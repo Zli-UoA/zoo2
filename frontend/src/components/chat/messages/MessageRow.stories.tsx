@@ -530,7 +530,7 @@ export const EncryptedBeforeEncryptionRow: Story = {
     ),
   ],
   args: {
-    // 暗号化に切り替える前の平文のメッセージ（#367）。本文を出し、印を付け、編集させない。
+    // 暗号化に切り替える前の平文のメッセージ（#367）。本文を出し、印は付けず、編集させない。
     item: {
       ...item,
       message: { ...item.message, id: "message-before-encryption", ciphertext: null, epoch: null },
@@ -539,7 +539,22 @@ export const EncryptedBeforeEncryptionRow: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("暗号化前")).toBeVisible();
+    await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
+    await expect(canvas.queryByText("暗号化されていません")).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedUnencryptedAfterEncryptedRow: Story = {
+  decorators: EncryptedBeforeEncryptionRow.decorators,
+  args: {
+    // 暗号化したメッセージより後ろの、暗号文のない行（#367）。正しいサーバーは作れないので警告する。
+    ...EncryptedBeforeEncryptionRow.args,
+    unencryptedAfterEncrypted: true,
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("暗号化されていません")).toBeVisible();
     await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
     await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
   }),

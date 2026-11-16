@@ -68,8 +68,12 @@ export class SasError extends Error {
 
 const REQUEST_TYPE = "m.key.verification.request";
 
+/** 読み取った QR を、取りやめずに読み直してもらうときの `ZooCryptoError` の `code`。 */
+const QR_RETRY_CODES = new Set(["InvalidPayload", "Verification"]);
+
 /**
- * 他のユーザーの絵文字 SAS 検証（#368。docs/e2ee.md の「絵文字 SAS 検証」）。
+ * 他のユーザーの絵文字 SAS 検証（#368。docs/e2ee.md の「絵文字 SAS 検証」）と、QR コードによる検証
+ * （docs/e2ee.md の「QR コードによる検証」）。
  *
  * vodozemac の SAS の状態は保存できないので、検証は Worker のメモリーにだけ置く。Worker を開き直したら
  * 続けられない（相手には、10 分で `m.timeout` の取りやめになる）。
@@ -148,6 +152,35 @@ export class SasVerifications {
   mismatch(txnId: string): SasUpdate {
     const verification = this.get(txnId);
     return { outgoing: verification.mismatch(), view: verification.view() };
+  }
+
+  /** 絵文字で検証することを選んだ（SAS の `start` を送る）。 */
+  startSas(txnId: string): SasUpdate {
+    const verification = this.get(txnId);
+    return { outgoing: verification.startSas(), view: verification.view() };
+  }
+
+  /**
+   * 相手の QR を読み取った。形が正しくない、別の検証の QR、読み取れる段階でないときは `null` を返す
+   * （取りやめずに読み直す）。鍵が違えば取りやめる（`view.phase` が `cancelled`）。
+   */
+  scanQr(txnId: string, bytes: Uint8Array): SasUpdate | null {
+    const verification = this.get(txnId);
+    let outgoing: VerificationOutgoing[];
+    try {
+      outgoing = verification.scanQrCode(bytes);
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (typeof code === "string" && QR_RETRY_CODES.has(code)) return null;
+      throw error;
+    }
+    return { outgoing, view: verification.view() };
+  }
+
+  /** 相手がこの端末の QR を読み取ったことを、利用者が確かめた（`done` を送る）。 */
+  confirmQr(txnId: string): SasUpdate {
+    const verification = this.get(txnId);
+    return { outgoing: verification.confirmQrScanned(), view: verification.view() };
   }
 
   cancel(txnId: string): SasUpdate | null {

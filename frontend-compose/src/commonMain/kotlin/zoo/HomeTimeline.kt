@@ -3,6 +3,8 @@ package zoo
 import androidx.compose.runtime.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 
 /** Owns the retained paging window; live refreshes wait for an outstanding older page. */
 @Stable
@@ -22,6 +24,13 @@ class HomeTimeline(
     var loading by mutableStateOf(true)
         private set
 
+    var refreshing by mutableStateOf(false)
+        private set
+
+    /** Includes retained live refreshes, even when the pull-to-refresh spinner stays hidden. */
+    var updating by mutableStateOf(false)
+        private set
+
     var loadingOlder by mutableStateOf(false)
         private set
 
@@ -31,12 +40,40 @@ class HomeTimeline(
     var error by mutableStateOf(false)
         private set
 
+    val canLoadOlder: Boolean
+        get() = hasMore && !loading && !loadingOlder && !updating && !error && !olderError
+
     private var refreshJob: Job? = null
     private var olderJob: Job? = null
     private var deferred = false
+    private var deferredHead = false
+    private var validatedIds = emptySet<String>()
+    var viewportError by mutableStateOf(false)
+        private set
     private var generation = 0
-    private var windowSize = 50
-    private var tail: Row? = null
+    private var visibleIds = emptyList<String>()
+    private var atTop = true
+    private var checkedAt = 0L
+    private var pendingHead = false
+    var olderError by mutableStateOf(false)
+        private set
+    private val cacheKey get() = listOf(timeline, postId.orEmpty(), actorId.orEmpty()).joinToString("\u0000")
+    fun viewport(ids: List<String>, top: Boolean): Boolean {
+        val next = ids.take(100)
+        val changed = visibleIds != next
+        val returnedToPendingHead = top && !atTop && pendingHead
+        visibleIds = next
+        atTop = top
+        return returnedToPendingHead || changed && next.any { it !in validatedIds }
+    }
+    internal fun restore(): HomeTimelineSnapshot? = app.homeTimelines.get(cacheKey)?.also {
+        posts = it.posts; hasMore = it.hasMore; loading = false; checkedAt = it.checkedAt
+        validatedIds = it.posts.take(50).map(::key).toSet()
+    }
+    fun needsRefresh(): Boolean = posts.isEmpty() || kotlin.time.Clock.System.now().toEpochMilliseconds() - checkedAt >= 30_000
+    private fun save(index: Int = 0, offset: Int = 0) {
+        app.homeTimelines.save(cacheKey, HomeTimelineSnapshot(posts, hasMore, index, offset, checkedAt))
+    }
 
     private var selectionChanged = false
     suspend fun restoreSelection() {
@@ -56,53 +93,66 @@ class HomeTimeline(
         posts = emptyList()
         loading = true
         loadingOlder = false
-        windowSize = 50
-        tail = null
+        olderError = false
+        visibleIds = emptyList()
+        atTop = true
         refresh()
     }
 
-    fun refresh(retain: Boolean = false) {
+    fun refresh(retain: Boolean = false, includeHead: Boolean = true) {
         if (retain && (loadingOlder || refreshJob?.isActive == true)) {
             deferred = true
+            deferredHead = deferredHead || includeHead
             return
         }
         deferred = false
+        deferredHead = false
         refreshJob?.cancel()
         val version = ++generation
         if (!retain) {
             olderJob?.cancel()
             loadingOlder = false
         }
-        val size = if (retain) windowSize else 50
-        val retainedTail = if (retain) tail else null
+        if (!retain) olderError = false
+        refreshing = !retain
+        updating = true
         refreshJob =
             scope.launch {
                 error = false
                 try {
-                    val result = mutableListOf<Row>()
-                    var before = ""
-                    var more: Boolean
-                    do {
-                        val page =
-                            if (postId != null)
-                                app.api.request("/api/home/${postId.encodeURLParameter()}/thread").rows()
-                            else app.api.request(path(size, before)).rows()
-                        result.addAll(page.filter { row -> result.none { key(it) == key(row) } })
-                        more = postId == null && page.size >= size
-                        before = page.lastOrNull()?.let(::key).orEmpty()
-                        val reached =
-                            retainedTail == null ||
-                                result.any { key(it) == key(retainedTail) } ||
-                                (result.lastOrNull()?.text("sort_key")?.let {
-                                    numericCompare(it, retainedTail.text("sort_key")) < 0
-                                } == true)
-                        if (!more || (result.size >= size && reached)) break
-                    } while (result.size < 500 && before.isNotEmpty())
+                    val fetchHead = includeHead || posts.isEmpty() || postId != null || atTop && pendingHead
+                    val head = if (!fetchHead) emptyList() else if (postId != null)
+                        app.api.request("/api/home/${postId.encodeURLParameter()}/thread").rows()
+                    else app.api.request(path(50, "")).rows()
+                    val headIds = head.map(::key).toSet()
+                    val complete = fetchHead && postId == null && head.size < 50
+                    val check = if (retain && postId == null && !complete) visibleIds.filterNot { it in headIds } else emptyList()
+                    var checked = emptyList<Row>()
+                    var checkedSuccessfully = true
+                    if (check.isNotEmpty()) {
+                        try {
+                            checked = app.api.request("/api/home/entries", "POST", obj(
+                                "entries" to JsonArray(check.map(::JsonPrimitive)), "timeline" to if (actorId == null) timeline else "social", "author" to actorId,
+                            )).rows()
+                        } catch (e: CancellationException) { throw e }
+                        catch (_: Exception) { checkedSuccessfully = false }
+                    }
                     if (version == generation) {
-                        posts = result
-                        hasMore = more
-                        windowSize = maxOf(50, result.size)
-                        tail = result.lastOrNull()
+                        val headApplied = !retain || postId != null || complete || atTop || posts.any { key(it) in headIds }
+                        posts = if (retain && postId == null)
+                            mergeHomeWindow(posts, head, if (complete) posts.map(::key) else if (checkedSuccessfully) check else emptyList(), checked, fetchHead && atTop || complete)
+                        else head
+                        if (fetchHead && (!retain || complete || posts.size <= 50)) hasMore = !complete && postId == null && head.size == 50
+                        if (fetchHead && headApplied) {
+                            pendingHead = false
+                            checkedAt = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                            validatedIds = headIds
+                        } else if (fetchHead) {
+                            pendingHead = true
+                            checkedAt = 0L
+                        }
+                        if (checkedSuccessfully) validatedIds = validatedIds + check
+                        viewportError = !checkedSuccessfully
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -111,15 +161,24 @@ class HomeTimeline(
                 } finally {
                     if (version == generation) {
                         loading = false
+                        refreshing = false
                         refreshJob = null
-                        if (deferred && app.env.visible && app.env.online) refresh(true)
+                        updating = false
+                        if (deferred && app.env.visible && app.env.online) refresh(true, deferredHead)
                     }
                 }
             }
     }
 
+    fun remove(postId: String) {
+        app.homeTimelines.remove(postId)
+        posts = posts.filterNot { it.text("id") == postId }
+    }
+
+    suspend fun awaitUpdate() { refreshJob?.join() }
+
     fun older() {
-        if (loading || loadingOlder || refreshJob?.isActive == true || !hasMore || posts.isEmpty()) return
+        if (loading || loadingOlder || updating || !hasMore || posts.isEmpty()) return
         val version = generation
         loadingOlder = true
         error = false
@@ -128,29 +187,32 @@ class HomeTimeline(
                 try {
                     val page = app.api.request(path(50, key(posts.last()))).rows()
                     if (version == generation) {
-                        posts = posts + page.filter { row -> posts.none { key(it) == key(row) } }
-                        hasMore = page.size == 50
-                        windowSize = maxOf(windowSize, posts.size)
-                        tail = posts.lastOrNull()
+                        val known = posts.map(::key).toSet()
+                        val added = page.filterNot { key(it) in known }
+                        posts = posts + added
+                        validatedIds = validatedIds + page.map(::key)
+                        hasMore = page.size == 50 && added.isNotEmpty()
+                        olderError = false
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
-                    if (version == generation) error = true
+                    if (version == generation) olderError = true
                 } finally {
                     if (version == generation) {
                         loadingOlder = false
                         if (deferred) {
-                            deferred = false
-                            refresh(true)
+                            refresh(true, deferredHead)
                         }
                     }
                 }
             }
     }
 
-    fun close() {
+    fun close(index: Int = 0, offset: Int = 0) {
+        if (posts.isNotEmpty()) save(index, offset)
         generation++
+        updating = false
         refreshJob?.cancel()
         olderJob?.cancel()
     }

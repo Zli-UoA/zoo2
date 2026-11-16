@@ -25,28 +25,50 @@ fun SettingRow(
     icon: String? = null,
     content: @Composable RowScope.() -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(16.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Row(
-            Modifier.weight(1f).heightIn(min = 32.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (icon != null) Icon(icon, modifier = Modifier.size(20.dp))
-            Column(Modifier.weight(1f)) {
-                Text(label, weight = FontWeight.Medium)
-                if (description.isNotEmpty())
-                    Text(description, Modifier.padding(top = 4.dp), muted = true, small = true)
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (LocalTouchUi.current && maxWidth < 480.dp) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                SettingLabel(label, description, icon)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = content,
+                )
+            }
+        } else {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SettingLabel(label, description, icon, Modifier.weight(1f))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = content,
+                )
             }
         }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            content = content,
-        )
+    }
+}
+
+@Composable
+private fun SettingLabel(label: String, description: String, icon: String?, modifier: Modifier = Modifier) {
+    Row(
+        modifier.heightIn(min = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) Icon(icon, modifier = Modifier.size(20.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, weight = FontWeight.Medium)
+            if (description.isNotEmpty())
+                Text(description, Modifier.padding(top = 4.dp), muted = true, small = true)
+        }
     }
 }
 
@@ -66,7 +88,7 @@ fun SettingsSection(
                 borderColor ?: MaterialTheme.colorScheme.outline,
                 RoundedCornerShape(10.dp),
             )
-            .padding(17.dp),
+            .padding(if (LocalTouchUi.current) 12.dp else 17.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (title.isNotEmpty())
@@ -107,7 +129,7 @@ fun ThemeToggle(app: Session) {
                     icon = icons[index],
                     selected = app.env.theme == value,
                     modifier =
-                        hintModifier.size(40.dp).focusRequester(focus[index]).onPreviewKeyEvent {
+                        hintModifier.size(touchTargetSize(40.dp, LocalTouchUi.current)).focusRequester(focus[index]).onPreviewKeyEvent {
                             if (it.type != KeyEventType.KeyDown) false
                             else {
                                 val next =

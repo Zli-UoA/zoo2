@@ -10,12 +10,15 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 #[derive(Default, Deserialize)]
 struct Page {
+    /// Entry IDs for refreshing a bounded viewport, including repost entries.
+    #[serde(skip)]
+    entries: Option<Vec<String>>,
     before: Option<String>,
     timeline: Option<String>,
     limit: Option<usize>,
@@ -23,6 +26,29 @@ struct Page {
     author: Option<String>,
     #[serde(default)]
     thread: bool,
+}
+#[derive(Deserialize)]
+struct EntryWindow {
+    entries: Vec<String>,
+    timeline: Option<String>,
+    author: Option<String>,
+}
+async fn refresh_entries(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(window): Json<EntryWindow>,
+) -> Result<Json<Vec<Value>>, AppError> {
+    list(
+        State(state),
+        user,
+        Query(Page {
+            entries: Some(window.entries),
+            timeline: window.timeline,
+            author: window.author,
+            ..Page::default()
+        }),
+    )
+    .await
 }
 #[derive(Deserialize)]
 struct NewPost {
@@ -54,6 +80,7 @@ struct Settings {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/home", get(list).post(create))
+        .route("/api/home/entries", post(refresh_entries))
         .merge(super::home_images::router())
         .route("/api/home/live", get(super::home_live::upgrade))
         .route("/api/home/settings", get(settings).put(update_settings))
@@ -326,6 +353,19 @@ async fn list(
     if !matches!(timeline, "home" | "local" | "social") {
         return Err(AppError::BadRequest("Unknown timeline".into()));
     }
+    let mut entries = page.entries;
+    let limit = if entries.is_some() {
+        100
+    } else {
+        page.limit.unwrap_or(50).clamp(1, 500)
+    };
+    if let Some(ref ids) = entries {
+        validate_entries(ids)?;
+    }
+    let _read_slot = HOME_READS
+        .acquire()
+        .await
+        .expect("Home read limiter remains open");
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
@@ -335,76 +375,78 @@ async fn list(
     toasty::sql::statement("SET LOCAL jit = off")
         .exec(&mut tx)
         .await?;
-    // `base` covers every visible post, so keep it narrow: local content emojis and the
-    // row JSON are built only for the page chosen in `picked`. `page_parents` and
-    // `page_replies` read `base` once for the whole page instead of once per row.
-    let mut rows=query(&mut tx,r#"WITH RECURSIVE shared_reactions AS NOT MATERIALIZED (
-      SELECT r.post_id,r.user_id,r.reaction,r.emoji,r.created_at FROM apub_reactions r
-      WHERE (r.user_id IS NULL OR NOT EXISTS(SELECT 1 FROM home_posts p WHERE p.id=r.post_id AND p.channel_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM apub_actors a WHERE a.id=r.actor_id AND a.blocked)
-      UNION ALL
-      SELECT p.id,r.user_id,r.emoji,NULL::jsonb,r.created_at AT TIME ZONE 'UTC' FROM message_reactions r JOIN home_posts p ON p.id=r.message_id AND p.channel_id IS NOT NULL
-    ), base AS (
-      SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,COALESCE(m.parent_id,p.parent_id) AS parent_id,NULL::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar,u.avatar_url,p.media
-      FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN messages m ON m.id=p.id
-      WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1 OR (p.id=$6 AND p.apub AND p.visibility='unlisted'))
-        AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
-        AND (NOT $4::boolean OR p.user_id=$1 OR p.reply_user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
-      UNION ALL
-      SELECT p.id,p.actor_id,a.user_name || '@' || split_part(a.id,'/',3),a.display_name,p.content,p.published,p.updated_at,true,p.visibility,NULL,NULL,true,p.id,p.parent_id,p.emojis,a.emojis,false,
-        (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1))),a.avatar,NULL::text,p.media
-      FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
-      WHERE p.deleted_at IS NULL AND NOT a.blocked AND (
-        (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1)))
-        OR (p.visibility IN ('public','unlisted') AND EXISTS(SELECT 1 FROM apub_reposts r WHERE r.post_id=p.id AND ((r.user_id IS NOT NULL AND r.visibility IN ('local','public') AND (NOT $4::boolean OR r.user_id=$1)) OR (r.user_id IS NULL AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=r.actor_id AND direction='outgoing' AND accepted)))))
-      )
-    ), ancestors AS (
-      SELECT b.id,b.parent_id,ARRAY[b.id] AS visited,0 AS depth FROM base b WHERE b.id=$6
-      UNION ALL
-      SELECT b.id,b.parent_id,a.visited||b.id,a.depth+1 FROM ancestors a JOIN base b ON b.id=a.parent_id
-      WHERE NOT b.id=ANY(a.visited) AND a.depth<100 AND b.original_visible
-    ), descendants AS (
-      SELECT b.id,ARRAY[b.id] AS visited,ARRAY[b.created_at::text||b.id] AS path,0 AS depth FROM base b WHERE b.id=CASE WHEN (SELECT phase FROM thread_rollout WHERE id)<>'collecting' THEN (SELECT id FROM ancestors ORDER BY depth DESC LIMIT 1) ELSE $6 END
-      UNION ALL
-      SELECT b.id,d.visited||b.id,d.path||(b.created_at::text||b.id),d.depth+1 FROM descendants d JOIN base b ON b.parent_id=d.id
-      WHERE NOT b.id=ANY(d.visited) AND d.depth<100 AND b.original_visible
-    ), entries AS (
-      SELECT '{}'::jsonb AS extra,b.id,b.id AS entry_id,b.created_at AS sort_at,b.user_id
-      FROM base b WHERE (b.original_visible OR $6<>'') AND ($6<>'' OR $3='social' OR $3='local' AND NOT b.remote AND b.visibility IN ('public','local') OR $3='home' AND (b.remote OR b.own))
-      UNION ALL
-      SELECT jsonb_build_object('reposted_by',COALESCE(u.display_name::text,a.display_name),'reposter_actor',r.actor_id,'repost_created_at',r.created_at),b.id,'repost:'||r.activity_id,r.created_at,b.user_id
-      FROM apub_reposts r JOIN base b ON b.id=r.post_id LEFT JOIN users u ON u.id=r.user_id LEFT JOIN apub_actors a ON a.id=r.actor_id
-      WHERE $6='' AND $7='' AND b.visibility IN ('public','unlisted','local') AND (r.user_id IS NOT NULL OR NOT a.blocked) AND (
-        (r.user_id=$1 AND $3 IN ('home','social'))
-        OR (r.user_id IS NOT NULL AND r.visibility IN ('public','local') AND $3 IN ('local','social') AND (NOT $4::boolean OR r.user_id=$1))
-        OR (r.user_id IS NULL AND $3 IN ('home','social') AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=r.actor_id AND direction='outgoing' AND accepted))
-      )
-    ), picked AS (
-      SELECT f.extra,f.id,f.entry_id,f.sort_at,CASE WHEN $8::boolean AND (SELECT phase FROM thread_rollout WHERE id)='collecting' THEN COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),1) ELSE 0 END AS tree_order,CASE WHEN $8::boolean THEN (SELECT path FROM descendants WHERE id=f.id) END AS tree_path
-      FROM entries f WHERE ($6='' OR f.id=$6 OR $8::boolean AND (f.id IN (SELECT id FROM ancestors) OR f.id IN (SELECT id FROM descendants))) AND ($7='' OR f.user_id=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2))
-      ORDER BY CASE WHEN $8::boolean AND f.id=$6 THEN 0 WHEN $8::boolean AND f.id IN (SELECT id FROM ancestors) THEN 1 ELSE 2 END,tree_order,tree_path,f.sort_at DESC,f.entry_id DESC LIMIT $5::integer
-    ), page AS MATERIALIZED (
-      SELECT row_to_json(b)::jsonb || CASE WHEN b.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(b.content)) e),'[]'::jsonb)) END || f.extra AS post,f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path
-      FROM picked f JOIN base b ON b.id=f.id
-    ), page_parents AS MATERIALIZED (
-      SELECT b.* FROM base b WHERE b.original_visible AND b.id IN (SELECT post->>'parent_id' FROM page)
-    ), page_replies AS MATERIALIZED (
-      SELECT b.parent_id,count(*) AS n FROM base b WHERE b.original_visible AND b.parent_id IN (SELECT id FROM page) GROUP BY b.parent_id
-    ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
-      'entry_id',f.entry_id,
-      'attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=f.id AND a.channel_id=f.post->>'channel_id' AND attachment_message.channel_id=f.post->>'channel_id' AND attachment_message.deleted_at IS NULL),
-      'parent',(SELECT (row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(parent.content)) e),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)) FROM page_parents parent WHERE parent.id=f.post->>'parent_id'),
-      'tree_depth',CASE WHEN $8::boolean AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting' THEN LEAST(COALESCE((SELECT depth FROM descendants WHERE id=f.id),0),1) WHEN $8::boolean THEN (SELECT max(depth) FROM ancestors) + COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),(SELECT depth FROM descendants WHERE id=f.id),0) ELSE 0 END,
-      'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
-      'likes',(SELECT count(*) FROM shared_reactions WHERE post_id=f.id),
-      'liked',EXISTS(SELECT 1 FROM shared_reactions WHERE post_id=f.id AND user_id=$1),
-      'my_reaction',(SELECT reaction FROM shared_reactions WHERE post_id=f.id AND user_id=$1 LIMIT 1),
-      'reactions',(SELECT COALESCE(jsonb_agg(jsonb_build_object('reaction',reaction,'emoji',emoji,'count',n,'selected',COALESCE(selected,false))),'[]'::jsonb) FROM (SELECT reaction,emoji,count(*) AS n,bool_or(user_id=$1) AS selected FROM shared_reactions WHERE post_id=f.id GROUP BY reaction,emoji ORDER BY min(created_at)) grouped),
-      'replies',COALESCE((SELECT n FROM page_replies WHERE parent_id=f.id),0),
-      'reposts',(SELECT count(*) FROM apub_reposts r WHERE r.post_id=f.id AND (r.visibility IN ('public','local') OR r.user_id=$1 OR EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1))),
-      'reposted',EXISTS(SELECT 1 FROM apub_reposts WHERE post_id=f.id AND user_id=$1)
-    ))::text FROM page f ORDER BY f.tree_order,f.tree_path,f.sort_at DESC,f.entry_id DESC"#,
-    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"}]).await?;
+    // Seek eligible keys first; render/decorate only this page and its parents.
+    // This stays within the existing request and transaction on every client.
+    let seek_page = entries.is_none() && page.post_id.as_deref().is_none_or(|id| id.is_empty());
+    if seek_page {
+        // User/author selectivity is highly skewed. A generic plan can scan
+        // another user's whole history for an empty account.
+        toasty::sql::statement("SET LOCAL plan_cache_mode = force_custom_plan")
+            .exec(&mut tx)
+            .await?;
+        let keys = query(
+            &mut tx,
+            &timeline_page_query_for_request(
+                timeline,
+                guest,
+                page.author.as_deref().is_some_and(|a| !a.is_empty()),
+                page.before.as_deref().is_some_and(|b| !b.is_empty()),
+            ),
+            &[
+                &user.id,
+                page.before.as_deref().unwrap_or(""),
+                timeline,
+                if guest { "true" } else { "false" },
+                &limit.to_string(),
+                "",
+                page.author.as_deref().unwrap_or(""),
+                "false",
+                "[]",
+            ],
+        )
+        .await?;
+        let selected: Vec<String> = keys
+            .into_iter()
+            .filter_map(|row| row["entry_id"].as_str().map(str::to_owned))
+            .collect();
+        if selected.is_empty() {
+            return Ok(Json(vec![]));
+        }
+        entries = Some(selected);
+    }
+    // Rendering is bounded by selected keys; its generic plan is reusable.
+    toasty::sql::statement("SET LOCAL plan_cache_mode = force_generic_plan")
+        .exec(&mut tx)
+        .await?;
+    let sql = timeline_query_for(
+        page.thread,
+        guest,
+        page.post_id.as_deref().is_some_and(|p| !p.is_empty()),
+        page.author.as_deref().is_some_and(|a| !a.is_empty()),
+        !seek_page && page.before.as_deref().is_some_and(|b| !b.is_empty()),
+    );
+    let mut rows = query(
+        &mut tx,
+        &sql,
+        &[
+            &user.id,
+            if seek_page {
+                ""
+            } else {
+                page.before.as_deref().unwrap_or("")
+            },
+            timeline,
+            if guest { "true" } else { "false" },
+            &limit.to_string(),
+            page.post_id.as_deref().unwrap_or(""),
+            page.author.as_deref().unwrap_or(""),
+            if page.thread { "true" } else { "false" },
+            &json!(entries.unwrap_or_default()).to_string(),
+        ],
+    )
+    .await?;
 
+    rows = rows.into_iter().map(timeline_post).collect();
     activitypub::quotes::decorate(&mut tx, &mut rows).await?;
     super::home_images::decorate(&mut tx, &mut rows).await?;
     activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
@@ -416,6 +458,17 @@ async fn list(
     activitypub::remember_display_emojis(&mut tx, &rows).await?;
     tx.commit().await?;
     Ok(Json(rows))
+}
+fn validate_entries(entries: &[String]) -> Result<(), AppError> {
+    if entries.is_empty()
+        || entries.len() > 100
+        || entries
+            .iter()
+            .any(|id| id.is_empty() || id.len() > 2048 || id.contains('\0'))
+    {
+        return Err(AppError::BadRequest("Invalid timeline entries".into()));
+    }
+    Ok(())
 }
 async fn detail(
     State(state): State<AppState>,
@@ -442,18 +495,23 @@ async fn thread(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<Value>>, AppError> {
-    let _ = detail(State(state.clone()), user.clone(), Path(id.clone())).await?;
-    list(
+    let Json(rows) = list(
         State(state),
         user,
         Query(Page {
-            post_id: Some(id),
+            post_id: Some(id.clone()),
             thread: true,
             limit: Some(500),
             ..Page::default()
         }),
     )
-    .await
+    .await?;
+    // `picked` prioritizes the requested post before applying the limit. Its
+    // absence means it is missing or inaccessible, even if relatives are visible.
+    if !rows.iter().any(|post| post["id"].as_str() == Some(&id)) {
+        return Err(AppError::NotFound("Post".into()));
+    }
+    Ok(Json(rows))
 }
 async fn settings(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
@@ -505,6 +563,20 @@ async fn update_settings(
 mod tests {
     use super::*;
     #[test]
+    fn viewport_entries_are_bounded_and_typed() {
+        assert!(validate_entries(&["p".into(), "repost:r".into()]).is_ok());
+        for invalid in [
+            vec![],
+            vec![String::new()],
+            vec!["\0".into()],
+            vec!["x".repeat(2049)],
+            vec!["p".into(); 101],
+        ] {
+            assert!(validate_entries(&invalid).is_err());
+        }
+        assert!(serde_json::from_value::<EntryWindow>(json!({"entries":[1]})).is_err());
+    }
+    #[test]
     fn content_limits() {
         assert!(validate_content(" \n").is_err());
         assert!(validate_content("text\0").is_err());
@@ -512,3 +584,167 @@ mod tests {
         assert!(validate_content(&"あ".repeat(1001)).is_err());
     }
 }
+
+/// The same audience and entry rules are used by the key picker and renderer.
+pub fn timeline_query() -> String {
+    fill_audience(
+        include_str!("home_timeline.sql")
+            .replace("/* reply_counts */", include_str!("home_reply_counts.sql"))
+            .replace(
+                "/* reaction_counts */",
+                include_str!("home_reaction_counts.sql"),
+            )
+            .replace(
+                "/* repost_counts */",
+                include_str!("home_repost_counts.sql"),
+            )
+            .replace("/* visible_posts */", include_str!("home_visible.sql")),
+    )
+    .replace(
+        "/* timeline_entries */",
+        &include_str!("home_entries.sql").replace("/* entry_posts */", "base"),
+    )
+    .replace("/* repost_entries */", "scoped_reposts")
+    .replace("/* local_posts */", "home_posts")
+    .replace("/* remote_posts */", "apub_remote_posts")
+}
+
+pub fn timeline_page_query() -> String {
+    // activity_id is NULL only for original posts. Separate these branches so
+    // planning a local stream does not also plan the repost/recipient joins.
+    let (posts, reposts) = include_str!("home_entries.sql")
+        .split_once("      UNION ALL")
+        .expect("original/repost entry branches");
+    fill_audience(
+        include_str!("home_page.sql")
+            .replace("/* visible_posts */", include_str!("home_visible.sql"))
+            .replace(
+                "/* post_entries */",
+                &posts.replace("/* entry_posts */", "visible"),
+            )
+            .replace(
+                "/* repost_entry_rows */",
+                &reposts.replace("/* entry_posts */", "visible"),
+            ),
+    )
+    .replace("/* repost_entries */", "apub_reposts")
+    .replace("/* local_posts */", "home_posts")
+    .replace("/* remote_posts */", "apub_remote_posts")
+}
+
+// Reuse the exact audience predicates for DTOs and lean reply aggregates.
+fn fill_audience(sql: String) -> String {
+    sql.replace(
+        "/* local_audience */",
+        include_str!("home_local_audience.sql").trim(),
+    )
+    .replace(
+        "/* remote_original_audience */",
+        include_str!("home_remote_original_audience.sql").trim(),
+    )
+}
+
+/// Only plan streams used by this surface. Retain their audience predicates;
+/// user values remain bound parameters, never interpolated SQL.
+pub fn timeline_page_query_for(timeline: &str, guest: bool) -> String {
+    timeline_page_query_for_author(timeline, guest, false)
+}
+
+pub fn timeline_page_query_for_author(timeline: &str, guest: bool, author: bool) -> String {
+    timeline_page_query_for_request(timeline, guest, author, false)
+}
+
+pub fn timeline_page_query_for_request(
+    timeline: &str,
+    guest: bool,
+    author: bool,
+    before: bool,
+) -> String {
+    let sql = timeline_page_query();
+    let marker = "), candidates AS (\n";
+    let start = sql.find(marker).expect("candidate CTE") + marker.len();
+    let end = sql
+        .rfind("\n)\nSELECT json_build_object")
+        .expect("candidate CTE end");
+    let streams: Vec<_> = sql[start..end].split("\n  UNION\n").collect();
+    assert_eq!(
+        streams.len(),
+        9,
+        "update surface stream selection with the template"
+    );
+    let selected: &[usize] = match (timeline, guest) {
+        ("home", _) => &[1, 2, 4, 5, 7, 8],
+        ("local", false) => &[0, 6],
+        ("local", true) => &[1, 2, 3, 6],
+        ("social", false) => &[0, 1, 2, 4, 5, 6, 7, 8],
+        ("social", true) => &[1, 2, 3, 4, 5, 6, 7, 8],
+        _ => return sql,
+    };
+    let specialized = format!(
+        "{}{}{}",
+        &sql[..start],
+        selected
+            .iter()
+            .map(|i| streams[*i])
+            .collect::<Vec<_>>()
+            .join("\n  UNION\n"),
+        &sql[end..]
+    );
+    specialized
+        .replace("$3", &format!("'{timeline}'"))
+        .replace("$4", if guest { "true" } else { "false" })
+        .replace("$7=''", if author { "false" } else { "true" })
+        .replace("$2=''", if before { "false" } else { "true" })
+        .replacen(
+            "WITH ",
+            "WITH bound_params AS (SELECT $2::text,$3::text,$4::text,$7::text), ",
+            1,
+        )
+}
+
+/// Assemble display metadata outside PostgreSQL to avoid repeatedly copying a
+/// large jsonb object for every field of every thread row.
+pub fn timeline_post(mut row: Value) -> Value {
+    let mut post = row["post"].take();
+    let object = post.as_object_mut().expect("timeline post object");
+    object.remove("own");
+    object.remove("original_visible");
+    if let Some(extra) = row["extra"].as_object() {
+        object.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    if !row["local_emojis"].is_null() {
+        object.insert("emojis".into(), row["local_emojis"].take());
+    }
+
+    let display = row["display"].take();
+    object.extend(
+        display
+            .as_object()
+            .expect("timeline display object")
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
+    post
+}
+
+pub fn timeline_query_for(
+    thread: bool,
+    guest: bool,
+    post: bool,
+    author: bool,
+    before: bool,
+) -> String {
+    timeline_query().replace("$8",if thread {"true"}else{"false"})
+  .replace("$4",if guest {"true"}else{"false"})
+  .replace("$6=''",if post {"false"}else{"true"})
+  .replace("$6<>''",if post {"true"}else{"false"})
+  .replace("$7=''",if author {"false"}else{"true"})
+  .replace("$2=''",if before {"false"}else{"true"})
+  .replacen("WITH RECURSIVE ","WITH RECURSIVE bound_params AS (SELECT $2::text,$4::text,$6::text,$7::text,$8::text), ",1)
+}
+
+/// Limit expensive Home reads before acquiring a DB connection. Other routes
+/// (including uploads holding object-lifetime locks) retain their pool capacity.
+pub const HOME_QUERY_CONCURRENCY: usize = 2;
+static HOME_READS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(HOME_QUERY_CONCURRENCY);

@@ -34,8 +34,10 @@ fun HomePostCard(
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
-            .nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .then(if (!editing) Modifier.nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null) else Modifier)
+            .padding(horizontal = if (LocalTouchUi.current) 8.dp else 16.dp,
+                vertical = if (LocalTouchUi.current) 6.dp else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
             val parent = post["parent"] as? Row
@@ -46,13 +48,7 @@ fun HomePostCard(
                     Text(app.t("home.replyTo", "name" to name), size = 12.sp)
                 }
                 parent?.let {
-                    if (it.text("content").isNotBlank()) ActivityPubContent(
-                        it.text("content"),
-                        it.homeRows("emojis"),
-                        textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-                    )
-                    MessageAttachments(app, it.homeRows("attachments"))
-                    if (it.homeRows("attachments").isEmpty()) HomeMedia(it.homeRows("media"))
+                    HomePostContent(app, it)
                 }
             }
         }
@@ -65,7 +61,7 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp)) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
             NativeLink(profile) {
                 val people by app.repo.users.rows.collectAsState()
@@ -79,7 +75,7 @@ fun HomePostCard(
                     post.text("display_name").ifEmpty { post.text("user_name") },
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -171,17 +167,9 @@ fun HomePostCard(
                         }
                         Button(app.t("common.cancel"), enabled = !saving) { editing = false }
                     }
-                } else if (post.text("content").isNotBlank()) {
-                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
-                        ActivityPubContent(
-                            post.text("content"),
-                            post.homeRows("emojis"),
-                            textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-                        )
-                    }
+                } else {
+                    HomePostContent(app, post)
                 }
-                MessageAttachments(app, post.homeRows("attachments"))
-                if (post.homeRows("attachments").isEmpty()) HomeMedia(post.homeRows("media"))
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -190,7 +178,7 @@ fun HomePostCard(
                         post.homeRows("reactions").forEach { item ->
                             val label = "${item.text("reaction")} ${item.text("count")}"
                             Row(
-                                Modifier.then(
+                                Modifier.sizeIn(minWidth = if (LocalTouchUi.current) 48.dp else 0.dp, minHeight = if (LocalTouchUi.current) 48.dp else 0.dp).then(
                                         webControlModifier(
                                             "button",
                                             enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),
@@ -274,9 +262,14 @@ fun HomePostCard(
                                 )
                                 add(MenuAction("trash-2", app.t("home.delete"), !pending, remove))
                             }
+                            if (post.flag("remote") && publicUrl(post.text("url")) != null)
+                                add(MenuAction("external-link", app.t("home.original")) { app.platform.action("open:${post.text("url")}") })
                             add(
                                 MenuAction("copy", app.t("home.copyContent")) {
-                                    app.run { app.platform.invoke("copy", post.text("content")) }
+                                    app.run {
+                                        app.platform.invoke("copy", post.text("content"))
+                                        app.showToast(app.t("messages.copied"), kind = ToastKind.Success)
+                                    }
                                 }
                             )
                         },
@@ -284,13 +277,7 @@ fun HomePostCard(
                 }
                 if (error)
                     Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
-                if (post.flag("remote") && publicUrl(post.text("url")) != null)
-                    NativeLink(
-                        post.text("url"),
-                        attributes = mapOf("target" to "_blank", "rel" to "noopener noreferrer"),
-                    ) {
-                        Text(app.t("home.original"), size = 12.sp, color = LocalLinkColor.current)
-                    }
+
             }
         }
     }

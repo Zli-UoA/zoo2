@@ -2,6 +2,10 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/layout/OnboardingTour.stories.tsx",
+      "states": ["FirstVisit", "CompleteAndReplay", "Skip", "Mobile", "SlackSetup"]
+    },
+    {
       "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
       "states": [
         "Default",
@@ -230,7 +234,7 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
-      "states": ["Landscape", "Portrait", "TextOnly", "Mobile"]
+      "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
@@ -273,6 +277,7 @@
       "states": [
         "Default",
         "EncryptedBeforeEncryptionRow",
+        "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
         "HoverActions",
         "WithReactions",
@@ -342,6 +347,8 @@
       "states": [
         "Empty",
         "WithReplies",
+        "EncryptedRepliesAfterEncryption",
+        "EncryptedRootAfterEncryption",
         "Archived",
         "ArchivedReadOnly",
         "ArchivedNotJoined",
@@ -624,7 +631,13 @@
         "Submit",
         "SendError",
         "OlderPosts",
+        "OlderPageError",
+        "InfiniteScrolling",
+        "InfiniteScrollingMobile",
         "DeletePost",
+        "DeleteFromDetail",
+        "DeleteFailure",
+        "NewPostsWhileReading",
         "Federated",
         "CrossPost",
         "FollowersOnly",
@@ -746,6 +759,13 @@
         "Incoming",
         "IncomingNeedsUnlock",
         "Requested",
+        "RequestedEmoji",
+        "ChooseMethod",
+        "CameraDenied",
+        "QrScanned",
+        "QrConfirm",
+        "QrNeedsLogin",
+        "QrKeyMismatch",
         "Exchanging",
         "Compare",
         "CompareLongName",
@@ -766,6 +786,7 @@
         "Ready",
         "Reverify",
         "SasVerify",
+        "CleanupSuggested",
         "Rename",
         "UserSigningKeyRollback",
         "ReadyLocked",
@@ -804,6 +825,10 @@
     }
   ],
   "modules": [
+    {
+      "file": "src/components/layout/OnboardingTour.tsx",
+      "story": "src/components/layout/OnboardingTour.stories.tsx"
+    },
     {
       "file": "src/components/layout/DefaultChannelsSettings.tsx",
       "story": "src/components/layout/DefaultChannelsSettings.stories.tsx"
@@ -1281,7 +1306,9 @@
     },
     {
       "file": "src/components/home/HomeScreen.tsx",
-      "story": "src/components/home/HomeScreen.stories.tsx"
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
+      "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",
@@ -1330,7 +1357,7 @@
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
-      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移と戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
+      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移・ページ切替時の先頭復帰・戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubProfileDetails.tsx",
@@ -1435,8 +1462,21 @@
       "story": "src/components/e2ee/SasVerificationView.stories.tsx"
     },
     {
+      "file": "src/components/e2ee/QrCodeImage.tsx",
+      "story": "src/components/e2ee/SasVerificationView.stories.tsx",
+      "composed": true,
+      "reason": "検証のダイアログの中でだけ使う QR の描画。Requested と ChooseMethod のストーリーで確かめ、読み取れるバイト列になることは QrCodeScanner.browser.test.tsx で確かめる。"
+    },
+    {
+      "file": "src/components/e2ee/QrCodeScanner.tsx",
+      "story": "src/components/e2ee/SasVerificationView.stories.tsx",
+      "composed": true,
+      "reason": "検証のダイアログの中でだけ使うカメラでの読み取り。カメラの映像とカメラを使えないときの表示は ChooseMethod と CameraDenied のストーリーで、映像から QR を読み取る処理（BarcodeDetector と JS のデコーダー）は実ブラウザーのテストで確かめる。",
+      "checks": ["src/components/e2ee/QrCodeScanner.browser.test.tsx"]
+    },
+    {
       "file": "src/components/e2ee/SasVerificationHost.tsx",
-      "reason": "絵文字 SAS の検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
+      "reason": "絵文字 SAS と QR コードによる検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
       "checks": ["src/lib/e2ee/sasController.test.ts"]
     },
     {

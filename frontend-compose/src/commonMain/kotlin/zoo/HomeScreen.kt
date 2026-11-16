@@ -4,14 +4,19 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Tab
+import androidx.compose.material3.PrimaryScrollableTabRow
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
-import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     app: Session,
@@ -45,7 +50,6 @@ fun HomeScreen(
     var actionError by remember { mutableStateOf("") }
     var delete by remember { mutableStateOf<Row?>(null) }
     var deleteError by remember { mutableStateOf(false) }
-    var pull by remember { mutableStateOf(0f) }
     suspend fun controls() = coroutineScope {
         var failed = false
         val status = async {
@@ -89,22 +93,44 @@ fun HomeScreen(
             }
         }
     }
-    val controlUpdates = remember(app, feed) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) { controls() } }
+    val controlUpdates = remember(app, feed) { CoalescedRefresh(scope, interval = 60_000, allowed = { app.env.visible && app.env.online }) { controls() } }
+    var requestHead by remember(app, feed) { mutableStateOf(false) }
+    val feedUpdates = remember(app, feed) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) {
+        val head = requestHead
+        requestHead = false
+        feed.refresh(true, head)
+        feed.awaitUpdate()
+    } }
+    LaunchedEffect(feed, scroll, app) {
+        snapshotFlow {
+            val layout = scroll.layoutInfo
+            val ids = layout.visibleItemsInfo.mapNotNull { it.key as? String }
+            val nearEnd = (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 10
+            Triple(ids, scroll.firstVisibleItemIndex == 0, nearEnd && layout.totalItemsCount > 0 && feed.canLoadOlder && app.env.visible && app.env.online)
+        }.collect { (ids, top, ready) ->
+            if (feed.viewport(ids, top) && !feed.loading) feedUpdates.request()
+            if (ready) feed.older()
+        }
+    }
+
     LaunchedEffect(app, feed) {
         feed.restoreSelection()
-        feed.refresh()
+        feed.restore()?.let { scroll.scrollToItem(it.index, it.offset) }
+        if (app.env.visible && app.env.online && feed.needsRefresh()) feed.refresh(retain = feed.posts.isNotEmpty())
         controlUpdates.request()
     }
     DisposableEffect(app, feed) {
         val dispose =
             app.homeLive.subscribe {
-                feed.refresh(true)
+                requestHead = true
+                feedUpdates.request()
                 controlUpdates.request()
             }
         onDispose {
             dispose()
             controlUpdates.close()
-            feed.close()
+            feedUpdates.close()
+            feed.close(scroll.firstVisibleItemIndex, scroll.firstVisibleItemScrollOffset)
         }
     }
     Box(Modifier.fillMaxSize()) {
@@ -118,177 +144,134 @@ fun HomeScreen(
             ) {
                 IconButton("user-search", app.t("home.userSearch")) { search = true }
                 IconButton("refresh-cw", app.t("home.refresh")) {
-                    feed.refresh()
-                    scope.launch { controls() }
+                    scope.launch { scroll.scrollToItem(0); feed.refresh() }
+                    controlUpdates.request()
                 }
             }
             HorizontalDivider()
-            LazyColumn(
-                state = scroll,
-                modifier =
-                    Modifier.fillMaxSize()
-                        .then(
-                            webControlModifier(
-                                "feed",
-                                attributes = mapOf("aria-label" to app.t("home.timeline")),
-                            )
-                        )
-                        .pointerInput(scroll) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val first = awaitPointerEvent(PointerEventPass.Initial)
-                                    val down =
-                                        first.changes.firstOrNull {
-                                            it.pressed && !it.previousPressed
-                                        } ?: continue
-                                    if (
-                                        down.type != PointerType.Touch ||
-                                            scroll.firstVisibleItemIndex != 0 ||
-                                            scroll.firstVisibleItemScrollOffset != 0
-                                    )
-                                        continue
-                                    val y = down.position.y
-                                    do {
-                                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                                        val change =
-                                            event.changes.firstOrNull { it.id == down.id } ?: break
-                                        pull = ((change.position.y - y) / 2).coerceIn(0f, 100f)
-                                        if (!change.pressed) {
-                                            if (pull >= 60) feed.refresh()
-                                            pull = 0f
-                                            break
-                                        }
-                                    } while (true)
-                                }
-                            }
-                        },
-                contentPadding = PaddingValues(bottom = 96.dp),
+            PullToRefreshBox(
+                isRefreshing = feed.refreshing && !feed.loading,
+                onRefresh = { if (app.env.online && !feed.refreshing) scope.launch { scroll.scrollToItem(0); feed.refresh() } },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
             ) {
-                item {
-                    HomeWidth {
-                        selectedActor?.let { ActivityPubProfile(app, it) }
-                        if (selectedPost != null || selectedActor != null)
-                            NativeLink("/home", Modifier.padding(12.dp)) {
-                                Text(app.t("home.title"), color = LocalLinkColor.current)
-                            }
-                        if (pull > 0)
-                            Text(
-                                app.t(
-                                    if (pull >= 60) "home.releaseRefresh" else "home.pullRefresh"
-                                ),
-                                Modifier.padding(16.dp),
-                            )
-                        if (selectedPost == null && selectedActor == null)
-                            Row(
-                                Modifier.fillMaxWidth().padding(12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                listOf("home", "local", "social").forEach { value ->
-                                    Button(
-                                        app.t("home.timelineLabels.$value"),
-                                        selected = feed.timeline == value,
-                                        variant =
-                                            if (feed.timeline == value) "secondary" else "ghost",
-                                    ) {
-                                        feed.select(value)
+                LazyColumn(
+                    state = scroll,
+                    modifier =
+                        Modifier.fillMaxSize()
+                            .then(
+                                webControlModifier(
+                                    "feed",
+                                    attributes = mapOf("aria-label" to app.t("home.timeline")),
+                                )
+                            ),
+                    contentPadding = PaddingValues(bottom = 96.dp),
+                ) {
+                    item {
+                        HomeWidth {
+                            selectedActor?.let { ActivityPubProfile(app, it) }
+                            if (selectedPost == null && selectedActor == null) {
+                                val timelines = listOf("home", "local", "social")
+                                PrimaryScrollableTabRow(
+                                    selectedTabIndex = timelines.indexOf(feed.timeline).coerceAtLeast(0),
+                                    edgePadding = 16.dp,
+                                ) {
+                                    timelines.forEach { value ->
+                                        Tab(
+                                            selected = feed.timeline == value,
+                                            onClick = { if (feed.timeline != value) scope.launch { scroll.scrollToItem(0); feed.select(value) } },
+                                            text = {
+                                                Text(
+                                                    app.t("home.timelineLabels.$value"), maxLines = 1,
+                                                    weight = if (feed.timeline == value) FontWeight.SemiBold else FontWeight.Normal,
+                                                    color = if (feed.timeline == value) androidx.compose.material3.MaterialTheme.colorScheme.onSurface
+                                                        else androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            },
+                                        )
                                     }
                                 }
                             }
-                        HorizontalDivider()
-                    }
-                }
-                if (feed.error)
-                    item {
-                        HomeWidth {
-                            Text(
-                                app.t("home.loadError"),
-                                Modifier.padding(16.dp).then(webControlModifier("alert")),
-                            )
-                            Button(app.t("home.refresh")) { feed.refresh() }
+                            HorizontalDivider()
                         }
                     }
-                if (feed.loading)
-                    item {
-                        HomeWidth {
-                            Text(
-                                app.t("home.loading"),
-                                Modifier.padding(32.dp).then(webControlModifier("status")),
-                            )
+                    if (feed.error || feed.viewportError || feed.olderError)
+                        item {
+                            HomeWidth {
+                                LoadErrorState(app.t("home.loadError"), app.t("home.refresh")) { feed.refresh() }
+                            }
                         }
-                    }
-                else if (feed.posts.isEmpty() && !feed.error)
-                    item {
+                    if (feed.loading)
+                        item {
+                            HomeWidth {
+                                TimelineLoadingState(app.t("home.loading"))
+                            }
+                        }
+                    else if (feed.posts.isEmpty() && !feed.error)
+                        item {
+                            HomeWidth {
+                                EmptyContentState("home", app.t("home.empty"), app.t("home.emptyHint"))
+                            }
+                        }
+                    items(feed.posts, key = { HomeTimeline.key(it) }) { post ->
                         HomeWidth {
-                            Column(
-                                Modifier.fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 56.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                Icon("home", modifier = Modifier.size(32.dp))
-                                Text(app.t("home.empty"), weight = FontWeight.SemiBold)
-                                Text(app.t("home.emptyHint"))
+                            val depth = if (selectedPost != null)
+                                post.text("tree_depth").toIntOrNull()?.coerceIn(0, 6) ?: 0
+                            else 0
+                            Box(Modifier.padding(start = (depth * 16).dp)) {
+                                HomePostCard(
+                                    app,
+                                    post,
+                                    pending,
+                                    actionError == post.text("id"),
+                                    reply = { composer.reply(post) },
+                                    react = { reaction = post },
+                                    toggleReaction = { item ->
+                                        mutate(
+                                            post,
+                                            "/api/activitypub/reactions",
+                                            if (item.flag("selected")) "DELETE" else "POST",
+                                            obj(
+                                                "post_id" to post.text("id"),
+                                                "reaction" to item.text("reaction"),
+                                                "emoji_id" to (item["emoji"] as? Row)?.get("image_id"),
+                                            ),
+                                        )
+                                    },
+                                    repost = {
+                                        mutate(
+                                            post,
+                                            "/api/activitypub/reposts",
+                                            if (post.flag("reposted")) "DELETE" else "POST",
+                                            obj("post_id" to post.text("id")),
+                                        )
+                                    },
+                                    remove = {
+                                        delete = post
+                                        deleteError = false
+                                    },
+                                    edited = { feed.refresh() },
+                                    showParent = selectedPost == null,
+                                )
                             }
                         }
                     }
-                items(feed.posts, key = { HomeTimeline.key(it) }) { post ->
-                    HomeWidth {
-                        val depth = if (selectedPost != null)
-                            post.text("tree_depth").toIntOrNull()?.coerceIn(0, 6) ?: 0
-                        else 0
-                        Box(Modifier.padding(start = (depth * 16).dp)) {
-                            HomePostCard(
-                                app,
-                                post,
-                                pending,
-                                actionError == post.text("id"),
-                                reply = { composer.reply(post) },
-                                react = { reaction = post },
-                                toggleReaction = { item ->
-                                    mutate(
-                                        post,
-                                        "/api/activitypub/reactions",
-                                        if (item.flag("selected")) "DELETE" else "POST",
-                                        obj(
-                                            "post_id" to post.text("id"),
-                                            "reaction" to item.text("reaction"),
-                                            "emoji_id" to (item["emoji"] as? Row)?.get("image_id"),
-                                        ),
-                                    )
-                                },
-                                repost = {
-                                    mutate(
-                                        post,
-                                        "/api/activitypub/reposts",
-                                        if (post.flag("reposted")) "DELETE" else "POST",
-                                        obj("post_id" to post.text("id")),
-                                    )
-                                },
-                                remove = {
-                                    delete = post
-                                    deleteError = false
-                                },
-                                edited = { feed.refresh() },
-                                showParent = selectedPost == null,
-                            )
-                        }
-                    }
-                }
-                if (feed.hasMore)
-                    item {
-                        HomeWidth {
-                            Box(
-                                Modifier.fillMaxWidth().padding(16.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Button(
-                                    app.t(if (feed.loadingOlder) "home.loading" else "home.older"),
-                                    enabled = !feed.loadingOlder,
+                    if (feed.hasMore)
+                        item {
+                            HomeWidth {
+                                Box(
+                                    Modifier.fillMaxWidth().padding(16.dp),
+                                    contentAlignment = Alignment.Center,
                                 ) {
-                                    feed.older()
+                                    Button(
+                                        app.t(if (feed.loadingOlder) "home.loading" else "home.older"),
+                                        enabled = !feed.loadingOlder,
+                                    ) {
+                                        feed.older()
+                                    }
                                 }
                             }
                         }
-                    }
+                }
             }
         }
         HomeComposer(
@@ -330,7 +313,8 @@ fun HomeScreen(
                 try {
                     app.api.request("/api/home/${post.text("id").encodeURLParameter()}", "DELETE")
                     delete = null
-                    feed.refresh()
+                    feed.remove(post.text("id"))
+                    feed.refresh(true)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {

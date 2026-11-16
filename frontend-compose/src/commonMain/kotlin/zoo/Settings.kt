@@ -74,7 +74,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     variant = "ghost",
                     size = "icon-sm",
                     icon = "arrow-left",
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier.size(touchTargetSize(44.dp, LocalTouchUi.current)),
                 ) {
                     app.platform.action("back")
                 }
@@ -92,8 +92,9 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(contentPadding),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                FlowRow(
+                Row(
                     Modifier.fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
                         .then(webControlModifier("tablist"))
                         .onPreviewKeyEvent { event ->
                             if (
@@ -180,8 +181,18 @@ private fun GeneralSettings(app: Session) {
                 SearchEngineSelect(app)
             }
         }
-        HorizontalDivider()
-        SettingRow(app.t("pwa.title"), icon = "bell") { PwaSelect(app) }
+        if (!LocalTouchUi.current || app.capabilities.flag("pushSupported")) {
+            HorizontalDivider()
+            SettingRow(app.t("pwa.title"), icon = "bell") { PwaSelect(app) }
+        }
+        if (app.env.oidc) {
+            HorizontalDivider()
+            SettingRow(app.t("auth.logout"), icon = "log-out") {
+                Button(app.t("auth.logout"), destructive = true, enabled = "logout" !in app.pending) {
+                    app.run("logout") { app.platform.invoke("logout") }
+                }
+            }
+        }
     }
 }
 

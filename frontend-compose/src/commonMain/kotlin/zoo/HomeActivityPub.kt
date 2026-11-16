@@ -33,9 +33,10 @@ fun ActivityPubEmoji(
     LaunchedEffect(id) {
         if (!failed)
             try {
-                val bytes =
-                    app.image(if (emoji.flag("local")) { val url = emoji.text("url"); if (url.startsWith("/")) endpoint(app.config.apiBaseUrl, url) else url } else endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id"))
-                app.platform.imageFrames(bytes).collect { bitmap = it }
+                val url = if (emoji.flag("local")) {
+                    emoji.text("url").let { if (it.startsWith("/")) endpoint(app.config.apiBaseUrl, it) else it }
+                } else endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id")
+                bitmap = app.imageBitmap(url)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -45,7 +46,7 @@ fun ActivityPubEmoji(
         else onFailure?.invoke()
     }
     val slot = modifier.height(size).width(size * emojiRatio(emoji))
-    if (failed) Text(emoji.text("name"), slot, maxLines = 1)
+    if (failed) Text(emoji.text("name"), modifier.heightIn(min = size), maxLines = 1)
     else
         bitmap?.let { Image(it, emoji.text("name"), slot) }
             ?: Box(slot)
@@ -198,8 +199,8 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier,
 /** Both authenticated timelines and public profiles use the same image proxy paths. */
 @Composable
 fun HomeMedia(media: List<Row>) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        media.chunked(2).forEach { pair ->
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        media.filter { homeMediaPath(it) != null }.chunked(2).forEach { pair ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 pair.forEach { item -> HomeMediaImage(item, Modifier.weight(1f)) }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -208,39 +209,42 @@ fun HomeMedia(media: List<Row>) {
     }
 }
 
+internal fun homeMediaPath(item: Row): String? {
+    val id = item.text("image_id")
+    return if (Regex("^[a-f0-9]{64}$").matches(id)) "/api/activitypub/media-images/$id"
+    else item.text("url").takeIf { Regex("^/api/home/images/[a-f0-9-]+$").matches(it) }
+}
+
 @Composable
 private fun HomeMediaImage(item: Row, modifier: Modifier) {
     val app = LocalApp.current
-    var revealed by remember(item.text("url"), item.flag("is_sensitive")) { mutableStateOf(false) }
-    if (item.flag("is_sensitive") && !revealed) {
-        SensitiveImagePlaceholder(app, item, modifier.heightIn(min = 80.dp, max = 320.dp).aspectRatio(imageAspectRatio(item, 1f))) { revealed = true }
-        return
-    }
-    val id = item.text("image_id")
-    val path = if (Regex("^[a-f0-9]{64}$").matches(id)) "/api/activitypub/media-images/$id"
-        else item.text("url").takeIf { Regex("^/api/home/images/[a-f0-9-]+$").matches(it) }
-    if (path == null) return
+    val path = homeMediaPath(item) ?: return
     val url = endpoint(app.config.apiBaseUrl, path)
     val label = item.text("name").ifEmpty { app.t("home.image") }
-    var bitmap by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    var failed by remember(url) { mutableStateOf(false) }
-    LaunchedEffect(url) {
-        try {
-            app.platform.imageFrames(app.image(url)).collect { bitmap = it }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) { failed = true }
-    }
-    val frame = bitmap
-    val ratio = imageAspectRatio(item, 1f)
-    Box(modifier.heightIn(max = 320.dp).aspectRatio(ratio)
-        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-        .background(MaterialTheme.colorScheme.surfaceVariant)
-        .clickable(role = Role.Button) { app.platform.action("open:$url") }) {
-        if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
-        else {
-            BlurhashPlaceholder(item.text("blurhash"), Modifier.fillMaxSize())
-            if (failed) Text(label)
+    var revealed by remember(url, item.flag("is_sensitive")) { mutableStateOf(false) }
+    BoxWithConstraints(modifier) {
+        val frameModifier = Modifier.fillMaxWidth().height(constrainedImageHeight(maxWidth, item, 320.dp))
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+        if (item.flag("is_sensitive") && !revealed) {
+            SensitiveImagePlaceholder(app, item, frameModifier) { revealed = true }
+        } else {
+            var bitmap by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+            var failed by remember(url) { mutableStateOf(false) }
+            LaunchedEffect(url) {
+                try {
+                    app.platform.imageFrames(app.image(url)).collect { bitmap = it }
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { failed = true }
+            }
+            Box(frameModifier.clickable(role = Role.Button) { app.platform.action("open:$url") }) {
+                val frame = bitmap
+                if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
+                else {
+                    BlurhashPlaceholder(item.text("blurhash"), Modifier.fillMaxSize())
+                    if (failed) Text(label)
+                }
+            }
         }
     }
 }

@@ -10,6 +10,13 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
+    internal val homeTimelines = HomeTimelineCache()
+    internal val notificationContexts = mutableMapOf<String, Row>()
+    internal val accountDetails = mutableMapOf<String, Row>()
+    internal val homeComposerState by lazy {
+        HomeComposerState(homePreferenceKey(this, "zoo-home-post-settings:v1:"))
+    }
+
     val api
         get() = repo.api
 
@@ -232,13 +239,25 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 )
                 .also { assets[path] = it }
 
-    suspend fun image(url: String): ByteArray =
-        platform.image(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-            ?: assetClient
-                .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-                .body()
+    private val imageCache = ImageCache(scope)
+    private val bitmapCache = AssetCache<androidx.compose.ui.graphics.ImageBitmap>(scope, maxBytes = 64 * 1024 * 1024) {
+        (it.width.toLong() * it.height * 4).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
 
-    fun update(next: Environment) {
+    suspend fun image(url: String): ByteArray {
+        val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+        return imageCache.get(resolved) {
+            platform.image(resolved) ?: assetClient.get(resolved).body()
+        }
+    }
+
+    /** Static images use the same platform decoder as attachments and animated media. */
+    suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
+        bitmapCache.get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url) {
+            platform.imageFrames(image(url)).first()
+        }
+
+    fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)
@@ -458,6 +477,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         activityPubNotifications.close()
         toastController.close()
         if (preferenceState.isInitialized()) preferenceState.value.close()
+        homeTimelines.clear()
+        notificationContexts.clear()
+        accountDetails.clear()
+        bitmapCache.close()
+        imageCache.close()
         assetClient.close()
         repo.close()
     }

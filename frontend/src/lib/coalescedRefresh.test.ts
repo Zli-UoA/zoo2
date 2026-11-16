@@ -67,3 +67,22 @@ it("can refresh again after a rejected request", async () => {
   expect(refresh).toHaveBeenCalledTimes(2);
   scheduler.dispose();
 });
+
+it("does not consume the interval when the initial load is disallowed", () => {
+  vi.useFakeTimers();
+  let allowed = false;
+  const refresh = vi.fn();
+  const scheduler = coalescedRefresh(refresh, 30_000, () => allowed);
+  scheduler.request();
+  expect(refresh).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(2000);
+  allowed = true;
+  scheduler.request();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  scheduler.request();
+  vi.advanceTimersByTime(29_999);
+  expect(refresh).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(1);
+  expect(refresh).toHaveBeenCalledTimes(2);
+  scheduler.dispose();
+});

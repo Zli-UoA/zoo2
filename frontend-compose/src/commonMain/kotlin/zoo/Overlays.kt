@@ -116,6 +116,7 @@ private fun OverlayCard(slot: OverlaySlot) {
     var cardHasFocus by remember { mutableStateOf(false) }
     var measured by remember { mutableStateOf(IntSize.Zero) }
     var bounds by remember { mutableStateOf(Rect.Zero) }
+    var hostOrigin by remember { mutableStateOf(Offset.Zero) }
     // Request the popup surface, never its fullscreen backdrop. Keep this effect before
     // composing the body so a body's initial field-focus effect can take focus afterwards.
     LaunchedEffect(slot) {
@@ -173,11 +174,13 @@ private fun OverlayCard(slot: OverlaySlot) {
             .then(retained)
             .then(retentionFocus)
             .background(backdrop)
+            .onGloballyPositioned { hostOrigin = it.positionInRoot() }
             .then(input)
     ) {
         val screenWidth = maxWidth
         val screenHeight = maxHeight
-        val anchor = slot.anchor
+        // Triggers use root coordinates; system bars and banners can inset this host.
+        val anchor = slot.anchor?.translate(-hostOrigin)
         // Base UI prefers the top side, then flips when the lower side has more room.
         // Keep the arrow aimed at the trigger when viewport collision shifts the popup.
         val popupWidth = with(density) { measured.width.toDp() }
@@ -219,7 +222,12 @@ private fun OverlayCard(slot: OverlaySlot) {
                         else anchor.left.toDp()
                     val top =
                         if (slot.placementAbove) anchor.top.toDp() - measured.height.toDp() - 4.dp
-                        else anchor.bottom.toDp() + slot.anchorOffset
+                        else {
+                            val below = anchor.bottom.toDp() + slot.anchorOffset
+                            val above = anchor.top.toDp() - popupHeight - 4.dp
+                            if (below + popupHeight > screenHeight - 8.dp && above >= 8.dp) above
+                            else below
+                        }
                     Modifier.offset(
                         left.coerceIn(
                             8.dp,
@@ -334,12 +342,12 @@ private fun OverlayCard(slot: OverlaySlot) {
                                             null
                                         )
                                     }
-                                Box(Modifier.fillMaxWidth()) {
+                                Box(Modifier.fillMaxWidth().heightIn(min = if (LocalTouchUi.current && !slot.alert) 48.dp else 0.dp)) {
                                     Text(
                                         slot.title,
-                                        Modifier.padding(end = if (slot.alert) 0.dp else 24.dp)
+                                        Modifier.padding(end = if (slot.alert) 0.dp else if (LocalTouchUi.current) 48.dp else 24.dp)
                                             .then(
-                                                if (slot.alert) Modifier
+                                                if (slot.alert || LocalTouchUi.current) Modifier
                                                 else
                                                     Modifier.cssTightTextLineBox(16.dp) {
                                                         titleLayout
@@ -365,7 +373,7 @@ private fun OverlayCard(slot: OverlaySlot) {
                                                 color = MaterialTheme.colorScheme.onSurface,
                                                 modifier =
                                                     Modifier.align(Alignment.TopEnd)
-                                                        .offset(x = 8.dp, y = (-8).dp),
+                                                        .offset(x = if (LocalTouchUi.current) 0.dp else 8.dp, y = if (LocalTouchUi.current) 0.dp else (-8).dp),
                                                 click = slot.close,
                                             )
                                         }
@@ -415,7 +423,7 @@ fun SelectField(
             .onGloballyPositioned { anchor = it.boundsInRoot() }
             .then(webControlModifier("combobox", enabled, expanded = open, busy = busy))
             .width(160.dp)
-            .height(32.dp)
+            .heightIn(min = touchTargetSize(32.dp, LocalTouchUi.current))
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.background, RoundedCornerShape(10.dp))
             .onPreviewKeyEvent {
@@ -462,6 +470,7 @@ fun SelectField(
                 choices.forEach { option ->
                     Box(
                         Modifier.fillMaxWidth()
+                            .heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
                             .then(webControlModifier("option", selected = option == value))
                             .clickable {
                                 open = false

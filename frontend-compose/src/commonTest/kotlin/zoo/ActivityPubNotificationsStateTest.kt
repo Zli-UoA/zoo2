@@ -200,4 +200,92 @@ class ActivityPubNotificationsStateTest {
         state.close(); app.close()
     }
 
+    @Test
+    fun refreshChecksTheHeadAndVisibleHistoryWithoutReplayingEveryOlderPage() = runTest {
+        var heads = 0
+        var checks = 0
+        fun response(items: List<Row>, cursor: String?) = obj(
+            "items" to kotlinx.serialization.json.JsonArray(items), "unread_count" to 102, "next_cursor" to cursor,
+        ).toString()
+        val head = (1..100).map { obj("id" to "head-$it", "created_at" to "2026-11-01T10:00:00Z") }
+        val older = listOf(obj("id" to "older-a", "created_at" to "2026-10-31T10:00:00Z"), obj("id" to "older-b", "created_at" to "2026-10-31T09:00:00Z"))
+        val app = app { request ->
+            when (request.url.encodedPath) {
+                "/api/activitypub/notifications/entries" -> {
+                    checks++
+                    val body = json.parseToJsonElement(request.body.toByteArray().decodeToString()).objectOrEmpty()
+                    assertEquals("[\"older-a\",\"older-b\"]", body["entries"].toString())
+                    respond(response(listOf(obj("id" to "older-a", "content" to "updated", "created_at" to "2026-10-31T10:00:00Z")), null))
+                }
+                "/api/activitypub/notifications" -> if (request.url.parameters["before"] == null) { heads++; respond(response(head, "head-tail")) }
+                    else respond(response(older, "old-tail"))
+                else -> awaitCancellation()
+            }
+        }
+        val state = ActivityPubNotificationsState(app, subscribe = { {} })
+        try {
+            state.ensureLoaded(); runCurrent(); state.loadMore(); runCurrent()
+            assertEquals(102, state.items.size)
+            val before = heads
+            state.viewport(listOf("older-a", "older-b")); runCurrent()
+            assertEquals(1, heads - before)
+            assertEquals(1, checks)
+            assertEquals(101, state.items.size)
+            assertEquals("updated", state.items.first { it.text("id") == "older-a" }.text("content"))
+            assertEquals("old-tail", state.nextCursor)
+        } finally { state.close(); app.close() }
+    }
+
+    @Test fun disjointHeadFillsTheGapBeforeResumingTheOldTail() = runTest {
+        for (tail in listOf<String?>(null, "old-tail")) {
+            var fresh = false
+            fun rows(from: Int, to: Int) = kotlinx.serialization.json.JsonArray((from downTo to).map { obj("id" to "id-${it.toString().padStart(6, '0')}", "created_at" to kotlin.time.Instant.fromEpochSeconds(it.toLong()).toString()) })
+            val app = app { request ->
+                if (request.url.encodedPath != "/api/activitypub/notifications") awaitCancellation()
+                val (items, cursor) = when (request.url.parameters["before"]) {
+                    "old-head" -> rows(200,101) to tail
+                    "new-head" -> rows(350,251) to "bridge"
+                    else -> if(fresh) rows(450,351) to "new-head" else rows(300,201) to "old-head"
+                }
+                respond(obj("items" to items,"next_cursor" to cursor,"unread_count" to 350).toString())
+            }
+            val state = ActivityPubNotificationsState(app, subscribe = { {} })
+            try {
+                state.ensureLoaded(); runCurrent()
+                state.loadMore(); runCurrent()
+                fresh = true
+                state.refresh(); runCurrent()
+                assertEquals("new-head", state.nextCursor)
+                state.loadMore(); runCurrent()
+                assertEquals((450 downTo 101).map { "id-${it.toString().padStart(6,'0')}" }, state.items.map { it.text("id") })
+                assertEquals(tail, state.nextCursor)
+            } finally { state.close(); app.close() }
+        }
+    }
+    @Test fun aCompletedReadSurvivesAnUnrelatedInFlightHeadRefresh() = runTest {
+        for (append in listOf(false,true)) {
+        var delayed = false
+        val gate = CompletableDeferred<Unit>()
+        val app = app { request ->
+            when(request.url.encodedPath) {
+                "/api/activitypub/notifications/read" -> respond("{}")
+                "/api/activitypub/notifications" -> {
+                    if(delayed && (request.url.parameters["before"]!=null)==append) gate.await()
+                    val older=request.url.parameters["before"]!=null
+                    respond(obj("items" to kotlinx.serialization.json.JsonArray(listOf(obj("id" to if(older) "older" else "head", "is_read" to false))),"next_cursor" to if(older) "older" else "head","unread_count" to 2).toString())
+                }
+                else -> awaitCancellation()
+            }
+        }
+        val state=ActivityPubNotificationsState(app,subscribe={ {} })
+        try {
+            state.ensureLoaded();runCurrent();state.loadMore();runCurrent()
+            delayed=true;if(append) state.loadMore() else state.refresh();runCurrent()
+            val read=backgroundScope.launch { state.markRead(listOf("older")) };runCurrent();read.join()
+            gate.complete(Unit);runCurrent()
+            assertTrue(state.items.first { it.text("id")=="older" }.flag("is_read"))
+            assertEquals(1,state.unreadCount)
+        } finally { state.close();app.close() }
+        }
+    }
 }

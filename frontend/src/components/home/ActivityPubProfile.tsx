@@ -61,8 +61,10 @@ export function ActivityPubProfile({
   useEffect(() => {
     setAccount(null);
     setFailed(false);
-    const scheduler = coalescedRefresh(() =>
-      document.visibilityState === "hidden" ? undefined : load(),
+    const scheduler = coalescedRefresh(
+      () => load(),
+      30_000,
+      () => document.visibilityState !== "hidden",
     );
     schedule.current = scheduler.request;
     scheduler.request();

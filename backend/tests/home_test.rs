@@ -1633,6 +1633,15 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     )
     .await?;
     assert_eq!(status, StatusCode::CREATED);
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&id),
+        "/api/home",
+        Some(json!({"content":format!(":unknown-{}:",uuid::Uuid::new_v4().simple()),"in_reply_to":post["id"],"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
     let (_, rows) = request(&app, "GET", Some(&id), "/api/home?timeline=local", None).await?;
     let row = rows
         .as_array()
@@ -1645,6 +1654,21 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     assert_eq!(emoji["width"], 120);
     assert_eq!(emoji["height"], 20);
     assert_eq!(emoji["local"], true);
+    let reply = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == reply["id"])
+        .unwrap();
+    assert_eq!(
+        reply["emojis"],
+        json!([]),
+        "page emoji metadata must not leak into another post"
+    );
+    assert_eq!(
+        reply["parent"]["emojis"][0], *emoji,
+        "parent aliases retain the same dimensions and identity"
+    );
     let local_url = emoji["url"].as_str().unwrap();
     let mut tx = db.transaction().await?;
     let count = backend::apps::one(
@@ -2054,5 +2078,319 @@ async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = request(&app, "POST", Some(&owner), "/api/messages", Some(json!({"content":"invalid selection","channel_id":uuid::Uuid::new_v4().to_string(),"sensitive_attachment_ids":[images[0]]}))).await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test]
+async fn viewport_refresh_preserves_audience_and_omits_deleted_entries() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let viewer = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &viewer] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let public = uuid::Uuid::new_v4().to_string();
+    let private = uuid::Uuid::new_v4().to_string();
+    let deleted = uuid::Uuid::new_v4().to_string();
+    for (id, visibility, removed) in [
+        (&public, "public", false),
+        (&private, "followers", false),
+        (&deleted, "public", true),
+    ] {
+        toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,visibility,deleted_at) VALUES($1,$2,'viewport',$3,CASE WHEN $4::boolean THEN now() ELSE NULL END)")
+            .bind(id.as_str()).bind(owner.as_str()).bind(visibility).bind(removed.to_string()).exec(&mut db).await?;
+    }
+    let body = json!({"timeline":"social","entries":[public, private, deleted, "missing"]});
+    let (status, rows) = request(
+        &app,
+        "POST",
+        Some(&viewer),
+        "/api/home/entries",
+        Some(body.clone()),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["entry_id"], public);
+    let (_, own) = request(&app, "POST", Some(&owner), "/api/home/entries", Some(body)).await?;
+    assert_eq!(own.as_array().unwrap().len(), 2);
+    assert!(
+        own.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == private)
+    );
+    let mut secured_config = Config::from_env();
+    secured_config.dev_auth_enabled = false;
+    let secured_app = create_router(AppState::new(db.clone(), secured_config));
+    assert_eq!(
+        request(
+            &secured_app,
+            "POST",
+            None,
+            "/api/home/entries",
+            Some(json!({"entries":[public]}))
+        )
+        .await?
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&viewer),
+            "/api/home/entries",
+            Some(json!({"entries":[]}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&viewer),
+            "/api/home/entries",
+            Some(json!({"entries":vec!["x";101]}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    for id in [&owner, &viewer] {
+        toasty::sql::statement("DELETE FROM home_posts WHERE user_id=$1")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+        toasty::sql::statement("DELETE FROM users WHERE id=$1")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn viewport_refresh_filters_reposts_remote_actors_and_private_channels() -> anyhow::Result<()>
+{
+    use std::collections::BTreeSet;
+    async fn entries(app: &Router, user: &str, body: Value) -> anyhow::Result<BTreeSet<String>> {
+        let (status, rows) =
+            request(app, "POST", Some(user), "/api/home/entries", Some(body)).await?;
+        assert_eq!(status, StatusCode::OK, "{rows}");
+        Ok(rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["entry_id"].as_str().unwrap().to_owned())
+            .collect())
+    }
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let viewer = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &viewer] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let public = uuid::Uuid::new_v4().to_string();
+    let own = uuid::Uuid::new_v4().to_string();
+    for (id, user) in [(&public, &owner), (&own, &viewer)] {
+        toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,visibility) VALUES($1,$2,'viewport fixture','public')").bind(id.as_str()).bind(user.as_str()).exec(&mut db).await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    let hidden = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,channel_id,content) VALUES($1,$2,$3,'private channel fixture')").bind(hidden.as_str()).bind(owner.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+    // Home posts can only be created in public channels. Test a later privacy change.
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    let activity = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,$2,$3,$4,'{}','local')").bind(public.as_str()).bind(format!("local:{viewer}")).bind(viewer.as_str()).bind(activity.as_str()).exec(&mut db).await?;
+    let repost = format!("repost:{activity}");
+    let mut remote = Vec::new();
+    for blocked in [false, true] {
+        let actor = format!("https://viewport.example/users/{}", uuid::Uuid::new_v4());
+        let post = format!("https://viewport.example/notes/{}", uuid::Uuid::new_v4());
+        toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,blocked) VALUES($1,$1,$1,'peer','Peer',$1,'test',$2::boolean)").bind(actor.as_str()).bind(blocked.to_string()).exec(&mut db).await?;
+        toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'outgoing',$3,true)").bind(viewer.as_str()).bind(actor.as_str()).bind(uuid::Uuid::new_v4().to_string()).exec(&mut db).await?;
+        toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at) VALUES($1,$2,'remote fixture','public',now(),now())").bind(post.as_str()).bind(actor.as_str()).exec(&mut db).await?;
+        toasty::sql::statement("INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2)")
+            .bind(post.as_str())
+            .bind(viewer.as_str())
+            .exec(&mut db)
+            .await?;
+        remote.push(post);
+    }
+    let ids = vec![
+        public.clone(),
+        public.clone(),
+        own.clone(),
+        hidden,
+        remote[0].clone(),
+        remote[1].clone(),
+        repost.clone(),
+    ];
+    assert_eq!(
+        entries(&app, &viewer, json!({"entries":ids,"timeline":"social"})).await?,
+        BTreeSet::from([
+            public.clone(),
+            own.clone(),
+            remote[0].clone(),
+            repost.clone()
+        ])
+    );
+    assert_eq!(
+        entries(&app, &viewer, json!({"entries":ids,"timeline":"home"})).await?,
+        BTreeSet::from([own.clone(), remote[0].clone(), repost.clone()])
+    );
+    assert_eq!(
+        entries(&app, &viewer, json!({"entries":ids,"timeline":"local"})).await?,
+        BTreeSet::from([public.clone(), own.clone(), repost])
+    );
+    assert_eq!(
+        entries(
+            &app,
+            &viewer,
+            json!({"entries":ids,"timeline":"social","author":owner})
+        )
+        .await?,
+        BTreeSet::from([public.clone()])
+    );
+    assert_eq!(
+        entries(
+            &app,
+            &viewer,
+            json!({"entries":ids,"timeline":"social","author":viewer})
+        )
+        .await?,
+        BTreeSet::from([own])
+    );
+    assert_eq!(
+        entries(
+            &app,
+            &viewer,
+            json!({"entries":vec![public.clone();100],"timeline":"social"})
+        )
+        .await?,
+        BTreeSet::from([public])
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&viewer),
+            "/api/home/entries",
+            Some(json!({"entries":["x".repeat(2049)]}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_thread_scope_preserves_audiences_previews_and_cycles() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    let actor = format!("https://{}.test/actor", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'remote','Remote',$1,'dummy')")
+        .bind(actor.as_str()).exec(&mut db).await?;
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'outgoing',$2,true)")
+        .bind(user.as_str()).bind(actor.as_str()).exec(&mut db).await?;
+    let ids: Vec<_> = (0..7).map(|n| format!("{actor}/posts/{n}")).collect();
+    // A visible chain, an undelivered private ancestor, a hidden reply, a cycle,
+    // and a deleted reply. The scope must not act as an audience grant.
+    for (n, parent, visibility, delivered) in [
+        (0, Some(3), "public", true),
+        (1, Some(0), "public", true),
+        (2, Some(1), "public", true),
+        (3, None, "followers", false),
+        (4, Some(0), "followers", false),
+        (5, Some(5), "public", true),
+        (6, Some(0), "public", true),
+    ] {
+        toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,deleted_at) VALUES($1,$2,'remote',$3,now(),now(),NULLIF($4,''),CASE WHEN $5='true' THEN now() END)")
+            .bind(ids[n].as_str()).bind(actor.as_str()).bind(visibility)
+            .bind(parent.map(|p| ids[p].as_str()).unwrap_or(""))
+            .bind(if n == 6 { "true" } else { "false" }).exec(&mut db).await?;
+        if delivered {
+            toasty::sql::statement(
+                "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2)",
+            )
+            .bind(ids[n].as_str())
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+        }
+    }
+    let path = |n: usize, suffix: &str| {
+        format!(
+            "/api/home/{}{suffix}",
+            percent_encoding::utf8_percent_encode(&ids[n], percent_encoding::NON_ALPHANUMERIC)
+        )
+    };
+    let (status, thread) = request(&app, "GET", Some(&user), &path(1, "/thread"), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let posts = thread.as_array().unwrap();
+    assert_eq!(
+        posts
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![ids[0].as_str(), ids[1].as_str(), ids[2].as_str()]
+    );
+    assert!(posts[0]["parent"].is_null());
+    assert_eq!(posts[0]["replies"], 1);
+    assert_eq!(posts[1]["parent"]["id"], ids[0]);
+    let (status, detail) = request(&app, "GET", Some(&user), &path(1, ""), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["parent"]["id"], ids[0]);
+    assert_eq!(detail["replies"], 1);
+    for n in [3, 4, 6] {
+        assert_eq!(
+            request(&app, "GET", Some(&user), &path(n, "/thread"), None)
+                .await?
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        request(&app, "GET", Some(&user), "/api/home/missing/thread", None)
+            .await?
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, cycle) = request(&app, "GET", Some(&user), &path(5, "/thread"), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cycle.as_array().unwrap().len(), 1);
     Ok(())
 }

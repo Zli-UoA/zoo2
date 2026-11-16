@@ -85,43 +85,7 @@ fun ZooTheme(
             ),
         )
     val emoji = FontFamily(Font(Res.font.NotoColorEmoji))
-    val scheme =
-        if (dark)
-            darkColorScheme(
-                error = Color(0xffff6467),
-                onError = Color.Black,
-                primary = Color(0xffffd600),
-                onPrimary = Color.Black,
-                background = Color.Black,
-                onBackground = Color.White,
-                surface = Color(0xff181818),
-                onSurface = Color.White,
-                surfaceVariant = Color(0xff262626),
-                onSurfaceVariant = Color(0xffbdbdbd),
-                outline = Color(0xff454545),
-                outlineVariant = Color(0xff454545),
-                secondary = Color(0xffd9d9d9),
-                secondaryContainer = Color(0xff303030),
-                onSecondaryContainer = Color(0xffe5e5e5),
-            )
-        else
-            lightColorScheme(
-                error = Color(0xffc2000f),
-                onError = Color.White,
-                primary = Color(0xffffd600),
-                onPrimary = Color.Black,
-                background = Color.White,
-                onBackground = Color.Black,
-                surface = Color.White,
-                onSurface = Color.Black,
-                surfaceVariant = Color(0xfff5f5f5),
-                onSurfaceVariant = Color(0xff666666),
-                outline = Color(0xffe5e5e5),
-                outlineVariant = Color(0xffe5e5e5),
-                secondary = Color(0xff626262),
-                secondaryContainer = Color(0xfffff6cc),
-                onSecondaryContainer = Color.Black,
-            )
+    val scheme = zooColorScheme(dark)
     val mono = FontFamily(Font(Res.font.LiberationMono))
     val math = FontFamily(Font(Res.font.KaTeXMain))
     val mathItalic = FontFamily(Font(Res.font.KaTeXMath))
@@ -129,8 +93,8 @@ fun ZooTheme(
         TextStyle(
             fontFamily = latin,
             localeList = androidx.compose.ui.text.intl.LocaleList(locale),
-            fontSize = 14.sp,
-            lineHeight = browserLineHeight(20.sp),
+            fontSize = if (LocalTouchUi.current) 17.sp else 14.sp,
+            lineHeight = browserLineHeight(if (LocalTouchUi.current) 25.sp else 20.sp),
             platformStyle = webTextStyle(),
             lineHeightStyle =
                 LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
@@ -149,7 +113,10 @@ fun ZooTheme(
             typography =
                 Typography(
                     bodyMedium = body,
-                    bodySmall = body.copy(fontSize = 12.sp, lineHeight = browserLineHeight(16.sp)),
+                    bodySmall = body.copy(
+                        fontSize = if (LocalTouchUi.current) 14.sp else 12.sp,
+                        lineHeight = browserLineHeight(if (LocalTouchUi.current) 20.sp else 16.sp),
+                    ),
                     titleSmall = body.copy(fontWeight = FontWeight.SemiBold),
                     titleLarge =
                         body.copy(
@@ -158,13 +125,51 @@ fun ZooTheme(
                             fontWeight = FontWeight.SemiBold,
                         ),
                     labelLarge = body,
-                    labelSmall = body.copy(fontSize = 11.sp),
+                    labelSmall = body.copy(fontSize = if (LocalTouchUi.current) 12.sp else 11.sp),
                 ),
         ) {
             content()
         }
     }
 }
+
+internal fun zooColorScheme(dark: Boolean): ColorScheme =
+    if (dark)
+        darkColorScheme(
+            error = Color(0xffff6467),
+            onError = Color.Black,
+            primary = Color(0xffffd600),
+            onPrimary = Color.Black,
+            background = Color.Black,
+            onBackground = Color.White,
+            surface = Color(0xff181818),
+            onSurface = Color.White,
+            surfaceVariant = Color(0xff262626),
+            onSurfaceVariant = Color(0xffbdbdbd),
+            outline = Color(0xff454545),
+            outlineVariant = Color(0xff454545),
+            secondary = Color(0xffd9d9d9),
+            secondaryContainer = Color(0xff303030),
+            onSecondaryContainer = Color(0xffe5e5e5),
+        )
+    else
+        lightColorScheme(
+            error = Color(0xffc2000f),
+            onError = Color.White,
+            primary = Color(0xffffd600),
+            onPrimary = Color.Black,
+            background = Color.White,
+            onBackground = Color.Black,
+            surface = Color.White,
+            onSurface = Color.Black,
+            surfaceVariant = Color(0xfff5f5f5),
+            onSurfaceVariant = Color(0xff666666),
+            outline = Color(0xffe5e5e5),
+            outlineVariant = Color(0xffe5e5e5),
+            secondary = Color(0xff626262),
+            secondaryContainer = Color(0xfffff6cc),
+            onSecondaryContainer = Color.Black,
+        )
 
 fun fontText(text: String, fonts: Fonts, weight: FontWeight? = null): AnnotatedString =
     buildAnnotatedString {
@@ -273,6 +278,8 @@ fun Text(
     lineHeight: TextUnit = TextUnit.Unspecified,
     textAlign: TextAlign? = null,
     letterSpacing: TextUnit = TextUnit.Unspecified,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
+    softWrap: Boolean = true,
     onTextLayout: (androidx.compose.ui.text.TextLayoutResult) -> Unit = {},
 ) {
     val fonts = LocalFonts.current
@@ -291,7 +298,8 @@ fun Text(
                 .let { it.copy(lineHeight = browserLineHeight(it.lineHeight)) },
         fontWeight = weight,
         maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis,
+        overflow = overflow,
+        softWrap = softWrap,
         fontSize = size,
         lineHeight = browserLineHeight(lineHeight),
         textAlign = textAlign,
@@ -359,6 +367,17 @@ fun webControlModifier(
         testTag = id
         if (!enabled) disabled()
         if (selected != null) this.selected = selected
+        attributes["aria-label"]?.takeIf { it.isNotBlank() }?.let { contentDescription = it }
+        when (role) {
+            "button", "menuitem" -> this.role = Role.Button
+            "tab" -> this.role = Role.Tab
+            "checkbox", "menuitemcheckbox" -> this.role = Role.Checkbox
+            "switch" -> this.role = Role.Switch
+            "radio", "menuitemradio" -> this.role = Role.RadioButton
+            "heading" -> heading()
+            "status" -> liveRegion = LiveRegionMode.Polite
+            "alert" -> liveRegion = LiveRegionMode.Assertive
+        }
     }
 }
 
@@ -395,7 +414,7 @@ fun Button(
     val isHovered = enabled && hovered
     val density = LocalDensity.current
     var labelAdvance by remember(label, size, textStyle) { mutableStateOf(Float.NaN) }
-    val controlHeight =
+    val controlHeight = touchTargetSize(
         if (variant == "tab") 36.dp
         else
             when (size.removePrefix("icon-")) {
@@ -403,7 +422,9 @@ fun Button(
                 "sm" -> 28.dp
                 "lg" -> 36.dp
                 else -> 32.dp
-            }
+            },
+        LocalTouchUi.current,
+    )
     val iconOnly = size.startsWith("icon")
     val radius =
         if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
@@ -432,6 +453,7 @@ fun Button(
                     endPadding.toPx() +
                     if (icon != null) resolvedIconSize.toPx() + gap.toPx() else 0f
         }
+    val compactChrome = LocalTouchUi.current
     val shape = RoundedCornerShape(radius)
     val destructiveColor = if (dark) Color(0xffff6467) else Color(0xffc2000f)
     val focusBorder =
@@ -498,7 +520,7 @@ fun Button(
                     attributes = if (title == null) emptyMap() else mapOf("title" to title),
                 )
             )
-            .height(controlHeight)
+            .heightIn(min = controlHeight)
             .then(if (iconOnly) Modifier.width(controlHeight) else Modifier)
             .then(
                 if (variant == "tab" && selected == true) Modifier.cssShadowSm(shape) else Modifier
@@ -508,15 +530,17 @@ fun Button(
             .clip(shape)
             .drawBehind {
                 val width = cssPaintWidth(this.size.width, preferredWidth)
+                val insetY = if (compactChrome) 4.dp.toPx() else 0f
+                val paintedHeight = (this.size.height - insetY * 2).coerceAtLeast(0f)
                 val border = if (variant == "tab") 0f else 1.dp.toPx()
                 val corner = radius.toPx()
                 // React's bg-clip-padding excludes the transparent one-pixel border.
                 drawRoundRect(
                     background,
-                    Offset(border, border),
+                    Offset(border, insetY + border),
                     androidx.compose.ui.geometry.Size(
                         (width - 2 * border).coerceAtLeast(0f),
-                        (this.size.height - 2 * border).coerceAtLeast(0f),
+                        (paintedHeight - 2 * border).coerceAtLeast(0f),
                     ),
                     androidx.compose.ui.geometry.CornerRadius((corner - border).coerceAtLeast(0f)),
                 )
@@ -528,10 +552,10 @@ fun Button(
                 if (variant != "tab")
                     drawRoundRect(
                         borderColor,
-                        Offset(border / 2, border / 2),
+                        Offset(border / 2, insetY + border / 2),
                         androidx.compose.ui.geometry.Size(
                             width - border,
-                            this.size.height - border,
+                            paintedHeight - border,
                         ),
                         androidx.compose.ui.geometry.CornerRadius(corner - border / 2),
                         style = Stroke(border),
@@ -540,7 +564,7 @@ fun Button(
             .hoverable(interaction, enabled)
             .clickable(
                 interactionSource = interaction,
-                indication = null,
+                indication = if (LocalTouchUi.current) LocalIndication.current else null,
                 enabled = enabled,
                 role = role,
                 onClick = {
@@ -574,7 +598,7 @@ fun Button(
                         lineHeight = textStyle?.lineHeight ?: TextUnit.Unspecified,
                         size =
                             textStyle?.fontSize?.takeIf { it.isSpecified }
-                                ?: when (size) {
+                                ?: if (LocalTouchUi.current) 15.sp else when (size) {
                                     "xs" -> 12.sp
                                     "sm" -> 12.8.sp
                                     else -> 14.sp
@@ -674,7 +698,7 @@ fun IconButton(
 ) {
     Box(
         modifier
-            .size(size)
+            .size(touchTargetSize(size, LocalTouchUi.current))
             .then(webControlModifier("button", enabled))
             .clip(RoundedCornerShape(8.dp))
             .background(
@@ -755,8 +779,8 @@ fun Field(
     val type =
         MaterialTheme.typography.bodyMedium
             .copy(
-                fontSize = if ((!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
-                lineHeight = if (!chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
+                fontSize = if (LocalTouchUi.current || (!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
+                lineHeight = if (LocalTouchUi.current || !chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
                 color = colors.onBackground,
             )
             .merge(inputTextStyle)
@@ -854,7 +878,8 @@ fun Field(
                         .onSizeChanged { fieldSize = it }
                         .then(
                             if (resizable && resizedHeight != null) Modifier.height(resizedHeight!!)
-                            else if (chrome && singleLine) Modifier.height(minimumHeight ?: 32.dp)
+                            else if (chrome && singleLine)
+                                Modifier.heightIn(min = touchTargetSize(minimumHeight ?: 32.dp, LocalTouchUi.current))
                             else
                                 Modifier.heightIn(
                                     min = minimumHeight ?: if (!chrome) 44.dp else 64.dp,
@@ -976,13 +1001,14 @@ fun Field(
 @Composable
 fun Check(label: String, checked: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
     Row(
-        Modifier.then(webControlModifier("checkbox", enabled, checked))
+        Modifier.heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
+            .then(webControlModifier("checkbox", enabled, checked))
             .toggleable(checked, enabled, role = Role.Checkbox, onValueChange = change),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
-            Modifier.size(13.dp)
+            Modifier.size(if (LocalTouchUi.current) 20.dp else 13.dp)
                 .border(
                     1.dp,
                     if (checked) Color(0xff0075ff) else Color(0xff767676),
@@ -1100,7 +1126,7 @@ fun Menu(
         IconButton(icon, label, size = size) { setOpen(true) }
     }
     if (open)
-        OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor, role = "menu") {
+        OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor, role = "menu", alignEnd = LocalTouchUi.current) {
             LaunchedEffect(Unit) {
                 withFrameNanos {}
                 actions
@@ -1109,7 +1135,7 @@ fun Menu(
                     ?.let { requesters[it].requestFocus() }
             }
             Column(
-                Modifier.onPreviewKeyEvent {
+                Modifier.wrapContentHeight().heightIn(max = if (LocalTouchUi.current) 240.dp else 320.dp).verticalScroll(rememberScrollState()).onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Escape || it.key == Key.Tab) {
                         setOpen(false)
@@ -1139,6 +1165,7 @@ fun Menu(
                 actions.forEachIndexed { index, item ->
                     Row(
                         Modifier.fillMaxWidth()
+                            .heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
                             .then(webControlModifier("menuitem", item.enabled))
                             .focusRequester(requesters[index])
                             .onFocusChanged { if (it.isFocused) active = index }
@@ -1146,7 +1173,7 @@ fun Menu(
                                 setOpen(false)
                                 item.action()
                             }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            .padding(horizontal = 8.dp, vertical = if (LocalTouchUi.current) 0.dp else 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (item.icon.isNotBlank()) Icon(item.icon, modifier = Modifier.size(16.dp))

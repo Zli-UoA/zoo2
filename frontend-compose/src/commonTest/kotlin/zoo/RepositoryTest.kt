@@ -224,10 +224,56 @@ class RepositoryTest {
             table.loading.first { !it }
             runCurrent()
             assertEquals(listOf("[]"), platform.cache.values.toList())
+            assertEquals(emptyList(), table.synchronizedRows.value)
         } finally {
             table.close()
             http.close()
         }
+    }
+
+    @Test
+    fun cachedRowsDoNotPublishASuccessfulNetworkSnapshot() = runTest {
+        val cached = obj("id" to "old", "content" to "cached")
+        val platform = object : Platform by FakePlatform() {
+            override suspend fun readCache(key: String) = JsonArray(listOf(cached)).toString()
+        }
+        val release = CompletableDeferred<Unit>()
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.parameters["offset"] != "-1") awaitCancellation()
+            release.await()
+            respond(
+                """[{"headers":{"control":"up-to-date"}}]""",
+                headers = headersOf(
+                    "electric-handle" to listOf("empty-handle"),
+                    "electric-offset" to listOf("0_0"),
+                    "electric-cursor" to listOf("1"),
+                    "electric-schema" to listOf("{}"),
+                    "content-type" to listOf("application/json"),
+                ),
+            )
+        })
+        val table = SyncedTable("messages", config, platform, http, backgroundScope,
+            mapOf("channel_id" to "channel-a"), options)
+        try {
+            table.loading.first { !it }
+            runCurrent()
+            assertEquals(listOf(cached), table.replicatedRows.value)
+            assertNull(table.synchronizedRows.value)
+            release.complete(Unit)
+            assertEquals(emptyList(), table.synchronizedRows.first { it != null })
+        } finally { table.close(); http.close() }
+    }
+
+    @Test
+    fun initialSyncFailureDoesNotPublishAnEmptySuccessfulSnapshot() = runTest {
+        val http = HttpClient(MockEngine { respond("denied", HttpStatusCode.Forbidden) })
+        val table = SyncedTable("notifications", config, FakePlatform(), http, backgroundScope,
+            streamOptions = options)
+        try {
+            table.error.first { it != null }
+            assertFalse(table.loading.value)
+            assertNull(table.synchronizedRows.value)
+        } finally { table.close(); http.close() }
     }
 
     @Test

@@ -238,6 +238,8 @@ class AttachmentDrafts(
     val owner = app.platform.uuid()
     val items = mutableStateListOf<AttachmentDraft>()
     private val owned = mutableMapOf<String, AttachmentDraft>()
+    private var submissions = 0
+    private var closeRequested = false
     var error by mutableStateOf<String?>(null)
     var enabled = false
     var acceptFiles = true
@@ -397,9 +399,29 @@ class AttachmentDrafts(
         }
     }
 
+    /** Keep uploaded files owned until an in-flight post finishes, even if its editor is removed. */
+    internal fun retainForSubmission(): () -> Unit {
+        check(!closeRequested)
+        submissions++
+        var released = false
+        return {
+            if (!released) {
+                released = true
+                submissions--
+                if (closeRequested && submissions == 0) discardOwned()
+            }
+        }
+    }
+
     fun close() {
+        if (closeRequested) return
+        closeRequested = true
         job.cancel()
         app.platform.forgetFileTarget(owner)
+        if (submissions == 0) discardOwned()
+    }
+
+    private fun discardOwned() {
         owned.values.toList().forEach { it.uploaded?.let { uploaded -> onDiscard?.invoke(uploaded) } }
         release(owned.values.toList())
         items.clear()
@@ -528,7 +550,8 @@ fun MessageAttachments(app: Session, values: List<Row>) {
                             app,
                             it,
                             if (images.size > 1) Modifier.size(square)
-                            else Modifier.width(minOf(256.dp, availableWidth)).heightIn(min = 80.dp, max = 384.dp).aspectRatio(imageAspectRatio(it)),
+                            else Modifier.width(minOf(256.dp, availableWidth))
+                                .height(constrainedImageHeight(minOf(256.dp, availableWidth), it, 384.dp, 80.dp)),
                             true,
                             images.size > 1,
                         )

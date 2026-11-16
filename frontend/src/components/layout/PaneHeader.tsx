@@ -17,6 +17,7 @@ export function PaneHeader({ className, ...props }: ComponentProps<"header">) {
 
 export function ScreenHeader({
   icon: Icon,
+  leading,
   iconClassName,
   title,
   titleId,
@@ -24,6 +25,7 @@ export function ScreenHeader({
   actions,
 }: {
   icon: LucideIcon;
+  leading?: ReactNode;
   iconClassName?: string;
   title: string;
   titleId: string;
@@ -32,15 +34,17 @@ export function ScreenHeader({
 }) {
   return (
     <PaneHeader className="bg-background/80 backdrop-blur supports-backdrop-filter:bg-background/60">
-      <div
-        className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-muted text-brand-muted-foreground",
-          iconClassName,
-        )}
-        aria-hidden="true"
-      >
-        <Icon className="size-4" />
-      </div>
+      {leading ?? (
+        <div
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-muted text-brand-muted-foreground",
+            iconClassName,
+          )}
+          aria-hidden="true"
+        >
+          <Icon className="size-4" />
+        </div>
+      )}
       <div className="min-w-0 flex-1">
         <h1 id={titleId} className="truncate text-sm font-semibold">
           {title}

@@ -719,3 +719,57 @@ async fn moving_a_slack_placeholder_into_an_encrypted_channel_bumps_the_epoch() 
         .await;
     assert_eq!(members[0]["n"], 1);
 }
+
+/// 暗号化に切り替える前の、Home と紐付いたメッセージを削除しても、Home との同期が検査で止まらない。
+/// 削除した行は本文が空になり、復活させることはできない。
+#[tokio::test]
+async fn deleting_a_home_linked_message_after_encrypting_succeeds_and_cannot_be_undone() {
+    let env = env().await;
+    let alice = env.user().await;
+    let channel = env.channel(&alice, false, &[]).await;
+    let post = Uuid::new_v4().to_string();
+    env.exec(
+        "INSERT INTO home_posts(id, user_id, content, channel_id) VALUES ($1, $2, 'home body', $3)",
+        &[&post, &alice, &channel],
+    )
+    .await
+    .unwrap();
+    let linked = env
+        .query(
+            "SELECT json_build_object('home', home_post_id IS NOT NULL)::text FROM messages WHERE id = $1",
+            &[&post],
+        )
+        .await;
+    assert_eq!(linked[0]["home"], true);
+    env.exec(
+        "UPDATE channels SET is_private = true WHERE id = $1",
+        &[&channel],
+    )
+    .await
+    .unwrap();
+    assert_eq!(env.encrypt(&channel, &alice).await.0, StatusCode::OK);
+
+    let (status, body) = env
+        .call(
+            "DELETE",
+            &format!("/api/messages/{post}"),
+            &alice,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = env.message_row(&post).await;
+    assert_eq!(
+        (row["deleted"].as_bool(), row["content"].as_str()),
+        (Some(true), Some(""))
+    );
+
+    assert!(
+        env.exec(
+            "UPDATE messages SET deleted_at = NULL WHERE id = $1",
+            &[&post]
+        )
+        .await
+        .is_err()
+    );
+}

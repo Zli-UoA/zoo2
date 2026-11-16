@@ -59,6 +59,13 @@
 //! - [`TrustStore::confirm_accepted_master_key`]：受け入れ（#362）と SAS のピンを保存できたときに、
 //!   記録の登録待ちを外す
 //!
+//! QR コードによる検証で足したもの:
+//!
+//! - [`SasVerification::qr_code`]、[`SasVerification::scan_qr_code`]、
+//!   [`SasVerification::confirm_qr_scanned`]：Matrix の QR コードによる検証（`m.reciprocate.v1`）。
+//!   [`QrCodeData`] は QR のバイト列の形
+//! - [`SasVerification::start_sas`]：相手も QR に対応しているとき、利用者が絵文字を選んだら SAS を始める
+//!
 //! #360 の TUI で足したもの:
 //!
 //! - [`SetupSession`]：初回設定と解錠のあいだメモリーにだけ置く秘密と、SSSS の保存の本文、続きの計画
@@ -138,11 +145,13 @@ pub use trust::{
     ReverificationReason, TrustBasis, TrustRecord, TrustStore, TrustWarning, UserState, UserTrust,
 };
 pub use verification::{
-    SAS_METHOD, SasCancellation, SasPhase, SasVerification, VERIFICATION_ACCEPT_TYPE,
-    VERIFICATION_CANCEL_TYPE, VERIFICATION_DONE_TYPE, VERIFICATION_KEY_TYPE, VERIFICATION_MAC_TYPE,
+    QR_SCAN_METHOD, QR_SHOW_METHOD, QrCodeData, RECIPROCATE_METHOD, SAS_METHOD, SasCancellation,
+    SasPhase, SasVerification, VERIFICATION_ACCEPT_TYPE, VERIFICATION_CANCEL_TYPE,
+    VERIFICATION_DONE_TYPE, VERIFICATION_KEY_TYPE, VERIFICATION_MAC_TYPE,
     VERIFICATION_MAX_CLOCK_SKEW_MS, VERIFICATION_READY_TYPE, VERIFICATION_REQUEST_TYPE,
     VERIFICATION_START_TYPE, VERIFICATION_TIMEOUT_MS, VERIFICATION_TYPES, VerificationIdentity,
-    VerificationMessage, VerificationOutgoing, cancel_code, verification_devices,
+    VerificationMessage, VerificationMethod, VerificationOutgoing, cancel_code,
+    verification_devices,
 };
 pub use vodozemac::olm::IdentityKeys;
 pub use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, PickleError};

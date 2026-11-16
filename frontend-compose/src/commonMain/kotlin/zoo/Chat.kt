@@ -26,7 +26,6 @@ import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.json.*
-import org.jetbrains.compose.resources.decodeToImageBitmap
 
 @Composable
 fun Avatar(
@@ -96,7 +95,7 @@ fun RemoteImage(
                     url.startsWith("http://") ||
                     (url.startsWith("/") && !url.startsWith("//"))
             ) {
-                bitmap = app.image(url).decodeToImageBitmap()
+                bitmap = app.imageBitmap(url)
                 onLoaded?.invoke()
             }
         } catch (e: CancellationException) {
@@ -136,7 +135,7 @@ fun Chat(
     // 暗号化チャンネルには、Megolm で暗号化して送れるようになるまで投稿、返信、編集を送らない
     // （docs/e2ee.md、#361）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
     val encrypted = channel.flag("encrypted")
-    val canPost = joined && !channel.present("archive_at") && app.env.online && !encrypted
+    val canPost = joined && !channel.present("archive_at") && !encrypted
     val composerPlaceholder = if (encrypted) app.t("e2ee.sendUnavailable") else null
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
@@ -699,7 +698,10 @@ internal fun Message(
     CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration,
         LocalJoinedEmojis provides joined) {
         Box(
-            Modifier.messageHold(!editing, gestureArbitration) { menuOpen = true }
+            Modifier.messageHold(!editing, gestureArbitration) {
+                app.platform.action("haptic:longPress")
+                menuOpen = true
+            }
                 .semantics { testTag = "message:$id" }
                 .fillMaxWidth()
                 .background(
@@ -1246,7 +1248,7 @@ internal fun Composer(
     val memberships by app.repo.members.rows.collectAsState()
     val channels by app.repo.channels.rows.collectAsState()
     var commands by remember(channel) { mutableStateOf<List<Row>>(emptyList()) }
-    val attachments = rememberAttachmentDrafts(app, channel, key, enabled, uploadAttachment)
+    val attachments = rememberAttachmentDrafts(app, channel, key, enabled && app.env.online, uploadAttachment)
     attachments.acceptFiles = allowAttachments
     val density = LocalDensity.current.density
     var sendError by remember(key) { mutableStateOf<String?>(null) }
@@ -1430,7 +1432,7 @@ internal fun Composer(
                 )
             }
             .padding(top = 1.dp)
-            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp, vertical = if (LocalTouchUi.current) 8.dp else 12.dp)
     ) {
         sendError?.let { error ->
             Row(
@@ -1525,7 +1527,7 @@ internal fun Composer(
                 IconButton(
                     "paperclip",
                     app.t("attachments.add"),
-                    enabled && attachments.items.size < MAX_ATTACHMENTS,
+                    enabled && app.env.online && attachments.items.size < MAX_ATTACHMENTS,
                     color = MaterialTheme.colorScheme.onBackground,
                     size = if (app.env.touch) 44.dp else 36.dp,
                 ) {
@@ -1586,6 +1588,7 @@ internal fun Composer(
                 singleLine = false,
                 enabled = enabled,
                 readOnly = !enabled,
+                maximumHeight = if (app.env.touch) 160.dp else null,
                 placeholder =
                     placeholder
                         ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
@@ -1684,7 +1687,7 @@ private fun ComposerSendButton(canSubmit: State<Boolean>, touch: Boolean, label:
     Box(
         Modifier.padding(bottom = 4.dp)
             .then(webControlModifier("button", enabled))
-            .size(if (touch) 44.dp else 36.dp)
+            .size(if (touch) 48.dp else 36.dp)
             .padding(1.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(

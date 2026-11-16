@@ -3,12 +3,29 @@ import type { SummalyClient, LinkPreviewData as Preview } from "../../../lib/sum
 
 interface Entry {
   at: number;
+  value: Preview | null;
   request: Promise<Preview | null>;
   controller: AbortController;
   users: number;
   settled: boolean;
 }
 const cache = new Map<string, Entry>();
+const subscribers = new Map<string, Set<(data: Preview) => void>>();
+
+/** Read without starting work, including while hidden/offline or before effects run. */
+export function cachedPreview(key: string): Preview | null {
+  return cache.get(key)?.value ?? null;
+}
+
+export function subscribePreview(key: string, notify: (data: Preview) => void) {
+  let listeners = subscribers.get(key);
+  if (!listeners) subscribers.set(key, (listeners = new Set()));
+  listeners.add(notify);
+  return () => {
+    listeners.delete(notify);
+    if (!listeners.size) subscribers.delete(key);
+  };
+}
 let active = 0;
 const waiting: (() => void)[] = [];
 
@@ -83,25 +100,40 @@ async function retry(client: SummalyClient, url: string, signal: AbortSignal) {
   }
 }
 
-/** Share work while any mounted card needs it; cache only completed results. */
+/** Serve the last success immediately; share a background revalidation after five minutes. */
 export function acquirePreview(client: SummalyClient, key: string, url: string) {
   let entry = cache.get(key);
-  if (!entry || (entry.settled && Date.now() - entry.at >= 300_000)) {
+  if (
+    !entry ||
+    entry.controller.signal.aborted ||
+    (entry.settled && Date.now() - entry.at >= 300_000)
+  ) {
     const current: Entry = {
-      at: Date.now(),
+      at: entry?.at ?? Date.now(),
+      value: entry?.value ?? null,
       controller: new AbortController(),
       users: 0,
       settled: false,
       request: Promise.resolve(null),
     };
     current.request = retry(client, url, current.controller.signal)
+      .then((data) => {
+        if (current.controller.signal.aborted || cache.get(key) !== current) return current.value;
+        if (data) {
+          current.value = data;
+          for (const notify of subscribers.get(key) ?? []) notify(data);
+        }
+        return current.value;
+      })
       .catch(() => {
-        if (cache.get(key) === current) cache.delete(key);
-        return null;
+        if (!current.value && cache.get(key) === current) cache.delete(key);
+        return current.value;
       })
       .finally(() => {
         current.settled = true;
-        current.at = Date.now();
+        // A failed refresh also waits five minutes before retrying; never erase
+        // the previous value. Cancellation must allow the next view to resume.
+        if (!current.controller.signal.aborted) current.at = Date.now();
         trimCache();
       });
     cache.set(key, current);
@@ -109,6 +141,9 @@ export function acquirePreview(client: SummalyClient, key: string, url: string) 
     trimCache();
     entry = current;
   }
+  // Touch settled entries without replacing the value used by mounted cards.
+  cache.delete(key);
+  cache.set(key, entry);
   entry.users++;
   const owned = entry;
   let released = false;
@@ -119,7 +154,7 @@ export function acquirePreview(client: SummalyClient, key: string, url: string) 
       released = true;
       owned.users--;
       if (!owned.users && !owned.settled) {
-        if (cache.get(key) === owned) cache.delete(key);
+        if (!owned.value && cache.get(key) === owned) cache.delete(key);
         owned.controller.abort();
       }
     },

@@ -41,11 +41,12 @@ internal class AndroidPlatform(
     var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true))
         private set
 
-    private val history = mutableListOf(env.path)
+    private val history = NavigationHistory(env.path)
     private val prefs = activity.getSharedPreferences("preferences", 0)
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
-    private val cache =
-        java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}").apply { mkdirs() }
+    private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
+    private val cache = AccountCache(cacheDirectory)
+    private val images = AndroidImageCache(cacheDirectory.resolve("images"))
     private val dictionaries = mutableMapOf<String, Row>()
 
     private fun hash(value: String) =
@@ -61,18 +62,19 @@ internal class AndroidPlatform(
     override suspend fun headers() = auth.headers()
 
     override suspend fun readCache(key: String): String? =
-        withContext(Dispatchers.IO) { cache.resolve(hash(key)).takeIf { it.exists() }?.readText() }
+        withContext(Dispatchers.IO) { cache.read(key) }
 
     override suspend fun writeCache(key: String, value: String) =
         withContext(Dispatchers.IO) {
-            val target = cache.resolve(hash(key))
-            val pending = cache.resolve("${hash(key)}.tmp")
-            pending.writeText(value)
-            check(pending.renameTo(target))
+            cache.write(key, value)
         }
 
-    fun clear() {
-        cache.deleteRecursively()
+    fun close() { images.close() }
+
+    private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {
+        // logout closes the session scope; deletion must still finish, off the UI thread.
+        close()
+        cache.clear()
         files.clear()
     }
 
@@ -81,19 +83,24 @@ internal class AndroidPlatform(
     override fun now() = Instant.now().toString()
 
     override fun navigate(path: String) {
-        history.add(path)
-        env = env.copy(path = path, historyState = zoo.obj("__TSR_index" to history.lastIndex))
+        applyNavigation(history.navigate(path))
+    }
+
+    override fun navigate(path: String, state: Row) {
+        applyNavigation(history.navigate(path, state))
+    }
+
+    private fun applyNavigation(entry: NavigationHistory.Entry) {
+        env = env.copy(path = entry.path, historyState = entry.state)
     }
 
     override fun replace(path: String) {
-        history[history.lastIndex] = path
-        env = env.copy(path = path)
+        applyNavigation(history.replace(path))
     }
 
     fun back(): Boolean {
-        if (history.size < 2) return false
-        history.removeAt(history.lastIndex)
-        env = env.copy(path = history.last())
+        val entry = history.back() ?: return false
+        applyNavigation(entry)
         return true
     }
 
@@ -120,13 +127,7 @@ internal class AndroidPlatform(
                     )
                     .jsonObject
             }
-        var value: JsonElement? = dictionary
-        key.split('.').forEach { value = (value as? JsonObject)?.get(it) }
-        var text = (value as? JsonPrimitive)?.content ?: key
-        args.forEach { (name, replacement) ->
-            text = text.replace("{{$name}}", replacement).replace("{$name}", replacement)
-        }
-        return text
+        return translateDictionary(dictionary, env.locale, key, args)
     }
 
     private fun format(timestamp: String, pattern: String): String =
@@ -158,6 +159,7 @@ internal class AndroidPlatform(
     override fun action(name: String) {
         when {
             name == "back" -> back()
+            name == "haptic:longPress" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -201,12 +203,7 @@ internal class AndroidPlatform(
             }
         }
 
-    override suspend fun image(url: String): ByteArray {
-        require(Url(url).protocol == URLProtocol.HTTPS)
-        val response = http.get(url) // Public client: never attach account headers to media.
-        check(response.status.value in 200..299)
-        return response.readRawBytes()
-    }
+    override suspend fun image(url: String): ByteArray = images.image(url)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {

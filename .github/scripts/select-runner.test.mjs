@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
+import { selectWorkflows } from './merge-queue-changes.mjs';
 
 const root = new URL('../../', import.meta.url);
 const yaml = readFileSync(new URL('.github/workflows/select-runner.yaml', root), 'utf8');
@@ -22,6 +23,9 @@ const privateRepo = {repository: {private: true}};
 const privateRepos = [{name: 'AuthZ'}, {name: 'repo'}];
 
 const cases = [
+  ['public bypasses self-hosted and billing APIs', {payload: {repository: {private: false}}, runners: [camp()], error: true, billingError: true}, H, H],
+  ['public without status token is hosted', {payload: {repository: {private: false}}, token: false}, H, H],
+  ['merge group is hosted even with exhausted minutes', {event: 'merge_group', payload: privateRepo, usage: [usage('repo', 2000)]}, H, H],
   ['kubecamp first', {runners: [camp(), arc()]}, K, H],
   ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H],
   ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H],
@@ -30,10 +34,10 @@ const cases = [
   ['kubecamp label matches another name', {runners: [camp({name: 'another'})]}, K, H],
   ['missing labels are safe', {runners: [camp({labels: undefined})]}, H, H],
   ['API error keeps kubecamp', {error: true}, K, H],
-  ['missing token keeps kubecamp', {token: false}, K, H],
+  ['private missing token keeps kubecamp and ARC', {token: false}, K, A],
   ['fork PR is hosted', {event: 'pull_request', payload: pull('someone/repo')}, H, H],
-  ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
-  ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
+  ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: true}}, runners: [camp()]}, K, H],
+  ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: true}}, runners: [camp()]}, K, H],
   ['private within included minutes uses hosted', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 899)]}, H, H],
   ['private out of minutes uses ARC', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 900)]}, A, A],
   ['private out of minutes still prefers kubecamp', {payload: privateRepo, runners: [camp()], usage: [usage('AuthZ', 1900)]}, K, A],
@@ -51,7 +55,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
     const outputs = {};
     const calls = {runners: 0, repos: 0, billing: 0};
     const warnings = [];
-    const payload = input.payload || {repository: {private: false}};
+    const payload = input.payload || privateRepo;
     const fork = input.event === 'pull_request' && payload.pull_request.head.repo.full_name !== 'Zli-UoA/repo';
     process.env.HAS_STATUS_TOKEN = String(input.token !== false);
     const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
@@ -79,9 +83,10 @@ for (const [name, input, expected, hostedExpected] of cases) {
         return {data: {usageItems: input.usage || []}};
       }});
     assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
-    const checksMinutes = !fork && input.token !== false && payload.repository?.private !== false;
+    const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
+    const checksMinutes = !hostedOnly && input.token !== false;
     assert.deepEqual(calls, {
-      runners: fork || input.token === false ? 0 : 1,
+      runners: hostedOnly || input.token === false ? 0 : 1,
       repos: checksMinutes ? 1 : 0,
       billing: checksMinutes && !input.reposError ? 1 : 0,
     });
@@ -90,20 +95,48 @@ for (const [name, input, expected, hostedExpected] of cases) {
   });
 }
 
-const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "ci-frontend.yaml": ["unit-test"], "automerge-gate.yaml": ["gate"]};
+const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
-const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
+const hostedJobs = {"select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
   "ci-desktop-tauri.yaml": ["check"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 // macOS でビルドを確かめるジョブ。GitHub ホストの macOS を使う (公開リポジトリなので無料)。
 const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
+// Keep timing comparisons on a fixed hosted OS, independent of shared runners.
+const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}};
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
   "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
   .matchAll(/^    uses: \.\/\.github\/workflows\/([\w-]+\.yaml)$/gm)].map(m => m[1])]);
+test('SQL and migration changes require the budget gate in the merge queue', () => {
+  const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
+  for (const path of ['backend/src/routes/home.rs', 'infra/db/migrations/example.sql', '.github/workflows/ci-home-query-budget.yaml']) {
+    assert.equal(selectWorkflows([path], readWorkflow)['ci-home-query-budget'], true, path);
+  }
+  assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)['ci-home-query-budget'], false);
+  const queue = readWorkflow('merge-queue');
+  assert.match(queue, /ci-home-query-budget: \$\{\{ steps\.match\.outputs\.ci-home-query-budget \}\}/);
+  const call = queue.split('  ci-home-query-budget:\n')[1].split(/^  [\w-]+:\s*$/m)[0];
+  assert.match(call, /if: needs\.changes\.outputs\.ci-home-query-budget == 'true'/);
+  assert.match(call, /uses: \.\/\.github\/workflows\/ci-home-query-budget.yaml/);
+  assert.match(queue.split('  all-passed:\n')[1], /^      - ci-home-query-budget$/m);
+});
+test('unread and worker plan budgets are mandatory in the merge queue', () => {
+  const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
+  const key = 'ci-read-state-worker-budget';
+  for (const path of ['backend/src/routes/read_states.rs', 'backend/src/slack/claim.sql', 'infra/db/schema.sql', `.github/workflows/${key}.yaml`]) {
+    assert.equal(selectWorkflows([path], readWorkflow)[key], true, path);
+  }
+  assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)[key], false);
+  const queue = readWorkflow('merge-queue');
+  assert.ok(queue.includes('      '+key+': ${{ steps.match.outputs.'+key+' }}'));
+  assert.ok(queue.includes(`    if: needs.changes.outputs.${key} == 'true'`));
+  assert.ok(queue.includes(`    uses: ./.github/workflows/${key}.yaml`));
+  assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${key}`));
+});
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -124,6 +157,13 @@ test('every workload uses the right output and protects fork PRs', () => {
         assert.match(block, /fromJSON\(inputs\.runs-on\)/);
         continue;
       }
+      if (benchmarkJobs[file]?.[id]) {
+        assert.ok(block.includes(`    runs-on: ${benchmarkJobs[file][id]}\n`), `${file}/${id}: pinned hosted benchmark OS`);
+        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        assert.match(text, /^  workflow_call:$/m, `${file}: merge queue must call the budget gate`);
+        checked++;
+        continue;
+      }
       if ((releaseJobs[file] || []).includes(id)) {
         assert.doesNotMatch(text.split(/^jobs:\s*$/m)[0], /pull_request/, `${file}: hosted-only workflows must not run on PRs`);
         assert.match(block, /^    runs-on: (?:ubuntu-latest|\$\{\{ matrix\.os \}\})$/m, `${file}/${id}: hosted pool`);
@@ -132,7 +172,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = (file === 'ci-frontend.yaml' && ['check', 'browser-test'].includes(id)) ||
+      const large = (file === 'ci-frontend.yaml' && ['check', 'build', 'browser-test'].includes(id)) ||
         (file === 'ci-backend.yaml' && id === 'check');
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
@@ -187,6 +227,7 @@ test('Kotlin build workflows keep hosted builds independent of runner selection'
 });
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);
+  assert.match(yaml, /runs-on:.*github\.event\.repository\.private == false.*&& 'ubuntu-latest' \|\| vars\.CI_SELECTOR_RUNNER/);
   assert.doesNotMatch(script, /arc\.length\s*</);
 });
 

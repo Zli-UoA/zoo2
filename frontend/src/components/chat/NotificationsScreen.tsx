@@ -125,6 +125,7 @@ export function NotificationsScreen() {
 
   return (
     <section
+      data-onboarding="notifications"
       className="relative flex h-full min-h-0 flex-col"
       aria-labelledby="notifications-title"
       aria-busy={loading}
@@ -176,6 +177,7 @@ export function NotificationsScreen() {
             {entries.map((entry) =>
               entry.source === "activitypub" ? (
                 <ActivityPubNotificationCard
+                  onVisibilityChange={apub.setVisible}
                   key={entry.key}
                   item={entry.item}
                   onRead={readVisible}

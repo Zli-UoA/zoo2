@@ -88,6 +88,13 @@ erDiagram
     }
     channel_leave }o--o| channels : channel_leave_channel_id_fkey
     channel_leave }o--o| users : channel_leave_user_id_fkey
+    channel_message_authors {
+      text channel_id PK,FK
+      text user_id PK,FK
+      timestamp(3) latest_at
+    }
+    channel_message_authors }o--o| channels : channel_message_authors_channel_id_fkey
+    channel_message_authors }o--o| users : channel_message_authors_user_id_fkey
     channel_notes {
       text id PK
       text channel_id FK
@@ -215,6 +222,24 @@ erDiagram
     home_posts }o--o| channels : home_posts_channel_id_fkey
     home_posts }o--o| users : home_posts_reply_user_id_fkey
     home_posts }o--o| users : home_posts_user_id_fkey
+    home_private_repost_totals {
+      text user_id PK,FK
+      text post_id PK
+      bigint n
+    }
+    home_private_repost_totals }o--o| users : home_private_repost_totals_user_id_fkey
+    home_reaction_totals {
+      text post_id PK
+      smallint source_kind PK
+      text group_key PK
+      text reaction
+      jsonb emoji
+      bigint n
+    }
+    home_repost_totals {
+      text post_id PK
+      bigint n
+    }
     message_reactions {
       text id PK
       text message_id FK

@@ -3,6 +3,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
   CheckIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   FingerprintIcon,
@@ -23,6 +24,8 @@ import type {
   UserState,
 } from "@zoo/crypto-wasm";
 
+import { cn } from "cn";
+
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
@@ -37,6 +40,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
+import {
+  NOT_UNLOCKED_UNUSED_DAYS,
+  STALE_DEVICE_DAYS,
+  cleanupReasons,
+  type CleanupReason,
+} from "../../lib/e2ee/deviceCleanup";
 import { formatKeyFingerprint } from "../../lib/e2ee/masterKey";
 import { Spinner } from "../ui/spinner";
 import type { E2eeNotReadyReason } from "../../lib/e2ee/notReady";
@@ -147,6 +156,8 @@ export type DevicesViewState =
       passkeyAvailable: boolean;
       busy: "rename" | "delete" | "revocation" | "verify" | null;
       error: DevicesErrorCode | null;
+      /** 削除を勧める端末を判定する時刻（ミリ秒）。省いたら今（Story で固定する）。 */
+      now?: number;
     };
 
 export interface DevicesSettingsHandlers {
@@ -215,8 +226,17 @@ function Busy({ label }: { label: string }) {
   );
 }
 
-/** 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。 */
-export function DeviceSummary({ device }: { device: DeviceRowView }) {
+/**
+ * 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。
+ * `cleanup` は削除を勧める理由（長く使っていない端末に印を付ける。未署名は署名の有無で出す）。
+ */
+export function DeviceSummary({
+  device,
+  cleanup = [],
+}: {
+  device: DeviceRowView;
+  cleanup?: CleanupReason[];
+}) {
   const { t, i18n } = useTranslation();
   const created = formatDate(device.createdAt, i18n.language);
   const used = formatDate(device.lastSeenAt, i18n.language);
@@ -233,6 +253,16 @@ export function DeviceSummary({ device }: { device: DeviceRowView }) {
           <span className="flex items-center gap-1 rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">
             <ShieldAlertIcon aria-hidden="true" className="size-3" />
             {t("e2ee.devices.unsigned")}
+          </span>
+        ) : null}
+        {cleanup.length > 0 ? (
+          // 削除を勧める理由を文字でも出す（背景の色だけで区別しない）。30 日の印があれば、7 日の印は
+          // 重ねない。
+          <span className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300">
+            <ClockIcon aria-hidden="true" className="size-3" />
+            {cleanup.includes("stale")
+              ? t("e2ee.devices.stale", { days: STALE_DEVICE_DAYS })
+              : t("e2ee.devices.notUnlockedStale", { days: NOT_UNLOCKED_UNUSED_DAYS })}
           </span>
         ) : null}
       </p>
@@ -343,6 +373,11 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState<DeviceRowView | null>(null);
   const busy = state.busy !== null;
+  const now = state.now ?? Date.now();
+  const anySigned = state.devices.some((device) => device.signed);
+  const cleanup = new Map(
+    state.devices.map((device) => [device.deviceId, cleanupReasons(device, { now, anySigned })]),
+  );
   return (
     <SettingsSection title={t("e2ee.devices.title")} description={t("e2ee.devices.description")}>
       <ErrorMessage code={state.error} />
@@ -353,7 +388,13 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
       ) : null}
       <ul className="divide-y rounded-md border">
         {state.devices.map((device) => (
-          <li key={device.deviceId} className="flex items-start justify-between gap-3 p-3">
+          <li
+            key={device.deviceId}
+            className={cn(
+              "flex items-start justify-between gap-3 p-3",
+              (cleanup.get(device.deviceId)?.length ?? 0) > 0 && "bg-amber-500/5",
+            )}
+          >
             <div className="flex min-w-0 items-start gap-3">
               <MonitorSmartphoneIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
               {renaming?.id === device.deviceId ? (
@@ -379,7 +420,7 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
                   </Button>
                 </form>
               ) : (
-                <DeviceSummary device={device} />
+                <DeviceSummary device={device} cleanup={cleanup.get(device.deviceId)} />
               )}
             </div>
             <div className="flex shrink-0 gap-1">

@@ -15,7 +15,9 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
-import org.jetbrains.compose.resources.decodeToImageBitmap
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
+import kotlin.time.Duration.Companion.minutes
 
 fun publicUrl(raw: String): Url? =
     try {
@@ -37,7 +39,7 @@ fun publicUrl(raw: String): Url? =
     }
 
 /** Only visible links create cards: code, plain and MFM silent links stay private. */
-fun previewUrls(content: String): List<String> {
+fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =
         content.replace(
             Regex(
@@ -49,6 +51,7 @@ fun previewUrls(content: String): List<String> {
         .findAll(visible)
         .mapNotNull { publicUrl(it.value.trimEnd(')', ',', '.', '!', '?', '、', '。'))?.toString() }
         .distinct()
+        .filter { it != publicUrl(excludeUrl.orEmpty())?.toString() }
         .take(3)
         .toList()
 }
@@ -87,8 +90,19 @@ fun parsePreview(data: Row, url: String) =
         data.text("sitename").trim().ifEmpty { Url(url).host }.take(300),
     )
 
-class PreviewLoader(private val app: Session) {
-    private val cache = mutableMapOf<String, PreviewData>()
+class PreviewLoader(private val app: Session, private val clock: TimeSource = TimeSource.Monotonic) {
+    private data class Cached(val data: PreviewData, val storedAt: TimeMark)
+    private val cache = mutableStateMapOf<String, Cached>()
+    private val order = linkedSetOf<String>()
+
+    fun cached(service: String, url: String): PreviewData? = cache["$service:$url"]?.data
+
+    private fun store(key: String, data: PreviewData) {
+        order.remove(key)
+        order.add(key)
+        cache[key] = Cached(data, clock.markNow())
+        while (order.size > 256) cache.remove(order.first().also { order.remove(it) })
+    }
 
     private data class Work(val request: Deferred<PreviewData?>, var users: Int = 0)
 
@@ -102,6 +116,7 @@ class PreviewLoader(private val app: Session) {
                 }
                 var wait = 2000L
                 while (currentCoroutineContext().isActive) {
+                    if (!app.env.online || !app.env.visible) { delay(wait); continue }
                     try {
                         suspend fun runtime(path: String): String {
                             val value =
@@ -144,13 +159,17 @@ class PreviewLoader(private val app: Session) {
 
     suspend fun load(service: String, url: String): PreviewData? {
         val key = "$service:$url"
-        cache[key]?.let {
-            return it
+        val previous = cache[key]
+        if (previous != null && previous.storedAt.elapsedNow() < 5.minutes) {
+            order.remove(key)
+            order.add(key)
+            return previous.data
         }
         val work =
             pending.getOrPut(key) {
                 Work(
                     app.scope.async {
+                        repeat(3) { attempt ->
                         try {
                             val target =
                                 publicUrl(
@@ -174,19 +193,21 @@ class PreviewLoader(private val app: Session) {
                                         )
                                     )
                                     .jsonObject
-                            parsePreview(
+                            return@async parsePreview(
                                     json.parseToJsonElement(response.text("body")).jsonObject,
                                     url,
                                 )
                                 .also {
-                                    if (cache.size >= 200) cache.remove(cache.keys.first())
-                                    cache[key] = it
+                                    store(key, it)
                                 }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (_: Exception) {
-                            null
+                            if (attempt < 2) delay(250L * (attempt + 1))
                         }
+                        }
+                        // Failed revalidation keeps the previous card and backs off.
+                        previous?.data?.also { store(key, it) }
                     }
                 )
             }
@@ -204,17 +225,19 @@ class PreviewLoader(private val app: Session) {
 }
 
 @Composable
-fun LinkPreviews(app: Session, content: String) {
-    val urls = remember(content) { previewUrls(content) }
+fun LinkPreviews(app: Session, content: String, excludeUrl: String? = null, showFallback: Boolean = true) {
+    val urls = remember(content, excludeUrl) { previewUrls(content, excludeUrl) }
     if (urls.isEmpty()) return
     val sources by app.previews.endpoints.collectAsState()
     val (service, media) = sources
     urls.forEach { url ->
-        var data by remember(url, service) { mutableStateOf<PreviewData?>(null) }
-        LaunchedEffect(url, service, app.env.online) {
-            if (app.env.online && service.isNotBlank()) data = app.previews.load(service, url)
+        var data by remember(url, service) { mutableStateOf(app.previews.cached(service, url)) }
+        LaunchedEffect(url, service, app.env.online, app.env.visible) {
+            if (app.env.online && app.env.visible && service.isNotBlank()) data = app.previews.load(service, url)
         }
-        PreviewCard(app, url, data ?: PreviewData(url, "", "", "", Url(url).host), media)
+        val displayed = app.previews.cached(service, url) ?: data
+        if (displayed != null || showFallback)
+            PreviewCard(app, url, displayed ?: PreviewData(url, "", "", "", Url(url).host), media)
     }
 }
 
@@ -230,7 +253,7 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
         imageComplete = image == null
         if (image != null)
             try {
-                bitmap = app.image(image).decodeToImageBitmap()
+                bitmap = app.imageBitmap(image)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {} finally {
@@ -241,7 +264,7 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
         iconBitmap = null
         if (icon != null)
             try {
-                iconBitmap = app.image(icon).decodeToImageBitmap()
+                iconBitmap = app.imageBitmap(icon)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {}

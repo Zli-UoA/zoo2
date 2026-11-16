@@ -11,11 +11,17 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -48,6 +54,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var notificationIntent by mutableStateOf<Intent?>(null)
+    private var notificationPermissionRevision by mutableStateOf(0)
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationPermissionRevision++
+        }
+
+    private fun enableNotifications() {
+        val prefs = getSharedPreferences("notification-permission", MODE_PRIVATE)
+        val requested = prefs.getBoolean("requested", false)
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            (!requested || shouldShowRequestPermissionRationale(android.Manifest.permission.POST_NOTIFICATIONS))) {
+            prefs.edit().putBoolean("requested", true).apply()
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -73,12 +100,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationIntent = intent
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
+        notificationIntent = intent
         // 再認証のリダイレクト（ReauthCallbackActivity から）。待っている再認証の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
@@ -112,6 +142,12 @@ class MainActivity : ComponentActivity() {
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        LaunchedEffect(current, notificationIntent) {
+            if (current != null) {
+                notificationIntent?.let { current.notifications.open(it) }
+                notificationIntent = null
+            }
+        }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
         suspend fun connect(connection: LoginConnection, refresh: String?, show: (String, String) -> Unit) {
@@ -201,21 +237,19 @@ class MainActivity : ComponentActivity() {
                     current.session.update(platform.env)
                 }
                 DisposableEffect(current) {
+                    var disposed = false
                     val observer = LifecycleEventObserver { _, _ ->
                         platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                        current.session.update(platform.env)
                     }
                     lifecycle.addObserver(observer)
+                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                    current.session.update(platform.env)
                     val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                     fun updateOnline() = runOnUiThread {
-                        platform.online(
-                            connectivity.activeNetwork?.let {
-                                connectivity
-                                    .getNetworkCapabilities(it)
-                                    ?.hasCapability(
-                                        android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
-                                    )
-                            } == true
-                        )
+                        if (!disposed) platform.online(hasInternet(
+                            connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
+                        ))
                     }
                     val callback =
                         object : android.net.ConnectivityManager.NetworkCallback() {
@@ -231,6 +265,7 @@ class MainActivity : ComponentActivity() {
                     connectivity.registerDefaultNetworkCallback(callback)
                     updateOnline()
                     onDispose {
+                        disposed = true
                         lifecycle.removeObserver(observer)
                         connectivity.unregisterNetworkCallback(callback)
                     }
@@ -240,7 +275,7 @@ class MainActivity : ComponentActivity() {
                         current.session.escape() -> Unit
                         current.session.thread != null -> current.session.thread = null
                         platform.back() -> Unit
-                        else -> finish()
+                        else -> moveTaskToBack(true)
                     }
                 }
                 val encryption =
@@ -253,10 +288,22 @@ class MainActivity : ComponentActivity() {
                     LocalWebPlatform provides platform,
                     LocalApp provides current.session,
                     LocalEncryptionSettings provides encryption,
+                    LocalTouchUi provides true,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-                            NativeWindow(current.session) { ZooApp(current.session) }
+                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
+                            val notificationsAllowed = remember(notificationPermissionRevision, platform.env.visible) {
+                                current.notifications.allowed()
+                            }
+                            if (!notificationsAllowed) {
+                                TextButton(onClick = ::enableNotifications) {
+                                    Text(current.session.t("androidNotifications.enable"))
+                                }
+                                Text(current.session.t("androidNotifications.scope"), style = MaterialTheme.typography.bodySmall)
+                            }
+                            Box(Modifier.weight(1f)) {
+                                NativeWindow(current.session) { ZooApp(current.session) }
+                            }
                         }
                         unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                     }
@@ -320,6 +367,7 @@ class MainActivity : ComponentActivity() {
                 this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, ::confirmUnbackedKeys,
             )
             platform.systemDark(dark)
+            platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
             val config = Config(
                 connection.base, "/api/shapes", me.text("id"), me.flag("is_admin"),
                 assetsBaseUrl = connection.base,
@@ -355,7 +403,7 @@ class MainActivity : ComponentActivity() {
                     copySecret = ::copySecret,
                 )
             }
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings).also {
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session)).also {
                 session.start()
                 e2ee.start()
             }
@@ -399,13 +447,15 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text("Zoo", style = MaterialTheme.typography.headlineLarge)
-                Text("Android 版 · Compose Multiplatform")
+                Text("Android 版")
                 OutlinedTextField(
                     base,
                     { base = it },
                     label = { Text("Zoo サーバー URL") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 )
                 OutlinedTextField(
                     issuer,
@@ -413,6 +463,8 @@ class MainActivity : ComponentActivity() {
                     label = { Text("OIDC issuer") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 )
                 OutlinedTextField(
                     client,
@@ -420,6 +472,8 @@ class MainActivity : ComponentActivity() {
                     label = { Text("Android 用 public client ID") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
                 )
                 OutlinedTextField(
                     resource,
@@ -427,9 +481,15 @@ class MainActivity : ComponentActivity() {
                     label = { Text("Resource / audience") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                 )
                 Text("サーバー管理者が登録したデバイス認証対応の client ID を指定してください。ブラウザーでコードを承認してログインします。")
-                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+                if (error.isNotEmpty()) Text(
+                    error,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    color = MaterialTheme.colorScheme.error,
+                )
                 if (retryRestore != null && job == null) {
                     TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
                 }
@@ -520,6 +580,7 @@ private class RunningSession(
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
+    val notifications: AndroidNotifications,
 ) {
     fun logout() {
         try { auth.forget() } finally { close() }
@@ -527,9 +588,11 @@ private class RunningSession(
 
     fun close() {
         e2ee.stop()
+        notifications.close()
         auth.close()
         session.close()
         scope.cancel()
+        platform.close()
         http.close()
     }
 }

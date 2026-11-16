@@ -1,8 +1,20 @@
+import type { TFunction } from "i18next";
+
+import { isStandaloneDisplay } from "../pwa/standalone";
+
 /**
- * 端末名（`display_name`）。本人の端末一覧（#362）にだけ出るので、ブラウザーと OS が分かれば足りる。
- * 例：`Chrome（macOS）`（docs/e2ee.md の例と同じ形）。
+ * 端末名（`display_name`）。本人の端末一覧（#362）にだけ出るので、ブラウザーと OS と、アプリとして
+ * 開いているかが分かれば足りる。登録したときの言語で作って送る。
+ * 例：`Chrome（macOS）`、`Safari（iOS・アプリ）`（docs/e2ee.md の例と同じ形）。
  */
-export function deviceDisplayName(userAgent: string = navigator.userAgent): string {
+export function deviceDisplayName(
+  t: TFunction,
+  {
+    userAgent = globalThis.navigator?.userAgent ?? "",
+    // Safari では、タブとアプリ（PWA）で保存先が分かれて別の端末になるので、端末名で見分ける。
+    standalone = isStandaloneDisplay(),
+  }: { userAgent?: string; standalone?: boolean } = {},
+): string {
   const browser = /Edg\//.test(userAgent)
     ? "Edge"
     : /OPR\//.test(userAgent)
@@ -27,5 +39,10 @@ export function deviceDisplayName(userAgent: string = navigator.userAgent): stri
             : /Linux/.test(userAgent)
               ? "Linux"
               : null;
-  return os ? `${browser}（${os}）` : browser;
+  if (standalone) {
+    return os
+      ? t("e2ee.deviceName.appWithOs", { browser, os })
+      : t("e2ee.deviceName.app", { browser });
+  }
+  return os ? t("e2ee.deviceName.withOs", { browser, os }) : browser;
 }

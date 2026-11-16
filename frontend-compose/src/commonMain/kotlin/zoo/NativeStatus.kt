@@ -11,6 +11,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.*
@@ -119,6 +120,28 @@ fun OfflineBanner(app: Session, state: Row, onRetry: (() -> Unit)? = null) {
     val description =
         if (offline) app.t("offline.bannerDescription")
         else state.text("persistenceError").ifEmpty { app.t("offline.persistenceErrorDescription") }
+    if (LocalTouchUi.current) {
+        androidx.compose.material3.Surface(
+            color = colors.surfaceVariant,
+            modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+        ) {
+            Row(
+                Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Icon("cloud-off", modifier = Modifier.size(24.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, weight = FontWeight.SemiBold, maxLines = 2)
+                    Text(description, small = true, muted = true, maxLines = 2)
+                }
+                IconButton("refresh-cw", app.t("offline.retry")) {
+                    if (onRetry != null) onRetry() else app.repo.refresh()
+                }
+            }
+        }
+        return
+    }
     val textMeasurer = rememberTextMeasurer()
     val fonts = LocalFonts.current
     val titleAdvance =
