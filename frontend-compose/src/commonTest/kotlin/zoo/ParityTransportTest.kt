@@ -50,12 +50,14 @@ class ParityTransportTest {
     }
 
     private class Browser : Platform {
+        override var messageEncryption: MessageEncryption? = null
+        var channelCache: String? = null
         val exits = mutableListOf<Row>()
         private var sequence = 0
 
         override suspend fun headers() = mapOf("X-Dev-User" to "alice")
 
-        override suspend fun readCache(key: String): String? = null
+        override suspend fun readCache(key: String): String? = if (":channels:" in key) channelCache else null
 
         override suspend fun writeCache(key: String, value: String) {}
 
@@ -79,6 +81,39 @@ class ParityTransportTest {
             if (name == "bubbleExit") exits += json.parseToJsonElement(payload).jsonObject
             return "{}"
         }
+    }
+
+    @Test
+    fun encryptedChannelUsesOnlyEncryptionAndNeverFallsBackToCommandsOrPlaintext() = runTest {
+        val platform = Browser().apply { channelCache = """[{"id":"secret","encrypted":"t"}]""" }
+        var sent = ""
+        var fail = false
+        var writes = 0
+        platform.messageEncryption = object : MessageEncryption {
+            override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+            override suspend fun send(channel: String, id: String, parent: String?, body: String) {
+                if (fail) error("e2ee.sendNeedsUnlock")
+                sent = body
+            }
+            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
+        }
+        val http = HttpClient(MockEngine { request ->
+            if (request.method != HttpMethod.Get) writes++
+            awaitCancellation()
+        })
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), platform, http, backgroundScope), backgroundScope, Environment())
+        runCurrent()
+        assertTrue(app.send("secret", "/echo secret text", "parent"))
+        assertEquals("/echo secret text", sent)
+        fail = true
+        assertFalse(app.send("secret", "never send plaintext", null))
+        assertEquals("e2ee.sendNeedsUnlock", app.toast)
+        assertFalse(app.send("secret", "file", null, attachmentIds = listOf("plaintext-file")))
+        assertFalse(app.send("secret", "/echo secret text", null, commandAppId = "echo"))
+        assertEquals(0, writes)
+        app.close()
+        http.close()
     }
 
     @Test

@@ -275,8 +275,15 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         if (!old.online && next.online) repo.refresh()
     }
 
+    private val encryptedChannels = mutableSetOf<String>()
+
     fun start() {
         if (isPublicProfilePath(env.path)) return
+        scope.launch {
+            repo.channels.rows.collect { rows ->
+                encryptedChannels += rows.filter { it.flag("encrypted") }.map { it.text("id") }
+            }
+        }
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =
@@ -341,10 +348,20 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         attachmentIds: List<String> = emptyList(),
         sensitiveAttachmentIds: List<String> = emptyList(),
     ): Boolean {
-        // 暗号化チャンネルには、暗号化の送信を入れるまで本文もコマンドも送らない（docs/e2ee.md、#361）。
         if (isEncryptedChannel(channel)) {
-            toast = t("e2ee.sendUnavailable")
-            return false
+            val encryption = platform.messageEncryption
+            if (encryption == null || attachmentIds.isNotEmpty() || commandAppId != null) {
+                toast = t("e2ee.sendUnavailable")
+                return false
+            }
+            return try {
+                encryption.send(channel, platform.uuid(), parent, content)
+                true
+            } catch (failure: CancellationException) { throw failure }
+            catch (failure: Exception) {
+                toast = t(failure.message?.takeIf { it.startsWith("e2ee.") } ?: "common.writeError")
+                false
+            }
         }
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
@@ -412,7 +429,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     /** 暗号化チャンネルか。Channels の Shape の行の `encrypted` で決める。 */
-    fun isEncryptedChannel(channel: String): Boolean = isEncryptedChannel(repo.channels.rows.value, channel)
+    fun isEncryptedChannel(channel: String): Boolean {
+        if (isEncryptedChannel(repo.channels.rows.value, channel)) encryptedChannels += channel
+        return channel in encryptedChannels
+    }
 
     fun configureMembersLayout(wide: Boolean) {
         if (membersWide != wide) {

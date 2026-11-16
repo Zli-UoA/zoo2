@@ -132,11 +132,10 @@ fun Chat(
     val nativeReactions by app.repo.reactions(id).rows.collectAsState()
     val reactions = nativeReactions
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
-    // 暗号化チャンネルには、Megolm で暗号化して送れるようになるまで投稿、返信、編集を送らない
-    // （docs/e2ee.md、#361）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
-    val encrypted = channel.flag("encrypted")
-    val canPost = joined && !channel.present("archive_at") && !encrypted
-    val composerPlaceholder = if (encrypted) app.t("e2ee.sendUnavailable") else null
+    // 送信は Session で暗号経路に振り分ける。添付は暗号化送信をつなぐまで無効にする。
+    val encrypted = channel.flag("encrypted") || app.isEncryptedChannel(id)
+    val canPost = joined && !channel.present("archive_at") && (!encrypted || app.platform.messageEncryption != null)
+    val composerPlaceholder = if (encrypted && app.platform.messageEncryption == null) app.t("e2ee.sendUnavailable") else null
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
             try {
@@ -200,7 +199,7 @@ fun Chat(
                                 muted = true,
                             )
                         !joined -> JoinToPostPrompt(app, channel)
-                        else -> Composer(app, id, null, users, canPost, placeholder = composerPlaceholder)
+                        else -> Composer(app, id, null, users, canPost, placeholder = composerPlaceholder, allowAttachments = !encrypted)
                     }
                 }
             app.thread?.let { parent ->
@@ -244,7 +243,7 @@ fun Chat(
                     },
                     composer =
                         if (joined && !channel.present("archive_at")) {
-                            { Composer(app, id, parent, users, canPost, placeholder = composerPlaceholder) }
+                            { Composer(app, id, parent, users, canPost, placeholder = composerPlaceholder, allowAttachments = !encrypted) }
                         } else null,
                 )
             }
@@ -618,6 +617,17 @@ internal fun Message(
     ownOverride: Boolean? = null,
     canOpenThread: Boolean = true,
 ) {
+    val encryptedRow = message["ciphertext"]?.let { it != JsonNull } == true
+    val encryptedChannel = encryptedRow || channel.flag("encrypted") || app.isEncryptedChannel(channel.text("id"))
+    val encryption = app.platform.messageEncryption
+    var decoded by remember(message, encryption) { mutableStateOf<DecryptedBody?>(null) }
+    LaunchedEffect(message, encryption) {
+        if (encryptedRow && encryption != null) {
+            encryption.changes.collect { decoded = encryption.decrypt(message) }
+        }
+    }
+    val originalMessage = message
+    val message = if (encryptedRow) JsonObject(message + ("content" to JsonPrimitive(decoded?.body.orEmpty()))) else message
     val id = message.text("id")
     val messageTable = app.repo.messages(channel.text("id"))
     val reactionTable = app.repo.reactions(channel.text("id"))
@@ -654,7 +664,7 @@ internal fun Message(
             .filter { it.text("message_id") == id }.groupBy { reactionKey(it.text("emoji")) }
     }
     val mine = ownOverride ?: (message.text("user_id") == app.config.userId)
-    val editable = app.env.online && !channel.present("archive_at")
+    val editable = app.env.online && !channel.present("archive_at") && (!encryptedChannel || encryptedRow && decoded?.body != null)
     var editing by remember(id, initialEditing) { mutableStateOf(initialEditing) }
     var content by
         remember(message.text("content"), initialEditingText) {
@@ -677,8 +687,8 @@ internal fun Message(
         else app.openThread(id, wide)
     }
     val startEdit = {
-        // 暗号化チャンネルでは、暗号化して送れるようになるまで編集を始めない（保存も送らない）。
-        if (channel.flag("encrypted")) app.toast = app.t("e2ee.sendUnavailable")
+        // 復号できたメッセージだけ、再暗号化して編集できる。
+        if (encryptedChannel && (encryption == null || (encryptedRow && decoded?.body == null))) app.toast = app.t("e2ee.sendNeedsUnlock")
         else if (callbacks?.startEdit != null) callbacks.startEdit.invoke()
         else editing = true
     }
@@ -812,8 +822,13 @@ internal fun Message(
                             var editComposing by remember { mutableStateOf(false) }
                             val saveEdit: () -> Unit = {
                                 if (callbacks?.saveEdit != null) callbacks.saveEdit.invoke()
-                                // 暗号化チャンネルの編集も、暗号化して送れるようになるまで送らない。
-                                else if (channel.flag("encrypted")) editing = false
+                                // 暗号化済みの投稿は、チャンネルのフラグが変わっても平文で編集しない。
+                                else if (encryptedChannel) {
+                                    app.run("edit:$id") {
+                                        checkNotNull(encryption).edit(originalMessage, content)
+                                        editing = false
+                                    }
+                                }
                                 else
                                     app.run("edit:$id") {
                                         val row =
@@ -891,9 +906,15 @@ internal fun Message(
                             }
                         }
                     } else {
-                        val cards = messageCards(message["card"])
+                        if (encryptedRow) {
+                            val notice = decoded?.notice ?: if (decoded == null) "e2ee.undecryptable.locked" else null
+                            notice?.let { Text(app.t(it), small = true, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        } else if (encryptedChannel) {
+                            Text(app.t("e2ee.legacy.unencryptedBadge"), small = true, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        val cards = if (encryptedRow) null else messageCards(message["card"])
                         val blockCards =
-                            parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
+                            !encryptedRow && parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
                         if (!blockCards) {
                             if (cards != null) cards.forEach { MessageCard(it) }
                             else {
@@ -913,11 +934,11 @@ internal fun Message(
                                                 },
                                         )
                                     }
-                                    LinkPreviews(app, message.text("content"))
+                                    if (!encryptedChannel && !encryptedRow) LinkPreviews(app, message.text("content"))
                                 }
                             }
                         }
-                        MessageAppContent(app, message)
+                        if (!encryptedRow) MessageAppContent(app, message)
                         MessageAttachments(
                             app,
                             messageAttachments,

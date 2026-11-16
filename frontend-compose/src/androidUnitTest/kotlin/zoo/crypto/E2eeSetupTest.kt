@@ -1,5 +1,12 @@
 package zoo.crypto
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.*
+import io.ktor.http.*
+import io.ktor.http.content.TextContent
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import zoo.*
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -69,6 +76,115 @@ class E2eeSetupTest {
             store.close()
             store = openStore()
         }
+    }
+
+    @Test
+    fun encryptedChatRetriesEpochDistributesKeysAndKeepsPlaintextOffTheWire() = runBlocking<Unit> {
+        val sender = Device("sender")
+        val start = sender.setup.begin()
+        sender.setup.completeSetup(start.session, "t")
+        val receiver = Device("receiver")
+        receiver.setup.unlock(UnlockMethod.Recovery(start.recoveryKey)).session.close()
+        start.session.close()
+        val channel = "00000000-0000-4000-8000-0000000000c1"
+        val messageId = "00000000-0000-4000-8000-0000000000d1"
+        val secret = "SECRET-ANDROID-MESSAGE"
+        val requests = mutableListOf<String>()
+        val delivered = mutableListOf<ToDeviceRow>()
+        var epoch = 1
+        var posts = 0
+        var accepted: JsonObject? = null
+        var refuseDelivery = false
+        fun snapshot(): JsonObject = JsonObject(server.keysQuery() + buildJsonObject {
+            put("user_ids", JsonArray(listOf(JsonPrimitive(ALICE))))
+            put("membership_epoch", epoch)
+            put("device_keys", buildJsonObject { put(ALICE, buildJsonObject {
+                put(sender.store.deviceId, Json.parseToJsonElement(sender.store.deviceKeys()))
+                put(receiver.store.deviceId, Json.parseToJsonElement(receiver.store.deviceKeys()))
+            }) })
+        })
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) { error("No plaintext cache") }
+            override fun uuid() = messageId
+            override fun now() = "2026-01-01T00:00:00Z"
+            override fun navigate(path: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun action(name: String) {}
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+        }
+        val http = HttpClient(MockEngine { request ->
+            val text = (request.body as? TextContent)?.text.orEmpty()
+            requests += text
+            val body = if (text.isEmpty()) JsonObject(emptyMap()) else Json.parseToJsonElement(text).jsonObject
+            val response = when (request.url.encodedPath) {
+                "/api/e2ee/channels/$channel/recipients" -> snapshot()
+                "/api/e2ee/keys/claim" -> buildJsonObject {
+                    put("one_time_keys", buildJsonObject { put(ALICE, buildJsonObject {
+                        val key = receiver.store.prepareKeyUpload(0, true)!!.oneTimeKeys.entries.first()
+                        put(receiver.store.deviceId, JsonObject(mapOf(key.key to key.value)))
+                    }) })
+                }
+                "/api/e2ee/to_device" -> {
+                    val content = body.getValue("messages").jsonObject.getValue(ALICE).jsonObject.getValue(receiver.store.deviceId)
+                    delivered += ToDeviceRow(delivered.size.toString(), ALICE, "m.room.encrypted", content)
+                    buildJsonObject { put("undelivered", if (refuseDelivery) JsonArray(listOf(buildJsonObject {
+                        put("user_id", ALICE); put("device_id", receiver.store.deviceId)
+                    })) else JsonArray(emptyList())) }
+                }
+                "/api/messages", "/api/messages/$messageId" -> {
+                    posts++
+                    if (posts == 1) {
+                        epoch = 2
+                        return@MockEngine respond("""{"code":"E2EE_STALE_EPOCH","current_epoch":2}""", HttpStatusCode.Conflict)
+                    }
+                    accepted = body
+                    JsonObject(emptyMap())
+                }
+                else -> error("Unexpected request: ${request.url}")
+            }
+            respond(response.toString())
+        })
+        val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val encryption = AndroidMessageEncryption(MutableStateFlow(sender.store), ZooApi(Config("https://zoo.test", "/shapes", ALICE, false), platform, http), lifetime)
+            encryption.send(channel, messageId, null, secret)
+            assertEquals(2, posts)
+            assertTrue(requests.none { secret in it })
+            assertEquals("", accepted!!.getValue("content").jsonPrimitive.content)
+            assertEquals(2, accepted!!.getValue("epoch").jsonPrimitive.content.toInt())
+            val snapshot = snapshot()
+            assertFailsWith<IllegalStateException> {
+                sender.store.recipients(listOf(JsonObject(snapshot + ("self_signing_keys" to JsonObject(emptyMap())))))
+            }
+            assertEquals(2, receiver.store.processToDevice(delivered, snapshot.getValue("device_keys").jsonObject,
+                snapshot.getValue("signatures").jsonArray, snapshot).verifiedRoomKeys)
+            val row = JsonObject(accepted!! + buildJsonObject { put("user_id", ALICE) })
+            val reader = AndroidMessageEncryption(MutableStateFlow(receiver.store), ZooApi(Config("https://zoo.test", "/shapes", ALICE, false), platform, http), lifetime)
+            assertEquals(secret, reader.decrypt(row).body)
+            assertNull(reader.decrypt(row).notice)
+            assertNull(reader.decrypt(JsonObject(row + ("channel_id" to JsonPrimitive("00000000-0000-4000-8000-0000000000c2")))).body)
+            receiver.restart()
+            val reopened = AndroidMessageEncryption(MutableStateFlow(receiver.store), ZooApi(Config("https://zoo.test", "/shapes", ALICE, false), platform, http), lifetime)
+            assertEquals(secret, reopened.decrypt(row).body)
+            epoch = 1
+            assertFailsWith<IllegalStateException> { encryption.send(channel, messageId, null, secret) }
+            assertEquals(2, posts) // 一度確認した epoch より古い配布先には送らない。
+            epoch = 2
+            encryption.edit(row, "EDITED-SECRET")
+            assertEquals(3, posts)
+            assertTrue(requests.none { "EDITED-SECRET" in it })
+            assertEquals("1", accepted!!.getValue("revision").jsonPrimitive.content)
+            assertEquals(2, delivered.size) // 同じ epoch の編集では、配布済みのセッションを再利用する。
+            // 配れなかった鍵のセッションで本文を送らない。
+            refuseDelivery = true
+            epoch = 3
+            assertFailsWith<IllegalStateException> { encryption.send(channel, messageId, null, secret) }
+            assertEquals(3, posts)
+            assertFailsWith<IllegalStateException> { encryption.edit(JsonObject(row - "ciphertext"), "plain edit") }
+        } finally { lifetime.cancel(); http.close() }
     }
 
     @Test

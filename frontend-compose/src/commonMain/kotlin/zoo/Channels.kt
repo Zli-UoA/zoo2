@@ -60,6 +60,7 @@ fun ChannelDialog(
                 initial.flag("private") || kind == "rename" && channel?.flag("is_private") == true
             )
         }
+    var encrypted by remember(kind) { mutableStateOf(false) }
     var search by remember(kind) { mutableStateOf(initial.text("search")) }
     var selected by
         remember(kind) {
@@ -72,6 +73,7 @@ fun ChannelDialog(
     var activeCandidate by remember(kind) { mutableStateOf(0) }
     val busy = "channel-dialog" in app.pending
     fun dismiss() {
+        encrypted = false
         when (kind) {
             "create" -> {
                 name = ""
@@ -118,6 +120,7 @@ fun ChannelDialog(
                             ?: JsonNull,
                     )
                     put("is_private", private)
+                    if (private && encrypted) put("encrypted", true)
                 } else if (description.trim() != initialDescription.trim()) {
                     put("description", description.trim())
                 }
@@ -142,6 +145,7 @@ fun ChannelDialog(
                                     "/api/dms",
                                     "POST",
                                     buildJsonObject {
+                                        if (encrypted) put("encrypted", true)
                                         put(
                                             "target_user_ids",
                                             JsonArray(selected.map(::JsonPrimitive)),
@@ -322,8 +326,13 @@ fun ChannelDialog(
                         )
                     }
                     Check(app.t("channels.nsfw"), nsfw, !busy) { nsfw = it }
-                    if (kind == "create")
-                        Check(app.t("channels.makePrivate"), private, !busy) { private = it }
+                    if (kind == "create") {
+                        Check(app.t("channels.makePrivate"), private, !busy) { private = it; if (!it) encrypted = false }
+                        if (private && app.platform.messageEncryption != null) {
+                            Check(app.t("e2ee.encryptChannel"), encrypted, !busy) { encrypted = it }
+                            Text(app.t("e2ee.encryptChannelHelp"), small = true, muted = true)
+                        }
+                    }
                 }
             }
             "browse" -> {
@@ -400,6 +409,10 @@ fun ChannelDialog(
 
             "dm" -> {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (app.platform.messageEncryption != null) {
+                        Check(app.t("e2ee.encryptDm"), encrypted, !busy && created == null) { encrypted = it }
+                        Text(app.t("e2ee.encryptDmHelp"), small = true, muted = true)
+                    }
                     val candidates =
                         users
                             .filter {
@@ -1021,8 +1034,7 @@ fun Members(
 }
 
 /**
- * 暗号化チャンネルか（Channels の Shape の行の `encrypted`）。Android はまだ Megolm で暗号化して
- * 送れないので、暗号化チャンネルには本文を送らない（docs/e2ee.md、#361）。
+ * 暗号化チャンネルか（Channels の Shape の行の `encrypted`）。平文の送信経路との分岐に使う。
  */
 fun isEncryptedChannel(channels: List<Row>, channel: String): Boolean =
     channels.any { it.text("id") == channel && it.flag("encrypted") }

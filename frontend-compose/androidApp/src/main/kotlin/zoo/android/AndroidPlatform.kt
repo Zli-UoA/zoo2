@@ -36,6 +36,7 @@ internal class AndroidPlatform(
     private val confirmUnbackedKeys: suspend (count: Int) -> Boolean,
 ) : Platform {
     /** E2EE の端末（#359）。ログインしたあとに設定する。 */
+    override var messageEncryption: zoo.MessageEncryption? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true))

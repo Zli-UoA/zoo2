@@ -40,6 +40,8 @@ fun isMember(rows: List<Row>, channelId: String, userId: String) =
     rows.any { it.text("channel_id") == channelId && it.text("user_id") == userId }
 
 interface Platform {
+    val messageEncryption: MessageEncryption? get() = null
+
     fun imageFrames(
         bytes: ByteArray
     ): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> =
