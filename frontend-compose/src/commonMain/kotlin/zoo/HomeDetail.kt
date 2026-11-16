@@ -16,7 +16,7 @@ import kotlinx.serialization.json.JsonNull
 @Composable
 fun ActivityPubProfile(app: Session, actorId: String) {
     val scope = rememberCoroutineScope()
-    var account by remember(actorId) { mutableStateOf<Row?>(null) }
+    var account by remember(actorId) { mutableStateOf<Row?>(app.accountDetails[actorId]) }
     var failed by remember(actorId) { mutableStateOf(false) }
     var pending by remember(actorId) { mutableStateOf(false) }
     var request by remember(actorId) { mutableStateOf<Job?>(null) }
@@ -32,6 +32,10 @@ fun ActivityPubProfile(app: Session, actorId: String) {
                             app.api.request(
                                 "/api/activitypub/accounts?actor=${actorId.encodeURLParameter()}"
                             ) as Row
+                        account?.let {
+                            if (app.accountDetails.size >= 64) app.accountDetails.remove(app.accountDetails.keys.first())
+                            app.accountDetails[actorId] = it
+                        }
                         failed = false
                     } catch (e: CancellationException) {
                         throw e
@@ -42,7 +46,7 @@ fun ActivityPubProfile(app: Session, actorId: String) {
             }
             .also { request = it }
     }
-    val updates = remember(app, actorId) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) { load().join() } }
+    val updates = remember(app, actorId) { CoalescedRefresh(scope, interval = 30_000, allowed = { app.env.visible && app.env.online }) { load().join() } }
     DisposableEffect(app, actorId) {
         updates.request()
         val unsubscribe = app.homeLive.subscribe { updates.request() }

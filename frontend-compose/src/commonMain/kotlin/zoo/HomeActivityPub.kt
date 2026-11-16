@@ -33,9 +33,10 @@ fun ActivityPubEmoji(
     LaunchedEffect(id) {
         if (!failed)
             try {
-                val bytes =
-                    app.image(if (emoji.flag("local")) { val url = emoji.text("url"); if (url.startsWith("/")) endpoint(app.config.apiBaseUrl, url) else url } else endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id"))
-                app.platform.imageFrames(bytes).collect { bitmap = it }
+                val url = if (emoji.flag("local")) {
+                    emoji.text("url").let { if (it.startsWith("/")) endpoint(app.config.apiBaseUrl, it) else it }
+                } else endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id")
+                bitmap = app.imageBitmap(url)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -45,7 +46,7 @@ fun ActivityPubEmoji(
         else onFailure?.invoke()
     }
     val slot = modifier.height(size).width(size * emojiRatio(emoji))
-    if (failed) Text(emoji.text("name"), slot, maxLines = 1)
+    if (failed) Text(emoji.text("name"), modifier.heightIn(min = size), maxLines = 1)
     else
         bitmap?.let { Image(it, emoji.text("name"), slot) }
             ?: Box(slot)

@@ -230,3 +230,33 @@ it("does not run scheduled live refreshes after the tab becomes hidden", async (
   });
   expect(mocks.client.get).toHaveBeenCalledTimes(2);
 });
+
+it("refreshes only the head and visible older notifications, preserving the pagination cursor", async () => {
+  const head = Array.from({ length: 100 }, (_, index) => item(`head-${index}`, 3));
+  const history = [item("older", 1), item("deleted", 0)];
+  mocks.client.get.mockImplementation(async (path: string) =>
+    path.includes("before=")
+      ? { items: history, unread_count: 102, next_cursor: "tail" }
+      : { items: head, unread_count: 102, next_cursor: "head-99" },
+  );
+  mocks.client.request.mockImplementation(async (path: string) => {
+    expect(path).toBe("/api/activitypub/notifications/entries");
+    return { items: [{ ...history[0], content: "updated" }], unread_count: 102 };
+  });
+  await act(async () => root.render(createElement(Probe)));
+  await act(async () => result.loadMore());
+  act(() => {
+    result.setVisible("older", true);
+    result.setVisible("deleted", true);
+  });
+  mocks.client.get.mockClear();
+  await act(async () => result.refresh());
+  expect(mocks.client.get).toHaveBeenCalledTimes(1);
+  expect(mocks.client.request).toHaveBeenCalledWith(
+    "/api/activitypub/notifications/entries",
+    expect.objectContaining({ method: "POST", body: { entries: ["older", "deleted"] } }),
+  );
+  expect(result.items.find((n) => n.id === "older")?.content).toBe("updated");
+  expect(result.items.some((n) => n.id === "deleted")).toBe(false);
+  expect(result.next_cursor).toBe("tail");
+});

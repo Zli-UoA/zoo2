@@ -226,4 +226,25 @@ class ReviewRegressionUiTest {
             ui.runOnIdle { assertEquals("", state.content); assertEquals(1, posts) }
         } finally { fixture.close() }
     }
+    @Test
+    fun reactionGlyphsAndMissingCustomEmojiNamesAreNotReplacedByAnEllipsis() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column {
+                            ReactionEmoji("👩🏽‍💻", size = 16.dp)
+                            ActivityPubEmoji(obj("name" to ":missing_custom_emoji:", "image_id" to "invalid"), size = 18.dp)
+                        }
+                    }
+                }
+            }
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText("👩🏽‍💻").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertFalse(layouts.single().isLineEllipsized(0))
+            ui.onNodeWithText(":missing_custom_emoji:").assertWidthIsAtLeast(40.dp)
+        } finally { fixture.close() }
+    }
+
 }

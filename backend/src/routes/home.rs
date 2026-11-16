@@ -369,16 +369,29 @@ async fn list(
     // `base` covers every visible post, so keep it narrow: local content emojis and the
     // row JSON are built only for the page chosen in `picked`. `page_parents` and
     // `page_replies` read `base` once for the whole page instead of once per row.
-    // Only detail/thread views need a conversation scope. Keep the timeline's
-    // existing plan; an OR predicate here would prevent primary-key lookups.
-    let sql = include_str!("home_timeline.sql").replace(
-        "/* post_scope */",
-        if page.post_id.as_deref().is_some_and(|id| !id.is_empty()) {
-            "JOIN thread_ids scope ON scope.id=p.id"
-        } else {
-            ""
-        },
-    );
+    // Scope detail, author and viewport reads before audience checks and payload
+    // construction. Include parents/children for previews/counts; plain timelines
+    // keep their existing plan. An OR in the WHERE would defeat indexed lookups.
+    let scoped = page.post_id.as_deref().is_some_and(|id| !id.is_empty())
+        || page.author.as_deref().is_some_and(|id| !id.is_empty())
+        || entries.is_some();
+    let sql = include_str!("home_timeline.sql")
+        .replace(
+            "/* local_posts */",
+            if scoped {
+                "scoped_home_posts"
+            } else {
+                "home_posts"
+            },
+        )
+        .replace(
+            "/* remote_posts */",
+            if scoped {
+                "scoped_remote_posts"
+            } else {
+                "apub_remote_posts"
+            },
+        );
     let mut rows = query(
         &mut tx,
         &sql,

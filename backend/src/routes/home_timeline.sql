@@ -2,8 +2,20 @@
 -- deletion, channel and block check. UNION deduplicates IDs and stops cycles.
 -- Traverse both parent sources because messages may override a Home parent.
 -- Include relatives outside the rendered depth/limit for previews and counts.
-WITH RECURSIVE thread_ids(id) AS (
+-- Detail reads recurse through the conversation; author/viewport seeds expand
+-- one hop only, so unrelated conversations never reach the visible base.
+WITH RECURSIVE target_ids(id) AS MATERIALIZED (
       SELECT $6::text WHERE $6<>''
+      UNION
+      SELECT id FROM home_posts WHERE $6='' AND jsonb_array_length($9::jsonb)=0 AND $7<>'' AND user_id=$7
+      UNION
+      SELECT id FROM apub_remote_posts WHERE $6='' AND jsonb_array_length($9::jsonb)=0 AND $7<>'' AND actor_id=$7
+      UNION
+      SELECT jsonb_array_elements_text($9::jsonb) WHERE $6=''
+      UNION
+      SELECT r.post_id FROM apub_reposts r WHERE $6='' AND 'repost:'||r.activity_id IN (SELECT jsonb_array_elements_text($9::jsonb))
+    ), thread_ids(id) AS (
+      SELECT id FROM target_ids
       UNION
       SELECT related.id FROM thread_ids t CROSS JOIN LATERAL (
         SELECT COALESCE(m.parent_id,p.parent_id) AS id FROM home_posts p LEFT JOIN messages m ON m.id=p.id WHERE p.id=t.id
@@ -15,7 +27,15 @@ WITH RECURSIVE thread_ids(id) AS (
         SELECT p.id FROM messages m JOIN home_posts p ON p.id=m.id WHERE m.parent_id=t.id
         UNION ALL
         SELECT p.id FROM apub_remote_posts p WHERE p.parent_id=t.id
-      ) related WHERE related.id IS NOT NULL
+      ) related WHERE related.id IS NOT NULL AND ($6<>'' OR t.id IN (SELECT id FROM target_ids))
+    ), scoped_home_posts AS NOT MATERIALIZED (
+      SELECT p.* FROM thread_ids scope CROSS JOIN LATERAL (
+        SELECT * FROM home_posts WHERE id=scope.id OFFSET 0
+      ) p
+    ), scoped_remote_posts AS NOT MATERIALIZED (
+      SELECT p.* FROM thread_ids scope CROSS JOIN LATERAL (
+        SELECT * FROM apub_remote_posts WHERE id=scope.id OFFSET 0
+      ) p
     ), shared_reactions AS NOT MATERIALIZED (
       SELECT r.post_id,r.user_id,r.reaction,r.emoji,r.created_at FROM apub_reactions r
       WHERE (r.user_id IS NULL OR NOT EXISTS(SELECT 1 FROM home_posts p WHERE p.id=r.post_id AND p.channel_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM apub_actors a WHERE a.id=r.actor_id AND a.blocked)
@@ -23,14 +43,14 @@ WITH RECURSIVE thread_ids(id) AS (
       SELECT p.id,r.user_id,r.emoji,NULL::jsonb,r.created_at AT TIME ZONE 'UTC' FROM message_reactions r JOIN home_posts p ON p.id=r.message_id AND p.channel_id IS NOT NULL
     ), base AS (
       SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,COALESCE(m.parent_id,p.parent_id) AS parent_id,NULL::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar,u.avatar_url,p.media
-      FROM home_posts p /* post_scope */ JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN messages m ON m.id=p.id
+      FROM /* local_posts */ p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN messages m ON m.id=p.id
       WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1 OR (p.id=$6 AND p.apub AND p.visibility='unlisted'))
         AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
         AND (NOT $4::boolean OR p.user_id=$1 OR p.reply_user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
       UNION ALL
       SELECT p.id,p.actor_id,a.user_name || '@' || split_part(a.id,'/',3),a.display_name,p.content,p.published,p.updated_at,true,p.visibility,NULL,NULL,true,p.id,p.parent_id,p.emojis,a.emojis,false,
         (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1))),a.avatar,NULL::text,p.media
-      FROM apub_remote_posts p /* post_scope */ JOIN apub_actors a ON a.id=p.actor_id
+      FROM /* remote_posts */ p JOIN apub_actors a ON a.id=p.actor_id
       WHERE p.deleted_at IS NULL AND NOT a.blocked AND (
         (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1)))
         OR (p.visibility IN ('public','unlisted') AND EXISTS(SELECT 1 FROM apub_reposts r WHERE r.post_id=p.id AND ((r.user_id IS NOT NULL AND r.visibility IN ('local','public') AND (NOT $4::boolean OR r.user_id=$1)) OR (r.user_id IS NULL AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=r.actor_id AND direction='outgoing' AND accepted)))))

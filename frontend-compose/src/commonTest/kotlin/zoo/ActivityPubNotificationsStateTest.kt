@@ -200,4 +200,40 @@ class ActivityPubNotificationsStateTest {
         state.close(); app.close()
     }
 
+    @Test
+    fun refreshChecksTheHeadAndVisibleHistoryWithoutReplayingEveryOlderPage() = runTest {
+        var heads = 0
+        var checks = 0
+        fun response(items: List<Row>, cursor: String?) = obj(
+            "items" to kotlinx.serialization.json.JsonArray(items), "unread_count" to 102, "next_cursor" to cursor,
+        ).toString()
+        val head = (1..100).map { obj("id" to "head-$it", "created_at" to "2026-11-01T10:00:00Z") }
+        val older = listOf(obj("id" to "older-a", "created_at" to "2026-10-31T10:00:00Z"), obj("id" to "older-b", "created_at" to "2026-10-31T09:00:00Z"))
+        val app = app { request ->
+            when (request.url.encodedPath) {
+                "/api/activitypub/notifications/entries" -> {
+                    checks++
+                    val body = json.parseToJsonElement(request.body.toByteArray().decodeToString()).objectOrEmpty()
+                    assertEquals("[\"older-a\",\"older-b\"]", body["entries"].toString())
+                    respond(response(listOf(obj("id" to "older-a", "content" to "updated", "created_at" to "2026-10-31T10:00:00Z")), null))
+                }
+                "/api/activitypub/notifications" -> if (request.url.parameters["before"] == null) { heads++; respond(response(head, "head-tail")) }
+                    else respond(response(older, "old-tail"))
+                else -> awaitCancellation()
+            }
+        }
+        val state = ActivityPubNotificationsState(app, subscribe = { {} })
+        try {
+            state.ensureLoaded(); runCurrent(); state.loadMore(); runCurrent()
+            assertEquals(102, state.items.size)
+            val before = heads
+            state.viewport(listOf("older-a", "older-b")); runCurrent()
+            assertEquals(1, heads - before)
+            assertEquals(1, checks)
+            assertEquals(101, state.items.size)
+            assertEquals("updated", state.items.first { it.text("id") == "older-a" }.text("content"))
+            assertEquals("old-tail", state.nextCursor)
+        } finally { state.close(); app.close() }
+    }
+
 }

@@ -43,6 +43,7 @@ export function useActivityPubNotifications() {
   const olderRequest = useRef<AbortController | null>(null);
   const deferred = useRef(false);
   const pendingReads = useRef(new Set<string>());
+  const visibleIds = useRef(new Set<string>());
   const refresh = useCallback((): Promise<void> => {
     if (lifetime.current?.signal.aborted) return Promise.resolve();
     if (olderRequest.current) {
@@ -59,35 +60,45 @@ export function useActivityPubNotifications() {
       do {
         deferred.current = false;
         const retained = snapshot.current.items;
-        const tail = retained.at(-1);
         try {
-          let page: NotificationPage;
-          const items: ActivityPubNotification[] = [];
-          let before: string | null = null;
-          const visited = new Set<string>();
-          do {
-            page = await client.get<NotificationPage>(
-              `/api/activitypub/notifications${before ? `?before=${encodeURIComponent(before)}` : ""}`,
-              { signal: controller.signal },
+          const page = await client.get<NotificationPage>("/api/activitypub/notifications", {
+            signal: controller.signal,
+          });
+          const headIds = new Set(page.items.map((item) => item.id));
+          const checkedIds = [...visibleIds.current].filter((id) => !headIds.has(id)).slice(0, 100);
+          let checked: ActivityPubNotification[] = [];
+          if (checkedIds.length) {
+            const viewport = await client.request<NotificationPage>(
+              "/api/activitypub/notifications/entries",
+              {
+                method: "POST",
+                body: { entries: checkedIds },
+                signal: controller.signal,
+              },
             );
-            items.push(...page.items.filter((item) => !items.some((old) => old.id === item.id)));
-            before = page.next_cursor ?? null;
-            const last = items.at(-1);
-            const reached =
-              !tail ||
-              items.some((item) => item.id === tail.id) ||
-              (!!last &&
-                (notificationTimestamp(last.created_at) < notificationTimestamp(tail.created_at) ||
-                  (notificationTimestamp(last.created_at) ===
-                    notificationTimestamp(tail.created_at) &&
-                    last.id <= tail.id)));
-            if (!before || visited.has(before) || (reached && items.length >= retained.length))
-              break;
-            visited.add(before);
-          } while (before && !controller.signal.aborted);
+            checked = viewport.items;
+          }
+          const updates = new Map([...page.items, ...checked].map((item) => [item.id, item]));
+          const authoritative = new Set(checkedIds);
+          const items = [
+            ...page.items,
+            ...(page.next_cursor ? retained.filter((item) => !headIds.has(item.id)) : []),
+          ]
+            .filter((item) => !authoritative.has(item.id) || updates.has(item.id))
+            .map((item) => updates.get(item.id) ?? item)
+            .sort(
+              (a, b) =>
+                notificationTimestamp(b.created_at) - notificationTimestamp(a.created_at) ||
+                (a.id > b.id ? -1 : a.id < b.id ? 1 : 0),
+            );
+          const cursor =
+            page.next_cursor && retained.length > page.items.length
+              ? snapshot.current.next_cursor
+              : page.next_cursor;
           if (!controller.signal.aborted) {
             const updated = {
               ...page,
+              next_cursor: cursor,
               items: items.map((item) =>
                 pendingReads.current.has(item.id) ? { ...item, is_read: true } : item,
               ),
@@ -230,5 +241,12 @@ export function useActivityPubNotifications() {
     await client.request(path, { method: "POST", body });
     await refresh();
   };
-  return { ...data, error, loading, loadingMore, loadMore, refresh, act, markRead };
+  const setVisible = useCallback((id: string, visible: boolean) => {
+    const wasVisible = visibleIds.current.has(id);
+    if (visible) visibleIds.current.add(id);
+    else visibleIds.current.delete(id);
+    if (visible && !wasVisible && snapshot.current.items.findIndex((item) => item.id === id) >= 100)
+      schedule.current();
+  }, []);
+  return { ...data, error, loading, loadingMore, loadMore, refresh, act, markRead, setVisible };
 }

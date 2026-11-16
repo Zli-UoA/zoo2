@@ -150,7 +150,7 @@ fun ReactionEmoji(
     else if (value.startsWith(":")) Text(value, modifier)
     else
         Box(modifier.size(size), contentAlignment = Alignment.Center) {
-            Text(value, size = size.value.sp, lineHeight = size.value.sp)
+            Text(value, size = size.value.sp, lineHeight = size.value.sp, maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Visible)
         }
 }
 

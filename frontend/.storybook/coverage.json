@@ -1300,7 +1300,7 @@
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
-      "reason": "タブ切替時の先頭復帰と不要な追加読込の抑止を390px・1440pxのブラウザテストで確認し、単体テストで古い仮想範囲・overscanと実際の表示領域を区別する。"
+      "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",

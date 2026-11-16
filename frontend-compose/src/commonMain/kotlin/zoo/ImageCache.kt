@@ -4,20 +4,22 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** Session-local LRU of encoded images; failures remain retryable. */
-internal class ImageCache(
+/** Session-local weighted LRU; concurrent consumers share loads and failures remain retryable. */
+internal class AssetCache<T>(
     scope: CoroutineScope,
     private val maxBytes: Int = 32 * 1024 * 1024,
     private val maxEntries: Int = 256,
+    private val weight: (T) -> Int,
 ) {
     private val job = SupervisorJob(scope.coroutineContext[Job])
     private val scope = CoroutineScope(scope.coroutineContext + job)
     private val mutex = Mutex()
-    private val images = linkedMapOf<String, ByteArray>()
-    private val pending = mutableMapOf<String, Deferred<ByteArray>>()
+    private val images = linkedMapOf<String, T>()
+    private val pending = mutableMapOf<String, Deferred<T>>()
     private var bytes = 0
+    private var closed = false
 
-    suspend fun get(url: String, load: suspend () -> ByteArray): ByteArray {
+    suspend fun get(url: String, load: suspend () -> T): T {
         val request = mutex.withLock {
             images.remove(url)?.let {
                 images[url] = it
@@ -28,11 +30,11 @@ internal class ImageCache(
                     try {
                         val image = load()
                         mutex.withLock {
-                            if (image.size <= maxBytes && maxEntries > 0) {
+                            if (!closed && weight(image) <= maxBytes && maxEntries > 0) {
                                 images[url] = image
-                                bytes += image.size
+                                bytes += weight(image)
                                 while (bytes > maxBytes || images.size > maxEntries) {
-                                    bytes -= images.remove(images.keys.first())!!.size
+                                    bytes -= weight(images.remove(images.keys.first())!!)
                                 }
                             }
                         }
@@ -47,8 +49,17 @@ internal class ImageCache(
     }
 
     fun close() {
+        closed = true
         job.cancel()
         images.clear()
+        pending.clear()
         bytes = 0
     }
+}
+
+/** Encoded images and decoded bitmaps have separate memory budgets. */
+internal class ImageCache(scope: CoroutineScope, maxBytes: Int = 32 * 1024 * 1024, maxEntries: Int = 256) {
+    private val cache = AssetCache<ByteArray>(scope, maxBytes, maxEntries) { it.size }
+    suspend fun get(url: String, load: suspend () -> ByteArray): ByteArray = cache.get(url, load)
+    fun close() = cache.close()
 }
