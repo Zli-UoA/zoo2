@@ -123,9 +123,15 @@ fn truncate(doc: &mut Document) {
         return;
     }
     let total = doc.components.len();
-    while doc.components.len() > 1 && over(doc) {
-        doc.components.pop();
+    // 先頭から何件までなら上限に収まるかを二分探索する（検証は文書全体を見るので、1 件ずつ外すと件数の二乗になる）
+    let all = std::mem::take(&mut doc.components);
+    let (mut ok, mut ng) = (1usize, total);
+    while ng - ok > 1 {
+        let mid = (ok + ng) / 2;
+        doc.components = all[..mid].to_vec();
+        if over(doc) { ng = mid } else { ok = mid }
     }
+    doc.components = all[..ok].to_vec();
     if doc.components.len() < total {
         // 省いたことを知らせる部品を足し、それで上限を超えるなら、その前の部品をもう 1 つ省く
         let notice = |omitted: usize| {
@@ -349,7 +355,16 @@ pub fn app(
         doc.flags = 0;
     }
     if let Err(e) = doc.validate(cx) {
-        return Err(bad(errors_message(&e)));
+        // 旧形式の入力は、旧形式の上限（50 件、各 text 4,000 文字、ラベル 200 文字。validate_blocks で確認済み）
+        // で受け付ける。部品の上限（数・文字数の合計・ラベルの長さ）だけに当たるものは 400 にしない
+        let errors: Vec<ValidationError> = if format == Format::Legacy {
+            e.into_iter().filter(|e| !is_limit_error(e)).collect()
+        } else {
+            e
+        };
+        if !errors.is_empty() {
+            return Err(bad(errors_message(&errors)));
+        }
     }
     if !doc.unsupported_types().is_empty() {
         return Err(bad(format!(
@@ -359,6 +374,13 @@ pub fn app(
     }
     crate::metrics::record_message_components(source, format.as_str(), false);
     Ok((doc, format))
+}
+
+/// 部品の数・文字数の合計・大きさ・文字の長さの上限だけに当たるエラーか（旧形式の入力では許す）。
+fn is_limit_error(e: &ValidationError) -> bool {
+    e.path.is_empty()
+        && (e.message.starts_with("too many components") || e.message.starts_with("too much text"))
+        || e.message.contains("is longer than")
 }
 
 fn discord_strict(value: &Value) -> Result<Document, AppError> {
@@ -461,6 +483,40 @@ mod tests {
         assert!(
             matches!(doc.components.last(), Some(Component::TextDisplay(t)) if t.content.contains("件の部品を省略しました"))
         );
+    }
+
+    #[test]
+    fn legacy_blocks_keep_their_old_limits() {
+        let long = "a".repeat(3000);
+        let mut blocks = vec![
+            json!({"type":"text","text":long}),
+            json!({"type":"text","text":long}),
+        ];
+        blocks.push(json!({"type":"button","action_id":"b","label":"x".repeat(150)}));
+        blocks.push(json!({"type":"input","action_id":"i","label":"y".repeat(150)}));
+        blocks.extend((0..45).map(|i| json!({"type":"text","text":format!("t{i}")})));
+        let (doc, f) = app(&json!(blocks), Context::AppMessage, "test").unwrap();
+        assert_eq!(f, Format::Legacy);
+        // ラベルは切り詰めない
+        assert!(doc.to_json().contains(&"y".repeat(150)));
+        // 新しい形式の入力には、部品の上限を当てる
+        assert!(
+            app(
+                &json!({"components":[{"type":10,"content":"a".repeat(4001)}]}),
+                Context::AppMessage,
+                "test"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn slack_selects_with_more_than_25_options() {
+        let options: Vec<Value> = (0..30).map(|i| json!({"text":{"type":"plain_text","text":format!("o{i}")},"value":format!("{i}")})).collect();
+        let blocks = json!({"blocks":[{"type":"actions","elements":[{"type":"static_select","action_id":"s","options":options}]}]});
+        assert!(app(&blocks, Context::AppMessage, "test").is_err());
+        // Webhook では押せない状態で、先頭 25 件を出す
+        assert!(hook(blocks).doc.is_some());
     }
 
     #[test]

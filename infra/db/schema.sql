@@ -4154,3 +4154,4 @@ CREATE TABLE app_submitted_files (
   PRIMARY KEY (attachment_id, installation_id)
 );
 CREATE INDEX app_submitted_files_installation ON app_submitted_files(installation_id);
+CREATE INDEX app_submitted_files_expiry ON app_submitted_files(expires_at);

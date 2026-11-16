@@ -220,7 +220,7 @@ pub fn blocks(list: &Value, modal: bool) -> Document {
             }
             "input" => out.push(Component::Label(Label {
                 id: None,
-                label: s(b, "label").chars().take(45).collect(),
+                label: s(b, "label").to_string(),
                 description: None,
                 component: Box::new(Component::TextInput(TextInput {
                     custom_id: s(b, "action_id").to_string(),
@@ -247,13 +247,13 @@ pub fn blocks(list: &Value, modal: bool) -> Document {
                 let select = StringSelect {
                     custom_id: s(b, "action_id").to_string(),
                     options,
-                    placeholder: Some(s(b, "label").chars().take(150).collect()),
+                    placeholder: Some(s(b, "label").to_string()),
                     ..Default::default()
                 };
                 if modal {
                     out.push(Component::Label(Label {
                         id: None,
-                        label: s(b, "label").chars().take(45).collect(),
+                        label: s(b, "label").to_string(),
                         description: None,
                         component: Box::new(Component::StringSelect(select)),
                     }));

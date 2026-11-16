@@ -261,12 +261,13 @@ pub async fn restore(db: &toasty::Db, changes: &[Change]) -> Result<usize, AppEr
                     String::new(),
                 ),
                 "app_link_unfurls" => (
-                    "UPDATE app_link_unfurls SET components=NULL WHERE message_id||' '||installation_id||' '||url=$1 AND components=$2 AND $3='' RETURNING '{}'::text",
+                    "UPDATE app_link_unfurls SET components=NULL WHERE message_id=$1::jsonb->>0 AND installation_id=$1::jsonb->>1 AND url=$1::jsonb->>2 AND components=$2 AND $3='' RETURNING '{}'::text",
                     String::new(),
                 ),
+                // 作り直した後に展開が付いた行（値が変わった行）は戻さない。old は保存していた文字列のまま戻す
                 "messages.app_unfurls" => (
-                    "UPDATE messages SET app_unfurls=$3 WHERE id=$1 AND $2<>'' RETURNING '{}'::text",
-                    c.old.to_string(),
+                    "UPDATE messages SET app_unfurls=$3 WHERE id=$1 AND app_unfurls=$2 RETURNING '{}'::text",
+                    c.old.as_str().unwrap_or_default().to_string(),
                 ),
                 "app_ui" => (
                     "UPDATE app_ui SET document=$3 WHERE id=$1 AND document=$2 RETURNING '{}'::text",
