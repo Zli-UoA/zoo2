@@ -308,6 +308,16 @@ pub fn app(
     cx: Context,
     source: &'static str,
 ) -> Result<(Document, Format), AppError> {
+    // blocks を渡すなら配列であること。形式を Slack と明示したなら blocks が必要（空の文書で上書きしないため）
+    if value.get("blocks").is_some_and(|b| !b.is_array())
+        || (value.get("format").and_then(Value::as_str) == Some("slack")
+            && value.get("blocks").is_none())
+        || value.get("components").is_some_and(|c| !c.is_array())
+    {
+        return Err(bad(
+            "Invalid component document: blocks and components must be arrays",
+        ));
+    }
     let modal = cx == Context::Modal;
     let explicit = value.get("format").and_then(Value::as_str);
     let (mut doc, format) = match (value, explicit) {
@@ -518,6 +528,18 @@ mod tests {
         let text = "</plain>".repeat(500);
         let blocks: Vec<Value> = (0..4).map(|_| json!({"type":"text","text":text})).collect();
         assert!(app(&json!(blocks), Context::AppMessage, "test").is_ok());
+    }
+
+    #[test]
+    fn non_array_blocks_are_rejected() {
+        for v in [
+            json!({"blocks":"not-an-array"}),
+            json!({"format":"slack"}),
+            json!({"blocks":{}}),
+            json!({"components":"x"}),
+        ] {
+            assert!(app(&v, Context::Home, "test").is_err(), "{v}");
+        }
     }
 
     #[test]
