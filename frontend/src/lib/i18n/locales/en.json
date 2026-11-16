@@ -550,6 +550,30 @@
     "you": "You",
     "closeParticipants": "Close participants list"
   },
+  "channelPins": {
+    "title": "Pinned",
+    "menu": "Channel options",
+    "channelMenu": "Channel options for {{name}}",
+    "dmMenu": "Conversation options for {{name}}",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "dragHandle": "Drag to reorder",
+    "dismissError": "Dismiss",
+    "errors": {
+      "conflict": "Pinned channels changed on another device. The latest order was loaded; try again.",
+      "limitExceeded": "You can pin up to 50 channels.",
+      "reorderConflict": "The pinned order changed on another device. The latest order was loaded; try again."
+    },
+    "announce": {
+      "pinned": "Pinned.",
+      "unpinned": "Unpinned.",
+      "moved": "Moved the pinned item.",
+      "reorderConflict": "This item is no longer pinned on another device, so it was not moved.",
+      "reorderArchived": "This channel was archived, so it was not moved."
+    }
+  },
   "dms": {
     "title": "Direct messages",
     "createTitle": "New direct message",

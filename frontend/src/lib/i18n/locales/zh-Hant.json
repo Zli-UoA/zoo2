@@ -550,6 +550,30 @@
     "you": "你",
     "closeParticipants": "關閉參與者名單"
   },
+  "channelPins": {
+    "title": "置頂",
+    "menu": "頻道操作",
+    "channelMenu": "{{name}} 頻道操作",
+    "dmMenu": "{{name}} 私訊操作",
+    "pin": "置頂",
+    "unpin": "取消置頂",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "dragHandle": "拖曳以重新排序",
+    "dismissError": "關閉",
+    "errors": {
+      "conflict": "置頂的頻道已在另一台裝置上變更。已重新載入最新順序，請再試一次。",
+      "limitExceeded": "最多只能置頂 50 個頻道。",
+      "reorderConflict": "置頂順序已在另一台裝置上變更。已重新載入最新順序，請再試一次。"
+    },
+    "announce": {
+      "pinned": "已置頂。",
+      "unpinned": "已取消置頂。",
+      "moved": "已移動置頂項目。",
+      "reorderConflict": "此項目已在另一台裝置上取消置頂，因此沒有移動。",
+      "reorderArchived": "此頻道已封存，因此沒有移動。"
+    }
+  },
   "dms": {
     "title": "私訊",
     "createTitle": "新增私訊",

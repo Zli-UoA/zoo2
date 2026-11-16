@@ -54,6 +54,10 @@ export function localizeApiError(cause: unknown, t: TFunction): string {
       }
       case "E2EE_LEGACY_IMMUTABLE":
         return t("e2ee.legacy.editForbidden");
+      case "CHANNEL_PINS_CONFLICT":
+        return t("channelPins.errors.conflict");
+      case "CHANNEL_PINS_LIMIT_EXCEEDED":
+        return t("channelPins.errors.limitExceeded");
       case "E2EE_LIMIT_EXCEEDED":
         if ((cause.body as { limit?: unknown } | null)?.limit === "members") {
           return t("e2ee.errors.tooManyMembers");

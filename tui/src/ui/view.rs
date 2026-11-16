@@ -386,8 +386,10 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                     },
                 ));
             }
-            let SidebarItem::Channel(id) = item else {
-                return None;
+            let (id, pinned) = match item {
+                SidebarItem::Channel(id) => (id, false),
+                SidebarItem::Pinned(id) => (id, true),
+                _ => return None,
             };
             let channel = app.store.channel(id)?;
             let member = app.store.is_member(&channel.id, &app.me.id);
@@ -406,10 +408,17 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if unread {
                 style = style.add_modifier(Modifier::BOLD);
             }
-            let mut spans = vec![
-                Span::styled(if unread { "● " } else { "  " }, Style::new().fg(ACCENT)),
-                Span::styled(app.store.channel_label(channel, &app.me.id), style),
-            ];
+            let mut spans = vec![Span::styled(
+                if unread { "● " } else { "  " },
+                Style::new().fg(ACCENT),
+            )];
+            if pinned {
+                spans.push(Span::styled("★ ", Style::new().fg(Color::Yellow)));
+            }
+            spans.push(Span::styled(
+                app.store.channel_label(channel, &app.me.id),
+                style,
+            ));
             if channel.is_private && !channel.is_dm {
                 spans.push(Span::styled(" 🔒", DIM));
             }
@@ -699,6 +708,8 @@ const HELP: &[(&str, &str)] = &[
     ("e", "自分のメッセージを編集"),
     ("d", "自分のメッセージを削除"),
     ("r", "リアクションを付ける / 外す"),
+    ("p", "ピン留め / 解除"),
+    ("[ / ] / Alt+↑↓", "ピン留めを上 / 下へ (ピン留め選択中)"),
     ("J / L", "チャンネル・スレッドに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
     ("u", "選択中のスレッドを再開"),
@@ -1268,6 +1279,68 @@ mod tests {
         assert_eq!(thread.root_id, "root");
         assert_eq!(thread.selected, None);
         assert_eq!(app.target, Target::Reply("root".into()));
+    }
+
+    #[tokio::test]
+    async fn pinned_channels_render_first_with_a_star() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![
+                (
+                    "p1",
+                    json!({
+                        "user_id": "u1", "channel_id": "c2", "position": "0",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+                (
+                    "p2",
+                    json!({
+                        "user_id": "u1", "channel_id": "c1", "position": "1",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+            ]),
+        ));
+        let items = app.sidebar_items();
+        assert_eq!(items[0], SidebarItem::Pinned("c2".into()));
+        assert_eq!(items[1], SidebarItem::Pinned("c1".into()));
+        assert_eq!(items[2], SidebarItem::Channel("c1".into()));
+        assert!(render(&mut app).contains("★"));
+    }
+
+    #[tokio::test]
+    async fn archived_pins_are_hidden_until_unarchived() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({
+                    "id": "c1", "channel_name": "general", "is_private": "f",
+                    "archive_at": "2026-11-10 00:00:00"
+                }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p1",
+                json!({
+                    "user_id": "u1", "channel_id": "c1", "position": "0",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        assert!(
+            !app.sidebar_items()
+                .iter()
+                .any(|item| matches!(item, SidebarItem::Pinned(_)))
+        );
     }
 
     #[tokio::test]
@@ -2315,7 +2388,8 @@ mod tests {
             app.subscriptions
                 .contains_key(&ShapeId::Messages("c2".into()))
         );
-        assert_eq!(app.subscriptions.len(), 4);
+        // Channels / Users / ChannelUsers / UserPinnedChannels / 開いているチャンネルの Messages。
+        assert_eq!(app.subscriptions.len(), 5);
         app.on_terminal_event(Event::FocusLost);
         assert!(app.typing.is_empty());
         app.on_tick();

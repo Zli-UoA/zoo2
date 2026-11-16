@@ -1,20 +1,32 @@
 import { avatarUsers, userAvatarHandler } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, within, waitFor } from "storybook/test";
+import { http, HttpResponse } from "msw";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { storyChannels, storyUsers, storyCollections } from "../../../.storybook/fixtures";
+import { StoryShell } from "../../../.storybook/shell";
 import { DmSection } from "./DmSection";
 const dm = { ...storyChannels[0], id: "dm-1", channel_name: "dm:user-alice:user-bob", is_dm: true };
 const bobAvatarUrl = avatarUsers[1].avatar_url;
+const pinnedAt = "2026-01-03 09:00:00.000";
+const pinnedDm = {
+  user_id: "user-alice",
+  channel_id: dm.id,
+  position: 0,
+  created_at: pinnedAt,
+  updated_at: pinnedAt,
+};
 const meta = {
   title: "Features/DMs/Sidebar",
   component: DmSection,
   parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
-      <div className="w-72 bg-sidebar">
-        <Story />
-      </div>
+      <StoryShell>
+        <div className="w-72 bg-sidebar">
+          <Story />
+        </div>
+      </StoryShell>
     ),
   ],
   args: {
@@ -61,6 +73,37 @@ export const Group: Story = {
       joined_at: dm.created_at,
     })),
   },
+};
+
+export const PinFromMenu: Story = {
+  parameters: {
+    // メニューを開くと Base UI のフォーカスガードが aria-hidden で focusable になる。
+    a11y: { test: "todo" },
+    msw: {
+      handlers: [
+        http.post("*/api/channel-pins", async () =>
+          HttpResponse.json({
+            data: {
+              pin: { ...pinnedDm, channel_id: dm.id, archived: false },
+              version: 1,
+              pins: [{ ...pinnedDm, channel_id: dm.id, archived: false }],
+            },
+            txid: "20",
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Bob の DM 操作" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "ピン留め" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("ピン留めしました。"));
+    await userEvent.click(canvas.getByRole("button", { name: "Bob の DM 操作" }));
+    await expect(
+      await screen.findByRole("menuitem", { name: "ピン留めを解除" }),
+    ).toBeInTheDocument();
+  }),
 };
 
 export const UserAvatar: Story = {

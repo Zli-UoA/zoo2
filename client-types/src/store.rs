@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     rows::{
         Attachment, CallInvite, Channel, ChannelUser, FromRow, Message, Notification, Reaction,
-        User,
+        User, UserPinnedChannel,
     },
     shape::{Batch, Change, ShapeId},
 };
@@ -29,6 +29,7 @@ pub struct Store {
     notifications: HashMap<String, Notification>,
     notification_keys: HashMap<String, String>,
     call_invites: HashMap<String, CallInvite>,
+    user_pinned_channels: HashMap<String, UserPinnedChannel>,
     synced: HashSet<ShapeId>,
     /// 型に変換できなかった行の数。スキーマのずれに気づけるよう画面に出す。
     pub invalid_rows: usize,
@@ -92,6 +93,12 @@ impl Store {
                 batch.changes,
                 &mut invalid,
             ),
+            ShapeId::UserPinnedChannels => apply_rows(
+                &mut self.user_pinned_channels,
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
         }
         self.invalid_rows += invalid;
         match id {
@@ -138,6 +145,22 @@ impl Store {
         let mut invites: Vec<&CallInvite> = self.call_invites.values().collect();
         invites.sort_by(|a, b| a.id.cmp(&b.id));
         invites
+    }
+
+    /// ピン留めしたチャンネルを、位置順に返す。並びはユーザーごとに独立している。
+    pub fn pinned_channels(&self) -> Vec<&UserPinnedChannel> {
+        let mut pins: Vec<&UserPinnedChannel> = self.user_pinned_channels.values().collect();
+        pins.sort_by(|a, b| {
+            (a.position, a.channel_id.as_str()).cmp(&(b.position, b.channel_id.as_str()))
+        });
+        pins
+    }
+
+    /// チャンネルがピン留めされているか。
+    pub fn is_pinned(&self, channel_id: &str) -> bool {
+        self.user_pinned_channels
+            .values()
+            .any(|pin| pin.channel_id == channel_id)
     }
 
     /// 通知を新しい順に返す。
@@ -729,6 +752,44 @@ mod tests {
         assert_eq!(by_message["m1"], store.reaction_groups("c1", "m1", "u1"));
         assert_eq!(store.invalid_rows, 1);
     }
+    #[test]
+    fn keeps_pinned_channels_in_position_order() {
+        let mut store = Store::default();
+        let pin = |key: &str, channel: &str, position: i64| {
+            upsert(
+                key,
+                json!({
+                    "user_id": "me",
+                    "channel_id": channel,
+                    "position": position,
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00",
+                }),
+            )
+        };
+        store.apply(
+            &ShapeId::UserPinnedChannels,
+            batch(vec![pin("p1", "c2", 1), pin("p2", "c1", 0)]),
+        );
+        assert_eq!(
+            store
+                .pinned_channels()
+                .iter()
+                .map(|pin| pin.channel_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c1", "c2"]
+        );
+        assert!(store.is_pinned("c1"));
+        assert!(!store.is_pinned("c3"));
+
+        store.apply(
+            &ShapeId::UserPinnedChannels,
+            batch(vec![Change::Delete { key: "p2".into() }]),
+        );
+        assert!(!store.is_pinned("c1"));
+        assert_eq!(store.pinned_channels()[0].channel_id, "c2");
+    }
+
     #[test]
     fn looks_up_notifications_by_id_through_the_index() {
         let notification = |id: &str| {

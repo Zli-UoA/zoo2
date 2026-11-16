@@ -9,7 +9,8 @@ export type TableName =
   | "channel_leave"
   | "call_invites"
   | "notifications"
-  | "attachments";
+  | "attachments"
+  | "user_pinned_channels";
 
 export type UserRow = {
   id: string;
@@ -109,6 +110,15 @@ export type ChannelLeaveRow = {
   left_at: TimestampString;
 };
 
+/** 自分がピン留めしたチャンネル・DM と、その並び順。本人の行だけが届く。 */
+export type UserPinnedChannelRow = {
+  user_id: string;
+  channel_id: string;
+  position: number;
+  created_at: TimestampString;
+  updated_at: TimestampString;
+};
+
 /** 通話の招待（呼び出し）。呼び出し中（`pending`）の行だけが届く。docs/calls.md。 */
 export type CallInviteRow = {
   id: string;
@@ -193,4 +203,5 @@ export type TableRowMap = {
   channel_leave: ChannelLeaveRow;
   call_invites: CallInviteRow;
   attachments: AttachmentRow;
+  user_pinned_channels: UserPinnedChannelRow;
 };

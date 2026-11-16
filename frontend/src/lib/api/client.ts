@@ -9,6 +9,12 @@ import {
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
+import type {
+  ChannelPinsResponse,
+  PinChannelResult,
+  ReorderChannelPinsResult,
+  UnpinChannelResult,
+} from "./types";
 import { assertSafeApiPath } from "./path";
 import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
@@ -280,4 +286,35 @@ export function createConfiguredApiClient(
     telemetry: config.telemetryEnabled,
     ...options,
   });
+}
+
+/**
+ * ユーザーごとのチャンネル・DM のピン留め API。
+ *
+ * 読み取りは `GET /api/channel-pins`、書き込みは `POST` / `DELETE` /
+ * `PATCH /api/channel-pins/order`。競合したときの 409 応答は `ApiError.body` に
+ * `{ error, code: "CHANNEL_PINS_CONFLICT", version, pins }` を持つ。
+ */
+export function createChannelPinsApi(client: ApiClient) {
+  return {
+    getChannelPins: () => client.get<ChannelPinsResponse>("/api/channel-pins"),
+    pinChannel: (channelId: string, expectedVersion?: number) =>
+      client.post<PinChannelResult>("/api/channel-pins", {
+        channel_id: channelId,
+        ...(expectedVersion === undefined ? {} : { expected_version: expectedVersion }),
+      }),
+    unpinChannel: (channelId: string, expectedVersion?: number) =>
+      client.delete<UnpinChannelResult>(
+        `/api/channel-pins/${encodeURIComponent(channelId)}${
+          expectedVersion === undefined
+            ? ""
+            : `?${new URLSearchParams({ expected_version: String(expectedVersion) })}`
+        }`,
+      ),
+    reorderChannelPins: (channelIds: string[], expectedVersion: number) =>
+      client.patch<ReorderChannelPinsResult>("/api/channel-pins/order", {
+        channel_ids: channelIds,
+        expected_version: expectedVersion,
+      }),
+  };
 }

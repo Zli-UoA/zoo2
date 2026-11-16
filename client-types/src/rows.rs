@@ -48,6 +48,16 @@ pub struct ChannelUser {
     pub channel_id: String,
 }
 
+/// 自分がピン留めしたチャンネル・DM と、その並び順（`user_pinned_channels`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserPinnedChannel {
+    pub user_id: String,
+    pub channel_id: String,
+    pub position: i64,
+    pub created_at: DateTime,
+    pub updated_at: DateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -224,6 +234,18 @@ impl FromRow for User {
             is_bot: opt_boolean(row, "is_bot")?.unwrap_or(false),
             bot_mentionable: opt_boolean(row, "bot_mentionable")?.unwrap_or(false),
             is_guest: opt_boolean(row, "is_guest")?.unwrap_or(false),
+        })
+    }
+}
+
+impl FromRow for UserPinnedChannel {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            user_id: text(row, "user_id")?,
+            channel_id: text(row, "channel_id")?,
+            position: integer(row, "position")?,
+            created_at: time(row, "created_at")?,
+            updated_at: time(row, "updated_at")?,
         })
     }
 }
