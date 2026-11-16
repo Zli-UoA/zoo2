@@ -37,8 +37,16 @@ fn work(name: &str, plan: &Value) -> Value {
             + node["Rows Removed by Filter"].as_f64().unwrap_or(0.)
             + node["Rows Removed by Index Recheck"].as_f64().unwrap_or(0.))
             * loops;
-        max_intermediate = max_intermediate
-            .max(n + node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops);
+        // Static lookup tables are bounded independently of message history.
+        // A plan may switch between an index lookup and a full scan, so their
+        // fixed row count must not count as history-dependent intermediate work.
+        let static_relation = node["Relation Name"]
+            .as_str()
+            .is_some_and(|table| table == "app_event_types");
+        if !static_relation {
+            max_intermediate = max_intermediate
+                .max(n + node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops);
+        }
         if let Some(table) = node["Relation Name"].as_str() {
             *relations.entry(table.into()).or_default() += n;
         }
