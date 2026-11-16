@@ -459,7 +459,10 @@ internal fun MessageList(
                 Modifier.fillMaxSize(),
                 state = state,
                 contentPadding =
-                    PaddingValues(horizontal = 8.dp, vertical = if (parent != null) 8.dp else 12.dp),
+                    PaddingValues(
+                        horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 8.dp,
+                        vertical = if (LocalTouchUi.current) AndroidDesign.postVerticalInset else if (parent != null) 8.dp else 12.dp,
+                    ),
             ) {
                 if (messages.isEmpty())
                     item {
@@ -745,10 +748,10 @@ internal fun Message(
                     .padding(
                         start = if (LocalTouchUi.current) 0.dp else 12.dp,
                         end = if (LocalTouchUi.current) 0.dp else 12.dp,
-                        top = if (grouped) 0.dp else 6.dp,
-                        bottom = if (groupEnd) 6.dp else 0.dp,
+                        top = if (grouped) 0.dp else if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 6.dp,
+                        bottom = if (!groupEnd) 0.dp else if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 6.dp,
                     ),
-                horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.avatarGap else 12.dp),
                 verticalAlignment = Alignment.Top,
             ) {
                 if (grouped)
@@ -1464,7 +1467,10 @@ internal fun Composer(
                 )
             }
             .padding(top = 1.dp)
-            .padding(horizontal = 12.dp, vertical = if (LocalTouchUi.current) 8.dp else 12.dp)
+            .padding(
+                horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 12.dp,
+                vertical = if (LocalTouchUi.current) AndroidDesign.spaceMedium else 12.dp,
+            )
     ) {
         sendError?.let { error ->
             Row(

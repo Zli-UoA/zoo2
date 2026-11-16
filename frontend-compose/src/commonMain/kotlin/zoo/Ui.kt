@@ -93,8 +93,8 @@ fun ZooTheme(
         TextStyle(
             fontFamily = latin,
             localeList = androidx.compose.ui.text.intl.LocaleList(locale),
-            fontSize = if (LocalTouchUi.current) 17.sp else 14.sp,
-            lineHeight = browserLineHeight(if (LocalTouchUi.current) 25.sp else 20.sp),
+            fontSize = if (LocalTouchUi.current) AndroidDesign.bodySize else 14.sp,
+            lineHeight = browserLineHeight(if (LocalTouchUi.current) AndroidDesign.bodyLineHeight else 20.sp),
             platformStyle = webTextStyle(),
             lineHeightStyle =
                 LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
@@ -114,18 +114,18 @@ fun ZooTheme(
                 Typography(
                     bodyMedium = body,
                     bodySmall = body.copy(
-                        fontSize = if (LocalTouchUi.current) 14.sp else 12.sp,
-                        lineHeight = browserLineHeight(if (LocalTouchUi.current) 20.sp else 16.sp),
+                        fontSize = if (LocalTouchUi.current) AndroidDesign.supportingSize else 12.sp,
+                        lineHeight = browserLineHeight(if (LocalTouchUi.current) AndroidDesign.supportingLineHeight else 16.sp),
                     ),
                     titleSmall = body.copy(fontWeight = FontWeight.SemiBold),
                     titleLarge =
                         body.copy(
-                            fontSize = 20.sp,
-                            lineHeight = 28.sp,
+                            fontSize = AndroidDesign.titleSize,
+                            lineHeight = AndroidDesign.titleLineHeight,
                             fontWeight = FontWeight.SemiBold,
                         ),
                     labelLarge = body,
-                    labelSmall = body.copy(fontSize = if (LocalTouchUi.current) 12.sp else 11.sp),
+                    labelSmall = body.copy(fontSize = if (LocalTouchUi.current) AndroidDesign.labelSize else 11.sp),
                 ),
         ) {
             content()
@@ -427,23 +427,26 @@ fun Button(
     )
     val iconOnly = size.startsWith("icon")
     val radius =
-        if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
+        if (LocalTouchUi.current) AndroidDesign.controlRadius
+        else if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
         else 10.dp
     val horizontalPadding =
-        if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
+        if (LocalTouchUi.current) {
+            if (iconOnly) 0.dp else AndroidDesign.controlInset
+        } else if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
     val startPadding =
-        if (inlineStartIcon && icon != null && !iconOnly) horizontalPadding - 2.dp
+        if (!LocalTouchUi.current && inlineStartIcon && icon != null && !iconOnly) horizontalPadding - 2.dp
         else horizontalPadding
     val endPadding = horizontalPadding
     val resolvedIconSize =
         iconSize
-            ?: when (size) {
+            ?: if (LocalTouchUi.current) AndroidDesign.icon else when (size) {
                 "xs",
                 "icon-xs" -> 12.dp
                 "sm" -> 14.dp
                 else -> 16.dp
             }
-    val gap = contentGap ?: if (size == "xs" || size == "sm") 4.dp else 6.dp
+    val gap = contentGap ?: if (LocalTouchUi.current) AndroidDesign.controlGap else if (size == "xs" || size == "sm") 4.dp else 6.dp
     val preferredWidth =
         with(density) {
             if (iconOnly) controlHeight.toPx()
@@ -598,7 +601,7 @@ fun Button(
                         lineHeight = textStyle?.lineHeight ?: TextUnit.Unspecified,
                         size =
                             textStyle?.fontSize?.takeIf { it.isSpecified }
-                                ?: if (LocalTouchUi.current) 15.sp else when (size) {
+                                ?: if (LocalTouchUi.current) AndroidDesign.buttonSize else when (size) {
                                     "xs" -> 12.sp
                                     "sm" -> 12.8.sp
                                     else -> 14.sp
@@ -700,7 +703,7 @@ fun IconButton(
         modifier
             .size(touchTargetSize(size, LocalTouchUi.current))
             .then(webControlModifier("button", enabled))
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 8.dp))
             .background(
                 if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
             )
@@ -713,7 +716,7 @@ fun IconButton(
     ) {
         Icon(
             name,
-            modifier = Modifier.size(if (size >= 40.dp) 20.dp else 16.dp),
+            modifier = Modifier.size(if (LocalTouchUi.current) AndroidDesign.icon else if (size >= 40.dp) 20.dp else 16.dp),
             color = color.copy(alpha = color.alpha * if (enabled) 1f else .4f),
         )
     }
@@ -775,12 +778,12 @@ fun Field(
         if (invalid && !singleLine) errorColor.copy(alpha = if (dark) .5f else 1f)
         else if (focused) if (dark) Color(0xffbdbdbd) else Color(0xff737373)
         else if (singleLine) colors.outline else inputColor
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp)
     val type =
         MaterialTheme.typography.bodyMedium
             .copy(
-                fontSize = if (LocalTouchUi.current || (!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
-                lineHeight = if (LocalTouchUi.current || !chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
+                fontSize = if (LocalTouchUi.current) AndroidDesign.inputSize else if ((!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
+                lineHeight = if (LocalTouchUi.current) AndroidDesign.inputLineHeight else if (!chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
                 color = colors.onBackground,
             )
             .merge(inputTextStyle)
@@ -896,7 +899,9 @@ fun Field(
                                         size.width + 3.dp.toPx(),
                                         size.height + 3.dp.toPx(),
                                     ),
-                                    androidx.compose.ui.geometry.CornerRadius(11.5.dp.toPx()),
+                                    androidx.compose.ui.geometry.CornerRadius(
+                                        ((if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp) + 1.5.dp).toPx(),
+                                    ),
                                     style = Stroke(3.dp.toPx()),
                                 )
                         }
@@ -915,7 +920,12 @@ fun Field(
                         )
                         .padding(
                             contentPadding
-                                ?: PaddingValues(
+                                ?: if (LocalTouchUi.current) PaddingValues(
+                                    start = if (leadingIcon != null) 40.dp else AndroidDesign.controlInset,
+                                    end = AndroidDesign.controlInset,
+                                    top = AndroidDesign.spaceMedium,
+                                    bottom = AndroidDesign.spaceMedium,
+                                ) else PaddingValues(
                                     start =
                                         if (leadingIcon != null) 32.dp
                                         else if (chrome) if (singleLine) 9.dp else 11.dp else 8.dp,
@@ -938,8 +948,8 @@ fun Field(
                                     leadingIcon,
                                     modifier =
                                         Modifier.align(Alignment.CenterStart)
-                                            .offset(x = (-22).dp)
-                                            .size(16.dp),
+                                            .offset(x = if (LocalTouchUi.current) (-28).dp else (-22).dp)
+                                            .size(if (LocalTouchUi.current) AndroidDesign.icon else 16.dp),
                                 )
                             }
                         val placeholderText = placeholder ?: if (chrome) "" else label
@@ -1001,7 +1011,7 @@ fun Field(
 @Composable
 fun Check(label: String, checked: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
     Row(
-        Modifier.heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
+        Modifier.heightIn(min = if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp)
             .then(webControlModifier("checkbox", enabled, checked))
             .toggleable(checked, enabled, role = Role.Checkbox, onValueChange = change),
         verticalAlignment = Alignment.CenterVertically,
@@ -1165,7 +1175,7 @@ fun Menu(
                 actions.forEachIndexed { index, item ->
                     Row(
                         Modifier.fillMaxWidth()
-                            .heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
+                            .heightIn(min = if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp)
                             .then(webControlModifier("menuitem", item.enabled))
                             .focusRequester(requesters[index])
                             .onFocusChanged { if (it.isFocused) active = index }

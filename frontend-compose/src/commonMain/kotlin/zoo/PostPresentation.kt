@@ -11,7 +11,7 @@ import kotlinx.coroutines.delay
 
 /** The author column and grouped-message gutter must have the same width. */
 @Composable
-internal fun postAvatarSize() = if (LocalTouchUi.current) 48.dp else 32.dp
+internal fun postAvatarSize() = if (LocalTouchUi.current) AndroidDesign.avatar else 32.dp
 
 internal fun Modifier.postAvatar() = semantics { testTag = "post-avatar" }
 
@@ -31,7 +31,7 @@ internal fun PostTimestamp(app: Session, createdAt: String, relative: Boolean = 
     Hint(full) { hint ->
         Text(label, hint.then(webControlModifier("time", attributes = mapOf("datetime" to createdAt)))
             .semantics { contentDescription = full },
-            size = if (LocalTouchUi.current) 14.sp else 12.sp,
+            size = if (LocalTouchUi.current) AndroidDesign.supportingSize else 12.sp,
             small = true, muted = true)
     }
 }

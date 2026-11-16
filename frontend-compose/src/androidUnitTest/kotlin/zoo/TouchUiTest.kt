@@ -116,6 +116,54 @@ class TouchUiTest {
         screenshot("editor", "editor-320-font180")
     }
 
+    @Test
+    fun designPrimitivesKeepTargetsAndSettingsUsableAcrossWidthsAndFontScales() {
+        var width by mutableStateOf(320.dp)
+        var dark by mutableStateOf(false)
+        var scale by mutableStateOf(1f)
+        var value by mutableStateOf("")
+        ui.setContent {
+            CompositionLocalProvider(
+                LocalTouchUi provides true,
+                LocalDensity provides Density(LocalDensity.current.density, fontScale = scale),
+            ) {
+                ZooTheme(dark) {
+                    Column(Modifier.width(width).testTag("design-primitives")) {
+                        ScreenHeader("settings", "表示と通知")
+                        Column(
+                            Modifier.fillMaxWidth().padding(AndroidDesign.screenInset),
+                            verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceLarge),
+                        ) {
+                            Field(value, "日本語の表示名", Modifier.fillMaxWidth()) { value = it }
+                            Row(horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceMedium)) {
+                                Button("保存", size = "xs", icon = "check") {}
+                                IconButton("x", "キャンセル", size = 24.dp) {}
+                            }
+                            SettingRow("長い日本語の設定名", "通知の表示方法を変更します") {
+                                Button("変更する", variant = "outline") {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for ((nextWidth, nextScale, nextDark) in listOf(
+            Triple(320.dp, 1f, false), Triple(320.dp, 1.8f, true), Triple(600.dp, 1f, true),
+        )) {
+            ui.runOnIdle { width = nextWidth; scale = nextScale; dark = nextDark }
+            ui.onNodeWithContentDescription("保存").assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("キャンセル").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("変更する").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("日本語の表示名").assertHeightIsAtLeast(48.dp)
+            val container = ui.onNodeWithTag("design-primitives").fetchSemanticsNode().boundsInRoot
+            val control = ui.onNodeWithContentDescription("変更する").fetchSemanticsNode().boundsInRoot
+            assertTrue(control.left >= container.left && control.right <= container.right)
+            screenshot("design-primitives", "design-${nextWidth.value}-${nextScale}-${nextDark}")
+        }
+        ui.onNodeWithContentDescription("日本語の表示名").performTextInput("日本語の名前")
+        ui.runOnIdle { assertEquals("日本語の名前", value) }
+    }
+
     private fun screenshot(tag: String, name: String) {
         val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/ui").apply { mkdirs() }
         val bounds = ui.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot

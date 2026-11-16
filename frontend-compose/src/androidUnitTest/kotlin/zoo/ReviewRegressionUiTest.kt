@@ -179,27 +179,38 @@ class ReviewRegressionUiTest {
                                     "content" to "Grouped body", "created_at" to "2026-11-15T00:00:01Z")),
                                 emptyList(), listOf(user), parent = null, wide = false,
                                 modifier = Modifier.height(350.dp), readState = false)
+                            NotificationCard(fixture.app, listOf(obj(
+                                "id" to "notification", "actor_id" to "alice", "is_read" to true,
+                                "notification_type" to "mention", "created_at" to "2026-11-15T00:00:00Z",
+                                "display_data" to obj("actor" to user, "message" to message,
+                                    "channel" to obj("id" to "general", "channel_name" to "general")),
+                            )), listOf(user), visible = false, readEnabled = false, onLoading = {})
                         }
                     }
                 }
             }
             fun checkAlignment() {
                 val names = ui.onAllNodesWithText("Alice").fetchSemanticsNodes()
-                assertEquals(2, names.size)
-                assertEquals(names[0].boundsInRoot.left, names[1].boundsInRoot.left, 1f)
+                assertEquals(3, names.size)
+                names.drop(1).forEach { name ->
+                    assertEquals(names[0].boundsInRoot.left, name.boundsInRoot.left, 1f)
+                }
                 val avatars = ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true).fetchSemanticsNodes()
                 assertEquals(2, avatars.size)
-                assertEquals(with(ui.density) { 8.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
+                assertEquals(with(ui.density) { 12.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
                 assertEquals(avatars[0].boundsInRoot.left, avatars[1].boundsInRoot.left, 1f)
                 avatars.zip(names).forEach { (avatar, name) ->
                     val frame = avatar.boundsInRoot
-                    assertEquals(with(ui.density) { 48.dp.toPx() }, frame.width, 1f)
+                    assertEquals(with(ui.density) { 40.dp.toPx() }, frame.width, 1f)
                     assertEquals(frame.top, name.boundsInRoot.top, 1f)
                 }
                 val grouped = ui.onNodeWithText("Grouped body").fetchSemanticsNode().boundsInRoot
                 assertEquals(names[0].boundsInRoot.left, grouped.left, 1f)
             }
             checkAlignment()
+            // The visible avatar follows notifications; its profile link keeps a full touch target.
+            ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true)[0].onParent()
+                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
             ui.runOnIdle { width = 440.dp }
             checkAlignment()
         } finally { fixture.close() }
