@@ -129,7 +129,8 @@ internal class GatewayPhone(
                     try {
                         stream(payload.text("session_id"), ::received)
                         if (!closed) events("failed", obj())
-                    } catch (cancel: CancellationException) { throw cancel }
+                    } catch (timeout: TimeoutCancellationException) { if (!closed) events("failed", obj()) }
+                    catch (cancel: CancellationException) { throw cancel }
                     catch (_: Exception) { if (!closed) events("failed", obj()) }
                 }
             }

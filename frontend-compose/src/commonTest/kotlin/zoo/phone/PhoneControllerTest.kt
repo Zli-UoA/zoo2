@@ -18,6 +18,10 @@ class PhoneControllerTest {
         var revision = "v1"
         var authorize = true
         var permission = true
+        var heartbeatTimeout = false
+        var signalTimeouts = 0
+        var streamTimeout = false
+        var phoneStreamTimeout = false
         var pendingAccept: CompletableDeferred<JsonElement>? = null
         var beforeRead: CompletableDeferred<Unit>? = null
         var streamEvent: (suspend (String, Row) -> Unit)? = null
@@ -32,6 +36,8 @@ class PhoneControllerTest {
                 path.endsWith("/connect") -> obj("data" to obj("revision" to revision, "session_id" to "phone-session", "peer_id" to "gateway-peer", "ice_servers" to JsonArray(emptyList())))
                 path.endsWith("/authorize") -> { check(authorize); obj("data" to obj("revision" to revision)) }
                 path.endsWith("/accept") -> pendingAccept?.await() ?: obj("data" to obj("channel_id" to "dm"))
+                path.endsWith("/call/heartbeat") && heartbeatTimeout -> { delay(20_000); obj() }
+                path.endsWith("/call/signal") && signalTimeouts > 0 -> { signalTimeouts--; delay(20_000); obj() }
                 path.endsWith("/command") -> {
                     val action = body?.text("action").orEmpty(); phoneActions.add(action)
                     if (action == "call") pendingPhoneCall?.await()
@@ -41,7 +47,7 @@ class PhoneControllerTest {
                 }
                 else -> obj("data" to obj())
             }
-        }, stream = { _, _, callback -> streamEvent = callback; awaitCancellation() }, phoneStream = { _, callback -> phoneEvent = callback; callback("registered", obj()); awaitCancellation() }, media = { kind, callback ->
+        }, stream = { _, _, callback -> streamEvent = callback; if (streamTimeout) withTimeout(1) { awaitCancellation() } else awaitCancellation() }, phoneStream = { _, callback -> phoneEvent = callback; callback("registered", obj()); if (phoneStreamTimeout) withTimeout(1) { awaitCancellation() } else awaitCancellation() }, media = { kind, callback ->
             events[kind] = callback
             object : PhoneMedia {
                 override suspend fun command(method: String, payload: Row) {
@@ -166,4 +172,48 @@ class PhoneControllerTest {
         assertEquals(1, f.native.count { it.startsWith("outgoing:") }); assertFalse("call" in f.phoneActions)
         f.controller.close()
     }
+    @Test fun lateAcceptCannotEraseTheNextDmInvitation() = runTest {
+        val f=Fixture(backgroundScope); f.controller.receiveDmCalls(true); runCurrent()
+        f.controller.invites(listOf(f.invitation()),"alice",1893456000000)
+        val first=CompletableDeferred<JsonElement>(); f.pendingAccept=first
+        f.controller.answer(); runCurrent(); f.controller.hangup(); runCurrent()
+        val second=JsonObject(f.invitation() + ("id" to JsonPrimitive("next-invite")))
+        f.controller.invites(listOf(second),"alice",1893456000000)
+        first.complete(obj("data" to obj("channel_id" to "dm"))); runCurrent()
+        assertEquals("incoming",f.controller.call?.status)
+        f.pendingAccept=null; f.controller.answer(); runCurrent()
+        assertTrue(f.requests.any {it.endsWith("/next-invite/accept")})
+        assertEquals("dialing",f.controller.call?.status); f.controller.close()
+    }
+    @Test fun heartbeatTimeoutClosesMediaAndShowsAnError() = runTest {
+        val f=Fixture(backgroundScope); f.controller.callDm("dm","Bob"); runCurrent()
+        f.streamEvent!!("room_state",obj()); f.events.getValue("dm")("connected",obj())
+        f.heartbeatTimeout=true; advanceTimeBy(25_001); runCurrent()
+        assertNull(f.controller.call); assertTrue(f.controller.error); assertTrue("dm" in f.closed)
+        f.controller.close()
+    }
+    @Test fun streamTimeoutEndsTheCallInsteadOfLeavingADialingCall() = runTest {
+        val f=Fixture(backgroundScope); f.streamTimeout=true; f.controller.callDm("dm","Bob"); runCurrent()
+        advanceTimeBy(2); runCurrent(); assertNull(f.controller.call); assertTrue(f.controller.error)
+        f.controller.close()
+    }
+    @Test fun timedOutSignalsAreRetriedWithoutEndingTheActiveCall() = runTest {
+        val f=Fixture(backgroundScope); f.controller.callDm("dm","Bob"); runCurrent()
+        f.streamEvent!!("room_state",obj()); f.events.getValue("dm")("connected",obj())
+        f.signalTimeouts=1
+        f.events.getValue("dm")("signal",obj("target_session_id" to "other","signal" to obj("type" to "offer","sdp" to "v=0")))
+        runCurrent(); advanceTimeBy(15_201); runCurrent()
+        assertEquals(2,f.requests.count {it.endsWith("/call/signal")})
+        assertEquals("active",f.controller.call?.status); assertFalse(f.controller.error)
+        f.controller.close()
+    }
+
+    @Test fun telephoneStreamTimeoutDisconnectsRegistrationAndShowsAnError() = runTest {
+        val f=Fixture(backgroundScope); f.phoneStreamTimeout=true
+        f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
+        advanceTimeBy(2); runCurrent()
+        assertEquals("offline",f.controller.registration.status); assertTrue(f.controller.error)
+        f.controller.close()
+    }
+
 }

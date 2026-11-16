@@ -202,8 +202,10 @@ class PhoneController(
                 val pending = invite ?: error("Invite ended")
                 val accepted = data(api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/accept", "POST"))
                 if (accepted.text("channel_id") != next.target) error("Invalid invitation")
-                inviteExpiry?.cancel(); invite = null; answeringInvite = null
-                if (epoch == callEpoch) { call = next.copy(status = "dialing"); joinDm(next, epoch) }
+                if (epoch == callEpoch) {
+                    inviteExpiry?.cancel(); invite = null; answeringInvite = null
+                    call = next.copy(status = "dialing"); joinDm(next, epoch)
+                }
             }
         }
     }
@@ -232,6 +234,7 @@ class PhoneController(
                         engine.command("rtc.start", obj("session_id" to session, "ice_servers" to (value["ice_servers"] ?: JsonArray(emptyList()))))
                         heartbeat = scope.launch {
                             try { while (isActive && epoch == callEpoch) { delay(10_000); api("/api/channels/${next.target.encodeURLPathPart()}/call/heartbeat", "POST", obj("session_id" to session)) } }
+                            catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
                             catch (cancel: CancellationException) { throw cancel }
                             catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
                         }
@@ -241,7 +244,8 @@ class PhoneController(
                     early.clear()
                 }
                 if (epoch == callEpoch) { hangup(); error = true }
-            } catch (cancel: CancellationException) { throw cancel }
+            } catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
+            catch (cancel: CancellationException) { throw cancel }
             catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
         }
     }
@@ -251,10 +255,13 @@ class PhoneController(
                 var attempt = 0
                 while (epoch == callEpoch) {
                     try { api("/api/channels/${channel.encodeURLPathPart()}/call/signal", "POST", obj("session_id" to session, "target_session_id" to payload.text("target_session_id"), "signal" to payload["signal"])); return@launch }
+                    catch (timeout: TimeoutCancellationException) { if (++attempt >= 3) throw timeout; delay(200L * attempt) }
                     catch (cancel: CancellationException) { throw cancel }
                     catch (failure: Exception) { if (++attempt >= 3 || failure is ApiException && failure.status < 500) throw failure; delay(200L * attempt) }
                 }
-            } catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
+            } catch (timeout: TimeoutCancellationException) { if (epoch == callEpoch) { hangup(); error = true } }
+            catch (cancel: CancellationException) { throw cancel }
+            catch (_: Exception) { if (epoch == callEpoch) { hangup(); error = true } }
         }
     }
     private fun operation(epoch: Int, fatal: Boolean = true, block: suspend () -> Unit) {
