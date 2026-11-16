@@ -99,6 +99,14 @@ function initialValues(doc: ComponentDocument): Record<string, Value> {
   return out;
 }
 
+/** 木のどこか（container・grid・section など）に Label があるか */
+function hasLabel(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(hasLabel);
+  if (!node || typeof node !== "object") return false;
+  if ((node as { type?: unknown }).type === T.Label) return true;
+  return Object.values(node).some((v) => typeof v === "object" && hasLabel(v));
+}
+
 /** メッセージ部品の木を描画する。本文を隠すかどうかは呼び出し側が `hidesContent` で決める。 */
 export function ComponentTree({
   document: doc,
@@ -150,8 +158,11 @@ export function ComponentTree({
       setError(t("apps.actionError"));
     }
   }
+  // Label の入力欄はまとめて送る。メッセージに Label があれば、モーダルと同じく送信ボタンを付ける
+  const form = !!target.submit || (!!target.appId && hasLabel(doc.components));
   const ctx: Ctx = {
     ...target,
+    submit: form,
     busy,
     values,
     set: (id, value) => setValues((v) => ({ ...v, [id]: value })),
@@ -168,7 +179,7 @@ export function ComponentTree({
   );
   return (
     <ComponentContext.Provider value={ctx}>
-      {target.submit ? (
+      {form ? (
         <form
           autoComplete="off"
           onSubmit={(e) => {
@@ -826,9 +837,11 @@ function InteractiveControl({
   const ctx = useCtx();
   const confirm = { run: runConfirmed };
   const id = c.custom_id ?? "";
-  const disabled = !!c.disabled || ctx.busy || !ctx.appId;
-  // モーダル・ホームの入力欄は送信でまとめて送る。メッセージの select などは選んだときに送る
+  // モーダル・ホーム・Label の入力欄は送信でまとめて送る。メッセージの select などは選んだときに送る
   const deferred = labelled || !!ctx.submit;
+  // 送信でまとめて送る欄は、送信中も入力を続けられるようにする (busy では無効にしない)。
+  // アプリが指定した disabled と、送り先のアプリがないことは、どこでも無効にする
+  const disabled = !!c.disabled || !ctx.appId || (!deferred && ctx.busy);
   const choose = (value: Value) => {
     ctx.set(id, value);
     if (!deferred) confirm.run(() => void ctx.invoke("action", id, value));
@@ -869,11 +882,10 @@ function InteractiveControl({
     case T.Overflow:
     case T.RadioGroup: {
       const many = c.type === T.StringSelect && (c.max_values ?? 1) > 1;
-      if (many)
-        return <CheckList c={c} disabled={disabled && !deferred} choose={choose} value={value} />;
+      if (many) return <CheckList c={c} disabled={disabled} choose={choose} value={value} />;
       if (c.type === T.RadioGroup)
         return (
-          <fieldset className="flex flex-col gap-1" disabled={disabled && !deferred}>
+          <fieldset className="flex flex-col gap-1" disabled={disabled}>
             {c.options?.map((o) => (
               <label key={o.value} className="flex items-center gap-2">
                 <input
@@ -899,7 +911,7 @@ function InteractiveControl({
             className={c.type === T.Overflow ? "w-auto" : "w-full max-w-xs"}
             multiple={many}
             required={labelled && c.required === true}
-            disabled={disabled && !deferred}
+            disabled={disabled}
             value={
               many
                 ? ((value as string[]) ?? [])
@@ -926,12 +938,12 @@ function InteractiveControl({
       );
     }
     case T.CheckboxGroup:
-      return <CheckList c={c} disabled={disabled && !deferred} choose={choose} value={value} />;
+      return <CheckList c={c} disabled={disabled} choose={choose} value={value} />;
     case T.Checkbox:
       return (
         <input
           type="checkbox"
-          disabled={disabled && !deferred}
+          disabled={disabled}
           checked={!!value}
           onChange={(e) => choose(e.target.checked)}
         />
@@ -943,7 +955,7 @@ function InteractiveControl({
         placeholder: c.placeholder,
         minLength: c.min_length,
         maxLength: c.max_length ?? 4000,
-        disabled: disabled && !deferred,
+        disabled,
         onChange: (e: { target: { value: string } }) => ctx.set(id, e.target.value),
       };
       if (c.style === 2 || c.format === "rich") return <Textarea {...common} />;
@@ -1000,7 +1012,7 @@ function InteractiveControl({
           }
           value={shown}
           required={c.required === true}
-          disabled={(!!c.disabled || !ctx.appId) && !deferred}
+          disabled={!!c.disabled || !ctx.appId}
           onChange={(e) => ctx.set(id, toValue(e.target.value))}
         />
       );
@@ -1012,7 +1024,7 @@ function InteractiveControl({
             type="button"
             size="sm"
             variant="outline"
-            disabled={disabled || !value}
+            disabled={disabled || ctx.busy || !value}
             onClick={() => confirm.run(() => void ctx.invoke("action", id, value))}
           >
             {t("apps.submit")}
@@ -1024,15 +1036,9 @@ function InteractiveControl({
     case T.ChannelSelect:
     case T.MentionableSelect:
     case T.RoleSelect:
-      return <EntitySelect c={c} choose={choose} disabled={disabled && !deferred} />;
+      return <EntitySelect c={c} choose={choose} disabled={disabled} />;
     case T.ExternalSelect:
-      return (
-        <ExternalSelect
-          c={c}
-          choose={choose}
-          disabled={(!!c.disabled || !ctx.appId) && !deferred}
-        />
-      );
+      return <ExternalSelect c={c} choose={choose} disabled={!!c.disabled || !ctx.appId} />;
     case T.FileUpload:
       return <FileUpload c={c} disabled={disabled} />;
     default:
@@ -1245,7 +1251,7 @@ function FileUpload({ c, disabled }: { c: Component; disabled: boolean }) {
         multiple={(c.max_values ?? 1) > 1}
         accept={accept || undefined}
         required={c.required !== false}
-        disabled={(disabled && !ctx.submit) || !ctx.channelId || state === "uploading"}
+        disabled={disabled || !ctx.channelId || state === "uploading"}
         onChange={async (e) => {
           const files = [...(e.target.files ?? [])].slice(0, c.max_values ?? 1);
           setState("uploading");

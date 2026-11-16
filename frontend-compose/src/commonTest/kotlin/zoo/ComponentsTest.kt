@@ -49,4 +49,13 @@ class ComponentsTest {
         assertNull(safeHttps("javascript:alert(1)"))
         assertNull(safeHttps("https://user@example.com/"))
     }
+
+    @Test
+    fun findsLabelsAnywhereInTheTree() {
+        val nested = Json.parseToJsonElement(
+            """[{"type":17,"components":[{"type":18,"label":"Name","component":{"type":4,"custom_id":"n"}}]}]"""
+        )
+        assertTrue(hasLabel(nested))
+        assertFalse(hasLabel(Json.parseToJsonElement("""[{"type":10,"content":"x"}]""")))
+    }
 }

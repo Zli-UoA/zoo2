@@ -87,4 +87,47 @@ describe("ComponentTree", () => {
     await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
     expect(JSON.stringify(api.request.mock.calls[0])).toContain('"approve":"yes"');
   });
+  it("keeps an app-disabled field fixed inside a submit form", async () => {
+    api.request.mockClear();
+    const form = parseComponents({
+      components: [
+        {
+          type: 18,
+          label: "Fixed",
+          component: { type: 23, custom_id: "fixed", disabled: true, default: false },
+        },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={form} appId="app" surfaceId="s1" submit />
+      </LocaleProvider>,
+    );
+    const box = await screen.findByRole("checkbox");
+    expect(box).toBeDisabled();
+    await userEvent.click(box);
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(api.request.mock.calls[0])).toContain('"fixed":false');
+  });
+
+  it("sends the labelled inputs of an app message with a submit button", async () => {
+    api.request.mockClear();
+    const message = parseComponents({
+      components: [
+        { type: 18, label: "Name", component: { type: 4, custom_id: "name", style: 1 } },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={message} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await userEvent.type(await screen.findByRole("textbox", { name: "Name" }), "zoo");
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
+    const call = JSON.stringify(api.request.mock.calls[0]);
+    expect(call).toContain('"kind":"submit"');
+    expect(call).toContain('"name":"zoo"');
+  });
 });

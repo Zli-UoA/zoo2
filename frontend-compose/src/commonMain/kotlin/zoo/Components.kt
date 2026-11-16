@@ -287,6 +287,8 @@ fun ComponentTree(
             }
         }
     }
+    // Label の入力欄はまとめて送る。メッセージに Label があれば、モーダルと同じく送信ボタンを付ける
+    val form = submit || (appId != null && hasLabel(JsonArray(doc.components)))
     val scope =
         ComponentScope(
             app,
@@ -294,7 +296,7 @@ fun ComponentTree(
             surface,
             message,
             channel,
-            submit,
+            form,
             attachments,
             sources.second,
             values,
@@ -304,7 +306,7 @@ fun ComponentTree(
         )
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         doc.components.forEach { ComponentNode(scope, it) }
-        if (submit)
+        if (form)
             Button(app.t("apps.submit"), !busy && app.env.online, primary = true) { invoke("submit", null, null) }
         if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
     }
@@ -587,6 +589,14 @@ private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
 }
 
 /** ボタン・select・入力欄・ピッカー。`labelled` は Label の中（送信でまとめて送る）。 */
+/** 木のどこか（container・grid・section など）に Label があるか */
+internal fun hasLabel(node: JsonElement): Boolean =
+    when (node) {
+        is JsonArray -> node.any(::hasLabel)
+        is JsonObject -> componentType(node) == CT.LABEL || node.values.any(::hasLabel)
+        else -> false
+    }
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean = false) {
@@ -595,6 +605,9 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
     val type = componentType(c)
     val enabled = !c.cFlag("disabled") && !scope.busy && scope.appId != null && app.env.online
     val deferred = labelled || scope.submit
+    // 送信でまとめて送る欄は、送信中も入力を続けられるようにする。アプリが指定した disabled と、
+    // 送り先のアプリがないことは、どこでも無効にする（Web の ComponentTree と同じ）
+    val editable = if (deferred) !c.cFlag("disabled") && scope.appId != null else enabled
     var confirming by remember { mutableStateOf<(() -> Unit)?>(null) }
     val confirm = c.cObj("confirm")
     fun run(action: () -> Unit) {
@@ -646,7 +659,7 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
         CT.STRING_SELECT,
         CT.OVERFLOW -> {
             val many = type == CT.STRING_SELECT && (c.cInt("max_values") ?: 1) > 1
-            if (many) CheckList(scope, id, options, enabled || deferred) { choose(it) }
+            if (many) CheckList(scope, id, options, editable) { choose(it) }
             else {
                 val current = (scope.values[id] as? JsonArray)?.firstOrNull()?.let { (it as? JsonPrimitive)?.content }
                     ?: (scope.values[id] as? JsonPrimitive)?.content.orEmpty()
@@ -654,7 +667,7 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
                     c.cStr("placeholder").ifEmpty { if (type == CT.OVERFLOW) "…" else app.t("apps.components.choose") },
                     options.firstOrNull { it.cStr("value") == current }?.cStr("label").orEmpty(),
                     options.map { it.cStr("label") },
-                    enabled || deferred,
+                    editable,
                 ) { label ->
                     val value = options.firstOrNull { it.cStr("label") == label }?.cStr("value") ?: return@SelectField
                     choose(if (type == CT.OVERFLOW) JsonPrimitive(value) else JsonArray(listOf(JsonPrimitive(value))))
@@ -665,7 +678,7 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
             Column {
                 options.forEach { o ->
                     Row(
-                        Modifier.clickable(enabled = enabled || deferred) { choose(JsonPrimitive(o.cStr("value"))) },
+                        Modifier.clickable(enabled = editable) { choose(JsonPrimitive(o.cStr("value"))) },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton((scope.values[id] as? JsonPrimitive)?.content == o.cStr("value"), null)
@@ -673,15 +686,16 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
                     }
                 }
             }
-        CT.CHECKBOX_GROUP -> CheckList(scope, id, options, enabled || deferred) { choose(it) }
+        CT.CHECKBOX_GROUP -> CheckList(scope, id, options, editable) { choose(it) }
         CT.CHECKBOX ->
-            Checkbox((scope.values[id] as? JsonPrimitive)?.booleanOrNull == true, { choose(JsonPrimitive(it)) }, enabled = enabled || deferred)
+            Checkbox((scope.values[id] as? JsonPrimitive)?.booleanOrNull == true, { choose(JsonPrimitive(it)) }, enabled = editable)
         CT.TEXT_INPUT -> {
             val current = (scope.values[id] as? JsonPrimitive)?.content.orEmpty()
             Field(
                 current,
                 c.cStr("placeholder").ifEmpty { c.cStr("label") },
                 singleLine = c.cInt("style") != 2 && c.cStr("format") != "rich",
+                readOnly = !editable,
                 showLabel = false,
             ) {
                 scope.set(id, JsonPrimitive(it.take(c.cInt("max_length") ?: 4000)))
@@ -700,7 +714,7 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
             var text by remember(id) { mutableStateOf((scope.values[id] as? JsonPrimitive)?.content.orEmpty()) }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.width(160.dp)) {
-                    Field(text, c.cStr("placeholder").ifEmpty { hint }, showLabel = false) {
+                    Field(text, c.cStr("placeholder").ifEmpty { hint }, readOnly = !editable, showLabel = false) {
                         text = it.take(32)
                         scope.set(id, JsonPrimitive(text))
                     }
@@ -711,8 +725,8 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
         CT.USER_SELECT,
         CT.CHANNEL_SELECT,
         CT.MENTIONABLE_SELECT,
-        CT.ROLE_SELECT -> EntitySelect(scope, c, enabled || deferred) { choose(it) }
-        CT.EXTERNAL_SELECT -> ExternalSelect(scope, c, enabled || deferred) { choose(it) }
+        CT.ROLE_SELECT -> EntitySelect(scope, c, editable) { choose(it) }
+        CT.EXTERNAL_SELECT -> ExternalSelect(scope, c, editable) { choose(it) }
         CT.FILE_UPLOAD -> Small(app.t("apps.components.webOnly"))
     }
 }
