@@ -37,6 +37,7 @@ import zoo.*
 import zoo.phone.LocalPhoneController
 import zoo.phone.PhoneCallBanner
 import zoo.android.phone.AndroidPhoneHost
+import zoo.android.phone.PhonePermissionRequest
 import zoo.android.update.AndroidUpdateFrame
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
@@ -79,16 +80,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private var phonePermissionResult: CompletableDeferred<Boolean>? = null
-    private val phonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> phonePermissionResult?.complete(granted); phonePermissionResult = null }
+    private val phonePermissionRequest = PhonePermissionRequest()
+    private val phonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> phonePermissionRequest.complete(granted) }
     private suspend fun preparePhone() {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
         check(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-        val existing = phonePermissionResult
-        if (existing != null) { check(existing.await()); return }
-        val result = CompletableDeferred<Boolean>(); phonePermissionResult = result
-        try { phonePermission.launch(android.Manifest.permission.RECORD_AUDIO); check(result.await()) }
-        finally { if (phonePermissionResult === result) phonePermissionResult = null }
+        phonePermissionRequest.await { phonePermission.launch(android.Manifest.permission.RECORD_AUDIO) }
     }
 
     private var fileResult: CompletableDeferred<List<Uri>>? = null
