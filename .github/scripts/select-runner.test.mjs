@@ -22,6 +22,9 @@ const privateRepo = {repository: {private: true}};
 const privateRepos = [{name: 'AuthZ'}, {name: 'repo'}];
 
 const cases = [
+  ['public bypasses self-hosted and billing APIs', {payload: {repository: {private: false}}, runners: [camp()], error: true, billingError: true}, H, H],
+  ['public without status token is hosted', {payload: {repository: {private: false}}, token: false}, H, H],
+  ['merge group is hosted even with exhausted minutes', {event: 'merge_group', payload: privateRepo, usage: [usage('repo', 2000)]}, H, H],
   ['kubecamp first', {runners: [camp(), arc()]}, K, H],
   ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H],
   ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H],
@@ -30,10 +33,10 @@ const cases = [
   ['kubecamp label matches another name', {runners: [camp({name: 'another'})]}, K, H],
   ['missing labels are safe', {runners: [camp({labels: undefined})]}, H, H],
   ['API error keeps kubecamp', {error: true}, K, H],
-  ['missing token keeps kubecamp', {token: false}, K, H],
+  ['private missing token keeps kubecamp and ARC', {token: false}, K, A],
   ['fork PR is hosted', {event: 'pull_request', payload: pull('someone/repo')}, H, H],
-  ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
-  ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
+  ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: true}}, runners: [camp()]}, K, H],
+  ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: true}}, runners: [camp()]}, K, H],
   ['private within included minutes uses hosted', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 899)]}, H, H],
   ['private out of minutes uses ARC', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 900)]}, A, A],
   ['private out of minutes still prefers kubecamp', {payload: privateRepo, runners: [camp()], usage: [usage('AuthZ', 1900)]}, K, A],
@@ -51,7 +54,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
     const outputs = {};
     const calls = {runners: 0, repos: 0, billing: 0};
     const warnings = [];
-    const payload = input.payload || {repository: {private: false}};
+    const payload = input.payload || privateRepo;
     const fork = input.event === 'pull_request' && payload.pull_request.head.repo.full_name !== 'Zli-UoA/repo';
     process.env.HAS_STATUS_TOKEN = String(input.token !== false);
     const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
@@ -79,9 +82,10 @@ for (const [name, input, expected, hostedExpected] of cases) {
         return {data: {usageItems: input.usage || []}};
       }});
     assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
-    const checksMinutes = !fork && input.token !== false && payload.repository?.private !== false;
+    const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
+    const checksMinutes = !hostedOnly && input.token !== false;
     assert.deepEqual(calls, {
-      runners: fork || input.token === false ? 0 : 1,
+      runners: hostedOnly || input.token === false ? 0 : 1,
       repos: checksMinutes ? 1 : 0,
       billing: checksMinutes && !input.reposError ? 1 : 0,
     });
@@ -90,7 +94,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
   });
 }
 
-const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "ci-frontend.yaml": ["unit-test"], "automerge-gate.yaml": ["gate"]};
+const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
@@ -187,6 +191,7 @@ test('Kotlin build workflows keep hosted builds independent of runner selection'
 });
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);
+  assert.match(yaml, /runs-on:.*github\.event\.repository\.private == false.*&& 'ubuntu-latest' \|\| vars\.CI_SELECTOR_RUNNER/);
   assert.doesNotMatch(script, /arc\.length\s*</);
 });
 

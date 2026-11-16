@@ -1,14 +1,10 @@
 # CI のRunner選択
 
-軽量ジョブはkubecamp固定です。空き状況による切り替えを残すDocker不要ジョブは、**kubecamp → GitHub-hosted → zli-k8s** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブとkubecampのメモリに収まらないジョブは、kubecampを飛ばして **GitHub-hosted → zli-k8s** の順に選びます。zli-k8sのDinDはzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていたので、zli-k8sは最後の受け皿です。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。
+自動選択を使うジョブは、publicリポジトリでは **GitHub-hostedを優先**します。標準Runnerは無料で分数の上限がないため、kubecampの空きを調べるAPIや課金APIは呼びません。選択時に空きがあってもRunnerは予約されず、複数workflowの後続ジョブが同じkubecampへ集中して待つことがあるためです。フロントのWasm生成と単体テストもこの選択に従います。
 
-zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で、分数の上限もありません。zli-k8sへ進むのは、privateリポジトリでGitHub Freeの無料枠（月2,000分）を使い切りそうな場合だけです。AuthZとzoo2-infraも同じ判定を使います。
+privateリポジトリと公開範囲が不明な場合は、Docker不要ジョブを **kubecamp → GitHub-hosted → zli-k8s** の順に選びます。Docker必須ジョブと2GiBを超える大容量ジョブは **GitHub-hosted → zli-k8s** の順です。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCは `zli-k8s` です。kubecampはPodSecurityでprivilegedを許可せず、DinDを置けません。zli-k8sのDinDはクラスタのetcdと同じディスクへの書き込みでAPI停止の原因になっていたため、最後の受け皿です。
 
-自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は同じ値を返します。backend の `check`（format・Clippy・ビルド・単体テスト）は、Rust のビルド・リンク中に2GiBのRunnerを圧迫しないよう、`large-runs-on` を使います。次の条件で選びます。
-
-1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
-2. kubecampが不在または全台busyなら、GitHub-hostedを選びます。Docker必須ジョブと大容量ジョブは常にここから選びます。
-3. GitHub-hostedを使えないと判断した場合だけ、zli-k8sを選びます。ARCの空きは見ず、zli-k8sのキューで順番を待ちます。
+`runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は同じ値です。privateではonlineかつidleのkubecampをDocker不要ジョブに使い、不在・全台busyの場合はHostedの無料枠を確認した結果に従います。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
@@ -18,15 +14,15 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 ## 判定ジョブの実行先
 
-判定前にはRunnerの状態が分からないため、判定ジョブ自身の実行先は固定です。Actions variableの `CI_SELECTOR_RUNNER`、既存の `CI_RUNNER`、GitHub-hostedの順で指定値を使います。**CI_RUNNERは判定をスキップする指定ではなく、判定ジョブの起動先に変更しました。** 本体ジョブの優先順位は上記の順になります。
+public・fork PR・merge_groupでは、判定ジョブ自身もGitHub-hostedに固定し、`CI_SELECTOR_RUNNER` や `CI_RUNNER` で指定したself-hosted Runnerの待ちを避けます。privateではActions variableの `CI_SELECTOR_RUNNER`、既存の `CI_RUNNER`、GitHub-hostedの順で判定ジョブの実行先を選びます。これらの変数は本体ジョブの優先順位を変更しません。
 
-例えば既存の `CI_RUNNER=zli-k8s` を維持すると、判定だけをARCで行い、本体は空いているkubecampへ送れます。未設定なら判定はGitHub-hostedで行います。判定ジョブが起動待ちになると、後続も待ちます。`timeout-minutes` はキュー待ちには効きません。判定を含む厳密な自動fallbackを行う構成ではありません。
+privateで判定ジョブが起動待ちになると後続も待ちます。`timeout-minutes` はキュー待ちには効きません。判定を含む厳密な自動fallbackを行う構成ではありません。
 
 ## 状態確認用の認証
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。privateリポジトリで無料枠を判定するには、さらにOrganization permissionsのAdministration: Read-only（Billing API用。発行者はorg ownerかbilling manager）と、Repository accessのAll repositories（privateリポジトリ一覧の取得用）が必要です。判定ジョブ以外には渡しません。
 
-トークン不足・API障害でkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。Docker必須ジョブと大容量ジョブは、publicリポジトリなら通常どおりGitHub-hostedで実行します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
+publicでは状態確認用トークンがなくても全選択出力がGitHub-hostedになります。privateでトークン不足・API障害によりkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 
@@ -36,7 +32,7 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 ## 選択のタイミングと検証
 
-選択はworkflowの判定時点で行い、空きの予約はしません。複数ジョブが同時に同じpoolを選ぶことがあります。後続が実行されるまでの状態変化や、選択後のpool停止で別poolへ自動再投入はしません。必要な場合は実行をキャンセルしてRe-run all jobsで選び直します。テスト失敗を別Runnerで再試行して隠すことはしません。
+privateでの空き状況の選択はworkflowの判定時点で行い、空きの予約はしません。複数ジョブが同時に同じpoolを選ぶことがあります。後続が実行されるまでの状態変化や、選択後のpool停止で別poolへ自動再投入はしません。必要な場合は実行をキャンセルしてRe-run all jobsで選び直します。テスト失敗を別Runnerで再試行して隠すことはしません。
 
 kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のCronJobで行うため、終了から次の起動まで空白があります。1台のlimitはCPU1コア・メモリ2Giなので、ビルドやブラウザー検証では時間・メモリ不足を別途確認します。
 
@@ -52,7 +48,7 @@ frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶�
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
 
-固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend単体テスト、Storybook deploy、automerge gate。backendの `check` とfrontendの `check`・`build`・`browser-test` は大容量用を使い、それ以外のRust build/lint/単体テストは通常の空き状況選択を残す。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、Storybook deploy、automerge gate。backendの `check` とfrontendの `check`・`build`・`browser-test` は大容量用を使い、frontend単体テストと、それ以外のRust build/lint/単体テストは共有selectorを使う（publicはHosted優先、privateは空き状況と無料枠で選択）。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
 
 状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。
 

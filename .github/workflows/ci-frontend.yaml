@@ -429,8 +429,8 @@ jobs:
         run: pnpm build
 
   unit-test:
-    needs: crypto-wasm
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    needs: [runner, crypto-wasm]
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
       run:
         working-directory: ./frontend
