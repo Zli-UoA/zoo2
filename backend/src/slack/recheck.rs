@@ -47,6 +47,7 @@ fn now_secs() -> u64 {
 /// もう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。ただし 429 は、`Retry-After` を守るため、そのまま返し、
 /// 再確認は、待ちより 5 分あとに回す (待ちのあとに、通常の同期が先に行える)
 /// (この回の通常の同期は、待ちのあと)。リースを失ったときも、そのまま返す
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run(
     slack: &mut Slack,
     ctx: &mut Context,
@@ -111,6 +112,7 @@ pub(super) async fn run(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_inner(
     slack: &mut Slack,
     ctx: &mut Context,
@@ -329,6 +331,7 @@ fn collect_chunk_users(chunk: &[SlackMessage], state: &ChunkState) -> Vec<String
 }
 
 /// 取り直した投稿のうち、すでに Zoo にあるものに、編集・リアクションの追加・tombstone の削除を反映する
+#[allow(clippy::too_many_arguments)]
 async fn apply_chunk(
     ctx: &mut Context,
     team: &str,

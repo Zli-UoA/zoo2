@@ -55,6 +55,7 @@ fn text(row: &Value, key: &str) -> String {
     row[key].as_str().unwrap_or_default().to_string()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn process(
     slack: &mut Slack,
     ctx: &mut Context,

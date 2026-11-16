@@ -1226,6 +1226,17 @@ async fn test_recheck_rejects_a_private_slack_channel_whose_zoo_target_became_pu
     let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
     assert!(ran);
     assert_eq!(row(&f, &msg_id).await["content"], "before");
+    let rechecked_rows = sql(
+        &f.state,
+        "SELECT json_build_object('old',rechecked_at < now()-interval '20 minutes')::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert_eq!(
+        rechecked_rows[0]["old"], true,
+        "recheck::run must record the failed recheck: {rechecked_rows:?}"
+    );
     let sync_rows = sql(
         &f.state,
         "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",

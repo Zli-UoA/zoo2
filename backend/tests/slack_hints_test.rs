@@ -1581,6 +1581,17 @@ async fn test_hints_rejects_a_private_slack_channel_whose_zoo_target_became_publ
     let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
     assert!(ran);
     assert_eq!(message_row(&f, &ts).await["content"], "new post");
+    let hint_rows = sql(
+        &f.state,
+        "SELECT json_build_object('attempts',attempts)::text FROM slack_message_hints \
+         WHERE team_id=$1 AND slack_channel_id='C1' AND message_ts=$2",
+        &[&f.team, &ts],
+    )
+    .await?;
+    assert_eq!(
+        hint_rows[0]["attempts"], 1,
+        "hints::apply must fail before consuming the hint: {hint_rows:?}"
+    );
     let sync_rows = sql(
         &f.state,
         "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
