@@ -62,7 +62,13 @@ export async function pullRequestWorkflows(github, repo, pr, localWorkflows = []
   let files;
   try {
     ({ data: files } = await github.rest.repos.getContent({ ...repo, path: '.github/workflows', ref }));
-  } catch (error) { if (error.status === 404) return []; throw error; }
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    // Missing paths and unresolved refs both return 404. Only an existing
+    // commit may establish that the workflow directory was actually removed.
+    await github.rest.repos.getCommit({ ...repo, ref });
+    return [];
+  }
   if (!Array.isArray(files)) throw new Error('Expected workflow directory');
   const local = new Map(localWorkflows.map(w => [basename(w.path), w.source]));
   return Promise.all(files.filter(f => f.type === 'file' && /\.ya?ml$/.test(f.name)).map(async file => {

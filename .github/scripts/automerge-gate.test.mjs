@@ -157,6 +157,26 @@ test('manual and workflow/review relay events resolve to the same PR identifier'
   assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { head_sha: 'c'.repeat(40), pull_requests: [{ number: 7 }] } } } }), []);
 });
 
+test('missing workflow directory is empty only after the merge ref is verified', async () => {
+  const ref = 'f'.repeat(40);
+  let unresolved = true;
+  const github = { rest: { repos: {
+    getContent: async () => { throw Object.assign(new Error('Not found'), { status: 404 }); },
+    getCommit: async params => {
+      assert.equal(params.ref, ref);
+      if (unresolved) throw Object.assign(new Error('Unknown merge ref'), { status: 404 });
+      return { data: { sha: ref } };
+    },
+  } } };
+  await assert.rejects(pullRequestWorkflows(github, {}, { merge_commit_sha: ref }), /Unknown merge ref/);
+  const f = fixture();
+  f.loadWorkflows = () => pullRequestWorkflows(github, {}, { merge_commit_sha: ref });
+  await assert.rejects(evaluatePullRequest(f), /Unknown merge ref/);
+  assert.ok(f.writes.every(write => write.state === 'pending'));
+  unresolved = false;
+  assert.deepEqual(await pullRequestWorkflows(github, {}, { merge_commit_sha: ref }), []);
+});
+
 test('fork review relay without linked PRs re-evaluates current reviews after a head change', async () => {
   const pr = { number: 7, state: 'open', head: { sha: 'a'.repeat(40) } };
   const github = { rest: { pulls: { get: async () => ({ data: pr }) }, repos: { listPullRequestsAssociatedWithCommit: 'associated' } },
