@@ -1,0 +1,67 @@
+package zoo
+
+import kotlin.test.*
+
+class MfmParserTest {
+    @Test
+    fun bracketsInLiteralRegionsAndLinksDoNotCloseFunctions() {
+        for (body in listOf("`a]b`", "<plain>a]b</plain>", "\\(a]b\\)", "[docs](https://example.test/a_(b))", "$[fg.color=fff inner]")) {
+            val source = "$[spin $body tail]"
+            assertEquals(listOf(source to true), richSegments(source), body)
+            assertEquals(listOf(Inline(source, "effect")), parseInline(source), body)
+        }
+    }
+
+    @Test
+    fun formattingRetainsEmbeddedFunctionsAsChildren() {
+        val outer = parseInline("**before $[spin inner] after**").single()
+        assertEquals("bold", outer.kind)
+        assertEquals(listOf("text", "effect", "text"), parseInline(outer.value).map { it.kind })
+        assertEquals("`x*y` tail", parseInline("*`x*y` tail*").single().value)
+        assertEquals("outer **inner** end", parseInline("*outer **inner** end*").single().value)
+        val nested = "outer $[fg.color=fff **inner**] end"
+        assertEquals(Inline(nested, "bold"), parseInline("**$nested**").single())
+    }
+
+    @Test
+    fun escapedSyntaxAndCodeRemainLiteral() {
+        assertEquals(listOf(Inline("$[spin literal]")), parseInline("\\$[spin literal]"))
+        assertEquals(listOf("\\$[spin literal]" to false), richSegments("\\$[spin literal]"))
+        assertEquals(listOf(Inline("**bold**", "code")), parseInline("`**bold**`"))
+        assertEquals(listOf(Inline("@alice $[spin x]", "plain")), parseInline("<plain>@alice $[spin x]</plain>"))
+        assertEquals(listOf(Inline("a*b", "code")), parseInline("`a*b`"))
+        assertEquals(listOf(Inline("foo_bar_baz")), parseInline("foo_bar_baz"))
+    }
+
+    @Test
+    fun linksKeepBalancedParenthesesAndConsumeSilentPrefix() {
+        val url = "https://example.test/a_(b)"
+        assertEquals(listOf(Inline("docs", "link", url)), parseInline("?[docs]($url)"))
+        assertFalse(parseInline("[bad](javascript:alert(1))").any { it.url != null })
+        assertEquals(listOf(Inline("mail@example.test")), parseInline("mail@example.test"))
+    }
+
+    @Test
+    fun onlyEmbeddedRegionsBecomeBlocksAndCentersBalance() {
+        val source = "<center>one <center>two</center> three</center>"
+        assertEquals(listOf(source to true), richSegments(source))
+        assertEquals(listOf("> ordinary" to true), richSegments("> ordinary"))
+        assertEquals(listOf("text > ordinary" to false), richSegments("text > ordinary"))
+        assertEquals(listOf("<center>unclosed" to false), richSegments("<center>unclosed"))
+    }
+
+    @Test
+    fun nestedTagsKeepTheirOwnClosingTags() {
+        val token = parseInline("<b>one <b>two</b> three</b>").single()
+        assertEquals(Inline("one <b>two</b> three", "bold"), token)
+        assertEquals(listOf("text", "bold", "text"), parseInline(token.value).map { it.kind })
+    }
+
+    @Test
+    fun malformedInputPreservesSource() {
+        for (source in listOf("$[spin unclosed", "<plain>unclosed", "`unclosed", "**unclosed")) {
+            assertEquals(source, richSegments(source).joinToString("") { it.first })
+            assertEquals(source, parseInline(source).joinToString("") { it.value })
+        }
+    }
+}

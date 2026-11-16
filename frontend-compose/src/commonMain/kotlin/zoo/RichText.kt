@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
@@ -24,91 +25,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import zoo_compose.generated.resources.Res
-
-/** Pure Kotlin inline scanner. Delimiters inside code remain literal. */
-data class Inline(val value: String, val kind: String = "text", val url: String? = null)
-
-private val inlinePattern =
-        Regex(
-            "(`[^`\\n]+`|<small>[\\s\\S]*?</small>|<plain>[\\s\\S]*?</plain>|\\*\\*[^*]+\\*\\*|~~[^~]+~~|<b>[\\s\\S]*?</b>|<i>[\\s\\S]*?</i>|\\*[^*\\n]+\\*|\\[[^]\\n]+]\\(https?://[^)\\s]+\\)|https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:)"
-        )
-
-fun parseInline(source: String): List<Inline> {
-    val out = mutableListOf<Inline>()
-    var end = 0
-    inlinePattern.findAll(source).forEach { match ->
-        if (match.range.first > end) out += Inline(source.substring(end, match.range.first))
-        val s = match.value
-        out +=
-            when {
-                s.startsWith('`') -> Inline(s.drop(1).dropLast(1), "code")
-                s.startsWith("<plain>") -> Inline(s.drop(7).dropLast(8), "plain")
-                s.startsWith("<small>") -> Inline(s.drop(7).dropLast(8), "small")
-                s.startsWith("**") -> Inline(s.drop(2).dropLast(2), "bold")
-                s.startsWith("<b>") -> Inline(s.drop(3).dropLast(4), "bold")
-                s.startsWith("<i>") -> Inline(s.drop(3).dropLast(4), "italic")
-                s.startsWith("~~") -> Inline(s.drop(2).dropLast(2), "strike")
-                s.startsWith('*') -> Inline(s.drop(1).dropLast(1), "italic")
-                s.startsWith('[') ->
-                    Inline(
-                        s.substringAfter('[').substringBefore(']'),
-                        "link",
-                        s.substringAfter("](").dropLast(1),
-                    )
-                s.startsWith("http") -> Inline(s, "link", s)
-                s.startsWith(":@") -> Inline(s, "accountEmoji")
-                s.startsWith('@') -> Inline(s, "mention")
-                s.startsWith('#') -> Inline(s, "hashtag")
-                s.startsWith(':') -> Inline(s, "emoji")
-                else -> Inline(s)
-            }
-        end = match.range.last + 1
-    }
-    if (end < source.length) out += Inline(source.substring(end))
-    return out
-}
-
-data class MessageHeadingBlock(val content: String, val level: Int? = null)
-
-/** Heading markers only belong to root text, never to code or an MFM subtree. */
-fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
-    val protectedRanges = BooleanArray(content.length)
-    var cursor = 0
-    richSegments(content).forEach { (text, embedded) ->
-        if (embedded) for (index in cursor until cursor + text.length) protectedRanges[index] = true
-        cursor += text.length
-    }
-    val blocks = mutableListOf<MessageHeadingBlock>()
-    val pending = mutableListOf<String>()
-    fun flush() {
-        if (pending.isNotEmpty()) {
-            val text = pending.joinToString("\n")
-            if (text.isNotEmpty()) blocks += MessageHeadingBlock(text)
-            pending.clear()
-        }
-    }
-    var offset = 0
-    content.lines().forEach { line ->
-        val marker = Regex("^ {0,3}(#{1,6})[ \t]+").find(line)
-        val source = line.substring(marker?.value?.length ?: 0)
-        if (
-            marker != null &&
-                source.isNotBlank() &&
-                protectedRanges.getOrNull(offset + marker.value.indexOf('#')) != true &&
-                !Regex("^([^\n]+) (検索|Search)$").matches(line)
-        ) {
-            flush()
-            blocks +=
-                MessageHeadingBlock(
-                    source.replace(Regex("[ \t]+#+[ \t]*$"), "").trimEnd(),
-                    marker.groupValues[1].length,
-                )
-        } else pending += line
-        offset += line.length + 1
-    }
-    flush()
-    return blocks
-}
 
 @Composable
 private fun RichSelection(enabled: Boolean, content: @Composable () -> Unit) {
@@ -202,15 +118,16 @@ fun RichText(
     }
     val shortcodes = app.standardShortcodes ?: fallbackShortcodes
     RichSelection(selection) {
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.fillMaxWidth().clipToBounds(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             val inline = mutableListOf<Pair<String, Boolean>>()
             segments.forEach { segment ->
                 val text = segment.first
                 val block =
-                    text.startsWith("```") ||
-                        text.startsWith("\\[") ||
-                        text.startsWith("<center>") ||
-                        text.startsWith(">")
+                    segment.second &&
+                        (text.startsWith("```") ||
+                            text.startsWith("\\[") ||
+                            text.startsWith("<center>") ||
+                            text.startsWith(">"))
                 if (block) {
                     if (inline.isNotEmpty()) {
                         InlineParagraph(inline.toList(), users, shortcodes, depth)
@@ -264,11 +181,14 @@ private suspend fun loadShortcodes(): Row = shortcodeLock.withLock {
     ).jsonObject.also { loadedShortcodes = it }
 }
 
+private data class EmbeddedMfm(val source: String, val style: SpanStyle)
+
 private data class CachedParagraph(
     val text: AnnotatedString,
     val mentions: Map<String, String>,
     val emojiParts: Map<String, Row>,
     val accountParts: Map<String, Row>,
+    val embeddedParts: Map<String, EmbeddedMfm>,
 )
 
 @Composable
@@ -291,11 +211,6 @@ private fun InlineParagraph(
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
     val sizes = remember(segments) { mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>() }
-    val embedded = remember(segments) {
-        segments.mapIndexedNotNull { index, segment ->
-            if (segment.second) index.toString() to segment.first else null
-        }.toMap()
-    }
     val joined = LocalJoinedEmojis.current
     val workspace = if (joined == null) workspaceEmojis(app) else emptyList()
     val registeredEmojis = remember(joined, workspace) {
@@ -315,14 +230,25 @@ private fun InlineParagraph(
         val mentions = mutableMapOf<String, String>()
         val emojiParts = mutableMapOf<String, Row>()
         val accountParts = mutableMapOf<String, Row>()
+        val embeddedParts = mutableMapOf<String, EmbeddedMfm>()
         val text = buildAnnotatedString {
             fun write(
                 source: String,
                 level: Int = 0,
                 inheritedWeight: FontWeight? = inheritedStyle.fontWeight,
+                inheritedSpan: SpanStyle = inheritedStyle.toSpanStyle(),
             ) {
                 parseInline(source).forEach { token ->
                     var value = token.value
+                    if (token.kind in setOf("effect", "math")) {
+                        val id = "embedded-${embeddedParts.size}"
+                        embeddedParts[id] = EmbeddedMfm(
+                            if (token.kind == "math") "\\($value\\)" else value,
+                            inheritedSpan,
+                        )
+                        appendInlineContent(id, value)
+                        return@forEach
+                    }
                     if (token.kind == "accountEmoji") {
                         val account = authzAccounts.find { it.text("username") == value.removePrefix(":@").removeSuffix(":") }
                         if (account != null) {
@@ -408,29 +334,27 @@ private fun InlineParagraph(
                     else
                         withStyle(style) {
                             if (token.kind in setOf("bold", "italic", "strike", "small") && level < 8)
-                                write(value, level + 1, inlineWeight)
+                                write(value, level + 1, inlineWeight, inheritedSpan.merge(style))
                             else if (token.kind == "code") append(value)
                             else append(fontText(value, fonts, inlineWeight))
                         }
                 }
             }
-            segments.forEachIndexed { index, segment ->
-                if (segment.second) appendInlineContent(index.toString(), segment.first)
-                else write(segment.first)
-            }
+            write(segments.joinToString("") { it.first })
             if (editedAt != null) {
                 append(" ")
                 appendInlineContent("edited", " ")
             }
         }
-        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap())
+        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap(), embeddedParts.toMap())
     }
     val text = paragraph.text
     val mentions = paragraph.mentions
     val emojiParts = paragraph.emojiParts
     val accountParts = paragraph.accountParts
     val content =
-        embedded.mapValues { (id, source) ->
+        paragraph.embeddedParts.mapValues { (id, embedded) ->
+            val source = embedded.source
             val measured = sizes[id]
             val width =
                 measured?.let { with(density) { it.width.toSp() } }
@@ -443,10 +367,13 @@ private fun InlineParagraph(
                     Modifier.wrapContentSize(unbounded = true)
                         .then(Modifier.onSizeChanged { sizes[id] = it })
                 ) {
-                    if (source.startsWith("$["))
-                        MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
-                    else if (source.startsWith("<plain>")) Text(source.drop(7).dropLast(8))
-                    else MathInline(source.drop(2).dropLast(2))
+                    CompositionLocalProvider(
+                        LocalMfmStyle provides inheritedStyle.merge(embedded.style)
+                    ) {
+                        if (source.startsWith("$["))
+                            MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
+                        else MathInline(source.drop(2).dropLast(2))
+                    }
                 }
             }
         }
@@ -1040,76 +967,6 @@ fun EmojiPicker(
                 ),
             content = content,
         )
-}
-
-/** Find balanced MFM functions without swallowing nested closing brackets. */
-fun richSegments(source: String): List<Pair<String, Boolean>> {
-    val result = mutableListOf<Pair<String, Boolean>>()
-    var at = 0
-    var plain = 0
-    while (at < source.length) {
-        if (source[at] == '`' && !source.startsWith("```", at)) {
-            val end = source.indexOf('`', at + 1)
-            val newline = source.indexOf('\n', at + 1).let { if (it < 0) source.length else it }
-            if (end >= 0 && end < newline) {
-                at = end + 1
-                continue
-            }
-        }
-        if ((at == 0 || source[at - 1] == '\n') && source[at] == '>') {
-            var end = source.indexOf('\n', at).let { if (it < 0) source.length else it }
-            while (end < source.length && source.getOrNull(end + 1) == '>') end =
-                source.indexOf('\n', end + 1).let { if (it < 0) source.length else it }
-            if (at > plain) result += source.substring(plain, at) to false
-            result += source.substring(at, end) to true
-            at = end
-            plain = end
-            continue
-        }
-        val opener =
-            when {
-                source.startsWith("```", at) -> "```" to "```"
-                source.startsWith("<plain>", at) -> "<plain>" to "</plain>"
-                source.startsWith("\\[", at) -> "\\[" to "\\]"
-                source.startsWith("\\(", at) -> "\\(" to "\\)"
-                source.startsWith("<center>", at) -> "<center>" to "</center>"
-                source.startsWith("$[", at) -> "$[" to "]"
-                else -> null
-            }
-        if (opener == null) {
-            at++
-            continue
-        }
-        var end = -1
-        if (opener.first == "$[") {
-            var depth = 1
-            var cursor = at + 2
-            while (cursor < source.length && depth > 0) {
-                if (source.startsWith("$[", cursor)) {
-                    depth++
-                    cursor += 2
-                } else {
-                    if (source[cursor] == ']') depth--
-                    cursor++
-                }
-            }
-            if (depth == 0) end = cursor
-        } else
-            source
-                .indexOf(opener.second, at + opener.first.length)
-                .takeIf { it >= 0 }
-                ?.let { end = it + opener.second.length }
-        if (end < 0) {
-            at += opener.first.length
-            continue
-        }
-        if (at > plain) result += source.substring(plain, at) to false
-        result += source.substring(at, end) to true
-        at = end
-        plain = end
-    }
-    if (plain < source.length) result += source.substring(plain) to false
-    return result
 }
 
 /** Mirror the server-owned integration card envelope; invalid data keeps the original text. */

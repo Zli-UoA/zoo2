@@ -3,14 +3,18 @@ package zoo
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.*
@@ -22,7 +26,8 @@ private val LocalMfmScale = staticCompositionLocalOf { 1f }
 @Composable
 fun MfmEffect(source: String, users: List<Row>, depth: Int) {
     val app = LocalApp.current
-    val header = source.substringBefore(' ')
+    val separator = source.indexOfFirst { it.isWhitespace() }
+    val header = if (separator < 0) source else source.take(separator)
     val name = header.substringBefore('.')
     val known =
         setOf(
@@ -64,7 +69,7 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
             .split(',')
             .filter { it.isNotEmpty() }
             .associate { it.substringBefore('=') to it.substringAfter('=', "true") }
-    val text = source.substringAfter(' ', "")
+    val text = if (separator < 0) "" else source.substring(separator + 1)
     fun number(key: String, fallback: Float, min: Float = -100f, max: Float = 100f): Float =
         args[key]?.toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(min, max) ?: fallback
     fun color(key: String, fallback: Color): Color {
@@ -119,6 +124,7 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                 it.removeSuffix("ms")
                     .removeSuffix("s")
                     .toFloatOrNull()
+                    ?.takeIf(Float::isFinite)
                     ?.div(if (it.endsWith("ms")) 1000 else 1)
             }
             ?.coerceIn(.5f, 86400f) ?: fallback
@@ -153,6 +159,10 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                 .value
         else 0f
     val wave = sin(phase * 2 * PI).toFloat()
+    val blurInteraction = remember { MutableInteractionSource() }
+    val hovered by blurInteraction.collectIsHoveredAsState()
+    var focused by remember { mutableStateOf(false) }
+    var revealed by remember(source) { mutableStateOf(false) }
     var modifier: Modifier = Modifier
     modifier =
         when (name) {
@@ -197,7 +207,11 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                     (number("y", 0f, -2f, 2f) * 14).dp,
                 )
             "rotate" -> modifier.rotate(number("deg", 90f, -3600f, 3600f))
-            "blur" -> modifier.blur(6.dp)
+            "blur" -> modifier
+                .hoverable(blurInteraction)
+                .onFocusChanged { focused = it.isFocused }
+                .clickable(role = Role.Button) { revealed = !revealed }
+                .then(if (revealed || hovered || focused) Modifier else Modifier.blur(6.dp))
             "border" -> {
                 val radius = number("radius", 0f, 0f, 100f).dp
                 val borderColor =
@@ -263,7 +277,7 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
         }
     CompositionLocalProvider(
         LocalMfmStyle provides style,
-        LocalMfmScale provides cumulativeScale * scale,
+        LocalMfmScale provides cumulativeScale * scale.coerceAtLeast(1f),
     ) {
         Box(modifier) {
             when (name) {
