@@ -14,7 +14,7 @@ docker run -d --rm --name "$name" \
   -e POSTGRES_PASSWORD=erd -e POSTGRES_DB=erd postgres:16 >/dev/null
 ready=false
 for _ in $(seq 1 60); do
-  if docker exec "$name" pg_isready -U postgres -d erd -q; then
+  if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -d erd -q; then
     ready=true
     break
   fi

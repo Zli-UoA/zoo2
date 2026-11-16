@@ -18,7 +18,7 @@ npm run build
 
 ## 自動更新
 
-`cd-db-erd.yaml` はPRでビルドを検証し、mainのスキーマ・生成設定の更新でビルドとデプロイを実行します。`workflow_dispatch` によるmainからの再配信もできます。PRでは配信せず、生成物をActionsのartifactに保存します。ビルドとSecretを使う配信は別ジョブです。
+`cd-db-erd.yaml` はPRでビルドを検証し、mainのスキーマ・生成設定の更新でビルドとデプロイを実行します。`workflow_dispatch` によるmainからの再配信もできます。PRでは配信せず、生成物をActionsのartifactに保存します。ビルドとSecretを使う配信は別ジョブです。配信前に生成入力を現在のmainと比較し、入力が古いビルドは配信を省略します。対象外のコミットでmainが進んでも、生成入力が同じなら配信します。
 
 ## 初回の配備順序
 

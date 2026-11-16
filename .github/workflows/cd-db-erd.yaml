@@ -5,6 +5,7 @@ on:
     paths:
       - infra/db/schema.sql
       - docs/erd/**
+      - .github/scripts/erd-publish.test.mjs
       - .github/workflows/cd-db-erd.yaml
       - .github/workflows/select-runner.yaml
   push:
@@ -12,6 +13,7 @@ on:
     paths:
       - infra/db/schema.sql
       - docs/erd/**
+      - .github/scripts/erd-publish.test.mjs
       - .github/workflows/cd-db-erd.yaml
       - .github/workflows/select-runner.yaml
   workflow_dispatch:
@@ -38,6 +40,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: docs/erd/package-lock.json
+      - name: Test deployment freshness check
+        run: node --test .github/scripts/erd-publish.test.mjs
       - run: npm ci
         working-directory: docs/erd
       - run: npm run build
@@ -81,7 +85,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
-      - name: Check current main before publishing
+      - name: Check current ERD inputs before publishing
         id: current
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
@@ -89,9 +93,27 @@ jobs:
             const {data: branch} = await github.rest.repos.getBranch({
               ...context.repo, branch: 'main',
             });
-            const publish = branch.commit.sha === context.sha;
+            // Compare inputs at immutable refs; unrelated main commits must not drop an update.
+            const paths = [
+              'infra/db/schema.sql', 'docs/erd',
+              '.github/workflows/cd-db-erd.yaml', '.github/workflows/select-runner.yaml',
+            ];
+            const fingerprint = async (ref, path) => {
+              const {data} = await github.rest.repos.getContent({...context.repo, ref, path});
+              // Directory entries include subtree SHAs, covering nested files too.
+              return Array.isArray(data)
+                ? JSON.stringify(data.map(({name, sha}) => [name, sha]).sort())
+                : data.sha;
+            };
+            const matches = await Promise.all(paths.map(async path => {
+              const [built, current] = await Promise.all([
+                fingerprint(context.sha, path), fingerprint(branch.commit.sha, path),
+              ]);
+              return built === current;
+            }));
+            const publish = matches.every(Boolean);
             core.setOutput('publish', String(publish));
-            if (!publish) core.notice('Skipping outdated main build; run the workflow on current main.');
+            if (!publish) core.notice('Skipping build with outdated ERD inputs; the current main build owns the update.');
       - name: Deploy to Cloudflare Pages
         if: steps.current.outputs.publish == 'true'
         id: deploy
