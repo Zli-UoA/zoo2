@@ -25,7 +25,7 @@ use zoo2_client_core::{
     auth::{
         self,
         device::{self, Poller},
-        reauth::{LoopbackReauth, REAUTH_TIMEOUT, ReauthError},
+        reauth::{LoopbackReauth, REAUTH_HTTP_TIMEOUT, REAUTH_TIMEOUT, ReauthError},
         token::{self, StoredTokens, TokenManager},
     },
     config::{AuthConfig, Config, OidcConfig, config_dir_for},
@@ -966,7 +966,12 @@ impl Core {
             }
             let core = self.clone();
             let task = tokio::spawn(async move {
-                let discovery = auth::discover(&core.http, &oidc.issuer).await?;
+                let discovery = tokio::time::timeout(
+                    REAUTH_HTTP_TIMEOUT,
+                    auth::discover(&core.http, &oidc.issuer),
+                )
+                .await
+                .map_err(|_| ReauthError::Timeout)??;
                 let pending = LoopbackReauth::start(&discovery, &oidc).await?;
                 open_in_browser(&core.app, pending.url())?;
                 pending
@@ -977,7 +982,28 @@ impl Core {
             drop(inner);
             task
         };
+        let attempt = task.id();
         let result = task.await;
+        // 終わったタスクには `abort()` が効かないので、終わってからここに戻るまでの間に、新しい
+        // 再認証やセッションの終わりで取り消されていたら、結果を使わない。まだ今の試行なら、
+        // `reauth` から外す。
+        let current = {
+            let _inner = self.inner.lock().await;
+            let mut pending = self.reauth.lock().expect("reauth の lock");
+            let current = pending
+                .as_ref()
+                .is_some_and(|handle| handle.id() == attempt);
+            if current {
+                pending.take();
+            }
+            current
+        };
+        if !current && matches!(result, Ok(Ok(_))) {
+            return Err(IpcError::new(
+                ErrorCode::Cancelled,
+                "新しい再認証を始めたか、ログアウトしたので、取り消しました",
+            ));
+        }
         match result {
             Ok(Ok(id_token)) => {
                 crate::window::show_main(&self.app);
