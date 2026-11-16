@@ -3,7 +3,13 @@
   "stories": [
     {
       "file": "src/components/layout/OnboardingTour.stories.tsx",
-      "states": ["FirstVisit", "CompleteAndReplay", "Skip", "Mobile", "SlackSetup"]
+      "states": [
+        "FirstVisit",
+        "CompleteAndReplay",
+        "Skip",
+        "Mobile",
+        "SlackSetup"
+      ]
     },
     {
       "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
@@ -20,23 +26,51 @@
     },
     {
       "file": "src/components/ui/image-preview.stories.tsx",
-      "states": ["Loading", "WithoutMetadata", "InvalidHash", "Loaded"]
+      "states": [
+        "Loading",
+        "WithoutMetadata",
+        "InvalidHash",
+        "Loaded"
+      ]
     },
     {
       "file": "src/components/SyncStatus.stories.tsx",
-      "states": ["Proxy", "Direct", "Oidc"]
+      "states": [
+        "Proxy",
+        "Direct",
+        "Oidc"
+      ]
     },
     {
       "file": "src/components/call/CallInvitePicker.stories.tsx",
-      "states": ["SelectAndInvite", "LimitedSlots", "Full", "Nobody", "Failed", "Sending"]
+      "states": [
+        "SelectAndInvite",
+        "LimitedSlots",
+        "Full",
+        "Nobody",
+        "Failed",
+        "Sending"
+      ]
     },
     {
       "file": "src/components/call/IncomingCallCard.stories.tsx",
-      "states": ["DirectMessage", "ChannelInvite", "LongNames", "Busy", "Ended"]
+      "states": [
+        "DirectMessage",
+        "ChannelInvite",
+        "LongNames",
+        "Busy",
+        "Ended"
+      ]
     },
     {
       "file": "src/components/chat/AppBlocks.stories.tsx",
-      "states": ["Default", "Pending", "Failed", "InvalidBlocks", "Card"]
+      "states": [
+        "Default",
+        "Pending",
+        "Failed",
+        "InvalidBlocks",
+        "Card"
+      ]
     },
     {
       "file": "src/components/chat/AppConnections.stories.tsx",
@@ -51,15 +85,33 @@
     },
     {
       "file": "src/components/chat/AppConsent.stories.tsx",
-      "states": ["Default", "Loading", "LoadError", "InvalidRequest", "Mobile"]
+      "states": [
+        "Default",
+        "Loading",
+        "LoadError",
+        "InvalidRequest",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/chat/AppEncryptedChannelConsent.stories.tsx",
-      "states": ["Default", "Pending", "NotReady", "Unsupported", "Mobile"]
+      "states": [
+        "Default",
+        "Pending",
+        "NotReady",
+        "Unsupported",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/chat/EncryptChannelDialog.stories.tsx",
-      "states": ["Channel", "Dm", "Pending", "Blocked", "Mobile"]
+      "states": [
+        "Channel",
+        "Dm",
+        "Pending",
+        "Blocked",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/chat/AppsDialog.stories.tsx",
@@ -77,7 +129,11 @@
     },
     {
       "file": "src/components/chat/ChannelBrowserDialog.stories.tsx",
-      "states": ["Default", "SearchEmpty", "Closed"]
+      "states": [
+        "Default",
+        "SearchEmpty",
+        "Closed"
+      ]
     },
     {
       "file": "src/components/chat/ChannelHeader.stories.tsx",
@@ -129,15 +185,33 @@
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.stories.tsx",
-      "states": ["Default", "Empty", "Archived", "LoadError"]
+      "states": [
+        "Default",
+        "Empty",
+        "Archived",
+        "LoadError"
+      ]
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "Closed", "Encrypted"]
+      "states": [
+        "Default",
+        "Filled",
+        "Closed",
+        "Encrypted"
+      ]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
-      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar", "Encrypted"]
+      "states": [
+        "Default",
+        "Selected",
+        "SearchEmpty",
+        "Empty",
+        "Mobile",
+        "UserAvatar",
+        "Encrypted"
+      ]
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
@@ -166,15 +240,28 @@
     },
     {
       "file": "src/components/chat/MembersScreen.stories.tsx",
-      "states": ["Default", "PublicNotJoined"]
+      "states": [
+        "Default",
+        "PublicNotJoined"
+      ]
     },
     {
       "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
+      "states": [
+        "Default",
+        "AddCandidates",
+        "Archived",
+        "PrivateNotJoined",
+        "UserAvatar"
+      ]
     },
     {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
-      "states": ["Unread", "SingleUnread", "AllRead"]
+      "states": [
+        "Unread",
+        "SingleUnread",
+        "AllRead"
+      ]
     },
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
@@ -208,11 +295,18 @@
     },
     {
       "file": "src/components/chat/RenameChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "EmptyDescription"]
+      "states": [
+        "Default",
+        "Filled",
+        "EmptyDescription"
+      ]
     },
     {
       "file": "src/components/chat/WelcomePanel.stories.tsx",
-      "states": ["Default", "Mobile"]
+      "states": [
+        "Default",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/chat/messages/Composer.stories.tsx",
@@ -234,7 +328,13 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
-      "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
+      "states": [
+        "CachedOnReturn",
+        "Landscape",
+        "Portrait",
+        "TextOnly",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
@@ -327,7 +427,13 @@
     },
     {
       "file": "src/components/chat/messages/ReactionEmoji.stories.tsx",
-      "states": ["Unicode", "Kitchen", "KitchenLoading", "CustomMissing", "ConsistentSize"]
+      "states": [
+        "Unicode",
+        "Kitchen",
+        "KitchenLoading",
+        "CustomMissing",
+        "ConsistentSize"
+      ]
     },
     {
       "file": "src/components/chat/messages/ReactionPicker.stories.tsx",
@@ -369,7 +475,11 @@
     },
     {
       "file": "src/components/chat/messages/TypingIndicator.stories.tsx",
-      "states": ["Empty", "Single", "Multiple"]
+      "states": [
+        "Empty",
+        "Single",
+        "Multiple"
+      ]
     },
     {
       "file": "src/components/chat/notifications/NotificationCard.stories.tsx",
@@ -390,7 +500,11 @@
     },
     {
       "file": "src/components/i18n/LanguageToggle.stories.tsx",
-      "states": ["Default", "Open", "SelectControl"]
+      "states": [
+        "Default",
+        "Open",
+        "SelectControl"
+      ]
     },
     {
       "file": "src/components/layout/AppShell.stories.tsx",
@@ -417,11 +531,18 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile", "UserAvatar"]
+      "states": [
+        "Default",
+        "Mobile",
+        "UserAvatar"
+      ]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
-      "states": ["Default", "Mobile"]
+      "states": [
+        "Default",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/layout/SlackLinkPanel.stories.tsx",
@@ -500,15 +621,28 @@
     },
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
-      "states": ["Online", "Offline", "PersistenceError", "Mobile"]
+      "states": [
+        "Online",
+        "Offline",
+        "PersistenceError",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
-      "states": ["On", "TurnOff", "Off", "OlderApp"]
+      "states": [
+        "On",
+        "TurnOff",
+        "Off",
+        "OlderApp"
+      ]
     },
     {
       "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
-      "states": ["Available", "Mobile"]
+      "states": [
+        "Available",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -525,79 +659,153 @@
     },
     {
       "file": "src/components/theme/ModeToggle.stories.tsx",
-      "states": ["Default", "Dark", "KeyboardSelection", "Explanation"]
+      "states": [
+        "Default",
+        "Dark",
+        "KeyboardSelection",
+        "Explanation"
+      ]
     },
     {
       "file": "src/components/ui/alert-dialog.stories.tsx",
-      "states": ["Default", "Open"]
+      "states": [
+        "Default",
+        "Open"
+      ]
     },
     {
       "file": "src/components/ui/avatar.stories.tsx",
-      "states": ["Default", "Sizes", "Badge", "Group"]
+      "states": [
+        "Default",
+        "Sizes",
+        "Badge",
+        "Group"
+      ]
     },
     {
       "file": "src/components/ui/button.stories.tsx",
-      "states": ["Default", "Variants", "Sizes", "Disabled", "WithIcon", "DisabledDark"]
+      "states": [
+        "Default",
+        "Variants",
+        "Sizes",
+        "Disabled",
+        "WithIcon",
+        "DisabledDark"
+      ]
     },
     {
       "file": "src/components/ui/confirm-action-dialog.stories.tsx",
-      "states": ["Default", "Pending", "Failed"]
+      "states": [
+        "Default",
+        "Pending",
+        "Failed"
+      ]
     },
     {
       "file": "src/components/ui/control-panel.stories.tsx",
-      "states": ["Default", "LongDescription", "Mobile"]
+      "states": [
+        "Default",
+        "LongDescription",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/ui/dialog.stories.tsx",
-      "states": ["Default", "Open"]
+      "states": [
+        "Default",
+        "Open"
+      ]
     },
     {
       "file": "src/components/ui/dropdown-menu.stories.tsx",
-      "states": ["Default", "Open", "IconOnlyTrigger"]
+      "states": [
+        "Default",
+        "Open",
+        "IconOnlyTrigger"
+      ]
     },
     {
       "file": "src/components/ui/input.stories.tsx",
-      "states": ["Default", "Disabled", "Invalid", "LongValue", "KeyboardInput"]
+      "states": [
+        "Default",
+        "Disabled",
+        "Invalid",
+        "LongValue",
+        "KeyboardInput"
+      ]
     },
     {
       "file": "src/components/ui/scroll-area.stories.tsx",
-      "states": ["Overflow", "ShortContent"]
+      "states": [
+        "Overflow",
+        "ShortContent"
+      ]
     },
     {
       "file": "src/components/ui/skeleton.stories.tsx",
-      "states": ["Text", "Avatar"]
+      "states": [
+        "Text",
+        "Avatar"
+      ]
     },
     {
       "file": "src/components/ui/sonner.stories.tsx",
-      "states": ["Success"]
+      "states": [
+        "Success"
+      ]
     },
     {
       "file": "src/components/ui/textarea.stories.tsx",
-      "states": ["Default", "WithValue", "Disabled", "Invalid", "LongText"]
+      "states": [
+        "Default",
+        "WithValue",
+        "Disabled",
+        "Invalid",
+        "LongText"
+      ]
     },
     {
       "file": "src/components/ui/tokens.stories.tsx",
-      "states": ["Default", "Dark"]
+      "states": [
+        "Default",
+        "Dark"
+      ]
     },
     {
       "file": "src/components/ui/tooltip.stories.tsx",
-      "states": ["Default", "Open"]
+      "states": [
+        "Default",
+        "Open"
+      ]
     },
     {
       "file": "src/stories/app-submission.stories.tsx",
-      "states": ["RetryPreservesValues"]
+      "states": [
+        "RetryPreservesValues"
+      ]
     },
     {
       "file": "src/stories/workspace-members.stories.tsx",
-      "states": ["GrantAndRevoke", "RejectedLastAdmin"]
+      "states": [
+        "GrantAndRevoke",
+        "RejectedLastAdmin"
+      ]
     },
     {
       "file": "src/components/ui/collapsible-section.stories.tsx",
-      "states": ["Default", "Closed", "WithActions"]
+      "states": [
+        "Default",
+        "Closed",
+        "WithActions"
+      ]
     },
     {
       "file": "src/components/ui/select.stories.tsx",
-      "states": ["Default", "Disabled", "LongLabel"]
+      "states": [
+        "Default",
+        "Disabled",
+        "LongLabel"
+      ]
     },
     {
       "file": "src/components/preferences/SearchPreferences.stories.tsx",
@@ -616,7 +824,13 @@
     },
     {
       "file": "src/components/chat/BubbleChatScreen.stories.tsx",
-      "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
+      "states": [
+        "ActiveConversation",
+        "Empty",
+        "Mobile",
+        "Participants",
+        "MobileParticipants"
+      ]
     },
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
@@ -727,15 +941,28 @@
     },
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
-      "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
+      "states": [
+        "Hidden",
+        "RevealAndHide",
+        "ActivityPub",
+        "WithoutMetadata",
+        "InvalidHash"
+      ]
     },
     {
       "file": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx",
-      "states": ["Default", "Pending", "Unknown"]
+      "states": [
+        "Default",
+        "Pending",
+        "Unknown"
+      ]
     },
     {
       "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",
-      "states": ["HealthyChild", "FallbackShown"]
+      "states": [
+        "HealthyChild",
+        "FallbackShown"
+      ]
     },
     {
       "file": "src/components/e2ee/EncryptionSettingsView.stories.tsx",
@@ -826,7 +1053,11 @@
     },
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
-      "states": ["Default", "Undeliverable", "AddedRecipients"]
+      "states": [
+        "Default",
+        "Undeliverable",
+        "AddedRecipients"
+      ]
     },
     {
       "file": "src/components/ui/media-preview.stories.tsx",
@@ -849,6 +1080,27 @@
         "JapanesePDF",
         "JPEG2000PDF"
       ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.stories.tsx",
+      "states": [
+        "PersonalAndShared",
+        "Empty",
+        "Disabled",
+        "Loading",
+        "LoadError",
+        "SharedMember",
+        "Incoming",
+        "Active",
+        "Failed",
+        "ChannelBusy",
+        "EditKeepsPassword",
+        "SaveError",
+        "Mobile",
+        "RegisterSharedLine",
+        "Saving",
+        "DeleteConfirmation"
+      ]
     }
   ],
   "modules": [
@@ -867,7 +1119,10 @@
     {
       "file": "src/components/auth/AuthGate.tsx",
       "reason": "OIDC設定と外部リダイレクトに依存する認証境界。ログイン・期限切れ・再認証は専用IdPのE2Eで確認する。",
-      "checks": ["e2e/oidc.spec.ts", "src/components/auth/AuthGate.browser.test.tsx"]
+      "checks": [
+        "e2e/oidc.spec.ts",
+        "src/components/auth/AuthGate.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/auth/LogoutSetting.tsx",
@@ -878,7 +1133,10 @@
     {
       "file": "src/components/auth/PreviewUserSwitcher.tsx",
       "reason": "プレビュー専用ビルドフラグとページ再読込を伴う開発補助UI。通常カタログの環境では表示されない。",
-      "checks": ["src/lib/preview.test.ts", "e2e/oidc.spec.ts"]
+      "checks": [
+        "src/lib/preview.test.ts",
+        "e2e/oidc.spec.ts"
+      ]
     },
     {
       "file": "src/components/chat/AppBlocks.tsx",
@@ -891,7 +1149,9 @@
     {
       "file": "src/components/auth/RouteAccess.tsx",
       "reason": "ルートの公開・認証境界を切り替える制御層。実際のAuthGateを通る内部リンクのログイン済み・未認証の遷移をブラウザーテストで確認する。",
-      "checks": ["src/components/public/PublicProfile.navigation.browser.test.tsx"]
+      "checks": [
+        "src/components/public/PublicProfile.navigation.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/AppConsent.tsx",
@@ -912,7 +1172,9 @@
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
       "reason": "待機時のポーリングを間引き、コマンド・アクション後に即時更新する制御層。private UIの起動はブラウザ統合テスト、直列化・非表示・復帰はvisiblePoll.test.tsで確認する。",
-      "checks": ["src/components/chat/AppInteraction.browser.test.tsx"]
+      "checks": [
+        "src/components/chat/AppInteraction.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/AppEncryptedChannelConsent.tsx",
@@ -929,7 +1191,9 @@
     {
       "file": "src/components/call/CallDeviceSelects.tsx",
       "reason": "通話バーと設定の通話タブで共用するマイク/スピーカー選択。一覧の整形と選択値の保存は call-devices.test.ts で検証する。",
-      "checks": ["src/lib/call/call-devices.test.ts"]
+      "checks": [
+        "src/lib/call/call-devices.test.ts"
+      ]
     },
     {
       "file": "src/components/call/CallInvitePicker.tsx",
@@ -942,22 +1206,32 @@
     {
       "file": "src/components/call/IncomingCallDialog.tsx",
       "reason": "着信の表示（IncomingCallCard）と、招待の購読・応答・拒否・着信音・Web Push からの起動を結ぶ制御層。表示と操作は IncomingCallCard のStoryで確認し、招待の絞り込み・期限・API・起動パラメーターは call-invites.test.ts、着信音は call-sounds.test.ts で検証する。",
-      "checks": ["src/lib/call/call-invites.test.ts", "src/lib/call/call-sounds.test.ts"]
+      "checks": [
+        "src/lib/call/call-invites.test.ts",
+        "src/lib/call/call-sounds.test.ts"
+      ]
     },
     {
       "file": "src/components/call/CallSettingsDevices.tsx",
       "reason": "設定の通話タブで CallDeviceSelects を通話コンテキストへ接続する薄い層。選択値の保存は call-devices.test.ts で検証する。",
-      "checks": ["src/lib/call/call-devices.test.ts"]
+      "checks": [
+        "src/lib/call/call-devices.test.ts"
+      ]
     },
     {
       "file": "src/components/call/CallStatusPanel.tsx",
       "reason": "通話バーの通信状況パネル。getStats の集計・品質判定・整形は call-diagnostics.test.ts で検証し、通話状態の取得は call-context.tsx の getCallDiagnostics が担う。",
-      "checks": ["src/lib/call/call-diagnostics.test.ts", "src/lib/call/call-context.tsx"]
+      "checks": [
+        "src/lib/call/call-diagnostics.test.ts",
+        "src/lib/call/call-context.tsx"
+      ]
     },
     {
       "file": "src/components/call/CallSoundsSwitch.tsx",
       "reason": "設定の通話タブにある効果音のオン/オフスイッチ。保存と既定値は call-sounds.test.ts で検証する。",
-      "checks": ["src/lib/call/call-sounds.test.ts"]
+      "checks": [
+        "src/lib/call/call-sounds.test.ts"
+      ]
     },
     {
       "file": "src/components/chat/CallBar.tsx",
@@ -979,7 +1253,9 @@
     {
       "file": "src/components/chat/ChannelScreen.tsx",
       "story": "src/components/chat/ChannelScreen.stories.tsx",
-      "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
+      "checks": [
+        "src/components/chat/ChannelScreen.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",
@@ -1067,7 +1343,9 @@
     {
       "file": "src/components/ui/image-preview.tsx",
       "story": "src/components/ui/image-preview.stories.tsx",
-      "checks": ["src/components/ui/image-preview.browser.test.tsx"]
+      "checks": [
+        "src/components/ui/image-preview.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageAttachments.tsx",
@@ -1088,7 +1366,9 @@
     {
       "file": "src/components/chat/messages/MessagePane.tsx",
       "story": "src/components/chat/messages/MessagePane.stories.tsx",
-      "checks": ["src/components/chat/messages/MessagePane.navigation.browser.test.tsx"]
+      "checks": [
+        "src/components/chat/messages/MessagePane.navigation.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.tsx",
@@ -1138,7 +1418,9 @@
     {
       "file": "src/components/i18n/LocaleProvider.tsx",
       "reason": "全Storyの共通デコレータで使用する言語制御層。切替状態はLanguageToggleとProviderテストで確認する。",
-      "checks": ["src/components/i18n/LocaleProvider.test.ts"]
+      "checks": [
+        "src/components/i18n/LocaleProvider.test.ts"
+      ]
     },
     {
       "file": "src/components/layout/AppShell.tsx",
@@ -1182,7 +1464,9 @@
     {
       "file": "src/components/desktop/DesktopBridge.tsx",
       "reason": "デスクトップ版（Tauri）の中だけで、通知・フォーカス・通知のクリックを Rust 側と受け渡す表示のない制御層。通常の Web と Storybook では何も描画しない。IPC の判定とトークンの扱いは desktop.test.ts で確認する。",
-      "checks": ["src/lib/desktop.test.ts"]
+      "checks": [
+        "src/lib/desktop.test.ts"
+      ]
     },
     {
       "file": "src/components/e2ee/E2eeProvider.tsx",
@@ -1206,7 +1490,9 @@
     {
       "file": "src/components/offline/OfflineProvider.tsx",
       "reason": "永続化・接続状態を供給する制御層。表示はOfflineBanner、OPFS初期化と再試行はブラウザテストで確認する。",
-      "checks": ["src/components/offline/OfflineProvider.browser.test.tsx"]
+      "checks": [
+        "src/components/offline/OfflineProvider.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/pwa/AppUpdateNotice.tsx",
@@ -1223,7 +1509,9 @@
     {
       "file": "src/components/theme/ThemeProvider.tsx",
       "reason": "全Storyの共通デコレータで使用するテーマ制御層。設定の解決はthemeテストで確認する。",
-      "checks": ["src/components/theme/theme.test.ts"]
+      "checks": [
+        "src/components/theme/theme.test.ts"
+      ]
     },
     {
       "file": "src/components/ui/alert-dialog.tsx",
@@ -1305,7 +1593,9 @@
     {
       "file": "src/components/preferences/SearchPreferences.tsx",
       "reason": "アカウント単位で設定を読み書きする制御層。保存・再読込・アカウント切替・失敗からの再試行はブラウザテストで検証する。",
-      "checks": ["src/components/preferences/SearchPreferences.browser.test.tsx"]
+      "checks": [
+        "src/components/preferences/SearchPreferences.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/ui/button-group.tsx",
@@ -1338,7 +1628,10 @@
     {
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
-      "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
+      "checks": [
+        "src/components/home/HomeScreen.browser.test.tsx",
+        "src/lib/homeTimeline.test.ts"
+      ],
       "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
     },
     {
@@ -1350,7 +1643,9 @@
     {
       "file": "src/components/home/HomeComposer.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
-      "checks": ["src/components/home/HomeComposer.browser.test.tsx"],
+      "checks": [
+        "src/components/home/HomeComposer.browser.test.tsx"
+      ],
       "composed": true,
       "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
     },
@@ -1486,7 +1781,9 @@
     {
       "file": "src/components/e2ee/DevicesSettings.tsx",
       "reason": "暗号化タブの端末と他のユーザーの検証のセクション（端末一覧、失効、20 台の上限）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
-      "checks": ["src/lib/e2ee/revocationController.test.ts"]
+      "checks": [
+        "src/lib/e2ee/revocationController.test.ts"
+      ]
     },
     {
       "file": "src/components/e2ee/SasVerificationView.tsx",
@@ -1503,12 +1800,16 @@
       "story": "src/components/e2ee/SasVerificationView.stories.tsx",
       "composed": true,
       "reason": "検証のダイアログの中でだけ使うカメラでの読み取り。カメラの映像とカメラを使えないときの表示は ChooseMethod と CameraDenied のストーリーで、映像から QR を読み取る処理（BarcodeDetector と JS のデコーダー）は実ブラウザーのテストで確かめる。",
-      "checks": ["src/components/e2ee/QrCodeScanner.browser.test.tsx"]
+      "checks": [
+        "src/components/e2ee/QrCodeScanner.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/e2ee/SasVerificationHost.tsx",
       "reason": "絵文字 SAS と QR コードによる検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
-      "checks": ["src/lib/e2ee/sasController.test.ts"]
+      "checks": [
+        "src/lib/e2ee/sasController.test.ts"
+      ]
     },
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
@@ -1519,7 +1820,9 @@
       "story": "src/components/ui/media-preview.stories.tsx",
       "composed": true,
       "reason": "Email、Outlook、Word、Spreadsheet、Slides、OpenDocument、Archive、Textで実際のWorkerと取得・解析・表示を確認する。",
-      "checks": ["src/components/ui/document-preview.browser.test.tsx"]
+      "checks": [
+        "src/components/ui/document-preview.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/ui/pdf-preview.tsx",
@@ -1537,6 +1840,31 @@
       "checks": [
         "src/components/ui/media-preview.browser.test.tsx",
         "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx"
+    },
+    {
+      "file": "src/components/sip/SipControls.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx",
+      "composed": true,
+      "reason": "通話操作はIncoming・Activeで実コンポーネントを描画し確認する。"
+    },
+    {
+      "file": "src/components/sip/SipPanel.tsx",
+      "reason": "シェル共通Providerと回線一覧・常設通話操作を接続する制御層。画面状態はSipPanelViewのStory、共有接続と認証終了はブラウザー統合テストで確認する。",
+      "checks": [
+        "src/components/sip/SipProvider.browser.test.tsx",
+        "src/lib/sip/controller.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipProvider.tsx",
+      "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
+      "checks": [
+        "src/components/sip/SipProvider.browser.test.tsx"
       ]
     }
   ]
