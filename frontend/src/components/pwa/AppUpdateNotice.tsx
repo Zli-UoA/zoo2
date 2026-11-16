@@ -82,7 +82,8 @@ export function AppUpdateNotice() {
       if (document.visibilityState === "visible") void check();
     };
     const first = setTimeout(checkIfVisible, UPDATE_CHECK_FIRST_DELAY_MS);
-    const timer = setInterval(checkIfVisible, UPDATE_CHECK_INTERVAL_MS);
+    // 直前にウィンドウを前に出して確かめていれば、最短の間隔を空ける。
+    const timer = setInterval(checkIfDue, UPDATE_CHECK_INTERVAL_MS);
     document.addEventListener("visibilitychange", checkIfDue);
     window.addEventListener("focus", checkIfDue);
     window.addEventListener("online", checkIfDue);
