@@ -45,6 +45,7 @@ internal class PhoneWebView(
     private val commands = mutableMapOf<Long, CompletableDeferred<Unit>>()
     private var serial = 0L
     private var closed = false
+    private var destroyed = false
     private val page = "$origin/__zoo_phone__/index.html"
     private val view = WebView(context.applicationContext)
     init {
@@ -85,7 +86,7 @@ internal class PhoneWebView(
             }
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) { handler.cancel(); fail() }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) { if (request.isForMainFrame) fail() }
-            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean { fail(); return true }
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean { destroy(); fail(); return true }
         }
         view.loadUrl(page)
     }
@@ -117,7 +118,11 @@ internal class PhoneWebView(
         if (closed) return
         closed = true; loaded.cancel(); commands.values.forEach { it.cancel() }; commands.clear()
         // evaluateJavascript runs the synchronous media teardown before its completion callback.
-        if (view.url == page) view.evaluateJavascript("window.ZooPhone&&window.ZooPhone.execute(0,${JSONObject.quote(token)},'close',{});", { destroy() }) else destroy()
+        if (destroyed) return
+        if (view.url == page) {
+            runCatching { view.evaluateJavascript("window.ZooPhone&&window.ZooPhone.execute(0,${JSONObject.quote(token)},'close',{});", { destroy() }) }.onFailure { destroy() }
+            main.postDelayed({ destroy() }, 1_000)
+        } else destroy()
     }
-    private fun destroy() { view.stopLoading(); view.removeJavascriptInterface("ZooNativePhone"); view.destroy() }
+    private fun destroy() { if (destroyed) return; destroyed = true; view.stopLoading(); view.removeJavascriptInterface("ZooNativePhone"); view.destroy() }
 }
