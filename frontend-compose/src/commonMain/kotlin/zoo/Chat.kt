@@ -715,8 +715,8 @@ internal fun Message(
             Row(
                 Modifier.fillMaxWidth()
                     .padding(
-                        start = if (LocalTouchUi.current) 8.dp else 12.dp,
-                        end = if (LocalTouchUi.current) 8.dp else 12.dp,
+                        start = if (LocalTouchUi.current) 0.dp else 12.dp,
+                        end = if (LocalTouchUi.current) 0.dp else 12.dp,
                         top = if (grouped) 0.dp else 6.dp,
                         bottom = if (groupEnd) 6.dp else 0.dp,
                     ),

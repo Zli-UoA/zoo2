@@ -172,11 +172,11 @@ class ReviewRegressionUiTest {
                     MaterialTheme {
                         Column(Modifier.width(width)) {
                             HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {})
-                            Message(fixture.app, obj("id" to "general"), message, listOf(message),
-                                emptyList(), listOf(user), grouped = false, wide = false)
-                            Message(fixture.app, obj("id" to "general"),
-                                obj("id" to "grouped", "user_id" to "alice", "content" to "Grouped body"),
-                                emptyList(), emptyList(), listOf(user), grouped = true, wide = false)
+                            MessageList(fixture.app, obj("id" to "general"),
+                                listOf(message, obj("id" to "message-2", "user_id" to "alice",
+                                    "content" to "Grouped body", "created_at" to "2026-11-15T00:00:01Z")),
+                                emptyList(), listOf(user), parent = null, wide = false,
+                                modifier = Modifier.height(350.dp), readState = false)
                         }
                     }
                 }
@@ -187,6 +187,8 @@ class ReviewRegressionUiTest {
                 assertEquals(names[0].boundsInRoot.left, names[1].boundsInRoot.left, 1f)
                 val avatars = ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true).fetchSemanticsNodes()
                 assertEquals(2, avatars.size)
+                assertEquals(with(ui.density) { 8.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
+                assertEquals(avatars[0].boundsInRoot.left, avatars[1].boundsInRoot.left, 1f)
                 avatars.zip(names).forEach { (avatar, name) ->
                     val frame = avatar.boundsInRoot
                     assertEquals(with(ui.density) { 48.dp.toPx() }, frame.width, 1f)

@@ -355,3 +355,7 @@ Homeとチャンネルの投稿アイコンは48dpに揃え、名前の行とア
 今回の環境ではJDKのJavaコンパイラがなく、Androidのビルド・単体テスト・lintはタスク依存関係の解決で停止しました。
 実機表示も未確認です。`make tui-check` と `git diff --check` は通過しています。
 Android固有の表示修正なのでReactのStorybookとTUIの表示は変更していません。
+
+レビュー対応では、チャンネルの左右余白を `MessageList` の8dpだけにし、投稿側の重複した8dpを除きました。
+配置テストも `MessageList` を通す形に変更し、Homeとチャンネルのアイコン左端がともに8dpになることを検証します。
+初回コミットのAndroid CIではビルド・単体テスト・lintが通過しています。
