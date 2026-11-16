@@ -433,7 +433,7 @@ internal fun Sidebar(
             ) {
                 Column(
                     Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 0.dp else 2.dp),
                 ) {
                     if (error) LoadErrorState(
                         app.t("channels.loadError"),
@@ -445,7 +445,7 @@ internal fun Sidebar(
                             repeat(5) {
                                 Box(
                                     Modifier.fillMaxWidth()
-                                        .height(if (narrow) 36.dp else 32.dp)
+                                        .height(navigationRowHeight(LocalTouchUi.current, narrow))
                                         .background(
                                             MaterialTheme.colorScheme.surfaceVariant,
                                             RoundedCornerShape(8.dp),
@@ -526,7 +526,7 @@ internal fun ChannelLink(app: Session, channel: Row, title: String) {
     val narrow = with(LocalDensity.current) { windowWidth.toDp() < 768.dp }
     Row(
         Modifier.fillMaxWidth()
-            .heightIn(min = if (LocalTouchUi.current) 56.dp else if (narrow) 36.dp else 32.dp)
+            .heightIn(min = navigationRowHeight(LocalTouchUi.current, narrow))
             .then(
                 webControlModifier(
                     "link",

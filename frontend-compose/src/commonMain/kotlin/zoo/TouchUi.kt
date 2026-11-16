@@ -10,6 +10,10 @@ val LocalTouchUi = staticCompositionLocalOf { false }
 internal fun touchTargetSize(size: Dp, touch: Boolean): Dp =
     if (touch) maxOf(size, 48.dp) else size
 
+/** Keep channel and DM rows aligned, including their loading placeholders. */
+internal fun navigationRowHeight(touch: Boolean, narrow: Boolean): Dp =
+    touchTargetSize(if (narrow) 36.dp else 32.dp, touch)
+
 internal enum class MobileDestination(val path: String, val icon: String, val labelKey: String) {
     Home("/home", "home", "home.title"),
     Channels("/", "hash", "channels.title"),

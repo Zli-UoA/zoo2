@@ -1,15 +1,15 @@
 -- atlas:txmode none
 
 -- Create index "apub_blocked_actors" to table: "apub_actors"
-CREATE INDEX CONCURRENTLY "apub_blocked_actors" ON "apub_actors" ("id") WHERE blocked;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "apub_blocked_actors" ON "apub_actors" ("id") WHERE blocked;
 -- Create index "apub_reaction_owner_post" to table: "apub_reactions"
-CREATE INDEX CONCURRENTLY "apub_reaction_owner_post" ON "apub_reactions" ("post_id", "user_id") WHERE (user_id IS NOT NULL);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "apub_reaction_owner_post" ON "apub_reactions" ("post_id", "user_id") WHERE (user_id IS NOT NULL);
 -- Modify "apub_repost_recipients" table
-ALTER TABLE "apub_repost_recipients" ADD COLUMN "post_id" text NOT NULL DEFAULT '', ADD COLUMN "private_counted" boolean NOT NULL DEFAULT false;
+ALTER TABLE "apub_repost_recipients" ADD COLUMN IF NOT EXISTS "post_id" text NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS "private_counted" boolean NOT NULL DEFAULT false;
 -- Create index "apub_repost_owner_post" to table: "apub_reposts"
-CREATE INDEX CONCURRENTLY "apub_repost_owner_post" ON "apub_reposts" ("user_id", "post_id") WHERE (user_id IS NOT NULL);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "apub_repost_owner_post" ON "apub_reposts" ("user_id", "post_id") WHERE (user_id IS NOT NULL);
 -- Create "home_reaction_totals" table
-CREATE TABLE "home_reaction_totals" (
+CREATE TABLE IF NOT EXISTS "home_reaction_totals" (
   "post_id" text NOT NULL,
   "source_kind" smallint NOT NULL,
   "group_key" text NOT NULL,
@@ -19,15 +19,15 @@ CREATE TABLE "home_reaction_totals" (
   PRIMARY KEY ("post_id", "source_kind", "group_key")
 );
 -- Create index "home_reaction_totals_live" to table: "home_reaction_totals"
-CREATE INDEX CONCURRENTLY "home_reaction_totals_live" ON "home_reaction_totals" ("post_id", "source_kind", "group_key") WHERE (n > 0);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "home_reaction_totals_live" ON "home_reaction_totals" ("post_id", "source_kind", "group_key") WHERE (n > 0);
 -- Create "home_repost_totals" table
-CREATE TABLE "home_repost_totals" (
+CREATE TABLE IF NOT EXISTS "home_repost_totals" (
   "post_id" text NOT NULL,
   "n" bigint NOT NULL DEFAULT 0,
   PRIMARY KEY ("post_id")
 );
 -- Create "home_private_repost_totals" table
-CREATE TABLE "home_private_repost_totals" (
+CREATE TABLE IF NOT EXISTS "home_private_repost_totals" (
   "user_id" text NOT NULL,
   "post_id" text NOT NULL,
   "n" bigint NOT NULL DEFAULT 0,
@@ -37,14 +37,14 @@ CREATE TABLE "home_private_repost_totals" (
 
 -- Explicit UTF-8 keeps keys independent of client_encoding; JSONB canonically
 -- encodes both fixed argument types. Hashing keeps long custom URIs out of keys.
-CREATE FUNCTION home_reaction_key(reaction text, emoji jsonb) RETURNS text
+CREATE OR REPLACE FUNCTION home_reaction_key(reaction text, emoji jsonb) RETURNS text
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
  SELECT encode(sha256(convert_to(jsonb_build_array(reaction,emoji)::text,'UTF8')),'hex');
 $$;
-CREATE INDEX CONCURRENTLY apub_reaction_group_order ON apub_reactions(post_id,(user_id IS NULL),home_reaction_key(reaction,emoji),created_at);
-CREATE INDEX CONCURRENTLY message_reaction_group_order ON message_reactions(message_id,home_reaction_key(emoji,NULL::jsonb),created_at);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS apub_reaction_group_order ON apub_reactions(post_id,(user_id IS NULL),home_reaction_key(reaction,emoji),created_at);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS message_reaction_group_order ON message_reactions(message_id,home_reaction_key(emoji,NULL::jsonb),created_at);
 
-CREATE FUNCTION maintain_home_reaction_totals() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION maintain_home_reaction_totals() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE before_row jsonb; after_row jsonb; item record;
 BEGIN
  IF TG_OP<>'INSERT' THEN before_row:=to_jsonb(OLD); END IF;
@@ -69,10 +69,10 @@ BEGIN
  END LOOP;
  RETURN NULL;
 END $$;
-CREATE TRIGGER home_reaction_totals_change AFTER INSERT OR UPDATE OR DELETE ON apub_reactions FOR EACH ROW EXECUTE FUNCTION maintain_home_reaction_totals();
-CREATE TRIGGER home_message_reaction_totals_change AFTER INSERT OR UPDATE OR DELETE ON message_reactions FOR EACH ROW EXECUTE FUNCTION maintain_home_reaction_totals();
+CREATE OR REPLACE TRIGGER home_reaction_totals_change AFTER INSERT OR UPDATE OR DELETE ON apub_reactions FOR EACH ROW EXECUTE FUNCTION maintain_home_reaction_totals();
+CREATE OR REPLACE TRIGGER home_message_reaction_totals_change AFTER INSERT OR UPDATE OR DELETE ON message_reactions FOR EACH ROW EXECUTE FUNCTION maintain_home_reaction_totals();
 
-CREATE FUNCTION maintain_home_repost_totals() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION maintain_home_repost_totals() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE before_row jsonb; after_row jsonb; item record; stripe integer;
 BEGIN
  IF TG_OP<>'INSERT' THEN before_row:=to_jsonb(OLD); END IF;
@@ -100,7 +100,7 @@ BEGIN
  END LOOP;
  RETURN NULL;
 END $$;
-CREATE TRIGGER home_repost_totals_change AFTER INSERT OR UPDATE OR DELETE ON apub_reposts FOR EACH ROW EXECUTE FUNCTION maintain_home_repost_totals();
+CREATE OR REPLACE TRIGGER home_repost_totals_change AFTER INSERT OR UPDATE OR DELETE ON apub_reposts FOR EACH ROW EXECUTE FUNCTION maintain_home_repost_totals();
 
 CREATE OR REPLACE FUNCTION set_apub_repost_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE p apub_reposts%ROWTYPE;
@@ -111,7 +111,7 @@ BEGIN
  RETURN NEW;
 END $$;
 DROP TRIGGER apub_repost_recipient_order ON apub_repost_recipients;
-CREATE TRIGGER apub_repost_recipient_order BEFORE INSERT OR UPDATE OF activity_id,user_id ON apub_repost_recipients FOR EACH ROW EXECUTE FUNCTION set_apub_repost_recipient_order();
+CREATE OR REPLACE TRIGGER apub_repost_recipient_order BEFORE INSERT OR UPDATE OF activity_id,user_id ON apub_repost_recipients FOR EACH ROW EXECUTE FUNCTION set_apub_repost_recipient_order();
 CREATE OR REPLACE FUNCTION sync_apub_repost_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  UPDATE apub_repost_recipients r SET actor_id=NEW.actor_id,created_at=NEW.created_at,post_id=NEW.post_id,
@@ -121,9 +121,9 @@ BEGIN
  RETURN NULL;
 END $$;
 DROP TRIGGER apub_repost_order ON apub_reposts;
-CREATE TRIGGER apub_repost_order AFTER UPDATE OF actor_id,created_at,post_id,user_id,visibility ON apub_reposts FOR EACH ROW EXECUTE FUNCTION sync_apub_repost_recipient_order();
+CREATE OR REPLACE TRIGGER apub_repost_order AFTER UPDATE OF actor_id,created_at,post_id,user_id,visibility ON apub_reposts FOR EACH ROW EXECUTE FUNCTION sync_apub_repost_recipient_order();
 
-CREATE INDEX CONCURRENTLY apub_private_repost_recipient_post ON apub_repost_recipients(user_id,post_id) WHERE private_counted;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS apub_private_repost_recipient_post ON apub_repost_recipients(user_id,post_id) WHERE private_counted;
 
 CREATE OR REPLACE FUNCTION sync_federated_reaction_display() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE target text;
@@ -164,7 +164,7 @@ BEGIN
   COMMIT;
  END LOOP;
 END $$;
-CREATE TRIGGER home_private_repost_totals_change AFTER INSERT OR UPDATE OR DELETE ON apub_repost_recipients FOR EACH ROW EXECUTE FUNCTION maintain_home_repost_totals();
+CREATE OR REPLACE TRIGGER home_private_repost_totals_change AFTER INSERT OR UPDATE OR DELETE ON apub_repost_recipients FOR EACH ROW EXECUTE FUNCTION maintain_home_repost_totals();
 
 INSERT INTO home_reaction_totals(post_id,source_kind,group_key,reaction,emoji)
  SELECT DISTINCT post_id,kind,home_reaction_key(reaction,emoji),reaction,emoji FROM (

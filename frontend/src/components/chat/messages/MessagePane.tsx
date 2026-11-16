@@ -972,9 +972,13 @@ export function MessagePane({
                   {t("e2ee.downgraded")}
                 </p>
               ) : null}
-              {encrypted && recipients ? (
-                <EncryptionRecipientsNotice summary={recipients} users={usersQuery.data ?? []} />
-              ) : null}
+              {/* 配布先の表示は、増えた人か配れない人がいるときだけ出る。中身が後から入っても読み上げられる
+                  よう、live region は常に置いておく。 */}
+              <div role="status" aria-live="polite" data-testid="encryption-recipients-status">
+                {encrypted && recipients ? (
+                  <EncryptionRecipientsNotice summary={recipients} users={usersQuery.data ?? []} />
+                ) : null}
+              </div>
               <Composer
                 commands={commandSuggestions.commands}
                 onRequestCommands={commandSuggestions.load}

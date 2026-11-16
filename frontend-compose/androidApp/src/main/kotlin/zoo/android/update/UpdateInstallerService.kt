@@ -46,6 +46,9 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
                     "works.zli.zoo",
                     "-S",
                     size.toString(),
+                    // End option parsing before the stdin path; some Android
+                    // versions otherwise reject '-' as an unknown option.
+                    "--",
                     "-",
                 )
                 .redirectErrorStream(true)
