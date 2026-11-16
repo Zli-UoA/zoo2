@@ -295,6 +295,7 @@ pub struct Config {
     pub cors_allowed_origins: Vec<String>,
     pub webrtc_ice_servers_json: String,
     pub sip_encryption_key: Option<String>,
+    pub phone_gateway: crate::phone_gateway::GatewayConfig,
     pub s3: S3Config,
     pub slack: SlackConfig,
     /// `encrypted: true` のチャンネルと DM の作成を受け付けるか（`E2EE_ENCRYPTED_CHANNELS_ENABLED`。既定は false）。
@@ -322,6 +323,7 @@ impl fmt::Debug for Config {
                 "sip_encryption_key",
                 &self.sip_encryption_key.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("phone_gateway", &self.phone_gateway)
             .field("s3", &self.s3)
             .field("slack", &self.slack)
             .field(
@@ -506,6 +508,7 @@ impl Config {
             sip_encryption_key: env::var("SIP_ENCRYPTION_KEY")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            phone_gateway: crate::phone_gateway::GatewayConfig::from_env(),
             s3,
             slack: SlackConfig::from_env(),
             e2ee_encrypted_channels_enabled: parse_bool_flag(
@@ -517,6 +520,10 @@ impl Config {
     /// 設定値の整合性検証 (本番環境での OIDC 設定必須化および S3/R2 設定必須化など)
     pub fn validate(&self) -> Result<(), String> {
         crate::routes::sip::parse_key(self.sip_encryption_key.as_deref())?;
+        self.phone_gateway.validate()?;
+        if self.phone_gateway.enabled() && self.sip_encryption_key.is_none() {
+            return Err("SIP_ENCRYPTION_KEY is required with SIP_GATEWAY_URL".into());
+        }
         const MAX_PRESIGNED_EXPIRY_SECS: u64 = 604_800; // AWS SigV4 上限 (7 日)
         if !(1..=MAX_PRESIGNED_EXPIRY_SECS).contains(&self.s3.presigned_put_expiry_secs) {
             return Err(format!(
@@ -756,6 +763,7 @@ mod tests {
             cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -786,6 +794,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -798,6 +807,7 @@ mod tests {
         let invalid_json = Config {
             webrtc_ice_servers_json: "not valid json".to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             ..base_config.clone()
         };
         assert!(invalid_json.validate().is_err());
@@ -806,6 +816,7 @@ mod tests {
         let not_array = Config {
             webrtc_ice_servers_json: r#"{"urls":["stun:stun.l.google.com:19302"]}"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             ..base_config
         };
         assert!(not_array.validate().is_err());
@@ -826,6 +837,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -919,6 +931,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -948,6 +961,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: "[]".to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -987,6 +1001,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: "[]".to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -1042,6 +1057,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: json.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -1145,6 +1161,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
@@ -1196,6 +1213,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             sip_encryption_key: None,
+            phone_gateway: Default::default(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
