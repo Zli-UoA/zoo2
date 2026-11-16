@@ -26,6 +26,7 @@ interface SipContextValue {
   loading: boolean;
   loadError: boolean;
   loaded: boolean;
+  resetCount: number;
   channelBusy: boolean;
   refresh(this: void): Promise<void>;
   save(this: void, id: string | null, input: SipLineInput): Promise<void>;
@@ -49,6 +50,7 @@ export function SipProvider({ config, children }: { config: AppConfig; children:
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [resetCount, setResetCount] = useState(0);
   const epoch = useRef(0);
   const flight = useRef<Promise<void> | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -89,6 +91,7 @@ export function SipProvider({ config, children }: { config: AppConfig; children:
       controller.disconnect();
       setDirectory({ enabled: false, lines: [] });
       setLoaded(false);
+      setResetCount((count) => count + 1);
       setLoading(false);
       setLoadError(false);
     };
@@ -117,6 +120,7 @@ export function SipProvider({ config, children }: { config: AppConfig; children:
     directory,
     loading,
     loaded,
+    resetCount,
     loadError,
     channelBusy: !!currentChannelId,
     refresh,

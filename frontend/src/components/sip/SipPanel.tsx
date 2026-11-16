@@ -13,9 +13,10 @@ export function SipPanel() {
   const { data: users } = useUsers();
   const refresh = sip?.refresh;
   const loaded = sip?.loaded;
+  const resetCount = sip?.resetCount;
   useEffect(() => {
     if (!loaded) void refresh?.();
-  }, [refresh, loaded]);
+  }, [refresh, loaded, resetCount]);
   if (!sip) return null;
   const c = sip.controller;
   return (

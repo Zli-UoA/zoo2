@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
@@ -67,10 +68,8 @@ beforeEach(() => {
   mocks.get.mockResolvedValue({ enabled: true, lines: [{ id: "home", can_connect: true }] });
   mocks.post.mockResolvedValue({
     data: {
-      websocket_path: "/sip/ws",
-      sip_domain: "pbx.example",
-      username: "alice",
-      password: "dummy",
+      session_id: "00000000-0000-4000-8000-000000000001",
+      peer_id: "00000000-0000-4000-8000-000000000002",
       revision: "v1",
       ice_servers: [],
     },
@@ -141,4 +140,45 @@ it("refreshes committed settings after an older directory request settles", asyn
   await act(async () => finish({ enabled: true, lines: [{ id: "home" }] }));
   await expect.element(screen.getByLabelText("state-panel")).toHaveTextContent("offline:2");
   expect(mocks.get).toHaveBeenCalledTimes(2);
+});
+
+function AutoConsumer() {
+  const sip = useSip()!;
+  useEffect(() => {
+    if (!sip.loaded) void sip.refresh();
+  }, [sip.refresh, sip.loaded, sip.resetCount]);
+  return (
+    <output aria-label="auto-directory">
+      {sip.loaded ? sip.directory.lines[0]?.id : "loading"}
+    </output>
+  );
+}
+it("reloads after a reset while the initial directory is still pending", async () => {
+  const pending: ((value: unknown) => void)[] = [];
+  mocks.get.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        pending.push(resolve);
+      }),
+  );
+  const view = render(
+    <SipProvider config={config}>
+      <AutoConsumer />
+    </SipProvider>,
+  );
+  await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0));
+  const before = mocks.get.mock.calls.length;
+  mocks.user = { currentUserId: "bob" };
+  view.rerender(
+    <SipProvider config={config}>
+      <AutoConsumer />
+    </SipProvider>,
+  );
+  await vi.waitFor(() => expect(mocks.get.mock.calls.length).toBeGreaterThan(before));
+  await act(async () => {
+    for (const finish of pending.slice(0, -1)) finish({ enabled: true, lines: [{ id: "old" }] });
+  });
+  await expect.element(screen.getByLabelText("auto-directory")).toHaveTextContent("loading");
+  await act(async () => pending.at(-1)!({ enabled: true, lines: [{ id: "bob-line" }] }));
+  await expect.element(screen.getByLabelText("auto-directory")).toHaveTextContent("bob-line");
 });
