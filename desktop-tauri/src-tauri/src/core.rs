@@ -789,10 +789,6 @@ impl Core {
     }
 
     pub async fn logout(&self) -> Result<(), IpcError> {
-        // 待っている再認証は、ログアウトしたら要らない (ループバックの待ち受けも閉じる)。
-        if let Some(reauth) = self.reauth.lock().expect("reauth の lock").take() {
-            reauth.abort();
-        }
         let mut inner = self.inner.lock().await;
         let ending = self.prepare_end_session(&mut inner).map_err(to_ipc)?;
         self.set_state(&mut inner, SessionState::LoggedOut);
@@ -817,7 +813,14 @@ impl Core {
     /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
     /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
     /// 後から終わっても、`token.json` は作り直されない。
+    ///
+    /// 待っている E2EE の再認証も取り消す (ループバックの待ち受けも閉じる)。ログアウトと 401 の
+    /// 失効の両方がここを通る。`inner` のロックの下で取り消すので、`reauthenticate` が
+    /// 同じロックの下で始めた再認証とは前後が決まる。
     fn prepare_end_session(&self, inner: &mut Inner) -> Result<EndingSession> {
+        if let Some(reauth) = self.reauth.lock().expect("reauth の lock").take() {
+            reauth.abort();
+        }
         let oidc = matches!(
             self.config.as_ref().map(|c| &c.auth),
             Ok(AuthConfig::Oidc(_))
@@ -948,29 +951,32 @@ impl Core {
     pub async fn reauthenticate(self: &Arc<Self>) -> Result<String, IpcError> {
         let (_, oidc) = self.oidc()?;
         let oidc = oidc.clone();
-        {
+        // ログイン中かを確かめてから、始めたタスクを `reauth` に置くまでを、`inner` と `reauth` の
+        // ロックの下で行う (どちらも、その間に await しない)。ログアウトや 401 の失効
+        // (`prepare_end_session`) と、ほかの再認証の開始が、間に入らないようにするため。
+        // これで、後から始めた再認証が必ず残り、セッションが終わったら必ず取り消される。
+        let task = {
             let inner = self.inner.lock().await;
             if !matches!(inner.state, SessionState::Ready { .. }) {
                 return Err(not_logged_in());
             }
-        }
-        let core = self.clone();
-        let task = tokio::spawn(async move {
-            let discovery = auth::discover(&core.http, &oidc.issuer).await?;
-            let pending = LoopbackReauth::start(&discovery, &oidc).await?;
-            open_in_browser(&core.app, pending.url())?;
-            pending
-                .finish(&core.http, &discovery, &oidc, REAUTH_TIMEOUT)
-                .await
-        });
-        if let Some(previous) = self
-            .reauth
-            .lock()
-            .expect("reauth の lock")
-            .replace(task.abort_handle())
-        {
-            previous.abort();
-        }
+            let mut pending = self.reauth.lock().expect("reauth の lock");
+            if let Some(previous) = pending.take() {
+                previous.abort();
+            }
+            let core = self.clone();
+            let task = tokio::spawn(async move {
+                let discovery = auth::discover(&core.http, &oidc.issuer).await?;
+                let pending = LoopbackReauth::start(&discovery, &oidc).await?;
+                open_in_browser(&core.app, pending.url())?;
+                pending
+                    .finish(&core.http, &discovery, &oidc, REAUTH_TIMEOUT)
+                    .await
+            });
+            *pending = Some(task.abort_handle());
+            drop(inner);
+            task
+        };
         let result = task.await;
         match result {
             Ok(Ok(id_token)) => {
