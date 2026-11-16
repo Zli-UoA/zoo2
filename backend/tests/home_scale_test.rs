@@ -616,7 +616,7 @@ async fn budget_samples(
         if name == "page_render" {
             assert_eq!(plan[0]["Plan"]["Actual Rows"], 500);
             visit(&plan[0]["Plan"], &|node| {
-                if node["Function Name"] == "jsonb_array_elements_text" {
+                if node["Function Name"] == "jsonb_array_elements_text" && node["Alias"] == "ids" {
                     assert!(
                         node["Actual Loops"].as_f64().unwrap() <= 1.,
                         "request IDs must be parsed once, not once per row"

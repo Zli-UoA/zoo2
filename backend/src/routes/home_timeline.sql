@@ -3,6 +3,13 @@
 WITH RECURSIVE request_entries AS MATERIALIZED (
   -- $9 is text: casting a 500-ID array for every row makes filtering O(K²).
   SELECT entry_id FROM jsonb_array_elements_text($9::jsonb) ids(entry_id)
+), workspace_emojis AS MATERIALIZED (
+  -- Reuse the canonical resolver once for the bounded page/parent contents.
+  -- Filtering its result by each post retains aliases and image metadata.
+  SELECT e.key,e.value FROM jsonb_each(message_content_emojis((
+    SELECT string_agg(content,E'\n') FROM base
+    WHERE NOT remote AND content LIKE '%:%:%'
+  ))) e
 ), visible AS NOT MATERIALIZED (
 /* visible_posts */
 ), requested_reposts AS MATERIALIZED (
@@ -74,7 +81,7 @@ WITH RECURSIVE request_entries AS MATERIALIZED (
         tree_order,tree_path,f.sort_at DESC,f.entry_id DESC LIMIT $5::integer
     ), page AS MATERIALIZED (
       SELECT row_to_json(b) AS post,f.extra,b.channel_id,b.parent_id,
-        CASE WHEN b.remote THEN NULL::json ELSE COALESCE((SELECT json_agg(json_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(b.content)) e),'[]'::json) END AS local_emojis,
+        CASE WHEN b.remote THEN NULL::json WHEN b.content NOT LIKE '%:%:%' THEN '[]'::json ELSE COALESCE((SELECT json_agg(json_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM workspace_emojis e WHERE strpos(b.content,':'||e.key||':')>0),'[]'::json) END AS local_emojis,
         f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path,f.tree_depth
       FROM picked f JOIN base b ON b.id=f.id
     ), reaction_groups AS MATERIALIZED (
@@ -99,7 +106,7 @@ WITH RECURSIVE request_entries AS MATERIALIZED (
     ), page_parents AS MATERIALIZED (
       SELECT b.* FROM base b WHERE b.original_visible AND b.id IN (SELECT parent_id FROM page)
     ), page_parent_previews AS MATERIALIZED (
-      SELECT parent.id,((row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(parent.content)) e),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)))::json AS post FROM page_parents parent
+      SELECT parent.id,((row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM workspace_emojis e WHERE parent.content LIKE '%:%:%' AND strpos(parent.content,':'||e.key||':')>0),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)))::json AS post FROM page_parents parent
     ), page_replies AS MATERIALIZED (
 /* reply_counts */
     ) SELECT json_build_object('post',f.post,'display',json_build_object(

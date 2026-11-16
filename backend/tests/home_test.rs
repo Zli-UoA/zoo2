@@ -1633,6 +1633,15 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     )
     .await?;
     assert_eq!(status, StatusCode::CREATED);
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&id),
+        "/api/home",
+        Some(json!({"content":format!(":unknown-{}:",uuid::Uuid::new_v4().simple()),"parent_id":post["id"],"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
     let (_, rows) = request(&app, "GET", Some(&id), "/api/home?timeline=local", None).await?;
     let row = rows
         .as_array()
@@ -1645,6 +1654,21 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     assert_eq!(emoji["width"], 120);
     assert_eq!(emoji["height"], 20);
     assert_eq!(emoji["local"], true);
+    let reply = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == reply["id"])
+        .unwrap();
+    assert_eq!(
+        reply["emojis"],
+        json!([]),
+        "page emoji metadata must not leak into another post"
+    );
+    assert_eq!(
+        reply["parent"]["emojis"][0], *emoji,
+        "parent aliases retain the same dimensions and identity"
+    );
     let local_url = emoji["url"].as_str().unwrap();
     let mut tx = db.transaction().await?;
     let count = backend::apps::one(
