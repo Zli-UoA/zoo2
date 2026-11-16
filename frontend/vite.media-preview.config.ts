@@ -1,3 +1,4 @@
+import { pdfAssets } from "./build/pdf-assets";
 import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -6,7 +7,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   base: "./",
   publicDir: false,
-  plugins: [react(), tailwindcss()],
+  plugins: [pdfAssets(), react(), tailwindcss()],
   resolve: { tsconfigPaths: true, alias: { buffer: "buffer/" } },
   worker: { format: "es" },
   build: {

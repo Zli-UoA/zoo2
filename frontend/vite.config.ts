@@ -1,3 +1,4 @@
+import { pdfAssets } from "./build/pdf-assets";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,6 +69,7 @@ const config = defineConfig({
     assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
   },
   plugins: lazyPlugins(() => [
+    pdfAssets(),
     offlineAssets,
     devtools(),
     tailwindcss(),

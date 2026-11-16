@@ -7,7 +7,8 @@ self.onmessage = async (event: MessageEvent<DocumentRequest>) => {
   try {
     const bytes = await fetchPreviewBytes(src);
     const data = await parseDocument(bytes, name, contentType);
-    self.postMessage({ data } satisfies DocumentResponse);
+    const transfer = [...new Set(data.files.map((file) => file.bytes.buffer))];
+    self.postMessage({ data } satisfies DocumentResponse, { transfer });
   } catch (error) {
     self.postMessage({
       error: error instanceof PreviewLimitError ? "limit" : "invalid",

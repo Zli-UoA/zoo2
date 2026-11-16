@@ -79,6 +79,7 @@ pub(super) fn media(value: &Value) -> Vec<Value> {
                     "message/rfc822"
                         | "application/vnd.ms-outlook"
                         | "application/zip"
+                        | "application/x-zip-compressed"
                         | "application/json"
                         | "application/xml"
                 );
@@ -567,6 +568,7 @@ mod media_metadata_tests {
             "message/rfc822",
             "text/plain",
             "application/zip",
+            "application/x-zip-compressed",
         ] {
             let received = media(&json!({"url":"https://peer.example/file", "mediaType":mime}));
             assert_eq!(received.len(), 1);

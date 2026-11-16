@@ -81,3 +81,18 @@ it("formats JSON, preserves invalid JSON and honors declared text encoding", asy
       .sections[0].text,
   ).toBe("あ");
 });
+
+it("lists ordinary ZIP entries without parsing Office-shaped XML", async () => {
+  const entries = {
+    "word/document.xml": strToU8(
+      '<!DOCTYPE p [<!ENTITY x SYSTEM "https://external.test">]><p>&x;</p>',
+    ),
+    "xl/sharedStrings.xml": strToU8("<broken"),
+    "ppt/slides/slide1.xml": strToU8("<broken"),
+  };
+  for (const mime of ["application/zip", "application/x-zip-compressed"]) {
+    const result = await parseDocument(zipSync(entries), "folder.zip", mime);
+    expect(result.files.map((file) => file.name)).toEqual(Object.keys(entries));
+    expect(result.sections).toHaveLength(0);
+  }
+});

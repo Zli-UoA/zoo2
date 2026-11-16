@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
@@ -17,6 +17,7 @@ const mime = {
   ".mjs": "text/javascript",
   ".css": "text/css",
   ".woff2": "font/woff2",
+  ".wasm": "application/wasm",
 };
 const server = createServer(async (request, response) => {
   try {
@@ -61,11 +62,17 @@ try {
     ["sample.odt", "application/vnd.oasis.opendocument.text", "OpenDocument preview"],
     ["sample.zip", "application/zip", "readme.txt"],
     ["media.pdf", "application/pdf", "1 / 12"],
+    ["cjk.pdf", "application/pdf", "1 / 1"],
+    ["jpx.pdf", "application/pdf", "1 / 1"],
   ];
   for (const [name, type, expected] of cases) {
     source = { name, type };
     sourceReads = 0;
     const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const responses = [];
+    context.on("response", (response) =>
+      responses.push({ url: response.url(), status: response.status() }),
+    );
     const external = [],
       errors = [];
     await context.route("**/*", (route) => {
@@ -107,6 +114,55 @@ try {
       await page.getByText("2 / 12").waitFor();
       await page.waitForFunction(() => document.querySelector("canvas")?.width > 300);
       assert.equal(sourceReads, 1, "page changes must reuse the loaded PDF");
+    }
+    if (name === "cjk.pdf" || name === "jpx.pdf") {
+      await page.getByRole("button", { name: "前のページ" }).waitFor();
+      await page.waitForFunction(
+        () =>
+          !document.querySelector('[role="status"]') && document.querySelector("canvas")?.width > 0,
+      );
+      const painted = await page.locator("canvas").evaluate((canvas) => {
+        const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        return pixels.some((value, index) => index % 4 !== 3 && value < 200);
+      });
+      assert.ok(painted, `${name}: PDF contents must paint on the canvas`);
+      assert.ok(
+        responses.some(
+          (response) =>
+            response.status === 200 &&
+            response.url.includes(
+              name === "cjk.pdf" ? "/cmaps/90ms-RKSJ-H.bcmap" : "/wasm/openjpeg.wasm",
+            ),
+        ),
+        `${name}: bundled decoder must be requested`,
+      );
+    }
+    if (name === "cjk.pdf") {
+      const pdfModule = (await readdir(path.join(output, "assets"))).find((file) =>
+        /^pdf-.*\.js$/.test(file),
+      );
+      const bytes = [...(await readFile(path.join(frontend, ".storybook/fixtures/cjk.pdf")))];
+      const text = await page.evaluate(
+        async ({ moduleUrl, bytes }) => {
+          const pdfjs = await import(moduleUrl);
+          const task = pdfjs.getDocument({
+            data: new Uint8Array(bytes),
+            cMapUrl: `${location.origin}/assets/pdfjs/${pdfjs.version}/cmaps/`,
+            cMapPacked: true,
+            useSystemFonts: true,
+          });
+          try {
+            const pdf = await task.promise;
+            const page = await pdf.getPage(1);
+            const content = await page.getTextContent();
+            return content.items.map((item) => item.str ?? "").join("");
+          } finally {
+            await task.destroy();
+          }
+        },
+        { moduleUrl: `${origin}/assets/${pdfModule}`, bytes },
+      );
+      assert.ok(text.includes("あい"), `Japanese CMap must decode characters: ${text}`);
     }
     assert.deepEqual(external, [], "previews must not load external tracking resources");
     assert.deepEqual(errors, [], "the APK viewer bundle must run without page errors");

@@ -221,6 +221,23 @@ export async function parseDocument(
     mime.includes("opendocument")
   ) {
     const entries = archive(bytes);
+    const office =
+      mime.includes("officedocument") ||
+      mime.includes("opendocument") ||
+      ["docx", "xlsx", "pptx", "odt", "ods", "odp"].includes(ext ?? "");
+    if (!office) {
+      return {
+        ...empty,
+        files: validateFiles(
+          Object.entries(entries).map(([path, data]) => ({
+            name: path,
+            type:
+              resolveAttachmentContentType({ name: path, type: "" }) ?? "application/octet-stream",
+            bytes: new Uint8Array(data),
+          })),
+        ),
+      };
+    }
     const sections: DocumentPreviewData["sections"] = [];
     const shared = entries["xl/sharedStrings.xml"]
       ? xmlChunks(entries["xl/sharedStrings.xml"], "si")
@@ -237,27 +254,10 @@ export async function parseDocument(
       if (path === "content.xml" && ["odt", "ods", "odp"].includes(ext ?? ""))
         sections.push(section(name, xmlChunks(entries[path], "p").join("\n")));
     }
-    if (
-      mime.includes("officedocument") ||
-      mime.includes("opendocument") ||
-      ["docx", "xlsx", "pptx", "odt", "ods", "odp"].includes(ext ?? "")
-    ) {
-      if (!sections.length) throw new Error("Missing document contents");
-      if (sections.reduce((n, item) => n + item.text.length, 0) > MAX_PREVIEW_TEXT)
-        throw new PreviewLimitError();
-      return { sections, files: [] };
-    }
-    return {
-      ...empty,
-      files: validateFiles(
-        Object.entries(entries).map(([path, data]) => ({
-          name: path,
-          type:
-            resolveAttachmentContentType({ name: path, type: "" }) ?? "application/octet-stream",
-          bytes: new Uint8Array(data),
-        })),
-      ),
-    };
+    if (!sections.length) throw new Error("Missing document contents");
+    if (sections.reduce((n, item) => n + item.text.length, 0) > MAX_PREVIEW_TEXT)
+      throw new PreviewLimitError();
+    return { sections, files: [] };
   }
   let value = text(bytes, contentType);
   if (mime === "application/json" || ext === "json") {

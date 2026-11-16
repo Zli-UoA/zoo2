@@ -1,3 +1,4 @@
+import { pdfAssets } from "../build/pdf-assets";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +23,7 @@ export default defineConfig({
   },
   // emojibase-data と mockServiceWorker.js を Storybook でも配信する。
   publicDir: path.resolve(dirname, "../public"),
-  plugins: [tailwindcss(), viteReact()],
+  plugins: [pdfAssets(), tailwindcss(), viteReact()],
   resolve: {
     alias: {
       buffer: "buffer/",

@@ -840,7 +840,9 @@
         "Slides",
         "OpenDocument",
         "Archive",
-        "Text"
+        "Text",
+        "JapanesePDF",
+        "JPEG2000PDF"
       ]
     }
   ],
@@ -1515,12 +1517,18 @@
       "story": "src/components/ui/media-preview.stories.tsx",
       "composed": true,
       "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
-      "checks": ["src/components/ui/media-preview.browser.test.tsx"]
+      "checks": [
+        "src/components/ui/media-preview.browser.test.tsx",
+        "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/ui/media-preview.tsx",
       "story": "src/components/ui/media-preview.stories.tsx",
-      "checks": ["src/components/ui/media-preview.browser.test.tsx"]
+      "checks": [
+        "src/components/ui/media-preview.browser.test.tsx",
+        "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
     }
   ]
 }

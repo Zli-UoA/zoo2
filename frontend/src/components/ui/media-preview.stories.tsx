@@ -1,5 +1,7 @@
 import { expect, waitFor, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import cjkUrl from "../../../.storybook/fixtures/cjk.pdf?url";
+import jpxUrl from "../../../.storybook/fixtures/jpx.pdf?url";
 import pdfUrl from "../../../.storybook/fixtures/media.pdf?url";
 import audioUrl from "../../../.storybook/fixtures/media.wav?url";
 import videoUrl from "../../../.storybook/fixtures/media.webm?url";
@@ -116,4 +118,24 @@ async function assertPreviewText(canvasElement: HTMLElement, expected: string) {
   await waitFor(() => expect(dialog.querySelector("pre")?.textContent).toContain(expected), {
     timeout: 10_000,
   });
+}
+
+export const JapanesePDF: Story = {
+  args: { src: cjkUrl, name: "cjk.pdf", contentType: "application/pdf", initialOpen: true },
+  play: async ({ canvasElement }) => assertPdfPainted(canvasElement),
+};
+export const JPEG2000PDF: Story = {
+  args: { src: jpxUrl, name: "jpx.pdf", contentType: "application/pdf", initialOpen: true },
+  play: async ({ canvasElement }) => assertPdfPainted(canvasElement),
+};
+async function assertPdfPainted(canvasElement: HTMLElement) {
+  const dialog = within(canvasElement.ownerDocument.body).getByRole("dialog");
+  await waitFor(
+    async () => {
+      await expect(within(dialog).queryByRole("status")).toBeNull();
+      await expect(within(dialog).queryByRole("alert")).toBeNull();
+      await expect(dialog.querySelector("canvas")?.width).toBeGreaterThan(0);
+    },
+    { timeout: 10_000 },
+  );
 }

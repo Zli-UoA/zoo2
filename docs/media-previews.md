@@ -7,7 +7,7 @@ Androidの通常添付とAPub投稿にも、アプリ内でプレビューを開
 | 形式 | 表示 |
 | --- | --- |
 | PNG・JPEG・WebP・GIF、通常添付のAVIF | 画像と拡大表示 |
-| PDF | PDF.jsのキャンバス描画、ページ送り。AndroidやスマホのPDFプラグインに依存しない |
+| PDF | PDF.jsのキャンバス描画、ページ送り。日本語用CMap・JPEG 2000などのデコーダー・標準フォントをWeb/Androidへ同梱し、外部CDNやPDFプラグインに依存しない |
 | MP4・WebM・Ogg・QuickTime動画、MP3・MP4・WAV・Ogg・WebM・FLAC・AAC音声 | 標準プレイヤー。対応コーデックはブラウザー・WebViewによる |
 | EML・MSG | 件名・差出人・宛先・日時、本文、メール内の添付ファイル |
 | TXT・Markdown・CSV・JSON・XML・HTML・ログ・コード・予定表・連絡先などのテキスト | テキスト表示。JSONは整形し、HTMLやコードは実行しない |

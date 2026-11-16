@@ -86,7 +86,7 @@ private fun NativeMediaPreview(app: Session, src: String, name: String, contentT
                             val builder = Request.Builder().url(src)
                             request.requestHeaders.entries.firstOrNull { it.key.equals("Range", ignoreCase = true) }?.let { builder.header("Range", it.value) }
                             val call = client.newCall(builder.build())
-                            calls.add(call)
+                            if (!registerPreviewCall(call, calls, disposed)) return deniedPreviewResponse()
                             val response = call.execute()
                             val body = response.body
                             if (disposed.get() || !response.isSuccessful || body == null) { response.close(); calls.remove(call); return deniedPreviewResponse() }
@@ -140,3 +140,14 @@ internal fun publicPreviewAddress(address: InetAddress): Boolean {
         !(bytes.size == 4 && (bytes[0].toInt() and 0xff) == 100 && (bytes[1].toInt() and 0xc0) == 64)
 }
 private fun deniedPreviewResponse() = WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden", emptyMap(), ByteArrayInputStream(byteArrayOf()))
+
+/** Close the race between the initial disposed check and registering a synchronous Call. */
+internal fun registerPreviewCall(call: Call, calls: MutableSet<Call>, disposed: AtomicBoolean): Boolean {
+    calls.add(call)
+    if (disposed.get()) {
+        call.cancel()
+        calls.remove(call)
+        return false
+    }
+    return true
+}

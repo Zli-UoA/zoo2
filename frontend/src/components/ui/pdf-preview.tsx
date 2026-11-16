@@ -18,6 +18,7 @@ export function PdfPreview({ src }: { src: string }) {
     let cleanup = () => {};
     const abort = new AbortController();
     const timeout = setTimeout(() => {
+      cancelled = true;
       abort.abort();
       cleanup();
       setFailed(true);
@@ -30,8 +31,16 @@ export function PdfPreview({ src }: { src: string }) {
       ]);
       if (cancelled) return;
       pdfjs.GlobalWorkerOptions.workerSrc = workerUrl.default;
+      const assets = new URL(
+        `${import.meta.env.BASE_URL}assets/pdfjs/${pdfjs.version}/`,
+        window.location.href,
+      );
       const task = pdfjs.getDocument({
         data: bytes,
+        cMapUrl: new URL("cmaps/", assets).href,
+        cMapPacked: true,
+        wasmUrl: new URL("wasm/", assets).href,
+        standardFontDataUrl: new URL("standard_fonts/", assets).href,
         maxImageSize: 16_000_000,
         useSystemFonts: true,
       });
@@ -62,12 +71,15 @@ export function PdfPreview({ src }: { src: string }) {
     let cleanup = () => {};
     setRendering(true);
     const timeout = setTimeout(() => {
+      cancelled = true;
       cleanup();
+      void document.loadingTask.destroy();
       setFailed(true);
       setRendering(false);
     }, 15_000);
     void (async () => {
       const pdfPage = await document.getPage(page);
+      if (cancelled) return;
       const natural = pdfPage.getViewport({ scale: 1 });
       const viewport = pdfPage.getViewport({
         scale: Math.min(2, 1600 / natural.width, 2400 / natural.height),

@@ -222,7 +222,8 @@ if (androidEnabled) {
         workingDir(rootDir.resolve("../frontend"))
         commandLine("pnpm", "build:media-preview")
         inputs.files(fileTree(rootDir.resolve("../frontend/src")), fileTree(rootDir.resolve("../frontend/.storybook/fixtures")))
-        inputs.files(rootDir.resolve("../frontend/package.json"), rootDir.resolve("../frontend/pnpm-lock.yaml"), rootDir.resolve("../frontend/media-preview.html"), rootDir.resolve("../frontend/vite.media-preview.config.ts"))
+        inputs.files(fileTree(rootDir.resolve("../frontend/build")))
+        inputs.files(rootDir.resolve("../frontend/tsconfig.json"), rootDir.resolve("../frontend/package.json"), rootDir.resolve("../frontend/pnpm-lock.yaml"), rootDir.resolve("../frontend/media-preview.html"), rootDir.resolve("../frontend/vite.media-preview.config.ts"))
         outputs.dir(viewerAssets)
     }
     extensions.configure<com.android.build.gradle.LibraryExtension> {
