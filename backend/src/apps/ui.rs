@@ -18,6 +18,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/v1/messages/{id}/blocks", post(blocks))
         .route("/api/apps/v1/messages/{id}/components", post(blocks))
         .route("/api/apps/v1/options/{id}", post(provide_options))
+        .route("/api/apps/v1/uploads/{id}/download", get(submitted_file))
         .route("/api/apps/{id}/options/{request}", get(requested_options))
         .layer(axum::middleware::map_response(super::no_store))
 }
@@ -357,6 +358,32 @@ async fn invoke(
                 }
                 _ => {
                     check_submission(&doc, &b.values)?;
+                    // file_upload の値は、利用者がこのチャンネルに上げた、まだ投稿に付けていない添付の ID。
+                    // 送信先のアプリだけが 1 日のあいだ取得できるようにする
+                    let ids: Vec<String> = doc
+                        .walk()
+                        .into_iter()
+                        .filter(|c| matches!(c, crate::components::Component::FileUpload(_)))
+                        .filter_map(|c| c.custom_id())
+                        .flat_map(|id| {
+                            chosen(&b.values[id])
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                    if !ids.is_empty() {
+                        let channel = b
+                            .channel_id
+                            .as_deref()
+                            .ok_or_else(|| bad("File uploads need a channel"))?;
+                        let list = json!(ids).to_string();
+                        let found = one(&mut tx, "SELECT json_build_object('n',count(*))::text FROM attachments WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND uploader_id=$2 AND channel_id=$3 AND message_id IS NULL", &[&list, &actor.id, channel]).await?;
+                        if found["n"].as_u64() != Some(ids.len() as u64) {
+                            return Err(bad("Unknown uploaded file"));
+                        }
+                        toasty::sql::statement("INSERT INTO app_submitted_files(attachment_id,installation_id,expires_at) SELECT x,$2,now()+interval '1 day' FROM jsonb_array_elements_text($1::jsonb) x ON CONFLICT(attachment_id,installation_id) DO UPDATE SET expires_at=EXCLUDED.expires_at").bind(list.as_str()).bind(app["installation"].as_str().unwrap()).exec(&mut tx).await?;
+                    }
                     "view.submitted"
                 }
             }
@@ -694,6 +721,32 @@ async fn provide_options(
     one(&mut tx, "UPDATE app_ui SET document=$3,updated_at=now() WHERE id=$1 AND installation_id=$2 AND kind='options' AND expires_at>now() RETURNING '{}'::text", &[request.as_str(), p.installation_id.as_str(), &json!({"options":options}).to_string()]).await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
+}
+
+/// モーダルで利用者が送ったファイル（file_upload）を、送信先のアプリが取得する。送信から 1 日だけ使える。
+async fn submitted_file(
+    State(s): State<AppState>,
+    p: Principal,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    p.require("ui:write")?;
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let row = one(&mut tx, "SELECT json_build_object('key',a.storage_key,'type',a.content_type,'name',a.file_name,'size',a.file_size)::text FROM app_submitted_files g JOIN attachments a ON a.id=g.attachment_id WHERE g.attachment_id=$1 AND g.installation_id=$2 AND g.expires_at>now()", &[id.as_str(), p.installation_id.as_str()]).await?;
+    drop(tx);
+    let url = crate::storage::presign::generate_presigned_get_url(
+        &s.s3_client,
+        &s.config.s3.bucket,
+        row["key"].as_str().unwrap_or_default(),
+        row["type"].as_str().unwrap_or_default(),
+        row["name"].as_str().unwrap_or_default(),
+        std::time::Duration::from_secs(60),
+        s.config.s3.public_endpoint.as_deref(),
+    )
+    .await?;
+    Ok(Json(
+        json!({"url":url,"file_name":row["name"],"content_type":row["type"],"file_size":row["size"]}),
+    ))
 }
 
 /// 利用者が external_select の選択肢を受け取る。アプリの応答を最大 3 秒待つ（150ms ごとに 20 回まで確かめて止める）。

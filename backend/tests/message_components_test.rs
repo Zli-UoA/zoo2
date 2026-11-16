@@ -457,3 +457,65 @@ async fn backfill_moves_legacy_cards_and_blocks_and_can_be_restored() -> anyhow:
     assert!(read(&mut db).await["c"].is_null());
     Ok(())
 }
+
+#[tokio::test]
+async fn modal_file_uploads_are_readable_only_by_the_receiving_app() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    let invoke = format!("/api/apps/{}/invoke", f.id);
+    let v = ok(
+        &f.app,
+        "POST",
+        &invoke,
+        &f.owner,
+        json!({"kind":"shortcut","name":"event","channel_id":f.channel}),
+    )
+    .await;
+    let trigger =
+        delivery(&f, v["event_id"].as_str().unwrap()).await?["data"]["trigger_id"].clone();
+    let surface = ok(&f.app, "POST", "/api/apps/v1/surfaces", &f.token, json!({"kind":"modal","user_id":f.owner,"channel_id":f.channel,"trigger_id":trigger,"components":[
+        {"type":18,"label":"Files","component":{"type":19,"custom_id":"files","max_values":2}}]})).await;
+    // 利用者がこのチャンネルに上げた、まだ投稿に付けていない添付
+    let mine = Uuid::new_v4().to_string();
+    let other = Uuid::new_v4().to_string();
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    for (id, uploader) in [(&mine, &f.owner), (&other, &f.other)] {
+        toasty::sql::statement("INSERT INTO attachments(id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) VALUES($1,$2,$3,'a.pdf',3,'application/pdf',$1)")
+            .bind(id.as_str()).bind(uploader.as_str()).bind(f.channel.as_str()).exec(&mut tx).await?;
+    }
+    tx.commit().await?;
+    let submit = |ids: Value| json!({"kind":"submit","surface_id":surface["id"],"channel_id":f.channel,"values":{"files":ids}});
+    // ほかの人の添付は送れない
+    let (s, _) = request(&f.app, "POST", &invoke, &f.owner, submit(json!([other]))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = request(
+        &f.app,
+        "GET",
+        &format!("/api/apps/v1/uploads/{mine}/download"),
+        &f.token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "not granted before submit");
+    ok(&f.app, "POST", &invoke, &f.owner, submit(json!([mine]))).await;
+    let file = ok(
+        &f.app,
+        "GET",
+        &format!("/api/apps/v1/uploads/{mine}/download"),
+        &f.token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(file["file_name"], "a.pdf");
+    assert!(file["url"].as_str().unwrap().contains(&mine));
+    let (s, _) = request(
+        &f.app,
+        "GET",
+        &format!("/api/apps/v1/uploads/{other}/download"),
+        &f.token,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    Ok(())
+}

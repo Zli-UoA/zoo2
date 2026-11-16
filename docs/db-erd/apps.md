@@ -182,6 +182,13 @@ erDiagram
       timestamptz used_at
     }
     app_socket_tickets }o--o| app_credentials : app_socket_tickets_credential_id_fkey
+    app_submitted_files {
+      text attachment_id PK,FK
+      text installation_id PK,FK
+      timestamptz expires_at
+    }
+    app_submitted_files }o--o| attachments : app_submitted_files_attachment_id_fkey
+    app_submitted_files }o--o| app_installations : app_submitted_files_installation_id_fkey
     app_ui {
       text id PK
       text installation_id FK

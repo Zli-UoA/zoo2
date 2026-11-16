@@ -75,3 +75,12 @@ END $$;
 ALTER TABLE app_ui DROP CONSTRAINT app_ui_kind_check;
 ALTER TABLE app_ui ADD CONSTRAINT app_ui_kind_check CHECK(kind IN ('home','modal','ephemeral','trigger','options'));
 INSERT INTO app_event_types VALUES('options.requested',NULL,'app');
+
+-- モーダルのファイル送信（file_upload）。利用者が上げた添付を、送信先のアプリが 1 日だけ取得できるようにする。
+CREATE TABLE app_submitted_files (
+  attachment_id text NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  installation_id text NOT NULL REFERENCES app_installations(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (attachment_id, installation_id)
+);
+CREATE INDEX app_submitted_files_installation ON app_submitted_files(installation_id);

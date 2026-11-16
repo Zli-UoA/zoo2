@@ -104,6 +104,7 @@ App のメッセージ・ホーム・モーダル・一時メッセージ・リ�
 | `POST /api/app-responses/{token}` | イベントの `response_path` に一時メッセージを返す |
 | `POST /api/apps/v1/messages/{id}/unfurls` | リンクの展開（`links:write`） |
 | `POST /api/apps/v1/options/{request_id}` | external select の選択肢を返す（下の「選択肢の問い合わせ」） |
+| `GET /api/apps/v1/uploads/{id}/download` | モーダルで利用者が送ったファイルを取得する（下の「ファイルの送信」） |
 
 本文は次のどれかです。形式は自動で見分けます。`"format": "discord" | "slack" | "legacy"` で明示もできます。
 
@@ -169,6 +170,10 @@ await zoo.setComponents(id, message([
 | `trigger_id`、`response_path` | モーダルを開く、一時メッセージを返すための値（下を参照） |
 
 サーバーは、値が選択肢の中にあるか、個数が `min_values`〜`max_values` に収まるか、送信で `required` の入力が空でないか、`format` に合うかを確かめ、合わなければ 400 にします。押せない状態（`disabled`）の部品とリンクボタンは操作できません。
+
+### ファイルの送信（file upload）
+
+モーダルの File Upload（19）では、利用者がそのチャンネルに添付としてファイルを上げ、送信の `values[custom_id]` に添付の ID の配列が入ります。サーバーは、送信した本人がそのチャンネルに上げ、まだ投稿に付けていない添付かを確かめます。アプリは送信から 1 日のあいだ、`GET /api/apps/v1/uploads/{添付の ID}/download`（`ui:write`）で、60 秒有効のダウンロード URL を受け取れます。
 
 ### 選択肢の問い合わせ（external select）
 
