@@ -1628,5 +1628,40 @@
     "mentions": "Mentions and replies",
     "messages": "Direct messages",
     "reactions": "Reactions"
+  },
+  "onboarding": {
+    "replay": "Quick tour",
+    "next": "Next",
+    "back": "Back",
+    "skip": "Skip tour",
+    "finish": "Start using Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "Welcome to Zoo",
+      "description": "Explore Zoo using the real screens. Next opens the channel list. You can skip and restart with the compass button."
+    },
+    "channels": {
+      "title": "Find a channel",
+      "description": "Choose a channel in the highlighted list. Use Browse channels to find and join more conversations."
+    },
+    "messages": {
+      "title": "Join the conversation",
+      "description": "You can post in the highlighted message box in the channel you opened. Use threads for replies and reactions for quick responses."
+    },
+    "notifications": {
+      "title": "Keep up with notifications",
+      "description": "This is Notifications. Check mentions and replies here, then select a notification to open its conversation."
+    },
+    "settings": {
+      "title": "Make Zoo your own",
+      "description": "This is General settings. Use the highlighted tabs to adjust display and behavior. You can restart the tour with the compass button."
+    },
+    "slack": {
+      "title": "Connect Slack",
+      "description": "This is Slack settings. Link your Slack account to associate imported past posts with your Zoo account. You can also import private channels you created. Ask an administrator if integration is not configured."
+    },
+    "title": "Getting started",
+    "chooseChannel": "Choose a channel to continue. If needed, use Browse channels to join one.",
+    "navigationError": "Could not open the screen. Please try again."
   }
 }

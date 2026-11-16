@@ -140,7 +140,7 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
   }
 
   return (
-    <div className="space-y-4">
+    <div data-onboarding="slack" className="space-y-4">
       <SettingsSection title={t("slackLink.title")} description={t("slackLink.description")}>
         {state === null && !error ? (
           <Spinner label={t("slackLink.loading")} className="justify-start" />
