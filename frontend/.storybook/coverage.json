@@ -1490,7 +1490,10 @@
     {
       "file": "src/components/chat/components/ComponentTree.tsx",
       "story": "src/components/chat/components/ComponentTree.stories.tsx",
-      "checks": ["src/components/chat/components/parse.test.ts"]
+      "checks": [
+        "src/components/chat/components/parse.test.ts",
+        "src/components/chat/components/ComponentTree.browser.test.tsx"
+      ]
     }
   ]
 }

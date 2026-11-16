@@ -127,6 +127,7 @@ mod tests {
             command::RESYNC,
             command::ACCOUNT_PROFILES,
             command::SEND_MESSAGE,
+            command::INVOKE_APP_ACTION,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,

@@ -13,7 +13,7 @@ import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { apiPath } from "../../../lib/api/path";
-import { useCollections } from "../../../lib/electric/collections-context";
+import { useCollections, useOptionalCollections } from "../../../lib/electric/collections-context";
 import { Button, buttonVariants } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { ExternalLink } from "../../ui/external-link";
@@ -805,6 +805,7 @@ function Interactive(props: { c: Component; labelled?: boolean }): ReactNode {
   return (
     <>
       <InteractiveControl {...props} confirm={confirm.run} />
+      {confirm.dialog}
     </>
   );
 }
@@ -1077,10 +1078,16 @@ function EntitySelect({
   disabled: boolean;
 }) {
   const { t } = useTranslation();
-  const collections = useCollections();
+  // 同期済みのユーザーとチャンネルを使う。まだ用意されていない（Storybook など）ときは候補なし
+  const collections = useOptionalCollections();
   const ctx = useCtx();
-  const users = useLiveQuery((q) => q.from({ users: collections.users }))?.data ?? [];
-  const channels = useLiveQuery((q) => q.from({ channels: collections.channels }))?.data ?? [];
+  const users =
+    useLiveQuery((q) => (collections?.users ? q.from({ users: collections.users }) : undefined))
+      ?.data ?? [];
+  const channels =
+    useLiveQuery((q) =>
+      collections?.channels ? q.from({ channels: collections.channels }) : undefined,
+    )?.data ?? [];
   const many = (c.max_values ?? 1) > 1;
   // zoo にはロールがないので、role select は選べない状態で出す。mentionable select はユーザーだけを候補にする
   if (c.type === T.RoleSelect)
