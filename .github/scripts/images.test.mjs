@@ -103,7 +103,7 @@ function planFixture({files = [], fork = false, state = 'open', currentSha = sha
   const github = {rest: {pulls: {get: async () => ({data: {state, head: {sha: currentSha}}}), listFiles: 'listFiles'}, packages: {getAllPackageVersionsForPackageOwnedByOrg: 'versions'}}, paginate: async (method, params) => {
     assert.equal(params.per_page, 100);
     // latest は main の SHA 98 を指す。より新しいバージョンがあっても昇格済みの SHA を使う。
-    if (method === 'versions') { requestedVersions = true; return [version(2, [sha(97)]), version(1, ['latest', sha(98)])]; }
+    if (method === 'versions') { requestedVersions = true; return [version(2, [sha(97)]), version(1, ['latest', sha(98), '0.0.10'])]; }
     assert.equal(method, 'listFiles'); requestedPages = true; return files;
   }};
   return {github, context, core, outputs, paginated: () => requestedPages, readVersions: () => requestedVersions};
@@ -210,6 +210,27 @@ test('truncated main comparisons and new registries build; API permission errors
   assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
   fixture.github.paginate = async () => { throw Object.assign(new Error('forbidden'), { status: 403 }); };
   await assert.rejects(mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), /forbidden/);
+});
+
+test('an interrupted promotion cannot hide application changes on a rerun or later docs push', async () => {
+  const fixture = planFixture();
+  const tags = {
+    frontend: ['latest', sha(99), '0.0.11'],
+    // Reused backend bytes retain the old release and multiple commit tags.
+    backend: ['latest', sha(98), sha(99), '0.0.10', '0.0.11'],
+    migrate: ['latest', sha(98), sha(99), '0.0.10'],
+  };
+  fixture.github.paginate = async (_, params) => [version(1, tags[params.package_name.replace('zoo2-', '')])];
+  fixture.github.rest.repos = { compareCommitsWithBasehead: async () => { throw new Error('Unfinished release must not become a checkpoint'); } };
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(100)), true);
+  tags.migrate.push('0.0.11');
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), false);
+  fixture.github.rest.repos.compareCommitsWithBasehead = async params => {
+    assert.equal(params.basehead, `${sha(99)}...${sha(100)}`);
+    return { data: { status: 'ahead', files: [{ filename: 'docs/later.md' }] } };
+  };
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(100)), false);
 });
 
 test('image planning cannot be excluded by GitHub path truncation', () => {

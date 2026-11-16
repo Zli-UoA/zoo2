@@ -80,9 +80,23 @@ export async function promotedMainSha(github, org) {
 
 export async function mainRequiresImages(github, repo, sha) {
   let promoted;
-  try { promoted = await promotedMainSha(github, repo.owner); }
+  try {
+    const latest = await Promise.all(components.map(async component => {
+      const versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {
+        org: repo.owner, package_type: 'container', package_name: `zoo2-${component}`, per_page: 100,
+      });
+      return versions.find(v => v.metadata?.container?.tags?.includes('latest'))?.metadata.container.tags ?? [];
+    }));
+    const common = latest[0].filter(tag => latest.every(tags => tags.includes(tag)));
+    // latest aliases move before the terminal migrate release tag. An
+    // interrupted promotion must not become a checkpoint for a later push.
+    // Require all three latest manifests to share a completed release and SHA.
+    if (!common.some(isReleaseTag)) return true;
+    promoted = common.find(tag => /^[a-f0-9]{40}$/.test(tag));
+    if (!promoted) return true;
+  }
   catch (error) {
-    if (error.status === 404 || /has no main commit tag/.test(error.message)) return true;
+    if (error.status === 404) return true;
     throw error;
   }
   if (promoted === sha) return false;
