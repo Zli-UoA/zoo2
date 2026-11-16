@@ -58,6 +58,8 @@ export const Interactive: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("button", { name: "Approve" })).toBeEnabled();
     await expect(canvas.getByRole("button", { name: "Off" })).toBeDisabled();
+    // メッセージ上のピッカーは、入力の途中では送らず「送信」で 1 回だけ送る
+    await expect(canvas.getAllByRole("button", { name: /送信|Submit/ }).length).toBe(3);
   },
 };
 

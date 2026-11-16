@@ -3,7 +3,7 @@ import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { MessageCard, parseMessageCard, type CardData } from "./messages/MessageCard";
 import { openApp } from "./AppIdentity";
-import { useMemo, useState } from "react";
+import { Suspense, lazy, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -11,7 +11,10 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import type { FeedMessage } from "./messages/messageFormat";
 import { apiPath } from "../../lib/api/path";
-import { ComponentTree } from "./components/ComponentTree";
+// 部品の描画は MFM やリンクの描画を伴うので、部品のある画面になったときだけ読み込む
+const ComponentTree = lazy(() =>
+  import("./components/ComponentTree").then((m) => ({ default: m.ComponentTree })),
+);
 import { parseComponents } from "./components/parse";
 
 type Block =
@@ -53,15 +56,17 @@ export function AppBlocks(props: Parameters<typeof LegacyBlocks>[0]) {
   const doc = parseComponents(props.blocks);
   if (doc)
     return (
-      <ComponentTree
-        document={doc}
-        appId={props.appId}
-        surfaceId={props.surfaceId}
-        messageId={props.messageId}
-        channelId={props.channelId}
-        submit={props.submit}
-        onDone={props.onDone}
-      />
+      <Suspense fallback={null}>
+        <ComponentTree
+          document={doc}
+          appId={props.appId}
+          surfaceId={props.surfaceId}
+          messageId={props.messageId}
+          channelId={props.channelId}
+          submit={props.submit}
+          onDone={props.onDone}
+        />
+      </Suspense>
     );
   const legacy =
     props.blocks && typeof props.blocks === "object" && !Array.isArray(props.blocks)
@@ -251,13 +256,15 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
     <>
       {doc ? (
         // Webhook と Slack 取り込みの部品は app_origin_id がないので、操作部品は押せない状態で表示する
-        <ComponentTree
-          document={doc}
-          appId={message.app_origin_id}
-          messageId={message.id}
-          channelId={shell.selectedChannelId}
-          attachments={files}
-        />
+        <Suspense fallback={null}>
+          <ComponentTree
+            document={doc}
+            appId={message.app_origin_id}
+            messageId={message.id}
+            channelId={shell.selectedChannelId}
+            attachments={files}
+          />
+        </Suspense>
       ) : null}
       {!doc && appId && parseBlocks(blocks).length ? (
         <AppBlocks
@@ -280,12 +287,14 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
               {unfurl.name} · APP
             </button>
             {unfurlDoc ? (
-              <ComponentTree
-                document={unfurlDoc}
-                appId={unfurl.app_id}
-                messageId={message.id}
-                channelId={shell.selectedChannelId}
-              />
+              <Suspense fallback={null}>
+                <ComponentTree
+                  document={unfurlDoc}
+                  appId={unfurl.app_id}
+                  messageId={message.id}
+                  channelId={shell.selectedChannelId}
+                />
+              </Suspense>
             ) : (
               <MessageCard card={card!} />
             )}

@@ -9,12 +9,11 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { useLiveQuery } from "@tanstack/react-db";
-import { ChevronDownIcon, ChevronRightIcon, MoreHorizontalIcon, PlayIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { apiPath } from "../../../lib/api/path";
-import { useCollections, useOptionalCollections } from "../../../lib/electric/collections-context";
-import { useAttachmentUpload } from "../../../hooks/useAttachments";
+import { useCollections } from "../../../lib/electric/collections-context";
 import { Button, buttonVariants } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { ExternalLink } from "../../ui/external-link";
@@ -97,7 +96,7 @@ export function ComponentTree({
   ...target
 }: { document: ComponentDocument } & ComponentTarget) {
   const { t } = useTranslation();
-  const collections = useOptionalCollections();
+  const collections = useCollections();
   const config = collections?.config;
   const client = useMemo(() => (config ? createConfiguredApiClient(config) : null), [config]);
   const [values, setValues] = useState(() => initialValues(doc));
@@ -121,13 +120,10 @@ export function ComponentTree({
           message_id: target.messageId,
           channel_id: target.channelId,
           action_id: actionId,
-          values:
-            kind === "options"
-              ? { query: value }
-              : { ...values, ...(actionId && value !== undefined ? { [actionId]: value } : {}) },
+          values: { ...values, ...(actionId && value !== undefined ? { [actionId]: value } : {}) },
         },
       });
-      if (kind !== "options") refreshAppSurfaces();
+      refreshAppSurfaces();
       if (kind === "submit") target.onDone?.();
       return result;
     } catch {
@@ -240,7 +236,7 @@ function Node({ c }: { c: Component }): ReactNode {
       return <Container c={c} />;
     case T.Section:
       return (
-        <div className="flex min-w-0 items-start gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
             {c.components?.map((x, i) => (
               <Node key={i} c={x} />
@@ -293,6 +289,19 @@ function Node({ c }: { c: Component }): ReactNode {
         </div>
       );
     case T.Label:
+      // 1 つのチェックボックスは、見出しと横に並べる
+      if (c.component?.type === T.Checkbox)
+        return (
+          <label className="flex items-center gap-2">
+            <Interactive c={c.component} labelled />
+            <span className="flex flex-col">
+              <span className="font-medium">{c.label}</span>
+              {c.description ? (
+                <span className="text-xs text-muted-foreground">{c.description}</span>
+              ) : null}
+            </span>
+          </label>
+        );
       return (
         <label className="flex flex-col gap-1">
           <span className="font-medium">{c.label}</span>
@@ -474,10 +483,12 @@ function Video({ c }: { c: Component }) {
           className="relative block"
         >
           <Image url={c.thumbnail_url ?? ""} alt={c.alt_text} className="aspect-video w-full" />
-          <PlayIcon
-            className="absolute inset-0 m-auto size-10 rounded-full bg-black/60 p-2 text-white"
+          <span
             aria-hidden
-          />
+            className="absolute inset-0 m-auto flex size-10 items-center justify-center rounded-full bg-black/60 text-white"
+          >
+            ▶
+          </span>
         </a>
       ) : null}
       {href ? <ExternalLink href={href}>{c.title}</ExternalLink> : <span>{c.title}</span>}
@@ -547,7 +558,7 @@ function Table({ c }: { c: Component }) {
               {r.map((x, j) => (
                 <td
                   key={j}
-                  className={`px-2 py-1 align-top ${align(j)} ${c.column_settings?.[j]?.is_wrapped ? "whitespace-normal" : "whitespace-nowrap"}`}
+                  className={`px-2 py-1 align-middle ${align(j)} ${c.column_settings?.[j]?.is_wrapped ? "whitespace-normal" : "whitespace-nowrap"}`}
                 >
                   {cell(x)}
                 </td>
@@ -884,7 +895,6 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
               </option>
             ))}
           </Select>
-          {c.type === T.Overflow ? <MoreHorizontalIcon className="sr-only" /> : null}
           {confirm.dialog}
         </>
       );
@@ -941,22 +951,35 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
               .toISOString()
               .slice(0, 16)
           : ((value as string) ?? "");
-      return (
+      const toValue = (v: string) =>
+        c.type === T.DateTimePicker && v ? String(Math.floor(new Date(v).getTime() / 1000)) : v;
+      // 入力の途中（年を 1 桁打つたびなど）では送らない。メッセージ上では「送信」を押したときに 1 回だけ送る。
+      // 送信中も入力欄は無効にしない（打っている途中の文字とフォーカスを失わないため）
+      const field = (
         <Input
           type={type}
           className="w-auto"
           value={shown}
           required={c.required === true}
-          disabled={disabled && !deferred}
-          onChange={(e) => {
-            const v = e.target.value;
-            choose(
-              c.type === T.DateTimePicker && v
-                ? String(Math.floor(new Date(v).getTime() / 1000))
-                : v,
-            );
-          }}
+          disabled={(!!c.disabled || !ctx.appId) && !deferred}
+          onChange={(e) => ctx.set(id, toValue(e.target.value))}
         />
+      );
+      if (deferred) return field;
+      return (
+        <span className="flex items-center gap-2">
+          {field}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled || !value}
+            onClick={() => confirm.run(() => void ctx.invoke("action", id, value))}
+          >
+            {t("apps.submit")}
+          </Button>
+          {confirm.dialog}
+        </span>
       );
     }
     case T.UserSelect:
@@ -965,7 +988,13 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
     case T.RoleSelect:
       return <EntitySelect c={c} choose={choose} disabled={disabled && !deferred} />;
     case T.ExternalSelect:
-      return <ExternalSelect c={c} choose={choose} disabled={disabled && !deferred} />;
+      return (
+        <ExternalSelect
+          c={c}
+          choose={choose}
+          disabled={(!!c.disabled || !ctx.appId) && !deferred}
+        />
+      );
     case T.FileUpload:
       return <FileUpload c={c} disabled={disabled} />;
     default:
@@ -1076,7 +1105,7 @@ function ExternalSelect({
 }) {
   const { t } = useTranslation();
   const ctx = useCtx();
-  const collections = useOptionalCollections();
+  const collections = useCollections();
   const client = useMemo(
     () => (collections?.config ? createConfiguredApiClient(collections.config) : null),
     [collections?.config],
@@ -1087,17 +1116,31 @@ function ExternalSelect({
   useEffect(() => {
     if (query.length < (c.min_query_length ?? 3) || !client || !ctx.appId) return;
     latest.current = query;
+    // 選択肢の問い合わせは、ボタン操作の invoke（木全体の busy・error を変える）とは別の要求にする
     const timer = setTimeout(async () => {
-      const asked = (await ctx.invoke("options", c.custom_id, query)) as
-        | { request_id?: string }
-        | undefined;
-      if (!asked?.request_id || latest.current !== query) return;
-      const got = await client
-        .get<{ options: SelectOption[] | null }>(
+      try {
+        const asked = await client.request<{ request_id?: string }>(
+          apiPath`/api/apps/${ctx.appId!}/invoke`,
+          {
+            method: "POST",
+            body: {
+              kind: "options",
+              surface_id: ctx.surfaceId,
+              message_id: ctx.messageId,
+              channel_id: ctx.channelId,
+              action_id: c.custom_id,
+              values: { query },
+            },
+          },
+        );
+        if (!asked?.request_id || latest.current !== query) return;
+        const got = await client.get<{ options: SelectOption[] | null }>(
           apiPath`/api/apps/${ctx.appId!}/options/${asked.request_id}`,
-        )
-        .catch(() => ({ options: null }));
-      if (latest.current === query && got.options) setOptions(got.options);
+        );
+        if (latest.current === query && got.options) setOptions(got.options);
+      } catch {
+        /* 候補が出ないだけにする。入力を続ければ問い合わせ直す */
+      }
     }, 400);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1131,7 +1174,13 @@ function ExternalSelect({
 function FileUpload({ c, disabled }: { c: Component; disabled: boolean }) {
   const { t } = useTranslation();
   const ctx = useCtx();
-  const upload = useAttachmentUpload(ctx.channelId ?? "");
+  const collections = useCollections();
+  // アップロード処理は使うときにだけ読み込む（部品を描画するだけの画面では要らない）
+  const upload = async (file: File) => {
+    if (!collections?.config || !ctx.channelId) throw new Error("no channel");
+    const { uploadAttachment } = await import("../../../lib/api/attachments");
+    return uploadAttachment(createConfiguredApiClient(collections.config), ctx.channelId, file);
+  };
   const [state, setState] = useState<"idle" | "uploading" | "error">("idle");
   const accept = (c.file_types ?? [])
     .map((x) => (x === "image" || x === "video" || x === "audio" ? `${x}/*` : x))

@@ -366,7 +366,7 @@ private fun ComponentNode(scope: ComponentScope, c: JsonObject) {
             }
         }
         CT.SECTION ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     c.cList("components").forEach { ComponentNode(scope, it) }
                 }
@@ -409,7 +409,16 @@ private fun ComponentNode(scope: ComponentScope, c: JsonObject) {
                 c.cList("components").forEach { Interactive(scope, it) }
             }
         CT.LABEL ->
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            // 1 つのチェックボックスは、見出しと横に並べる
+            if (c.cObj("component")?.let { componentType(it) } == CT.CHECKBOX)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    c.cObj("component")?.let { Interactive(scope, it, labelled = true) }
+                    Column {
+                        Text(c.cStr("label"), fontWeight = FontWeight.Medium)
+                        if (c.cStr("description").isNotEmpty()) Small(c.cStr("description"))
+                    }
+                }
+            else Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(c.cStr("label"), fontWeight = FontWeight.Medium)
                 if (c.cStr("description").isNotEmpty()) Small(c.cStr("description"))
                 c.cObj("component")?.let { Interactive(scope, it, labelled = true) }
@@ -546,7 +555,7 @@ private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
     Column(Modifier.horizontalScroll(rememberScrollState())) {
         if (c.cStr("caption").isNotEmpty()) Small(c.cStr("caption"))
         (if (header) listOf(rows.first()) else emptyList()).plus(body.drop(page * pageSize).take(pageSize)).forEachIndexed { i, row ->
-            Row(Modifier.padding(vertical = 2.dp)) {
+            Row(Modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 row.forEach { cell ->
                     Box(Modifier.width(120.dp).padding(horizontal = 4.dp)) {
                         val button = cell.cObj("button")
