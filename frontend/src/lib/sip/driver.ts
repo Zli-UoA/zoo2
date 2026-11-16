@@ -19,12 +19,15 @@ export const createSipDriver: SipDriverFactory = async (credentials, events) => 
     media: { constraints: { audio: true, video: false }, remote: { audio } },
     userAgentOptions: {
       sessionDescriptionHandlerFactory: Web.defaultSessionDescriptionHandlerFactory(
-        async (constraints) => {
+        async (constraints, handler) => {
           const mic = loadSelectedDevice("mic");
-          const stream = await Web.defaultMediaStreamFactory()({
-            ...constraints,
-            audio: constraints.audio && mic ? { deviceId: { ideal: mic } } : constraints.audio,
-          });
+          const stream = await Web.defaultMediaStreamFactory()(
+            {
+              ...constraints,
+              audio: constraints.audio && mic ? { deviceId: { ideal: mic } } : constraints.audio,
+            },
+            handler,
+          );
           if (stopped) {
             stream.getTracks().forEach((track) => track.stop());
             throw new Error("SIP disconnected");

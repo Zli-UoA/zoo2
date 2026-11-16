@@ -121,6 +121,14 @@ describe("SIP controller", () => {
     expect(s.controller.snapshot().error).toBe(true);
     s.controller.disconnect();
   });
+  it("disconnects when the PBX settings changed before a call", async () => {
+    const s = setup();
+    await s.controller.connect("personal");
+    s.post.mockResolvedValueOnce({ data: { ...credentials, revision: "v2" }, txid: null });
+    await s.controller.dial("101");
+    expect(s.driver.call).not.toHaveBeenCalled();
+    expect(s.controller.snapshot()).toMatchObject({ status: "offline", error: true });
+  });
   it("clears the old registration before switching lines", async () => {
     const s = setup();
     await s.controller.connect("personal");
