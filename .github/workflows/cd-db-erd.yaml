@@ -1,0 +1,106 @@
+name: DB ER diagram
+
+on:
+  pull_request:
+    paths:
+      - infra/db/schema.sql
+      - docs/erd/**
+      - .github/workflows/cd-db-erd.yaml
+  push:
+    branches: [main]
+    paths:
+      - infra/db/schema.sql
+      - docs/erd/**
+      - .github/workflows/cd-db-erd.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/erd/package-lock.json
+      - run: npm ci
+        working-directory: docs/erd
+      - run: npm run build
+        working-directory: docs/erd
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: db-erd
+          path: docs/erd/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: zli-kubecamp-no-docker
+    timeout-minutes: 10
+    concurrency:
+      group: db-erd-production
+      cancel-in-progress: false
+    environment:
+      name: db-erd
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    steps:
+      - name: Check Cloudflare configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          for variable in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!variable}" ]; then
+              echo "::error::$variable is not set. See docs/erd/README.md."
+              exit 1
+            fi
+          done
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: db-erd
+          path: erd-static
+      - name: Remove runtime configuration
+        run: rm -rf -- erd-static/_worker.js erd-static/_headers erd-static/_redirects erd-static/_routes.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+      - name: Check current main before publishing
+        id: current
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const {data: branch} = await github.rest.repos.getBranch({
+              ...context.repo, branch: 'main',
+            });
+            const publish = branch.commit.sha === context.sha;
+            core.setOutput('publish', String(publish));
+            if (!publish) core.notice('Skipping outdated main build; run the workflow on current main.');
+      - name: Deploy to Cloudflare Pages
+        if: steps.current.outputs.publish == 'true'
+        id: deploy
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: npm
+          wranglerVersion: "4.162.0"
+          command: >-
+            pages deploy erd-static
+            --project-name=zoo2-erd
+            --branch=main
+            --commit-hash=${{ github.sha }}
+      - name: Publish diagram link
+        if: steps.current.outputs.publish == 'true'
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          echo "[DB ER diagram]($DEPLOYMENT_URL)" >> "$GITHUB_STEP_SUMMARY"
