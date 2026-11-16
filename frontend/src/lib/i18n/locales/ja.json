@@ -281,7 +281,9 @@
     "membershipError": "スレッドの参加状態を更新できませんでした。",
     "participants": "参加者 {{count}}人",
     "participantsMore": "ほか {{count}}人",
-    "participantsEmpty": "参加者はいません"
+    "participantsEmpty": "参加者はいません",
+    "joinToReply": "参加するとこのスレッドに返信できます。",
+    "reopenAndJoin": "再Openして参加する"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",

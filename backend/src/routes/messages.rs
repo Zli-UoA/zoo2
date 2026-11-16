@@ -827,6 +827,19 @@ pub(crate) async fn create_message_impl(
             }
         }
 
+        // Like a channel, replying needs membership: join the thread first. The first reply
+        // creates the thread, so only threads that already track participants are gated.
+        let gate_root = roots
+            .first()
+            .and_then(|root| root["id"].as_str())
+            .unwrap_or(parent_id.as_str());
+        let state = crate::apps::one(&mut tx,
+            "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text",
+            &[gate_root, auth_user.id.as_str()]).await?;
+        if state["tracked"] == true && state["joined"] != true {
+            return Err(AppError::Forbidden("Join the thread before replying".into()));
+        }
+
         parent_author_id = Some(parent.user_id);
     }
 

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ArrowLeftIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, LogOutIcon, UsersIcon, XIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
@@ -44,6 +44,8 @@ export interface ThreadPaneProps {
   onJoinThread?: () => void;
   onLeaveThread?: () => void;
   onReopenThread?: () => void;
+  /** アーカイブ済みを再Openして参加する（参加ボタンの代わりに出す）。 */
+  onReopenAndJoinThread?: () => void;
   isLoading: boolean;
   isError: boolean;
   currentUserId: string | null;
@@ -113,6 +115,7 @@ export function ThreadPane({
   onJoinThread,
   onLeaveThread,
   onReopenThread,
+  onReopenAndJoinThread,
   isLoading,
   isError,
   currentUserId,
@@ -141,7 +144,10 @@ export function ThreadPane({
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
+  const [participantsOpen, setParticipantsOpen] = useState(false);
   const items = useMemo(() => buildMessageItems(replies), [replies]);
+  // チャンネルと同様、参加してから返信する。最初の返信（参加者がまだ居ない）はスレッドを作るので参加不要。
+  const needsJoin = isMember && membership !== "joined" && (participantCount ?? 0) > 0;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -228,6 +234,32 @@ export function ThreadPane({
         {isArchived ? (
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
+        {participantCount !== undefined ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            id="thread-participants-toggle"
+            aria-expanded={participantsOpen}
+            aria-controls="thread-participants"
+            aria-label={t("threads.participants", { count: participantCount })}
+            onClick={() => setParticipantsOpen((value) => !value)}
+          >
+            <UsersIcon aria-hidden="true" />
+            <span className="tabular-nums">{participantCount}</span>
+          </Button>
+        ) : null}
+        {!readOnly && isMember && membership === "joined" && onLeaveThread ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("threads.leave")}
+            title={t("threads.leave")}
+            disabled={membershipPending || isOffline}
+            onClick={onLeaveThread}
+          >
+            <LogOutIcon />
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="icon-sm"
@@ -239,10 +271,10 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
-      {participantCount !== undefined ? (
+      {participantCount !== undefined && participantsOpen ? (
         <ThreadParticipants count={participantCount} participants={participants ?? []} />
       ) : null}
-      {!readOnly && isMember ? (
+      {!readOnly && isMember && ((isArchived && onReopenThread) || membershipError) ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
           {isArchived && onReopenThread ? (
             <Button
@@ -252,25 +284,6 @@ export function ThreadPane({
               onClick={onReopenThread}
             >
               {t("threads.reopen")}
-            </Button>
-          ) : null}
-          {membership === "joined" && onLeaveThread ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={membershipPending || isOffline}
-              onClick={onLeaveThread}
-            >
-              {t("threads.leave")}
-            </Button>
-          ) : !isArchived && onJoinThread ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={membership === undefined || membershipPending || isOffline}
-              onClick={onJoinThread}
-            >
-              {t("threads.join")}
             </Button>
           ) : null}
           {membershipError ? (
@@ -407,21 +420,30 @@ export function ThreadPane({
             <p className="px-3 py-2 text-xs text-muted-foreground">{t("threads.reopenOnSend")}</p>
           ) : null}
           <TypingIndicator users={typingUsers} />
-          <Composer
-            commands={commands}
-            onRequestCommands={onRequestCommands}
-            mentionUsers={mentionUsers}
-            mentionMemberIds={mentionMemberIds}
-            disabled={!isMember || isOffline || composeDisabledReason !== undefined}
-            onTyping={onTyping}
-            onSend={onSendReply}
-            onUploadAttachment={onUploadAttachment}
-            placeholder={
-              composeDisabledReason ??
-              (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
-            }
-            ariaLabel={t("threads.compose")}
-          />
+          {needsJoin ? (
+            <ThreadJoinPrompt
+              archived={!!isArchived}
+              pending={membershipPending}
+              disabled={membership === undefined || isOffline}
+              onJoin={isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread}
+            />
+          ) : (
+            <Composer
+              commands={commands}
+              onRequestCommands={onRequestCommands}
+              mentionUsers={mentionUsers}
+              mentionMemberIds={mentionMemberIds}
+              disabled={!isMember || isOffline || composeDisabledReason !== undefined}
+              onTyping={onTyping}
+              onSend={onSendReply}
+              onUploadAttachment={onUploadAttachment}
+              placeholder={
+                composeDisabledReason ??
+                (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
+              }
+              ariaLabel={t("threads.compose")}
+            />
+          )}
         </>
       ) : null}
     </aside>
@@ -436,42 +458,58 @@ function ThreadParticipants({
   participants: ThreadParticipant[];
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
   return (
     <div className="border-b px-3 py-2">
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-expanded={open}
-        id="thread-participants-toggle"
-        aria-controls="thread-participants"
-        onClick={() => setOpen((value) => !value)}
+      <ul
+        id="thread-participants"
+        aria-label={t("threads.participants", { count })}
+        className="max-h-40 overflow-y-auto text-xs"
       >
-        {t("threads.participants", { count })}
-      </Button>
-      {open ? (
-        <ul
-          id="thread-participants"
-          aria-labelledby="thread-participants-toggle"
-          className="mt-1 max-h-40 overflow-y-auto text-xs"
-        >
-          {participants.length === 0 ? (
-            <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
-          ) : (
-            participants.map((participant) => (
-              <li key={participant.id} className="truncate py-0.5">
-                {participant.display_name || participant.user_name}
-                <span className="text-muted-foreground"> @{participant.user_name}</span>
-              </li>
-            ))
-          )}
-          {count > participants.length ? (
-            <li className="text-muted-foreground">
-              {t("threads.participantsMore", { count: count - participants.length })}
+        {participants.length === 0 ? (
+          <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
+        ) : (
+          participants.map((participant) => (
+            <li key={participant.id} className="truncate py-0.5">
+              {participant.display_name || participant.user_name}
+              <span className="text-muted-foreground"> @{participant.user_name}</span>
             </li>
-          ) : null}
-        </ul>
-      ) : null}
+          ))
+        )}
+        {count > participants.length ? (
+          <li className="text-muted-foreground">
+            {t("threads.participantsMore", { count: count - participants.length })}
+          </li>
+        ) : null}
+      </ul>
+    </div>
+  );
+}
+
+function ThreadJoinPrompt({
+  archived,
+  pending,
+  disabled,
+  onJoin,
+}: {
+  archived: boolean;
+  pending: boolean;
+  disabled: boolean;
+  onJoin?: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="border-t px-3 py-3">
+      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
+        <p className="text-sm text-muted-foreground">{t("threads.joinToReply")}</p>
+        <Button
+          size="sm"
+          onClick={onJoin}
+          disabled={disabled || pending || !onJoin}
+          aria-busy={pending}
+        >
+          {archived ? t("threads.reopenAndJoin") : t("threads.join")}
+        </Button>
+      </div>
     </div>
   );
 }

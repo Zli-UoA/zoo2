@@ -281,7 +281,9 @@
     "membershipError": "Could not update thread participation.",
     "participants": "{{count}} participants",
     "participantsMore": "and {{count}} more",
-    "participantsEmpty": "No participants"
+    "participantsEmpty": "No participants",
+    "joinToReply": "Join the thread to reply.",
+    "reopenAndJoin": "Reopen and join"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

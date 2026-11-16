@@ -180,6 +180,22 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
     let nested_id = uuid::Uuid::new_v4().to_string();
     let nested =
         json!({"id":nested_id,"channel_id":channel,"parent_id":reply,"content":"Back again"});
+    // Like a channel, replying needs membership: a user who left must join again first.
+    assert_eq!(
+        call(&app, &users[1], "POST", "/api/messages", nested.clone())
+            .await?
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("{path}/unarchive"),
+        json!({}),
+    )
+    .await?;
+    ok(&app, &users[1], "POST", &format!("{path}/join"), json!({})).await?;
     let created = ok(&app, &users[1], "POST", "/api/messages", nested.clone()).await?;
     assert_eq!(created["data"]["parent_id"], root);
     let state = ok(&app, &users[1], "GET", &path, Value::Null).await?;

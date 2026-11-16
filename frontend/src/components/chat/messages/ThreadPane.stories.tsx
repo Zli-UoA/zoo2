@@ -248,7 +248,7 @@ export const RootLoadError: Story = {
 
 export const NotParticipating: Story = {
   parameters: { a11y: { test: "error" } },
-  args: { replies, membership: "none", onJoinThread: fn() },
+  args: { replies, membership: "none", participantCount: 2, onJoinThread: fn() },
   play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "参加する" }));
@@ -286,6 +286,31 @@ export const WithParticipants: Story = {
     await expect(list.getByText("Alice")).toBeVisible();
     await expect(list.getByText("@bob")).toBeVisible();
     await expect(list.getByText("ほか 51人")).toBeVisible();
+  }),
+};
+export const ReopenAndJoin: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    isArchived: true,
+    membership: "none",
+    participantCount: 2,
+    onReopenAndJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "再Openして参加する" }));
+    await expect(args.onReopenAndJoinThread).toHaveBeenCalledOnce();
+  }),
+};
+export const FirstReplyWithoutJoining: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies: [], membership: "none", participantCount: 0, onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeEnabled();
+    await expect(canvas.queryByRole("button", { name: "参加する" })).not.toBeInTheDocument();
   }),
 };
 export const LeftThread: Story = {

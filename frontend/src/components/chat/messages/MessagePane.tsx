@@ -1023,6 +1023,12 @@ export function MessagePane({
             onJoinThread={() => void threadMembership.change?.("join")}
             onLeaveThread={() => void threadMembership.change?.("leave")}
             onReopenThread={() => void threadMembership.change?.("unarchive")}
+            onReopenAndJoinThread={() =>
+              void (async () => {
+                await threadMembership.change?.("unarchive");
+                await threadMembership.change?.("join");
+              })()
+            }
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived ? null : currentUserId}

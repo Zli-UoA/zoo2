@@ -281,7 +281,9 @@
     "membershipError": "스레드 참가 상태를 변경하지 못했습니다.",
     "participants": "참가자 {{count}}명",
     "participantsMore": "그밖에 {{count}}명",
-    "participantsEmpty": "참가자가 없습니다"
+    "participantsEmpty": "참가자가 없습니다",
+    "joinToReply": "스레드에 참가하면 답글을 보낼 수 있습니다.",
+    "reopenAndJoin": "다시 열고 참가하기"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",

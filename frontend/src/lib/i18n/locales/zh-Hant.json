@@ -281,7 +281,9 @@
     "membershipError": "無法更新討論串參與狀態。",
     "participants": "參與者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
-    "participantsEmpty": "沒有參與者"
+    "participantsEmpty": "沒有參與者",
+    "joinToReply": "參與後才能回覆此討論串。",
+    "reopenAndJoin": "重新開啟並參與"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
