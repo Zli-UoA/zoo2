@@ -1,3 +1,11 @@
+import { openCallStream, readCallEvents } from "./signaling";
+import {
+  acquireCallMicrophone as acquireMicStream,
+  createAudioPeer,
+  createAudioOffer,
+  answerAudioOffer,
+  applyAudioAnswer,
+} from "./rtc-audio";
 import { visiblePoll } from "../visiblePoll";
 import {
   createContext,
@@ -12,7 +20,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import { ApiError, buildAuthHeaders, createConfiguredApiClient } from "../api/client";
+import { ApiError, createConfiguredApiClient } from "../api/client";
 import { joinUrl, resolveConfig, type AppConfig } from "../config";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import {
@@ -122,36 +130,6 @@ function createVolumeMeter(
   } catch {
     return () => {};
   }
-}
-
-/**
- * マイクを取得する。allowFallback が true のとき、指定デバイスが無い/使えなければ既定デバイスで取得し、
- * fellBack を true にして返す。false のときは失敗として例外を投げる (明示的な切替で黙って既定へ変えない)。
- */
-async function acquireMicStream(
-  deviceId: string,
-  allowFallback: boolean,
-): Promise<{ stream: MediaStream; fellBack: boolean }> {
-  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-  let fellBack = false;
-  if (deviceId) {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { ...base, deviceId: { exact: deviceId } },
-        video: false,
-      });
-      return { stream, fellBack };
-    } catch (err) {
-      const name = (err as Error).name;
-      // 保存済みデバイスが無い/使えない場合のみ既定デバイスにフォールバック
-      if (!allowFallback || (name !== "OverconstrainedError" && name !== "NotFoundError")) {
-        throw err;
-      }
-      fellBack = true;
-    }
-  }
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: base, video: false });
-  return { stream, fellBack };
 }
 
 export interface CallProviderProps {
@@ -600,7 +578,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         existing.pc.close();
       }
 
-      const pc = new RTCPeerConnection({ iceServers });
+      const pc = createAudioPeer(iceServers);
       pc.addEventListener("iceconnectionstatechange", () => {
         if (pc.iceConnectionState === "failed") {
           reportWebrtcEvent({ state: "ice_failed" });
@@ -980,19 +958,17 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       sseAbortRef.current = abortController;
 
       try {
-        const authHeaders = await buildAuthHeaders({ devUserId: config.devUserId });
-        if (callGenerationRef.current !== currentGen) return;
-        cachedAuthHeadersRef.current = new Headers(authHeaders);
-        authHeaders.set("Accept", "text/event-stream");
-
-        const streamUrl = joinUrl(
-          config.apiBaseUrl,
+        const response = await openCallStream(
+          config,
           apiPath`/api/channels/${channelId}/call/stream?session_id=${mySessionId}`,
+          {
+            signal: abortController.signal,
+            onAuth: (headers) => {
+              if (callGenerationRef.current !== currentGen) abortController.abort();
+              else cachedAuthHeadersRef.current = headers;
+            },
+          },
         );
-        const response = await fetch(streamUrl, {
-          headers: authHeaders,
-          signal: abortController.signal,
-        });
 
         if (callGenerationRef.current !== currentGen) return;
 
@@ -1020,11 +996,6 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         playCallSound("join");
         void pollActiveCalls();
 
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("SSE response body is empty");
-
-        const decoder = new TextDecoder();
-        let buffer = "";
         let hasReceivedRoomState = false;
         interface PendingCallEvent {
           eventType: string;
@@ -1076,8 +1047,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   iceServersRef.current,
                 );
                 try {
-                  const offer = await pc.createOffer();
-                  await pc.setLocalDescription(offer);
+                  const offer = await createAudioOffer(pc);
                   await sendSignalWithRetry(channelId, mySessionId, newP.session_id, {
                     type: "offer",
                     sdp: offer.sdp,
@@ -1162,20 +1132,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               );
 
               try {
-                await pc.setRemoteDescription(
-                  new RTCSessionDescription({ type: "offer", sdp: signal.sdp }),
-                );
-                // 保留中の ICE Candidate を適用
                 const entry = peersRef.current.get(fromSid);
-                if (entry) {
-                  for (const cand of entry.pendingCandidates) {
-                    await pc.addIceCandidate(new RTCIceCandidate(cand));
-                  }
-                  entry.pendingCandidates = [];
-                }
-
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
+                const answer = await answerAudioOffer(
+                  pc,
+                  signal.sdp,
+                  entry?.pendingCandidates ?? [],
+                );
 
                 lastHandledOffersRef.current.set(fromSid, {
                   signalId,
@@ -1194,13 +1156,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               const entry = peersRef.current.get(fromSid);
               if (entry && entry.pc.signalingState === "have-local-offer") {
                 try {
-                  await entry.pc.setRemoteDescription(
-                    new RTCSessionDescription({ type: "answer", sdp: signal.sdp }),
-                  );
-                  for (const cand of entry.pendingCandidates) {
-                    await entry.pc.addIceCandidate(new RTCIceCandidate(cand));
-                  }
-                  entry.pendingCandidates = [];
+                  await applyAudioAnswer(entry.pc, signal.sdp, entry.pendingCandidates);
                 } catch (err) {
                   console.error("Failed to set answer", err);
                 }
@@ -1227,133 +1183,104 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           }
         };
 
-        while (true) {
-          const { done, value } = await reader.read();
+        for await (const { eventType, data } of readCallEvents(response)) {
           if (callGenerationRef.current !== currentGen) return;
-          if (done) break;
+          if (eventType === "room_state") {
+            const rawParticipants = Array.isArray(data.participants) ? data.participants : [];
+            const roomParticipants = rawParticipants.filter(isCallParticipant);
+            const ice = (data.ice_servers as RTCIceServer[]) ?? [
+              { urls: "stun:stun.l.google.com:19302" },
+            ];
+            iceServersRef.current = ice;
 
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n\n");
-          buffer = parts.pop() ?? "";
+            // 先行して受信した participant_left / participant_joined とマージ整合性を担保 ([P2])
+            const leftSessionIds = leftSessionIdsRef.current;
+            const validRoomParticipants = roomParticipants.filter(
+              (p) => !leftSessionIds.has(p.session_id),
+            );
 
-          for (const part of parts) {
-            let eventType = "message";
-            let dataStr = "";
-
-            for (const line of part.split("\n")) {
-              if (line.startsWith("event:")) {
-                eventType = line.slice(6).trim();
-              } else if (line.startsWith("data:")) {
-                dataStr += (dataStr ? "\n" : "") + line.slice(5).trim();
-              }
+            for (const p of validRoomParticipants) {
+              sessionUserMapRef.current.set(p.session_id, p.user_id);
+              knownSessionIdsRef.current.add(p.session_id);
             }
 
-            if (!dataStr) continue;
-
-            let data: Record<string, unknown>;
-            try {
-              data = JSON.parse(dataStr);
-            } catch {
-              continue;
-            }
-
-            if (eventType === "room_state") {
-              const rawParticipants = Array.isArray(data.participants) ? data.participants : [];
-              const roomParticipants = rawParticipants.filter(isCallParticipant);
-              const ice = (data.ice_servers as RTCIceServer[]) ?? [
-                { urls: "stun:stun.l.google.com:19302" },
-              ];
-              iceServersRef.current = ice;
-
-              // 先行して受信した participant_left / participant_joined とマージ整合性を担保 ([P2])
-              const leftSessionIds = leftSessionIdsRef.current;
-              const validRoomParticipants = roomParticipants.filter(
-                (p) => !leftSessionIds.has(p.session_id),
-              );
-
+            setParticipants((prev) => {
+              const map = new Map<string, CallParticipant>();
               for (const p of validRoomParticipants) {
-                sessionUserMapRef.current.set(p.session_id, p.user_id);
-                knownSessionIdsRef.current.add(p.session_id);
+                const isSelf = p.session_id === mySessionId;
+                map.set(p.session_id, isSelf ? { ...p, is_muted: isMutedRef.current } : p);
               }
-
-              setParticipants((prev) => {
-                const map = new Map<string, CallParticipant>();
-                for (const p of validRoomParticipants) {
+              for (const p of prev) {
+                if (!map.has(p.session_id) && !leftSessionIds.has(p.session_id)) {
                   const isSelf = p.session_id === mySessionId;
                   map.set(p.session_id, isSelf ? { ...p, is_muted: isMutedRef.current } : p);
                 }
-                for (const p of prev) {
-                  if (!map.has(p.session_id) && !leftSessionIds.has(p.session_id)) {
-                    const isSelf = p.session_id === mySessionId;
-                    map.set(p.session_id, isSelf ? { ...p, is_muted: isMutedRef.current } : p);
-                  }
-                }
-                return Array.from(map.values());
-              });
-
-              // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2])
-              // toggleMute と同一の直列化キュー（muteSerialQueueRef）を通して送信し、
-              // 接続直後のミュート解除との並行送信による逆転・上書きを防止
-              if (isMutedRef.current) {
-                void syncMuteStateToServer(channelId, mySessionId);
               }
+              return Array.from(map.values());
+            });
 
-              // 同時参加時の Offer 衝突 (Glare) 回避 & 冪等性ガード ([P2]):
-              // 既に PeerConnection が存在する場合は重複作成しない。
-              // セッション ID の辞書順比較で小さい側のみが Offer を送信する。
-              for (const p of validRoomParticipants) {
-                if (callGenerationRef.current !== currentGen) return;
-                if (p.session_id === mySessionId) continue;
-                if (peersRef.current.has(p.session_id)) continue;
-                if (mySessionId.localeCompare(p.session_id) < 0) {
-                  const pc = createPeer(channelId, mySessionId, p.session_id, p.user_id, ice);
-                  try {
-                    const offer = await pc.createOffer();
-                    if (callGenerationRef.current !== currentGen) {
-                      pc.close();
-                      return;
-                    }
-                    await pc.setLocalDescription(offer);
-                    if (callGenerationRef.current !== currentGen) {
-                      pc.close();
-                      return;
-                    }
-                    await sendSignalWithRetry(channelId, mySessionId, p.session_id, {
-                      type: "offer",
-                      sdp: offer.sdp,
-                    });
-                    if (callGenerationRef.current !== currentGen) {
-                      pc.close();
-                      return;
-                    }
-                  } catch (offerErr) {
-                    console.error("Failed to send offer", offerErr);
-                  }
-                }
-              }
-
-              if (callGenerationRef.current !== currentGen) return;
-              hasReceivedRoomState = true;
-
-              // room_state 到着前に受信した先行イベントを順次再生 ([P2])
-              while (pendingEarlyEvents.length > 0) {
-                if (callGenerationRef.current !== currentGen) return;
-                const pending = pendingEarlyEvents.shift()!;
-                await handleNonRoomStateEvent(pending.eventType, pending.data);
-                if (callGenerationRef.current !== currentGen) return;
-              }
-            } else if (!hasReceivedRoomState) {
-              // room_state 受信前の場合: participant_left は即時記録し、イベントは保留 ([P2])
-              if (eventType === "participant_left") {
-                const leftSid = data.session_id as string;
-                if (leftSid) {
-                  leftSessionIdsRef.current.add(leftSid);
-                }
-              }
-              pendingEarlyEvents.push({ eventType, data });
-            } else {
-              await handleNonRoomStateEvent(eventType, data);
+            // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2])
+            // toggleMute と同一の直列化キュー（muteSerialQueueRef）を通して送信し、
+            // 接続直後のミュート解除との並行送信による逆転・上書きを防止
+            if (isMutedRef.current) {
+              void syncMuteStateToServer(channelId, mySessionId);
             }
+
+            // 同時参加時の Offer 衝突 (Glare) 回避 & 冪等性ガード ([P2]):
+            // 既に PeerConnection が存在する場合は重複作成しない。
+            // セッション ID の辞書順比較で小さい側のみが Offer を送信する。
+            for (const p of validRoomParticipants) {
+              if (callGenerationRef.current !== currentGen) return;
+              if (p.session_id === mySessionId) continue;
+              if (peersRef.current.has(p.session_id)) continue;
+              if (mySessionId.localeCompare(p.session_id) < 0) {
+                const pc = createPeer(channelId, mySessionId, p.session_id, p.user_id, ice);
+                try {
+                  const offer = await pc.createOffer();
+                  if (callGenerationRef.current !== currentGen) {
+                    pc.close();
+                    return;
+                  }
+                  await pc.setLocalDescription(offer);
+                  if (callGenerationRef.current !== currentGen) {
+                    pc.close();
+                    return;
+                  }
+                  await sendSignalWithRetry(channelId, mySessionId, p.session_id, {
+                    type: "offer",
+                    sdp: offer.sdp,
+                  });
+                  if (callGenerationRef.current !== currentGen) {
+                    pc.close();
+                    return;
+                  }
+                } catch (offerErr) {
+                  console.error("Failed to send offer", offerErr);
+                }
+              }
+            }
+
+            if (callGenerationRef.current !== currentGen) return;
+            hasReceivedRoomState = true;
+
+            // room_state 到着前に受信した先行イベントを順次再生 ([P2])
+            while (pendingEarlyEvents.length > 0) {
+              if (callGenerationRef.current !== currentGen) return;
+              const pending = pendingEarlyEvents.shift()!;
+              await handleNonRoomStateEvent(pending.eventType, pending.data);
+              if (callGenerationRef.current !== currentGen) return;
+            }
+          } else if (!hasReceivedRoomState) {
+            // room_state 受信前の場合: participant_left は即時記録し、イベントは保留 ([P2])
+            if (eventType === "participant_left") {
+              const leftSid = data.session_id as string;
+              if (leftSid) {
+                leftSessionIdsRef.current.add(leftSid);
+              }
+            }
+            pendingEarlyEvents.push({ eventType, data });
+          } else {
+            await handleNonRoomStateEvent(eventType, data);
           }
         }
 

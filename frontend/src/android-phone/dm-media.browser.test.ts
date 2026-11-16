@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vite-plus/test";
-import { DmMedia } from "./dm-media";
+import { AudioCallMedia as DmMedia } from "../lib/call/audio-media";
 it("negotiates two real audio-only WebRTC peers and releases capture on close", async () => {
   const context = new AudioContext();
   const source = context.createMediaStreamDestination().stream;
