@@ -252,7 +252,8 @@ private fun InlineParagraph(
                             inheritedSpan,
                             inLink,
                         )
-                        appendInlineContent(id, "\uFFFC")
+                        // Placeholder spans cannot cross Android paragraph boundaries or be empty.
+                        appendInlineContent(id, value.replace('\r', ' ').replace('\n', ' ').ifEmpty { "\uFFFC" })
                         return@forEach
                     }
                     if (token.kind == "accountEmoji") {
