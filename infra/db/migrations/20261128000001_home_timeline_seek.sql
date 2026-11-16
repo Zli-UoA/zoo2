@@ -61,19 +61,27 @@ CREATE TRIGGER apub_repost_order AFTER UPDATE OF actor_id,created_at ON apub_rep
 -- then reply parents, then receipts, matching insert-trigger lock order. Commits
 -- bound advisory locks and write blocking to 1,000 receipts at a time.
 DO $$
-DECLARE batch jsonb; after_post text; after_user text; parent text;
+DECLARE batch jsonb; after_post text; after_user text; stripe integer;
 BEGIN
   LOOP
-    SELECT jsonb_agg(jsonb_build_object('post_id',post_id,'user_id',user_id) ORDER BY post_id,user_id)
-      INTO batch FROM (SELECT post_id,user_id FROM apub_remote_recipients
-        WHERE after_post IS NULL OR (post_id,user_id)>(after_post,after_user)
-        ORDER BY post_id,user_id LIMIT 1000) r;
+    -- Separate the initial page: an OR with a nullable PL/pgSQL parameter
+    -- prevents an index range seek once PostgreSQL chooses a generic plan.
+    IF after_post IS NULL THEN
+      SELECT jsonb_agg(jsonb_build_object('post_id',post_id,'user_id',user_id) ORDER BY post_id,user_id)
+        INTO batch FROM (SELECT post_id,user_id FROM apub_remote_recipients ORDER BY post_id,user_id LIMIT 1000) r;
+    ELSE
+      SELECT jsonb_agg(jsonb_build_object('post_id',post_id,'user_id',user_id) ORDER BY post_id,user_id)
+        INTO batch FROM (SELECT post_id,user_id FROM apub_remote_recipients
+          WHERE (post_id,user_id)>(after_post,after_user) ORDER BY post_id,user_id LIMIT 1000) r;
+    END IF;
     EXIT WHEN batch IS NULL;
     PERFORM p.id FROM apub_remote_posts p WHERE p.id IN (SELECT r.post_id FROM jsonb_to_recordset(batch) AS r(post_id text,user_id text)) ORDER BY p.id FOR SHARE;
-    FOR parent IN SELECT DISTINCT p.parent_id FROM apub_remote_posts p WHERE p.parent_id IS NOT NULL AND p.id IN
-      (SELECT r.post_id FROM jsonb_to_recordset(batch) AS r(post_id text,user_id text)) ORDER BY p.parent_id
+    -- Order the actual lock stripe keys, not their unhashed parent IDs.
+    FOR stripe IN SELECT DISTINCT (hashtextextended(p.parent_id,0) & 1023)::integer AS lock_key
+      FROM apub_remote_posts p WHERE p.parent_id IS NOT NULL AND p.id IN
+      (SELECT r.post_id FROM jsonb_to_recordset(batch) AS r(post_id text,user_id text)) ORDER BY lock_key
     LOOP
-      PERFORM pg_advisory_xact_lock(20880,(hashtextextended(parent,0) & 1023)::integer);
+      PERFORM pg_advisory_xact_lock(20880,stripe);
     END LOOP;
     UPDATE apub_remote_recipients r SET actor_id=p.actor_id,published=p.published,post_deleted=p.deleted_at IS NOT NULL,
       reply_to_user=EXISTS(SELECT 1 FROM home_posts WHERE id=p.parent_id AND user_id=r.user_id)
@@ -87,10 +95,14 @@ DO $$
 DECLARE batch jsonb; after_activity text; after_user text;
 BEGIN
   LOOP
-    SELECT jsonb_agg(jsonb_build_object('activity_id',activity_id,'user_id',user_id) ORDER BY activity_id,user_id)
-      INTO batch FROM (SELECT activity_id,user_id FROM apub_repost_recipients
-        WHERE after_activity IS NULL OR (activity_id,user_id)>(after_activity,after_user)
-        ORDER BY activity_id,user_id LIMIT 1000) r;
+    IF after_activity IS NULL THEN
+      SELECT jsonb_agg(jsonb_build_object('activity_id',activity_id,'user_id',user_id) ORDER BY activity_id,user_id)
+        INTO batch FROM (SELECT activity_id,user_id FROM apub_repost_recipients ORDER BY activity_id,user_id LIMIT 1000) r;
+    ELSE
+      SELECT jsonb_agg(jsonb_build_object('activity_id',activity_id,'user_id',user_id) ORDER BY activity_id,user_id)
+        INTO batch FROM (SELECT activity_id,user_id FROM apub_repost_recipients
+          WHERE (activity_id,user_id)>(after_activity,after_user) ORDER BY activity_id,user_id LIMIT 1000) r;
+    END IF;
     EXIT WHEN batch IS NULL;
     PERFORM p.activity_id FROM apub_reposts p WHERE p.activity_id IN
       (SELECT r.activity_id FROM jsonb_to_recordset(batch) AS r(activity_id text,user_id text)) ORDER BY p.activity_id FOR SHARE;

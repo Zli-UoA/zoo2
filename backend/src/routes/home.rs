@@ -562,23 +562,42 @@ mod tests {
 
 /// The same audience and entry rules are used by the key picker and renderer.
 pub fn timeline_query() -> String {
-    include_str!("home_timeline.sql")
-        .replace("/* visible_posts */", include_str!("home_visible.sql"))
-        .replace(
-            "/* timeline_entries */",
-            &include_str!("home_entries.sql").replace("/* entry_posts */", "base"),
-        )
-        .replace("/* local_posts */", "home_posts")
-        .replace("/* remote_posts */", "apub_remote_posts")
+    fill_audience(
+        include_str!("home_timeline.sql")
+            .replace("/* reply_counts */", include_str!("home_reply_counts.sql"))
+            .replace("/* visible_posts */", include_str!("home_visible.sql")),
+    )
+    .replace(
+        "/* timeline_entries */",
+        &include_str!("home_entries.sql").replace("/* entry_posts */", "base"),
+    )
+    .replace("/* repost_entries */", "scoped_reposts")
+    .replace("/* local_posts */", "home_posts")
+    .replace("/* remote_posts */", "apub_remote_posts")
 }
 
 pub fn timeline_page_query() -> String {
-    include_str!("home_page.sql")
-        .replace("/* visible_posts */", include_str!("home_visible.sql"))
-        .replace(
-            "/* timeline_entries */",
-            &include_str!("home_entries.sql").replace("/* entry_posts */", "visible"),
-        )
-        .replace("/* local_posts */", "home_posts")
-        .replace("/* remote_posts */", "apub_remote_posts")
+    fill_audience(
+        include_str!("home_page.sql")
+            .replace("/* visible_posts */", include_str!("home_visible.sql")),
+    )
+    .replace(
+        "/* timeline_entries */",
+        &include_str!("home_entries.sql").replace("/* entry_posts */", "visible"),
+    )
+    .replace("/* repost_entries */", "apub_reposts")
+    .replace("/* local_posts */", "home_posts")
+    .replace("/* remote_posts */", "apub_remote_posts")
+}
+
+// Reuse the exact audience predicates for DTOs and lean reply aggregates.
+fn fill_audience(sql: String) -> String {
+    sql.replace(
+        "/* local_audience */",
+        include_str!("home_local_audience.sql").trim(),
+    )
+    .replace(
+        "/* remote_original_audience */",
+        include_str!("home_remote_original_audience.sql").trim(),
+    )
 }

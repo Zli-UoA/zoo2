@@ -3828,3 +3828,9 @@ CREATE INDEX home_public_reply_timeline ON home_posts(reply_user_id,created_at D
 CREATE INDEX home_public_channel_timeline ON home_posts(channel_id,created_at DESC,id DESC) WHERE deleted_at IS NULL AND visibility IN ('public','local') AND channel_id IS NOT NULL;
 
 CREATE INDEX home_public_profile_timeline ON home_posts(user_id,created_at DESC,id DESC) WHERE apub AND visibility='public' AND deleted_at IS NULL;
+
+-- Foreign-key checks and cascades also need indexes covering deleted receipts.
+CREATE INDEX apub_remote_posts_actor ON apub_remote_posts(actor_id);
+CREATE INDEX apub_remote_recipients_owner ON apub_remote_recipients(user_id,post_id);
+CREATE INDEX apub_follows_actor ON apub_follows(actor_id);
+CREATE INDEX apub_deliveries_actor ON apub_deliveries(actor_id);

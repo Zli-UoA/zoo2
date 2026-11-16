@@ -195,6 +195,26 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
         );
         let p = plan(&tx, &sql).await?;
         visit(&p["Plan"], &|n| {
+            if n["Relation Name"] == "apub_remote_recipients" {
+                let read = (n["Actual Rows"].as_f64().unwrap_or(0.)
+                    + n["Rows Removed by Filter"].as_f64().unwrap_or(0.))
+                    * n["Actual Loops"].as_f64().unwrap_or(0.);
+                let direct_replies = (count - local) / 20;
+                assert!(
+                    read <= (direct_replies + 5000) as f64,
+                    "reply count scanned unrelated recipient history: {n}"
+                );
+            }
+            if thread == "true" && n["Subplan Name"] == "CTE page_parent_previews" {
+                assert_eq!(
+                    n["Actual Rows"], 1,
+                    "the shared reply parent is encoded once"
+                );
+                assert_eq!(
+                    n["Actual Loops"], 1,
+                    "parent preview must not be rebuilt for every child"
+                );
+            }
             if n["Subplan Name"] == "CTE base" {
                 assert!(
                     n["Actual Rows"].as_u64().unwrap() <= 601,

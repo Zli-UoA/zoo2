@@ -405,3 +405,155 @@ async fn seek_skips_private_history_and_preserves_repost_ties() -> anyhow::Resul
     tx.rollback().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn selected_reposts_use_primary_keys_and_reactions_are_aggregated_once() -> anyhow::Result<()>
+{
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    tx.batch_execute("SET LOCAL jit=off; SET LOCAL statement_timeout='30s'")
+        .await?;
+    let user = uuid::Uuid::new_v4().to_string();
+    let post = format!("{user}-post");
+    let activity = format!("{user}-announce");
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+        &[&user],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO home_posts(id,user_id,content,visibility) VALUES($1,$2,'post','public')",
+        &[&post, &user],
+    )
+    .await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) SELECT $1||'-unrelated-'||n,'local:'||$1,$1,$1||'-activity-'||n,'{}','public' FROM generate_series(1,30000)n", &[&user]).await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,'local:'||$2,$2,$3,'{}','public')", &[&post,&user,&activity]).await?;
+    let actor = format!("https://{user}.test/actor/1");
+    tx.execute("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,blocked) VALUES($1,$1,$1,'blocked','Blocked',$1,'dummy',true)", &[&actor]).await?;
+    tx.execute("INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json,reaction) SELECT $1,$2||n,$1||'-reaction-'||n,'{}',CASE WHEN n%2=0 THEN '❤️' ELSE '😀' END FROM generate_series(1,5000)n", &[&post,&format!("https://{user}.test/actor/")]).await?;
+    tx.execute("INSERT INTO apub_reactions(post_id,actor_id,user_id,activity_id,activity_json,reaction) VALUES($1,'local:'||$2,$2,$1||'-mine','{}','👍')", &[&post,&user]).await?;
+    let remote_actor = format!("https://{user}.test/unfollowed");
+    let remote_post = format!("{remote_actor}/post");
+    let remote_activity = format!("{user}-remote-announce");
+    tx.execute("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'remote','Remote',$1,'dummy')", &[&remote_actor]).await?;
+    tx.execute("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at) VALUES($1,$2,'only visible by repost','public',now(),now())", &[&remote_post,&remote_actor]).await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,'local:'||$2,$2,$3,'{}','public')", &[&remote_post,&user,&remote_activity]).await?;
+    tx.batch_execute("ANALYZE apub_reposts; ANALYZE apub_reactions; ANALYZE apub_actors")
+        .await?;
+    for entry in [
+        &post,
+        &format!("repost:{activity}"),
+        &format!("repost:{remote_activity}"),
+    ] {
+        let window = serde_json::json!([entry]).to_string();
+        let mut sql = backend::routes::home::timeline_query();
+        for (n, v) in [&user, "", "social", "false", "50", "", "", "false", &window]
+            .iter()
+            .enumerate()
+            .rev()
+        {
+            sql = sql.replace(
+                &format!("${}", n + 1),
+                &format!("'{}'", v.replace('\'', "''")),
+            );
+        }
+        let rows = tx
+            .simple_query(&format!("EXPLAIN (ANALYZE,FORMAT JSON) {sql}"))
+            .await?;
+        let p: Value = serde_json::from_str(
+            rows.iter()
+                .find_map(|r| match r {
+                    SimpleQueryMessage::Row(r) => r.get(0),
+                    _ => None,
+                })
+                .unwrap(),
+        )?;
+        let mut repost_reads = 0.;
+        let mut reaction_reads = 0.;
+        fn scan(n: &Value, reposts: &mut f64, reactions: &mut f64) {
+            let read = (n["Actual Rows"].as_f64().unwrap_or(0.)
+                + n["Rows Removed by Filter"].as_f64().unwrap_or(0.))
+                * n["Actual Loops"].as_f64().unwrap_or(0.);
+            match n["Relation Name"].as_str() {
+                Some("apub_reposts") => {
+                    *reposts += read;
+                    if read > 5. {
+                        eprintln!("unexpected repost scan: {n}");
+                    }
+                }
+                Some("apub_reactions") => *reactions += read,
+                _ => (),
+            }
+            if let Some(children) = n["Plans"].as_array() {
+                for c in children {
+                    scan(c, reposts, reactions);
+                }
+            }
+        }
+        scan(&p[0]["Plan"], &mut repost_reads, &mut reaction_reads);
+        assert!(
+            repost_reads <= 10.,
+            "unrelated repost history was scanned: {repost_reads}"
+        );
+        assert!(
+            reaction_reads <= 5001.,
+            "reaction stream was scanned repeatedly: {reaction_reads}"
+        );
+        let result = tx.simple_query(&sql).await?;
+        let rows: Vec<Value> = result
+            .iter()
+            .filter_map(|r| match r {
+                SimpleQueryMessage::Row(r) => r.get(0),
+                _ => None,
+            })
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row["entry_id"], entry.as_str());
+        if entry == &format!("repost:{remote_activity}") {
+            assert_eq!(row["id"], remote_post);
+            assert_eq!(row["likes"], 0);
+            assert_eq!(row["liked"], false);
+            assert_eq!(row["reactions"], serde_json::json!([]));
+            continue;
+        }
+        assert_eq!(row["likes"], 5000);
+        assert_eq!(row["liked"], true);
+        assert_eq!(row["my_reaction"], "👍");
+        let groups = row["reactions"].as_array().unwrap();
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups.iter().filter(|g| g["selected"] == true).count(), 1);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|g| g["count"].as_i64().unwrap())
+                .sum::<i64>(),
+            5000
+        );
+    }
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn activitypub_foreign_keys_have_full_leading_indexes() -> anyhow::Result<()> {
+    let (client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    for (table, column) in [
+        ("apub_remote_posts", "actor_id"),
+        ("apub_remote_recipients", "user_id"),
+        ("apub_follows", "actor_id"),
+        ("apub_deliveries", "actor_id"),
+    ] {
+        let row=client.query_one("SELECT EXISTS(SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0] WHERE i.indrelid=$1::text::regclass AND a.attname=$2 AND i.indisvalid AND i.indisready AND i.indpred IS NULL)", &[&table,&column]).await?;
+        assert!(
+            row.get::<_, bool>(0),
+            "foreign-key checks on {table}.{column} need a leading full index"
+        );
+    }
+    Ok(())
+}
