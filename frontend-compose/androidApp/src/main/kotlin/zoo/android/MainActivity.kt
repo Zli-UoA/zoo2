@@ -153,7 +153,7 @@ class MainActivity : ComponentActivity() {
         }
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
-                notificationIntent?.let { if (!current.push.open(it)) current.notifications.open(it) }
+                notificationIntent?.let { if (!current.push.open(it, current.notifications::dismissTag)) current.notifications.open(it) }
                 notificationIntent = null
             }
         }
@@ -170,8 +170,9 @@ class MainActivity : ComponentActivity() {
                             active = null
                             canRestore = false
                             restoreError = "認証情報の有効期限が切れました。ログインし直してください。"
+                            running.notifications.close()
                             running.push.forget()
-                            running.close()
+                            running.close(preserveNotifications = false)
                         }
                     }
                 },
@@ -425,7 +426,10 @@ class MainActivity : ComponentActivity() {
                     copySecret = ::copySecret,
                 )
             }
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session)).also {
+            val logoutApi = ZooApi(config, object : Platform by platform {
+                override suspend fun headers() = auth.headersWithoutRefresh()
+            }, http)
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi)).also {
                 session.start()
                 e2ee.start()
             }
@@ -606,15 +610,16 @@ private class RunningSession(
     val push: AndroidPushRegistration,
 ) {
     suspend fun logout() {
+        notifications.close()
         try { push.logout() } finally {
-            try { auth.forget() } finally { close() }
+            try { auth.forget() } finally { close(preserveNotifications = false) }
         }
     }
 
-    fun close() {
+    fun close(preserveNotifications: Boolean = true) {
         e2ee.stop()
         push.close()
-        notifications.close(preserveNotifications = true)
+        notifications.close(preserveNotifications = preserveNotifications)
         auth.close()
         session.close()
         scope.cancel()

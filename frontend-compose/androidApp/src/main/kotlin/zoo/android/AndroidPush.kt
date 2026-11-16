@@ -29,11 +29,37 @@ internal fun notificationTag(user: String, id: String) = "zoo:$user:$id"
 /** No account credentials or message bodies are persisted. A new login gets a new delivery binding. */
 internal class PushBinding(private val context: Context) {
     private val prefs = context.getSharedPreferences("push-binding", Context.MODE_PRIVATE)
+    private val cleanup = context.getSharedPreferences("push-subscription-cleanup", Context.MODE_PRIVATE)
+
+    private fun cleanupEntry(base: String, user: String, endpoint: String) =
+        obj("base" to base, "user" to user, "endpoint" to endpoint).toString()
+
+    fun deferRemoval(base: String, user: String, endpoint: String) = synchronized(lock) {
+        val entries = cleanup.getStringSet("pending", emptySet()).orEmpty().toSet()
+        check(cleanup.edit().putStringSet("pending", entries + cleanupEntry(base, user, endpoint)).commit())
+    }
+
+    fun pendingRemovals(base: String, user: String): List<String> = synchronized(lock) {
+        cleanup.getStringSet("pending", emptySet()).orEmpty().map { json.parseToJsonElement(it) as Row }
+            .filter { it.text("base") == base && it.text("user") == user }.map { it.text("endpoint") }
+    }
+
+    fun removed(base: String, user: String, endpoint: String) = synchronized(lock) {
+        val entries = cleanup.getStringSet("pending", emptySet()).orEmpty().toSet()
+        check(cleanup.edit().putStringSet("pending", entries - cleanupEntry(base, user, endpoint)).commit())
+    }
+
+    private fun retireCurrent() {
+        val base = prefs.getString("base", null) ?: return
+        val user = prefs.getString("user", null) ?: return
+        prefs.getString("endpoint", null)?.let { deferRemoval(base, user, it) }
+    }
 
     fun bind(base: String, user: String): String = synchronized(lock) {
         if (prefs.getString("base", null) == base && prefs.getString("user", null) == user) {
             prefs.getString("binding", null)?.let { return@synchronized it }
         }
+        retireCurrent()
         prefs.getString("user", null)?.let { clearNotifications(context, it) }
         UUID.randomUUID().toString().also {
             check(prefs.edit().clear().putString("base", base).putString("user", user)
@@ -46,17 +72,20 @@ internal class PushBinding(private val context: Context) {
             prefs.getString("binding", null) == binding && prefs.getString("user", null) == user
     }
 
-    fun endpoint(binding: String): String? = if (prefs.getString("binding", null) == binding)
-        prefs.getString("endpoint", null) else null
+    fun endpoint(binding: String): String? = synchronized(lock) {
+        if (prefs.getString("binding", null) == binding) prefs.getString("endpoint", null) else null
+    }
 
-    fun registered(binding: String, endpoint: String) = synchronized(lock) {
-        if (prefs.getString("binding", null) == binding) {
-            check(prefs.edit().putString("endpoint", endpoint).commit())
-        }
+    fun registered(binding: String, endpoint: String): Boolean = synchronized(lock) {
+        if (prefs.getString("binding", null) != binding) return@synchronized false
+        check(prefs.edit().putString("endpoint", endpoint).commit())
+        removed(prefs.getString("base", null)!!, prefs.getString("user", null)!!, endpoint)
+        true
     }
 
     fun clear(binding: String): Boolean = synchronized(lock) {
         if (prefs.getString("binding", null) != binding) return@synchronized false
+        retireCurrent()
         check(prefs.edit().clear().commit())
         true
     }
@@ -70,11 +99,53 @@ internal class PushBinding(private val context: Context) {
     }
 
     fun forgetAll() = synchronized(lock) {
+        retireCurrent()
         prefs.getString("user", null)?.let { clearNotifications(context, it) }
         check(prefs.edit().clear().commit())
     }
 
     companion object { val lock = Any() }
+}
+
+/** Persist uncertain POSTs before sending. Cleanup is retried with the same user's next session. */
+internal class PushSubscriptionRegistration(
+    private val store: PushBinding,
+    private val base: String,
+    private val user: String,
+    private val binding: String,
+    private val request: suspend (method: String, endpoint: String) -> Unit,
+) {
+    suspend fun cleanup() {
+        for (endpoint in store.pendingRemovals(base, user)) {
+            request("DELETE", endpoint)
+            store.removed(base, user, endpoint)
+        }
+    }
+
+    suspend fun register(endpoint: String) {
+        store.endpoint(binding)?.takeIf { it != endpoint }?.let { store.deferRemoval(base, user, it) }
+        cleanup() // Do not create more subscriptions while old registrations cannot be removed.
+        store.deferRemoval(base, user, endpoint)
+        var settled = false
+        try {
+            currentCoroutineContext().ensureActive()
+            // Finish a committed POST even if the Activity is disposed or logout cancels its worker.
+            withContext(NonCancellable) {
+                withTimeout(10_000) {
+                    request("POST", endpoint)
+                    if (!store.registered(binding, endpoint)) {
+                        request("DELETE", endpoint)
+                        store.removed(base, user, endpoint)
+                    }
+                    settled = true
+                }
+            }
+        } catch (failure: Throwable) {
+            // A lost response may follow a successful server commit. Never discard that endpoint.
+            if (!settled) store.deferRemoval(base, user, endpoint)
+            throw failure
+        }
+    }
 }
 
 internal suspend fun <T> Task<T>.awaitPushTask(): T = suspendCancellableCoroutine { continuation ->
@@ -86,14 +157,22 @@ internal suspend fun <T> Task<T>.awaitPushTask(): T = suspendCancellableCoroutin
 /** Reconcile on login, permission change, token refresh, connectivity recovery and resume.
  * One conflated worker uses the existing authenticated API; there is no additional polling.
  */
-internal class AndroidPushRegistration(private val context: Context, private val app: Session) {
+internal class AndroidPushRegistration(
+    private val context: Context,
+    private val app: Session,
+    private val logoutApi: ZooApi,
+) {
     private val store = PushBinding(context)
     private val binding = store.bind(app.repo.config.apiBaseUrl, app.repo.config.userId)
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
     private var projectId: String? = null
     private var registeredEndpoint: String? = null
-    private var retiredEndpoint: String? = null
+    private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
+        app.api.request("/api/push/subscriptions", method,
+            if (method == "POST") obj("transport" to "fcm", "endpoint" to endpoint) else obj("endpoint" to endpoint))
+        Unit
+    }
     private val observer = app.scope.launch {
         snapshotFlow { app.env.online to app.env.visible }.collectLatest { (online, _) -> if (online) refresh() }
     }
@@ -111,18 +190,12 @@ internal class AndroidPushRegistration(private val context: Context, private val
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
                 val endpoint = "fcm:$token:$binding"
+                registration.cleanup()
                 if (endpoint != registeredEndpoint) {
-                    val previous = store.endpoint(binding)
-                    app.api.request("/api/push/subscriptions", "POST", obj("transport" to "fcm", "endpoint" to endpoint))
-                    if (closed) continue
-                    store.registered(binding, endpoint)
-                    registeredEndpoint = endpoint
-                    if (previous != null && previous != endpoint) retiredEndpoint = previous
+                    registration.register(endpoint)
+                    if (!closed) registeredEndpoint = endpoint
                 }
-                retiredEndpoint?.let { previous ->
-                    app.api.request("/api/push/subscriptions", "DELETE", obj("endpoint" to previous))
-                    retiredEndpoint = null
-                }
+
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -136,11 +209,13 @@ internal class AndroidPushRegistration(private val context: Context, private val
     fun refresh() { if (!closed) updates.trySend(Unit) }
 
     suspend fun logout() {
-        val endpoint = store.endpoint(binding)
         forget() // Reject in-flight pushes before attempting any network cleanup.
         withTimeoutOrNull(5_000) {
             try {
-                if (endpoint != null) app.api.request("/api/push/subscriptions", "DELETE", obj("endpoint" to endpoint))
+                PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
+                    logoutApi.request("/api/push/subscriptions", method, obj("endpoint" to endpoint))
+                    Unit
+                }.cleanup()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* A delayed delivery is rejected by the cleared binding. */ }
         }
@@ -153,11 +228,14 @@ internal class AndroidPushRegistration(private val context: Context, private val
         close()
     }
 
-    fun open(intent: Intent): Boolean {
+    fun open(intent: Intent, dismissed: (String) -> Unit = {}): Boolean {
         if (intent.action != OPEN_ACTION || !store.matches(intent.getStringExtra("binding"), app.repo.config.userId)) return false
         val path = pushDestination(intent.getStringExtra("path")) ?: return false
         app.navigate(path)
-        intent.getStringExtra("tag")?.let { context.getSystemService(NotificationManager::class.java).cancel(it, 0) }
+        intent.getStringExtra("tag")?.takeIf { it.startsWith("zoo:${app.config.userId}:") }?.let {
+            dismissed(it)
+            context.getSystemService(NotificationManager::class.java).cancel(it, 0)
+        }
         return true
     }
 

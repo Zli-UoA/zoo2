@@ -209,6 +209,12 @@ internal class DeviceAuth(
         }
     }
 
+    /** Cleanup must never start or wait for refresh-token rotation during logout. */
+    fun headersWithoutRefresh(): Map<String, String> = synchronized(persistenceLock) {
+        check(!closed && token.isNotBlank()) { "認証セッションは終了しています" }
+        mapOf("Authorization" to "Bearer $token")
+    }
+
     suspend fun headers(): Map<String, String> =
         lock.withLock {
             check(!synchronized(persistenceLock) { closed }) { "認証セッションは終了しています" }

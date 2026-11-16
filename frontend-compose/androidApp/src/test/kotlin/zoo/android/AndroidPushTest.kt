@@ -24,6 +24,7 @@ class AndroidPushTest {
 
     @BeforeTest fun prepare() {
         context.getSharedPreferences("push-binding", Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("push-subscription-cleanup", Context.MODE_PRIVATE).edit().clear().commit()
         manager.cancelAll()
         shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
     }

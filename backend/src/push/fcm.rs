@@ -49,6 +49,8 @@ impl FcmConfig {
         );
         let key = EncodingKey::from_rsa_pem(account.private_key.as_bytes())
             .map_err(|_| anyhow::anyhow!("Invalid FCM service account private key"))?;
+        jsonwebtoken::encode(&Header::new(Algorithm::RS256), &json!({}), &key)
+            .map_err(|_| anyhow::anyhow!("Invalid FCM service account private key"))?;
         Ok(Some(Self {
             project_id: account.project_id,
             email: account.client_email,
@@ -214,6 +216,24 @@ mod tests {
         assert!(FcmConfig::parse("").unwrap().is_none());
         assert!(FcmConfig::parse("{}").is_err());
         assert!(FcmConfig::parse(r#"{"project_id":"../evil","client_email":"test.iam.gserviceaccount.com","private_key":"secret"}"#).is_err());
+    }
+
+    #[test]
+    fn startup_rejects_public_keys_and_accepts_signing_private_keys() {
+        let rsa = openssl::rsa::Rsa::generate(2048).unwrap();
+        let key = openssl::pkey::PKey::from_rsa(rsa).unwrap();
+        let account = |pem: Vec<u8>| {
+            json!({
+            "project_id": "test-project", "client_email": "test@test-project.iam.gserviceaccount.com",
+            "private_key": String::from_utf8(pem).unwrap(),
+        }).to_string()
+        };
+        assert!(FcmConfig::parse(&account(key.public_key_to_pem().unwrap())).is_err());
+        assert!(
+            FcmConfig::parse(&account(key.private_key_to_pem_pkcs8().unwrap()))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

@@ -232,6 +232,10 @@ internal class AndroidNotifications(
         dismiss(row.text("id"))
     }
 
+    fun dismissTag(tag: String) {
+        shown.keys.firstOrNull { notificationTag(app.config.userId, it) == tag }?.let { dismiss(it) }
+    }
+
     private fun dismiss(id: String, refreshSummary: Boolean = true) {
         manager.cancel(notificationTag(app.repo.config.userId, id), 0)
         shown.remove(id)
@@ -259,7 +263,31 @@ internal class AndroidNotifications(
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
         avatars.clear()
-        if (preserveNotifications) shown.clear()
+        if (preserveNotifications) {
+            val posted = manager.activeNotifications.associateBy { it.tag }
+            for (row in shown.values.toList()) {
+                val id = row.text("id")
+                val tag = notificationTag(app.config.userId, id)
+                val destination = PushBinding(activity).openIntent(app.config.userId, id,
+                    "/channels/${row.text("channel_id")}?message=${row.text("message_id")}")
+                val notification = posted[tag]?.notification
+                if (destination == null || notification == null) {
+                    dismiss(id, refreshSummary = false)
+                    continue
+                }
+                val detached = Notification.Builder.recoverBuilder(activity, notification)
+                    .setActions().setDeleteIntent(null).setGroup(null)
+                    .setContentIntent(PendingIntent.getActivity(activity, 0, destination,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                    .setOnlyAlertOnce(true).build().apply {
+                        // recoverBuilder can retain the original array when its action list is empty.
+                        actions = null
+                    }
+                try { manager.notify(tag, 0, detached) }
+                catch (_: SecurityException) { manager.cancel(tag, 0) }
+            }
+            shown.clear()
+        }
         else shown.keys.toList().forEach { dismiss(it, refreshSummary = false) }
         updateSummaries()
         if (active === this) active = null
