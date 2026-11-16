@@ -85,26 +85,15 @@ jobs:
           version: 12.11.2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install frontend dependencies for the shared media viewer
+      - name: Install frontend dependencies for shared media and phone engines
         run: pnpm --dir frontend install --frozen-lockfile
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
-        with:
-          version: 12.11.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install phone engine dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: 13114758
@@ -200,26 +189,15 @@ jobs:
           version: 12.11.2
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install frontend dependencies for the shared media viewer
+      - name: Install frontend dependencies for shared media and phone engines
         run: pnpm --dir frontend install --frozen-lockfile
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: "21"
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
-        with:
-          version: 12.11.2
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Install phone engine dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: 13114758
@@ -311,7 +289,7 @@ jobs:
           if [ "$latest" != "$GITHUB_SHA" ]; then
             # push の paths と同じ一覧。Android に関係しない新しいコミット (TUI など) はビルドを起動しないので、
             # それだけが後から入ったときは、このビルドが最新の Android と同じ内容として公開する。
-            paths=(frontend-compose frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
+            paths=(frontend-compose frontend/src/android-phone frontend/src/lib/sip frontend/src/lib/call frontend/vite.android-phone.config.ts frontend/scripts/android-phone-smoke.mjs frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
             git fetch --quiet origin "$latest"
             if ! git diff --quiet "$GITHUB_SHA" "$latest" -- "${paths[@]}"; then
               echo "A newer main commit changes Android; skip this older build."
