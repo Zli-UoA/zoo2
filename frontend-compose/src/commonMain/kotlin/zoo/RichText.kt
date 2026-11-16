@@ -145,9 +145,13 @@ fun RichText(
                             mfmCodeBlock(text).let { CodeBlock(it.body, it.language) }
                         text.startsWith("\\[") -> MathText(text.drop(2).dropLast(2))
                         text.startsWith("<center>") ->
-                            CompositionLocalProvider(LocalMfmStyle provides
-                                LocalMfmStyle.current.copy(textAlign = TextAlign.Center)) {
-                                RichText(text.drop(8).dropLast(9), users, depth + 1)
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                CompositionLocalProvider(
+                                    LocalMfmStyle provides LocalMfmStyle.current.copy(textAlign = TextAlign.Center),
+                                    LocalMfmInline provides true,
+                                ) {
+                                    RichText(text.drop(8).dropLast(9), users, depth + 1)
+                                }
                             }
                         else -> {
                             val quoteColor = MaterialTheme.colorScheme.outline

@@ -305,6 +305,10 @@ class MfmUiTest {
             ui.onNodeWithText("中央寄せ", useUnmergedTree = true).assertIsDisplayed()
             val centered = layout(ui.onNodeWithText("中央寄せ", useUnmergedTree = true))
             assertEquals(androidx.compose.ui.text.style.TextAlign.Center, centered.layoutInput.style.textAlign)
+            val centerBounds = ui.onNodeWithText("中央寄せ", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val containerBounds = ui.onNodeWithTag("syntax").fetchSemanticsNode().boundsInRoot
+            assertTrue(kotlin.math.abs(centerBounds.center.x - containerBounds.center.x) <= 1f,
+                "The centered content is not visually centered")
             ui.onNodeWithText("引用1\n引用2", useUnmergedTree = true).assertIsDisplayed()
             ui.onNodeWithText("val x = 1\n", useUnmergedTree = true).assertIsDisplayed()
             ui.onNodeWithText("**literal** $[spin x]", useUnmergedTree = true).assertIsDisplayed()
