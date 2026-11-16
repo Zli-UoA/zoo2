@@ -829,15 +829,25 @@ pub(crate) async fn create_message_impl(
 
         // Like a channel, replying needs membership: join the thread first. The first reply
         // creates the thread, so only threads that already track participants are gated.
-        let gate_root = roots
-            .first()
-            .and_then(|root| root["id"].as_str())
-            .unwrap_or(parent_id.as_str());
+        // The target is the one join/leave act on (the requested ID until a staged migration has
+        // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
+        let gate = crate::apps::one(&mut tx,
+            "SELECT json_build_object('id',CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root($1))) THEN $1 ELSE thread_root($1) END)::text",
+            &[parent_id.as_str()]).await?;
+        let gate_root = gate["id"].as_str().unwrap_or(parent_id.as_str()).to_owned();
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=$1 FOR NO KEY UPDATE",
+            &[gate_root.as_str()],
+        )
+        .await?;
         let state = crate::apps::one(&mut tx,
             "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text",
-            &[gate_root, auth_user.id.as_str()]).await?;
+            &[gate_root.as_str(), auth_user.id.as_str()]).await?;
         if state["tracked"] == true && state["joined"] != true {
-            return Err(AppError::Forbidden("Join the thread before replying".into()));
+            return Err(AppError::Forbidden(
+                "Join the thread before replying".into(),
+            ));
         }
 
         parent_author_id = Some(parent.user_id);

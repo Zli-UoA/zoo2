@@ -37,6 +37,8 @@ export interface ThreadPaneProps {
   membership?: "none" | "joined" | "left";
   membershipPending?: boolean;
   membershipError?: boolean;
+  /** 参加状態の初回取得中。確定するまで入力を止める（未参加で送れてしまうのを防ぐ）。 */
+  membershipLoading?: boolean;
   /** 参加中の人数と一覧（先頭から最大50人）。 */
   participantCount?: number;
   participants?: ThreadParticipant[];
@@ -109,6 +111,7 @@ export function ThreadPane({
   membership,
   membershipPending = false,
   membershipError = false,
+  membershipLoading = false,
   participantCount,
   participants,
   onMembershipRetry,
@@ -147,7 +150,8 @@ export function ThreadPane({
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   // チャンネルと同様、参加してから返信する。最初の返信（参加者がまだ居ない）はスレッドを作るので参加不要。
-  const needsJoin = isMember && membership !== "joined" && (participantCount ?? 0) > 0;
+  const needsJoin =
+    isMember && membership !== "joined" && (membership === "left" || (participantCount ?? 0) > 0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -433,7 +437,9 @@ export function ThreadPane({
               onRequestCommands={onRequestCommands}
               mentionUsers={mentionUsers}
               mentionMemberIds={mentionMemberIds}
-              disabled={!isMember || isOffline || composeDisabledReason !== undefined}
+              disabled={
+                !isMember || isOffline || membershipLoading || composeDisabledReason !== undefined
+              }
               onTyping={onTyping}
               onSend={onSendReply}
               onUploadAttachment={onUploadAttachment}

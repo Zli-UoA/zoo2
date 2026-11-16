@@ -1032,6 +1032,7 @@ export function MessagePane({
             membership={threadMembership.data?.membership}
             membershipPending={threadMembership.pending}
             membershipError={threadMembership.error}
+            membershipLoading={!threadMembership.data && !threadMembership.error}
             participantCount={threadMembership.data?.participant_count}
             participants={threadMembership.data?.participants}
             onMembershipRetry={() => void threadMembership.retry?.()}
