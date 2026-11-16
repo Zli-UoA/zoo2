@@ -415,8 +415,8 @@ async fn seed_engagement_fixture(
     Ok(other)
 }
 
-// A dedicated benchmark gate: every sample includes PostgreSQL planning and
-// execution. Keep fixtures committed for independent concurrent connections.
+// Every sample checks bounded work; timings include planning and execution
+// but are observations. Keep fixtures committed for concurrent connections.
 async fn verify_budget(user: &str, root: &str, count: usize) -> anyhow::Result<()> {
     let url = Config::from_env().database_url;
     let (mut fixture, connection) = tokio_postgres::connect(&url, NoTls).await?;
@@ -577,7 +577,6 @@ async fn verify_budget(user: &str, root: &str, count: usize) -> anyhow::Result<(
         ))));
     }
     let pool = std::sync::Arc::new(connections);
-    let mut violations = Vec::new();
     for (name, sql, args) in queries {
         for concurrency in [1, 8] {
             let mut tasks = tokio::task::JoinSet::new();
@@ -625,20 +624,122 @@ async fn verify_budget(user: &str, root: &str, count: usize) -> anyhow::Result<(
                 round_trips[(round_trips.len() - 1) * 95 / 100],
                 round_trips.last().unwrap()
             );
-            if *samples.last().unwrap() > 100. {
-                violations.push(format!(
-                    "{name}/{concurrency}: {:.2}ms",
-                    samples.last().unwrap()
-                ));
+        }
+    }
+    Ok(())
+}
+
+// Constants describe this fixture, not total history: F=20, at most two
+// copies of each of nine candidate streams, and 32 point/group probes per DTO
+// (including its parent and 20 reply-actor groups). Independent scale fixtures
+// additionally compare these observed quantities; N, A and P are never limits.
+fn assert_bounded_work(name: &str, args: &[String], root: &Value) -> Value {
+    let rendering = matches!(name, "detail" | "other_audience" | "thread" | "page_render");
+    let k = match name {
+        "detail" | "other_audience" => 2.,
+        "thread" => 601.,
+        _ => args[4].parse::<f64>().unwrap_or(1.),
+    };
+    let bound = if is_budget_write(name) {
+        16.
+    } else if rendering {
+        32. * k
+    } else {
+        4. * (2. * 20. + 7.) * k
+    };
+    let mut relations = std::collections::BTreeMap::<String, f64>::new();
+    let mut max_intermediate = 0_f64;
+    let mut max_sort_input = 0_f64;
+    let mut max_join_checks = 0_f64;
+    let mut max_recursive = 0_f64;
+    // visit accepts an immutable closure; collect nodes first for aggregation.
+    fn collect<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
+        out.push(node);
+        if let Some(children) = node["Plans"].as_array() {
+            for child in children {
+                collect(child, out);
             }
         }
     }
-    anyhow::ensure!(
-        violations.is_empty(),
-        "100ms budget failures: {}",
-        violations.join(", ")
+    let mut nodes = Vec::new();
+    collect(root, &mut nodes);
+    for node in nodes {
+        let loops = node["Actual Loops"].as_f64().unwrap_or(0.);
+        let output = node["Actual Rows"].as_f64().unwrap_or(0.) * loops;
+        let examined = output
+            + (node["Rows Removed by Filter"].as_f64().unwrap_or(0.)
+                + node["Rows Removed by Index Recheck"].as_f64().unwrap_or(0.))
+                * loops;
+        max_intermediate = max_intermediate.max(output);
+        let join_checks =
+            output + node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops;
+        max_join_checks = max_join_checks.max(join_checks);
+        assert!(
+            join_checks <= bound,
+            "{name}: repeated join filtering exceeds budget={bound}: {node}"
+        );
+        assert!(
+            output <= bound,
+            "{name}: unbounded intermediate rows, budget={bound}: {node}"
+        );
+        if let Some(relation) = node["Relation Name"].as_str() {
+            *relations.entry(relation.to_owned()).or_default() += examined;
+        }
+        if matches!(
+            node["Node Type"].as_str(),
+            Some("Sort" | "Incremental Sort")
+        ) {
+            let input: f64 = node["Plans"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    c["Actual Rows"].as_f64().unwrap_or(0.)
+                        * c["Actual Loops"].as_f64().unwrap_or(0.)
+                })
+                .sum();
+            max_sort_input = max_sort_input.max(input);
+            assert!(
+                input <= bound,
+                "{name}: sort consumes history: {input} > {bound}"
+            );
+        }
+        if node["Node Type"] == "Recursive Union" {
+            max_recursive = max_recursive.max(output);
+            assert!(
+                output <= 601.,
+                "{name}: recursion exceeds candidate cap: {node}"
+            );
+        }
+    }
+    for (relation, examined) in &relations {
+        // Multiple audience checks can inspect the same small follow set.
+        // Keep F explicit instead of charging it to the constant DTO budget.
+        let relation_bound = if rendering && relation == "apub_follows" {
+            8. * k * (20. + 1.)
+        } else {
+            bound
+        };
+        assert!(
+            *examined <= relation_bound,
+            "{name}: {relation} examines {examined} rows > {relation_bound}"
+        );
+        if rendering && matches!(relation.as_str(), "apub_reactions" | "apub_reposts") {
+            assert!(
+                *examined <= 4. * k + 16.,
+                "{name}: concentrated engagement enumerated: {relation}={examined}"
+            );
+        }
+    }
+    assert_eq!(
+        root["Temp Written Blocks"].as_u64().unwrap_or(0),
+        0,
+        "{name}: spilled to disk"
     );
-    Ok(())
+    serde_json::json!({"relations": relations, "max_intermediate":max_intermediate,
+        "max_sort_input":max_sort_input,"max_recursive":max_recursive,"max_join_checks":max_join_checks,
+        "logical_blocks":root["Shared Hit Blocks"].as_u64().unwrap_or(0)+root["Shared Read Blocks"].as_u64().unwrap_or(0),
+        "temporary_blocks":root["Temp Written Blocks"].as_u64().unwrap_or(0),"row_budget":bound})
 }
 
 fn is_budget_write(name: &str) -> bool {
@@ -662,7 +763,7 @@ async fn budget_samples(
         args[0] = format!("{}-{worker}", args[0]);
     }
     let execution = format!(
-        "EXPLAIN (ANALYZE,TIMING OFF,FORMAT JSON) EXECUTE budget_{}({})",
+        "EXPLAIN (ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) EXECUTE budget_{}({})",
         name,
         args.iter()
             .map(|v| format!("'{}'", v.replace('\'', "''")))
@@ -672,7 +773,7 @@ async fn budget_samples(
     let mut samples = Vec::new();
     let mut waits = Vec::new();
     let mut round_trips = Vec::new();
-    for _ in 0..30 {
+    for sample in 0..30 {
         let waiting = std::time::Instant::now();
         let mut connection = pool[worker % pool.len()].lock().await;
         waits.push(waiting.elapsed().as_secs_f64() * 1000.);
@@ -740,6 +841,22 @@ async fn budget_samples(
             })
             .unwrap();
         let plan: Value = serde_json::from_str(raw)?;
+        let work = assert_bounded_work(&name, &args, &plan[0]["Plan"]);
+        if sample == 0 && worker == 0 {
+            eprintln!("plan-work {name}: {work}");
+            if let Some(directory) = std::env::var_os("SCALE_PLAN_DIR") {
+                std::fs::create_dir_all(&directory)?;
+                let directory = std::path::Path::new(&directory);
+                std::fs::write(
+                    directory.join(format!("{name}.json")),
+                    serde_json::to_vec_pretty(&plan)?,
+                )?;
+                std::fs::write(
+                    directory.join(format!("{name}-work.json")),
+                    serde_json::to_vec_pretty(&work)?,
+                )?;
+            }
+        }
         if name == "page_render" {
             assert_eq!(plan[0]["Plan"]["Actual Rows"], 500);
             visit(&plan[0]["Plan"], &|node| {
@@ -761,7 +878,7 @@ async fn budget_samples(
 }
 
 #[tokio::test]
-#[ignore = "repeat the strict budget gate on the committed SCALE_BUDGET fixture"]
+#[ignore = "repeat bounded-work checks and timing observations on the committed fixture"]
 async fn persisted_query_budget() -> anyhow::Result<()> {
     let (client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;

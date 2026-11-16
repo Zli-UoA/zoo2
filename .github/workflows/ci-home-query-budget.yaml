@@ -45,6 +45,8 @@ jobs:
           workspaces: backend
           shared-key: backend-check
       - uses: ariga/setup-atlas@28f0b75814c08b1a265b75713c120cfad46433ae
+      - name: Verify interrupted preview migration recovery
+        run: python3 infra/db/test-migrate-recovery.py
       - name: Build benchmark before measuring
         run: cargo test --manifest-path backend/Cargo.toml --test home_scale_test --no-run
       - name: Measure 300k and 1m posts
@@ -62,9 +64,10 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
             export DATABASE_URL="postgres://root:password@localhost:5432/$db?sslmode=disable"
             atlas migrate apply --dir file://infra/db/migrations --url "$DATABASE_URL"
-            SCALE_POSTS="$count" SCALE_BUDGET=1 cargo test --manifest-path backend/Cargo.toml --test home_scale_test timeline_work_is_bounded -- --ignored --nocapture 2>&1 | tee "performance-results/${count}.log"
+            SCALE_PLAN_DIR="$PWD/performance-results/${count}-plans" SCALE_POSTS="$count" SCALE_BUDGET=1 cargo test --manifest-path backend/Cargo.toml --test home_scale_test timeline_work_is_bounded -- --ignored --nocapture 2>&1 | tee "performance-results/${count}.log"
             cargo test --manifest-path backend/Cargo.toml --test home_scale_test persisted_home_handler_budget -- --ignored --nocapture 2>&1 | tee "performance-results/${count}-http.log"
           done
+          python3 infra/db/compare-home-plan-work.py performance-results/300000-plans performance-results/1000000-plans | tee performance-results/plan-comparison.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
