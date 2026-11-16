@@ -29,8 +29,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 const panel = () => within(screen.getByRole("complementary", { name: "使い方ツアー" }));
-async function chooseChannel() {
+async function nextTo(title: string) {
   await userEvent.click(panel().getByRole("button", { name: "次へ" }));
+  await waitFor(() => expect(panel().getByRole("heading", { name: title })).toBeVisible());
+}
+async function chooseChannel() {
+  await nextTo("チャンネルを探す");
   await expect(panel().getByRole("button", { name: "次へ" })).toBeDisabled();
   await userEvent.click(await screen.findByRole("link", { name: "general" }));
   await waitFor(() => expect(panel().getByRole("button", { name: "次へ" })).toBeEnabled());
@@ -40,10 +44,11 @@ export const CompleteAndReplay: Story = {
   play: playForImplementation(async () => {
     await screen.findByRole("complementary", { name: "使い方ツアー" });
     await chooseChannel();
-    await userEvent.click(panel().getByRole("button", { name: "次へ" }));
+    await nextTo("会話に参加する");
     await expect(await screen.findByRole("textbox", { name: "メッセージを送信" })).toBeVisible();
-    for (let i = 0; i < 3; i += 1)
-      await userEvent.click(panel().getByRole("button", { name: "次へ" }));
+    await nextTo("通知を確認する");
+    await nextTo("Slackと連携する");
+    await nextTo("自分に合う設定にする");
     await expect(screen.getByRole("tab", { name: "一般" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -51,6 +56,14 @@ export const CompleteAndReplay: Story = {
     await userEvent.click(panel().getByRole("button", { name: "Zooを使い始める" }));
     await expect(localStorage.getItem("zoo:onboarding:v1:user-alice")).toBe("done");
     // Settings has a back button; the rail and its replay control belong to the channel screen.
+    // Follow the real history from General through Slack back to Notifications.
+    await userEvent.click(screen.getByRole("button", { name: "チャンネル一覧へ戻る" }));
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Slack 連携" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
     await userEvent.click(screen.getByRole("button", { name: "チャンネル一覧へ戻る" }));
     await userEvent.click(await screen.findByRole("button", { name: "初期ツアーを開く" }));
     await expect(panel().getByRole("heading", { name: "Zooへようこそ" })).toBeVisible();
@@ -67,8 +80,9 @@ export const SlackSetup: Story = {
   play: playForImplementation(async () => {
     await screen.findByRole("complementary", { name: "使い方ツアー" });
     await chooseChannel();
-    for (let i = 0; i < 3; i += 1)
-      await userEvent.click(panel().getByRole("button", { name: "次へ" }));
+    await nextTo("会話に参加する");
+    await nextTo("通知を確認する");
+    await nextTo("Slackと連携する");
     await expect(screen.getByRole("tab", { name: "Slack 連携" })).toHaveAttribute(
       "aria-selected",
       "true",
