@@ -109,8 +109,10 @@ internal fun NotificationReadStatus(app: Session, read: Boolean) {
 @Composable
 fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
     val apub = app.activityPubNotifications
-    val feed = unifiedNotificationFeed(notifications, apub.items, apub.nextCursor != null)
-    val groups = feed.entries.mapNotNull { it.channel }
+    val feed = remember(notifications, apub.items, apub.nextCursor != null) {
+        unifiedNotificationFeed(notifications, apub.items, apub.nextCursor != null)
+    }
+    val groups = remember(feed) { feed.entries.mapNotNull { it.channel } }
     var reading by remember { mutableStateOf(false) }
     val attempted = remember { mutableSetOf<String>() }
     val pendingReads = remember { mutableSetOf<String>() }
@@ -120,14 +122,14 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
         if (pendingReads.isEmpty() || readJob?.isActive == true) return
         readJob = app.scope.launch {
           while (pendingReads.isNotEmpty()) {
-            delay(1)
+            delay(100)
             val selected = pendingReads.toList(); pendingReads.clear()
             val local = selected.filterNot { it.startsWith("activitypub:") }
             val remote = selected.filter { it.startsWith("activitypub:") }.map { it.removePrefix("activitypub:") }.toMutableSet()
             feed.mirrors.filter { it.channelId in local }.forEach { remote.add(it.item.text("id")) }
             var failed = false
-            for (id in local) {
-                try { app.api.request("/api/notifications/$id/read", "PATCH", obj()) }
+            if (local.isNotEmpty()) {
+                try { local.chunked(500).forEach { app.api.request("/api/notifications/read", "POST", obj("ids" to JsonArray(it.map(::JsonPrimitive)))) } }
                 catch (e: CancellationException) { throw e }
                 catch (_: Exception) { failed = true }
             }
@@ -147,7 +149,7 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
     val usersLoading by app.repo.users.loading.collectAsState()
     val channelsLoading by app.repo.channels.loading.collectAsState()
     val contextLoading = remember { mutableStateMapOf<String, Boolean>() }
-    val contextCache = remember(app) { mutableStateMapOf<String, Row>() }
+    val contextCache = app.notificationContexts
 
     val scroll = rememberLazyListState()
     val visible by remember {
@@ -165,6 +167,10 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                 .toSet()
         }
     }
+    LaunchedEffect(visible, apub) {
+        apub.viewport(visible.filter { it.startsWith("activitypub:") }.map { it.removePrefix("activitypub:") })
+    }
+    DisposableEffect(apub) { onDispose { apub.viewport(emptyList()) } }
     var hasLoaded by remember { mutableStateOf(false) }
     val loading =
         apub.loading || loadError == null &&
@@ -355,7 +361,10 @@ fun NotificationCard(
             onLoading(true)
             try {
                 fetchedContext = app.api.request("/api/notifications/$id/context").objectOrEmpty()
-                contextCache?.set(id, fetchedContext!!)
+                contextCache?.let {
+                    if (it.size >= 256) it.remove(it.keys.first())
+                    it[id] = fetchedContext!!
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {} finally {

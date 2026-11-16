@@ -1994,14 +1994,16 @@ pub(super) async fn insert_message(
     )
     .await?;
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
+    // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
+    // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
     exec(
         tx,
         "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,card) \
-         VALUES($1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
           AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
-         NULLIF($8,'')) \
+         NULLIF($8,'') WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \

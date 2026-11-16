@@ -278,7 +278,9 @@ it("defers Home requests until nearby, shares active views and cancels offscreen
   await act(async () =>
     pending[2].finish({ title: "取得できたHomeカード", description: "説明", image: null }),
   );
-  await screen.findByRole("link", { name: /取得できたHomeカード/ });
+  await waitFor(() =>
+    expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2),
+  );
   await act(async () => callbacks[1]([{ isIntersecting: true }]));
   await waitFor(() =>
     expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2),
@@ -317,4 +319,47 @@ it("prefetches within 200px of the real scrolling pane and defers more distant p
   fireEvent.scroll(scroller);
   await screen.findByRole("link", { name: /遠い投稿のカード/ });
   expect(api.get).toHaveBeenCalledTimes(2);
+});
+
+it("shows the cached card during a slow background refresh and replaces every mounted copy", async () => {
+  vi.useFakeTimers();
+  const url = "https://example.com/stale-preview-card";
+  api.get.mockResolvedValueOnce({
+    title: "保存済みのカード",
+    description: "前の説明",
+    image: null,
+  });
+  const first = render(<LinkPreviews content={url} />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("link", { name: /保存済みのカード/ })).toBeInTheDocument();
+  first.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300_001);
+  });
+  let finish!: (data: unknown) => void;
+  api.get.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <>
+      <LinkPreviews content={url} />
+      <LinkPreviews content={url} />
+    </>,
+  );
+  expect(screen.getAllByRole("link", { name: /保存済みのカード/ })).toHaveLength(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(api.get).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByRole("link", { name: /保存済みのカード/ })).toHaveLength(2);
+  await act(async () => {
+    finish({ title: "更新済みのカード", description: "新しい説明", image: null });
+  });
+  expect(screen.getAllByRole("link", { name: /更新済みのカード/ })).toHaveLength(2);
+  expect(screen.queryByText("保存済みのカード")).toBeNull();
 });

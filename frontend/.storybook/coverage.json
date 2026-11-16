@@ -230,7 +230,7 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
-      "states": ["Landscape", "Portrait", "TextOnly", "Mobile"]
+      "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
@@ -1300,7 +1300,7 @@
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
-      "reason": "タブ切替時の先頭復帰と不要な追加読込の抑止を390px・1440pxのブラウザテストで確認し、単体テストで古い仮想範囲・overscanと実際の表示領域を区別する。"
+      "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",
@@ -1349,7 +1349,7 @@
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
-      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移と戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
+      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移・ページ切替時の先頭復帰・戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubProfileDetails.tsx",

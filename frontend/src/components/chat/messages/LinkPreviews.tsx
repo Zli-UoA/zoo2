@@ -7,7 +7,7 @@ import {
 import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { previewUrls, proxyImageUrl } from "./linkPreviews";
-import { acquirePreview } from "./linkPreviewRequests";
+import { acquirePreview, cachedPreview, subscribePreview } from "./linkPreviewRequests";
 import { subscribePreviewEndpoints, type PreviewEndpoints } from "./linkPreviewEndpoints";
 
 function LinkPreview({
@@ -25,28 +25,31 @@ function LinkPreview({
   active: boolean;
   showFallback: boolean;
 }) {
-  const [result, setResult] = useState<{ url: string; data: Preview | null } | null>(null);
+  const key = `${cacheKey}:${url}`;
+  const cached = useMemo(() => cachedPreview(key), [key]);
+  const [result, setResult] = useState<{ key: string; data: Preview | null } | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const [failedIcon, setFailedIcon] = useState<string | null>(null);
+  useEffect(() => subscribePreview(key, (data) => setResult({ key, data })), [key]);
   useEffect(() => {
     if (!client || !active) return;
     let subscribed = true;
-    const work = acquirePreview(client, `${cacheKey}:${url}`, url);
+    const work = acquirePreview(client, key, url);
     void work.request.then((data) => {
-      if (subscribed) setResult({ url, data });
+      if (subscribed && data) setResult({ key, data });
     });
     return () => {
       subscribed = false;
       work.release();
     };
-  }, [url, client, cacheKey, active]);
-  const { title, description, image, siteName, icon } =
-    result?.url === url && result.data
-      ? result.data
-      : { title: url, description: "", image: null, siteName: new URL(url).hostname, icon: null };
+  }, [url, client, key, active]);
+  const data = result?.key === key ? result.data : cached;
+  const { title, description, image, siteName, icon } = data
+    ? data
+    : { title: url, description: "", image: null, siteName: new URL(url).hostname, icon: null };
   const src = proxyImageUrl(proxy, image);
   const iconSrc = proxyImageUrl(proxy, icon ?? null);
-  if (!showFallback && !(result?.url === url && result.data)) return null;
+  if (!showFallback && !data) return null;
   return (
     <a
       href={url}

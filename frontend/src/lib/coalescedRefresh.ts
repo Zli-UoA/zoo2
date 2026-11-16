@@ -1,5 +1,9 @@
 /** Immediate first load, then one trailing refresh per interval, without overlapping requests. */
-export function coalescedRefresh(refresh: () => void | Promise<void>, interval = 5000) {
+export function coalescedRefresh(
+  refresh: () => void | Promise<void>,
+  interval = 5000,
+  allowed: () => boolean = () => true,
+) {
   let last = Number.NEGATIVE_INFINITY;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
@@ -25,7 +29,7 @@ export function coalescedRefresh(refresh: () => void | Promise<void>, interval =
   };
   const run = () => {
     timer = undefined;
-    if (disposed) return;
+    if (disposed || !allowed()) return;
     last = Date.now();
     running = true;
     try {

@@ -121,7 +121,28 @@ async fn account(
         .and_then(|prefix| input.actor.strip_prefix(prefix))
         .unwrap_or(&input.actor);
     if id.starts_with("https://") {
-        let remote = remote_actor(&state, Some(&user.id), id, false).await?;
+        // Viewing a known account must not wait on its server whenever the
+        // actor cache's short signing-key TTL expires. Inbox/key resolution
+        // retains its refresh policy; only unknown profile reads need a fetch.
+        let cached = {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            query(
+                &mut tx,
+                "SELECT row_to_json(a)::text FROM apub_actors a WHERE id=$1",
+                &[id],
+            )
+            .await?
+            .into_iter()
+            .next()
+        };
+        let remote = match cached {
+            Some(actor) if actor["blocked"] == true => {
+                return Err(AppError::Forbidden("Actor is blocked".into()));
+            }
+            Some(actor) => actor,
+            None => remote_actor(&state, Some(&user.id), id, false).await?,
+        };
         let mut db = state.db.clone();
         let mut tx = db.transaction().await?;
         if remote["avatar"].is_object() {

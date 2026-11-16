@@ -90,9 +90,19 @@ fun parsePreview(data: Row, url: String) =
         data.text("sitename").trim().ifEmpty { Url(url).host }.take(300),
     )
 
-class PreviewLoader(private val app: Session) {
+class PreviewLoader(private val app: Session, private val clock: TimeSource = TimeSource.Monotonic) {
     private data class Cached(val data: PreviewData, val storedAt: TimeMark)
-    private val cache = linkedMapOf<String, Cached>()
+    private val cache = mutableStateMapOf<String, Cached>()
+    private val order = linkedSetOf<String>()
+
+    fun cached(service: String, url: String): PreviewData? = cache["$service:$url"]?.data
+
+    private fun store(key: String, data: PreviewData) {
+        order.remove(key)
+        order.add(key)
+        cache[key] = Cached(data, clock.markNow())
+        while (order.size > 256) cache.remove(order.first().also { order.remove(it) })
+    }
 
     private data class Work(val request: Deferred<PreviewData?>, var users: Int = 0)
 
@@ -149,11 +159,11 @@ class PreviewLoader(private val app: Session) {
 
     suspend fun load(service: String, url: String): PreviewData? {
         val key = "$service:$url"
-        cache.remove(key)?.let {
-            if (it.storedAt.elapsedNow() < 5.minutes) {
-                cache[key] = it
-                return it.data
-            }
+        val previous = cache[key]
+        if (previous != null && previous.storedAt.elapsedNow() < 5.minutes) {
+            order.remove(key)
+            order.add(key)
+            return previous.data
         }
         val work =
             pending.getOrPut(key) {
@@ -188,8 +198,7 @@ class PreviewLoader(private val app: Session) {
                                     url,
                                 )
                                 .also {
-                                    if (cache.size >= 256) cache.remove(cache.keys.first())
-                                    cache[key] = Cached(it, TimeSource.Monotonic.markNow())
+                                    store(key, it)
                                 }
                         } catch (e: CancellationException) {
                             throw e
@@ -197,7 +206,8 @@ class PreviewLoader(private val app: Session) {
                             if (attempt < 2) delay(250L * (attempt + 1))
                         }
                         }
-                        null
+                        // Failed revalidation keeps the previous card and backs off.
+                        previous?.data?.also { store(key, it) }
                     }
                 )
             }
@@ -221,12 +231,13 @@ fun LinkPreviews(app: Session, content: String, excludeUrl: String? = null, show
     val sources by app.previews.endpoints.collectAsState()
     val (service, media) = sources
     urls.forEach { url ->
-        var data by remember(url, service) { mutableStateOf<PreviewData?>(null) }
+        var data by remember(url, service) { mutableStateOf(app.previews.cached(service, url)) }
         LaunchedEffect(url, service, app.env.online, app.env.visible) {
             if (app.env.online && app.env.visible && service.isNotBlank()) data = app.previews.load(service, url)
         }
-        if (data != null || showFallback)
-            PreviewCard(app, url, data ?: PreviewData(url, "", "", "", Url(url).host), media)
+        val displayed = app.previews.cached(service, url) ?: data
+        if (displayed != null || showFallback)
+            PreviewCard(app, url, displayed ?: PreviewData(url, "", "", "", Url(url).host), media)
     }
 }
 

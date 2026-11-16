@@ -185,9 +185,9 @@ POSTGRES_PASSWORD=staging-test-password \
     logs --no-color migrate
   ```
 
-  `20261128010002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
+  `20261128020006_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
 
-  1. `migrate status` とログで停止箇所が `20261128010002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
+  1. `migrate status` とログで停止箇所が `20261128020006` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
   2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`indisvalid` が `false` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。`indisvalid = true`、別スキーマ、別名、または対象 migration 以外の失敗なら削除しない。
 
      ```bash
@@ -220,7 +220,7 @@ POSTGRES_PASSWORD=staging-test-password \
      docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
      ```
 
-  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261128010003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
+  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261128020007_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
 
   `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 

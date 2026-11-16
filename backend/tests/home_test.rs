@@ -1633,6 +1633,15 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     )
     .await?;
     assert_eq!(status, StatusCode::CREATED);
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&id),
+        "/api/home",
+        Some(json!({"content":format!(":unknown-{}:",uuid::Uuid::new_v4().simple()),"in_reply_to":post["id"],"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
     let (_, rows) = request(&app, "GET", Some(&id), "/api/home?timeline=local", None).await?;
     let row = rows
         .as_array()
@@ -1645,6 +1654,21 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     assert_eq!(emoji["width"], 120);
     assert_eq!(emoji["height"], 20);
     assert_eq!(emoji["local"], true);
+    let reply = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == reply["id"])
+        .unwrap();
+    assert_eq!(
+        reply["emojis"],
+        json!([]),
+        "page emoji metadata must not leak into another post"
+    );
+    assert_eq!(
+        reply["parent"]["emojis"][0], *emoji,
+        "parent aliases retain the same dimensions and identity"
+    );
     let local_url = emoji["url"].as_str().unwrap();
     let mut tx = db.transaction().await?;
     let count = backend::apps::one(
@@ -2283,5 +2307,90 @@ async fn viewport_refresh_filters_reposts_remote_actors_and_private_channels() -
         .0,
         StatusCode::BAD_REQUEST
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn remote_thread_scope_preserves_audiences_previews_and_cycles() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    let actor = format!("https://{}.test/actor", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'remote','Remote',$1,'dummy')")
+        .bind(actor.as_str()).exec(&mut db).await?;
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'outgoing',$2,true)")
+        .bind(user.as_str()).bind(actor.as_str()).exec(&mut db).await?;
+    let ids: Vec<_> = (0..7).map(|n| format!("{actor}/posts/{n}")).collect();
+    // A visible chain, an undelivered private ancestor, a hidden reply, a cycle,
+    // and a deleted reply. The scope must not act as an audience grant.
+    for (n, parent, visibility, delivered) in [
+        (0, Some(3), "public", true),
+        (1, Some(0), "public", true),
+        (2, Some(1), "public", true),
+        (3, None, "followers", false),
+        (4, Some(0), "followers", false),
+        (5, Some(5), "public", true),
+        (6, Some(0), "public", true),
+    ] {
+        toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,deleted_at) VALUES($1,$2,'remote',$3,now(),now(),NULLIF($4,''),CASE WHEN $5='true' THEN now() END)")
+            .bind(ids[n].as_str()).bind(actor.as_str()).bind(visibility)
+            .bind(parent.map(|p| ids[p].as_str()).unwrap_or(""))
+            .bind(if n == 6 { "true" } else { "false" }).exec(&mut db).await?;
+        if delivered {
+            toasty::sql::statement(
+                "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2)",
+            )
+            .bind(ids[n].as_str())
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+        }
+    }
+    let path = |n: usize, suffix: &str| {
+        format!(
+            "/api/home/{}{suffix}",
+            percent_encoding::utf8_percent_encode(&ids[n], percent_encoding::NON_ALPHANUMERIC)
+        )
+    };
+    let (status, thread) = request(&app, "GET", Some(&user), &path(1, "/thread"), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let posts = thread.as_array().unwrap();
+    assert_eq!(
+        posts
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![ids[0].as_str(), ids[1].as_str(), ids[2].as_str()]
+    );
+    assert!(posts[0]["parent"].is_null());
+    assert_eq!(posts[0]["replies"], 1);
+    assert_eq!(posts[1]["parent"]["id"], ids[0]);
+    let (status, detail) = request(&app, "GET", Some(&user), &path(1, ""), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["parent"]["id"], ids[0]);
+    assert_eq!(detail["replies"], 1);
+    for n in [3, 4, 6] {
+        assert_eq!(
+            request(&app, "GET", Some(&user), &path(n, "/thread"), None)
+                .await?
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        request(&app, "GET", Some(&user), "/api/home/missing/thread", None)
+            .await?
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, cycle) = request(&app, "GET", Some(&user), &path(5, "/thread"), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cycle.as_array().unwrap().len(), 1);
     Ok(())
 }
