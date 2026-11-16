@@ -315,6 +315,20 @@ erDiagram
     notifications }o--o| channels : notifications_channel_id_fkey
     notifications }o--o| messages : notifications_message_id_fkey
     notifications }o--o| users : notifications_user_id_fkey
+    phone_sessions {
+      text id PK
+      text user_id FK
+      text line_id FK
+      timestamptz line_revision
+      text peer_id
+      bigint gateway_session_id
+      bigint gateway_handle_id
+      text lease_owner
+      timestamptz expires_at
+      timestamptz created_at
+    }
+    phone_sessions }o--o| sip_lines : phone_sessions_line_id_fkey
+    phone_sessions }o--o| users : phone_sessions_user_id_fkey
     push_subscriptions {
       text id PK
       text user_id FK

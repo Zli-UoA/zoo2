@@ -4093,3 +4093,18 @@ CREATE TABLE sip_phones (
 );
 CREATE INDEX sip_lines_owner_idx ON sip_lines(owner_user_id);
 CREATE INDEX sip_line_members_user_idx ON sip_line_members(user_id);
+-- Ephemeral, authenticated gateway registrations. No SIP credentials or call history.
+CREATE TABLE phone_sessions (
+ id text PRIMARY KEY,
+ user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ line_revision timestamptz NOT NULL,
+ peer_id text NOT NULL,
+ gateway_session_id bigint,
+ gateway_handle_id bigint,
+ lease_owner text,
+ expires_at timestamptz NOT NULL DEFAULT (now() + interval '60 seconds'),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX phone_sessions_user_expiry ON phone_sessions(user_id, expires_at);
+CREATE INDEX phone_sessions_line_idx ON phone_sessions(line_id);
