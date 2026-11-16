@@ -122,6 +122,7 @@ test('workflow completion subscription covers every non-optional PR workflow and
   assert.ok(subscription.includes('"PR review relay"'));
   const relay = readFileSync(new URL('pr-review-relay.yaml', dir), 'utf8');
   assert.match(relay, /permissions: \{\}/);
+  assert.match(relay, /group: pr-review-relay-\$\{\{ github.event.pull_request.number \}\}/);
   assert.doesNotMatch(relay, /^\s+uses:.*checkout/m);
 });
 
@@ -154,4 +155,18 @@ test('manual and workflow/review relay events resolve to the same PR identifier'
   assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { name: 'PR review relay', head_sha: pr.merge_commit_sha, pull_requests: [{ number: 7 }] } } } }), [7]);
   assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { name: 'PR review relay', head_sha: 'c'.repeat(40), pull_requests: [{ number: 7 }] } } } }), [7]);
   assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { head_sha: 'c'.repeat(40), pull_requests: [{ number: 7 }] } } } }), []);
+});
+
+test('fork review relay without linked PRs re-evaluates current reviews after a head change', async () => {
+  const pr = { number: 7, state: 'open', head: { sha: 'a'.repeat(40) } };
+  const github = { rest: { pulls: { get: async () => ({ data: pr }) }, repos: { listPullRequestsAssociatedWithCommit: 'associated' } },
+    paginate: async (method, params) => {
+      assert.equal(method, 'associated');
+      assert.equal(params.commit_sha, 'c'.repeat(40));
+      return [{ number: 7 }];
+    } };
+  const context = { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { name: 'PR review relay', head_sha: 'c'.repeat(40), pull_requests: [] } } };
+  assert.deepEqual(await resolvePullRequestNumbers({ github, context }), [7]);
+  pr.state = 'closed';
+  assert.deepEqual(await resolvePullRequestNumbers({ github, context }), []);
 });

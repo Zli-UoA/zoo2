@@ -127,7 +127,7 @@ export async function resolvePullRequestNumbers({ github, context }) {
     const linked = payload.workflow_run?.pull_requests ?? payload.check_run?.pull_requests ?? payload.check_suite?.pull_requests ?? [];
     const prs = linked.length ? linked : await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, { ...context.repo, commit_sha: sha, per_page: 100 });
     const current = await Promise.all(prs.map(async pr => (await github.rest.pulls.get({ ...context.repo, pull_number: pr.number })).data));
-    const reviewRelay = payload.workflow_run?.name === 'PR review relay' && linked.length > 0;
+    const reviewRelay = payload.workflow_run?.name === 'PR review relay';
     numbers = current.filter(pr => pr.state === 'open' && (reviewRelay || pr.head.sha === sha || pr.merge_commit_sha === sha)).map(pr => pr.number);
   }
   return [...new Set(numbers ?? [])];
