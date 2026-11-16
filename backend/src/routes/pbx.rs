@@ -98,7 +98,7 @@ async fn lookup(
         if uuid::Uuid::parse_str(id).is_err() {
             return Ok((response_headers, String::new()));
         }
-        let line=one(&mut tx,"SELECT json_build_object('id',l.id)::text FROM sip_lines l JOIN users u ON u.id=l.created_by WHERE l.id=$1 AND NOT u.is_deactivated", &[id]).await?;
+        let line=one(&mut tx,"SELECT json_build_object('id',l.id)::text FROM sip_lines l LEFT JOIN users u ON u.id=l.owner_user_id WHERE l.id=$1 AND (l.owner_user_id IS NULL OR (NOT u.is_deactivated AND NOT u.is_bot))", &[id]).await?;
         if line.is_null() {
             return Ok((response_headers, String::new()));
         }
@@ -146,9 +146,9 @@ async fn lookup(
             return Ok((response_headers, String::new()));
         };
         let line = if kind == "phone" {
-            one(&mut tx,"SELECT json_build_object('id',l.id,'sip_domain',l.sip_domain,'username',l.username,'password_ciphertext',l.password_ciphertext)::text FROM sip_phones p JOIN sip_lines l ON l.id=p.line_id JOIN users u ON u.id=l.created_by WHERE p.id=$1 AND NOT u.is_deactivated", &[uuid]).await?
+            one(&mut tx,"SELECT json_build_object('id',l.id,'sip_domain',l.sip_domain,'username',l.username,'password_ciphertext',l.password_ciphertext)::text FROM sip_phones p JOIN sip_lines l ON l.id=p.line_id LEFT JOIN users u ON u.id=l.owner_user_id WHERE p.id=$1 AND (l.owner_user_id IS NULL OR (NOT u.is_deactivated AND NOT u.is_bot))", &[uuid]).await?
         } else {
-            one(&mut tx,"SELECT json_build_object('id',l.id,'sip_domain',l.sip_domain,'username',l.username,'password_ciphertext',l.password_ciphertext)::text FROM sip_lines l JOIN users u ON u.id=l.created_by WHERE l.id=$1 AND NOT u.is_deactivated", &[uuid]).await?
+            one(&mut tx,"SELECT json_build_object('id',l.id,'sip_domain',l.sip_domain,'username',l.username,'password_ciphertext',l.password_ciphertext)::text FROM sip_lines l LEFT JOIN users u ON u.id=l.owner_user_id WHERE l.id=$1 AND (l.owner_user_id IS NULL OR (NOT u.is_deactivated AND NOT u.is_bot))", &[uuid]).await?
         };
         if line.is_null() {
             return Ok((response_headers, String::new()));

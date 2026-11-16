@@ -440,6 +440,19 @@ async fn sip_personal_and_shared_authorization_and_encryption() -> anyhow::Resul
         .0,
         StatusCode::NOT_FOUND
     );
+    // Shared lines belong to the workspace, not to the administrator who created them.
+    toasty::sql::statement("UPDATE users SET is_deactivated=true WHERE id=$1")
+        .bind(admin.clone())
+        .exec(&mut db)
+        .await?;
+    let (status, shared_auth) =
+        pbx(&app, "dummy-config", "auths", &format!("id=auth-{shared}")).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(shared_auth.contains("password=dummy-shared-password"));
+    toasty::sql::statement("UPDATE users SET is_deactivated=false WHERE id=$1")
+        .bind(admin.clone())
+        .exec(&mut db)
+        .await?;
     input["member_ids"] = json!([]);
     input["password"] = json!("");
     assert_eq!(
@@ -464,6 +477,17 @@ async fn sip_personal_and_shared_authorization_and_encryption() -> anyhow::Resul
         .bind(alice.clone())
         .exec(&mut db)
         .await?;
+    assert!(
+        pbx(
+            &app,
+            "dummy-config",
+            "auths",
+            &format!("id=auth-{personal}")
+        )
+        .await?
+        .1
+        .is_empty()
+    );
     assert!(
         !request(
             &app,
