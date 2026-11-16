@@ -50,7 +50,9 @@ export function AppUpdateNotice() {
     let stopped = false;
     let found = false;
     let checking = false;
-    let lastCheck = Date.now();
+    // 開いてから最初の確認までは `UPDATE_CHECK_FIRST_DELAY_MS`。その時点でオフラインや裏に回っていて
+    // 確かめられなくても、オンラインや表示に戻ったときにすぐ確かめられるように、起点をずらしておく。
+    let lastCheck = Date.now() - UPDATE_CHECK_MIN_GAP_MS + UPDATE_CHECK_FIRST_DELAY_MS;
 
     const check = async () => {
       if (stopped || found || checking || !navigator.onLine) return;
