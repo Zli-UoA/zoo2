@@ -23,3 +23,6 @@ override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Bundled Android phone engine (generated from frontend/src/android-phone).
+/frontend/build/
