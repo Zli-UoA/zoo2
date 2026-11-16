@@ -848,16 +848,22 @@ impl Component {
         match self {
             Component::ActionRow(r) => r.components.iter().collect(),
             Component::Container(c) => c.components.iter().collect(),
-            Component::Section(s) => s
-                .components
-                .iter()
-                .chain(s.accessory.as_deref())
-                .collect(),
+            Component::Section(s) => s.components.iter().chain(s.accessory.as_deref()).collect(),
             Component::Label(l) => vec![l.component.as_ref()],
             Component::Card(c) => c.actions.iter().collect(),
             Component::Carousel(c) => c.cards.iter().collect(),
-            Component::Grid(g) => g.rows.iter().flatten().map(|i| i.component.as_ref()).collect(),
-            Component::Table(t) => t.rows.iter().flatten().filter_map(|c| c.button.as_deref()).collect(),
+            Component::Grid(g) => g
+                .rows
+                .iter()
+                .flatten()
+                .map(|i| i.component.as_ref())
+                .collect(),
+            Component::Table(t) => t
+                .rows
+                .iter()
+                .flatten()
+                .filter_map(|c| c.button.as_deref())
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -874,8 +880,18 @@ impl Component {
             Component::Label(l) => vec![l.component.as_mut()],
             Component::Card(c) => c.actions.iter_mut().collect(),
             Component::Carousel(c) => c.cards.iter_mut().collect(),
-            Component::Grid(g) => g.rows.iter_mut().flatten().map(|i| i.component.as_mut()).collect(),
-            Component::Table(t) => t.rows.iter_mut().flatten().filter_map(|c| c.button.as_deref_mut()).collect(),
+            Component::Grid(g) => g
+                .rows
+                .iter_mut()
+                .flatten()
+                .map(|i| i.component.as_mut())
+                .collect(),
+            Component::Table(t) => t
+                .rows
+                .iter_mut()
+                .flatten()
+                .filter_map(|c| c.button.as_deref_mut())
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -970,7 +986,10 @@ fn deserialize_color<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::
 /// `type` の値を番号にする。数値と名前の両方を受け付け、知らなければ None。
 fn type_of(value: &Value) -> Result<Option<u16>, String> {
     match value.get("type") {
-        Some(Value::Number(n)) => Ok(n.as_u64().and_then(|n| u16::try_from(n).ok()).filter(|k| kind::name(*k).is_some())),
+        Some(Value::Number(n)) => Ok(n
+            .as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|k| kind::name(*k).is_some())),
         Some(Value::String(s)) => Ok(kind::from_name(s)),
         _ => Err("component needs a type".into()),
     }
@@ -993,7 +1012,15 @@ pub fn salvage_text(value: &Value) -> String {
         }
         match v {
             Value::Object(map) => {
-                for key in ["label", "title", "content", "text", "alt_text", "description", "placeholder"] {
+                for key in [
+                    "label",
+                    "title",
+                    "content",
+                    "text",
+                    "alt_text",
+                    "description",
+                    "placeholder",
+                ] {
                     match map.get(key) {
                         Some(Value::String(s)) if !s.trim().is_empty() => out.push(s.clone()),
                         Some(obj @ Value::Object(_)) => walk(obj, out, depth + 1),
@@ -1030,7 +1057,10 @@ impl Component {
         }
         let Some(k) = type_of(&value)? else {
             return Ok(Component::Unsupported(Unsupported {
-                id: value.get("id").and_then(Value::as_i64).and_then(|i| i32::try_from(i).ok()),
+                id: value
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .and_then(|i| i32::try_from(i).ok()),
                 original_type: original_type(&value),
                 text: salvage_text(&value),
             }));
@@ -1091,7 +1121,9 @@ impl Serialize for Component {
             C::Button(v) => to(v),
             C::StringSelect(v) => to(v),
             C::TextInput(v) => to(v),
-            C::UserSelect(v) | C::RoleSelect(v) | C::MentionableSelect(v) | C::ChannelSelect(v) => to(v),
+            C::UserSelect(v) | C::RoleSelect(v) | C::MentionableSelect(v) | C::ChannelSelect(v) => {
+                to(v)
+            }
             C::Section(v) => to(v),
             C::TextDisplay(v) => to(v),
             C::Thumbnail(v) => to(v),

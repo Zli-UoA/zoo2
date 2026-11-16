@@ -1,4 +1,5 @@
 import { text, resource, type Json } from "./types.ts";
+import { plain, IS_COMPONENTS_V2, type Component, type ComponentDocument } from "../../../sdk/src/components.ts";
 import type { Notice } from "./events.ts";
 
 /** Case-insensitive keys stay internal; GitHub's canonical spelling is presentation data. */
@@ -174,4 +175,42 @@ export function messageBlocks(notice: Notice, s: Json, payload: Json, reply = fa
       },
     },
   ];
+}
+
+/** 部品の id（テストと読み手が、部品の役割を見分けるのに使う）。 */
+export const PART = { heading: 1, title: 2, description: 3, fields: 4, footer: 5 } as const;
+
+/** カードの 1 項目の値を MFM にする（コードは `` ` ``、リンクは `[値](URL)`）。 */
+function fieldValue(f: Json): string {
+  const value = f.code ? `\`${String(f.value).replaceAll("`", "'")}\`` : plain(String(f.value));
+  return f.url ? `[${value}](${f.url})` : value;
+}
+
+/** カード（見出しの文字と、container 1 つ）を部品の文書にする。本文は通知用の代わりの文字として残す。 */
+export function cardComponents(heading: string | undefined, card: Json): Component[] {
+  const parts: Component[] = [
+    { type: 10, id: PART.title, content: card.url ? `**[${plain(card.title)}](${card.url})**` : `**${plain(card.title)}**` },
+  ];
+  if (card.description) parts.push({ type: 10, id: PART.description, content: plain(card.description) });
+  if (card.fields?.length)
+    parts.push({
+      type: 10,
+      id: PART.fields,
+      content: card.fields.map((f: Json) => `**${plain(f.title)}**: ${fieldValue(f)}`).join("\n"),
+    });
+  const footer = [card.source, card.context].filter(Boolean).map((v) => plain(String(v)));
+  if (footer.length) {
+    parts.push({ type: 14, divider: false, spacing: 1 });
+    parts.push({ type: 10, id: PART.footer, content: `<small>${footer.join(" · ")}</small>` });
+  }
+  const box: Component = { type: 17, components: parts };
+  if (card.color) box.accent_color = Number.parseInt(String(card.color).replace(/^#/, ""), 16);
+  return heading ? [{ type: 10, id: PART.heading, content: plain(heading) }, box] : [box];
+}
+
+/** {@link messageBlocks} の結果（見出しとカード）を、メッセージの部品にする。 */
+export function messageComponents(blocks: Json[]): ComponentDocument {
+  const heading = blocks.find((b) => b.type === "text")?.text;
+  const card = blocks.find((b) => b.type === "card")?.card;
+  return { flags: IS_COMPONENTS_V2, components: card ? cardComponents(heading, card) : [] };
 }

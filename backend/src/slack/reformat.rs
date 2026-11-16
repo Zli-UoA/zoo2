@@ -145,7 +145,7 @@ pub async fn run(
                 let updated = query(
                     &mut tx,
                     "UPDATE messages SET content=$2 \
-                     WHERE id=$1 AND content=$3 AND revision=0 AND card IS NULL AND deleted_at IS NULL \
+                     WHERE id=$1 AND content=$3 AND revision=0 AND card IS NULL AND components IS NULL AND deleted_at IS NULL \
                      RETURNING json_build_object('ok',true)::text",
                     &[&change.id, &change.new, &change.old],
                 )

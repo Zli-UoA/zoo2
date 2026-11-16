@@ -7,6 +7,7 @@ on:
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop/**"
       # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
       # アイコンのテストは frontend/src の lucide-react の import を読む。
@@ -22,6 +23,7 @@ on:
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop/**"
       # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
       # アイコンのテストは frontend/src の lucide-react の import を読む。
@@ -74,6 +76,19 @@ jobs:
           # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: tui
+      # メッセージ部品のモデル。backend と client-types（GPUI・Tauri・TUI）が使う。
+      - name: format check (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo fmt --check
+      - name: lint check (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo test --locked
+      - name: wasm32 build check (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo check --locked --target wasm32-unknown-unknown
       - name: format check (client-types)
         working-directory: ./client-types
         run: cargo fmt --check

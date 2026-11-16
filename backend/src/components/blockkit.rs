@@ -39,10 +39,16 @@ fn s<'v>(v: &'v Value, k: &str) -> &'v str {
     v.get(k).and_then(Value::as_str).unwrap_or("")
 }
 fn opt(v: &Value, k: &str) -> Option<String> {
-    v.get(k).and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_string)
+    v.get(k)
+        .and_then(Value::as_str)
+        .filter(|x| !x.is_empty())
+        .map(str::to_string)
 }
 fn arr<'v>(v: &'v Value, k: &str) -> &'v [Value] {
-    v.get(k).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    v.get(k)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 fn clip(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
@@ -72,10 +78,12 @@ impl<'a, R: Resolver> Converter<'a, R> {
     }
 
     fn custom_id(&mut self, v: &Value) -> String {
-        opt(v, "action_id").map(|a| clip(&a, 100)).unwrap_or_else(|| {
-            self.auto += 1;
-            format!("slack-auto-{}", self.auto)
-        })
+        opt(v, "action_id")
+            .map(|a| clip(&a, 100))
+            .unwrap_or_else(|| {
+                self.auto += 1;
+                format!("slack-auto-{}", self.auto)
+            })
     }
 
     /// テキストオブジェクト（plain_text / mrkdwn）を MFM にする。
@@ -111,7 +119,8 @@ impl<'a, R: Resolver> Converter<'a, R> {
     }
 
     fn option(&self, o: &Value, defaults: &[String]) -> SelectOption {
-        let value = opt(o, "value").unwrap_or_else(|| self.raw(o.get("text").unwrap_or(&Value::Null)));
+        let value =
+            opt(o, "value").unwrap_or_else(|| self.raw(o.get("text").unwrap_or(&Value::Null)));
         SelectOption {
             label: clip(&self.raw(o.get("text").unwrap_or(&Value::Null)), 100),
             default: defaults.contains(&value),
@@ -135,9 +144,16 @@ impl<'a, R: Resolver> Converter<'a, R> {
         if let Some(o) = v.get("initial_option").and_then(|o| opt(o, "value")) {
             defaults.push(o);
         }
-        let mut out: Vec<SelectOption> = arr(v, "options").iter().map(|o| self.option(o, &defaults)).collect();
+        let mut out: Vec<SelectOption> = arr(v, "options")
+            .iter()
+            .map(|o| self.option(o, &defaults))
+            .collect();
         for group in arr(v, "option_groups") {
-            out.extend(arr(group, "options").iter().map(|o| self.option(o, &defaults)));
+            out.extend(
+                arr(group, "options")
+                    .iter()
+                    .map(|o| self.option(o, &defaults)),
+            );
         }
         out.truncate(limits::MAX_OPTIONS);
         out
@@ -155,10 +171,12 @@ impl<'a, R: Resolver> Converter<'a, R> {
                     id: id.clone(),
                     kind: kind.into(),
                 }),
-                Some(Value::Array(ids)) => out.extend(ids.iter().filter_map(Value::as_str).map(|id| DefaultValue {
-                    id: id.into(),
-                    kind: kind.into(),
-                })),
+                Some(Value::Array(ids)) => {
+                    out.extend(ids.iter().filter_map(Value::as_str).map(|id| DefaultValue {
+                        id: id.into(),
+                        kind: kind.into(),
+                    }))
+                }
                 _ => {}
             }
         }
@@ -208,44 +226,59 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 confirm: self.confirm(v),
                 ..Default::default()
             }),
-            "external_select" | "multi_external_select" => Component::ExternalSelect(ExternalSelect {
-                custom_id: self.custom_id(v),
-                placeholder: self.placeholder(v),
-                min_query_length: u8_of(v, "min_query_length"),
-                min_values: min,
-                max_values: max,
-                initial_options: {
-                    let mut o: Vec<SelectOption> = arr(v, "initial_options").iter().map(|o| self.option(o, &[])).collect();
-                    o.extend(v.get("initial_option").map(|o| self.option(o, &[])));
-                    o
-                },
-                confirm: self.confirm(v),
-                ..Default::default()
-            }),
+            "external_select" | "multi_external_select" => {
+                Component::ExternalSelect(ExternalSelect {
+                    custom_id: self.custom_id(v),
+                    placeholder: self.placeholder(v),
+                    min_query_length: u8_of(v, "min_query_length"),
+                    min_values: min,
+                    max_values: max,
+                    initial_options: {
+                        let mut o: Vec<SelectOption> = arr(v, "initial_options")
+                            .iter()
+                            .map(|o| self.option(o, &[]))
+                            .collect();
+                        o.extend(v.get("initial_option").map(|o| self.option(o, &[])));
+                        o
+                    },
+                    confirm: self.confirm(v),
+                    ..Default::default()
+                })
+            }
             "users_select" | "multi_users_select" => Component::UserSelect(EntitySelect {
                 custom_id: self.custom_id(v),
                 placeholder: self.placeholder(v),
                 min_values: min,
                 max_values: max,
-                default_values: Self::entity_defaults(v, "user", &["initial_user", "initial_users"]),
+                default_values: Self::entity_defaults(
+                    v,
+                    "user",
+                    &["initial_user", "initial_users"],
+                ),
                 confirm: self.confirm(v),
                 ..Default::default()
             }),
-            "conversations_select" | "multi_conversations_select" | "channels_select" | "multi_channels_select" => {
-                Component::ChannelSelect(EntitySelect {
-                    custom_id: self.custom_id(v),
-                    placeholder: self.placeholder(v),
-                    min_values: min,
-                    max_values: max,
-                    default_values: Self::entity_defaults(
-                        v,
-                        "channel",
-                        &["initial_conversation", "initial_conversations", "initial_channel", "initial_channels"],
-                    ),
-                    confirm: self.confirm(v),
-                    ..Default::default()
-                })
-            }
+            "conversations_select"
+            | "multi_conversations_select"
+            | "channels_select"
+            | "multi_channels_select" => Component::ChannelSelect(EntitySelect {
+                custom_id: self.custom_id(v),
+                placeholder: self.placeholder(v),
+                min_values: min,
+                max_values: max,
+                default_values: Self::entity_defaults(
+                    v,
+                    "channel",
+                    &[
+                        "initial_conversation",
+                        "initial_conversations",
+                        "initial_channel",
+                        "initial_channels",
+                    ],
+                ),
+                confirm: self.confirm(v),
+                ..Default::default()
+            }),
             "overflow" => Component::Overflow(OptionGroup {
                 custom_id: self.custom_id(v),
                 options: {
@@ -290,11 +323,15 @@ impl<'a, R: Resolver> Converter<'a, R> {
             }),
             "datetimepicker" => Component::DateTimePicker(Picker {
                 custom_id: self.custom_id(v),
-                initial_value: v.get("initial_date_time").and_then(Value::as_i64).map(|t| t.to_string()),
+                initial_value: v
+                    .get("initial_date_time")
+                    .and_then(Value::as_i64)
+                    .map(|t| t.to_string()),
                 confirm: self.confirm(v),
                 ..Default::default()
             }),
-            "plain_text_input" | "number_input" | "email_text_input" | "url_text_input" | "rich_text_input" => {
+            "plain_text_input" | "number_input" | "email_text_input" | "url_text_input"
+            | "rich_text_input" => {
                 let format = match ty {
                     "number_input" => TextFormat::Number,
                     "email_text_input" => TextFormat::Email,
@@ -314,19 +351,30 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 };
                 Component::TextInput(TextInput {
                     custom_id: self.custom_id(v),
-                    style: if v.get("multiline").and_then(Value::as_bool).unwrap_or(false) || format == TextFormat::Rich {
+                    style: if v.get("multiline").and_then(Value::as_bool).unwrap_or(false)
+                        || format == TextFormat::Rich
+                    {
                         2
                     } else {
                         1
                     },
-                    min_length: v.get("min_length").and_then(Value::as_u64).map(|n| n.min(4000) as u16),
-                    max_length: v.get("max_length").and_then(Value::as_u64).map(|n| n.min(4000) as u16),
+                    min_length: v
+                        .get("min_length")
+                        .and_then(Value::as_u64)
+                        .map(|n| n.min(4000) as u16),
+                    max_length: v
+                        .get("max_length")
+                        .and_then(Value::as_u64)
+                        .map(|n| n.min(4000) as u16),
                     value: value.map(|x| clip(&x, 4000)),
                     placeholder: self.placeholder(v),
                     format,
                     min_value: num("min_value"),
                     max_value: num("max_value"),
-                    decimal: v.get("is_decimal_allowed").and_then(Value::as_bool).unwrap_or(false),
+                    decimal: v
+                        .get("is_decimal_allowed")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                     ..Default::default()
                 })
             }
@@ -334,14 +382,22 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 custom_id: self.custom_id(v),
                 min_values: Some(0),
                 max_values: u8_of(v, "max_files").map(|n| n.clamp(1, 10)),
-                file_types: arr(v, "filetypes").iter().filter_map(Value::as_str).map(str::to_string).collect(),
+                file_types: arr(v, "filetypes")
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
                 ..Default::default()
             }),
             "image" => {
-                let url = opt(v, "image_url").or_else(|| v.get("slack_file").and_then(|f| opt(f, "url")));
+                let url =
+                    opt(v, "image_url").or_else(|| v.get("slack_file").and_then(|f| opt(f, "url")));
                 match url {
                     Some(url) => Component::Thumbnail(Thumbnail {
-                        media: Media { url, ..Default::default() },
+                        media: Media {
+                            url,
+                            ..Default::default()
+                        },
                         description: opt(v, "alt_text").map(|t| clip(&t, 1024)),
                         ..Default::default()
                     }),
@@ -350,7 +406,9 @@ impl<'a, R: Resolver> Converter<'a, R> {
             }
             "icon_button" => Component::Button(Button {
                 style: button_style::SECONDARY,
-                label: Some(clip(&self.raw(v.get("text").unwrap_or(&Value::Null)), 80)).filter(|l| !l.is_empty()).or_else(|| Some(s(v, "icon").to_string())),
+                label: Some(clip(&self.raw(v.get("text").unwrap_or(&Value::Null)), 80))
+                    .filter(|l| !l.is_empty())
+                    .or_else(|| Some(s(v, "icon").to_string())),
                 custom_id: Some(self.custom_id(v)),
                 value: opt(v, "value"),
                 confirm: self.confirm(v),
@@ -365,7 +423,10 @@ impl<'a, R: Resolver> Converter<'a, R> {
         if s(v, "type") == "feedback_buttons" {
             let id = self.custom_id(v);
             let mut out = Vec::new();
-            for (k, style) in [("positive_button", button_style::SUCCESS), ("negative_button", button_style::DANGER)] {
+            for (k, style) in [
+                ("positive_button", button_style::SUCCESS),
+                ("negative_button", button_style::DANGER),
+            ] {
                 if let Some(b) = v.get(k) {
                     out.push(Component::Button(Button {
                         style,
@@ -386,7 +447,7 @@ impl<'a, R: Resolver> Converter<'a, R> {
         let mut rows: Vec<Component> = Vec::new();
         let mut small: Vec<Component> = Vec::new();
         let flush = |small: &mut Vec<Component>, rows: &mut Vec<Component>| {
-            for chunk in small.drain(..).collect::<Vec<_>>().chunks(limits::MAX_BUTTONS_PER_ROW) {
+            for chunk in std::mem::take(small).chunks(limits::MAX_BUTTONS_PER_ROW) {
                 rows.push(Component::ActionRow(ActionRow {
                     id: None,
                     components: chunk.to_vec(),
@@ -420,7 +481,8 @@ impl<'a, R: Resolver> Converter<'a, R> {
         let mut out: Vec<Component> = Vec::new();
         for b in blocks {
             for c in self.block(b)? {
-                if let (Component::MediaGallery(next), Some(Component::MediaGallery(prev))) = (&c, out.last_mut())
+                if let (Component::MediaGallery(next), Some(Component::MediaGallery(prev))) =
+                    (&c, out.last_mut())
                     && prev.items.len() + next.items.len() <= limits::MAX_GALLERY_ITEMS
                 {
                     prev.items.extend(next.items.iter().cloned());
@@ -439,16 +501,27 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 if let Some(t) = b.get("text") {
                     texts.push(self.text(t));
                 }
-                let fields: Vec<String> = arr(b, "fields").iter().take(10).map(|f| self.text(f)).collect();
+                let fields: Vec<String> = arr(b, "fields")
+                    .iter()
+                    .take(10)
+                    .map(|f| self.text(f))
+                    .collect();
                 if !fields.is_empty() {
                     texts.push(fields.join("\n"));
                 }
-                let texts: Vec<Component> = texts.into_iter().filter(|t| !t.trim().is_empty()).map(Component::text).collect();
+                let texts: Vec<Component> = texts
+                    .into_iter()
+                    .filter(|t| !t.trim().is_empty())
+                    .map(Component::text)
+                    .collect();
                 match b.get("accessory") {
                     Some(a) => {
                         let accessory = self.element(a)?;
                         if texts.is_empty() {
-                            vec![Component::ActionRow(ActionRow { id: None, components: vec![accessory] })]
+                            vec![Component::ActionRow(ActionRow {
+                                id: None,
+                                components: vec![accessory],
+                            })]
                         } else {
                             vec![Component::Section(Section {
                                 id: None,
@@ -461,8 +534,16 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 }
             }
             "header" => {
-                let level = b.get("level").and_then(Value::as_u64).unwrap_or(3).clamp(1, 4) as usize;
-                vec![Component::text(format!("{} {}", "#".repeat(level), plain(&self.raw(b.get("text").unwrap_or(&Value::Null)))))]
+                let level = b
+                    .get("level")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3)
+                    .clamp(1, 4) as usize;
+                vec![Component::text(format!(
+                    "{} {}",
+                    "#".repeat(level),
+                    plain(&self.raw(b.get("text").unwrap_or(&Value::Null)))
+                ))]
             }
             "divider" => vec![Component::Separator(Separator::default())],
             "context" => {
@@ -477,12 +558,16 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 if parts.is_empty() {
                     vec![]
                 } else {
-                    vec![Component::text(format!("<small>{}</small>", parts.join(" · ")))]
+                    vec![Component::text(format!(
+                        "<small>{}</small>",
+                        parts.join(" · ")
+                    ))]
                 }
             }
             "actions" | "context_actions" => self.rows(arr(b, "elements"))?,
             "image" => {
-                let url = opt(b, "image_url").or_else(|| b.get("slack_file").and_then(|f| opt(f, "url")));
+                let url =
+                    opt(b, "image_url").or_else(|| b.get("slack_file").and_then(|f| opt(f, "url")));
                 let Some(url) = url else {
                     return Ok(vec![self.unknown("block", b)?]);
                 };
@@ -493,7 +578,10 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 out.push(Component::MediaGallery(MediaGallery {
                     id: None,
                     items: vec![GalleryItem {
-                        media: Media { url, ..Default::default() },
+                        media: Media {
+                            url,
+                            ..Default::default()
+                        },
                         description: opt(b, "alt_text").map(|t| clip(&t, 1024)),
                         spoiler: false,
                     }],
@@ -507,13 +595,17 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 match &mut component {
                     Component::TextInput(t) => t.required = Some(!optional),
                     Component::StringSelect(t) => t.required = Some(!optional),
-                    Component::UserSelect(t) | Component::ChannelSelect(t) => t.required = Some(!optional),
-                    Component::ExternalSelect(t) => t.required = Some(!optional),
-                    Component::FileUpload(t) => t.required = Some(!optional),
-                    Component::RadioGroup(t) | Component::CheckboxGroup(t) => t.required = Some(!optional),
-                    Component::DatePicker(t) | Component::TimePicker(t) | Component::DateTimePicker(t) => {
+                    Component::UserSelect(t) | Component::ChannelSelect(t) => {
                         t.required = Some(!optional)
                     }
+                    Component::ExternalSelect(t) => t.required = Some(!optional),
+                    Component::FileUpload(t) => t.required = Some(!optional),
+                    Component::RadioGroup(t) | Component::CheckboxGroup(t) => {
+                        t.required = Some(!optional)
+                    }
+                    Component::DatePicker(t)
+                    | Component::TimePicker(t)
+                    | Component::DateTimePicker(t) => t.required = Some(!optional),
                     _ => {}
                 }
                 vec![Component::Label(Label {
@@ -525,7 +617,11 @@ impl<'a, R: Resolver> Converter<'a, R> {
             }
             "rich_text" => {
                 let t = self.rich_text(b);
-                if t.trim().is_empty() { vec![] } else { vec![Component::text(t)] }
+                if t.trim().is_empty() {
+                    vec![]
+                } else {
+                    vec![Component::text(t)]
+                }
             }
             "markdown" => vec![Component::text(markdown_to_mfm(s(b, "text")))],
             "video" => vec![Component::Video(Video {
@@ -541,11 +637,21 @@ impl<'a, R: Resolver> Converter<'a, R> {
             })],
             "table" | "data_table" => {
                 let data = s(b, "type") == "data_table";
-                let max_rows = if data { limits::MAX_TABLE_DATA_ROWS } else { 100 };
+                let max_rows = if data {
+                    limits::MAX_TABLE_DATA_ROWS
+                } else {
+                    100
+                };
                 let mut rows: Vec<Vec<TableCell>> = Vec::new();
                 for r in arr(b, "rows").iter().take(max_rows) {
                     let mut row = Vec::new();
-                    for c in r.as_array().map(Vec::as_slice).unwrap_or(&[]).iter().take(limits::MAX_TABLE_COLUMNS) {
+                    for c in r
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[])
+                        .iter()
+                        .take(limits::MAX_TABLE_COLUMNS)
+                    {
                         row.push(self.cell(c)?);
                     }
                     rows.push(row);
@@ -557,12 +663,19 @@ impl<'a, R: Resolver> Converter<'a, R> {
                         .iter()
                         .map(|c| ColumnSetting {
                             align: opt(c, "align"),
-                            is_wrapped: c.get("is_wrapped").and_then(Value::as_bool).unwrap_or(false),
+                            is_wrapped: c
+                                .get("is_wrapped")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
                         })
                         .collect(),
                     header: data,
                     caption: opt(b, "caption").map(|c| clip(&c, 200)),
-                    page_size: if data { Some(u8_of(b, "page_size").unwrap_or(5).clamp(1, 100)) } else { None },
+                    page_size: if data {
+                        Some(u8_of(b, "page_size").unwrap_or(5).clamp(1, 100))
+                    } else {
+                        None
+                    },
                 })]
             }
             "alert" => vec![Component::Alert(Alert {
@@ -593,14 +706,23 @@ impl<'a, R: Resolver> Converter<'a, R> {
                     })
                     .collect();
                 if inner.is_empty() {
-                    inner.push(Component::Separator(Separator { divider: false, ..Default::default() }));
+                    inner.push(Component::Separator(Separator {
+                        divider: false,
+                        ..Default::default()
+                    }));
                 }
-                let collapsible = b.get("is_collapsible").and_then(Value::as_bool).unwrap_or(false);
+                let collapsible = b
+                    .get("is_collapsible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 vec![Component::Container(Container {
                     title,
                     subtitle: b.get("subtitle").map(|t| self.text(t)),
                     collapsible,
-                    collapsed: collapsible && b.get("default_collapsed").and_then(Value::as_bool).unwrap_or(false),
+                    collapsed: collapsible
+                        && b.get("default_collapsed")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     components: inner,
                     ..Default::default()
                 })]
@@ -625,7 +747,11 @@ impl<'a, R: Resolver> Converter<'a, R> {
                             data: arr(x, "data").iter().take(20).map(point).collect(),
                         })
                         .collect(),
-                    categories: arr(axis, "categories").iter().filter_map(Value::as_str).map(|c| clip(c, 20)).collect(),
+                    categories: arr(axis, "categories")
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|c| clip(c, 20))
+                        .collect(),
                     x_label: opt(axis, "x_label"),
                     y_label: opt(axis, "y_label"),
                 })]
@@ -639,7 +765,10 @@ impl<'a, R: Resolver> Converter<'a, R> {
                         let component = if inner.len() == 1 {
                             inner.remove(0)
                         } else {
-                            Component::Container(Container { components: inner, ..Default::default() })
+                            Component::Container(Container {
+                                components: inner,
+                                ..Default::default()
+                            })
                         };
                         items.push(GridItem {
                             width: match s(item, "width") {
@@ -655,7 +784,11 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 }
                 vec![Component::Grid(Grid {
                     id: None,
-                    label: if b.get("is_label_visible").and_then(Value::as_bool).unwrap_or(false) {
+                    label: if b
+                        .get("is_label_visible")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
                         opt(b, "label").map(|l| plain(&l))
                     } else {
                         None
@@ -667,7 +800,11 @@ impl<'a, R: Resolver> Converter<'a, R> {
             "plan" => vec![Component::Plan(Plan {
                 id: None,
                 title: s(b, "title").to_string(),
-                tasks: arr(b, "tasks").iter().take(limits::MAX_PLAN_TASKS).map(|t| self.task(t)).collect(),
+                tasks: arr(b, "tasks")
+                    .iter()
+                    .take(limits::MAX_PLAN_TASKS)
+                    .map(|t| self.task(t))
+                    .collect(),
             })],
             "task_card" => vec![Component::TaskCard(self.task(b))],
             "file" => vec![Component::Unsupported(Unsupported {
@@ -682,8 +819,13 @@ impl<'a, R: Resolver> Converter<'a, R> {
     fn card(&mut self, b: &Value) -> Res<Component> {
         let image = |k: &str| {
             b.get(k)
-                .and_then(|i| opt(i, "image_url").or_else(|| i.get("slack_file").and_then(|f| opt(f, "url"))))
-                .map(|url| Media { url, ..Default::default() })
+                .and_then(|i| {
+                    opt(i, "image_url").or_else(|| i.get("slack_file").and_then(|f| opt(f, "url")))
+                })
+                .map(|url| Media {
+                    url,
+                    ..Default::default()
+                })
         };
         let actions = match b.get("actions") {
             Some(a) => {
@@ -721,27 +863,46 @@ impl<'a, R: Resolver> Converter<'a, R> {
             sources: arr(t, "sources")
                 .iter()
                 .filter(|x| zoo_components::validate::is_https_url(s(x, "url")))
-                .map(|x| TaskSource { url: s(x, "url").into(), text: s(x, "text").into() })
+                .map(|x| TaskSource {
+                    url: s(x, "url").into(),
+                    text: s(x, "text").into(),
+                })
                 .collect(),
         }
     }
 
     fn cell(&mut self, c: &Value) -> Res<TableCell> {
         Ok(match s(c, "type") {
-            "rich_text" => TableCell { text: self.rich_text(c), ..Default::default() },
-            "raw_number" => TableCell {
-                text: plain(&opt(c, "text").unwrap_or_else(|| c.get("value").map(|v| v.to_string()).unwrap_or_default())),
-                number: c.get("value").and_then(Value::as_f64),
-                button: None,
+            "rich_text" => TableCell {
+                text: self.rich_text(c),
+                ..Default::default()
             },
-            "action_cell" => {
-                let fallback = c.get("fallback").map(|f| self.cell(f)).transpose()?.unwrap_or_default();
+            "raw_number" => {
                 TableCell {
-                    button: Some(Box::new(self.element(c.get("element").unwrap_or(&Value::Null))?)),
+                    text: plain(&opt(c, "text").unwrap_or_else(|| {
+                        c.get("value").map(|v| v.to_string()).unwrap_or_default()
+                    })),
+                    number: c.get("value").and_then(Value::as_f64),
+                    button: None,
+                }
+            }
+            "action_cell" => {
+                let fallback = c
+                    .get("fallback")
+                    .map(|f| self.cell(f))
+                    .transpose()?
+                    .unwrap_or_default();
+                TableCell {
+                    button: Some(Box::new(
+                        self.element(c.get("element").unwrap_or(&Value::Null))?,
+                    )),
                     ..fallback
                 }
             }
-            _ => TableCell { text: plain(s(c, "text")), ..Default::default() },
+            _ => TableCell {
+                text: plain(s(c, "text")),
+                ..Default::default()
+            },
         })
     }
 
@@ -752,8 +913,15 @@ impl<'a, R: Resolver> Converter<'a, R> {
             match s(e, "type") {
                 "rich_text_section" => out.push(self.inline(arr(e, "elements"))),
                 "rich_text_preformatted" => {
-                    let body: String = arr(e, "elements").iter().map(|x| s(x, "text").to_string() + s(x, "url")).collect();
-                    out.push(format!("```{}\n{}\n```", s(e, "language"), body.replace("```", "`\u{200b}``")));
+                    let body: String = arr(e, "elements")
+                        .iter()
+                        .map(|x| s(x, "text").to_string() + s(x, "url"))
+                        .collect();
+                    out.push(format!(
+                        "```{}\n{}\n```",
+                        s(e, "language"),
+                        body.replace("```", "`\u{200b}``")
+                    ));
                 }
                 "rich_text_quote" => out.push(
                     self.inline(arr(e, "elements"))
@@ -763,12 +931,21 @@ impl<'a, R: Resolver> Converter<'a, R> {
                         .join("\n"),
                 ),
                 "rich_text_list" => {
-                    let indent = "  ".repeat(e.get("indent").and_then(Value::as_u64).unwrap_or(0).min(8) as usize);
+                    let indent = "  ".repeat(
+                        e.get("indent").and_then(Value::as_u64).unwrap_or(0).min(8) as usize,
+                    );
                     let ordered = s(e, "style") == "ordered";
                     let offset = e.get("offset").and_then(Value::as_u64).unwrap_or(0);
                     for (i, item) in arr(e, "elements").iter().enumerate() {
-                        let mark = if ordered { format!("{}.", offset as usize + i + 1) } else { "・".into() };
-                        out.push(format!("{indent}{mark} {}", self.inline(arr(item, "elements"))));
+                        let mark = if ordered {
+                            format!("{}.", offset as usize + i + 1)
+                        } else {
+                            "・".into()
+                        };
+                        out.push(format!(
+                            "{indent}{mark} {}",
+                            self.inline(arr(item, "elements"))
+                        ));
                     }
                 }
                 _ => out.push(salvage_text(e)),
@@ -788,7 +965,11 @@ impl<'a, R: Resolver> Converter<'a, R> {
                         format!("`{}`", s(e, "text").replace('`', "'"))
                     } else {
                         // 改行は残し、各行の記号だけを無効にする
-                        s(e, "text").split('\n').map(plain).collect::<Vec<_>>().join("\n")
+                        s(e, "text")
+                            .split('\n')
+                            .map(plain)
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     }
                 }
                 "link" => {
@@ -809,12 +990,16 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 },
                 "user" => format!(
                     "@{}",
-                    self.resolver.user_name(s(e, "user_id")).unwrap_or_else(|| s(e, "user_id").to_string())
+                    self.resolver
+                        .user_name(s(e, "user_id"))
+                        .unwrap_or_else(|| s(e, "user_id").to_string())
                 ),
                 "usergroup" => format!("@{}", s(e, "usergroup_id")),
                 "channel" => format!(
                     "#{}",
-                    self.resolver.channel_name(s(e, "channel_id")).unwrap_or_else(|| s(e, "channel_id").to_string())
+                    self.resolver
+                        .channel_name(s(e, "channel_id"))
+                        .unwrap_or_else(|| s(e, "channel_id").to_string())
                 ),
                 "broadcast" => format!("@{}", s(e, "range")),
                 "date" => match e.get("timestamp").and_then(Value::as_i64) {
@@ -824,15 +1009,27 @@ impl<'a, R: Resolver> Converter<'a, R> {
                 "color" => format!("`{}`", s(e, "value")),
                 "team" => format!("@{}", s(e, "team_id")),
                 "tag" => format!("`{}`", s(e, "text").replace('`', "'")),
-                "citation" => match opt(e, "url").filter(|u| zoo_components::validate::is_https_url(u)) {
-                    Some(url) => format!("[[{}]]({url})", e.get("index").map(|i| i.to_string()).unwrap_or_else(|| s(e, "text").into())),
-                    None => plain(s(e, "text")),
-                },
+                "citation" => {
+                    match opt(e, "url").filter(|u| zoo_components::validate::is_https_url(u)) {
+                        Some(url) => format!(
+                            "[[{}]]({url})",
+                            e.get("index")
+                                .map(|i| i.to_string())
+                                .unwrap_or_else(|| s(e, "text").into())
+                        ),
+                        None => plain(s(e, "text")),
+                    }
+                }
                 // ファイル・canvas・メッセージ・ワークフローなどへの参照は、文字（あればリンク）にする
                 _ => {
-                    let text = opt(e, "text").or_else(|| opt(e, "label")).unwrap_or_else(|| salvage_text(e));
+                    let text = opt(e, "text")
+                        .or_else(|| opt(e, "label"))
+                        .unwrap_or_else(|| salvage_text(e));
                     match opt(e, "url").filter(|u| zoo_components::validate::is_https_url(u)) {
-                        Some(url) => format!("[{}]({url})", plain(if text.is_empty() { &url } else { &text })),
+                        Some(url) => format!(
+                            "[{}]({url})",
+                            plain(if text.is_empty() { &url } else { &text })
+                        ),
                         None => plain(&text),
                     }
                 }
@@ -856,13 +1053,19 @@ impl<'a, R: Resolver> Converter<'a, R> {
 
 /// Slack の旧 attachments を container にする（Webhook と Slack の取り込み）。
 /// `pretext` は container の前に置く。リンクの展開（from_url、is_app_unfurl）は除く。
-pub fn attachments<R: Resolver>(conv: &mut Converter<'_, R>, attachments: &[Value]) -> Vec<Component> {
+pub fn attachments<R: Resolver>(
+    conv: &mut Converter<'_, R>,
+    attachments: &[Value],
+) -> Vec<Component> {
     let mut out = Vec::new();
     for a in attachments.iter().take(100) {
         if a.get("from_url").is_some() || a.get("is_app_unfurl").is_some() {
             continue;
         }
-        let mrkdwn_in: Vec<&str> = arr(a, "mrkdwn_in").iter().filter_map(Value::as_str).collect();
+        let mrkdwn_in: Vec<&str> = arr(a, "mrkdwn_in")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
         let field_text = |k: &str| -> String {
             let raw = s(a, k);
             if raw.is_empty() {
@@ -879,17 +1082,20 @@ pub fn attachments<R: Resolver>(conv: &mut Converter<'_, R>, attachments: &[Valu
         }
         let mut parts: Vec<Component> = Vec::new();
         if let Some(author) = opt(a, "author_name") {
-            let author = match opt(a, "author_link").filter(|u| zoo_components::validate::is_https_url(u)) {
-                Some(link) => format!("[{}]({link})", plain(&author)),
-                None => plain(&author),
-            };
+            let author =
+                match opt(a, "author_link").filter(|u| zoo_components::validate::is_https_url(u)) {
+                    Some(link) => format!("[{}]({link})", plain(&author)),
+                    None => plain(&author),
+                };
             parts.push(Component::text(format!("<small>{author}</small>")));
         }
         if let Some(title) = opt(a, "title") {
-            parts.push(Component::text(match opt(a, "title_link").filter(|u| zoo_components::validate::is_https_url(u)) {
-                Some(link) => format!("**[{}]({link})**", plain(&title)),
-                None => format!("**{}**", plain(&title)),
-            }));
+            parts.push(Component::text(
+                match opt(a, "title_link").filter(|u| zoo_components::validate::is_https_url(u)) {
+                    Some(link) => format!("**[{}]({link})**", plain(&title)),
+                    None => format!("**{}**", plain(&title)),
+                },
+            ));
         }
         let text = field_text("text");
         if !text.is_empty() {
@@ -904,7 +1110,11 @@ pub fn attachments<R: Resolver>(conv: &mut Converter<'_, R>, attachments: &[Valu
                 } else {
                     plain(s(f, "value"))
                 };
-                if s(f, "title").is_empty() { value } else { format!("**{}**: {value}", plain(s(f, "title"))) }
+                if s(f, "title").is_empty() {
+                    value
+                } else {
+                    format!("**{}**: {value}", plain(s(f, "title")))
+                }
             })
             .collect();
         if !fields.is_empty() {
@@ -912,7 +1122,8 @@ pub fn attachments<R: Resolver>(conv: &mut Converter<'_, R>, attachments: &[Valu
         }
         let mut parts = merge_texts(parts);
         // thumb_url があれば、文字の横にサムネイルを置く
-        if let Some(thumb) = opt(a, "thumb_url").filter(|u| zoo_components::validate::is_https_url(u))
+        if let Some(thumb) =
+            opt(a, "thumb_url").filter(|u| zoo_components::validate::is_https_url(u))
             && let Some(Component::TextDisplay(_)) = parts.last()
         {
             let last = parts.pop().unwrap();
@@ -920,31 +1131,52 @@ pub fn attachments<R: Resolver>(conv: &mut Converter<'_, R>, attachments: &[Valu
                 id: None,
                 components: vec![last],
                 accessory: Some(Box::new(Component::Thumbnail(Thumbnail {
-                    media: Media { url: thumb, ..Default::default() },
+                    media: Media {
+                        url: thumb,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }))),
             }));
         }
-        if let Some(image) = opt(a, "image_url").filter(|u| zoo_components::validate::is_https_url(u)) {
+        if let Some(image) =
+            opt(a, "image_url").filter(|u| zoo_components::validate::is_https_url(u))
+        {
             parts.push(Component::MediaGallery(MediaGallery {
                 id: None,
                 items: vec![GalleryItem {
-                    media: Media { url: image, ..Default::default() },
+                    media: Media {
+                        url: image,
+                        ..Default::default()
+                    },
                     description: None,
                     spoiler: false,
                 }],
             }));
         }
         if let Ok(nested) = conv.blocks(arr(a, "blocks")) {
-            parts.extend(nested.into_iter().filter(|c| !matches!(c, Component::Container(_))));
+            parts.extend(
+                nested
+                    .into_iter()
+                    .filter(|c| !matches!(c, Component::Container(_))),
+            );
         }
-        let footer: Vec<String> = [opt(a, "footer").map(|f| field_text_plain(&f)), a.get("ts").and_then(ts_text)]
-            .into_iter()
-            .flatten()
-            .collect();
+        let footer: Vec<String> = [
+            opt(a, "footer").map(|f| field_text_plain(&f)),
+            a.get("ts").and_then(ts_text),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if !footer.is_empty() {
-            parts.push(Component::Separator(Separator { divider: false, ..Default::default() }));
-            parts.push(Component::text(format!("<small>{}</small>", footer.join(" · "))));
+            parts.push(Component::Separator(Separator {
+                divider: false,
+                ..Default::default()
+            }));
+            parts.push(Component::text(format!(
+                "<small>{}</small>",
+                footer.join(" · ")
+            )));
         }
         if parts.is_empty() {
             if let Some(fallback) = opt(a, "fallback") {
@@ -968,7 +1200,10 @@ pub fn markdown_to_mfm(text: &str) -> String {
         .map(|line| {
             let trimmed = line.trim_start();
             let indent = &line[..line.len() - trimmed.len()];
-            if let Some(rest) = trimmed.strip_prefix("- [ ] ").or_else(|| trimmed.strip_prefix("* [ ] ")) {
+            if let Some(rest) = trimmed
+                .strip_prefix("- [ ] ")
+                .or_else(|| trimmed.strip_prefix("* [ ] "))
+            {
                 format!("{indent}☐ {rest}")
             } else if let Some(rest) = trimmed
                 .strip_prefix("- [x] ")
@@ -978,7 +1213,10 @@ pub fn markdown_to_mfm(text: &str) -> String {
                 format!("{indent}☑ {rest}")
             } else if trimmed == "---" || trimmed == "***" {
                 "──────────".to_string()
-            } else if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            } else if let Some(rest) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("* "))
+            {
                 format!("{indent}・{rest}")
             } else {
                 line.to_string()
@@ -1007,18 +1245,29 @@ mod tests {
     use serde_json::json;
 
     fn convert(blocks: Value) -> Vec<Component> {
-        Converter::new(Mode::Lenient, &NoResolver).blocks(blocks.as_array().unwrap()).unwrap()
+        Converter::new(Mode::Lenient, &NoResolver)
+            .blocks(blocks.as_array().unwrap())
+            .unwrap()
     }
 
     #[test]
     fn section_with_fields_and_image_accessory_becomes_section() {
-        let c = convert(json!([{"type":"section","text":{"type":"mrkdwn","text":"*Deploy* done"},
+        let c = convert(
+            json!([{"type":"section","text":{"type":"mrkdwn","text":"*Deploy* done"},
             "fields":[{"type":"mrkdwn","text":"*Env*\nprod"}],
-            "accessory":{"type":"image","image_url":"https://example.com/a.png","alt_text":"logo"}}]));
-        let Component::Section(s) = &c[0] else { panic!("{c:?}") };
+            "accessory":{"type":"image","image_url":"https://example.com/a.png","alt_text":"logo"}}]),
+        );
+        let Component::Section(s) = &c[0] else {
+            panic!("{c:?}")
+        };
         assert_eq!(s.components.len(), 1);
-        assert!(matches!(s.accessory.as_deref(), Some(Component::Thumbnail(_))));
-        let Component::TextDisplay(t) = &s.components[0] else { panic!() };
+        assert!(matches!(
+            s.accessory.as_deref(),
+            Some(Component::Thumbnail(_))
+        ));
+        let Component::TextDisplay(t) = &s.components[0] else {
+            panic!()
+        };
         assert!(t.content.starts_with("**Deploy** done\n"), "{}", t.content);
     }
 
@@ -1031,15 +1280,25 @@ mod tests {
         let c = convert(json!([{"type":"actions","elements":elements}]));
         assert_eq!(c.len(), 4, "{c:?}");
         let doc = Document::new(0, c);
-        assert!(doc.validate(Context::AppMessage).is_ok(), "{:?}", doc.validate(Context::AppMessage));
+        assert!(
+            doc.validate(Context::AppMessage).is_ok(),
+            "{:?}",
+            doc.validate(Context::AppMessage)
+        );
     }
 
     #[test]
     fn unknown_blocks_are_kept_as_text_in_lenient_mode_and_rejected_in_strict_mode() {
         let blocks = json!([{"type":"future_block","text":{"type":"plain_text","text":"hello"}}]);
         let c = convert(blocks.clone());
-        assert!(matches!(&c[0], Component::Unsupported(u) if u.text == "hello" && u.original_type == "slack:future_block"));
-        assert!(Converter::new(Mode::Strict, &NoResolver).blocks(blocks.as_array().unwrap()).is_err());
+        assert!(
+            matches!(&c[0], Component::Unsupported(u) if u.text == "hello" && u.original_type == "slack:future_block")
+        );
+        assert!(
+            Converter::new(Mode::Strict, &NoResolver)
+                .blocks(blocks.as_array().unwrap())
+                .is_err()
+        );
     }
 
     #[test]
@@ -1049,31 +1308,58 @@ mod tests {
             {"type":"rich_text_list","style":"ordered","elements":[{"type":"rich_text_section","elements":[{"type":"text","text":"one"}]}]},
             {"type":"rich_text_quote","elements":[{"type":"text","text":"quoted"}]},
             {"type":"rich_text_preformatted","elements":[{"type":"text","text":"code"}]}]}]));
-        let Component::TextDisplay(t) = &c[0] else { panic!() };
-        assert_eq!(t.content, "Hi **bold**$[unixtime 1700000000]\n1. one\n> quoted\n```\ncode\n```");
+        let Component::TextDisplay(t) = &c[0] else {
+            panic!()
+        };
+        assert_eq!(
+            t.content,
+            "Hi **bold**$[unixtime 1700000000]\n1. one\n> quoted\n```\ncode\n```"
+        );
     }
 
     #[test]
     fn inputs_become_labels() {
-        let c = convert(json!([{"type":"input","label":{"type":"plain_text","text":"When"},"optional":true,
+        let c = convert(
+            json!([{"type":"input","label":{"type":"plain_text","text":"When"},"optional":true,
             "element":{"type":"datepicker","action_id":"d","initial_date":"2026-11-16"}},
-            {"type":"input","label":{"type":"plain_text","text":"Count"},"element":{"type":"number_input","action_id":"n","is_decimal_allowed":false,"min_value":"1"}}]));
+            {"type":"input","label":{"type":"plain_text","text":"Count"},"element":{"type":"number_input","action_id":"n","is_decimal_allowed":false,"min_value":"1"}}]),
+        );
         let doc = Document::new(0, c);
-        assert!(doc.validate(Context::Modal).is_ok(), "{:?}", doc.validate(Context::Modal));
-        assert!(matches!(doc.find("n"), Some(Component::TextInput(t)) if t.format == TextFormat::Number && t.required == Some(true)));
+        assert!(
+            doc.validate(Context::Modal).is_ok(),
+            "{:?}",
+            doc.validate(Context::Modal)
+        );
+        assert!(
+            matches!(doc.find("n"), Some(Component::TextInput(t)) if t.format == TextFormat::Number && t.required == Some(true))
+        );
     }
 
     #[test]
     fn attachments_become_containers() {
         let mut conv = Converter::new(Mode::Lenient, &NoResolver);
-        let c = attachments(&mut conv, &[json!({"color":"danger","pretext":"Alert","title":"CPU","title_link":"https://grafana.example/d",
+        let c = attachments(
+            &mut conv,
+            &[
+                json!({"color":"danger","pretext":"Alert","title":"CPU","title_link":"https://grafana.example/d",
             "text":"*high*","fields":[{"title":"Host","value":"web1","short":true}],"footer":"Grafana","ts":1700000000,
-            "thumb_url":"https://example.com/t.png"})]);
+            "thumb_url":"https://example.com/t.png"}),
+            ],
+        );
         assert_eq!(c.len(), 2);
-        let Component::Container(box_) = &c[1] else { panic!() };
+        let Component::Container(box_) = &c[1] else {
+            panic!()
+        };
         assert_eq!(box_.accent_color, Some(0xa30200));
         let doc = Document::new(IS_COMPONENTS_V2, c);
-        assert!(doc.validate(Context::Webhook).is_ok(), "{:?}", doc.validate(Context::Webhook));
-        assert!(doc.fallback_text(4000).contains("**[CPU](https://grafana.example/d)**"));
+        assert!(
+            doc.validate(Context::Webhook).is_ok(),
+            "{:?}",
+            doc.validate(Context::Webhook)
+        );
+        assert!(
+            doc.fallback_text(4000)
+                .contains("**[CPU](https://grafana.example/d)**")
+        );
     }
 }

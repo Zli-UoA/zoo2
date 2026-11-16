@@ -5,6 +5,7 @@
 //! - [`webhook`]: 受信 Webhook。寛容に受け取り、操作部品は押せない状態にする。
 //! - [`app`]: App API。知らない部品は 400 にする。
 
+pub mod backfill;
 pub mod blockkit;
 pub mod discord;
 
@@ -50,7 +51,10 @@ fn errors_message(errors: &[ValidationError]) -> String {
 }
 
 fn arr<'v>(v: &'v Value, k: &str) -> &'v [Value] {
-    v.get(k).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    v.get(k)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// 寛容に読む：壊れた部品は「未対応の部品」にして文字だけ残す。
@@ -113,12 +117,18 @@ fn truncate(doc: &mut Document) {
     }
     let omitted = total - doc.components.len();
     if omitted > 0 {
-        doc.components.push(Component::text(format!("<small>（ほかに {omitted} 件の部品を省略しました）</small>")));
+        doc.components.push(Component::text(format!(
+            "<small>（ほかに {omitted} 件の部品を省略しました）</small>"
+        )));
     }
 }
 
 /// Webhook と Slack の取り込みに共通の後処理。操作部品を押せない状態にし、検証する。
-fn finish_lenient(mut doc: Document, source: &'static str, format: Format) -> Result<Document, AppError> {
+fn finish_lenient(
+    mut doc: Document,
+    source: &'static str,
+    format: Format,
+) -> Result<Document, AppError> {
     doc.disable_interactive();
     truncate(&mut doc);
     repair(&mut doc, Context::Webhook).map_err(|e| bad(errors_message(&e)))?;
@@ -131,8 +141,12 @@ fn finish_lenient(mut doc: Document, source: &'static str, format: Format) -> Re
 }
 
 fn is_discord(v: &Value) -> bool {
-    ["components", "flags", "embeds", "content"].iter().any(|k| v.get(*k).is_some())
-        && ["blocks", "attachments", "text"].iter().all(|k| v.get(*k).is_none())
+    ["components", "flags", "embeds", "content"]
+        .iter()
+        .any(|k| v.get(*k).is_some())
+        && ["blocks", "attachments", "text"]
+            .iter()
+            .all(|k| v.get(*k).is_none())
 }
 
 /// 受信 Webhook の本文を読む。Slack 形式と Discord 形式の両方を受け付ける。
@@ -153,7 +167,11 @@ pub fn webhook(body: &[u8]) -> Result<Ingested, AppError> {
 
 /// Discord の Webhook（`content`・`embeds`・`components`・`flags`）を読む。
 fn discord_message(v: &Value, source: &'static str) -> Result<Ingested, AppError> {
-    let text = v.get("content").and_then(Value::as_str).map(discord::markdown_to_mfm).unwrap_or_default();
+    let text = v
+        .get("content")
+        .and_then(Value::as_str)
+        .map(discord::markdown_to_mfm)
+        .unwrap_or_default();
     let mut components = lenient_components(arr(v, "components"));
     #[allow(unused_mut)]
     let mut doc = Document::new(0, std::mem::take(&mut components));
@@ -164,7 +182,11 @@ fn discord_message(v: &Value, source: &'static str) -> Result<Ingested, AppError
         if text.trim().is_empty() {
             return Err(bad("Empty webhook message"));
         }
-        return Ok(Ingested { doc: None, content: text, format: Format::Discord });
+        return Ok(Ingested {
+            doc: None,
+            content: text,
+            format: Format::Discord,
+        });
     }
     // 本文も部品として先頭に置き、本文の列には代わりの文字を入れる
     if !text.trim().is_empty() {
@@ -174,11 +196,19 @@ fn discord_message(v: &Value, source: &'static str) -> Result<Ingested, AppError
     doc.components = components;
     let doc = finish_lenient(doc, source, Format::Discord)?;
     let content = doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
-    Ok(Ingested { doc: Some(doc), content, format: Format::Discord })
+    Ok(Ingested {
+        doc: Some(doc),
+        content,
+        format: Format::Discord,
+    })
 }
 
 /// Slack の投稿（`text`・`blocks`・`attachments`）を読む。Slack の取り込みも使う。
-pub fn slack_message(v: &Value, resolver: &impl Resolver, source: &'static str) -> Result<Ingested, AppError> {
+pub fn slack_message(
+    v: &Value,
+    resolver: &impl Resolver,
+    source: &'static str,
+) -> Result<Ingested, AppError> {
     let text = v.get("text").and_then(Value::as_str).unwrap_or("");
     let blocks = arr(v, "blocks");
     let attachments = arr(v, "attachments");
@@ -188,7 +218,11 @@ pub fn slack_message(v: &Value, resolver: &impl Resolver, source: &'static str) 
     let mut conv = Converter::new(Mode::Lenient, resolver);
     let mut components = conv.blocks(blocks).map_err(bad)?;
     let atts = blockkit::attachments(&mut conv, attachments);
-    let text_mfm = if text.trim().is_empty() { String::new() } else { mrkdwn_to_mfm(text, resolver) };
+    let text_mfm = if text.trim().is_empty() {
+        String::new()
+    } else {
+        mrkdwn_to_mfm(text, resolver)
+    };
     // Slack では blocks があると text は通知用の代わりの文字になる。blocks がなければ text を表示する。
     if blocks.is_empty() && !text_mfm.is_empty() && !atts.is_empty() {
         components.push(Component::text(text_mfm.clone()));
@@ -198,25 +232,42 @@ pub fn slack_message(v: &Value, resolver: &impl Resolver, source: &'static str) 
         if text_mfm.is_empty() {
             return Err(bad("Empty webhook message"));
         }
-        return Ok(Ingested { doc: None, content: text_mfm, format: Format::Slack });
+        return Ok(Ingested {
+            doc: None,
+            content: text_mfm,
+            format: Format::Slack,
+        });
     }
-    let doc = finish_lenient(Document::new(IS_COMPONENTS_V2, components), source, Format::Slack)?;
+    let doc = finish_lenient(
+        Document::new(IS_COMPONENTS_V2, components),
+        source,
+        Format::Slack,
+    )?;
     let content = if !blocks.is_empty() && !text_mfm.is_empty() {
-        text_mfm.chars().take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH).collect()
+        text_mfm
+            .chars()
+            .take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
+            .collect()
     } else {
         doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
     };
-    Ok(Ingested { doc: Some(doc), content, format: Format::Slack })
+    Ok(Ingested {
+        doc: Some(doc),
+        content,
+        format: Format::Slack,
+    })
 }
 
 /// 旧 zoo の Block 一覧か（Slack の blocks とは type が重ならない）。
 fn is_legacy_blocks(list: &[Value]) -> bool {
     !list.is_empty()
-        && list.iter().all(|b| match b.get("type").and_then(Value::as_str) {
-            Some("card" | "text" | "button" | "select") => true,
-            Some("input") => b.get("label").is_some_and(Value::is_string),
-            _ => false,
-        })
+        && list
+            .iter()
+            .all(|b| match b.get("type").and_then(Value::as_str) {
+                Some("card" | "text" | "button" | "select") => true,
+                Some("input") => b.get("label").is_some_and(Value::is_string),
+                _ => false,
+            })
 }
 
 /// App API の入力を読む。受け付けるのは次の 4 つ。
@@ -224,21 +275,36 @@ fn is_legacy_blocks(list: &[Value]) -> bool {
 /// - Slack：`{"blocks":[..]}`
 /// - 旧形式：`[..]` か `{"blocks":[..]}`（旧 Block の一覧）
 /// - `"format"` で形式を明示したもの（`discord`・`slack`・`legacy`）
-pub fn app(value: &Value, cx: Context, source: &'static str) -> Result<(Document, Format), AppError> {
+pub fn app(
+    value: &Value,
+    cx: Context,
+    source: &'static str,
+) -> Result<(Document, Format), AppError> {
     let modal = cx == Context::Modal;
     let explicit = value.get("format").and_then(Value::as_str);
     let (mut doc, format) = match (value, explicit) {
-        (Value::Array(list), None) => (legacy::blocks(&Value::Array(list.clone()), modal), Format::Legacy),
-        (Value::Object(_), Some("legacy")) => (legacy::blocks(value.get("blocks").unwrap_or(&Value::Null), modal), Format::Legacy),
+        (Value::Array(list), None) => (
+            legacy::blocks(&Value::Array(list.clone()), modal),
+            Format::Legacy,
+        ),
+        (Value::Object(_), Some("legacy")) => (
+            legacy::blocks(value.get("blocks").unwrap_or(&Value::Null), modal),
+            Format::Legacy,
+        ),
         (Value::Object(_), Some("slack")) => (slack_strict(arr(value, "blocks"))?, Format::Slack),
         (Value::Object(_), Some("discord")) => (discord_strict(value)?, Format::Discord),
-        (Value::Object(_), None) if value.get("components").is_some() || value.get("flags").is_some() => {
+        (Value::Object(_), None)
+            if value.get("components").is_some() || value.get("flags").is_some() =>
+        {
             (discord_strict(value)?, Format::Discord)
         }
-        (Value::Object(_), None) if is_legacy_blocks(arr(value, "blocks")) => {
-            (legacy::blocks(value.get("blocks").unwrap(), modal), Format::Legacy)
+        (Value::Object(_), None) if is_legacy_blocks(arr(value, "blocks")) => (
+            legacy::blocks(value.get("blocks").unwrap(), modal),
+            Format::Legacy,
+        ),
+        (Value::Object(_), None) if value.get("blocks").is_some() => {
+            (slack_strict(arr(value, "blocks"))?, Format::Slack)
         }
-        (Value::Object(_), None) if value.get("blocks").is_some() => (slack_strict(arr(value, "blocks"))?, Format::Slack),
         _ => return Err(bad("Invalid component document")),
     };
     if format == Format::Legacy {
@@ -255,7 +321,10 @@ pub fn app(value: &Value, cx: Context, source: &'static str) -> Result<(Document
         return Err(bad(errors_message(&e)));
     }
     if !doc.unsupported_types().is_empty() {
-        return Err(bad(format!("Unsupported component types: {:?}", doc.unsupported_types())));
+        return Err(bad(format!(
+            "Unsupported component types: {:?}",
+            doc.unsupported_types()
+        )));
     }
     crate::metrics::record_message_components(source, format.as_str(), false);
     Ok((doc, format))
@@ -272,7 +341,9 @@ fn discord_strict(value: &Value) -> Result<Document, AppError> {
 }
 
 fn slack_strict(blocks: &[Value]) -> Result<Document, AppError> {
-    let components = Converter::new(Mode::Strict, &NoResolver).blocks(blocks).map_err(bad)?;
+    let components = Converter::new(Mode::Strict, &NoResolver)
+        .blocks(blocks)
+        .map_err(bad)?;
     // Slack のメッセージは text が通知用なので、blocks だけで本文を置き換える
     Ok(Document::new(IS_COMPONENTS_V2, components))
 }
@@ -300,21 +371,27 @@ mod tests {
 
     #[test]
     fn slack_blocks_use_text_as_fallback_and_disable_buttons() {
-        let i = hook(json!({"text":"fallback","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"hi"}},
+        let i = hook(
+            json!({"text":"fallback","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"hi"}},
             {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"Approve"},"action_id":"ok"},
              {"type":"button","text":{"type":"plain_text","text":"Open"},"url":"https://e.x"}]},
-            {"type":"brand_new_block","text":{"type":"plain_text","text":"future"}}]}));
+            {"type":"brand_new_block","text":{"type":"plain_text","text":"future"}}]}),
+        );
         let doc = i.doc.unwrap();
         assert_eq!(i.content, "fallback");
         assert!(doc.hides_content());
-        let Some(Component::Button(b)) = doc.find("ok") else { panic!() };
+        let Some(Component::Button(b)) = doc.find("ok") else {
+            panic!()
+        };
         assert!(b.disabled);
         assert_eq!(doc.unsupported_types(), vec!["slack:brand_new_block"]);
     }
 
     #[test]
     fn slack_attachments_keep_text_first() {
-        let i = hook(json!({"text":"Deployment results","attachments":[{"text":"Reconciliation failed","color":"danger"}]}));
+        let i = hook(
+            json!({"text":"Deployment results","attachments":[{"text":"Reconciliation failed","color":"danger"}]}),
+        );
         let doc = i.doc.unwrap();
         assert_eq!(doc.components[0], Component::text("Deployment results"));
         assert_eq!(i.content, "Deployment results\nReconciliation failed");
@@ -322,8 +399,10 @@ mod tests {
 
     #[test]
     fn discord_v2_and_embeds_are_accepted() {
-        let i = hook(json!({"username":"bot","flags":32768,"components":[{"type":17,"components":[{"type":10,"content":"-# hi"}]},
-            {"type":1,"components":[{"type":2,"style":1,"label":"x","custom_id":"x"}]}]}));
+        let i = hook(
+            json!({"username":"bot","flags":32768,"components":[{"type":17,"components":[{"type":10,"content":"-# hi"}]},
+            {"type":1,"components":[{"type":2,"style":1,"label":"x","custom_id":"x"}]}]}),
+        );
         let doc = i.doc.unwrap();
         assert_eq!(i.content, "<small>hi</small>");
         assert!(matches!(doc.find("x"), Some(Component::Button(b)) if b.disabled));
@@ -333,7 +412,9 @@ mod tests {
 
     #[test]
     fn invalid_discord_parts_are_kept_as_text() {
-        let i = hook(json!({"components":[{"type":17,"components":[{"type":17,"components":[{"type":10,"content":"inner"}]}]}]}));
+        let i = hook(
+            json!({"components":[{"type":17,"components":[{"type":17,"components":[{"type":10,"content":"inner"}]}]}]}),
+        );
         let doc = i.doc.unwrap();
         assert!(matches!(&doc.components[0], Component::Unsupported(u) if u.text == "inner"));
     }
@@ -348,15 +429,34 @@ mod tests {
 
     #[test]
     fn app_accepts_three_formats() {
-        let (d, f) = app(&json!([{"type":"button","action_id":"a","label":"A"}]), Context::AppMessage, "test").unwrap();
+        let (d, f) = app(
+            &json!([{"type":"button","action_id":"a","label":"A"}]),
+            Context::AppMessage,
+            "test",
+        )
+        .unwrap();
         assert_eq!(f, Format::Legacy);
         assert!(d.find("a").is_some());
         let (_, f) = app(&json!({"blocks":[{"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":"A"},"action_id":"a"}]}]}), Context::AppMessage, "test").unwrap();
         assert_eq!(f, Format::Slack);
         let (_, f) = app(&json!({"components":[{"type":"action_row","components":[{"type":"button","label":"A","custom_id":"a"}]}]}), Context::AppMessage, "test").unwrap();
         assert_eq!(f, Format::Discord);
-        assert!(app(&json!({"blocks":[{"type":"unknown_block"}]}), Context::AppMessage, "test").is_err());
-        assert!(app(&json!({"components":[{"type":99}]}), Context::AppMessage, "test").is_err());
+        assert!(
+            app(
+                &json!({"blocks":[{"type":"unknown_block"}]}),
+                Context::AppMessage,
+                "test"
+            )
+            .is_err()
+        );
+        assert!(
+            app(
+                &json!({"components":[{"type":99}]}),
+                Context::AppMessage,
+                "test"
+            )
+            .is_err()
+        );
         assert!(app(&json!({"components":[{"type":1,"components":[{"type":2,"label":"A","custom_id":"a"}]}]}), Context::Unfurl, "test").is_err());
     }
 }

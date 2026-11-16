@@ -32,6 +32,12 @@ impl Context {
             _ => limits::MAX_TEXT,
         }
     }
+    fn max_bytes(self) -> usize {
+        match self {
+            Context::Webhook => limits::MAX_BYTES_WEBHOOK,
+            _ => limits::MAX_BYTES,
+        }
+    }
     fn interactive(self) -> bool {
         matches!(
             self,
@@ -47,7 +53,8 @@ pub mod limits {
     pub const MAX_COMPONENTS_SURFACE: usize = 100;
     /// 受信 Webhook と Slack の取り込み（旧形式では attachments を 100 件まで受け付けていたため、広めにする）
     pub const MAX_COMPONENTS_WEBHOOK: usize = 500;
-    pub const MAX_TEXT_WEBHOOK: usize = 40_000;
+    pub const MAX_TEXT_WEBHOOK: usize = 100_000;
+    pub const MAX_BYTES_WEBHOOK: usize = 256 * 1024;
     /// text_display・label・表のセルなどの文字の合計
     pub const MAX_TEXT: usize = 4000;
     pub const MAX_TEXT_HOME: usize = 8000;
@@ -196,7 +203,14 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn range(&mut self, path: &str, min: Option<u8>, max: Option<u8>, count: usize, max_allowed: usize) {
+    fn range(
+        &mut self,
+        path: &str,
+        min: Option<u8>,
+        max: Option<u8>,
+        count: usize,
+        max_allowed: usize,
+    ) {
         let min = min.unwrap_or(1) as usize;
         let max = max.unwrap_or(1) as usize;
         if min > max || max > max_allowed.max(1) || (count > 0 && min > count) {
@@ -210,9 +224,24 @@ impl<'a> Walker<'a> {
         }
         let mut values = HashSet::new();
         for o in options {
-            self.len(path, "option.label", Some(&o.label), limits::MAX_OPTION_TEXT);
-            self.len(path, "option.value", Some(&o.value), limits::MAX_OPTION_TEXT);
-            self.len(path, "option.description", o.description.as_deref(), limits::MAX_OPTION_TEXT);
+            self.len(
+                path,
+                "option.label",
+                Some(&o.label),
+                limits::MAX_OPTION_TEXT,
+            );
+            self.len(
+                path,
+                "option.value",
+                Some(&o.value),
+                limits::MAX_OPTION_TEXT,
+            );
+            self.len(
+                path,
+                "option.description",
+                o.description.as_deref(),
+                limits::MAX_OPTION_TEXT,
+            );
             if o.label.is_empty() || o.value.is_empty() {
                 self.err(path, "option label and value are required");
             }
@@ -244,14 +273,29 @@ impl<'a> Walker<'a> {
         // 配置のルール
         let block = matches!(place, Place::Top | Place::Container | Place::GridItem);
         let allowed = match c {
-            C::ActionRow(_) | C::MediaGallery(_) | C::File(_) | C::Separator(_) | C::Video(_) | C::Table(_)
-            | C::Section(_) | C::Label(_) | C::Alert(_) | C::Chart(_) | C::Plan(_) | C::TaskCard(_) => block,
+            C::ActionRow(_)
+            | C::MediaGallery(_)
+            | C::File(_)
+            | C::Separator(_)
+            | C::Video(_)
+            | C::Table(_)
+            | C::Section(_)
+            | C::Label(_)
+            | C::Alert(_)
+            | C::Chart(_)
+            | C::Plan(_)
+            | C::TaskCard(_) => block,
             C::TextDisplay(_) => block || place == Place::SectionText,
             C::Container(_) => matches!(place, Place::Top | Place::GridItem),
             C::Card(_) => block || place == Place::Carousel,
-            C::Carousel(_) | C::Grid(_) => matches!(place, Place::Top | Place::GridItem | Place::Container),
+            C::Carousel(_) | C::Grid(_) => {
+                matches!(place, Place::Top | Place::GridItem | Place::Container)
+            }
             C::Thumbnail(_) => place == Place::Accessory,
-            C::Button(_) => matches!(place, Place::ActionRow | Place::Accessory | Place::CardAction | Place::TableCell),
+            C::Button(_) => matches!(
+                place,
+                Place::ActionRow | Place::Accessory | Place::CardAction | Place::TableCell
+            ),
             C::Overflow(_) => matches!(place, Place::ActionRow | Place::Accessory),
             C::StringSelect(_)
             | C::UserSelect(_)
@@ -269,7 +313,13 @@ impl<'a> Walker<'a> {
             C::Unsupported(_) => true,
         };
         if !allowed {
-            self.err(path, format!("{} cannot be placed here", kind::name(c.kind()).unwrap_or("component")));
+            self.err(
+                path,
+                format!(
+                    "{} cannot be placed here",
+                    kind::name(c.kind()).unwrap_or("component")
+                ),
+            );
         }
         self.interactive(path, c);
         match c {
@@ -318,8 +368,19 @@ impl<'a> Walker<'a> {
             }
             C::StringSelect(s) => {
                 self.options(path, &s.options, limits::MAX_OPTIONS);
-                self.range(path, s.min_values.or(Some(1)), s.max_values, s.options.len(), limits::MAX_OPTIONS);
-                self.len(path, "placeholder", s.placeholder.as_deref(), limits::MAX_PLACEHOLDER);
+                self.range(
+                    path,
+                    s.min_values.or(Some(1)),
+                    s.max_values,
+                    s.options.len(),
+                    limits::MAX_OPTIONS,
+                );
+                self.len(
+                    path,
+                    "placeholder",
+                    s.placeholder.as_deref(),
+                    limits::MAX_PLACEHOLDER,
+                );
                 self.confirm(path, &s.confirm);
             }
             C::TextInput(t) => {
@@ -331,8 +392,18 @@ impl<'a> Walker<'a> {
                 {
                     self.err(path, "min_length/max_length are out of range");
                 }
-                self.len(path, "value", t.value.as_deref(), limits::MAX_INPUT_LENGTH as usize);
-                self.len(path, "placeholder", t.placeholder.as_deref(), limits::MAX_PLACEHOLDER);
+                self.len(
+                    path,
+                    "value",
+                    t.value.as_deref(),
+                    limits::MAX_INPUT_LENGTH as usize,
+                );
+                self.len(
+                    path,
+                    "placeholder",
+                    t.placeholder.as_deref(),
+                    limits::MAX_PLACEHOLDER,
+                );
                 if let (Some(a), Some(b)) = (t.min_value, t.max_value)
                     && a > b
                 {
@@ -341,7 +412,12 @@ impl<'a> Walker<'a> {
             }
             C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => {
                 self.range(path, s.min_values, s.max_values, 0, limits::MAX_OPTIONS);
-                self.len(path, "placeholder", s.placeholder.as_deref(), limits::MAX_PLACEHOLDER);
+                self.len(
+                    path,
+                    "placeholder",
+                    s.placeholder.as_deref(),
+                    limits::MAX_PLACEHOLDER,
+                );
                 if s.default_values.len() > s.max_values.unwrap_or(1) as usize {
                     self.err(path, "too many default_values");
                 }
@@ -369,7 +445,12 @@ impl<'a> Walker<'a> {
             }
             C::Thumbnail(t) => {
                 self.media(path, &t.media, false);
-                self.len(path, "description", t.description.as_deref(), limits::MAX_DESCRIPTION);
+                self.len(
+                    path,
+                    "description",
+                    t.description.as_deref(),
+                    limits::MAX_DESCRIPTION,
+                );
             }
             C::MediaGallery(g) => {
                 if g.items.is_empty() || g.items.len() > limits::MAX_GALLERY_ITEMS {
@@ -378,7 +459,12 @@ impl<'a> Walker<'a> {
                 for (i, item) in g.items.iter().enumerate() {
                     let p = format!("{path}.items[{i}]");
                     self.media(&p, &item.media, false);
-                    self.len(&p, "description", item.description.as_deref(), limits::MAX_DESCRIPTION);
+                    self.len(
+                        &p,
+                        "description",
+                        item.description.as_deref(),
+                        limits::MAX_DESCRIPTION,
+                    );
                 }
             }
             C::File(f) => {
@@ -409,11 +495,22 @@ impl<'a> Walker<'a> {
                     self.err(path, "label is empty");
                 }
                 self.len(path, "label", Some(&l.label), limits::MAX_LABEL);
-                self.len(path, "description", l.description.as_deref(), limits::MAX_LABEL_DESCRIPTION);
+                self.len(
+                    path,
+                    "description",
+                    l.description.as_deref(),
+                    limits::MAX_LABEL_DESCRIPTION,
+                );
                 self.component(&format!("{path}.component"), &l.component, Place::Label);
             }
             C::FileUpload(f) => {
-                self.range(path, f.min_values, f.max_values, 0, limits::MAX_FILES as usize);
+                self.range(
+                    path,
+                    f.min_values,
+                    f.max_values,
+                    0,
+                    limits::MAX_FILES as usize,
+                );
             }
             C::RadioGroup(g) => {
                 self.options(path, &g.options, 10);
@@ -421,7 +518,13 @@ impl<'a> Walker<'a> {
             }
             C::CheckboxGroup(g) => {
                 self.options(path, &g.options, 10);
-                self.range(path, g.min_values.or(Some(0)), g.max_values.or(Some(g.options.len().min(255) as u8)), g.options.len(), 10);
+                self.range(
+                    path,
+                    g.min_values.or(Some(0)),
+                    g.max_values.or(Some(g.options.len().min(255) as u8)),
+                    g.options.len(),
+                    10,
+                );
                 self.confirm(path, &g.confirm);
             }
             C::Overflow(g) => {
@@ -431,9 +534,19 @@ impl<'a> Walker<'a> {
             C::Checkbox(_) => {}
             C::ExternalSelect(s) => {
                 self.range(path, s.min_values, s.max_values, 0, limits::MAX_OPTIONS);
-                self.len(path, "placeholder", s.placeholder.as_deref(), limits::MAX_PLACEHOLDER);
+                self.len(
+                    path,
+                    "placeholder",
+                    s.placeholder.as_deref(),
+                    limits::MAX_PLACEHOLDER,
+                );
                 for o in &s.initial_options {
-                    self.len(path, "option.label", Some(&o.label), limits::MAX_OPTION_TEXT);
+                    self.len(
+                        path,
+                        "option.label",
+                        Some(&o.label),
+                        limits::MAX_OPTION_TEXT,
+                    );
                 }
                 self.confirm(path, &s.confirm);
             }
@@ -448,7 +561,12 @@ impl<'a> Walker<'a> {
                         self.err(path, "invalid initial_value");
                     }
                 }
-                self.len(path, "placeholder", p.placeholder.as_deref(), limits::MAX_PLACEHOLDER);
+                self.len(
+                    path,
+                    "placeholder",
+                    p.placeholder.as_deref(),
+                    limits::MAX_PLACEHOLDER,
+                );
                 self.confirm(path, &p.confirm);
             }
             C::Video(v) => {
@@ -465,11 +583,17 @@ impl<'a> Walker<'a> {
                 self.len(path, "description", v.description.as_deref(), 200);
             }
             C::Table(t) => {
-                let max_rows = if t.header { limits::MAX_TABLE_DATA_ROWS } else { 100 };
+                let max_rows = if t.header {
+                    limits::MAX_TABLE_DATA_ROWS
+                } else {
+                    100
+                };
                 let width = t.rows.first().map_or(0, Vec::len);
                 if t.rows.is_empty()
                     || t.rows.len() > max_rows
-                    || t.rows.iter().any(|r| r.is_empty() || r.len() > limits::MAX_TABLE_COLUMNS)
+                    || t.rows
+                        .iter()
+                        .any(|r| r.is_empty() || r.len() > limits::MAX_TABLE_COLUMNS)
                     || (t.header && t.rows.iter().any(|r| r.len() != width))
                 {
                     self.err(path, "table needs rows of 1-20 cells");
@@ -485,12 +609,18 @@ impl<'a> Walker<'a> {
             C::Alert(a) => {
                 self.add_text(&a.content);
                 self.len(path, "content", Some(&a.content), 200);
-                if !matches!(a.level.as_deref(), None | Some("default" | "info" | "warning" | "error" | "success")) {
+                if !matches!(
+                    a.level.as_deref(),
+                    None | Some("default" | "info" | "warning" | "error" | "success")
+                ) {
                     self.err(path, "invalid alert level");
                 }
             }
             C::Card(card) => {
-                for t in [&card.title, &card.subtitle, &card.body, &card.subtext].into_iter().flatten() {
+                for t in [&card.title, &card.subtitle, &card.body, &card.subtext]
+                    .into_iter()
+                    .flatten()
+                {
                     self.add_text(t);
                 }
                 self.len(path, "title", card.title.as_deref(), 150);
@@ -501,7 +631,11 @@ impl<'a> Walker<'a> {
                 if card.actions.len() > limits::MAX_CARD_ACTIONS {
                     self.err(path, "card has at most 3 buttons");
                 }
-                if card.title.is_none() && card.body.is_none() && card.hero_image.is_none() && card.actions.is_empty() {
+                if card.title.is_none()
+                    && card.body.is_none()
+                    && card.hero_image.is_none()
+                    && card.actions.is_empty()
+                {
                     self.err(path, "card is empty");
                 }
                 for (i, a) in card.actions.iter().enumerate() {
@@ -519,14 +653,24 @@ impl<'a> Walker<'a> {
             C::Chart(ch) => {
                 self.len(path, "title", Some(&ch.title), 50);
                 let ok = match ch.chart_type.as_str() {
-                    "pie" => (1..=limits::MAX_CHART_SERIES).contains(&ch.segments.len()) && ch.segments.iter().all(|s| s.value > 0.0),
+                    "pie" => {
+                        (1..=limits::MAX_CHART_SERIES).contains(&ch.segments.len())
+                            && ch.segments.iter().all(|s| s.value > 0.0)
+                    }
                     "bar" | "area" | "line" => {
                         (1..=limits::MAX_CHART_SERIES).contains(&ch.series.len())
-                            && ch.series.iter().all(|s| (1..=limits::MAX_CHART_POINTS).contains(&s.data.len()))
+                            && ch
+                                .series
+                                .iter()
+                                .all(|s| (1..=limits::MAX_CHART_POINTS).contains(&s.data.len()))
                     }
                     _ => false,
                 };
-                let finite = ch.segments.iter().chain(ch.series.iter().flat_map(|s| s.data.iter())).all(|p| p.value.is_finite());
+                let finite = ch
+                    .segments
+                    .iter()
+                    .chain(ch.series.iter().flat_map(|s| s.data.iter()))
+                    .all(|p| p.value.is_finite());
                 if !ok || !finite {
                     self.err(path, "invalid chart");
                 }
@@ -534,7 +678,9 @@ impl<'a> Walker<'a> {
             C::Grid(g) => {
                 if g.rows.is_empty()
                     || g.rows.len() > limits::MAX_GRID_ROWS
-                    || g.rows.iter().any(|r| r.is_empty() || r.len() > limits::MAX_GRID_ITEMS)
+                    || g.rows
+                        .iter()
+                        .any(|r| r.is_empty() || r.len() > limits::MAX_GRID_ITEMS)
                 {
                     self.err(path, "grid needs 1-5 rows of 1-3 items");
                 }
@@ -543,7 +689,11 @@ impl<'a> Walker<'a> {
                         if !(1..=3).contains(&item.width) {
                             self.err(path, "grid item width must be 1-3");
                         }
-                        self.component(&format!("{path}.rows[{r}][{i}]"), &item.component, Place::GridItem);
+                        self.component(
+                            &format!("{path}.rows[{r}][{i}]"),
+                            &item.component,
+                            Place::GridItem,
+                        );
                     }
                 }
             }
@@ -568,7 +718,10 @@ impl<'a> Walker<'a> {
         for x in [&t.details, &t.output].into_iter().flatten() {
             self.add_text(x);
         }
-        if !matches!(t.status.as_str(), "pending" | "in_progress" | "complete" | "error") {
+        if !matches!(
+            t.status.as_str(),
+            "pending" | "in_progress" | "complete" | "error"
+        ) {
             self.err(path, "invalid task status");
         }
         for src in &t.sources {
@@ -584,7 +737,9 @@ fn is_date(v: &str) -> bool {
     b.len() == 10
         && b[4] == b'-'
         && b[7] == b'-'
-        && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
         && (1..=12).contains(&v[5..7].parse::<u8>().unwrap_or(0))
         && (1..=31).contains(&v[8..10].parse::<u8>().unwrap_or(0))
 }
@@ -615,23 +770,41 @@ impl Document {
             w.component(&format!("components[{i}]"), c, Place::Top);
         }
         if w.count > cx.max_components() {
-            w.err("", format!("too many components (max {})", cx.max_components()));
+            w.err(
+                "",
+                format!("too many components (max {})", cx.max_components()),
+            );
         }
         if w.table_text > limits::MAX_TABLE_TEXT {
-            w.err("", format!("too much table text (max {} characters)", limits::MAX_TABLE_TEXT));
+            w.err(
+                "",
+                format!(
+                    "too much table text (max {} characters)",
+                    limits::MAX_TABLE_TEXT
+                ),
+            );
         }
         if w.text > cx.max_text() {
-            w.err("", format!("too much text (max {} characters)", cx.max_text()));
+            w.err(
+                "",
+                format!("too much text (max {} characters)", cx.max_text()),
+            );
         }
-        if self.to_json().len() > limits::MAX_BYTES {
-            w.err("", "document is larger than 64 KB");
+        if self.to_json().len() > cx.max_bytes() {
+            w.err("", format!("document is larger than {} KB", cx.max_bytes() / 1024));
         }
-        if w.errors.is_empty() { Ok(()) } else { Err(w.errors) }
+        if w.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(w.errors)
+        }
     }
 
     /// 操作部品を custom_id で探す。
     pub fn find(&self, custom_id: &str) -> Option<&Component> {
-        self.walk().into_iter().find(|c| c.custom_id() == Some(custom_id))
+        self.walk()
+            .into_iter()
+            .find(|c| c.custom_id() == Some(custom_id))
     }
 
     /// 木のすべての部品（深さ優先）。
@@ -683,10 +856,16 @@ mod tests {
 
     #[test]
     fn accepts_string_types_and_writes_numbers() {
-        let d = doc(json!({"flags":32768,"components":[{"type":"container","accent_color":"#ff0000","components":[
+        let d = doc(
+            json!({"flags":32768,"components":[{"type":"container","accent_color":"#ff0000","components":[
             {"type":"text_display","content":"hi"},{"type":"separator"},
-            {"type":"section","components":[{"type":10,"content":"x"}],"accessory":{"type":"thumbnail","media":{"url":"https://e.x/a.png"}}}]}]}));
-        assert!(d.validate(Context::Webhook).is_ok(), "{:?}", d.validate(Context::Webhook));
+            {"type":"section","components":[{"type":10,"content":"x"}],"accessory":{"type":"thumbnail","media":{"url":"https://e.x/a.png"}}}]}]}),
+        );
+        assert!(
+            d.validate(Context::Webhook).is_ok(),
+            "{:?}",
+            d.validate(Context::Webhook)
+        );
         let out: serde_json::Value = serde_json::from_str(&d.to_json()).unwrap();
         assert_eq!(out["components"][0]["type"], 17);
         assert_eq!(out["components"][0]["accent_color"], 0xff0000);
@@ -695,30 +874,45 @@ mod tests {
 
     #[test]
     fn unknown_types_keep_their_text() {
-        let d = doc(json!({"components":[{"type":99,"label":"Hello","components":[{"content":"World"}]}]}));
-        assert!(matches!(&d.components[0], Component::Unsupported(u) if u.original_type == "99" && u.text == "Hello\nWorld"));
+        let d = doc(
+            json!({"components":[{"type":99,"label":"Hello","components":[{"content":"World"}]}]}),
+        );
+        assert!(
+            matches!(&d.components[0], Component::Unsupported(u) if u.original_type == "99" && u.text == "Hello\nWorld")
+        );
         assert_eq!(d.unsupported_types(), vec!["99"]);
     }
 
     #[test]
     fn enforces_placement_and_limits() {
-        let nested = doc(json!({"components":[{"type":17,"components":[{"type":17,"components":[{"type":10,"content":"x"}]}]}]}));
+        let nested = doc(
+            json!({"components":[{"type":17,"components":[{"type":17,"components":[{"type":10,"content":"x"}]}]}]}),
+        );
         assert!(nested.validate(Context::AppMessage).is_err());
-        let row = |n: usize| doc(json!({"components":[{"type":1,"components":(0..n).map(|i| json!({"type":2,"label":"b","custom_id":format!("b{i}")})).collect::<Vec<_>>()}]}));
+        let row = |n: usize| {
+            doc(
+                json!({"components":[{"type":1,"components":(0..n).map(|i| json!({"type":2,"label":"b","custom_id":format!("b{i}")})).collect::<Vec<_>>()}]}),
+            )
+        };
         assert!(row(5).validate(Context::AppMessage).is_ok());
         assert!(row(6).validate(Context::AppMessage).is_err());
-        let many = doc(json!({"components":(0..41).map(|_| json!({"type":14})).collect::<Vec<_>>()}));
+        let many =
+            doc(json!({"components":(0..41).map(|_| json!({"type":14})).collect::<Vec<_>>()}));
         assert!(many.validate(Context::AppMessage).is_err());
         assert!(many.validate(Context::Home).is_ok());
         let long = doc(json!({"components":[{"type":10,"content":"a".repeat(4001)}]}));
         assert!(long.validate(Context::AppMessage).is_err());
-        let dup = doc(json!({"components":[{"type":1,"components":[{"type":2,"label":"a","custom_id":"x"},{"type":2,"label":"b","custom_id":"x"}]}]}));
+        let dup = doc(
+            json!({"components":[{"type":1,"components":[{"type":2,"label":"a","custom_id":"x"},{"type":2,"label":"b","custom_id":"x"}]}]}),
+        );
         assert!(dup.validate(Context::AppMessage).is_err());
     }
 
     #[test]
     fn interactive_components_need_an_app_or_must_be_disabled() {
-        let mut d = doc(json!({"components":[{"type":1,"components":[{"type":2,"label":"Go","custom_id":"go"},{"type":2,"style":5,"label":"Open","url":"https://e.x"}]}]}));
+        let mut d = doc(
+            json!({"components":[{"type":1,"components":[{"type":2,"label":"Go","custom_id":"go"},{"type":2,"style":5,"label":"Open","url":"https://e.x"}]}]}),
+        );
         assert!(d.validate(Context::Webhook).is_err());
         d.disable_interactive();
         assert!(d.validate(Context::Webhook).is_ok());
@@ -727,7 +921,13 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_urls() {
-        for url in ["javascript:alert(1)", "http://e.x", "https://", "https://user@e.x/", "https://e.x/a b"] {
+        for url in [
+            "javascript:alert(1)",
+            "http://e.x",
+            "https://",
+            "https://user@e.x/",
+            "https://e.x/a b",
+        ] {
             let d = doc(json!({"components":[{"type":12,"items":[{"media":{"url":url}}]}]}));
             assert!(d.validate(Context::Webhook).is_err(), "{url}");
         }
@@ -741,7 +941,11 @@ mod tests {
             {"type":18,"label":"Ok","component":{"type":23,"custom_id":"k"}},
             {"type":18,"label":"Files","component":{"type":19,"custom_id":"f","file_types":["image",".pdf"]}},
             {"type":18,"label":"Name","component":{"type":4,"custom_id":"n","style":1}}]}));
-        assert!(d.validate(Context::Modal).is_ok(), "{:?}", d.validate(Context::Modal));
+        assert!(
+            d.validate(Context::Modal).is_ok(),
+            "{:?}",
+            d.validate(Context::Modal)
+        );
         let bare = doc(json!({"components":[{"type":4,"custom_id":"n"}]}));
         assert!(bare.validate(Context::Modal).is_err());
     }

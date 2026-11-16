@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fixture, job, command } from "./helpers.ts";
+import { fixture, job, command, unplain } from "./helpers.ts";
 import { preview } from "../src/previews.ts";
 
 test("late workflow and deployment transitions keep their historical reply state", async (t) => {
@@ -144,5 +144,5 @@ test("link previews use the canonical name from GitHub metadata", async (t) => {
   assert.match(card!.card.url, /github\.com\/Acme\/Project\/issues\/7/);
   await f.bot.zooEvent(command("subscribe ACME/PROJECT"));
   const response = f.zoo.calls.findLast((c) => c.path === "/surfaces")!;
-  assert.match(response.body.blocks[0].text, /^Acme\/Project:/);
+  assert.match(unplain(response.body.components[0].content), /^Acme\/Project:/);
 });

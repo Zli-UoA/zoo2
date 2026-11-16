@@ -125,7 +125,11 @@ impl Publish {
     /// 部品の入力を 1 つの JSON にまとめる（[`crate::components::app`] が形式を見分ける）。
     fn document_input(&self) -> Value {
         let mut v = serde_json::Map::new();
-        for (k, value) in [("blocks", &self.blocks), ("components", &self.components), ("flags", &self.flags)] {
+        for (k, value) in [
+            ("blocks", &self.blocks),
+            ("components", &self.components),
+            ("flags", &self.flags),
+        ] {
             if let Some(value) = value {
                 v.insert(k.into(), value.clone());
             }
@@ -144,7 +148,9 @@ fn deprecation(format: crate::components::Format) -> axum::http::HeaderMap {
         h.insert("deprecation", axum::http::HeaderValue::from_static("true"));
         h.insert(
             "link",
-            axum::http::HeaderValue::from_static("</docs/apps.md#メッセージ部品>; rel=\"deprecation\""),
+            axum::http::HeaderValue::from_static(
+                "<https://github.com/Zli-UoA/zoo2/blob/main/docs/apps.md>; rel=\"deprecation\"",
+            ),
         );
     }
     h
@@ -256,7 +262,8 @@ async fn invoke(
     let manifest: Manifest = serde_json::from_value(app["manifest"].clone())
         .map_err(|e| AppError::Internal(e.into()))?;
     // action_id（custom_id）ごとの部品の番号（イベントの component_type）
-    let mut component_kind: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
+    let mut component_kind: std::collections::HashMap<String, u16> =
+        std::collections::HashMap::new();
     let event_type = match b.kind.as_str() {
         "command" => {
             if b.channel_id.is_none()
@@ -305,7 +312,11 @@ async fn invoke(
                     .ok_or_else(|| AppError::BadRequest("channel_id required".into()))?;
                 modal_surface = false;
                 let row = one(&mut tx,"SELECT json_build_object('components',components::jsonb,'blocks',app_blocks::jsonb)::text FROM messages WHERE id=$1 AND channel_id=$2 AND app_origin_id=$3 AND deleted_at IS NULL AND (components IS NOT NULL OR app_blocks IS NOT NULL)",&[message,channel,&id]).await?;
-                if row["components"].is_object() { row["components"].clone() } else { json!({"blocks":row["blocks"]}) }
+                if row["components"].is_object() {
+                    row["components"].clone()
+                } else {
+                    json!({"blocks":row["blocks"]})
+                }
             } else {
                 return Err(AppError::BadRequest(
                     "A surface or message is required".into(),
@@ -329,12 +340,18 @@ async fn invoke(
                 }
                 "options" => {
                     let action = b.action_id.as_deref().unwrap_or_default();
-                    let Some(crate::components::Component::ExternalSelect(select)) = doc.find(action) else {
+                    let Some(crate::components::Component::ExternalSelect(select)) =
+                        doc.find(action)
+                    else {
                         return Err(AppError::BadRequest("Unknown external select".into()));
                     };
                     let query = b.values["query"].as_str().unwrap_or_default();
-                    if query.chars().count() < select.min_query_length.unwrap_or(3) as usize || query.chars().count() > 100 {
-                        return Err(AppError::BadRequest("Query is too short or too long".into()));
+                    if query.chars().count() < select.min_query_length.unwrap_or(3) as usize
+                        || query.chars().count() > 100
+                    {
+                        return Err(AppError::BadRequest(
+                            "Query is too short or too long".into(),
+                        ));
                     }
                     "options.requested"
                 }
@@ -382,7 +399,10 @@ async fn invoke(
     } else {
         None
     };
-    let component_type = b.action_id.as_deref().and_then(|a| component_kind.get(a).copied());
+    let component_type = b
+        .action_id
+        .as_deref()
+        .and_then(|a| component_kind.get(a).copied());
     let payload = json!({"id":event_id,"version":1,"type":event_type,"actor_id":actor.id,"channel_id":b.channel_id,"occurred_at":jiff::Timestamp::now().to_string(),"data":{"name":b.name,"surface_id":b.surface_id,"message_id":b.message_id,"action_id":b.action_id,"custom_id":b.action_id,"component_type":component_type,"values":b.values,"request_id":request_id,"trigger_id":trigger,"response_path":format!("/api/app-responses/{response_token}")}});
     toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,channel_id,event_type,payload) VALUES($1,$2,$3,NULLIF($4,''),$5,$6)").bind(uuid::Uuid::new_v4().to_string()).bind(event_id.as_str()).bind(installation).bind(b.channel_id.as_deref().unwrap_or("")).bind(event_type).bind(payload.to_string()).exec(&mut tx).await?;
     if b.kind == "submit"
@@ -426,7 +446,9 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
     match c {
         C::StringSelect(s) => {
             let v = chosen(value);
-            if !in_options(&s.options, &v) || !count_ok(v.len(), s.min_values.or(Some(1)), s.max_values, 1) {
+            if !in_options(&s.options, &v)
+                || !count_ok(v.len(), s.min_values.or(Some(1)), s.max_values, 1)
+            {
                 return Err(bad("Invalid selection"));
             }
         }
@@ -444,13 +466,17 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
         }
         C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => {
             let v = chosen(value);
-            if v.iter().any(|id| id.is_empty() || id.len() > 100) || v.len() > s.max_values.unwrap_or(1).max(1) as usize {
+            if v.iter().any(|id| id.is_empty() || id.len() > 100)
+                || v.len() > s.max_values.unwrap_or(1).max(1) as usize
+            {
                 return Err(bad("Invalid selection"));
             }
         }
         C::ExternalSelect(s) => {
             let v = chosen(value);
-            if v.iter().any(|id| id.len() > 100) || v.len() > s.max_values.unwrap_or(1).max(1) as usize {
+            if v.iter().any(|id| id.len() > 100)
+                || v.len() > s.max_values.unwrap_or(1).max(1) as usize
+            {
                 return Err(bad("Invalid selection"));
             }
         }
@@ -468,7 +494,9 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
         C::TextInput(t) => {
             let v = value.as_str().ok_or_else(|| bad("Invalid input"))?;
             let n = v.chars().count();
-            if n > t.max_length.unwrap_or(4000) as usize || (n > 0 && n < t.min_length.unwrap_or(0) as usize) {
+            if n > t.max_length.unwrap_or(4000) as usize
+                || (n > 0 && n < t.min_length.unwrap_or(0) as usize)
+            {
                 return Err(bad("Input length is out of range"));
             }
             if !v.is_empty() {
@@ -512,10 +540,17 @@ fn check_submission(doc: &crate::components::Document, values: &Value) -> Result
         let required = match c {
             C::TextInput(t) => t.required.unwrap_or(true),
             C::StringSelect(s) => s.required.unwrap_or(false),
-            C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => s.required.unwrap_or(false),
+            C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => {
+                s.required.unwrap_or(false)
+            }
             C::ExternalSelect(s) => s.required.unwrap_or(false),
-            C::RadioGroup(g) | C::CheckboxGroup(g) => g.required.unwrap_or(true) && !matches!(c, C::CheckboxGroup(g) if g.min_values == Some(0)),
-            C::DatePicker(p) | C::TimePicker(p) | C::DateTimePicker(p) => p.required.unwrap_or(false),
+            C::RadioGroup(g) | C::CheckboxGroup(g) => {
+                g.required.unwrap_or(true)
+                    && !matches!(c, C::CheckboxGroup(g) if g.min_values == Some(0))
+            }
+            C::DatePicker(p) | C::TimePicker(p) | C::DateTimePicker(p) => {
+                p.required.unwrap_or(false)
+            }
             C::FileUpload(f) => f.required.unwrap_or(true),
             _ => false,
         };
@@ -558,7 +593,8 @@ async fn blocks(
     Json(b): Json<Value>,
 ) -> Result<(axum::http::HeaderMap, Json<Value>), AppError> {
     p.require("messages:write")?;
-    let (doc, format) = crate::components::app(&b, crate::components::Context::AppMessage, "app_message")?;
+    let (doc, format) =
+        crate::components::app(&b, crate::components::Context::AppMessage, "app_message")?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let m = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
@@ -571,15 +607,24 @@ async fn blocks(
         .walk()
         .into_iter()
         .filter_map(|c| match c {
-            crate::components::Component::File(f) => f.file.url.strip_prefix("attachment://").map(str::to_string),
+            crate::components::Component::File(f) => {
+                f.file.url.strip_prefix("attachment://").map(str::to_string)
+            }
             _ => None,
         })
         .collect();
     if !names.is_empty() {
         let row = one(&mut tx, "SELECT json_build_object('a',COALESCE(app_attachments,'[]')::jsonb)::text FROM messages WHERE id=$1", &[id.as_str()]).await?;
-        let attached: Vec<&str> = row["a"].as_array().into_iter().flatten().filter_map(|a| a["name"].as_str()).collect();
+        let attached: Vec<&str> = row["a"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a["name"].as_str())
+            .collect();
         if names.iter().any(|n| !attached.contains(&n.as_str())) {
-            return Err(AppError::BadRequest("attachment:// must name a file attached to this message".into()));
+            return Err(AppError::BadRequest(
+                "attachment:// must name a file attached to this message".into(),
+            ));
         }
     }
     let fallback = doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
@@ -613,11 +658,18 @@ async fn provide_options(
     Json(b): Json<ProvidedOptions>,
 ) -> Result<Json<Value>, AppError> {
     p.require("ui:write")?;
-    let conv = crate::components::blockkit::Converter::new(crate::components::blockkit::Mode::Strict, &crate::components::blockkit::NoResolver);
+    let conv = crate::components::blockkit::Converter::new(
+        crate::components::blockkit::Mode::Strict,
+        &crate::components::blockkit::NoResolver,
+    );
     let options: Vec<crate::components::SelectOption> = b
         .options
         .iter()
-        .chain(b.option_groups.iter().flat_map(|g| g["options"].as_array().into_iter().flatten()))
+        .chain(
+            b.option_groups
+                .iter()
+                .flat_map(|g| g["options"].as_array().into_iter().flatten()),
+        )
         .take(100)
         .map(|o| {
             if o["text"].is_object() {
@@ -628,7 +680,12 @@ async fn provide_options(
         })
         .collect::<Result<_, _>>()?;
 
-    if options.iter().any(|o| o.label.is_empty() || o.value.is_empty() || o.label.chars().count() > 100 || o.value.chars().count() > 100) {
+    if options.iter().any(|o| {
+        o.label.is_empty()
+            || o.value.is_empty()
+            || o.label.chars().count() > 100
+            || o.value.chars().count() > 100
+    }) {
         return Err(bad("Invalid option"));
     }
     let mut db = s.db.clone();
@@ -779,15 +836,31 @@ async fn unfurl(
     }
     let doc = match (&b.card, &b.components, &b.blocks) {
         (Some(card), None, None) => {
-            let parsed: crate::cards::MessageCard = serde_json::from_value(card.clone()).map_err(|_| bad("Invalid card"))?;
+            let parsed: crate::cards::MessageCard =
+                serde_json::from_value(card.clone()).map_err(|_| bad("Invalid card"))?;
             parsed.encode()?;
             let mut doc = zoo_components::legacy::cards(card);
             doc.flags = 0;
-            doc.validate(crate::components::Context::Unfurl).map_err(|_| bad("Invalid card"))?;
+            doc.validate(crate::components::Context::Unfurl)
+                .map_err(|_| bad("Invalid card"))?;
             doc
         }
-        (None, Some(c), None) => crate::components::app(&json!({"components":c}), crate::components::Context::Unfurl, "app_unfurl")?.0,
-        (None, None, Some(bl)) => crate::components::app(&json!({"blocks":bl}), crate::components::Context::Unfurl, "app_unfurl")?.0,
+        (None, Some(c), None) => {
+            crate::components::app(
+                &json!({"components":c}),
+                crate::components::Context::Unfurl,
+                "app_unfurl",
+            )?
+            .0
+        }
+        (None, None, Some(bl)) => {
+            crate::components::app(
+                &json!({"blocks":bl}),
+                crate::components::Context::Unfurl,
+                "app_unfurl",
+            )?
+            .0
+        }
         _ => return Err(bad("Give one of card, components or blocks")),
     };
     let mut db = s.db.clone();
@@ -837,7 +910,8 @@ async fn respond(
     Path(token): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<(axum::http::HeaderMap, Json<Value>), AppError> {
-    let (doc, format) = crate::components::app(&body, crate::components::Context::Ephemeral, "app_response")?;
+    let (doc, format) =
+        crate::components::app(&body, crate::components::Context::Ephemeral, "app_response")?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let installation=one(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_responses WHERE token_hash=$1",&[&hash(&token)]).await?;

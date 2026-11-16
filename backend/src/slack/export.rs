@@ -348,7 +348,8 @@ impl SlackMessage {
         if blocks.is_empty() && attachments.is_empty() {
             return None;
         }
-        let body = serde_json::json!({ "text": self.text, "blocks": blocks, "attachments": attachments });
+        let body =
+            serde_json::json!({ "text": self.text, "blocks": blocks, "attachments": attachments });
         crate::components::slack_message(&body, resolver, "slack_import")
             .ok()
             .and_then(|i| i.doc)
@@ -361,7 +362,6 @@ impl SlackMessage {
             .filter(|t| *t != self.ts && crate::slack::is_valid_ts(t))
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSummary {

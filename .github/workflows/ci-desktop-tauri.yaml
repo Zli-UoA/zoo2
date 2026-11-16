@@ -7,6 +7,7 @@ on:
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop-tauri/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-desktop-tauri.yaml"
@@ -15,6 +16,7 @@ on:
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop-tauri/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-desktop-tauri.yaml"

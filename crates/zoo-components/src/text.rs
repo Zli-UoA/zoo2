@@ -38,13 +38,27 @@ fn collect(c: &Component, out: &mut Vec<String>) {
         C::Thumbnail(t) => out.extend(t.description.clone()),
         C::MediaGallery(g) => out.extend(g.items.iter().filter_map(|i| i.description.clone())),
         C::File(f) => out.extend(f.name.clone()),
-        C::Video(v) => out.push(format!("{} {}", v.title, v.title_url.as_ref().unwrap_or(&v.video_url))),
+        C::Video(v) => out.push(format!(
+            "{} {}",
+            v.title,
+            v.title_url.as_ref().unwrap_or(&v.video_url)
+        )),
         C::Table(t) => {
             out.extend(t.caption.clone());
-            out.extend(t.rows.iter().map(|r| r.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" | ")))
+            out.extend(t.rows.iter().map(|r| {
+                r.iter()
+                    .map(|c| c.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }))
         }
         C::Alert(a) => out.push(a.content.clone()),
-        C::Card(c) => out.extend([&c.title, &c.subtitle, &c.body, &c.subtext].into_iter().flatten().cloned()),
+        C::Card(c) => out.extend(
+            [&c.title, &c.subtitle, &c.body, &c.subtext]
+                .into_iter()
+                .flatten()
+                .cloned(),
+        ),
         C::Chart(c) => out.push(c.title.clone()),
         C::Grid(g) => out.extend(g.label.clone()),
         C::Plan(p) => {

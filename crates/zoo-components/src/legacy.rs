@@ -20,7 +20,10 @@ pub fn plain(text: &str) -> String {
         return text.to_string();
     }
     // </plain> を含むと閉じてしまうので、その部分だけ分ける
-    format!("<plain>{}</plain>", text.replace("</plain>", "</plain><plain></</plain><plain>plain>"))
+    format!(
+        "<plain>{}</plain>",
+        text.replace("</plain>", "</plain><plain></</plain><plain>plain>")
+    )
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -31,7 +34,11 @@ fn s<'a>(v: &'a Value, k: &str) -> &'a str {
 pub fn card(v: &Value) -> Vec<Component> {
     let title = s(v, "title");
     let description = s(v, "description");
-    let fields = v.get("fields").and_then(Value::as_array).cloned().unwrap_or_default();
+    let fields = v
+        .get("fields")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if (title == WEBHOOK_TEXT_TITLE || title == SLACK_TEXT_TITLE)
         && !description.is_empty()
         && fields.is_empty()
@@ -50,7 +57,10 @@ pub fn card(v: &Value) -> Vec<Component> {
     }
     let mut parts = Vec::new();
     if !s(v, "author").is_empty() {
-        parts.push(Component::text(format!("<small>{}</small>", plain(s(v, "author")))));
+        parts.push(Component::text(format!(
+            "<small>{}</small>",
+            plain(s(v, "author"))
+        )));
     }
     let mut heading = if s(v, "url").is_empty() {
         format!("**{}**", plain(title))
@@ -95,7 +105,11 @@ pub fn card(v: &Value) -> Vec<Component> {
         }));
         parts.push(Component::text(format!(
             "<small>{}</small>",
-            footer.iter().map(|x| plain(x)).collect::<Vec<_>>().join(" · ")
+            footer
+                .iter()
+                .map(|x| plain(x))
+                .collect::<Vec<_>>()
+                .join(" · ")
         )));
     }
     // 見出しと説明を 1 つにまとめて、部品の数を減らす
@@ -110,7 +124,9 @@ pub fn card(v: &Value) -> Vec<Component> {
 pub fn merge_texts(items: Vec<Component>) -> Vec<Component> {
     let mut out: Vec<Component> = Vec::new();
     for c in items {
-        if let (Component::TextDisplay(next), Some(Component::TextDisplay(prev))) = (&c, out.last_mut()) {
+        if let (Component::TextDisplay(next), Some(Component::TextDisplay(prev))) =
+            (&c, out.last_mut())
+        {
             prev.content.push('\n');
             prev.content.push_str(&next.content);
             continue;
@@ -126,10 +142,7 @@ pub fn cards(stored: &Value) -> Document {
         Some(cards) => cards.clone(),
         None => vec![stored.clone()],
     };
-    Document::new(
-        IS_COMPONENTS_V2,
-        list.iter().flat_map(card).collect(),
-    )
+    Document::new(IS_COMPONENTS_V2, list.iter().flat_map(card).collect())
 }
 
 /// `messages.app_blocks`（旧 Block の配列）を文書にする。`modal` なら select を label に入れる。
@@ -156,7 +169,10 @@ pub fn blocks(list: &Value, modal: bool) -> Document {
                 match out.last_mut() {
                     Some(Component::ActionRow(row))
                         if row.components.len() < 5
-                            && row.components.iter().all(|c| matches!(c, Component::Button(_))) =>
+                            && row
+                                .components
+                                .iter()
+                                .all(|c| matches!(c, Component::Button(_))) =>
                     {
                         row.components.push(button)
                     }
@@ -228,22 +244,39 @@ mod tests {
     #[test]
     fn webhook_text_card_becomes_plain_text_display() {
         let doc = cards(&json!({"title":"Webhook","description":"*not bold*"}));
-        assert_eq!(doc.components, vec![Component::text("<plain>*not bold*</plain>")]);
+        assert_eq!(
+            doc.components,
+            vec![Component::text("<plain>*not bold*</plain>")]
+        );
         assert!(doc.hides_content());
     }
 
     #[test]
     fn rich_card_becomes_container() {
-        let doc = cards(&json!({"cards":[{"title":"Deploy","url":"https://example.com","color":"good","badge":"ok",
+        let doc = cards(
+            &json!({"cards":[{"title":"Deploy","url":"https://example.com","color":"good","badge":"ok",
             "fields":[{"title":"Commit","value":"abc","code":true,"url":"https://example.com/c"}],
-            "source":"GitHub","context":"now"}, {"title":"Webhook","description":"hi"}]}));
+            "source":"GitHub","context":"now"}, {"title":"Webhook","description":"hi"}]}),
+        );
         assert_eq!(doc.components.len(), 2);
-        let Component::Container(c) = &doc.components[0] else { panic!() };
+        let Component::Container(c) = &doc.components[0] else {
+            panic!()
+        };
         assert_eq!(c.accent_color, Some(0x2eb886));
-        assert!(doc.validate(Context::Webhook).is_ok(), "{:?}", doc.validate(Context::Webhook));
+        assert!(
+            doc.validate(Context::Webhook).is_ok(),
+            "{:?}",
+            doc.validate(Context::Webhook)
+        );
         let text = doc.fallback_text(4000);
-        assert!(text.contains("**[Deploy](https://example.com)** `ok`"), "{text}");
-        assert!(text.contains("**Commit**: [`abc`](https://example.com/c)"), "{text}");
+        assert!(
+            text.contains("**[Deploy](https://example.com)** `ok`"),
+            "{text}"
+        );
+        assert!(
+            text.contains("**Commit**: [`abc`](https://example.com/c)"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -256,8 +289,14 @@ mod tests {
         );
         assert_eq!(doc.flags, 0);
         assert_eq!(doc.components.len(), 4);
-        assert!(doc.validate(Context::Modal).is_ok(), "{:?}", doc.validate(Context::Modal));
-        let Some(Component::Button(b)) = doc.find("a") else { panic!() };
+        assert!(
+            doc.validate(Context::Modal).is_ok(),
+            "{:?}",
+            doc.validate(Context::Modal)
+        );
+        let Some(Component::Button(b)) = doc.find("a") else {
+            panic!()
+        };
         assert_eq!(b.value.as_deref(), Some("1"));
     }
 }

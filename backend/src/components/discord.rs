@@ -82,7 +82,10 @@ fn convert_token(token: &str) -> Option<String> {
     }
     // カスタム絵文字 <:name:id> と <a:name:id> は :name: にする
     let parts: Vec<&str> = token.split(':').collect();
-    if parts.len() == 3 && (parts[0].is_empty() || parts[0] == "a") && parts[2].bytes().all(|b| b.is_ascii_digit()) {
+    if parts.len() == 3
+        && (parts[0].is_empty() || parts[0] == "a")
+        && parts[2].bytes().all(|b| b.is_ascii_digit())
+    {
         return Some(format!(":{}:", parts[1]));
     }
     None
@@ -145,7 +148,13 @@ pub fn embeds(list: &[Value]) -> Vec<Component> {
             .unwrap_or(&[])
             .iter()
             .take(25)
-            .map(|f| format!("**{}**: {}", markdown_to_mfm(s(f, "name")), markdown_to_mfm(s(f, "value"))))
+            .map(|f| {
+                format!(
+                    "**{}**: {}",
+                    markdown_to_mfm(s(f, "name")),
+                    markdown_to_mfm(s(f, "value"))
+                )
+            })
             .collect();
         if !fields.is_empty() {
             parts.push(Component::text(fields.join("\n")));
@@ -159,7 +168,10 @@ pub fn embeds(list: &[Value]) -> Vec<Component> {
                 id: None,
                 components: vec![last],
                 accessory: Some(Box::new(Component::Thumbnail(Thumbnail {
-                    media: Media { url: thumb, ..Default::default() },
+                    media: Media {
+                        url: thumb,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 }))),
             }));
@@ -168,7 +180,10 @@ pub fn embeds(list: &[Value]) -> Vec<Component> {
             parts.push(Component::MediaGallery(MediaGallery {
                 id: None,
                 items: vec![GalleryItem {
-                    media: Media { url: image, ..Default::default() },
+                    media: Media {
+                        url: image,
+                        ..Default::default()
+                    },
                     description: None,
                     spoiler: false,
                 }],
@@ -181,18 +196,32 @@ pub fn embeds(list: &[Value]) -> Vec<Component> {
                 footer.push(text);
             }
         }
-        if let Some(ts) = e.get("timestamp").and_then(Value::as_str).and_then(|t| t.parse::<jiff::Timestamp>().ok()) {
+        if let Some(ts) = e
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(|t| t.parse::<jiff::Timestamp>().ok())
+        {
             footer.push(format!("$[unixtime {}]", ts.as_second()));
         }
         if !footer.is_empty() {
-            parts.push(Component::Separator(Separator { divider: false, ..Default::default() }));
-            parts.push(Component::text(format!("<small>{}</small>", footer.join(" · "))));
+            parts.push(Component::Separator(Separator {
+                divider: false,
+                ..Default::default()
+            }));
+            parts.push(Component::text(format!(
+                "<small>{}</small>",
+                footer.join(" · ")
+            )));
         }
         if parts.is_empty() {
             continue;
         }
         out.push(Component::Container(Container {
-            accent_color: e.get("color").and_then(Value::as_u64).filter(|c| *c <= 0xFF_FFFF).map(|c| c as u32),
+            accent_color: e
+                .get("color")
+                .and_then(Value::as_u64)
+                .filter(|c| *c <= 0xFF_FFFF)
+                .map(|c| c as u32),
             components: parts,
             ..Default::default()
         }));
@@ -209,19 +238,37 @@ mod tests {
     fn converts_discord_only_markdown() {
         assert_eq!(markdown_to_mfm("-# small"), "<small>small</small>");
         assert_eq!(markdown_to_mfm("a ||secret|| b"), "a $[blur secret] b");
-        assert_eq!(markdown_to_mfm("at <t:1700000000:R>"), "at $[unixtime 1700000000]");
-        assert_eq!(markdown_to_mfm("hi <@123> in <#45> <:wave:99>"), "hi <plain>@123</plain> in <plain>#45</plain> :wave:");
+        assert_eq!(
+            markdown_to_mfm("at <t:1700000000:R>"),
+            "at $[unixtime 1700000000]"
+        );
+        assert_eq!(
+            markdown_to_mfm("hi <@123> in <#45> <:wave:99>"),
+            "hi <plain>@123</plain> in <plain>#45</plain> :wave:"
+        );
         assert_eq!(markdown_to_mfm(">>> a\nb"), "> a\n> b");
-        assert_eq!(markdown_to_mfm("**bold** [x](https://e.x) <b>keep</b>"), "**bold** [x](https://e.x) <b>keep</b>");
+        assert_eq!(
+            markdown_to_mfm("**bold** [x](https://e.x) <b>keep</b>"),
+            "**bold** [x](https://e.x) <b>keep</b>"
+        );
     }
 
     #[test]
     fn embeds_become_containers() {
-        let c = embeds(&[json!({"title":"Build","url":"https://ci.example/1","description":"ok","color":3066993,
+        let c = embeds(&[
+            json!({"title":"Build","url":"https://ci.example/1","description":"ok","color":3066993,
             "fields":[{"name":"Branch","value":"main","inline":true}],"footer":{"text":"CI"},"timestamp":"2026-11-16T00:00:00Z",
-            "thumbnail":{"url":"https://e.x/t.png"}})]);
+            "thumbnail":{"url":"https://e.x/t.png"}}),
+        ]);
         let doc = Document::new(IS_COMPONENTS_V2, c);
-        assert!(doc.validate(Context::Webhook).is_ok(), "{:?}", doc.validate(Context::Webhook));
-        assert!(doc.fallback_text(4000).contains("**[Build](https://ci.example/1)**"));
+        assert!(
+            doc.validate(Context::Webhook).is_ok(),
+            "{:?}",
+            doc.validate(Context::Webhook)
+        );
+        assert!(
+            doc.fallback_text(4000)
+                .contains("**[Build](https://ci.example/1)**")
+        );
     }
 }

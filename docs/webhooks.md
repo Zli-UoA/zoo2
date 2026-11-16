@@ -1,12 +1,84 @@
 # Webhook
 
-外部サービスから Slack Incoming Webhook 形式の JSON を受け取り、通知専用 App としてチャンネルへ投稿します。受信口は `POST /api/webhooks/{id}` の1種類です。
+外部サービスからの通知を受け取り、通知専用 App としてチャンネルへ投稿します。受信口は `POST /api/webhooks/{id}` の 1 種類です。本文は次の 2 つの形式を受け付けます。
+
+- **Slack 形式**：Slack Incoming Webhook と同じ `text`・`blocks`（Block Kit）・`attachments`
+- **Discord 形式**：Discord Webhook と同じ `content`・`embeds`・`components`（Components V2）・`flags`
+
+どちらも、zoo のメッセージ部品（Discord Components V2 と同じ構造。[App・Bot 基盤](apps.md#メッセージ部品)）に変換して表示します。
 
 ## 設定
 
 1. チャンネルの設定から Webhook を開き、名前を指定して作成します。チャンネル管理者またはワークスペース管理者が操作できます。専用の投稿 App は自動作成されます。
-2. 表示された「Webhook URL」をコピーし、送信元の Slack Incoming Webhook URL に設定します。URL は `/api/webhooks/{id}?token=<認証トークン>` の形式です。
-3. JSON を POST します。URL 内のトークンで認証するため、本文署名や独自の認証ヘッダーは不要です。成功時は HTTP 200 と本文 `ok` を返します。
+2. 表示された「Webhook URL」をコピーし、送信元の Slack Incoming Webhook URL、または Discord Webhook URL に設定します。URL は `/api/webhooks/{id}?token=<認証トークン>` の形式です。
+3. JSON を POST します。URL 内のトークンで認証するため、本文署名や独自の認証ヘッダーは不要です。
+
+## 送り方
+
+| 項目 | 内容 |
+| --- | --- |
+| メソッドと URL | `POST /api/webhooks/{id}?token=<認証トークン>`。トークンは `Authorization: Bearer <認証トークン>` でも渡せます（下の Flux の節） |
+| `Content-Type` | `application/json` |
+| 本文の大きさ | 2 MiB まで。部品に変換したあとの JSON は 64 KB まで（超えた分は末尾の部品から省き、「ほかに N 件の部品を省略しました」と書き足します） |
+| 成功 | HTTP 200、本文 `ok` |
+| `X-Webhook-Delivery` | UUID を指定すると、同じチャンネルへの再送を重複排除します |
+
+400 になるのは、JSON として読めないとき、JSON がオブジェクトでないとき、表示するものが何もないとき（`{"text":""}`、`{"blocks":[]}` など）、不正な Delivery ID のときだけです。**形式が正しい Slack・Discord の通知は、知らない項目やブロックが混ざっていても 400 にしません**（下の「部品の一覧」）。
+
+### 形式の見分け方
+
+- `blocks`・`attachments`・`text` のどれかがあれば **Slack 形式** として読みます。
+- それらがなく、`content`・`embeds`・`components`・`flags` のどれかがあれば **Discord 形式** として読みます。
+- `username`・`avatar_url`・`icon_emoji`・`channel`・`tts`・`allowed_mentions` など、投稿者やチャンネルを上書きする項目は無視します。投稿者は常に Webhook の通知専用 App です。
+
+### 本文の代わり（`content`）
+
+部品のある投稿では、チャットに部品だけを表示し、メッセージの本文（`content`）は通知・プッシュ・検索・TUI・古いクライアント用の「代わりの文字」になります。
+
+- **Slack 形式**：`blocks` があれば、`text` を代わりの文字にします（Slack と同じく、`text` は表示しません）。`blocks` がなく `attachments` があれば、`text` を部品の先頭に表示し、代わりの文字は部品の文字から作ります。`text` だけなら、部品を作らずに本文として表示します。
+- **Discord 形式**：`content` は部品の先頭に表示します。代わりの文字は部品の文字（見出し・本文・項目・ボタンの行き先など）を改行でつないで作ります。
+- 代わりの文字は 4,000 文字までに切り詰めます。本文のメンション（`@name`）で通知は飛びません。
+
+## 例
+
+### Slack：テキストだけ
+
+```bash
+curl -X POST "$ZOO_WEBHOOK_URL" -H 'content-type: application/json' \
+  -d '{"text":"*デプロイ* が完了しました <https://example.com/deploy/123|詳細>"}'
+```
+
+### Slack：Block Kit
+
+```bash
+curl -X POST "$ZOO_WEBHOOK_URL" -H 'content-type: application/json' -d @- <<'JSON'
+{
+  "text": "本番のデプロイが完了しました",
+  "blocks": [
+    { "type": "header", "text": { "type": "plain_text", "text": "Deploy complete" } },
+    {
+      "type": "section",
+      "text": { "type": "mrkdwn", "text": "*production* は正常です" },
+      "fields": [
+        { "type": "mrkdwn", "text": "*Cluster*\nsite1" },
+        { "type": "mrkdwn", "text": "*Commit*\n`abc1234`" }
+      ],
+      "accessory": { "type": "image", "image_url": "https://example.com/logo.png", "alt_text": "logo" }
+    },
+    { "type": "divider" },
+    {
+      "type": "actions",
+      "elements": [
+        { "type": "button", "text": { "type": "plain_text", "text": "ログを開く" }, "url": "https://example.com/logs/123" }
+      ]
+    },
+    { "type": "context", "elements": [{ "type": "mrkdwn", "text": "CI · <!date^1700000000^{date_short}|2023-11-14>" }] }
+  ]
+}
+JSON
+```
+
+### Slack：attachments（Flux・Alertmanager・Grafana などの旧形式）
 
 ```json
 {
@@ -19,19 +91,175 @@
       "color": "good",
       "author_name": "CI",
       "footer": "production",
+      "ts": 1700000000,
       "fields": [{ "title": "Cluster", "value": "site1", "short": true }]
     }
   ]
 }
 ```
 
-`{"text":"Hello"}` のようなテキストのみの通知も受け付けます。Flux は下記のヘッダー認証の設定を使用してください。Flux が送信する `good`・`danger` の色をそのまま表示します。
+### Discord：Components V2
 
-### 既存の通知専用 App から投稿する
+```bash
+curl -X POST "$ZOO_WEBHOOK_URL" -H 'content-type: application/json' -d @- <<'JSON'
+{
+  "flags": 32768,
+  "components": [
+    {
+      "type": 17,
+      "accent_color": 3066993,
+      "components": [
+        { "type": 10, "content": "## Deploy complete\n**production** は正常です" },
+        {
+          "type": 9,
+          "components": [{ "type": 10, "content": "Commit `abc1234`\n-# 2 分前" }],
+          "accessory": { "type": 11, "media": { "url": "https://example.com/logo.png" } }
+        },
+        { "type": 14 },
+        { "type": 1, "components": [{ "type": 2, "style": 5, "label": "ログを開く", "url": "https://example.com/logs/123" }] }
+      ]
+    }
+  ]
+}
+JSON
+```
 
-複数のチャンネルへ同じ投稿者で通知するには、作成時に `app_id` を指定します。`POST /api/channels/{channel_id}/webhooks` に `{"name":"Deploys","app_id":"<App ID>"}` を送ると、新しい App を作らず、その App の Bot として投稿します。指定できるのは、操作者が開発者または管理者で、インストール済みの通知専用 App だけです。チャンネル管理権限も必要です。
+### Discord：embeds（旧来の形式）
 
-App ごとの Webhook は `GET /api/apps/{id}/webhooks` で確認できます。返すのは操作者が管理できるチャンネルの Webhook だけで、それ以外は `hidden_count` に件数だけを返します。
+```json
+{
+  "content": "デプロイが完了しました",
+  "embeds": [
+    {
+      "title": "Deploy complete",
+      "url": "https://example.com/deploy/123",
+      "description": "Production is healthy",
+      "color": 3066993,
+      "fields": [{ "name": "Cluster", "value": "site1", "inline": true }],
+      "footer": { "text": "CI" },
+      "timestamp": "2026-11-16T00:00:00Z"
+    }
+  ]
+}
+```
+
+### 送信元ごとの設定
+
+- **Grafana**：通知先（Contact point）の種類に「Slack」か「Discord」を選び、Webhook URL に zoo の URL を入れます。Slack 型では「Incoming Webhook URL」の欄を使います。
+- **Alertmanager**：`slack_configs` の `api_url`、または `discord_configs` の `webhook_url` に zoo の URL を設定します。トークンを URL に入れたくない場合は、`http_config.authorization`（`type: Bearer`、`credentials_file`）を使い、`api_url` にはトークンを含めない URL を設定します。
+- **GitHub Actions**：`curl` で上の例のような JSON を送ります。URL は Actions の Secret に入れ、ログに出さないでください。
+- **Flux**：下の「Flux の設定と送信エラーのマスク」を参照してください。
+
+## 記法（テキストの書き方）
+
+zoo の本文は MFM（[MFM 対応表](mfm.md)）です。Slack の mrkdwn と Discord の markdown は、受け取ったときに MFM へ変換します。MFM にない記法や、変換表にない記法は、文字のまま表示します。
+
+### Slack mrkdwn（`type: mrkdwn` のテキスト、`text`、`attachments[].text` など）
+
+| Slack の書き方 | zoo での表示 |
+| --- | --- |
+| `*太字*` | 太字（`**太字**`） |
+| `_斜体_` | 斜体（`<i>斜体</i>`） |
+| `~取り消し~` | 取り消し線（`~~取り消し~~`） |
+| `` `コード` ``、` ```コードブロック``` ` | コード（中の記号は変換しません） |
+| `> 引用` | 引用 |
+| `<https://example.com>` | リンク（URL をそのまま表示） |
+| `<https://example.com\|ラベル>` | `[ラベル](https://example.com)` のリンク |
+| `<mailto:a@example.com\|ラベル>` | ラベルの文字 |
+| `<@U123>`、`<@U123\|名前>` | `@U123`、`@名前`（文字として表示し、通知は飛びません） |
+| `<#C123\|general>` | `#general` |
+| `<!here>`、`<!channel>`、`<!everyone>` | `@here` などの文字（通知は飛びません） |
+| `<!subteam^S123\|@team>` | `@team` |
+| `<!date^1700000000^{date_short}\|代わり>` | 代わりの文字 |
+| `:smile:` | 絵文字 |
+| `&amp;`、`&lt;`、`&gt;` | `&`、`<`、`>` |
+| MFM として解釈される並び（`$[`、`<b>` など） | 文字のまま表示（間に見えない区切りを入れて無効にします） |
+
+- `plain_text` のテキストは記法を解釈せず、文字のまま表示します。`emoji: true` の `:smile:` は絵文字にします。`verbatim` は無視します（zoo は URL やチャンネル名を自動でリンクにしません）。
+- `attachments` の `mrkdwn_in` に含めた項目だけを mrkdwn として読みます。`mrkdwn_in` がなければ、`text`・`pretext`・`fields` を mrkdwn として読みます（Slack の既定と同じ）。
+- `rich_text` ブロックは書式（太字・斜体・取り消し・コード）、リスト（番号付き・箇条書き・字下げ）、引用、コードブロック、リンク、絵文字、メンション、日時（`$[unixtime]` で、見る人のタイムゾーンで表示）を変換します。下線と強調表示は表示しません。
+- `markdown` ブロック（標準の markdown）は、そのまま MFM として表示します。タスクリスト（`- [ ]`・`- [x]`）は ☐・☑ に、`---` は横線に、`-`・`*` の箇条書きは「・」に変えます。表（GFM）は文字のまま表示します。
+
+### Discord markdown（`content`、`text_display`、embeds の `title`・`description`・`fields`）
+
+| Discord の書き方 | zoo での表示 |
+| --- | --- |
+| `**太字**`、`*斜体*`、`~~取り消し~~` | そのまま（MFM と同じ） |
+| `__下線__` | 太字（MFM に下線がないため） |
+| `# 見出し`〜`### 見出し` | 見出し |
+| `-# 小さい字` | 小さい字（`<small>`） |
+| `\|\|ネタバレ\|\|` | ぼかし（`$[blur …]`。触れると表示） |
+| `> 引用`、`>>> 以降すべて引用` | 引用 |
+| `- 箇条書き`、`1. 番号付き` | 文字のまま（行頭の記号を表示） |
+| `[ラベル](https://example.com)` | リンク |
+| `` `コード` ``、` ```コードブロック``` ` | コード |
+| `<t:1700000000:R>` など | 日時（`$[unixtime]`。表示の書式は見る人の端末に合わせます） |
+| `<@123>`、`<@!123>`、`<@&123>`、`<#123>` | `@123`・`#123` の文字（通知は飛びません） |
+| `<:name:123>`、`<a:name:123>` | `:name:`（登録済みの絵文字なら絵文字） |
+
+## 部品の一覧
+
+受け取った部品は、どれもチャットに表示します。**Webhook には押したときに受け取るアプリがないので、ボタン（リンクボタンを除く）・select・入力欄・ピッカーは、表示はしますが押せない状態にします。** リンクボタンと動画は普通に使えます。
+
+### Slack Block Kit
+
+| ブロック | zoo での表示 |
+| --- | --- |
+| `section` | 本文。`fields` は 1 行ずつ（2 列にはしません）。`accessory` が画像なら横にサムネイル、ボタンや select なら横に置きます |
+| `header` | 見出し（`level` 1〜4。既定は 3） |
+| `divider` | 区切り線 |
+| `context` | 小さい字。画像は代わりの文字（`alt_text`） |
+| `actions`、`context_actions` | ボタンは 5 個ずつの行、select などは 1 行に 1 つ。`feedback_buttons` は 2 つのボタン、`icon_button` はボタン |
+| `image` | 画像（続く画像は 1 つのギャラリーにまとめます。`title` は太字の見出し） |
+| `rich_text`、`markdown` | 本文（上の記法を参照） |
+| `input` | 見出し付きの入力欄（押せない状態） |
+| `video` | 動画のカード（サムネイル・タイトル・再生のリンク） |
+| `table`、`data_table` | 表（`data_table` は見出しの行・並べ替え・ページ送りあり。ボタンのセルは押せない状態） |
+| `alert` | 色付きのお知らせ（`level`：info・warning・error・success） |
+| `card`、`carousel` | カード（画像・タイトル・本文・ボタン）。`carousel` は横に並べます |
+| `container` | 枠（見出し・折りたたみ付き） |
+| `data_visualization` | グラフ（円・棒・面・折れ線） |
+| `layout` | 格子状の配置（狭い画面では縦に積みます） |
+| `plan`、`task_card` | 作業の一覧と状態 |
+| `file` | ファイル名だけ（Slack 内のファイルは取得しません） |
+
+要素：`button`（`primary`・`danger` の色、`url` があればリンクボタン、`confirm`）、`static_select`・`external_select`・`users_select`・`conversations_select`・`channels_select`（それぞれ `multi_` も）、`overflow`、`datepicker`・`timepicker`・`datetimepicker`、`checkboxes`・`radio_buttons`、`plain_text_input`・`number_input`・`email_text_input`・`url_text_input`・`rich_text_input`、`file_input`、`image`、`workflow_button` に対応します。
+
+### Slack attachments（旧形式）
+
+`pretext` は枠の前に、それ以外は `color` の色の枠にまとめます。`author_name`（`author_link`）・`title`（`title_link`）・`text`・`fields`・`thumb_url`（横にサムネイル）・`image_url`（画像）・`footer`・`ts`（日時）・`blocks` を表示します。表示するものがなければ `fallback` を表示します。リンクの展開（`from_url`・`is_app_unfurl`）と、旧来の `actions` は表示しません。最大 100 件です。
+
+### Discord
+
+| 部品（type） | zoo での表示 |
+| --- | --- |
+| Container（17） | 色付きの枠（`accent_color`、`spoiler` はぼかし） |
+| Text Display（10） | 本文（上の記法を参照） |
+| Section（9） | 本文の横にサムネイルかボタン |
+| Thumbnail（11）、Media Gallery（12） | 画像（`spoiler` はぼかし） |
+| File（13） | ファイル（https の URL だけ。`attachment://` は使えません） |
+| Separator（14） | 区切り線か余白（`divider`、`spacing`） |
+| Action Row（1）、Button（2） | ボタン（リンクボタン以外は押せない状態） |
+| String / User / Role / Mentionable / Channel Select（3、5〜8） | select（押せない状態） |
+| Label（18）、Text Input（4）、File Upload（19）、Radio Group（21）、Checkbox Group（22）、Checkbox（23） | 見出し付きの入力欄（押せない状態） |
+| embeds | 色付きの枠（author・title・url・description・fields・thumbnail・image・footer・timestamp） |
+
+### 知らない部品
+
+zoo がまだ知らないブロックや type（Slack や Discord が今後足すもの）は、捨てずに「未対応の部品」として、中の文字（`text`・`label`・`title` など）を拾える分だけ表示します。配置の決まりに合わない部品（container の中の container など）も、同じく文字だけを表示します。
+
+### 上限
+
+| 項目 | 上限 |
+| --- | --- |
+| 部品の数（入れ子を含む） | 500 |
+| 本文の文字の合計 | 40,000 |
+| 表のセルの文字の合計 | 20,000 |
+| ボタン | 1 行に 5 個 |
+| 画像のギャラリー | 10 枚 |
+| `blocks`、`attachments` | それぞれ 100 件 |
+
+画像・動画・リンクの URL は `https://` のものだけを使います。それ以外の URL のリンクは文字として表示し、画像は表示しません。画像はプロキシを通して表示し、見る人の IP アドレスを画像の置き場所へ渡しません。
 
 ## Flux の設定と送信エラーのマスク
 
@@ -67,18 +295,6 @@ v1.9.4 の [Slack 送信処理](https://github.com/fluxcd/notification-controlle
 
 Authorization ヘッダーがある場合はヘッダーを優先し、不正なヘッダーから query トークンへのフォールバックは行いません。URL の再発行ではヘッダーに使用する旧トークンも無効になります。
 
-## 対応する表示項目
-
-- `text` と、最大100件の `attachments` を受け付けます。添付カードは1件のメッセージ内に順番に表示します。
-- 添付カードの `title`、`title_link`、`text`、`fallback`、`pretext`、`author_name`、`footer`、`fields[].title/value` を表示します。`fallback` はタイトルも本文もない場合に使用します。タイトル省略時は `Webhook` と表示します。`short` による列配置は行いません。
-- `color` は `good`（緑）、`warning`（黄）、`danger`（赤）、6桁の16進色コード（`#` は省略可）を受け付けます。省略時はブランド色です。不正な色は400エラーになります。
-- Block Kit（`blocks`）、操作ボタン、画像、アイコン、送信者名・チャンネルの上書きには対応しません。未知の表示項目は無視します。対応する本文がない通知は400エラーになります。
-- HTML・Slack mrkdwn は解釈せずプレーンテキストとして表示します。リンクは `title_link` の HTTPS URL のみです。
-
-読み上げ・管理画面・旧クライアント向けの `content` には、各カードのタイトルと本文を順番に連結し、40,000文字以内に収めた要約を保存します。タイトルが省略されたカードは本文だけを使用します。要約を切り詰めても、保存するカード本体は変更しません。
-
-本文上限は2 MiBです。変換後の各カードのタイトルは500文字、説明は4,000文字、リンク・著者・フッターなどの各項目は2,000文字までです。`pretext`・`text`・`fields` を連結した説明にも4,000文字の制限を適用します。各添付の `fields` は最大100件です。
-
 ## 認証・再送・管理
 
 Webhook URL 全体が認証情報です。設定画面ではマスクして表示し、管理 API は `Cache-Control: no-store` を返します。管理 API の `path` に認証トークン付きの URL を返します。独立した `secret`・`generic_path`・`slack_path` は返しません。
@@ -88,6 +304,10 @@ Webhook URL 全体が認証情報です。設定画面ではマスクして表�
 `X-Webhook-Delivery` に UUID を指定すると同一チャンネルへの再送を重複排除します。省略時はリクエストごとに新規投稿となり、送信元の再送によって重複する場合があります。不正な Delivery ID は400エラーになります。
 
 「削除」では受信口を無効化し、不要になったチャンネルへの参加を解除します。投稿済みメッセージと投稿 App は履歴のため保持します。アーカイブ・削除済みチャンネルには投稿できません。
+
+## 部品の形式への移行（2026-11）
+
+これまで Webhook の投稿はカード（`messages.card`）として保存していました。今後は部品（`messages.components`）として保存します。送信元の設定変更は不要です。これまで 400 にしていた `blocks` も受け付けます。保存済みのカードは `zoo_components_backfill` で部品に移します（[App・Bot 基盤](apps.md#メッセージ部品)の「移行」）。
 
 ## 旧共通カード形式からの移行
 
