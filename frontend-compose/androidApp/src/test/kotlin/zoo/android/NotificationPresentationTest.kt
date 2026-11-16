@@ -33,13 +33,16 @@ class NotificationPresentationTest {
             val row = row(if (dm) "dm" else "mention", dm = dm)
             val avatar = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
             val body = notificationBody(row) { _, _ -> error("Message should use its content") }
+            val style = notificationStyle(row, body, "Me", avatar) as Notification.MessagingStyle
             val notification = Notification.Builder(RuntimeEnvironment.getApplication(), "test")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setStyle(notificationStyle(row, body, "Me", avatar)).build()
-            val style = assertNotNull(Notification.MessagingStyle.extractMessagingStyleFromNotification(notification))
+                .setStyle(style).build()
+            assertEquals(style.conversationTitle,
+                notification.extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE))
             if (dm && Build.VERSION.SDK_INT < 28) assertNull(style.conversationTitle)
             else assertEquals("general", style.conversationTitle.toString())
-            val message = style.messages.single()
+            val message = Notification.MessagingStyle.Message.getMessagesFromBundleArray(
+                notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)).single()
             assertEquals("長いメッセージ\n二行目", message.text.toString())
             assertEquals(timestampMillis(row.text("created_at")), message.timestamp)
             assertEquals("Alice", message.sender.toString())
