@@ -156,7 +156,7 @@ class AndroidNotificationsTest {
             assertNotNull(notification.getLargeIcon())
             assertEquals("body-1", message(notification).getCharSequence("text").toString())
             if (Build.VERSION.SDK_INT >= 28) {
-                val sender = message(notification).getParcelable("sender_person") as android.app.Person
+                val sender = assertNotNull(message(notification).getParcelable<android.app.Person>("sender_person"))
                 assertNotNull(sender.icon)
             }
             assertEquals(1, f.requested.size)
