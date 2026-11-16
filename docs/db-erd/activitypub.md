@@ -123,6 +123,10 @@ erDiagram
     apub_remote_recipients {
       text post_id PK,FK
       text user_id PK,FK
+      text actor_id
+      timestamptz published
+      boolean reply_to_user
+      boolean post_deleted
     }
     apub_remote_recipients }o--o| apub_remote_posts : apub_remote_recipients_post_id_fkey
     apub_remote_recipients }o--o| users : apub_remote_recipients_user_id_fkey
@@ -135,6 +139,8 @@ erDiagram
     apub_repost_recipients {
       text activity_id PK,FK
       text user_id PK,FK
+      text actor_id
+      timestamptz created_at
     }
     apub_repost_recipients }o--o| apub_reposts : apub_repost_recipients_activity_id_fkey
     apub_repost_recipients }o--o| users : apub_repost_recipients_user_id_fkey

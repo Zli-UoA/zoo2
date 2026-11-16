@@ -353,7 +353,12 @@ async fn list(
     if !matches!(timeline, "home" | "local" | "social") {
         return Err(AppError::BadRequest("Unknown timeline".into()));
     }
-    let entries = page.entries;
+    let mut entries = page.entries;
+    let limit = if entries.is_some() {
+        100
+    } else {
+        page.limit.unwrap_or(50).clamp(1, 500)
+    };
     if let Some(ref ids) = entries {
         validate_entries(ids)?;
     }
@@ -366,46 +371,49 @@ async fn list(
     toasty::sql::statement("SET LOCAL jit = off")
         .exec(&mut tx)
         .await?;
-    // `base` covers every visible post, so keep it narrow: local content emojis and the
-    // row JSON are built only for the page chosen in `picked`. `page_parents` and
-    // `page_replies` read `base` once for the whole page instead of once per row.
-    // Scope detail, author and viewport reads before audience checks and payload
-    // construction. Include parents/children for previews/counts; plain timelines
-    // keep their existing plan. An OR in the WHERE would defeat indexed lookups.
-    let scoped = page.post_id.as_deref().is_some_and(|id| !id.is_empty())
-        || page.author.as_deref().is_some_and(|id| !id.is_empty())
-        || entries.is_some();
-    let sql = include_str!("home_timeline.sql")
-        .replace(
-            "/* local_posts */",
-            if scoped {
-                "scoped_home_posts"
-            } else {
-                "home_posts"
-            },
+    // Seek eligible keys first; render/decorate only this page and its parents.
+    // This stays within the existing request and transaction on every client.
+    let seek_page = entries.is_none() && page.post_id.as_deref().is_none_or(|id| id.is_empty());
+    if seek_page {
+        let keys = query(
+            &mut tx,
+            &timeline_page_query(),
+            &[
+                &user.id,
+                page.before.as_deref().unwrap_or(""),
+                timeline,
+                if guest { "true" } else { "false" },
+                &limit.to_string(),
+                "",
+                page.author.as_deref().unwrap_or(""),
+                "false",
+                "[]",
+            ],
         )
-        .replace(
-            "/* remote_posts */",
-            if scoped {
-                "scoped_remote_posts"
-            } else {
-                "apub_remote_posts"
-            },
-        );
+        .await?;
+        let selected: Vec<String> = keys
+            .into_iter()
+            .filter_map(|row| row["entry_id"].as_str().map(str::to_owned))
+            .collect();
+        if selected.is_empty() {
+            return Ok(Json(vec![]));
+        }
+        entries = Some(selected);
+    }
+    let sql = timeline_query();
     let mut rows = query(
         &mut tx,
         &sql,
         &[
             &user.id,
-            page.before.as_deref().unwrap_or(""),
+            if seek_page {
+                ""
+            } else {
+                page.before.as_deref().unwrap_or("")
+            },
             timeline,
             if guest { "true" } else { "false" },
-            &if entries.is_some() {
-                100
-            } else {
-                page.limit.unwrap_or(50).clamp(1, 500)
-            }
-            .to_string(),
+            &limit.to_string(),
             page.post_id.as_deref().unwrap_or(""),
             page.author.as_deref().unwrap_or(""),
             if page.thread { "true" } else { "false" },
@@ -550,4 +558,27 @@ mod tests {
         assert!(validate_content(&"あ".repeat(1000)).is_ok());
         assert!(validate_content(&"あ".repeat(1001)).is_err());
     }
+}
+
+/// The same audience and entry rules are used by the key picker and renderer.
+pub fn timeline_query() -> String {
+    include_str!("home_timeline.sql")
+        .replace("/* visible_posts */", include_str!("home_visible.sql"))
+        .replace(
+            "/* timeline_entries */",
+            &include_str!("home_entries.sql").replace("/* entry_posts */", "base"),
+        )
+        .replace("/* local_posts */", "home_posts")
+        .replace("/* remote_posts */", "apub_remote_posts")
+}
+
+pub fn timeline_page_query() -> String {
+    include_str!("home_page.sql")
+        .replace("/* visible_posts */", include_str!("home_visible.sql"))
+        .replace(
+            "/* timeline_entries */",
+            &include_str!("home_entries.sql").replace("/* entry_posts */", "visible"),
+        )
+        .replace("/* local_posts */", "home_posts")
+        .replace("/* remote_posts */", "apub_remote_posts")
 }
