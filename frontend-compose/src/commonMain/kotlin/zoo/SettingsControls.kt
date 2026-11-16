@@ -28,7 +28,7 @@ fun SettingRow(
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         if (LocalTouchUi.current && maxWidth < 480.dp) {
             Column(
-                Modifier.fillMaxWidth().padding(16.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 SettingLabel(label, description, icon)
@@ -43,7 +43,7 @@ fun SettingRow(
             Row(
                 Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.Top,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 SettingLabel(label, description, icon, Modifier.weight(1f))
                 Row(
@@ -88,7 +88,7 @@ fun SettingsSection(
                 borderColor ?: MaterialTheme.colorScheme.outline,
                 RoundedCornerShape(10.dp),
             )
-            .padding(17.dp),
+            .padding(if (LocalTouchUi.current) 12.dp else 17.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (title.isNotEmpty())

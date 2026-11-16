@@ -5,6 +5,11 @@ import { RevocationSession, evaluateTrust } from "./revocationSession";
 import { SetupSession } from "./setupSession";
 import type { CryptoBackend } from "./store/backend";
 import { CryptoStore, destroyCryptoStore } from "./store/cryptoStore";
+import {
+  deleteDeviceRecord,
+  indexedDbDeviceRecords,
+  type DeviceRecordStore,
+} from "./store/deviceRecord";
 import { indexedDbWrappingKeys, type WrappingKeyStore } from "./store/storageKey";
 import type { CryptoFailure, CryptoOperation, CryptoResults } from "./protocol";
 
@@ -31,6 +36,8 @@ export class CryptoOperations {
   constructor(
     private readonly backends: CryptoBackendFactory,
     private readonly keys: WrappingKeyStore = indexedDbWrappingKeys,
+    /** 今の端末の記録（`store/deviceRecord.ts`）。 */
+    private readonly devices: DeviceRecordStore = indexedDbDeviceRecords,
   ) {}
 
   private lastOpen: { namespace: string; userId: string } | null = null;
@@ -91,16 +98,17 @@ export class CryptoOperations {
         const name = cryptoDatabaseName(request.namespace);
         if (this.store) {
           if (this.storeName === name && this.store.userId === request.userId) {
-            return this.describe(null, false);
+            return this.describe();
           }
           await this.store.close();
           this.store = null;
         }
-        const { store, replacedDeviceId, replacedRegistered } = await CryptoStore.open({
+        const { store } = await CryptoStore.open({
           backend: await this.backends.open(name),
           name,
           userId: request.userId,
           keys: this.keys,
+          devices: this.devices,
           reset: async () => {
             await this.backends.remove(name);
             return this.backends.open(name);
@@ -110,7 +118,7 @@ export class CryptoOperations {
         this.storeName = name;
         this.lastOpen = { namespace: request.namespace, userId: request.userId };
         this.reopenPending = false;
-        return this.describe(replacedDeviceId, replacedRegistered);
+        return this.describe();
       }
       case "replaceDevice": {
         const { namespace, userId, deviceId } = request;
@@ -124,7 +132,7 @@ export class CryptoOperations {
         // 作り直しは、消されたと確かめた端末（`deviceId`）にだけ行う。保存済みの暗号ストアがすでに別の
         // 端末なら、前の作り直しは保存できている（そのあとの開き直しだけが失敗した）。その端末を
         // もう一度作り直さず、そのまま返して登録から続けさせる。
-        if (store.deviceId !== deviceId) return this.describe(null, false);
+        if (store.deviceId !== deviceId) return this.describe();
         this.revocation.discard();
         this.setup.discard();
         await store.replaceDevice();
@@ -139,6 +147,9 @@ export class CryptoOperations {
       }
       case "registrationRequest":
         return this.opened().registrationRequest();
+      case "forgetReplacedDevices":
+        await this.opened().forgetReplacedDevices(request.deviceIds);
+        return null;
       case "markRegistered":
         await this.opened().markRegistered();
         return null;
@@ -294,6 +305,12 @@ export class CryptoOperations {
         return this.opened().verification.confirm(request.txnId);
       case "sasMismatch":
         return this.opened().verification.mismatch(request.txnId);
+      case "sasStartSas":
+        return this.opened().verification.startSas(request.txnId);
+      case "sasScanQr":
+        return this.opened().verification.scanQr(request.txnId, request.bytes);
+      case "sasConfirmQr":
+        return this.opened().verification.confirmQr(request.txnId);
       case "sasCancel":
         return this.opened().verification.cancel(request.txnId);
       case "sasExpire":
@@ -355,6 +372,7 @@ export class CryptoOperations {
               removeFiles: () => this.backends.remove(name),
               deleteWrappingKey: () => this.keys.delete(name),
             });
+            await deleteDeviceRecord(this.devices, name);
           }
         } finally {
           // 消し切れなくても（ファイルの削除だけが失敗したなど）、このストアはもう使わない。保存鍵を
@@ -379,14 +397,14 @@ export class CryptoOperations {
     return this.store;
   }
 
-  private describe(replacedDeviceId: string | null, replacedRegistered: boolean) {
+  /** 開いた暗号ストア。前の端末は、削除待ちに渡すまで開くたびに返す（起動の試し直しでも渡す）。 */
+  private describe() {
     const store = this.opened();
     return {
       userId: store.userId,
       deviceId: store.deviceId,
       registered: store.isRegistered,
-      replacedDeviceId,
-      replacedRegistered,
+      replacedDevices: store.replacedDevices,
     };
   }
 }

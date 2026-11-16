@@ -193,6 +193,13 @@ export function MessageList({
       ),
     [messages, firstUnreadId, readStateLoading, readStateError],
   );
+  // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージ（#367）。ここに「ここから暗号化されています」の
+  // 区切りを出す。これより後ろの暗号文のない行は、正しいサーバーが作れないので警告の印を付ける。
+  const firstEncryptedIndex = useMemo(
+    () =>
+      encryptedChannel ? items.findIndex((item) => !isPlaintextBeforeEncryption(item.message)) : -1,
+    [encryptedChannel, items],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
@@ -561,12 +568,7 @@ export function MessageList({
                   className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
-                  {encryptedChannel &&
-                  !isPlaintextBeforeEncryption(item.message) &&
-                  virtualRow.index > 0 &&
-                  isPlaintextBeforeEncryption(
-                    items[virtualRow.index - 1]?.message ?? item.message,
-                  ) ? (
+                  {virtualRow.index > 0 && virtualRow.index === firstEncryptedIndex ? (
                     // 暗号化に切り替える前と後の境目（#367）。上は平文、下は暗号化したメッセージ。
                     <div
                       role="separator"
@@ -620,6 +622,9 @@ export function MessageList({
                       item.message.display_data?.attachments ??
                       attachments?.get(item.message.id) ??
                       []
+                    }
+                    unencryptedAfterEncrypted={
+                      firstEncryptedIndex >= 0 && virtualRow.index > firstEncryptedIndex
                     }
                   />
                 </div>

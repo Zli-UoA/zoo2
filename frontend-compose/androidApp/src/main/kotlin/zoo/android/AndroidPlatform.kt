@@ -44,9 +44,9 @@ internal class AndroidPlatform(
     private val history = NavigationHistory(env.path)
     private val prefs = activity.getSharedPreferences("preferences", 0)
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
-    private val cache = AccountCache(
-        java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}"),
-    )
+    private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
+    private val cache = AccountCache(cacheDirectory)
+    private val images = AndroidImageCache(cacheDirectory.resolve("images"))
     private val dictionaries = mutableMapOf<String, Row>()
 
     private fun hash(value: String) =
@@ -69,8 +69,11 @@ internal class AndroidPlatform(
             cache.write(key, value)
         }
 
+    fun close() { images.close() }
+
     private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {
         // logout closes the session scope; deletion must still finish, off the UI thread.
+        close()
         cache.clear()
         files.clear()
     }
@@ -124,13 +127,7 @@ internal class AndroidPlatform(
                     )
                     .jsonObject
             }
-        var value: JsonElement? = dictionary
-        key.split('.').forEach { value = (value as? JsonObject)?.get(it) }
-        var text = (value as? JsonPrimitive)?.content ?: key
-        args.forEach { (name, replacement) ->
-            text = text.replace("{{$name}}", replacement).replace("{$name}", replacement)
-        }
-        return text
+        return translateDictionary(dictionary, env.locale, key, args)
     }
 
     private fun format(timestamp: String, pattern: String): String =
@@ -162,6 +159,7 @@ internal class AndroidPlatform(
     override fun action(name: String) {
         when {
             name == "back" -> back()
+            name == "haptic:longPress" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -205,12 +203,7 @@ internal class AndroidPlatform(
             }
         }
 
-    override suspend fun image(url: String): ByteArray {
-        require(Url(url).protocol == URLProtocol.HTTPS)
-        // Streaming prevents Ktor from buffering an unbounded response before the size check.
-        // Public client: never attach account headers to media.
-        return http.prepareGet(url).execute { response -> readImageResponse(response) }
-    }
+    override suspend fun image(url: String): ByteArray = images.image(url)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {

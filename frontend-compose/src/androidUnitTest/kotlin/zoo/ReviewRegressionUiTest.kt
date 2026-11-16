@@ -2,9 +2,14 @@ package zoo
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -45,6 +50,129 @@ class ReviewRegressionUiTest {
             scope, initial,
         )
         fun close() { app.close(); scope.cancel() }
+    }
+
+    @Test
+    fun messageMenuUsesInsetHostCoordinatesAndFlipsAboveBottomTrigger() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column {
+                            Spacer(Modifier.height(64.dp))
+                            NativeWindow(fixture.app, Modifier.size(320.dp, 500.dp)) {
+                                Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = androidx.compose.ui.Alignment.BottomEnd) {
+                                    Menu("message actions", List(6) { index ->
+                                        MenuAction("copy", "action $index") {}
+                                    })
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            val trigger = ui.onNodeWithContentDescription("message actions")
+            val triggerBounds = trigger.fetchSemanticsNode().boundsInRoot
+            trigger.performClick()
+            val menu = ui.onNode(SemanticsMatcher.expectValue(
+                androidx.compose.ui.semantics.SemanticsProperties.PaneTitle, "message actions",
+            ))
+            menu.assertIsDisplayed()
+            val bounds = menu.fetchSemanticsNode().boundsInRoot
+            assertTrue(bounds.height <= triggerBounds.height * 248f / 48f + 1f,
+                "Menu height should stay within 240dp plus its padding")
+            assertTrue(bounds.bottom <= triggerBounds.top, "Menu should flip above its trigger")
+            assertTrue(kotlin.math.abs(bounds.right - triggerBounds.right) <= 1f,
+                "Menu should align with the trigger inside the inset host")
+            ui.onNodeWithText("action 5").performScrollTo().assertIsDisplayed()
+            ui.onNodeWithText("action 5").performClick()
+            menu.assertDoesNotExist()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun aDownConsumedByTheScrollingParentDoesNotNavigateOnRelease() {
+        val fixture = Fixture(Environment(path = "/home", touch = true))
+        var stoppingScroll = true
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Box(Modifier.size(320.dp).pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(false, PointerEventPass.Main)
+                                // LazyColumn consumes this down when a finger stops its fling.
+                                if (stoppingScroll) down.consume()
+                                waitForUpOrCancellation()
+                            }
+                        }) {
+                            NativeLink("/home/posts/target", Modifier.size(160.dp).testTag("target")) {
+                                Text("target")
+                            }
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithTag("target").performTouchInput { click() }
+            ui.runOnIdle {
+                assertEquals("/home", fixture.app.env.path)
+                stoppingScroll = false
+            }
+            ui.onNodeWithTag("target").performTouchInput {
+                down(center)
+                moveTo(center.copy(y = center.y + 60f))
+                moveTo(center)
+                up()
+            }
+            ui.runOnIdle { assertEquals("/home", fixture.app.env.path) }
+            ui.onNodeWithTag("target").performTouchInput { click() }
+            ui.runOnIdle { assertEquals("/home/posts/target", fixture.app.env.path) }
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun tallHomeMediaDoesNotOverlapTheNextRowAtPhoneWidth() {
+        val fixture = Fixture()
+        val tall = obj("url" to "/api/home/images/abcd-1234", "width" to 100,
+            "height" to 10000, "is_sensitive" to true)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column(Modifier.width(240.dp).testTag("media-container")) {
+                            HomeMedia(listOf(tall))
+                            Text("next row", Modifier.testTag("next"))
+                        }
+                    }
+                }
+            }
+            val media = ui.onNodeWithContentDescription("attachments.showSensitive").fetchSemanticsNode().boundsInRoot
+            val next = ui.onNodeWithTag("next").fetchSemanticsNode().boundsInRoot
+            val container = ui.onNodeWithTag("media-container").fetchSemanticsNode().boundsInRoot
+            assertTrue(media.left >= container.left && media.right <= container.right)
+            assertTrue(media.bottom <= next.top, "Tall images must remain inside their measured row")
+            ui.onNodeWithTag("next").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun homeQuotesRenderFromTheDtoWithoutAnotherPostRequest() {
+        val fixture = Fixture()
+        val quoted = obj("id" to "quoted", "remote" to false, "user_name" to "bob",
+            "content" to "quoted body", "created_at" to "2026-11-15T00:00:00Z")
+        val post = kotlinx.serialization.json.JsonObject(obj("content" to "comment\n\n<https://zoo.test/note>") +
+            ("quote" to kotlinx.serialization.json.JsonObject(obj("uri" to "https://zoo.test/note") + ("post" to quoted))))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme { Box(Modifier.width(300.dp)) { HomePostContent(fixture.app, post, previewLinks = false) } }
+                }
+            }
+            ui.onNodeWithText("quoted body").assertIsDisplayed()
+            ui.onNodeWithText("comment").assertIsDisplayed()
+            ui.onNodeWithText("<https://zoo.test/note>").assertDoesNotExist()
+        } finally { fixture.close() }
     }
 
     @Test
@@ -137,4 +265,25 @@ class ReviewRegressionUiTest {
             ui.runOnIdle { assertEquals("", state.content); assertEquals(1, posts) }
         } finally { fixture.close() }
     }
+    @Test
+    fun reactionGlyphsAndMissingCustomEmojiNamesAreNotReplacedByAnEllipsis() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column {
+                            ReactionEmoji("👩🏽‍💻", size = 16.dp)
+                            ActivityPubEmoji(obj("name" to ":missing_custom_emoji:", "image_id" to "invalid"), size = 18.dp)
+                        }
+                    }
+                }
+            }
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText("👩🏽‍💻").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertFalse(layouts.single().isLineEllipsized(0))
+            ui.onNodeWithText(":missing_custom_emoji:").assertWidthIsAtLeast(40.dp)
+        } finally { fixture.close() }
+    }
+
 }

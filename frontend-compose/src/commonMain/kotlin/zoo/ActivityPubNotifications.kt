@@ -51,6 +51,15 @@ class ActivityPubNotificationsState(
     var nextCursor by mutableStateOf<String?>(null)
         private set
 
+    private var visibleIds = emptyList<String>()
+    private data class Gap(val anchors: Set<String>, val resume: String?)
+    private var gap: Gap? = null
+    private var readRevision = 0
+    fun viewport(ids: List<String>) {
+        val next = ids.take(100)
+        if (next != visibleIds && next.any { id -> items.indexOfFirst { it.text("id") == id } >= 100 }) updates.request()
+        visibleIds = next
+    }
     private var generation = 0
     private var started = false
     private var deferred = false
@@ -101,28 +110,48 @@ class ActivityPubNotificationsState(
 
     private suspend fun fetch(append: Boolean, ticket: Int) {
         try {
+            val readsAtStart = readRevision
+            val suffix = if (append) nextCursor?.let { "?before=${it.encodeURLParameter()}" }.orEmpty() else ""
+            val response = app.api.request("/api/activitypub/notifications$suffix").objectOrEmpty()
+            if (ticket != generation) return
+            val incoming = response["items"]?.rows().orEmpty()
+            val headIds = incoming.map { it.text("id") }.toSet()
+            val check = if (append) emptyList() else visibleIds.filterNot { it in headIds }
+            val checked = if (check.isEmpty()) emptyList() else app.api.request(
+                "/api/activitypub/notifications/entries", "POST", obj("entries" to JsonArray(check.map(::JsonPrimitive))),
+            ).objectOrEmpty()["items"]?.rows().orEmpty()
+            if (ticket != generation) return
+            val updates = (incoming + checked).associateBy { it.text("id") }
             val retained = items
-            val tail = retained.lastOrNull()
-            val incoming = mutableListOf<Row>()
-            val seen = mutableSetOf<String>()
-            var cursor = if (append) nextCursor else null
-            var response: Row
-            do {
-                val suffix = cursor?.let { "?before=${it.encodeURLParameter()}" }.orEmpty()
-                response = app.api.request("/api/activitypub/notifications$suffix").objectOrEmpty()
-                if (ticket != generation) return
-                incoming.addAll(response["items"]?.rows().orEmpty().filter { row -> incoming.none { it.text("id") == row.text("id") } })
-                cursor = response.text("next_cursor").takeIf { it.isNotEmpty() }
-                val last = incoming.lastOrNull()
-                val reached = tail == null || incoming.any { it.text("id") == tail.text("id") } || last != null &&
-                    (notificationTimestamp(last.text("created_at")) < notificationTimestamp(tail.text("created_at")) ||
-                    notificationTimestamp(last.text("created_at")) == notificationTimestamp(tail.text("created_at")) && last.text("id") <= tail.text("id"))
-                if (append || cursor == null || !seen.add(cursor) || reached && incoming.size >= retained.size) break
-            } while (true)
-            items = (if (append) items + incoming.filter { row -> items.none { it.text("id") == row.text("id") } } else incoming)
+            val latest = retained.associateBy { it.text("id") }
+            val cursor = response.text("next_cursor").takeIf { it.isNotEmpty() }
+            items = (if (append) retained + incoming.filterNot { row -> retained.any { it.text("id") == row.text("id") } }
+                else incoming + (if (cursor != null) retained.filterNot { it.text("id") in headIds } else emptyList()))
+                .filter { it.text("id") !in check || it.text("id") in updates }
+                .map { row -> (updates[row.text("id")] ?: row).let { updated ->
+                    if (latest[row.text("id")]?.flag("is_read") == true) JsonObject(updated + ("is_read" to JsonPrimitive(true))) else updated
+                } }
+                .let { rows -> if (rows.any { it.text("created_at").isEmpty() }) rows else rows.sortedWith(compareByDescending<Row> { notificationTimestamp(it.text("created_at")) }.thenByDescending { it.text("id") }) }
                 .map { if (it.text("id") in pendingReads) JsonObject(it + ("is_read" to JsonPrimitive(true))) else it }
-            unreadCount = response["unread_count"]?.jsonPrimitive?.intOrNull ?: 0
-            nextCursor = cursor
+            if (!append && readsAtStart == readRevision) unreadCount = ((response["unread_count"]?.jsonPrimitive?.intOrNull ?: 0) - incoming.count { !it.flag("is_read") && it.text("id") in pendingReads }).coerceAtLeast(0)
+            if (append) {
+                val missing = gap
+                if (missing != null && incoming.any { it.text("id") in missing.anchors }) {
+                    nextCursor = missing.resume
+                    gap = null
+                } else {
+                    nextCursor = cursor
+                    if (cursor == null) gap = null
+                }
+            } else if (cursor == null || retained.isEmpty()) {
+                nextCursor = cursor
+                gap = null
+            } else if (retained.none { it.text("id") in headIds }) {
+                if (gap == null) gap = Gap(retained.map { it.text("id") }.toSet(), nextCursor)
+                nextCursor = cursor
+            } else if (gap == null && nextCursor != null && retained.all { it.text("id") in headIds }) {
+                nextCursor = cursor
+            }
             error = false
         } catch (e: CancellationException) {
             throw e
@@ -139,6 +168,7 @@ class ActivityPubNotificationsState(
         if (ids != null && ids.isEmpty()) return
         val selected = ids?.toSet() ?: items.filterNot { it.flag("is_read") }.map { it.text("id") }.toSet()
         val changed = items.filter { !it.flag("is_read") && it.text("id") in selected }.map { it.text("id") }.toSet()
+        readRevision++
         pendingReads.addAll(selected)
         items = items.map { if (it.text("id") in selected) JsonObject(it + ("is_read" to JsonPrimitive(true))) else it }
         val previousCount = unreadCount
@@ -146,6 +176,7 @@ class ActivityPubNotificationsState(
         try {
             app.api.request("/api/activitypub/notifications/read", "POST", if (ids == null) obj() else obj("ids" to JsonArray(selected.map(::JsonPrimitive))))
         } catch (e: Exception) {
+            readRevision++
             items = items.map { if (it.text("id") in changed) JsonObject(it + ("is_read" to JsonPrimitive(false))) else it }
             unreadCount = previousCount
             throw e

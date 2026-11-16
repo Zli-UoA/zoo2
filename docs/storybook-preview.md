@@ -98,4 +98,4 @@ preview だけを削除し、production や他の PR のデプロイは削除し
 Settings → Environments から対応する `storybook-pr-<PR番号>` も削除します。
 この手順は API の仕様に基づきます。実際のプロジェクトでの削除は未検証です。
 
-Storybook は React を対象に公開します。Compose for Android の開発は継続します。[Android 版](android.md) を参照してください。
+Storybook は React を対象に公開します。Compose for Web の実験終了に伴い、Kotlin の Storybook 登録は対象外です。Compose for Android に廃止予定はなく、開発・検証・配布を継続します。Android の検証手順は [Android 版](android.md) を参照してください。

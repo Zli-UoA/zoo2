@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { ActivityPubEmoji, ActivityPubText, ActivityPubContent } from "./ActivityPubEmoji";
 import { ActivityPubAvatar } from "./ActivityPubAvatar";
-import { useMemo, useState, type RefObject } from "react";
+import { useEffect, useMemo, useState, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import type { ActivityPubNotification } from "../../hooks/useActivityPubNotifications";
 import { useReadVisibleNotification } from "../chat/notifications/useReadVisibleNotification";
@@ -25,12 +25,14 @@ export function ActivityPubNotificationCard({
   onRead,
   scrollRoot,
   readEnabled = true,
+  onVisibilityChange,
   act,
 }: {
   item: ActivityPubNotification;
   onRead: (ids: readonly string[]) => void;
   scrollRoot: RefObject<HTMLDivElement | null>;
   readEnabled?: boolean;
+  onVisibilityChange?: (id: string, visible: boolean) => void;
   act: (path: string, body: unknown) => Promise<void>;
 }) {
   const { t } = useTranslation();
@@ -39,7 +41,11 @@ export function ActivityPubNotificationCard({
     () => (item.is_read ? [] : [`activitypub:${item.id}`]),
     [item.id, item.is_read],
   );
-  const { ref } = useReadVisibleNotification(unread, onRead, scrollRoot, readEnabled);
+  const { ref, isVisible } = useReadVisibleNotification(unread, onRead, scrollRoot, readEnabled);
+  useEffect(() => {
+    onVisibilityChange?.(item.id, isVisible === true);
+    return () => onVisibilityChange?.(item.id, false);
+  }, [item.id, isVisible, onVisibilityChange]);
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   const action = async (accept: boolean) => {

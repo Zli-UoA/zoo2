@@ -450,10 +450,17 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     await a2.page.screenshot({ path: testInfo.outputPath("alice-2-03-reopened.png") });
 
     // 4. 絵文字 SAS 検証（Alice の 1 台目 → Bob）。Bob の端末すべてに要求が届き、1 台目で受け入れる。
+    // 「検証する」を押すと QR を先に出す。その下の「絵文字で検証する」を選ぶと、Bob が受け入れたときに
+    // 絵文字の検証を始める（QR の読み取りは QrCodeScanner.browser.test.tsx と sasController.test.ts）。
     await openSettings(a1, "devices");
     const bobRow = a1.page.getByRole("listitem").filter({ hasText: bob.name });
     await expect(bobRow).toBeVisible({ timeout: 60_000 });
-    await bobRow.getByRole("button", { name: "絵文字で検証" }).click();
+    await bobRow.getByRole("button", { name: "検証する" }).click();
+    await expect(a1.page.getByRole("img", { name: "検証の QR コード" })).toBeVisible({
+      timeout: 60_000,
+    });
+    await a1.page.screenshot({ path: testInfo.outputPath("alice-1-04-qr.png") });
+    await a1.page.getByRole("button", { name: "絵文字で検証する" }).click();
     await expect(b1.page.getByText(`${alice.name} さんが検証を求めています`)).toBeVisible({
       timeout: 60_000,
     });
@@ -639,5 +646,58 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
   } finally {
     // 途中で落ちたときに、元の失敗を後片付けの失敗で隠さない。
     for (const device of devices) await device.context.close().catch(() => undefined);
+  }
+});
+
+test("暗号ストアのファイルだけが消えたら、再読み込みで前の端末を消し、端末は 1 台のまま", async ({
+  browser,
+}) => {
+  const carol: MockUser = {
+    sub: `e2ee-carol-${runId}`,
+    preferredUsername: `carol${runId}`,
+    name: `Carol ${runId}`,
+    email: `carol-${runId}@example.com`,
+  };
+  const device = await openDevice(browser, "carol-1", carol);
+  try {
+    await login(device);
+    // ログインのあとに、端末が自動で登録される。
+    await expect
+      .poll(() => devicesOf(userIdOf(carol)).filter((row) => !row.deleted).length, {
+        timeout: 60_000,
+      })
+      .toBe(1);
+    const carolId = userIdOf(carol);
+    const [first] = devicesOf(carolId);
+
+    // アプリを閉じて（Worker と Web Locks を手放して）から、OPFS の暗号ストアのファイルだけを消す。
+    // 保存鍵を包む鍵と、今の端末の記録（IndexedDB `zoo-crypto-keys`）は残る。Safari が OPFS だけを
+    // 失ったときと同じ状態。
+    await device.page.goto("/manifest.webmanifest");
+    const removed = await device.page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const names: string[] = [];
+      for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
+        if (name.startsWith("zoo-crypto-")) names.push(name);
+      }
+      for (const name of names) await root.removeEntry(name);
+      return names;
+    });
+    expect(removed.some((name) => name.endsWith(".sqlite"))).toBe(true);
+
+    // 再読み込みで新しい端末を作り、記録にあった前の端末を削除する。
+    await device.page.goto("/");
+    await hideDevtools(device.page);
+    await expect
+      .poll(() => devicesOf(carolId), { timeout: 60_000 })
+      .toEqual([
+        { deviceId: first!.deviceId, deleted: true },
+        { deviceId: expect.any(String), deleted: false },
+      ]);
+    const live = devicesOf(carolId).filter((row) => !row.deleted);
+    expect(live).toHaveLength(1);
+    expect(live[0]!.deviceId).not.toBe(first!.deviceId);
+  } finally {
+    await device.context.close();
   }
 });

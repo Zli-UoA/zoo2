@@ -59,12 +59,13 @@
 - Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン（下の「Web の動き」）。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
 - デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き（下の「デスクトップ版の動き」）。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
-- Compose（Android）: 通話の UI は追加しない（通話関連の変更は docs と PR 本文に記録して済ませる方針）。例外として、不在着信（`missed_call`、`message_id` が NULL）は、通知の種類を知らない一覧が「返信」と誤って表示するので、Android の通知一覧と未読数から除く（`frontend-compose/` の `androidNotificationRows`）。
+- Compose（Android）: 通話の UI は追加しない。これは通話機能の実装範囲であり、Android 版の廃止・開発停止を意味しない。共通 API・認証・同期への変更は Android への影響を確認し、必要な修正と検証を同じ PR に含める。不在着信（`missed_call`、`message_id` が NULL）は、通知の種類を知らない一覧が「返信」と誤って表示するので、Android の通知一覧と未読数から除く（`frontend-compose/` の `androidNotificationRows`）。
 
 ## Web の動き
 
 - **購読**: `callInvites`（`frontend/src/lib/electric/collections.ts`）が `/api/shapes/call_invites` を購読する（永続化しない）。`useCallInvites` が、自分が呼ばれている招待（`incoming`）と、自分が呼んでいる招待（`outgoing`）に分ける。サーバーが `missed` にするまでの数秒も、期限を過ぎた招待は一覧から外す。期限は、端末の時計がずれていても働くよう、行を初めて受け取った時刻 + 招待の長さ（`created_at` と `expires_at` の差）で決める。
-- **着信**: `IncomingCallDialog`（`routes/_shell.tsx` の `CallProvider` の下）が、`incoming` の先頭を `IncomingCallCard` で出し、着信音（`call-sounds.ts` の `startRingtone`。効果音の設定に従う。ページを操作する前は、ブラウザーの自動再生の制限で鳴らないことがある）を繰り返す。
+- **着信**: `IncomingCallDialog`（`routes/_shell.tsx` の `CallProvider` の下）が、`incoming` の先頭を `IncomingCallCard` で出し、着信音（`call-sounds.ts` の `startRingtone`。高低 2 音を 2 回、大きめに、1.2 秒ごとに鳴らす。効果音の設定に従う。ページを操作する前は、ブラウザーの自動再生の制限で鳴らないことがある）を繰り返す。
+- **発信側の呼び出し音**: 自分が呼んでいる招待（`outgoing`）が、いまの通話のチャンネルに 1 件でもある間、`CallBar` が `startRingback` で静かな 2 音を 0.9 秒鳴らして 2 秒あける。着信音とは別の音で、効果音の設定に従う。相手が応答・拒否するか、招待が期限切れで shape から消えると止まる。
   - 応答: `POST /api/call-invites/{id}/accept` のあとに `joinCall(channelId)`（`joinCall` は通話が終わるまで戻らないので待たない。待つと、通話中に届く次の着信を操作できない）。別の通話中なら、`joinCall` が先に抜ける。終わっていた招待（409・404）には入らず、「この着信はすでに終了しました」をトーストで出す。それ以外の失敗は、カードに「応答できませんでした」を出す。
   - 拒否: `POST /api/call-invites/{id}/decline`。
 - **招待する側**（`CallBar`）: チャンネルの通話では「メンバーを招待」で、通話に入っておらず呼び出し中でもない、チャンネルのメンバー（bot と無効化したユーザーを除く）を選んで呼ぶ（`CallInvitePicker`。空き = 定員 - 在室 - 呼び出し中 まで）。DM では出さない。呼び出し中の相手は「〇〇さんを呼び出し中…」と出し、取り消せる。

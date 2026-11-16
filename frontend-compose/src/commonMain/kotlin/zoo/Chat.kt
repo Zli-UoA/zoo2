@@ -698,7 +698,10 @@ internal fun Message(
     CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration,
         LocalJoinedEmojis provides joined) {
         Box(
-            Modifier.messageHold(!editing, gestureArbitration) { menuOpen = true }
+            Modifier.messageHold(!editing, gestureArbitration) {
+                app.platform.action("haptic:longPress")
+                menuOpen = true
+            }
                 .semantics { testTag = "message:$id" }
                 .fillMaxWidth()
                 .background(
@@ -1429,7 +1432,7 @@ internal fun Composer(
                 )
             }
             .padding(top = 1.dp)
-            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp, vertical = if (LocalTouchUi.current) 8.dp else 12.dp)
     ) {
         sendError?.let { error ->
             Row(

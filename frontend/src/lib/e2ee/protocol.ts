@@ -75,6 +75,8 @@ export type CryptoOperation =
     }
   | { op: "registrationRequest" }
   | { op: "markRegistered" }
+  /** 削除待ちに残せた（または消せた）前の端末を、暗号ストアの外の記録から外す。 */
+  | { op: "forgetReplacedDevices"; deviceIds: string[] }
   | { op: "prepareKeyUpload"; oneTimeKeyCount: number; hasUnusedFallbackKey: boolean }
   | { op: "markKeysPublished" }
   | { op: "processToDevice"; rows: ToDeviceRow[]; keysQuery: KeysQueryResponse }
@@ -153,6 +155,10 @@ export type CryptoOperation =
   | { op: "sasAccept"; txnId: string }
   | { op: "sasConfirm"; txnId: string }
   | { op: "sasMismatch"; txnId: string }
+  // QR コードによる検証（docs/e2ee.md の「QR コードによる検証」）。
+  | { op: "sasStartSas"; txnId: string }
+  | { op: "sasScanQr"; txnId: string; bytes: Uint8Array }
+  | { op: "sasConfirmQr"; txnId: string }
   | { op: "sasCancel"; txnId: string }
   | { op: "sasExpire"; now: number }
   | { op: "sasForget"; txnId: string }
@@ -207,10 +213,12 @@ export interface OpenedCryptoStore {
   deviceId: string;
   /** サーバーへの登録が済んでいるか。 */
   registered: boolean;
-  /** 保存鍵を開けずに作り直したとき、前の端末の ID（サーバーから消す）。 */
-  replacedDeviceId: string | null;
-  /** 前の端末の登録が済んでいたか（`replacedDeviceId` がないときは `false`）。 */
-  replacedRegistered: boolean;
+  /**
+   * 前の端末（サーバーから消す）。保存鍵を開けずに作り直したときと、暗号ストアの外の記録
+   * （`store/deviceRecord.ts`）にある同じユーザーの端末が今の端末と違うとき（ファイルが消えたなど）。
+   * 削除待ちに渡すまで（`forgetReplacedDevices`）、開くたびに返す。`registered` は登録が済んでいたか。
+   */
+  replacedDevices: { deviceId: string; registered: boolean }[];
 }
 
 export interface CryptoResults {
@@ -218,6 +226,7 @@ export interface CryptoResults {
   open: OpenedCryptoStore;
   registrationRequest: RegistrationRequest;
   markRegistered: null;
+  forgetReplacedDevices: null;
   prepareKeyUpload: KeyUpload | null;
   markKeysPublished: null;
   processToDevice: ToDeviceResult;
@@ -278,6 +287,9 @@ export interface CryptoResults {
   sasAccept: SasUpdate;
   sasConfirm: SasUpdate;
   sasMismatch: SasUpdate;
+  sasStartSas: SasUpdate;
+  sasScanQr: SasUpdate | null;
+  sasConfirmQr: SasUpdate;
   sasCancel: SasUpdate | null;
   sasExpire: SasUpdate[];
   sasForget: null;

@@ -82,6 +82,7 @@ describe("translations", () => {
     "appConsole.events.websocket", // Protocol and Slack field names stay untranslated.
     "appConsole.events.requestUrl",
     "messages.typingSeparator", // Korean also separates names with a comma and a space.
+    "e2ee.deviceName.withOs", // Korean also writes the OS in half-width parentheses.
   ]);
 
   it.each(LOCALES.filter((locale) => locale !== "en"))(

@@ -28,7 +28,7 @@ internal fun DmItem(
     val colors = MaterialTheme.colorScheme
     Row(
         Modifier.fillMaxWidth()
-            .heightIn(min = if (LocalTouchUi.current) 56.dp else if (narrow) 36.dp else 32.dp)
+            .heightIn(min = navigationRowHeight(LocalTouchUi.current, narrow))
             .background(
                 if (active) colors.secondaryContainer else Color.Transparent,
                 RoundedCornerShape(8.dp),
@@ -110,7 +110,7 @@ internal fun DmSidebar(
     ) {
         Column(
             Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 0.dp else 2.dp),
         ) {
             if (error) LoadErrorState(app.t("dms.loadError"), app.t("dms.reload")) {
                 if (onReload != null) onReload() else app.repo.channels.refresh()
@@ -120,7 +120,7 @@ internal fun DmSidebar(
                     repeat(3) {
                         Box(
                             Modifier.fillMaxWidth()
-                                .height(if (narrow) 36.dp else 32.dp)
+                                .height(navigationRowHeight(LocalTouchUi.current, narrow))
                                 .background(
                                     MaterialTheme.colorScheme.surfaceVariant,
                                     RoundedCornerShape(8.dp),

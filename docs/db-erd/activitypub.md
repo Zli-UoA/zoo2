@@ -123,6 +123,11 @@ erDiagram
     apub_remote_recipients {
       text post_id PK,FK
       text user_id PK,FK
+      text parent_id
+      text actor_id
+      timestamptz published
+      boolean reply_to_user
+      boolean post_deleted
     }
     apub_remote_recipients }o--o| apub_remote_posts : apub_remote_recipients_post_id_fkey
     apub_remote_recipients }o--o| users : apub_remote_recipients_user_id_fkey
@@ -132,9 +137,20 @@ erDiagram
       timestamptz created_at
     }
     apub_remote_tombstones }o--o| apub_actors : apub_remote_tombstones_actor_id_fkey
+    apub_reply_counts {
+      text user_id PK,FK
+      text parent_id PK
+      text actor_id PK
+      bigint n
+    }
+    apub_reply_counts }o--o| users : apub_reply_counts_user_id_fkey
     apub_repost_recipients {
       text activity_id PK,FK
       text user_id PK,FK
+      text actor_id
+      timestamptz created_at
+      text post_id
+      boolean private_counted
     }
     apub_repost_recipients }o--o| apub_reposts : apub_repost_recipients_activity_id_fkey
     apub_repost_recipients }o--o| users : apub_repost_recipients_user_id_fkey

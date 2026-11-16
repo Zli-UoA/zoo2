@@ -27,7 +27,7 @@ describe("zoo-crypto Worker", () => {
     const namespace = `test-${crypto.randomUUID()}`;
     worker = startCryptoWorker();
     const opened = await worker.request({ op: "open", namespace, userId: USER });
-    expect(opened).toMatchObject({ userId: USER, registered: false, replacedDeviceId: null });
+    expect(opened).toMatchObject({ userId: USER, registered: false, replacedDevices: [] });
     const request = await worker.request({ op: "registrationRequest" });
     expect(request.device_keys).toMatchObject({ device_id: opened.deviceId });
     await worker.request({ op: "markRegistered" });
@@ -61,7 +61,7 @@ describe("zoo-crypto Worker", () => {
       userId: USER,
       deviceId: first.deviceId,
     });
-    expect(replaced).toMatchObject({ userId: USER, registered: false, replacedDeviceId: null });
+    expect(replaced).toMatchObject({ userId: USER, registered: false, replacedDevices: [] });
     expect(replaced.deviceId).not.toBe(first.deviceId);
     const request = await worker.request({ op: "registrationRequest" });
     expect(request.device_keys).toMatchObject({ device_id: replaced.deviceId });
