@@ -212,10 +212,11 @@ enum Callback {
     Error(String),
 }
 
-const DONE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2-tui</title>\
-<p>再認証が終わりました。このタブを閉じて、zoo2-tui に戻ってください。</p>";
-const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2-tui</title>\
-<p>再認証できませんでした。zoo2-tui に戻って、表示を確かめてください。</p>";
+// TUI とデスクトップ版の両方が使うので、アプリの名前は「zoo2」とだけ書く。
+const DONE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
+<p>再認証が終わりました。このタブを閉じて、zoo2 のアプリに戻ってください。</p>";
+const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
+<p>再認証できませんでした。zoo2 のアプリに戻って、表示を確かめてください。</p>";
 
 async fn handle_connection(mut stream: TcpStream, state: &str) -> Result<Option<Callback>> {
     let target = tokio::time::timeout(READ_TIMEOUT, read_request_target(&mut stream))

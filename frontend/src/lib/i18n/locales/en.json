@@ -1208,6 +1208,7 @@
       "popupBlocked": "Couldn't open the sign-in window. Allow pop-ups and try again.",
       "reauthFailed": "Couldn't sign in again. Please try again; your keys are kept.",
       "reauthTimeout": "Sign-in didn't finish in time. Please try again.",
+      "desktopOutdated": "This version of the desktop app can't sign you in again. Update the app and try again.",
       "setupConflict": "Another device started setting up encryption first. The recovery key shown here won't work. Unlock with the recovery key or passkey from that device.",
       "mismatch": "A key revocation may be unfinished, or the keys on the server may have been tampered with. This device wasn't signed. Redo the revocation or reset encryption.",
       "invalidRecoveryKey": "That recovery key isn't valid. Check for typos.",

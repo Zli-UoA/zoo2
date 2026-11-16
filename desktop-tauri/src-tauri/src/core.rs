@@ -18,13 +18,14 @@ use jiff::{civil::DateTime, tz::TimeZone};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     sync::{Mutex, mpsc},
-    task::JoinHandle,
+    task::{AbortHandle, JoinHandle},
 };
 use zoo2_client_core::{
     api::ApiClient,
     auth::{
         self,
         device::{self, Poller},
+        reauth::{LoopbackReauth, REAUTH_TIMEOUT, ReauthError},
         token::{self, StoredTokens, TokenManager},
     },
     config::{AuthConfig, Config, OidcConfig, config_dir_for},
@@ -65,6 +66,8 @@ pub struct Core {
     inner: Mutex<Inner>,
     /// OS の通知を出すか (`notifications.json` に保存する)。
     notifications: std::sync::Mutex<NotificationSettings>,
+    /// 待っている E2EE の再認証。新しく始めたら、前のものは取り消す。
+    reauth: std::sync::Mutex<Option<AbortHandle>>,
 }
 
 struct Inner {
@@ -126,6 +129,7 @@ impl Core {
             config: config.map_err(|err| format!("{err:#}")),
             http: reqwest::Client::new(),
             notifications: std::sync::Mutex::new(load_notification_settings()),
+            reauth: std::sync::Mutex::new(None),
             inner: Mutex::new(Inner {
                 generation: 0,
                 state: SessionState::Starting,
@@ -926,6 +930,76 @@ impl Core {
             })?
         };
         tokens.access_token_with_expiry().await.map_err(to_ipc)
+    }
+
+    /// E2EE の直前の再認証 (`docs/e2ee.md` の「初回設定と解錠の流れ」の 7)。ID トークンを返す。
+    ///
+    /// (b) の Web の画面は、Web 版と同じ別のウィンドウ (`window.open`) を開けない (wry は新しい
+    /// ウィンドウを作らない)。また、AuthZ が再認証として認めるのはパスキーでのログインだけで、
+    /// アプリの WebView ではパスキーを使えない。そこで TUI と同じく、既定のブラウザーで
+    /// `max_age=0` の認可リクエストを開き、ループバックのリダイレクトで受け取る
+    /// (`client-core` の `auth/reauth.rs`)。今のセッションのトークンは変えない。
+    ///
+    /// 新しく始めたら、待っている前の再認証は取り消す (Web で同じ名前のウィンドウを開き直すのと同じ)。
+    pub async fn reauthenticate(self: &Arc<Self>) -> Result<String, IpcError> {
+        let (_, oidc) = self.oidc()?;
+        let oidc = oidc.clone();
+        {
+            let inner = self.inner.lock().await;
+            if !matches!(inner.state, SessionState::Ready { .. }) {
+                return Err(not_logged_in());
+            }
+        }
+        let core = self.clone();
+        let task = tokio::spawn(async move {
+            let discovery = auth::discover(&core.http, &oidc.issuer).await?;
+            let pending = LoopbackReauth::start(&discovery, &oidc).await?;
+            open_in_browser(&core.app, pending.url())?;
+            pending
+                .finish(&core.http, &discovery, &oidc, REAUTH_TIMEOUT)
+                .await
+        });
+        if let Some(previous) = self
+            .reauth
+            .lock()
+            .expect("reauth の lock")
+            .replace(task.abort_handle())
+        {
+            previous.abort();
+        }
+        let result = task.await;
+        match result {
+            Ok(Ok(id_token)) => {
+                crate::window::show_main(&self.app);
+                Ok(id_token)
+            }
+            Ok(Err(error)) => Err(reauth_error(error)),
+            Err(join) if join.is_cancelled() => Err(IpcError::new(
+                ErrorCode::Cancelled,
+                "新しい再認証を始めたので、取り消しました",
+            )),
+            Err(join) => Err(IpcError::new(ErrorCode::Internal, join.to_string())),
+        }
+    }
+}
+
+/// 再認証の認可リクエストを既定のブラウザーで開く。URL は IdP の認可エンドポイントなので、
+/// 外部のサイトの確認 (`window::open_external`) はしない。
+fn open_in_browser(app: &AppHandle, url: &str) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| anyhow!("ブラウザーを開けませんでした: {error}"))
+}
+
+/// 再認証の失敗を、Web の画面が見分けられる IPC のエラーにする。
+fn reauth_error(error: anyhow::Error) -> IpcError {
+    match error.downcast_ref::<ReauthError>() {
+        Some(ReauthError::Timeout) => IpcError::new(ErrorCode::Timeout, format!("{error:#}")),
+        Some(ReauthError::Denied(_) | ReauthError::InvalidIdToken(_)) => {
+            IpcError::new(ErrorCode::Rejected, format!("{error:#}"))
+        }
+        None => to_ipc(error),
     }
 }
 
