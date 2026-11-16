@@ -667,5 +667,10 @@ async fn persisted_home_handler_budget() -> anyhow::Result<()> {
         )
         .await?
         .get(0);
-    benchmark_home_requests(&user, 1000000).await
+    // The persisted fixture can be either CI size; do not label 300k as 1m.
+    let count: i64 = client.query_one(
+        "SELECT (SELECT count(*) FROM home_posts WHERE user_id=$1::text) + (SELECT count(*) FROM apub_remote_recipients WHERE user_id=$1::text)",
+        &[&user],
+    ).await?.get(0);
+    benchmark_home_requests(&user, count as usize).await
 }
