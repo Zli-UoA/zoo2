@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
@@ -147,23 +148,18 @@ fun RichText(
                                 LocalMfmStyle.current.copy(textAlign = TextAlign.Center)) {
                                 RichText(text.drop(8).dropLast(9), users, depth + 1)
                             }
-                        else ->
-                            Row(Modifier.height(IntrinsicSize.Min)) {
-                                Box(
-                                    Modifier.width(3.dp)
-                                        .fillMaxHeight()
-                                        .background(MaterialTheme.colorScheme.outline)
+                        else -> {
+                            val quoteColor = MaterialTheme.colorScheme.outline
+                            Box(Modifier.drawBehind {
+                                drawRect(quoteColor, size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height))
+                            }.padding(start = 15.dp)) {
+                                RichText(
+                                    text.lines().joinToString("\n") { it.removePrefix(">").trimStart() },
+                                    users,
+                                    depth + 1,
                                 )
-                                Box(Modifier.weight(1f).padding(start = 12.dp)) {
-                                    RichText(
-                                        text.lines().joinToString("\n") {
-                                            it.removePrefix(">").trimStart()
-                                        },
-                                        users,
-                                        depth + 1,
-                                    )
-                                }
                             }
+                        }
                     }
                 } else inline += segment
             }

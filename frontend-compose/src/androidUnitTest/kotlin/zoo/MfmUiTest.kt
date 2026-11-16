@@ -65,7 +65,9 @@ class MfmUiTest {
     @Composable
     private fun Shell(fixture: Fixture, dark: Boolean = false, content: @Composable () -> Unit) {
         CompositionLocalProvider(LocalApp provides fixture.app, LocalJoinedEmojis provides emptyList()) {
-            MaterialTheme(colorScheme = zooColorScheme(dark)) { content() }
+            MaterialTheme(colorScheme = zooColorScheme(dark)) {
+                androidx.compose.material3.Surface { content() }
+            }
         }
     }
 
