@@ -237,4 +237,58 @@ class HomeRefreshStateTest {
             assertEquals("500",feed.posts.first().text("id"))
         } finally { feed.close(); app.close(); http.close() }
     }
+
+    @Test
+    fun knownPostIsVisibleBeforeTheOnlyThreadRequestCompletes() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var requests = 0
+        val http = HttpClient(MockEngine) { engine {
+            dispatcher = StandardTestDispatcher(testScheduler)
+            addHandler { request ->
+                assertEquals("/api/home/post/thread", request.url.encodedPath)
+                requests++
+                gate.await()
+                respond("[{\"id\":\"post\",\"content\":\"updated\"},{\"id\":\"reply\",\"parent_id\":\"post\"}]")
+            }
+        } }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        app.homeTimelines.save("home\u0000post\u0000", HomeTimelineSnapshot(listOf(obj("id" to "post", "content" to "stale")), false, 3, 20, Long.MAX_VALUE))
+        app.homeTimelines.preparePost(obj("id" to "post", "content" to "known"))
+        val feed = HomeTimeline(app, backgroundScope, postId = "post")
+        try {
+            assertEquals("known", feed.posts.single().text("content"))
+            assertFalse(feed.loading)
+            assertNull(feed.restore(), "The clicked DTO takes priority over an older thread snapshot")
+            assertTrue(feed.needsRefresh())
+            assertEquals(0, requests)
+            feed.refresh(retain = true)
+            runCurrent()
+            assertEquals("known", feed.posts.single().text("content"))
+            assertEquals(1, requests)
+            assertFalse(feed.viewport(listOf("post"), true), "Rendering the seed must not queue a second thread request")
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(listOf("post", "reply"), feed.posts.map { it.text("id") })
+            assertEquals("updated", feed.posts.first().text("content"))
+            assertEquals(1, requests)
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun threadFailuresRetainKnownPostsExceptWhenAccessIsDeniedOrThePostIsGone() = runTest {
+        for (status in listOf(500, 403, 404)) {
+            val http = HttpClient(MockEngine { respond("{}", HttpStatusCode.fromValue(status)) })
+            val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+            app.homeTimelines.preparePost(obj("id" to "post", "content" to "known"))
+            val feed = HomeTimeline(app, backgroundScope, postId = "post")
+            try {
+                feed.refresh(retain = true)
+                feed.awaitUpdate()
+                assertTrue(feed.error)
+                assertFalse(feed.loading)
+                if (status == 500) assertEquals("known", feed.posts.single().text("content"))
+                else assertTrue(feed.posts.isEmpty())
+            } finally { feed.close(); app.close(); http.close() }
+        }
+    }
 }

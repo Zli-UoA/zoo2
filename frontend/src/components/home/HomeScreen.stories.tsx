@@ -2501,3 +2501,25 @@ export const OlderPageError: Story = {
     await expect(canvas.getByRole("button", { name: "過去の投稿を読む" })).toBeEnabled();
   }),
 };
+
+export const PostWhileThreadLoading: Story = {
+  render: () => <NavigableHome />,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home/home-post/thread", async () => {
+          await delay("infinite");
+          return HttpResponse.json([]);
+        }),
+        ...homeHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText(/Homeから最初の公開投稿です/));
+    await canvas.findByRole("button", { name: "戻る" });
+    await expect(canvas.getByText(/Homeから最初の公開投稿です/)).toBeVisible();
+    await expect(canvas.queryByText("読み込み中…")).not.toBeInTheDocument();
+  }),
+};

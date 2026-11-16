@@ -96,6 +96,7 @@ class ReviewRegressionUiTest {
     fun aDownConsumedByTheScrollingParentDoesNotNavigateOnRelease() {
         val fixture = Fixture(Environment(path = "/home", touch = true))
         var stoppingScroll = true
+        var prepared = 0
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalApp provides fixture.app) {
@@ -108,7 +109,7 @@ class ReviewRegressionUiTest {
                                 waitForUpOrCancellation()
                             }
                         }) {
-                            NativeLink("/home/posts/target", Modifier.size(160.dp).testTag("target")) {
+                            NativeLink("/home/posts/target", Modifier.size(160.dp).testTag("target"), beforeNavigate = { prepared++ }) {
                                 Text("target")
                             }
                         }
@@ -118,6 +119,7 @@ class ReviewRegressionUiTest {
             ui.onNodeWithTag("target").performTouchInput { click() }
             ui.runOnIdle {
                 assertEquals("/home", fixture.app.env.path)
+                assertEquals(0, prepared)
                 stoppingScroll = false
             }
             ui.onNodeWithTag("target").performTouchInput {
@@ -126,9 +128,9 @@ class ReviewRegressionUiTest {
                 moveTo(center)
                 up()
             }
-            ui.runOnIdle { assertEquals("/home", fixture.app.env.path) }
+            ui.runOnIdle { assertEquals("/home", fixture.app.env.path); assertEquals(0, prepared) }
             ui.onNodeWithTag("target").performTouchInput { click() }
-            ui.runOnIdle { assertEquals("/home/posts/target", fixture.app.env.path) }
+            ui.runOnIdle { assertEquals("/home/posts/target", fixture.app.env.path); assertEquals(1, prepared) }
         } finally { fixture.close() }
     }
 
@@ -333,4 +335,31 @@ class ReviewRegressionUiTest {
         } finally { fixture.close() }
     }
 
+
+    @Test
+    fun homeBodyTimestampAndParentLinksHandOffTheirOwnPost() {
+        val fixture = Fixture(Environment(path = "/home", touch = true))
+        val parent = obj("id" to "parent", "display_name" to "Parent", "content" to "Parent body")
+        val post = obj("id" to "post", "user_id" to "alice", "display_name" to "Alice",
+            "content" to "Known body", "created_at" to "2026-11-15T00:00:00Z",
+            "parent_id" to "parent", "parent" to parent)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme { HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {}) }
+                }
+            }
+            for (label in listOf("Known body", "5分前", "home.replyTo")) {
+                ui.onNodeWithText(label).performTouchInput { click() }
+                ui.runOnIdle {
+                    val id = if (label == "home.replyTo") "parent" else "post"
+                    assertEquals("/home/posts/$id", fixture.app.env.path)
+                    assertEquals(if (id == "parent") "Parent body" else "Known body",
+                        fixture.app.homeTimelines.takePost(id)?.text("content"))
+                    assertNull(fixture.app.homeTimelines.takePost(if (id == "parent") "post" else "parent"))
+                    fixture.app.update(fixture.app.env.copy(path = "/home"))
+                }
+            }
+        } finally { fixture.close() }
+    }
 }

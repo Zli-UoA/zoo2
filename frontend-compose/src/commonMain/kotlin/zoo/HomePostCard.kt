@@ -33,7 +33,13 @@ fun HomePostCard(
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
-            .then(if (!editing) Modifier.nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null) else Modifier)
+            .then(
+                if (!editing) Modifier.nativeNavigation(
+                    "/home/posts/${post.text("id").encodeURLParameter()}",
+                    role = null,
+                    beforeNavigate = { app.homeTimelines.preparePost(post) },
+                ) else Modifier
+            )
             .padding(horizontal = if (LocalTouchUi.current) 8.dp else 16.dp,
                 vertical = if (LocalTouchUi.current) 6.dp else 16.dp),
         verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp),
@@ -43,7 +49,10 @@ fun HomePostCard(
             val name = parent?.text("display_name")?.ifEmpty { parent.text("user_name") }
                 ?: app.t("activitypubSettings.post")
             Column(Modifier.fillMaxWidth().padding(start = 12.dp, bottom = 8.dp)) {
-                NativeLink("/home/posts/${post.text("parent_id").encodeURLParameter()}") {
+                NativeLink(
+                    "/home/posts/${post.text("parent_id").encodeURLParameter()}",
+                    beforeNavigate = { parent?.let { app.homeTimelines.preparePost(it) } },
+                ) {
                     Text(app.t("home.replyTo", "name" to name), size = 12.sp)
                 }
                 parent?.let {
@@ -101,7 +110,10 @@ fun HomePostCard(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
+                    NativeLink(
+                        "/home/posts/${post.text("id").encodeURLParameter()}",
+                        beforeNavigate = { app.homeTimelines.preparePost(post) },
+                    ) {
                         PostTimestamp(app, post.text("created_at"))
                     }
                     ActivityPubBadge(app, post.text("visibility").ifEmpty { "local" }, federated = post.flag("apub") || post.flag("remote"))
