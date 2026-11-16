@@ -35,6 +35,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import zoo.ApiException
+import zoo.crypto.ffi.OutgoingMessage
+import zoo.crypto.ffi.MessageContent
+import zoo.crypto.ffi.Mentions
 import zoo.crypto.ffi.DeviceAccount
 import zoo.crypto.ffi.OlmSessionStore
 import zoo.crypto.ffi.OutboundSession
@@ -178,6 +181,25 @@ class E2eeSetupTest {
             assertTrue(requests.none { "EDITED-SECRET" in it })
             assertEquals("1", accepted!!.getValue("revision").jsonPrimitive.content)
             assertEquals(2, delivered.size) // 同じ epoch の編集では、配布済みのセッションを再利用する。
+            val editedRow = JsonObject(row + accepted!!)
+            val displayed = EncryptedMessageDisplayState()
+            displayed.receive(reopened.decrypt(editedRow))
+            assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            val stale = reopened.decrypt(row)
+            assertEquals(MessageRevision.STALE, stale.revision)
+            displayed.receive(stale)
+            assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            assertEquals("e2ee.revision.stale", displayed.decoded?.revisionNotice)
+            // 別セッションから同じ版の異なる本文が届いても、最初に確認した本文を保持する。
+            displayed.receive(encryption.decrypt(editedRow))
+            OutboundSession(channel, 2uL, 0uL).use { fork ->
+                val alternate = sender.store.encrypt(fork, OutgoingMessage(messageId, null, 1uL,
+                    MessageContent("conflicting body", "mfm", "message"), Mentions(emptyList(), false, false)))
+                val conflict = encryption.decrypt(JsonObject(editedRow + ("ciphertext" to alternate)))
+                assertEquals(MessageRevision.CONFLICT, conflict.revision)
+                displayed.receive(conflict)
+                assertEquals("EDITED-SECRET", displayed.decoded?.body)
+            }
             // 配れなかった鍵のセッションで本文を送らない。
             refuseDelivery = true
             epoch = 3

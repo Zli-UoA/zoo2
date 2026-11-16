@@ -620,10 +620,12 @@ internal fun Message(
     val encryptedRow = message["ciphertext"]?.let { it != JsonNull } == true
     val encryptedChannel = encryptedRow || channel.flag("encrypted") || app.isEncryptedChannel(channel.text("id"))
     val encryption = app.platform.messageEncryption
-    var decoded by remember(message, encryption) { mutableStateOf<DecryptedBody?>(null) }
-    LaunchedEffect(message, encryption) {
+    val payload = encryptedMessagePayload(message)
+    val decryptedState = remember(message.text("channel_id"), message.text("id"), encryption) { EncryptedMessageDisplayState() }
+    val decoded = decryptedState.decoded
+    LaunchedEffect(payload, encryption) {
         if (encryptedRow && encryption != null) {
-            encryption.changes.collect { decoded = encryption.decrypt(message) }
+            encryption.changes.collect { decryptedState.receive(encryption.decrypt(payload)) }
         }
     }
     val originalMessage = message
@@ -664,12 +666,20 @@ internal fun Message(
             .filter { it.text("message_id") == id }.groupBy { reactionKey(it.text("emoji")) }
     }
     val mine = ownOverride ?: (message.text("user_id") == app.config.userId)
-    val editable = app.env.online && !channel.present("archive_at") && (!encryptedChannel || encryptedRow && decoded?.body != null)
+    val interactive = app.env.online && !channel.present("archive_at")
+    val editable = interactive && (!encryptedChannel || encryptedRow && decoded?.body != null && decoded.revision == MessageRevision.LATEST)
     var editing by remember(id, initialEditing) { mutableStateOf(initialEditing) }
     var content by
-        remember(message.text("content"), initialEditingText) {
+        remember(id, initialEditingText) {
             mutableStateOf(initialEditingText ?: message.text("content"))
         }
+    var editDirty by remember(id) { mutableStateOf(initialEditingText != null) }
+    LaunchedEffect(message.text("content"), editing) {
+        if (!editing || !editDirty) {
+            content = message.text("content")
+            if (!editing) editDirty = false
+        }
+    }
     var deleting by remember(id) { mutableStateOf(false) }
     var picker by remember(id) { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
@@ -688,9 +698,17 @@ internal fun Message(
     }
     val startEdit = {
         // 復号できたメッセージだけ、再暗号化して編集できる。
-        if (encryptedChannel && (encryption == null || (encryptedRow && decoded?.body == null))) app.toast = app.t("e2ee.sendNeedsUnlock")
+        if (encryptedChannel && !editable) app.toast = app.t(
+            if (!encryptedRow) "e2ee.legacy.editForbidden"
+            else if (decoded?.revision != null && decoded.revision != MessageRevision.LATEST) "e2ee.editConflict"
+            else "e2ee.sendNeedsUnlock"
+        )
         else if (callbacks?.startEdit != null) callbacks.startEdit.invoke()
-        else editing = true
+        else {
+            content = message.text("content")
+            editDirty = false
+            editing = true
+        }
     }
     val requestDelete = {
         if (callbacks?.requestDelete != null) callbacks.requestDelete.invoke() else deleting = true
@@ -822,6 +840,7 @@ internal fun Message(
                                 }
                                 else
                                     app.run("edit:$id") {
+                                        app.requirePlaintextChannel(channel.text("id"))
                                         val row =
                                             JsonObject(
                                                 message + ("content" to JsonPrimitive(content))
@@ -872,7 +891,7 @@ internal fun Message(
                                 minimumHeight = 36.dp,
                             ) {
                                 if (callbacks?.changeText != null) callbacks.changeText.invoke(it)
-                                else content = it
+                                else { content = it; editDirty = true }
                             }
                             Row(
                                 Modifier.fillMaxWidth(),
@@ -900,6 +919,7 @@ internal fun Message(
                         if (encryptedRow) {
                             val notice = decoded?.notice ?: if (decoded == null) "e2ee.undecryptable.locked" else null
                             notice?.let { Text(app.t(it), small = true, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            decoded?.revisionNotice?.let { Text(app.t(it), small = true, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         } else if (encryptedChannel) {
                             Text(app.t("e2ee.legacy.unencryptedBadge"), small = true, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -999,7 +1019,7 @@ internal fun Message(
                                         emoji,
                                         rows,
                                         users,
-                                        editable && canReact && !emoji.startsWith("apub:"),
+                                        interactive && canReact && !emoji.startsWith("apub:"),
                                         wide,
                                     ) {
                                         if (callbacks?.reaction != null)
@@ -1011,7 +1031,7 @@ internal fun Message(
                                 IconButton(
                                     "smile-plus",
                                     app.t("reactions.add"),
-                                    editable && canReact,
+                                    interactive && canReact,
                                     size = 24.dp,
                                     click = pickReaction,
                                 )
@@ -1035,7 +1055,7 @@ internal fun Message(
                         IconButton(
                             "smile-plus",
                             app.t("reactions.add"),
-                            editable && canReact,
+                            interactive && canReact,
                             size = 24.dp,
                             click = pickReaction,
                         )
@@ -1091,7 +1111,7 @@ internal fun Message(
                                 MenuAction(
                                     "smile-plus",
                                     app.t("reactions.add"),
-                                    editable && canReact,
+                                    interactive && canReact,
                                     pickReaction,
                                 )
                             )

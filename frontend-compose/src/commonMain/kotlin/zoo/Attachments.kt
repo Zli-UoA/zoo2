@@ -327,6 +327,7 @@ class AttachmentDrafts(
                         val result = upload(file)
                         if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
                     } else {
+                        app.requirePlaintextChannel(channel)
                         val presign =
                             attachmentPayload(
                                 app.api.request(

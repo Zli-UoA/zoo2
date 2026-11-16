@@ -287,7 +287,8 @@ class CryptoStore private constructor(
             val selfSigning = if (sender == state.userId && device != null) ownSelfSigning else null
             if (keysQuery != null && sender != null && device != null && state.secretsRevision != null) {
                 val result = trust.senderTrust(keysQuery.toString(), sender, device, ownSelfSigning)
-                saveTrustStore()
+                // Olm の更新・受信用鍵・処理済み ID と同じ行単位の保存に含める。
+                state.trustStore = trust.pickle(account, storageKey)
                 result
             } else selfSigning?.let { key ->
                 val signature =

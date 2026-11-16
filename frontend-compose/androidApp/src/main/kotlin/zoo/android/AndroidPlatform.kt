@@ -47,6 +47,7 @@ internal class AndroidPlatform(
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
     private val cache = AccountCache(cacheDirectory)
+    private val encryptionHistory = AccountCache(java.io.File(activity.noBackupFilesDir, "e2ee-channel-history/${hash("$base:$userId")}"))
     private val images = AndroidImageCache(cacheDirectory.resolve("images"))
     private val dictionaries = mutableMapOf<String, Row>()
 
@@ -62,6 +63,10 @@ internal class AndroidPlatform(
 
     override suspend fun headers() = auth.headers()
 
+    override suspend fun readEncryptionHistory(key: String): String? = withContext(Dispatchers.IO) { encryptionHistory.read(key) }
+
+    override suspend fun writeEncryptionHistory(key: String, value: String) = withContext(Dispatchers.IO) { encryptionHistory.write(key, value) }
+
     override suspend fun readCache(key: String): String? =
         withContext(Dispatchers.IO) { cache.read(key) }
 
@@ -76,6 +81,7 @@ internal class AndroidPlatform(
         // logout closes the session scope; deletion must still finish, off the UI thread.
         close()
         cache.clear()
+        encryptionHistory.clear()
         files.clear()
     }
 

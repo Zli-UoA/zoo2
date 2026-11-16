@@ -74,6 +74,10 @@ interface Platform {
 
     suspend fun headers(): Map<String, String>
 
+    suspend fun readEncryptionHistory(key: String): String? = readCache(key)
+
+    suspend fun writeEncryptionHistory(key: String, value: String) = writeCache(key, value)
+
     suspend fun readCache(key: String): String?
 
     suspend fun writeCache(key: String, value: String)

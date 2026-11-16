@@ -125,12 +125,8 @@ fun ChannelDialog(
                     put("description", description.trim())
                 }
             }
-            app.repo.channels.write(
-                app.api,
-                if (kind == "create") "/api/channels" else "/api/channels/${channel!!.text("id")}",
-                if (kind == "create") "POST" else "PATCH",
-                body,
-            )
+            if (kind == "create") app.createChannel(body)
+            else app.repo.channels.write(app.api, "/api/channels/${channel!!.text("id")}", "PATCH", body)
             dismiss()
         }
     }
@@ -139,21 +135,7 @@ fun ChannelDialog(
             val id =
                 created
                     ?: run {
-                        val response =
-                            app.api
-                                .request(
-                                    "/api/dms",
-                                    "POST",
-                                    buildJsonObject {
-                                        if (encrypted) put("encrypted", true)
-                                        put(
-                                            "target_user_ids",
-                                            JsonArray(selected.map(::JsonPrimitive)),
-                                        )
-                                    },
-                                )
-                                .jsonObject
-                        response.getValue("data").jsonObject.text("id")
+                        app.createDm(selected, encrypted)
                     }
             try {
                 withTimeout(8_000) {

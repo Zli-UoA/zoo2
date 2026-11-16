@@ -249,7 +249,8 @@ class AndroidMessageEncryption(
                 message.text("channel_id"), message.text("id"), message.text("parent_id").ifEmpty { null },
                 message.text("user_id"), message.text("kind").ifEmpty { "message" },
                 message.text("epoch").toULong(), message.text("revision").toULong(), ciphertext)) }
-            if (decrypted.revision != RevisionStatus.Latest) DecryptedBody(notice = "e2ee.undecryptable.invalid")
+            if (decrypted.revision is RevisionStatus.Stale) DecryptedBody(revision = MessageRevision.STALE)
+            else if (decrypted.revision == RevisionStatus.Conflict) DecryptedBody(revision = MessageRevision.CONFLICT)
             else DecryptedBody(decrypted.payload.content.body, when {
                 decrypted.origin == SessionOrigin.BACKUP -> "e2ee.sender.unauthenticated"
                 !decrypted.senderVerified -> "e2ee.sender.unverified"
