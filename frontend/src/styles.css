@@ -525,3 +525,18 @@ h5.mfm-heading {
 h6.mfm-heading {
   font-size: 0.9em;
 }
+
+/* Keep the real screen usable beside the tour, including on small viewports. */
+html[data-onboarding-active] [data-app-shell] {
+  height: calc(100dvh - var(--onboarding-panel-height, 240px));
+}
+.onboarding-target {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+@media (min-width: 768px) {
+  html[data-onboarding-active] [data-app-shell] {
+    width: calc(100% - 22rem);
+    height: 100dvh;
+  }
+}

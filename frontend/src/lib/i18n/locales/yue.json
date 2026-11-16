@@ -1638,28 +1638,30 @@
     "progress": "{{current}} / {{total}}",
     "welcome": {
       "title": "歡迎嚟到 Zoo",
-      "description": "用六個簡短步驟了解基本用法。你可以跳過，之後隨時撳導覽列嘅指南針掣重新開啟。"
+      "description": "一邊操作實際畫面，一邊認識 Zoo。撳下一步去頻道列表。可以跳過，之後用指南針掣重開。"
     },
     "channels": {
       "title": "搵頻道",
-      "description": "喺導覽列開啟頻道，再揀對話。你可以瀏覽同加入公開頻道。細螢幕上可以返頻道列表切換對話。"
+      "description": "喺框住嘅列表揀頻道。可以透過瀏覽頻道搵其他對話加入。"
     },
     "messages": {
       "title": "參與對話",
-      "description": "揀頻道，再喺訊息欄發文。喺討論串回覆可以集中相關話題，亦可以加表情回應。"
+      "description": "喺你揀嘅頻道，用框住嘅輸入欄發文。可以用討論串回覆，或者加表情回應。"
     },
     "notifications": {
       "title": "睇通知",
-      "description": "喺導覽列開啟通知，睇提及同回覆。揀通知就可以返到相關對話。"
+      "description": "而家係通知頁面。喺呢度睇提及同回覆，揀通知就可以開啟相關對話。"
     },
     "settings": {
       "title": "調整個人設定",
-      "description": "撳齒輪掣開啟設定，調整偏好。撳指南針掣就可以隨時重睇導覽。"
+      "description": "而家係一般設定。用框住嘅分頁調整顯示同操作。之後可以撳指南針掣重睇導覽。"
     },
     "slack": {
       "title": "連結 Slack",
-      "description": "喺設定嘅 Slack 連結頁面連結 Slack 帳戶，就可以將已匯入嘅舊貼文連到你嘅 Zoo 帳戶，亦可以匯入你建立嘅私人頻道。工作區要先啟用 Slack 連結。"
+      "description": "呢度係 Slack 設定。連結 Slack 帳戶可以將已匯入嘅舊貼文連到 Zoo，亦可以匯入你建立嘅私人頻道。工作區未設定嘅話，請聯絡管理員。"
     },
-    "openSlack": "設定 Slack 連結"
+    "title": "使用導覽",
+    "chooseChannel": "揀一個頻道就可以繼續。有需要可以喺瀏覽頻道加入。",
+    "navigationError": "開唔到頁面，請再試。"
   }
 }

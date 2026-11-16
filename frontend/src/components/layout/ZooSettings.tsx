@@ -95,6 +95,7 @@ export function ZooSettings() {
           className="flex w-full min-h-0 flex-col gap-4"
         >
           <Tabs.List
+            data-onboarding="settings"
             className="flex shrink-0 flex-wrap gap-1 rounded-lg bg-muted p-1"
             aria-label={t("settings.zooTitle")}
           >

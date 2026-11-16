@@ -302,13 +302,35 @@ function AppShellContent({ children }: { children: ReactNode }) {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const channelId = useRouterState({
+    select: (state) => {
+      const id = state.location.pathname.startsWith("/channels/")
+        ? state.location.pathname.split("/")[2]
+        : null;
+      return isUuid(id) ? id : null;
+    },
+  });
+  const lastChannel = useRef<string | null>(null);
+  useEffect(() => {
+    if (channelId) lastChannel.current = channelId;
+  }, [channelId]);
   const { currentUserId } = useCurrentUser();
   return (
     <OnboardingProvider
       key={currentUserId ?? "anonymous"}
       userId={currentUserId}
-      onOpenSlack={() => {
-        void router.navigate({ to: "/settings", search: { tab: "slack" } });
+      channelSelected={!!channelId}
+      onStepChange={async (step) => {
+        if (step === "welcome" || step === "channels") await router.navigate({ to: "/" });
+        if (step === "messages" && lastChannel.current)
+          await router.navigate({
+            to: "/channels/$channelId",
+            params: { channelId: lastChannel.current },
+          });
+        if (step === "notifications") await router.navigate({ to: "/notifications" });
+        if (step === "slack") await router.navigate({ to: "/settings", search: { tab: "slack" } });
+        if (step === "settings")
+          await router.navigate({ to: "/settings", search: { tab: "general" } });
       }}
     >
       <AppShellContent>{children}</AppShellContent>

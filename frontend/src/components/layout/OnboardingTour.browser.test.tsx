@@ -1,3 +1,5 @@
+import "../../styles.css";
+import { page } from "vite-plus/test/browser/context";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
@@ -21,15 +23,17 @@ it("persists skipping, reopens at the beginning, and isolates accounts", async (
   const view = render(tour("alice"));
   await userEvent.click(await screen.findByRole("button", { name: "次へ" }));
   await userEvent.click(screen.getByRole("button", { name: "スキップ" }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() =>
+    expect(screen.queryByRole("complementary", { name: "使い方ツアー" })).toBeNull(),
+  );
   expect(localStorage.getItem("zoo:onboarding:v1:alice")).toBe("done");
   view.unmount();
   const returning = render(tour("alice"));
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("complementary", { name: "使い方ツアー" })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "初期ツアーを開く" }));
   expect(await screen.findByRole("heading", { name: "Zooへようこそ" })).toBeVisible();
   returning.rerender(tour("bob"));
-  expect(await screen.findByRole("dialog")).toBeVisible();
+  expect(await screen.findByRole("complementary", { name: "使い方ツアー" })).toBeVisible();
   expect(localStorage.getItem("zoo:onboarding:v1:bob")).toBeNull();
 });
 it("can dismiss with Escape even when storage is blocked", async () => {
@@ -43,34 +47,107 @@ it("can dismiss with Escape even when storage is blocked", async () => {
   });
   try {
     render(tour("alice"));
-    await screen.findByRole("dialog");
+    await screen.findByRole("complementary", { name: "使い方ツアー" });
     await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("complementary", { name: "使い方ツアー" })).toBeNull(),
+    );
   } finally {
     vi.restoreAllMocks();
   }
 });
 it("does not open automatically before the account is known", () => {
   render(tour(null));
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("complementary", { name: "使い方ツアー" })).toBeNull();
 });
 
-it("offers Slack setup without starting OAuth during the tour", async () => {
-  const openSlack = vi.fn();
-  render(
+it("moves through real destinations, including Slack, and preserves the tour", async () => {
+  const navigate = vi.fn();
+  const view = render(
     <LocaleProvider>
-      <OnboardingProvider userId="alice" onOpenSlack={openSlack}>
+      <OnboardingProvider userId="alice" onStepChange={navigate} channelSelected={false}>
         <OnboardingButton />
       </OnboardingProvider>
     </LocaleProvider>,
   );
-  await screen.findByRole("dialog");
-  for (let i = 0; i < 4; i += 1)
+  await userEvent.click(await screen.findByRole("button", { name: "次へ" }));
+  expect(navigate).toHaveBeenLastCalledWith("channels");
+  expect(screen.getByRole("button", { name: "次へ" })).toBeDisabled();
+  view.rerender(
+    <LocaleProvider>
+      <OnboardingProvider userId="alice" onStepChange={navigate} channelSelected>
+        <OnboardingButton />
+      </OnboardingProvider>
+    </LocaleProvider>,
+  );
+  for (let i = 0; i < 3; i += 1)
     await userEvent.click(screen.getByRole("button", { name: "次へ" }));
-  expect(screen.getByRole("heading", { name: "Slackと連携する" })).toBeVisible();
-  expect(openSlack).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: "Slack連携を設定" }));
-  expect(openSlack).toHaveBeenCalledOnce();
-  expect(localStorage.getItem("zoo:onboarding:v1:alice")).toBe("done");
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(navigate.mock.calls.map(([step]) => step)).toEqual([
+    "channels",
+    "messages",
+    "notifications",
+    "slack",
+  ]);
+  expect(await screen.findByRole("heading", { name: "Slackと連携する" })).toBeVisible();
+  expect(localStorage.getItem("zoo:onboarding:v1:alice")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "戻る" }));
+  expect(navigate).toHaveBeenLastCalledWith("notifications");
+});
+it("keeps the current step when navigation fails and allows retrying", async () => {
+  const navigate = vi.fn().mockRejectedValueOnce(new Error("failed")).mockResolvedValue(undefined);
+  render(
+    <LocaleProvider>
+      <OnboardingProvider userId="alice" onStepChange={navigate}>
+        screen
+      </OnboardingProvider>
+    </LocaleProvider>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "次へ" }));
+  expect(await screen.findByRole("alert")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Zooへようこそ" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "次へ" }));
+  expect(await screen.findByRole("heading", { name: "チャンネルを探す" })).toBeVisible();
+});
+it("highlights the actual target while keeping it interactive and cleans up", async () => {
+  const action = vi.fn();
+  render(
+    <LocaleProvider>
+      <OnboardingProvider userId="alice">
+        <button data-onboarding="channels" onClick={action}>
+          Channel list
+        </button>
+      </OnboardingProvider>
+    </LocaleProvider>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: "次へ" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Channel list" })).toHaveClass("onboarding-target"),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Channel list" }));
+  expect(action).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button", { name: "スキップ" }));
+  await waitFor(() => expect(document.documentElement.dataset.onboardingActive).toBeUndefined());
+  expect(screen.getByRole("button", { name: "Channel list" })).not.toHaveClass("onboarding-target");
+});
+
+it("reserves space for the real screen beside or above the tour", async () => {
+  for (const width of [375, 1280]) {
+    await page.viewport(width, 800);
+    const view = render(
+      <LocaleProvider>
+        <OnboardingProvider userId="layout">
+          <div data-app-shell className="fixed inset-x-0 top-0 h-dvh w-full">
+            Actual screen
+          </div>
+        </OnboardingProvider>
+      </LocaleProvider>,
+    );
+    await waitFor(() => {
+      const screenBox = document.querySelector("[data-app-shell]")!.getBoundingClientRect();
+      const panelBox = document.querySelector("[data-onboarding-panel]")!.getBoundingClientRect();
+      if (width < 768) expect(screenBox.bottom).toBeLessThanOrEqual(panelBox.top);
+      else expect(screenBox.right).toBeLessThanOrEqual(panelBox.left);
+    });
+    view.unmount();
+  }
 });
