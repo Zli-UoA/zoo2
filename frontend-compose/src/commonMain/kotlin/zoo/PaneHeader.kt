@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun PaneHeader(
     modifier: Modifier = Modifier,
-    horizontalPadding: Dp = 16.dp,
+    horizontalPadding: Dp = if (LocalTouchUi.current) 12.dp else 16.dp,
     content: @Composable RowScope.() -> Unit,
 ) {
     val platform = LocalWebPlatform.current

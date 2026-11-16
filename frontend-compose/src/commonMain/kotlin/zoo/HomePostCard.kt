@@ -35,9 +35,9 @@ fun HomePostCard(
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
             .then(if (!editing) Modifier.nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null) else Modifier)
-            .padding(horizontal = if (LocalTouchUi.current) 12.dp else 16.dp,
-                vertical = if (LocalTouchUi.current) 10.dp else 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = if (LocalTouchUi.current) 8.dp else 16.dp,
+                vertical = if (LocalTouchUi.current) 6.dp else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
             val parent = post["parent"] as? Row
@@ -61,7 +61,7 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp)) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
             NativeLink(profile) {
                 val people by app.repo.users.rows.collectAsState()
@@ -75,7 +75,7 @@ fun HomePostCard(
                     post.text("display_name").ifEmpty { post.text("user_name") },
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),

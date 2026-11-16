@@ -116,6 +116,7 @@ private fun OverlayCard(slot: OverlaySlot) {
     var cardHasFocus by remember { mutableStateOf(false) }
     var measured by remember { mutableStateOf(IntSize.Zero) }
     var bounds by remember { mutableStateOf(Rect.Zero) }
+    var hostOrigin by remember { mutableStateOf(Offset.Zero) }
     // Request the popup surface, never its fullscreen backdrop. Keep this effect before
     // composing the body so a body's initial field-focus effect can take focus afterwards.
     LaunchedEffect(slot) {
@@ -173,11 +174,13 @@ private fun OverlayCard(slot: OverlaySlot) {
             .then(retained)
             .then(retentionFocus)
             .background(backdrop)
+            .onGloballyPositioned { hostOrigin = it.positionInRoot() }
             .then(input)
     ) {
         val screenWidth = maxWidth
         val screenHeight = maxHeight
-        val anchor = slot.anchor
+        // Triggers use root coordinates; system bars and banners can inset this host.
+        val anchor = slot.anchor?.translate(-hostOrigin)
         // Base UI prefers the top side, then flips when the lower side has more room.
         // Keep the arrow aimed at the trigger when viewport collision shifts the popup.
         val popupWidth = with(density) { measured.width.toDp() }
@@ -219,7 +222,12 @@ private fun OverlayCard(slot: OverlaySlot) {
                         else anchor.left.toDp()
                     val top =
                         if (slot.placementAbove) anchor.top.toDp() - measured.height.toDp() - 4.dp
-                        else anchor.bottom.toDp() + slot.anchorOffset
+                        else {
+                            val below = anchor.bottom.toDp() + slot.anchorOffset
+                            val above = anchor.top.toDp() - popupHeight - 4.dp
+                            if (below + popupHeight > screenHeight - 8.dp && above >= 8.dp) above
+                            else below
+                        }
                     Modifier.offset(
                         left.coerceIn(
                             8.dp,
