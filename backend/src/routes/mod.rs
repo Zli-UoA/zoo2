@@ -18,6 +18,7 @@ pub mod home_images;
 pub mod home_live;
 pub mod messages;
 pub mod notifications;
+pub mod pbx;
 pub mod phone_sessions;
 pub mod push;
 pub mod read_states;
@@ -119,6 +120,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(calls::router())
         .merge(sip::router())
         .merge(phone_sessions::router())
+        .merge(pbx::router())
         .merge(notifications::router())
         .merge(push::router())
         .merge(read_states::router())
