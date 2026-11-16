@@ -3,6 +3,7 @@ package zoo.android.update
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.annotation.Keep
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -92,6 +93,20 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
             )
             if (process.exitValue() == 0 && result.lineSequence().any { it == "Success" }) "Success"
             else "インストールできませんでした: ${result.take(1000)}"
+        } catch (failure: IOException) {
+            // pm may reject the install before consuming stdin. Preserve its
+            // diagnostic instead of sending an IOException through Binder.
+            val exited = process.waitFor(5, TimeUnit.SECONDS)
+            if (!exited) process.destroyForcibly()
+            reader.join(5000)
+            val result = output.toString(Charsets.UTF_8.name()).trim().take(1000)
+            val exit = if (exited) process.exitValue().toString() else "timeout"
+            Log.e(
+                "ZooUpdaterService",
+                "Install transfer failed: exit=$exit, output=$result",
+                failure,
+            )
+            "インストールできませんでした: ${result.ifBlank { failure.toString() }} (exit=$exit)"
         } catch (failure: Exception) {
             Log.e("ZooUpdaterService", "Install failed", failure)
             throw failure
