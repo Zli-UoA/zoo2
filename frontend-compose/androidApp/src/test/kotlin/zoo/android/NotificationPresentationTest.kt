@@ -3,6 +3,7 @@ package zoo.android
 import android.app.Notification
 import android.graphics.Bitmap
 import android.os.Build
+import android.os.Bundle
 import kotlin.test.*
 import kotlinx.serialization.json.JsonArray
 import org.junit.runner.RunWith
@@ -29,20 +30,25 @@ class NotificationPresentationTest {
     )
 
     @Test fun messageStylePreservesSenderTimestampBodyAndDmIdentity() {
+        val context = RuntimeEnvironment.getApplication<android.app.Application>()
+        // MessagingStyle infers group conversations from titles for target SDK < 28.
+        context.applicationInfo.targetSdkVersion = 35
         for (dm in listOf(false, true)) {
             val row = row(if (dm) "dm" else "mention", dm = dm)
             val avatar = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
             val body = notificationBody(row) { _, _ -> error("Message should use its content") }
             val style = notificationStyle(row, body, "Me", avatar) as Notification.MessagingStyle
-            val notification = Notification.Builder(RuntimeEnvironment.getApplication(), "test")
+            val notification = Notification.Builder(context, "test")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setStyle(style).build()
             assertEquals(style.conversationTitle,
                 notification.extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE))
             if (dm && Build.VERSION.SDK_INT < 28) assertNull(style.conversationTitle)
             else assertEquals("general", style.conversationTitle.toString())
-            val message = Notification.MessagingStyle.Message.getMessagesFromBundleArray(
-                notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)).single()
+            val message = style.messages.single()
+            val serialized = notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)?.single() as Bundle
+            assertEquals(message.text, serialized.getCharSequence("text"))
+            assertEquals(message.timestamp, serialized.getLong("time"))
             assertEquals("長いメッセージ\n二行目", message.text.toString())
             assertEquals(timestampMillis(row.text("created_at")), message.timestamp)
             assertEquals("Alice", message.sender.toString())
