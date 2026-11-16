@@ -1,5 +1,5 @@
 import type { ApiClient } from "../api/client";
-import type { SipCredentials, SipState } from "./types";
+import type { PhoneConnection, SipState } from "./types";
 
 export interface SipDriver {
   connect(this: void): Promise<void>;
@@ -18,7 +18,7 @@ export interface SipEvents {
   disconnected(this: void): void;
 }
 export type SipDriverFactory = (
-  credentials: SipCredentials,
+  credentials: PhoneConnection,
   events: SipEvents,
 ) => Promise<SipDriver>;
 export const initialSipState: SipState = {
@@ -29,15 +29,14 @@ export const initialSipState: SipState = {
   error: false,
   peer: "",
 };
-export function dialTarget(number: string, domain: string): string {
-  if (!/^\+?\d{1,32}$/.test(number) || !/^[a-zA-Z0-9._-]{1,128}$/.test(domain)) {
-    throw new Error("Invalid telephone number");
-  }
-  return `sip:${number}@${domain}`;
+export function dialTarget(number: string): string {
+  const target = number.trim();
+  if (!/^\+?\d{1,32}$/.test(target)) throw new Error("Invalid telephone number");
+  return target;
 }
 
 /** One transport/registration for the selected line, shared by the entire shell.
- * Secrets live only in the driver's memory. Generations dispose late connects after logout.
+ * The gateway session is owned by the authenticated user. Generations dispose late connects after logout.
  */
 export class SipController {
   private state: SipState = initialSipState;
@@ -46,7 +45,6 @@ export class SipController {
   private generation = 0;
   private abort: AbortController | null = null;
   private registrationTimeout: ReturnType<typeof setTimeout> | undefined;
-  private domain = "";
   private revision = "";
   constructor(
     private api: ApiClient,
@@ -74,7 +72,6 @@ export class SipController {
     this.abort = null;
     const driver = this.driver;
     this.driver = null;
-    this.domain = "";
     this.set({ ...initialSipState });
     if (driver) void driver.disconnect().catch(() => {});
   };
@@ -91,7 +88,7 @@ export class SipController {
       }
     }, 15000);
     try {
-      const { data } = await this.api.post<SipCredentials>(
+      const { data } = await this.api.post<PhoneConnection>(
         `/api/sip/lines/${encodeURIComponent(lineId)}/connect`,
         undefined,
         { signal: abort.signal },
@@ -126,7 +123,6 @@ export class SipController {
         return;
       }
       this.driver = driver;
-      this.domain = data.sip_domain;
       this.revision = data.revision;
       await driver.connect();
     } catch {
@@ -150,7 +146,7 @@ export class SipController {
   }
   private async authorize() {
     if (!this.state.lineId) throw new Error("Not connected");
-    // Recheck membership before using cached PBX credentials to place/answer a call.
+    // Recheck the displayed line revision; the server also authorizes every gateway command.
     const generation = this.generation;
     try {
       const { data } = await this.api.post<{ revision: string }>(
@@ -173,7 +169,7 @@ export class SipController {
     if (this.state.status !== "ready") return;
     let target: string;
     try {
-      target = dialTarget(number.trim(), this.domain);
+      target = dialTarget(number);
     } catch {
       this.set({ error: true });
       return;

@@ -1,4 +1,5 @@
 export interface SipPhone {
+  id?: string;
   name: string;
   extension: string;
 }
@@ -31,14 +32,14 @@ export interface SipLineInput {
   member_ids: string[];
   phones: SipPhone[];
 }
-export interface SipCredentials {
-  websocket_path: string;
-  sip_domain: string;
-  username: string;
-  password: string;
+export interface PhoneConnection {
+  relay_only?: boolean;
+  session_id: string;
+  peer_id: string;
   ice_servers: RTCIceServer[];
   revision: string;
 }
+
 export type SipStatus = "offline" | "connecting" | "ready" | "dialing" | "incoming" | "active";
 export interface SipState {
   status: SipStatus;

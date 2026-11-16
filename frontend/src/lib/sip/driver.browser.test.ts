@@ -1,76 +1,139 @@
-import { expect, it, vi } from "vite-plus/test";
-import type { Web } from "sip.js";
-import { createSipDriver } from "./driver";
-const mocks = vi.hoisted(() => ({
-  media: vi.fn(),
-  factory: undefined as Web.MediaStreamFactory | undefined,
-  stop: vi.fn(async () => {}),
-}));
-vi.mock("sip.js", () => ({
-  Web: {
-    defaultMediaStreamFactory: () => mocks.media,
-    defaultSessionDescriptionHandlerFactory: (factory: Web.MediaStreamFactory) => {
-      mocks.factory = factory;
-      return vi.fn();
-    },
-    SimpleUser: class {
-      delegate: unknown;
-      localMediaStream = undefined;
-      disconnect = mocks.stop;
-    },
-  },
-}));
-it("stops a microphone stream that arrives after logout/disconnect", async () => {
+import { afterEach, expect, it, vi } from "vite-plus/test";
+import type { ApiClient } from "../api/client";
+import type { AppConfig } from "../config";
+import { createPhoneDriverFactory } from "./driver";
+
+const connection = {
+  session_id: "00000000-0000-4000-8000-000000000001",
+  peer_id: "00000000-0000-4000-8000-000000000002",
+  ice_servers: [],
+  revision: "v1",
+};
+const cleanup: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+  vi.restoreAllMocks();
+});
+async function fixture(relayOnly = true) {
   const audio = new AudioContext();
-  const stream = audio.createMediaStreamDestination().stream;
-  const [track] = stream.getAudioTracks();
+  const source = audio.createMediaStreamDestination().stream;
+  const original = window.RTCPeerConnection;
+  const server = new original();
+  server.addTrack(source.getAudioTracks()[0], source);
+  const peers: RTCPeerConnection[] = [];
+  vi.spyOn(window, "RTCPeerConnection").mockImplementation(function (config) {
+    const peer = new original(config);
+    peers.push(peer);
+    return peer;
+  });
+  const mic = vi
+    .spyOn(navigator.mediaDevices, "getUserMedia")
+    .mockImplementation(async () => new MediaStream(source.getAudioTracks().map((t) => t.clone())));
+  let output!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      output = controller;
+    },
+  });
+  const send = (event: string, data: unknown = {}) =>
+    output.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+  vi.spyOn(window, "fetch").mockResolvedValue(
+    new Response(stream, { headers: { "Content-Type": "text/event-stream" } }),
+  );
+  const post = vi.fn(async (_path: string, body: unknown) => {
+    const command = body as { action: string; signal?: RTCSessionDescriptionInit };
+    if (command.action === "call") {
+      await server.setRemoteDescription(command.signal!);
+      const answer = await server.createAnswer();
+      await server.setLocalDescription(answer);
+      send("signal", { from_session_id: connection.peer_id, signal: answer });
+      send("accepted");
+    } else if (command.action === "accept") {
+      await server.setRemoteDescription(command.signal!);
+      send("accepted");
+    } else if (command.action === "hangup" || command.action === "decline") send("ended");
+    return { data: {}, txid: null };
+  });
+  const events = {
+    ready: vi.fn(),
+    incoming: vi.fn(),
+    answered: vi.fn(),
+    ended: vi.fn(),
+    disconnected: vi.fn(),
+  };
+  const driver = await createPhoneDriverFactory(
+    { post } as unknown as ApiClient,
+    { apiBaseUrl: "https://zoo.test", devUserId: "alice" } as AppConfig,
+  )({ ...connection, relay_only: relayOnly }, events);
+  cleanup.push(async () => {
+    await driver.disconnect();
+    server.close();
+    source.getTracks().forEach((t) => t.stop());
+    await audio.close();
+  });
+  await driver.connect();
+  send("registered");
+  await vi.waitFor(() => expect(events.ready).toHaveBeenCalledOnce());
+  const connected = () => {
+    Object.defineProperty(peers[0], "connectionState", { value: "connected", configurable: true });
+    peers[0].dispatchEvent(new Event("connectionstatechange"));
+  };
+  return { driver, events, mic, server, send, post, connected, audio, peers };
+}
+it("uses HTTP/SSE and shared audio-only WebRTC, without capturing while registered", async () => {
+  const f = await fixture();
+  expect(f.mic).not.toHaveBeenCalled();
+  await f.driver.call("101");
+  expect(f.peers[0].getConfiguration().iceTransportPolicy).toBe("relay");
+  const command = f.post.mock.calls.find(
+    ([, body]) => (body as { action: string }).action === "call",
+  )![1];
+  expect(command).toMatchObject({ action: "call", number: "101", signal: { type: "offer" } });
+  expect(JSON.stringify(command)).not.toMatch(/password|authorizationPassword|sip:/);
+  expect(f.events.answered).not.toHaveBeenCalled();
+  f.connected();
+  await vi.waitFor(() => expect(f.events.answered).toHaveBeenCalledOnce());
+  f.driver.mute(true);
+  await f.driver.hangup();
+  expect(f.events.ended).toHaveBeenCalledOnce();
+});
+it("defers incoming capture until answer and negotiates the gateway offer", async () => {
+  const f = await fixture();
+  const offer = await f.server.createOffer();
+  await f.server.setLocalDescription(offer);
+  f.send("incoming", { signal: offer });
+  await vi.waitFor(() => expect(f.events.incoming).toHaveBeenCalledOnce());
+  expect(f.mic).not.toHaveBeenCalled();
+  await f.driver.answer();
+  expect(
+    f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "accept"),
+  ).toBe(true);
+  f.connected();
+  await vi.waitFor(() => expect(f.events.answered).toHaveBeenCalledOnce());
+});
+it("stops capture returned after disconnect without placing an external call", async () => {
+  const f = await fixture();
+  const late = f.audio.createMediaStreamDestination().stream;
   let finish!: (stream: MediaStream) => void;
-  mocks.media.mockImplementation(
+  f.mic.mockImplementation(
     () =>
       new Promise((resolve) => {
         finish = resolve;
       }),
   );
-  const driver = await createSipDriver(
-    {
-      websocket_path: "/sip/ws",
-      sip_domain: "pbx.example",
-      username: "alice",
-      password: "dummy",
-      ice_servers: [],
-      revision: "v1",
-    },
-    { ready: vi.fn(), incoming: vi.fn(), answered: vi.fn(), ended: vi.fn(), disconnected: vi.fn() },
+  const dialing = f.driver.call("101");
+  await f.driver.disconnect();
+  finish(late);
+  await dialing;
+  expect(late.getTracks().every((t) => t.readyState === "ended")).toBe(true);
+  expect(f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "call")).toBe(
+    false,
   );
-  const acquiring = mocks.factory!(
-    { audio: true, video: false },
-    {} as Web.SessionDescriptionHandler,
-  );
-  await driver.disconnect();
-  finish(stream);
-  await expect(acquiring).rejects.toThrow("SIP disconnected");
-  expect(track.readyState).toBe("ended");
-  expect(mocks.stop).toHaveBeenCalledOnce();
-  await audio.close();
 });
-it("rejects a cross-origin transport before creating an account", async () => {
-  await expect(
-    createSipDriver(
-      {
-        websocket_path: "https://other.example/sip/ws",
-        sip_domain: "pbx.example",
-        username: "alice",
-        password: "dummy",
-        ice_servers: [],
-        revision: "v1",
-      },
-      {
-        ready: vi.fn(),
-        incoming: vi.fn(),
-        answered: vi.fn(),
-        ended: vi.fn(),
-        disconnected: vi.fn(),
-      },
-    ),
-  ).rejects.toThrow("Invalid SIP WebSocket path");
+
+it("supports direct WebRTC within the backend LAN without TURN", async () => {
+  const f = await fixture(false);
+  await f.driver.call("101");
+  expect(f.peers[0].getConfiguration().iceTransportPolicy).toBe("all");
+  expect(f.peers[0].getConfiguration().iceServers).toEqual([]);
 });

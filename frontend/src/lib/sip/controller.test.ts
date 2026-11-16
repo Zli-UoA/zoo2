@@ -1,12 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { ApiClient } from "../api/client";
 import { SipController, dialTarget, type SipDriver, type SipEvents } from "./controller";
-import type { SipCredentials } from "./types";
-const credentials: SipCredentials = {
-  websocket_path: "/sip/ws",
-  sip_domain: "pbx.example",
-  username: "alice",
-  password: "dummy",
+import type { PhoneConnection } from "./types";
+const credentials: PhoneConnection = {
+  session_id: "00000000-0000-4000-8000-000000000001",
+  peer_id: "00000000-0000-4000-8000-000000000002",
   revision: "v1",
   ice_servers: [],
 };
@@ -28,7 +26,7 @@ function setup() {
     dtmf: vi.fn(async () => {}),
   };
   const post = vi.fn(async () => ({ data: credentials, txid: null }));
-  const factory = vi.fn(async (_: SipCredentials, e: SipEvents) => {
+  const factory = vi.fn(async (_: PhoneConnection, e: SipEvents) => {
     events = e;
     return driver;
   });
@@ -37,7 +35,7 @@ function setup() {
 }
 describe("SIP controller", () => {
   it("restricts dial strings to numbers on the configured PBX", () => {
-    expect(dialTarget("+81312345678", "pbx.example")).toBe("sip:+81312345678@pbx.example");
+    expect(dialTarget("+81312345678")).toBe("+81312345678");
     for (const n of [
       "",
       "+",
@@ -47,8 +45,7 @@ describe("SIP controller", () => {
       "*98",
       "1".repeat(33),
     ])
-      expect(() => dialTarget(n, "pbx.example")).toThrow();
-    expect(() => dialTarget("123", "pbx.example;foo")).toThrow();
+      expect(() => dialTarget(n)).toThrow();
   });
   it("shares one transport and supports dial, mute, DTMF and hangup", async () => {
     const s = setup();
@@ -56,7 +53,7 @@ describe("SIP controller", () => {
     expect(s.controller.snapshot().status).toBe("ready");
     await s.controller.dial("101");
     expect(s.post).toHaveBeenCalledTimes(2);
-    expect(s.driver.call).toHaveBeenCalledWith("sip:101@pbx.example");
+    expect(s.driver.call).toHaveBeenCalledWith("101");
     s.events().answered();
     s.controller.toggleMute();
     expect(s.driver.mute).toHaveBeenCalledWith(true);
@@ -81,7 +78,7 @@ describe("SIP controller", () => {
   });
   it("drops a delayed credential response after logout or account switch", async () => {
     const s = setup();
-    let finish!: (value: { data: SipCredentials; txid: null }) => void;
+    let finish!: (value: { data: PhoneConnection; txid: null }) => void;
     s.post.mockImplementationOnce(
       () =>
         new Promise((resolve) => {

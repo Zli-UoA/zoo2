@@ -1,89 +1,257 @@
+import type { ApiClient } from "../api/client";
+import type { AppConfig } from "../config";
+import { AudioCallMedia } from "../call/audio-media";
+import { acquireCallMicrophone } from "../call/rtc-audio";
+import { openCallStream, readCallEvents } from "../call/signaling";
 import { applySink, loadSelectedDevice } from "../call/call-devices";
 import type { SipDriverFactory } from "./controller";
 
-/** Loaded on explicit connection only. SIP messages and configuration must never enter logs. */
-export const createSipDriver: SipDriverFactory = async (credentials, events) => {
-  const { Web } = await import("sip.js");
-  const audio = document.createElement("audio");
-  audio.autoplay = true;
-  await applySink(audio, loadSelectedDevice("speaker"));
-  let stopped = false;
-  const url = new URL(credentials.websocket_path, window.location.origin);
-  if (url.origin !== window.location.origin || !url.pathname.startsWith("/sip/"))
-    throw new Error("Invalid SIP WebSocket path");
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  const user = new Web.SimpleUser(url.href, {
-    aor: `sip:${credentials.username}@${credentials.sip_domain}`,
-    reconnectionAttempts: 0,
-    registererOptions: { expires: 120, logConfiguration: false },
-    media: { constraints: { audio: true, video: false }, remote: { audio } },
-    userAgentOptions: {
-      sessionDescriptionHandlerFactory: Web.defaultSessionDescriptionHandlerFactory(
-        async (constraints, handler) => {
-          const mic = loadSelectedDevice("mic");
-          const stream = await Web.defaultMediaStreamFactory()(
-            {
-              ...constraints,
-              audio: constraints.audio && mic ? { deviceId: { ideal: mic } } : constraints.audio,
-            },
-            handler,
-          );
-          if (stopped) {
-            stream.getTracks().forEach((track) => track.stop());
-            throw new Error("SIP disconnected");
-          }
-          return stream;
-        },
-      ),
-      authorizationUsername: credentials.username,
-      authorizationPassword: credentials.password,
-      logBuiltinEnabled: false,
-      logConfiguration: false,
-      transportOptions: { traceSip: false },
-      sessionDescriptionHandlerFactoryOptions: {
-        peerConnectionConfiguration: {
-          iceServers: credentials.ice_servers,
-          iceTransportPolicy: "relay",
-        },
-        iceGatheringTimeout: 8000,
-      },
-    },
-    delegate: {
-      onRegistered: events.ready,
-      onUnregistered: events.disconnected,
-      onServerDisconnect: events.disconnected,
-      onCallReceived: events.incoming,
-      onCallAnswered: () => {
-        void audio.play().catch(() => {});
-        events.answered();
-      },
-      onCallHangup: events.ended,
-    },
-    sendDTMFUsingSessionDescriptionHandler: true,
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<void>((yes, no) => {
+    resolve = yes;
+    reject = no;
   });
-  return {
-    connect: async () => {
-      await user.connect();
-      await user.register();
-    },
-    disconnect: async () => {
-      // Disable callbacks before teardown; disconnect also disposes sessions/media.
-      stopped = true;
-      user.delegate = undefined;
-      user.localMediaStream?.getTracks().forEach((track) => track.stop());
-      audio.pause();
-      audio.srcObject = null;
-      await user.disconnect();
-    },
-    call: async (target) => {
-      await user.call(target);
-    },
-    answer: () => user.answer(),
-    hangup: () => user.hangup(),
-    mute: (muted) => {
-      if (muted) user.mute();
-      else user.unmute();
-    },
-    dtmf: (tone) => user.sendDTMF(tone),
+  // Calls can be cancelled while a microphone permission prompt is pending.
+  void promise.catch(() => {});
+  return { promise, resolve, reject };
+}
+
+/** Plain authenticated HTTP/SSE and the same WebRTC audio core as ordinary calls. */
+export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): SipDriverFactory {
+  return async (connection, events) => {
+    if (!/^[a-f0-9-]{36}$/.test(connection.session_id) || !connection.peer_id)
+      throw new Error("Invalid phone connection");
+    const path = `/api/phone/sessions/${encodeURIComponent(connection.session_id)}`;
+    const abort = new AbortController();
+    let closed = false;
+    let generation = 0;
+    let media: AudioCallMedia | null = null;
+    let incoming: Record<string, unknown> | null = null;
+    let accepted = false;
+    let connected = false;
+    let notified = false;
+    let descriptionSent = false;
+    let description: ReturnType<typeof deferred> | null = null;
+    let callNumber = "";
+    let candidates: unknown[] = [];
+    let earlySignals: Record<string, unknown>[] = [];
+    let queue: Promise<unknown> = Promise.resolve();
+    let ending: ReturnType<typeof deferred> | null = null;
+    const active = () => {
+      if (accepted && connected && !notified && !closed) {
+        notified = true;
+        events.answered();
+      }
+    };
+    const stopMedia = () => {
+      ++generation;
+      media?.close();
+      media = null;
+      candidates = [];
+      earlySignals = [];
+      callNumber = "";
+      description?.reject(new Error("Phone call ended"));
+      description = null;
+      accepted = false;
+      connected = false;
+      notified = false;
+      descriptionSent = false;
+    };
+    const disconnect = async () => {
+      if (closed) return;
+      closed = true;
+      abort.abort();
+      stopMedia();
+      incoming = null;
+      ending?.resolve();
+      ending = null;
+      const body = { action: "disconnect" };
+      if (api.keepalive) await api.keepalive(`${path}/command`, body).catch(() => {});
+      else await api.post(`${path}/command`, body, { keepalive: true }).catch(() => {});
+    };
+    const fail = () => {
+      if (!closed) {
+        void disconnect();
+        events.disconnected();
+      }
+    };
+    const send = (body: Record<string, unknown>, mine?: number) => {
+      const request = queue.then(async () => {
+        if (closed || (mine !== undefined && mine !== generation)) return;
+        await api.post(`${path}/command`, body, { signal: abort.signal });
+      });
+      queue = request.catch(() => {});
+      return request;
+    };
+    const signal = (value: Record<string, unknown>, mine: number) => {
+      const rtc = value.signal as Record<string, unknown>;
+      if (mine !== generation || closed) return;
+      if (rtc.type === "candidate") {
+        if (!descriptionSent) {
+          if (candidates.length >= 128) {
+            fail();
+            return;
+          }
+          candidates.push(rtc);
+        } else void send({ action: "candidate", signal: rtc }, mine).catch(fail);
+      } else if (rtc.type === "offer" || rtc.type === "answer") {
+        const done = description;
+        void send(
+          {
+            action: rtc.type === "offer" ? "call" : "accept",
+            ...(rtc.type === "offer" ? { number: callNumber } : {}),
+            signal: rtc,
+          },
+          mine,
+        )
+          .then(() => {
+            if (mine !== generation || closed) return;
+            descriptionSent = true;
+            for (const candidate of candidates.splice(0))
+              void send({ action: "candidate", signal: candidate }, mine).catch(fail);
+            done?.resolve();
+          })
+          .catch(() => {
+            done?.reject(new Error("Phone operation failed"));
+            fail();
+          });
+      }
+    };
+    const start = async (number?: string) => {
+      if (closed || media) throw new Error("Phone call unavailable");
+      const mine = ++generation;
+      const offer = incoming;
+      callNumber = number ?? "";
+      accepted = false;
+      connected = false;
+      notified = false;
+      descriptionSent = false;
+      candidates = [];
+      description = deferred();
+      const done = description;
+      const next = new AudioCallMedia(
+        connection.session_id,
+        connection.ice_servers,
+        (event, payload) => {
+          if (mine !== generation || closed) return;
+          if (event === "signal") signal(payload as Record<string, unknown>, mine);
+          else if (event === "connected") {
+            connected = true;
+            active();
+          } else if (event === "failed") fail();
+        },
+        async () => (await acquireCallMicrophone(loadSelectedDevice("mic"))).stream,
+        connection.relay_only !== false,
+        async (audio) => {
+          await applySink(audio, loadSelectedDevice("speaker"));
+        },
+      );
+      media = next;
+      try {
+        await next.start();
+        if (mine !== generation || closed) return;
+        await next.event("room_state", {
+          participants: [{ session_id: connection.peer_id }],
+          offerer_session_id: number ? connection.session_id : connection.peer_id,
+        });
+        if (offer)
+          await next.event("signal", { from_session_id: connection.peer_id, signal: offer });
+        for (const pending of earlySignals.splice(0)) await next.event("signal", pending);
+        let timeout!: ReturnType<typeof setTimeout>;
+        try {
+          await Promise.race([
+            done.promise,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error("Phone signaling timed out")), 15000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch (error) {
+        if (mine === generation) stopMedia();
+        throw error;
+      }
+    };
+    return {
+      connect: async () => {
+        const response = await openCallStream(config, `${path}/stream`, {
+          signal: abort.signal,
+          method: "POST",
+        });
+        if (!response.ok) throw new Error("Phone stream unavailable");
+        void (async () => {
+          for await (const { eventType, data } of readCallEvents(response)) {
+            if (closed) return;
+            if (eventType === "registered") events.ready();
+            else if (eventType === "incoming") {
+              if (!media && !incoming) {
+                incoming = data.signal as Record<string, unknown>;
+                events.incoming();
+              }
+            } else if (eventType === "signal") {
+              if (media) await media.event("signal", data);
+              else if (incoming) {
+                if (earlySignals.length >= 128) throw new Error("Too many phone signals");
+                earlySignals.push(data);
+              }
+            } else if (eventType === "accepted") {
+              incoming = null;
+              accepted = true;
+              active();
+            } else if (eventType === "ended") {
+              stopMedia();
+              incoming = null;
+              ending?.resolve();
+              ending = null;
+              events.ended();
+            } else if (eventType === "disconnected") {
+              fail();
+              return;
+            }
+          }
+          if (!closed) fail();
+        })().catch(() => {
+          if (!closed) fail();
+        });
+      },
+      disconnect,
+      call: (number) => start(number),
+      answer: () => {
+        if (!incoming) return Promise.reject(new Error("Phone invitation ended"));
+        return start();
+      },
+      hangup: async () => {
+        if (closed || (!media && !incoming)) return;
+        const decline = !media && incoming !== null;
+        if (media && !descriptionSent) {
+          // Wait for the queued description before sending its hangup.
+          await description?.promise.catch(() => {});
+          if (closed) return;
+        }
+        ending = deferred();
+        const done = ending;
+        media?.close();
+        await send({ action: decline ? "decline" : "hangup" });
+        let timeout!: ReturnType<typeof setTimeout>;
+        try {
+          await Promise.race([
+            done.promise,
+            new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error("Phone hangup timed out")), 5000);
+            }),
+          ]);
+        } catch (error) {
+          fail();
+          throw error;
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+      mute: (muted) => media?.mute(muted),
+      dtmf: (tone) => send({ action: "dtmf", tone }).then(() => undefined),
+    };
   };
-};
+}

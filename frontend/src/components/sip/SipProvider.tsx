@@ -13,7 +13,7 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import { subscribeAuthSessionEnded } from "../../lib/auth";
 import type { AppConfig } from "../../lib/config";
 import { SipController, initialSipState } from "../../lib/sip/controller";
-import { createSipDriver } from "../../lib/sip/driver";
+import { createPhoneDriverFactory } from "../../lib/sip/driver";
 import type { SipDirectory, SipLineInput } from "../../lib/sip/types";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { startRingtone } from "../../lib/call/call-sounds";
@@ -34,7 +34,10 @@ interface SipContextValue {
 const SipContext = createContext<SipContextValue | null>(null);
 export function SipProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
   const api = useMemo(() => createConfiguredApiClient(config), [config]);
-  const controller = useMemo(() => new SipController(api, createSipDriver), [api]);
+  const controller = useMemo(
+    () => new SipController(api, createPhoneDriverFactory(api, config)),
+    [api, config],
+  );
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.snapshot,

@@ -17,7 +17,7 @@ vi.mock("../../lib/api/client", () => ({
 vi.mock("../../hooks/useCurrentUser", () => ({ useCurrentUser: () => mocks.user }));
 vi.mock("../../lib/call/call-context", () => ({ useCall: () => mocks.call }));
 vi.mock("../../lib/sip/driver", () => ({
-  createSipDriver: async (_c: unknown, events: { ready(): void }) => ({
+  createPhoneDriverFactory: () => async (_c: unknown, events: { ready(): void }) => ({
     connect: async () => events.ready(),
     disconnect: mocks.disconnect,
   }),
