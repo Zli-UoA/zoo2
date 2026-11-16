@@ -151,6 +151,14 @@ impl Core {
         self.config.as_ref().ok().map(|c| c.api_base_url.as_str())
     }
 
+    /// OIDC の発行者 (`https://account.zli.works/...` など)。dev ログインや設定のエラーでは None。
+    pub fn oidc_issuer(&self) -> Option<&str> {
+        match &self.config.as_ref().ok()?.auth {
+            AuthConfig::Oidc(oidc) => Some(oidc.issuer.as_str()),
+            AuthConfig::Dev { .. } => None,
+        }
+    }
+
     fn info(&self, state: &SessionState) -> SessionInfo {
         SessionInfo {
             protocol: PROTOCOL_VERSION,
