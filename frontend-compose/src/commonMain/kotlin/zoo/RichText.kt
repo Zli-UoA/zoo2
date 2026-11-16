@@ -389,8 +389,10 @@ private fun InlineParagraphContent(
             val width = if (maximum.isSp && maximum.value.isFinite())
                 minOf(estimate.value, maximum.value).coerceAtLeast(1f).sp else estimate
             val height = measured?.let { with(density) { it.height.toSp() } } ?: 20.sp
+            val ruby = source.startsWith("$[") && mfmFunction(source.drop(2).dropLast(1)).name == "ruby"
             androidx.compose.foundation.text.InlineTextContent(
-                Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)
+                Placeholder(width, height,
+                    if (ruby) PlaceholderVerticalAlign.TextBottom else PlaceholderVerticalAlign.TextCenter)
             ) {
                 MeasuredInlineContent(availableWidth, { if (sizes[id] != it) sizes[id] = it }) {
                     CompositionLocalProvider(

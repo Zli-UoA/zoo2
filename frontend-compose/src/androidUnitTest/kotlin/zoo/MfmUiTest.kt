@@ -91,6 +91,11 @@ class MfmUiTest {
             val readingLayout = layout(reading)
             assertTrue(readingLayout.layoutInput.style.fontSize < baseLayout.layoutInput.style.fontSize)
             assertTrue(reading.fetchSemanticsNode().boundsInRoot.bottom <= base.fetchSemanticsNode().boundsInRoot.top + 1f)
+            val paragraph = ui.onNodeWithText("前 ", substring = true, useUnmergedTree = true)
+            val paragraphBaseline = paragraph.fetchSemanticsNode().boundsInRoot.top + layout(paragraph).firstBaseline
+            val baseBaseline = base.fetchSemanticsNode().boundsInRoot.top + baseLayout.firstBaseline
+            assertTrue(kotlin.math.abs(paragraphBaseline - baseBaseline) <= 2f,
+                "Ruby base is not aligned to its neighbors: $baseBaseline vs $paragraphBaseline")
             screenshot("ruby", "ruby-styled")
         } finally { fixture.close() }
     }
