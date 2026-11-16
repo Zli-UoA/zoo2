@@ -57,8 +57,10 @@ on:
 permissions:
   contents: read
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: ci-android-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   android:
     runs-on: ubuntu-latest
