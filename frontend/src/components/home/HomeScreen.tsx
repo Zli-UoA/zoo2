@@ -48,7 +48,7 @@ import {
   SmilePlusIcon,
   ExternalLinkIcon,
 } from "lucide-react";
-import { createConfiguredApiClient } from "../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { THREADS_CHANGED } from "../../lib/electric/threads";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -218,9 +218,21 @@ function HomeScreenContent({
   };
   const cacheScope = JSON.stringify([config.apiBaseUrl, currentUserId]) + ":";
   const cacheKey = cacheScope + JSON.stringify([historyKey, timelineQuery]);
+  const detailCacheKey = (id: string) => cacheScope + JSON.stringify(["post", id]);
+  const preparePost = (post: HomePost) => {
+    // Hand off the DTO in account-scoped tab memory, without persisting it in browser history.
+    timelineCache.save(detailCacheKey(post.id), {
+      posts: [{ ...post, entry_id: post.id, tree_depth: 0, reposted_by: null }],
+      hasMore: false,
+      scrollOffset: 0,
+      listOffset: 0,
+      measurements: [],
+    });
+  };
+  const initialDetailKey = postId ? detailCacheKey(postId) : null;
   const restored = useMemo(
-    () => (!postId ? timelineCache.get(cacheKey) : undefined),
-    [cacheKey, postId],
+    () => timelineCache.get(initialDetailKey ?? cacheKey),
+    [cacheKey, initialDetailKey],
   );
   const [posts, setPosts] = useState<HomePost[]>(() => restored?.posts ?? []);
   const [newPosts, setNewPosts] = useState(0);
@@ -352,8 +364,15 @@ function HomeScreenContent({
         }
         if (fetchedHead) setError(false);
         setViewportError(!checkedSuccessfully);
-      } catch {
-        if (!controller.signal.aborted) setError(true);
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          if (postId && cause instanceof ApiError && [403, 404].includes(cause.status)) {
+            timelineCache.forget(cacheScope + JSON.stringify(["post", postId]));
+            postsRef.current = [];
+            setPosts([]);
+          }
+          setError(true);
+        }
       } finally {
         if (version === generation.current) setLoading(false);
         if (refreshRequest.current === controller) {
@@ -364,11 +383,11 @@ function HomeScreenContent({
         }
       }
     },
-    [client, timelineQuery, postId],
+    [client, timelineQuery, postId, cacheScope],
   );
 
   useEffect(() => {
-    const snapshot = !postId ? timelineCache.get(cacheKey) : undefined;
+    const snapshot = restored;
     setLoading(!snapshot);
     setPosts(snapshot?.posts ?? []);
     postsRef.current = snapshot?.posts ?? [];
@@ -403,7 +422,7 @@ function HomeScreenContent({
       refreshRequest.current = null;
       olderRequest.current = null;
     };
-  }, [refresh, cacheKey, postId]);
+  }, [refresh, cacheKey, postId, restored]);
   useHomeLive(() => {
     scheduleRefresh.current();
     scheduleControls.current();
@@ -757,6 +776,9 @@ function HomeScreenContent({
                         <Link
                           to="/home/posts/$postId"
                           params={{ postId: post.parent_id }}
+                          onClick={() => {
+                            if (post.parent) preparePost(post.parent);
+                          }}
                           className="flex items-center gap-1 hover:underline"
                         >
                           <ReplyIcon className="size-3" />
@@ -795,6 +817,7 @@ function HomeScreenContent({
                           window.getSelection()?.toString()
                         )
                           return;
+                        preparePost(post);
                         void navigate({ to: "/home/posts/$postId", params: { postId: post.id } });
                       }}
                     >
@@ -842,6 +865,7 @@ function HomeScreenContent({
                             <Link
                               to="/home/posts/$postId"
                               params={{ postId: post.id }}
+                              onClick={() => preparePost(post)}
                               className="shrink-0 hover:underline"
                             >
                               <time dateTime={post.created_at}>
