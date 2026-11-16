@@ -230,7 +230,7 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
-      "states": ["Landscape", "Portrait", "TextOnly", "Mobile"]
+      "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
