@@ -13,6 +13,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.semantics.SemanticsProperties
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import kotlinx.coroutines.*
@@ -213,6 +215,47 @@ class ReviewRegressionUiTest {
                 .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
             ui.runOnIdle { width = 440.dp }
             checkAlignment()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun channelComposerSwipesToFullScreenAndPreservesSelectedJapaneseText() {
+        val fixture = Fixture(Environment(touch = true, online = false))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        NativeWindow(fixture.app, Modifier.width(320.dp).height(900.dp)) {
+                            Column(Modifier.fillMaxSize()) {
+                                Spacer(Modifier.weight(1f))
+                                Composer(fixture.app, "general", null, emptyList(), enabled = true,
+                                    initialValue = "日本語の下書き", showTyping = false, onTyping = {})
+                            }
+                        }
+                    }
+                }
+            }
+            val input = ui.onNodeWithContentDescription("messages.compose")
+            val compact = input.fetchSemanticsNode().boundsInRoot.height
+            input.performTextInputSelection(TextRange(0, 3))
+            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.onNodeWithContentDescription("composer.collapse").assertIsDisplayed()
+            assertTrue(input.fetchSemanticsNode().boundsInRoot.height > compact * 2)
+            input.assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(0, 3)))
+            ui.onNodeWithContentDescription("composer.formatting").performClick()
+            ui.onNodeWithContentDescription("composer.bold").performClick()
+            input.assertTextEquals("<b>日本語</b>の下書き")
+            ui.onNodeWithContentDescription("composer.collapse").performClick()
+            input.assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(3, 6)))
+            input.performTextInput("置換")
+            input.assertTextEquals("<b>置換</b>の下書き")
+            ui.onNodeWithContentDescription("messages.send").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("attachments.add").assertIsNotEnabled()
+            // Back returns to the compact draft rather than navigating out of the channel.
+            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.runOnIdle { assertTrue(fixture.app.escape()) }
+            input.assertTextEquals("<b>置換</b>の下書き")
+            ui.onNodeWithContentDescription("composer.collapse").assertDoesNotExist()
         } finally { fixture.close() }
     }
 

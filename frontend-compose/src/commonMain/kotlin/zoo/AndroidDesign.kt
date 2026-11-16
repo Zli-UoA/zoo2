@@ -13,7 +13,8 @@ internal object AndroidDesign {
 
     val touchTarget = 48.dp
     val headerMinHeight = 56.dp
-    val icon = 20.dp
+    val icon = 24.dp
+    val controlVisualSize = 32.dp
     val avatar = 40.dp
     val controlRadius = 8.dp
     val surfaceRadius = 12.dp

@@ -221,9 +221,14 @@ class TouchUiTest {
             ui.setContent {
                 CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides app) {
                     MaterialTheme {
-                        Box(Modifier.width(320.dp)) {
-                            Composer(app, "general", null, emptyList(), enabled = editAllowed, showTyping = false,
-                                sendMessage = { _, _, _ -> sends++; true })
+                        Box(Modifier.width(320.dp).height(800.dp).testTag("channel-editor")) {
+                            NativeWindow(app) {
+                                Column(Modifier.fillMaxSize()) {
+                                    Spacer(Modifier.weight(1f))
+                                    Composer(app, "general", null, emptyList(), enabled = editAllowed, showTyping = false,
+                                        sendMessage = { _, _, _ -> sends++; true })
+                                }
+                            }
                         }
                     }
                 }
@@ -231,6 +236,10 @@ class TouchUiTest {
             ui.onNodeWithContentDescription("messages.compose").performTextInput("通信が戻るまで下書き")
             ui.onNodeWithContentDescription("messages.send").assertIsNotEnabled()
             ui.onNodeWithContentDescription("attachments.add").assertIsNotEnabled()
+            screenshot("channel-editor", "channel-editor-compact")
+            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.onNodeWithContentDescription("composer.formatting").performClick()
+            screenshot("channel-editor", "channel-editor-expanded-formatting")
             ui.runOnIdle { editAllowed = false }
             ui.onNodeWithContentDescription("messages.compose").assertIsNotEnabled()
             ui.runOnIdle { assertEquals(0, requests); assertEquals(0, sends) }

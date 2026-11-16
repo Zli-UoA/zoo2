@@ -347,6 +347,15 @@
     "yesterday": "昨天"
   },
   "composer": {
+    "editorTitle": "編輯訊息",
+    "expand": "全螢幕展開編輯器",
+    "collapse": "收合編輯器",
+    "dragHandle": "上下滑動輸入框頂部的拖曳列",
+    "formatting": "格式",
+    "bold": "粗體",
+    "italic": "斜體",
+    "strike": "刪除線",
+    "code": "程式碼區塊",
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
     "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",

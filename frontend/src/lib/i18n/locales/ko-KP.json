@@ -347,6 +347,15 @@
     "yesterday": "어제"
   },
   "composer": {
+    "editorTitle": "통보문 편집",
+    "expand": "입력칸을 전체 화면으로 펼치기",
+    "collapse": "입력칸 접기",
+    "dragHandle": "입력칸 손잡이를 우아래로 밀기",
+    "formatting": "서식",
+    "bold": "굵은 글씨",
+    "italic": "기울임 글씨",
+    "strike": "취소선",
+    "code": "코드 블로크",
     "mac": "⌘(Cmd)+Enter로 보내기 / Enter로 줄바꾸기",
     "ctrl": "Ctrl+Enter로 보내기 / Enter로 줄바꾸기",
     "other": "Cmd / Ctrl+Enter로 보내기 / Enter로 줄바꾸기",

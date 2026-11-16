@@ -20,7 +20,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
@@ -1264,6 +1267,10 @@ internal fun Composer(
     var picker by remember(key) { mutableStateOf(false) }
     var composing by remember(key) { mutableStateOf(false) }
     var caret by remember(key) { mutableStateOf(0) }
+    var expanded by remember(key) { mutableStateOf(false) }
+    var formatting by remember(key) { mutableStateOf(false) }
+    var textRange by remember(key) { mutableStateOf(TextRange(initialValue.length)) }
+    var requestedRange by remember(key) { mutableStateOf<TextRange?>(null) }
     var selection by remember(key) { mutableStateOf<Int?>(null) }
     var activeOption by remember(key) { mutableStateOf(0) }
     var dismissed by remember(key) { mutableStateOf(false) }
@@ -1279,6 +1286,17 @@ internal fun Composer(
             withFrameNanos {}
             composerFocusRequester.requestFocus()
         }
+    }
+    LaunchedEffect(key, enabled) { if (!enabled) expanded = false }
+    fun applyEdit(edit: ComposerEdit) {
+        value = edit.text
+        textRange = edit.selection
+        requestedRange = edit.selection
+        selection = null
+        caret = if (edit.selection.collapsed) edit.selection.end else -1
+        dismissed = true
+        updateTyping(value.trim().isNotEmpty())
+        focusReturn++
     }
     val memberships by app.repo.members.rows.collectAsState()
     val channels by app.repo.channels.rows.collectAsState()
@@ -1329,6 +1347,8 @@ internal fun Composer(
             val (next, position) = insertCompletion(value, range, option.name)
             value = next
             caret = position
+            textRange = TextRange(position)
+            requestedRange = null
             selection = position
             dismissed = true
             updateTyping(true)
@@ -1343,6 +1363,7 @@ internal fun Composer(
         if (value.isEmpty()) {
             value = stored
             caret = stored.length
+            textRange = TextRange(stored.length)
         }
     }
     LaunchedEffect(value, key) {
@@ -1441,8 +1462,12 @@ internal fun Composer(
                     if (value.isEmpty()) {
                         value = sent
                         caret = sent.length
+                        textRange = TextRange(sent.length)
                     }
-                } else attachments.release(drafts)
+                } else {
+                    attachments.release(drafts)
+                    if (value.isEmpty()) expanded = false
+                }
             }
         }
         Unit
@@ -1456,8 +1481,14 @@ internal fun Composer(
     val sendFromButton = remember { { currentSend() } }
     if (showTyping) TypingStatus(app, typing)
     val composerBorder = MaterialTheme.colorScheme.outline
+    ChannelComposerSheet(app, key, enabled, expanded, {
+        expanded = it
+        focusReturn++
+    }) { fullScreen, availableHeight ->
+    val scrollEditor = fullScreen && availableHeight < 192.dp
     Column(
-        Modifier.fillMaxWidth()
+        Modifier.fillMaxWidth().then(if (fullScreen) Modifier.weight(1f) else Modifier)
+            .then(if (scrollEditor) Modifier.verticalScroll(rememberScrollState()) else Modifier)
             .drawBehind {
                 drawLine(
                     composerBorder,
@@ -1472,6 +1503,11 @@ internal fun Composer(
                 vertical = if (LocalTouchUi.current) AndroidDesign.spaceMedium else 12.dp,
             )
     ) {
+        val auxiliary = if (fullScreen)
+            (availableHeight - if (formatting) 192.dp else 144.dp).coerceIn(0.dp, 192.dp)
+        else Dp.Infinity
+        Column(Modifier.fillMaxWidth().heightIn(max = auxiliary)
+            .then(if (fullScreen) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
         sendError?.let { error ->
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -1560,23 +1596,14 @@ internal fun Composer(
                     }
                 }
             }
-        ComposerFrame(Modifier.fillMaxWidth()) {
-            if (allowAttachments)
-                IconButton(
-                    "paperclip",
-                    app.t("attachments.add"),
-                    enabled && app.env.online && attachments.items.size < MAX_ATTACHMENTS,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    size = if (app.env.touch) 44.dp else 36.dp,
-                ) {
-                    attachments.pick()
-                }
+        }
+        val editor: @Composable (Modifier, Dp?) -> Unit = { fieldModifier, editorHeight ->
             Field(
                 value,
                 ariaLabel
                     ?: placeholder
                     ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
-                Modifier.weight(1f)
+                fieldModifier
                     .onGloballyPositioned { coordinates ->
                         val bounds = coordinates.boundsInWindow()
                         attachments.updateBounds(
@@ -1626,7 +1653,8 @@ internal fun Composer(
                 singleLine = false,
                 enabled = enabled,
                 readOnly = !enabled,
-                maximumHeight = if (app.env.touch) 160.dp else null,
+                minimumHeight = editorHeight,
+                maximumHeight = editorHeight ?: if (app.env.touch) 160.dp else null,
                 placeholder =
                     placeholder
                         ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
@@ -1639,6 +1667,8 @@ internal fun Composer(
                 fileOwner = attachments.owner.takeIf { allowAttachments },
                 chrome = false,
                 selection = selection,
+                textSelection = requestedRange,
+                onTextSelection = { textRange = it; requestedRange = null },
                 onSelection = {
                     caret = it
                     selection = null
@@ -1651,7 +1681,51 @@ internal fun Composer(
                 dismissed = false
                 activeOption = 0
             }
-            ComposerSendButton(canSubmit, app.env.touch, app.t("messages.send"), sendFromButton)
+        }
+        val attach: @Composable () -> Unit = {
+            if (allowAttachments) IconButton(
+                "paperclip", app.t("attachments.add"),
+                enabled && app.env.online && attachments.items.size < MAX_ATTACHMENTS,
+            ) { attachments.pick() }
+        }
+        if (LocalTouchUi.current) {
+            ComposerColumn(Modifier.fillMaxWidth().then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
+                if (fullScreen && !scrollEditor) {
+                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                        editor(Modifier.fillMaxSize(), maxHeight.coerceAtLeast(AndroidDesign.touchTarget))
+                    }
+                } else editor(Modifier.fillMaxWidth(), if (scrollEditor) 96.dp else null)
+                if (formatting) Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                ) {
+                    ComposerFormat.entries.forEach { format ->
+                        val codeAllowed = format != ComposerFormat.Code || !value.substring(
+                            textRange.min.coerceIn(0, value.length), textRange.max.coerceIn(0, value.length),
+                        ).contains("```")
+                        Button(format.label, variant = "ghost", enabled = enabled && !composing && codeAllowed,
+                            accessibleLabel = app.t(format.title),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = if (format == ComposerFormat.Bold) FontWeight.Bold else FontWeight.Normal,
+                                fontStyle = if (format == ComposerFormat.Italic) FontStyle.Italic else FontStyle.Normal,
+                                textDecoration = if (format == ComposerFormat.Strike) TextDecoration.LineThrough else null,
+                            ),
+                        ) { applyEdit(formatComposerText(value, textRange, format)) }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    attach()
+                    Button("Aa", variant = if (formatting) "secondary" else "ghost", enabled = enabled, selected = formatting,
+                        accessibleLabel = app.t("composer.formatting")) { formatting = !formatting }
+                    IconButton("smile-plus", app.t("reactions.tabEmoji"), enabled && !composing) { picker = true }
+                    Spacer(Modifier.weight(1f))
+                    ComposerSendButton(canSubmit, true, app.t("messages.send"), sendFromButton)
+                }
+            }
+        } else ComposerFrame(Modifier.fillMaxWidth()) {
+            attach()
+            editor(Modifier.weight(1f), null)
+            ComposerSendButton(canSubmit, false, app.t("messages.send"), sendFromButton)
         }
         if (!app.env.touch)
             Text(
@@ -1662,9 +1736,10 @@ internal fun Composer(
                 size = 11.sp,
             )
     }
+    }
     if (picker)
         EmojiPicker(app, { picker = false }) {
-            value += it
+            applyEdit(insertComposerText(value, textRange, it))
             picker = false
         }
 }
@@ -1723,21 +1798,20 @@ internal fun MessageEmptyState(
 private fun ComposerSendButton(canSubmit: State<Boolean>, touch: Boolean, label: String, send: () -> Unit) {
     val enabled by canSubmit
     Box(
-        Modifier.padding(bottom = 4.dp)
-            .then(webControlModifier("button", enabled))
-            .size(if (touch) 48.dp else 36.dp)
-            .padding(1.dp)
-            .clip(RoundedCornerShape(9.dp))
-            .background(
-                if (enabled) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.surfaceVariant
-            )
-            .clickable(enabled, role = Role.Button, onClick = send),
+        Modifier.then(webControlModifier("button", enabled))
+            .size(if (touch) AndroidDesign.touchTarget else 36.dp)
+            .clickable(enabled, role = Role.Button, onClick = send)
+            .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            "send", label, modifier = Modifier.size(16.dp),
-            color = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Box(
+            Modifier.size(if (touch) AndroidDesign.controlVisualSize else 34.dp)
+                .clip(RoundedCornerShape(if (touch) AndroidDesign.controlRadius else 9.dp))
+                .background(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon("send", modifier = Modifier.size(if (touch) AndroidDesign.icon else 16.dp),
+                color = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

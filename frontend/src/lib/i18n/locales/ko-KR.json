@@ -347,6 +347,15 @@
     "yesterday": "어제"
   },
   "composer": {
+    "editorTitle": "메시지 편집",
+    "expand": "입력창 전체 화면으로 펼치기",
+    "collapse": "입력창 접기",
+    "dragHandle": "입력창 손잡이를 위아래로 스와이프",
+    "formatting": "서식",
+    "bold": "굵게",
+    "italic": "기울임꼴",
+    "strike": "취소선",
+    "code": "코드 블록",
     "mac": "⌘(Cmd)+Enter로 보내기 / Enter로 줄바꿈",
     "ctrl": "Ctrl+Enter로 보내기 / Enter로 줄바꿈",
     "other": "Cmd / Ctrl+Enter로 보내기 / Enter로 줄바꿈",

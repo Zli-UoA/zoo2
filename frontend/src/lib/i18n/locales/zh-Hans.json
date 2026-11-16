@@ -347,6 +347,15 @@
     "yesterday": "昨天"
   },
   "composer": {
+    "editorTitle": "编辑消息",
+    "expand": "全屏展开编辑器",
+    "collapse": "收起编辑器",
+    "dragHandle": "上下滑动输入框顶部的拖动条",
+    "formatting": "格式",
+    "bold": "粗体",
+    "italic": "斜体",
+    "strike": "删除线",
+    "code": "代码块",
     "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
     "ctrl": "Ctrl+Enter 发送 / Enter 换行",
     "other": "Cmd / Ctrl+Enter 发送 / Enter 换行",
