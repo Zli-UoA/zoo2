@@ -59,6 +59,7 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             notificationPermissionRevision++
+            AndroidPushRegistration.tokenChanged()
         }
 
     private fun enableNotifications() {
@@ -132,6 +133,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AndroidApp() {
         var active by remember { mutableStateOf<RunningSession?>(null) }
+        var loggingOut by remember { mutableStateOf(false) }
         val dark = isSystemInDarkTheme()
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
@@ -142,9 +144,16 @@ class MainActivity : ComponentActivity() {
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        LaunchedEffect(current) {
+            if (current != null && android.os.Build.VERSION.SDK_INT >= 33 &&
+                !current.notifications.allowed() &&
+                !getSharedPreferences("notification-permission", MODE_PRIVATE).getBoolean("requested", false)) {
+                enableNotifications()
+            }
+        }
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
-                notificationIntent?.let { current.notifications.open(it) }
+                notificationIntent?.let { if (!current.push.open(it)) current.notifications.open(it) }
                 notificationIntent = null
             }
         }
@@ -156,23 +165,32 @@ class MainActivity : ComponentActivity() {
                 onExpired = { expiredAuth ->
                     scope.launch {
                         val running = active
+                        if (running == null && !loginStore.hasSession) PushBinding(this@MainActivity).forgetAll()
                         if (running != null && running.auth === expiredAuth) {
                             active = null
                             canRestore = false
                             restoreError = "認証情報の有効期限が切れました。ログインし直してください。"
+                            running.push.forget()
                             running.close()
                         }
                     }
                 },
                 logout = {
-                    val running = active
-                    active = null
-                    canRestore = false
-                    restoreError = ""
-                    try {
-                        running?.logout()
-                    } catch (failure: LoginFailure) {
-                        restoreError = failure.message.orEmpty()
+                    if (!loggingOut) {
+                        loggingOut = true
+                        scope.launch {
+                            val running = active
+                            try {
+                                running?.logout()
+                                restoreError = ""
+                            } catch (failure: LoginFailure) {
+                                restoreError = failure.message.orEmpty()
+                            } finally {
+                                active = null
+                                canRestore = false
+                                loggingOut = false
+                            }
+                        }
                     }
                 },
             )
@@ -186,6 +204,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val saved = loginStore.load()
                 canRestore = saved != null
+                if (saved == null) PushBinding(this@MainActivity).forgetAll()
                 if (saved != null) connect(saved.connection, saved.refreshToken) { _, _ -> }
             } catch (failure: CancellationException) {
                 throw failure
@@ -227,6 +246,7 @@ class MainActivity : ComponentActivity() {
                     ) { base, issuer, client, resource, code ->
                         canRestore = false
                         loginStore.clear()
+                        PushBinding(this@MainActivity).forgetAll()
                         connect(LoginConnection(base, issuer, client, resource), null, code)
                     }
                 }
@@ -238,7 +258,8 @@ class MainActivity : ComponentActivity() {
                 }
                 DisposableEffect(current) {
                     var disposed = false
-                    val observer = LifecycleEventObserver { _, _ ->
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
                         platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                         current.session.update(platform.env)
                     }
@@ -403,7 +424,7 @@ class MainActivity : ComponentActivity() {
                     copySecret = ::copySecret,
                 )
             }
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session)).also {
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session)).also {
                 session.start()
                 e2ee.start()
             }
@@ -581,13 +602,17 @@ private class RunningSession(
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
     val notifications: AndroidNotifications,
+    val push: AndroidPushRegistration,
 ) {
-    fun logout() {
-        try { auth.forget() } finally { close() }
+    suspend fun logout() {
+        try { push.logout() } finally {
+            try { auth.forget() } finally { close() }
+        }
     }
 
     fun close() {
         e2ee.stop()
+        push.close()
         notifications.close()
         auth.close()
         session.close()

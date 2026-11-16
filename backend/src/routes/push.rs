@@ -24,13 +24,26 @@ pub fn router() -> Router<AppState> {
 
 async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
     let config = PushConfig::from_env().map_err(AppError::Internal)?;
-    Ok(Json(json!({"publicKey": config.map(|c| c.public_key)})))
+    let android = crate::push::fcm::FcmConfig::from_env().map_err(AppError::Internal)?;
+    Ok(Json(
+        json!({"publicKey": config.map(|c| c.public_key), "fcmProjectId": android.map(|c| c.project_id)}),
+    ))
 }
 
 #[derive(Deserialize)]
 struct SubscriptionRequest {
     endpoint: String,
-    keys: crate::push::SubscriptionKeys,
+    keys: Option<crate::push::SubscriptionKeys>,
+    #[serde(default)]
+    transport: Transport,
+}
+
+#[derive(Default, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Transport {
+    #[default]
+    Webpush,
+    Fcm,
 }
 
 #[derive(Deserialize)]
@@ -50,18 +63,41 @@ async fn subscribe(
     actor: AuthUser,
     Json(body): Json<SubscriptionRequest>,
 ) -> Result<Json<Value>, AppError> {
-    if PushConfig::from_env()
-        .map_err(AppError::Internal)?
-        .is_none()
-    {
-        return Err(AppError::BadRequest(
-            "Push notifications are not configured".into(),
-        ));
-    }
-    crate::push::validate_endpoint(&body.endpoint)?;
-    body.keys
-        .validate()
-        .map_err(|_| AppError::BadRequest("Invalid push subscription keys".into()))?;
+    let (p256dh, auth_secret) = match body.transport {
+        Transport::Fcm => {
+            if crate::push::fcm::FcmConfig::from_env()
+                .map_err(AppError::Internal)?
+                .is_none()
+            {
+                return Err(AppError::BadRequest(
+                    "Android push notifications are not configured".into(),
+                ));
+            }
+            if body.keys.is_some() || crate::push::fcm::registration(&body.endpoint).is_none() {
+                return Err(AppError::BadRequest(
+                    "Invalid Android push registration".into(),
+                ));
+            }
+            (None, None)
+        }
+        Transport::Webpush => {
+            if PushConfig::from_env()
+                .map_err(AppError::Internal)?
+                .is_none()
+            {
+                return Err(AppError::BadRequest(
+                    "Push notifications are not configured".into(),
+                ));
+            }
+            crate::push::validate_endpoint(&body.endpoint)?;
+            let keys = body
+                .keys
+                .ok_or_else(|| AppError::BadRequest("Missing push subscription keys".into()))?;
+            keys.validate()
+                .map_err(|_| AppError::BadRequest("Invalid push subscription keys".into()))?;
+            (Some(keys.p256dh), Some(keys.auth))
+        }
+    };
     let id = endpoint_id(&body.endpoint);
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -76,8 +112,8 @@ async fn subscribe(
             ));
         }
         PushSubscription::update_by_id(id.as_str())
-            .p256dh(Some(body.keys.p256dh))
-            .auth_secret(Some(body.keys.auth))
+            .p256dh(p256dh)
+            .auth_secret(auth_secret)
             .exec(&mut tx)
             .await?;
     } else {
@@ -92,8 +128,8 @@ async fn subscribe(
             .id(id)
             .user_id(actor.id)
             .endpoint(body.endpoint)
-            .p256dh(Some(body.keys.p256dh))
-            .auth_secret(Some(body.keys.auth))
+            .p256dh(p256dh)
+            .auth_secret(auth_secret)
             .created_at(now_utc_millis())
             .exec(&mut tx)
             .await?;

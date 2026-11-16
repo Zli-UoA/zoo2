@@ -29,8 +29,6 @@ internal class AndroidNotifications(private val activity: Activity, private val 
 
     init {
         active = this
-        manager.activeNotifications.filter { it.tag?.startsWith("zoo:") == true }
-            .forEach { manager.cancel(it.tag, it.id) }
         listOf(
             "mentions" to "androidNotifications.mentions",
             "messages" to "androidNotifications.messages",
@@ -45,10 +43,13 @@ internal class AndroidNotifications(private val activity: Activity, private val 
             app.repo.notifications.synchronizedRows.collectLatest { rows ->
                 if (rows == null) return@collectLatest
                 val unread = rows.filterNot { it.flag("is_read") }.associateBy { it.text("id") }
+                val prefix = "zoo:${app.repo.config.userId}:"
+                manager.activeNotifications.filter { it.tag?.startsWith(prefix) == true && it.tag?.removePrefix(prefix) !in unread }
+                    .forEach { manager.cancel(it.tag, it.id) }
                 shown.keys.toList().filter { it !in unread }.forEach(::dismiss)
                 unread.forEach { (id, row) -> if (id in shown) shown[id] = row }
                 for (row in inbox.update(rows)) {
-                    if (!app.env.visible && allowed() && row.text("channel_id").isNotEmpty()) {
+                    if (allowed() && row.text("channel_id").isNotEmpty() && row.text("notification_type") != "missed_call") {
                         shown[row.text("id")] = row
                         post(row)
                     }
@@ -113,7 +114,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
             builder.addAction(Notification.Action.Builder(null, app.t("home.reply"), action(id, "reply", true))
                 .addRemoteInput(input).setAllowGeneratedReplies(true).build())
         }
-        try { manager.notify("zoo:$token:$id", 0, builder.build()) }
+        try { manager.notify(notificationTag(app.repo.config.userId, id), 0, builder.build()) }
         catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
     }
 
@@ -125,7 +126,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     }
 
     private fun dismiss(id: String) {
-        manager.cancel("zoo:$token:$id", 0)
+        manager.cancel(notificationTag(app.repo.config.userId, id), 0)
         shown.remove(id)
     }
 
@@ -139,7 +140,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
 
     fun close() {
         observer.cancel()
-        shown.keys.toList().forEach(::dismiss)
+        shown.clear()
         if (active === this) active = null
     }
 

@@ -1,4 +1,5 @@
 //! RFC 8291 encrypted notification payloads with RFC 8292 VAPID authentication.
+pub mod fcm;
 use crate::{
     error::AppError,
     models::{Channel, Message, Notification, PushSubscription, User},
@@ -321,9 +322,11 @@ pub fn dispatch_db(db: toasty::Db, notifications: Vec<Notification>) {
 }
 
 async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow::Result<()> {
-    let Some(config) = PushConfig::from_env()? else {
+    let config = PushConfig::from_env()?;
+    let android = fcm::FcmConfig::from_env()?;
+    if config.is_none() && android.is_none() {
         return Ok(());
-    };
+    }
     let client = push_client()?;
     for notification in notifications {
         let Some(payload) = build_payload(&mut db, &notification).await? else {
@@ -331,7 +334,8 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
         };
         push_to_user(
             &client,
-            &config,
+            config.as_ref(),
+            android.as_ref(),
             &mut db,
             &notification.user_id,
             &payload,
@@ -373,7 +377,8 @@ impl Delivery {
 /// 1 人のユーザーの、すべての購読へ送る。
 async fn push_to_user(
     client: &reqwest::Client,
-    config: &PushConfig,
+    config: Option<&PushConfig>,
+    android: Option<&fcm::FcmConfig>,
     db: &mut toasty::Db,
     user_id: &str,
     payload: &NotificationPayload,
@@ -387,6 +392,30 @@ async fn push_to_user(
         .exec(db)
         .await?;
     for subscription in subscriptions {
+        if subscription.endpoint.starts_with("fcm:") {
+            // Calls are a Web-only feature; native Android subscribes to message notifications.
+            if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
+                match android
+                    .send(client, &subscription.endpoint, user_id, payload)
+                    .await
+                {
+                    Ok(true) => {
+                        PushSubscription::filter(
+                            PushSubscription::fields().id().eq(subscription.id.as_str()),
+                        )
+                        .delete()
+                        .exec(db)
+                        .await?;
+                    }
+                    Ok(false) => {}
+                    Err(_) => tracing::warn!("Android push delivery failed"),
+                }
+            }
+            continue;
+        }
+        let Some(config) = config else {
+            continue;
+        };
         let Ok(endpoint) = validate_endpoint(&subscription.endpoint) else {
             continue;
         };
@@ -563,7 +592,8 @@ async fn deliver_call_invites(
             };
             push_to_user(
                 &client,
-                &config,
+                Some(&config),
+                None,
                 &mut db,
                 &invite.invitee_id,
                 &payload,
