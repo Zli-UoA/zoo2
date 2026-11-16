@@ -737,6 +737,13 @@ fun IconButton(
     }
 }
 
+/** Hoisted text/selection/composition shared when an editor changes its presentation. */
+@Stable
+class FieldEditingState(initialValue: String) {
+    internal val editing = mutableStateOf(TextFieldValue(initialValue))
+    internal val committed = mutableStateOf(TextFieldValue(initialValue))
+}
+
 @Composable
 fun Field(
     value: String,
@@ -751,6 +758,7 @@ fun Field(
     onSelection: (Int) -> Unit = {},
     textSelection: TextRange? = null,
     onTextSelection: (TextRange) -> Unit = {},
+    editingState: FieldEditingState? = null,
     fileOwner: String? = null,
     showLabel: Boolean = chrome,
     enabled: Boolean = true,
@@ -780,8 +788,9 @@ fun Field(
     val requester = focusRequester ?: defaultRequester
     var focused by remember { mutableStateOf(false) }
     val blur by rememberUpdatedState(onBlur)
-    var editing by remember { mutableStateOf(TextFieldValue(value)) }
-    var committedEditing by remember { mutableStateOf(TextFieldValue(value)) }
+    val fieldEditingState = editingState ?: remember { FieldEditingState(value) }
+    var editing by fieldEditingState.editing
+    var committedEditing by fieldEditingState.committed
     val layout = remember { arrayOfNulls<TextLayoutResult>(1) }
     val viewport = LocalViewportWidth.current
     val colors = MaterialTheme.colorScheme
@@ -939,6 +948,7 @@ fun Field(
                                     .border(1.dp, borderColor, shape)
                             else Modifier
                         )
+                        .semantics { contentDescription = label }
                         .padding(
                             contentPadding
                                 ?: if (LocalTouchUi.current) PaddingValues(
@@ -954,8 +964,7 @@ fun Field(
                                     top = if (chrome) if (singleLine) 6.dp else 9.dp else 10.dp,
                                     bottom = if (chrome) if (singleLine) 6.dp else 9.dp else 10.dp,
                                 )
-                        )
-                        .semantics { contentDescription = label },
+                        ),
                 onTextLayout = { layout[0] = it },
                 singleLine = singleLine,
                 enabled = enabled,

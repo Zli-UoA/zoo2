@@ -24,8 +24,9 @@ description: Zoo Androidの画面・Compose部品・余白・サイズ・文字�
 
 ## チャンネル入力を変更する
 
+- 入力欄の外側にpaddingや二重の枠を足さず、画面の左右・下端へ密着させる。本文と操作列の内側にだけ余白を置く。
 - つまみからの上下スワイプで展開・縮小する。本文のスクロールへ同じジェスチャーを割り当てず、展開ボタンも追加しない。
-- `ChannelComposerSheet` と既存の `Composer` を使い、同じ編集部品を移動する。全画面用に別のField・下書き・添付管理・送信処理を作らない。
+- `ChannelComposerSheet` と既存の `Composer` を使い、共通Fieldと外側の`FieldEditingState`を使う。全画面用の別の下書き・添付管理・送信処理を作らない。
 - 書式と絵文字は選択範囲へ挿入し、IME変換中は変更しない。`ComposerFormatting` の純粋関数と `Field` の選択範囲APIを使う。
 - スワイプのほかに、TalkBackのカスタムアクションと既存の戻る操作でも移動できるようにする。
 

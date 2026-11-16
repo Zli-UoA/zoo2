@@ -170,51 +170,52 @@ class ReviewRegressionUiTest {
         val message = obj("id" to "message", "user_id" to "alice", "content" to "Channel body",
             "created_at" to "2026-11-15T00:00:00Z")
         var width by mutableStateOf(320.dp)
+        var notificationReference by mutableStateOf(true)
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
                     MaterialTheme {
                         Column(Modifier.width(width)) {
-                            HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {})
-                            MessageList(fixture.app, obj("id" to "general"),
-                                listOf(message, obj("id" to "message-2", "user_id" to "alice",
-                                    "content" to "Grouped body", "created_at" to "2026-11-15T00:00:01Z")),
-                                emptyList(), listOf(user), parent = null, wide = false,
-                                modifier = Modifier.height(350.dp), readState = false)
-                            NotificationCard(fixture.app, listOf(obj(
-                                "id" to "notification", "actor_id" to "alice", "is_read" to true,
-                                "notification_type" to "mention", "created_at" to "2026-11-15T00:00:00Z",
-                                "display_data" to obj("actor" to user, "message" to message,
-                                    "channel" to obj("id" to "general", "channel_name" to "general")),
-                            )), listOf(user), visible = false, readEnabled = false, onLoading = {})
+                            if (notificationReference) {
+                                NotificationCard(fixture.app, listOf(obj(
+                                    "id" to "notification", "actor_id" to "alice", "is_read" to true,
+                                    "notification_type" to "mention", "created_at" to "2026-11-15T00:00:00Z",
+                                    "display_data" to obj("actor" to user, "message" to message,
+                                        "channel" to obj("id" to "general", "channel_name" to "general")),
+                                )), listOf(user), visible = false, readEnabled = false, onLoading = {})
+                            } else {
+                                HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {})
+                                MessageList(fixture.app, obj("id" to "general"),
+                                    listOf(message, obj("id" to "message-2", "user_id" to "alice",
+                                        "content" to "Grouped body", "created_at" to "2026-11-15T00:00:01Z")),
+                                    emptyList(), listOf(user), parent = null, wide = false,
+                                    modifier = Modifier.height(350.dp), readState = false)
+                            }
                         }
                     }
                 }
             }
-            fun checkAlignment() {
+            for (nextWidth in listOf(320.dp, 440.dp)) {
+                ui.runOnIdle { width = nextWidth; notificationReference = true }
+                val keyline = ui.onNodeWithText("Alice").fetchSemanticsNode().boundsInRoot.left
+                assertTrue(keyline > 0f)
+                ui.runOnIdle { notificationReference = false }
                 val names = ui.onAllNodesWithText("Alice").fetchSemanticsNodes()
-                assertEquals(3, names.size)
-                names.drop(1).forEach { name ->
-                    assertEquals(names[0].boundsInRoot.left, name.boundsInRoot.left, 1f)
-                }
+                assertEquals(2, names.size)
+                names.forEach { assertEquals(keyline, it.boundsInRoot.left, 1f) }
                 val avatars = ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true).fetchSemanticsNodes()
                 assertEquals(2, avatars.size)
                 assertEquals(with(ui.density) { 12.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
                 assertEquals(avatars[0].boundsInRoot.left, avatars[1].boundsInRoot.left, 1f)
                 avatars.zip(names).forEach { (avatar, name) ->
-                    val frame = avatar.boundsInRoot
-                    assertEquals(with(ui.density) { 40.dp.toPx() }, frame.width, 1f)
-                    assertEquals(frame.top, name.boundsInRoot.top, 1f)
+                    assertEquals(with(ui.density) { 40.dp.toPx() }, avatar.boundsInRoot.width, 1f)
+                    assertEquals(avatar.boundsInRoot.top, name.boundsInRoot.top, 1f)
                 }
                 val grouped = ui.onNodeWithText("Grouped body").fetchSemanticsNode().boundsInRoot
-                assertEquals(names[0].boundsInRoot.left, grouped.left, 1f)
+                assertEquals(keyline, grouped.left, 1f)
+                ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true)[0].onParent()
+                    .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
             }
-            checkAlignment()
-            // The visible avatar follows notifications; its profile link keeps a full touch target.
-            ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true)[0].onParent()
-                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
-            ui.runOnIdle { width = 440.dp }
-            checkAlignment()
         } finally { fixture.close() }
     }
 
@@ -253,6 +254,8 @@ class ReviewRegressionUiTest {
             ui.onNodeWithContentDescription("attachments.add").assertIsNotEnabled()
             // Back returns to the compact draft rather than navigating out of the channel.
             ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.runOnIdle { fixture.app.update(fixture.app.env.copy(visualViewportHeight = 220f)) }
+            ui.onNodeWithContentDescription("messages.send").performScrollTo().assertIsDisplayed()
             ui.runOnIdle { assertTrue(fixture.app.escape()) }
             input.assertTextEquals("<b>置換</b>の下書き")
             ui.onNodeWithContentDescription("composer.collapse").assertDoesNotExist()

@@ -19,13 +19,14 @@ import androidx.compose.ui.unit.dp
 
 /** The shared frame owns only presentation; each composer retains its input and keyboard policy. */
 @Composable
-private fun composerFrameModifier(modifier: Modifier): Modifier {
+fun ComposerFrame(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
     val radius = if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 14.dp
     val dark = MaterialTheme.colorScheme.background == Color.Black
     var focused by remember { mutableStateOf(false) }
     val ring = if (dark) Color(0xffbdbdbd) else Color(0xff737373)
     val input = if (dark) Color(0xff575757) else Color(0xffd4d4d4)
-    return modifier
+    Row(
+        modifier
             .fillMaxWidth()
             .onFocusChanged { focused = it.hasFocus }
             .focusGroup()
@@ -44,22 +45,9 @@ private fun composerFrameModifier(modifier: Modifier): Modifier {
                 RoundedCornerShape(radius),
             )
             .border(1.dp, if (focused) ring else input, RoundedCornerShape(radius))
-            .padding(if (LocalTouchUi.current) AndroidDesign.spaceMedium else 7.dp)
-}
-
-/** Shared horizontal frame for compact desktop and Bubble Chat inputs. */
-@Composable
-fun ComposerFrame(modifier: Modifier = Modifier, content: @Composable RowScope.() -> Unit) {
-    Row(
-        composerFrameModifier(modifier),
+            .padding(if (LocalTouchUi.current) AndroidDesign.spaceMedium else 7.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.Bottom,
         content = content,
     )
-}
-
-/** Mobile channels put the editing area above the same frame's action row. */
-@Composable
-internal fun ComposerColumn(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(composerFrameModifier(modifier), content = content)
 }

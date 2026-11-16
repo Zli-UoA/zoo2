@@ -1276,6 +1276,7 @@ internal fun Composer(
     var dismissed by remember(key) { mutableStateOf(false) }
     var typingActive by remember(key) { mutableStateOf(false) }
     val composerFocusRequester = remember { FocusRequester() }
+    val editorState = remember(key) { FieldEditingState(initialValue) }
     var focusReturn by remember(key) { mutableIntStateOf(0) }
     fun updateTyping(active: Boolean) {
         typingActive = active
@@ -1481,7 +1482,8 @@ internal fun Composer(
     val sendFromButton = remember { { currentSend() } }
     if (showTyping) TypingStatus(app, typing)
     val composerBorder = MaterialTheme.colorScheme.outline
-    ChannelComposerSheet(app, key, enabled, expanded, {
+    ChannelComposerSheet(app, enabled, expanded, {
+        requestedRange = textRange
         expanded = it
         focusReturn++
     }) { fullScreen, availableHeight ->
@@ -1489,25 +1491,20 @@ internal fun Composer(
     Column(
         Modifier.fillMaxWidth().then(if (fullScreen) Modifier.weight(1f) else Modifier)
             .then(if (scrollEditor) Modifier.verticalScroll(rememberScrollState()) else Modifier)
-            .drawBehind {
+            .then(if (LocalTouchUi.current) Modifier else Modifier.drawBehind {
                 drawLine(
                     composerBorder,
                     androidx.compose.ui.geometry.Offset(0f, .5.dp.toPx()),
                     androidx.compose.ui.geometry.Offset(size.width, .5.dp.toPx()),
                     1.dp.toPx(),
                 )
-            }
-            .padding(top = 1.dp)
-            .padding(
-                horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 12.dp,
-                vertical = if (LocalTouchUi.current) AndroidDesign.spaceMedium else 12.dp,
-            )
+            }.padding(top = 1.dp).padding(12.dp))
     ) {
-        val auxiliary = if (fullScreen)
+        val auxiliary = if (fullScreen && !scrollEditor)
             (availableHeight - if (formatting) 192.dp else 144.dp).coerceIn(0.dp, 192.dp)
         else Dp.Infinity
         Column(Modifier.fillMaxWidth().heightIn(max = auxiliary)
-            .then(if (fullScreen) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
+            .then(if (fullScreen && !scrollEditor) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
         sendError?.let { error ->
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -1668,6 +1665,7 @@ internal fun Composer(
                 chrome = false,
                 selection = selection,
                 textSelection = requestedRange,
+                editingState = editorState,
                 onTextSelection = { textRange = it; requestedRange = null },
                 onSelection = {
                     caret = it
@@ -1689,14 +1687,18 @@ internal fun Composer(
             ) { attachments.pick() }
         }
         if (LocalTouchUi.current) {
-            ComposerColumn(Modifier.fillMaxWidth().then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
-                if (fullScreen && !scrollEditor) {
-                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                        editor(Modifier.fillMaxSize(), maxHeight.coerceAtLeast(AndroidDesign.touchTarget))
-                    }
-                } else editor(Modifier.fillMaxWidth(), if (scrollEditor) 96.dp else null)
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                .then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
+                // Keep this call site stable when moving the same editor into the fullscreen host.
+                BoxWithConstraints(Modifier.fillMaxWidth()
+                    .then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
+                    val editorHeight = if (fullScreen && !scrollEditor) maxHeight.coerceAtLeast(AndroidDesign.touchTarget)
+                        else if (scrollEditor) 96.dp else null
+                    editor(Modifier.fillMaxWidth().then(if (fullScreen && !scrollEditor) Modifier.fillMaxHeight() else Modifier), editorHeight)
+                }
                 if (formatting) Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium)
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
                 ) {
                     ComposerFormat.entries.forEach { format ->
@@ -1713,7 +1715,8 @@ internal fun Composer(
                         ) { applyEdit(formatComposerText(value, textRange, format)) }
                     }
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium),
+                    verticalAlignment = Alignment.CenterVertically) {
                     attach()
                     Button("Aa", variant = if (formatting) "secondary" else "ghost", enabled = enabled, selected = formatting,
                         accessibleLabel = app.t("composer.formatting")) { formatting = !formatting }

@@ -1,6 +1,8 @@
 package zoo
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,23 +15,20 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 
-/** One editor moves between the channel and its overlay, preserving selection and IME state. */
+/** Channel and fullscreen presentations share the caller-owned editing and attachment state. */
 @Composable
 internal fun ChannelComposerSheet(
     app: Session,
-    owner: String,
     enabled: Boolean,
     expanded: Boolean,
     changeExpanded: (Boolean) -> Unit,
     content: @Composable ColumnScope.(Boolean, Dp) -> Unit,
 ) {
-    val latestContent = rememberUpdatedState(content)
-    val editor = remember(owner) {
-        movableContentOf<Boolean> { fullScreen ->
-            BoxWithConstraints(if (fullScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
-                Column(if (fullScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
-                    latestContent.value(this, fullScreen, maxHeight)
-                }
+    val editor: @Composable (Boolean) -> Unit = { fullScreen ->
+        BoxWithConstraints(if (fullScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
+            val availableHeight = maxHeight
+            Column(if (fullScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth()) {
+                content(this, fullScreen, availableHeight)
             }
         }
     }
@@ -38,7 +37,10 @@ internal fun ChannelComposerSheet(
         return
     }
     if (!expanded) {
-        Column(Modifier.fillMaxWidth()) {
+        val shape = RoundedCornerShape(topStart = AndroidDesign.surfaceRadius, topEnd = AndroidDesign.surfaceRadius)
+        Column(Modifier.fillMaxWidth().clip(shape)
+            .background(MaterialTheme.colorScheme.background)
+            .border(1.dp, MaterialTheme.colorScheme.outline, shape)) {
             ComposerDragHandle(app, expanded = false, enabled = enabled) { changeExpanded(true) }
             editor(false)
         }
@@ -48,6 +50,7 @@ internal fun ChannelComposerSheet(
         visible = expanded, fullScreen = true, customChrome = true,
     ) {
         if (expanded) {
+            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             PaneHeader {
                 IconButton("arrow-left", app.t("composer.collapse")) { changeExpanded(false) }
                 Text(app.t("messages.compose"), Modifier.weight(1f),
@@ -55,6 +58,7 @@ internal fun ChannelComposerSheet(
             }
             ComposerDragHandle(app, expanded = true, enabled = true) { changeExpanded(false) }
             Box(Modifier.weight(1f).fillMaxWidth()) { editor(true) }
+            }
         }
     }
 }

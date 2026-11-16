@@ -208,7 +208,16 @@ class TouchUiTest {
             override fun now() = "2026-11-15T00:00:00Z"
             override fun navigate(path: String) {}
             override fun action(name: String) {}
-            override fun translate(key: String, args: Map<String, String>) = key
+            override fun translate(key: String, args: Map<String, String>) = mapOf(
+                    "messages.compose" to "メッセージを送信",
+                    "messages.send" to "送信",
+                    "attachments.add" to "ファイルを添付",
+                    "composer.editorTitle" to "メッセージの編集",
+                    "composer.collapse" to "入力欄を小さく戻す",
+                    "composer.formatting" to "書式設定",
+                    "composer.expand" to "入力欄を全画面に広げる",
+                    "composer.dragHandle" to "入力欄を上下にスワイプ"
+                )[key] ?: key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
             override suspend fun invoke(name: String, payload: String) = ""
@@ -220,7 +229,7 @@ class TouchUiTest {
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides app) {
-                    MaterialTheme {
+                    ZooTheme(dark = true) {
                         Box(Modifier.width(320.dp).height(800.dp).testTag("channel-editor")) {
                             NativeWindow(app) {
                                 Column(Modifier.fillMaxSize()) {
@@ -233,15 +242,15 @@ class TouchUiTest {
                     }
                 }
             }
-            ui.onNodeWithContentDescription("messages.compose").performTextInput("通信が戻るまで下書き")
-            ui.onNodeWithContentDescription("messages.send").assertIsNotEnabled()
-            ui.onNodeWithContentDescription("attachments.add").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("メッセージを送信").performTextInput("通信が戻るまで下書き")
+            ui.onNodeWithContentDescription("送信").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("ファイルを添付").assertIsNotEnabled()
             screenshot("channel-editor", "channel-editor-compact")
             ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
-            ui.onNodeWithContentDescription("composer.formatting").performClick()
+            ui.onNodeWithContentDescription("書式設定").performClick()
             screenshot("channel-editor", "channel-editor-expanded-formatting")
             ui.runOnIdle { editAllowed = false }
-            ui.onNodeWithContentDescription("messages.compose").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("メッセージを送信").assertIsNotEnabled()
             ui.runOnIdle { assertEquals(0, requests); assertEquals(0, sends) }
         } finally { app.close(); scope.cancel() }
     }
