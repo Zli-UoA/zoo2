@@ -831,6 +831,13 @@ pub(crate) async fn create_message_impl(
         // creates the thread, so only threads that already track participants are gated.
         // The target is the one join/leave act on (the requested ID until a staged migration has
         // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
+        // Lock order matches thread_operation: the canonical root first, then the join target.
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=thread_root($1) FOR NO KEY UPDATE",
+            &[parent_id.as_str()],
+        )
+        .await?;
         let gate = crate::apps::one(&mut tx,
             "SELECT json_build_object('id',CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root($1))) THEN $1 ELSE thread_root($1) END)::text",
             &[parent_id.as_str()]).await?;
