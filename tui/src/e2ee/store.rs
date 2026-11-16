@@ -26,9 +26,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 use zoo_crypto::{
-    BackupUpload, BackupUploadState, DeviceAccount, InboundSessionStore, KeySnapshot, ListedDevice,
-    OlmSession, OwnKeys, OwnSecrets, ServerKeyState, SessionRef, StartupCheck, TrustStore,
-    VersionChange,
+    BackupUpload, BackupUploadState, CryptoError, Curve25519PublicKey, DeviceAccount,
+    InboundSessionStore, KeySnapshot, ListedDevice, OlmSession, OwnKeys, OwnSecrets,
+    ServerKeyState, SessionRef, StartupCheck, TrustStore, VersionChange,
 };
 
 mod megolm;
@@ -193,7 +193,8 @@ pub struct ToDeviceResult {
 pub enum BackupUploadRequest {
     /// 送るものがない（解錠していない、今の版がない、送信待ちがない）。
     None,
-    /// 今の版を使えない（署名がない、SSSS の鍵と違う、版の巻き戻りなど）。送らない。
+    /// 今の版を使えない（署名がない、SSSS の鍵と違う、版の巻き戻り、`upload_key` が鍵の形でないなど）。
+    /// 送らない。
     Rejected(String),
     /// `POST /api/e2ee/key_backup/keys` に送る。
     Upload {
@@ -202,6 +203,9 @@ pub enum BackupUploadRequest {
         secrets_revision: u64,
         body: Value,
         count: usize,
+        /// アップロードの証明（`X-Zoo-Backup-Proof` の値。docs/e2ee.md の「アップロードの証明」）。
+        /// 今の版に `upload_key` がない（証明を足す前のサーバー）なら `None` で、ヘッダーを送らない。
+        proof: Option<String>,
     },
 }
 
@@ -1104,13 +1108,13 @@ impl CryptoStore {
         // 送信は 1 つずつ（`setup::upload_key_backup`）なので、ここで残っている要求は、送っている途中で
         // 捨てられたもの。記録を捨てる（入れたセッションは送信待ちのまま）。
         self.pending_uploads.clear();
-        match self.accept_backup_version(current_version)? {
-            AcceptedVersion::Accepted(_) => {}
+        let version = match self.accept_backup_version(current_version)? {
+            AcceptedVersion::Accepted(version) => version,
             AcceptedVersion::None => return Ok(BackupUploadRequest::None),
             AcceptedVersion::Rejected(message) => {
                 return Ok(BackupUploadRequest::Rejected(message));
             }
-        }
+        };
 
         let keys: Vec<String> = self
             .state
@@ -1123,6 +1127,23 @@ impl CryptoStore {
         if keys.is_empty() {
             return Ok(BackupUploadRequest::None);
         }
+        // フィールドがない版（証明を足す前のサーバー）だけ、証明を付けずに送る。フィールドがあって
+        // 文字列でなければ（`null`、数値、オブジェクトも）送らない。証明を黙って省いて、未証明の行を
+        // 送信済みにしないため。
+        let proof = match current_version.and_then(|current| current.get("upload_key")) {
+            None => None,
+            Some(Value::String(upload_key)) => {
+                match self.backup_upload_proof(upload_key, &version)? {
+                    Ok(proof) => Some(proof),
+                    Err(message) => return Ok(BackupUploadRequest::Rejected(message)),
+                }
+            }
+            Some(_) => {
+                return Ok(BackupUploadRequest::Rejected(
+                    "upload_key が鍵の形ではありません".to_owned(),
+                ));
+            }
+        };
         let mut refs = Vec::with_capacity(keys.len());
         for key in &keys {
             self.load_inbound(key)?;
@@ -1158,10 +1179,31 @@ impl CryptoStore {
             secrets_revision: upload.secrets_revision,
             body: upload.body.clone(),
             count: sessions.len(),
+            proof,
         };
         self.pending_uploads
             .insert(id, PendingUpload { upload, sessions });
         Ok(request)
+    }
+
+    /// 受け入れた今の版 `version` へのアップロードの証明を、SSSS のバックアップ鍵で作る（docs/e2ee.md の
+    /// 「アップロードの証明」。Web の `CryptoStore.backupUploadProof` と同じ）。`upload_key` は今の版の
+    /// `upload_key`。鍵の形でなければ内側の `Err`（送らない）。
+    fn backup_upload_proof(
+        &self,
+        upload_key: &str,
+        version: &str,
+    ) -> Result<std::result::Result<String, String>> {
+        let Some(own) = self.own_keys()? else {
+            return Ok(Err("自分の鍵がありません".to_owned()));
+        };
+        Ok(Curve25519PublicKey::from_base64(upload_key)
+            .map_err(CryptoError::from)
+            .and_then(|key| {
+                own.backup_key
+                    .upload_proof(&key, &self.state.user_id, version)
+            })
+            .map_err(|error| error.to_string()))
     }
 
     /// [`prepare_backup_upload`](Self::prepare_backup_upload) の `id` の要求が成功した。その要求に入れた

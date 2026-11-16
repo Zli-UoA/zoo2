@@ -76,9 +76,16 @@ pub const USER_SCOPES: &[&str] = &[
 /// - `chat:write`・`chat:write.customize`: Slack と連携していないユーザーの投稿を、Bot が `username` /
 ///   `icon_url` を付けて代理で Slack に投稿する (#294)
 ///
+/// - `chat:write.public`: Bot未参加の公開チャンネルにも移行案内の送信を試みる
+///
 /// Bot は、いまはチャンネルに参加しない。#293 で Bot の購読 (`bot_events`) を使う場合は、Bot の履歴スコープと
 /// チャンネルへの参加 (`channels:join`) が別に必要になる。
-pub const BOT_SCOPES: &[&str] = &["files:read", "chat:write", "chat:write.customize"];
+pub const BOT_SCOPES: &[&str] = &[
+    "files:read",
+    "chat:write",
+    "chat:write.customize",
+    "chat:write.public",
+];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -1227,9 +1234,20 @@ mod tests {
             assert!(USER_SCOPES.contains(&scope), "missing user scope {scope}");
         }
         // #294 の未連携ユーザーの代理投稿
-        for scope in ["files:read", "chat:write", "chat:write.customize"] {
+        for scope in [
+            "files:read",
+            "chat:write",
+            "chat:write.customize",
+            "chat:write.public",
+        ] {
             assert!(BOT_SCOPES.contains(&scope), "missing bot scope {scope}");
         }
+        let manifest = manifest_json(None, false);
+        let bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+            .as_array()
+            .unwrap();
+        assert!(bot_scopes.contains(&json!("chat:write.public")));
+        assert!(!USER_SCOPES.contains(&"chat:write.public"));
         // 重複しない (認可 URL の `user_scope` に同じスコープを 2 回書かない)
         let unique: HashSet<_> = USER_SCOPES.iter().collect();
         assert_eq!(unique.len(), USER_SCOPES.len());

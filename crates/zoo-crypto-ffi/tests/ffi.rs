@@ -339,3 +339,35 @@ fn store_pickles_round_trip() {
         Err(ZooCryptoError::InvalidPickle { .. })
     ));
 }
+
+#[test]
+fn backup_upload_proof_matches_the_vector_and_the_server_check() {
+    // crates/zoo-crypto の照合用の値（tests/vectors/gen_backup_upload_proof_v1.py）と同じ入力。
+    let key = BackupDecryptionKey::from_bytes(vec![0x11; 32]).unwrap();
+    let user = "00000000-0000-4000-8000-000000000001".to_owned();
+    let proof = key
+        .upload_proof(
+            "D6poTtKIZ7l/Smot7l34zpdOdrcBjj8iocTPJnhXDyA".into(),
+            user.clone(),
+            "12".into(),
+        )
+        .unwrap();
+    assert_eq!(proof, "Wst7kaXNOseF/BRemOR8xJJTEtm6vOlvoe6korBz8hw");
+    assert_eq!(backup_proof_header(), "X-Zoo-Backup-Proof");
+
+    // サーバーの鍵（zoo-crypto の BackupUploadKey）で確かめられる。
+    let server = zoo_crypto::BackupUploadKey::generate();
+    let backup = BackupDecryptionKey::generate();
+    let proof = backup
+        .upload_proof(server.public_key().to_base64(), ALICE.into(), "3".into())
+        .unwrap();
+    let backup_public = zoo_crypto::Curve25519PublicKey::from_base64(&backup.public_key()).unwrap();
+    assert!(server.verify_proof(&backup_public, ALICE, "3", &proof));
+    assert!(!server.verify_proof(&backup_public, ALICE, "4", &proof));
+
+    // upload_key が鍵の形でなければ誤り。
+    assert!(
+        key.upload_proof("not-a-key".into(), user, "12".into())
+            .is_err()
+    );
+}

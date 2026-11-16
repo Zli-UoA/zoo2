@@ -453,6 +453,7 @@ export function Composer({
 
   return (
     <form
+      data-onboarding="messages"
       autoComplete="off"
       className="shrink-0 border-t px-3 py-3"
       onSubmit={(event) => {

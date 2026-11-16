@@ -1639,5 +1639,40 @@
     "mentions": "提及和回复",
     "messages": "私信",
     "reactions": "回应"
+  },
+  "onboarding": {
+    "replay": "打开入门导览",
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳过",
+    "finish": "开始使用 Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "欢迎来到 Zoo",
+      "description": "一边操作实际页面，一边了解 Zoo。点击下一步进入频道列表。可以跳过，之后通过指南针按钮重开。"
+    },
+    "channels": {
+      "title": "寻找频道",
+      "description": "从高亮列表中选择频道。可通过浏览频道寻找并加入其他会话。"
+    },
+    "messages": {
+      "title": "参与会话",
+      "description": "在所选频道的高亮输入框中发帖。使用讨论串回复，或添加表情回应。"
+    },
+    "notifications": {
+      "title": "查看通知",
+      "description": "已进入通知页面。在这里查看提及和回复，选择通知即可打开对应会话。"
+    },
+    "settings": {
+      "title": "设置适合自己的 Zoo",
+      "description": "已进入常规设置。通过高亮选项卡调整显示和操作。之后可通过指南针按钮重新打开导览。"
+    },
+    "slack": {
+      "title": "连接 Slack",
+      "description": "这是 Slack 设置。连接 Slack 账号可将已导入的历史发帖关联到 Zoo，也可以导入自己创建的私密频道。工作区尚未配置时，请联系管理员。"
+    },
+    "title": "使用导览",
+    "chooseChannel": "选择一个频道即可继续。需要时可从浏览频道中加入。",
+    "navigationError": "无法打开页面，请重试。"
   }
 }

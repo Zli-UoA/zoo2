@@ -45,6 +45,20 @@ impl BackupDecryptionKey {
         self.inner.public_key().to_base64()
     }
 
+    /// `user_id` の版 `version` へのアップロードの証明（`POST /api/e2ee/key_backup/keys` の
+    /// `X-Zoo-Backup-Proof` の値）。`upload_key` は版の `upload_key`（サーバーの公開鍵、パディングなしの base64）。
+    #[wasm_bindgen(js_name = uploadProof)]
+    pub fn upload_proof(
+        &self,
+        upload_key: &str,
+        user_id: &str,
+        version: &str,
+    ) -> Result<String, JsValue> {
+        let upload_key = core::Curve25519PublicKey::from_base64(upload_key)
+            .map_err(|e| crate::convert::crypto_error(e.into()))?;
+        self.inner.upload_proof(&upload_key, user_id, version).js()
+    }
+
     /// 版 `version` の `auth_data`（方式と版の番号を入れ、マスター鍵で署名したもの）。
     #[wasm_bindgen(js_name = authData, unchecked_return_type = "JsonObject")]
     pub fn auth_data(

@@ -518,7 +518,11 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     await a1.page.getByRole("checkbox").first().check();
     await a1.page.getByRole("radio", { name: /端末だけ/ }).check();
     await a1.page.getByLabel("AuthZ でセッションとサービス接続を停止した").check();
-    await a1.page.getByRole("button", { name: "次へ" }).click();
+    // 初期ツアーにも「次へ」があるため、実際の設定画面の操作に限定する。
+    await a1.page
+      .getByRole("region", { name: "Zoo設定", exact: true })
+      .getByRole("button", { name: "次へ", exact: true })
+      .click();
     await a1.page.getByRole("button", { name: "パスキーで解錠" }).click();
     await a1.page.getByRole("button", { name: "失効を実行" }).click();
     await expect(a1.page.getByText("失効が終わりました。")).toBeVisible({ timeout: 120_000 });
