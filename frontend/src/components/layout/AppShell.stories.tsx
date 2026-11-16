@@ -16,6 +16,9 @@ import { AppShell } from "./AppShell";
 
 const meta = {
   title: "Pages/Shell",
+  beforeEach: () => {
+    localStorage.setItem("zoo:onboarding:v1:user-alice", "done");
+  },
   component: AppShell,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

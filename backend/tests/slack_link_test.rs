@@ -821,7 +821,12 @@ async fn test_slack_link_requires_configuration_and_admin_manifest() -> anyhow::
     );
     assert_eq!(
         manifest["manifest"]["oauth_config"]["scopes"]["bot"],
-        json!(["files:read", "chat:write", "chat:write.customize"])
+        json!([
+            "files:read",
+            "chat:write",
+            "chat:write.customize",
+            "chat:write.public"
+        ])
     );
     Ok(())
 }

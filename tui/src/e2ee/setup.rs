@@ -184,7 +184,8 @@ pub enum BackupUploadResult {
     },
     /// 今の版を使えない（署名がない、SSSS の鍵と違う、巻き戻りなど）。送っていない。
     Rejected(String),
-    /// サーバーが拒んだ（409 `E2EE_WRONG_BACKUP_VERSION` か `E2EE_SSSS_CONFLICT`）。
+    /// サーバーが拒んだ（409 `E2EE_WRONG_BACKUP_VERSION` か `E2EE_SSSS_CONFLICT`、403
+    /// `E2EE_BACKUP_PROOF_INVALID`）。今の版を取り直して検証できるまで送らない。
     Conflict(String),
 }
 
@@ -208,7 +209,7 @@ pub async fn upload_key_backup(api: &ApiClient, store: &SharedStore) -> Result<B
             .lock()
             .await
             .prepare_backup_upload(current.as_ref(), BACKUP_UPLOAD_BATCH)?;
-        let (id, version, secrets_revision, body, count) = match request {
+        let (id, version, secrets_revision, body, count, proof) = match request {
             BackupUploadRequest::None => return Ok(BackupUploadResult::Done { uploaded }),
             BackupUploadRequest::Rejected(reason) => {
                 return Ok(BackupUploadResult::Rejected(reason));
@@ -219,15 +220,20 @@ pub async fn upload_key_backup(api: &ApiClient, store: &SharedStore) -> Result<B
                 secrets_revision,
                 body,
                 count,
-            } => (id, version, secrets_revision, body, count),
+                proof,
+            } => (id, version, secrets_revision, body, count, proof),
         };
         if let Err(error) = api
-            .e2ee_upload_backup_keys(&version, secrets_revision, body)
+            .e2ee_upload_backup_keys(&version, secrets_revision, body, proof.as_deref())
             .await
         {
-            let conflict = ApiError::status_of(&error) == Some(reqwest::StatusCode::CONFLICT)
+            let status = ApiError::status_of(&error);
+            // 証明が今の版と合わない（403）も、版の食い違いと同じく送るのをやめる。
+            let conflict = (status == Some(reqwest::StatusCode::CONFLICT)
                 && (ApiError::has_code(&error, "E2EE_WRONG_BACKUP_VERSION")
-                    || ApiError::has_code(&error, "E2EE_SSSS_CONFLICT"));
+                    || ApiError::has_code(&error, "E2EE_SSSS_CONFLICT")))
+                || (status == Some(reqwest::StatusCode::FORBIDDEN)
+                    && ApiError::has_code(&error, "E2EE_BACKUP_PROOF_INVALID"));
             {
                 let mut store = store.lock().await;
                 store.backup_upload_failed(id, conflict);

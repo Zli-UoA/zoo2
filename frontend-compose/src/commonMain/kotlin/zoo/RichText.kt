@@ -1,6 +1,7 @@
 package zoo
 
 import androidx.compose.foundation.*
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -10,9 +11,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
@@ -25,90 +28,7 @@ import kotlinx.serialization.json.*
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import zoo_compose.generated.resources.Res
 
-/** Pure Kotlin inline scanner. Delimiters inside code remain literal. */
-data class Inline(val value: String, val kind: String = "text", val url: String? = null)
-
-private val inlinePattern =
-        Regex(
-            "(`[^`\\n]+`|<small>[\\s\\S]*?</small>|<plain>[\\s\\S]*?</plain>|\\*\\*[^*]+\\*\\*|~~[^~]+~~|<b>[\\s\\S]*?</b>|<i>[\\s\\S]*?</i>|\\*[^*\\n]+\\*|\\[[^]\\n]+]\\(https?://[^)\\s]+\\)|https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:)"
-        )
-
-fun parseInline(source: String): List<Inline> {
-    val out = mutableListOf<Inline>()
-    var end = 0
-    inlinePattern.findAll(source).forEach { match ->
-        if (match.range.first > end) out += Inline(source.substring(end, match.range.first))
-        val s = match.value
-        out +=
-            when {
-                s.startsWith('`') -> Inline(s.drop(1).dropLast(1), "code")
-                s.startsWith("<plain>") -> Inline(s.drop(7).dropLast(8), "plain")
-                s.startsWith("<small>") -> Inline(s.drop(7).dropLast(8), "small")
-                s.startsWith("**") -> Inline(s.drop(2).dropLast(2), "bold")
-                s.startsWith("<b>") -> Inline(s.drop(3).dropLast(4), "bold")
-                s.startsWith("<i>") -> Inline(s.drop(3).dropLast(4), "italic")
-                s.startsWith("~~") -> Inline(s.drop(2).dropLast(2), "strike")
-                s.startsWith('*') -> Inline(s.drop(1).dropLast(1), "italic")
-                s.startsWith('[') ->
-                    Inline(
-                        s.substringAfter('[').substringBefore(']'),
-                        "link",
-                        s.substringAfter("](").dropLast(1),
-                    )
-                s.startsWith("http") -> Inline(s, "link", s)
-                s.startsWith(":@") -> Inline(s, "accountEmoji")
-                s.startsWith('@') -> Inline(s, "mention")
-                s.startsWith('#') -> Inline(s, "hashtag")
-                s.startsWith(':') -> Inline(s, "emoji")
-                else -> Inline(s)
-            }
-        end = match.range.last + 1
-    }
-    if (end < source.length) out += Inline(source.substring(end))
-    return out
-}
-
-data class MessageHeadingBlock(val content: String, val level: Int? = null)
-
-/** Heading markers only belong to root text, never to code or an MFM subtree. */
-fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
-    val protectedRanges = BooleanArray(content.length)
-    var cursor = 0
-    richSegments(content).forEach { (text, embedded) ->
-        if (embedded) for (index in cursor until cursor + text.length) protectedRanges[index] = true
-        cursor += text.length
-    }
-    val blocks = mutableListOf<MessageHeadingBlock>()
-    val pending = mutableListOf<String>()
-    fun flush() {
-        if (pending.isNotEmpty()) {
-            val text = pending.joinToString("\n")
-            if (text.isNotEmpty()) blocks += MessageHeadingBlock(text)
-            pending.clear()
-        }
-    }
-    var offset = 0
-    content.lines().forEach { line ->
-        val marker = Regex("^ {0,3}(#{1,6})[ \t]+").find(line)
-        val source = line.substring(marker?.value?.length ?: 0)
-        if (
-            marker != null &&
-                source.isNotBlank() &&
-                protectedRanges.getOrNull(offset + marker.value.indexOf('#')) != true &&
-                !Regex("^([^\n]+) (検索|Search)$").matches(line)
-        ) {
-            flush()
-            blocks +=
-                MessageHeadingBlock(
-                    source.replace(Regex("[ \t]+#+[ \t]*$"), "").trimEnd(),
-                    marker.groupValues[1].length,
-                )
-        } else pending += line
-        offset += line.length + 1
-    }
-    flush()
-    return blocks
-}
+internal val LocalMfmInline = staticCompositionLocalOf { false }
 
 @Composable
 private fun RichSelection(enabled: Boolean, content: @Composable () -> Unit) {
@@ -125,7 +45,7 @@ fun RichText(
     maxLines: Int = Int.MAX_VALUE,
     selection: Boolean = true,
 ) {
-    if (depth > 12) {
+    if (depth > 20) {
         Text(content)
         return
     }
@@ -202,15 +122,19 @@ fun RichText(
     }
     val shortcodes = app.standardShortcodes ?: fallbackShortcodes
     RichSelection(selection) {
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            if (LocalMfmInline.current) Modifier else Modifier.fillMaxWidth().clipToBounds(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             val inline = mutableListOf<Pair<String, Boolean>>()
             segments.forEach { segment ->
                 val text = segment.first
                 val block =
-                    text.startsWith("```") ||
-                        text.startsWith("\\[") ||
-                        text.startsWith("<center>") ||
-                        text.startsWith(">")
+                    segment.second &&
+                        (text.startsWith("```") ||
+                            text.startsWith("\\[") ||
+                            text.startsWith("<center>") ||
+                            text.startsWith(">"))
                 if (block) {
                     if (inline.isNotEmpty()) {
                         InlineParagraph(inline.toList(), users, shortcodes, depth)
@@ -218,36 +142,33 @@ fun RichText(
                     }
                     when {
                         text.startsWith("```") ->
-                            CodeBlock(
-                                text.substringAfter('\n').substringBeforeLast("```"),
-                                text.drop(3).substringBefore('\n').trim(),
-                            )
+                            mfmCodeBlock(text).let { CodeBlock(it.body, it.language) }
                         text.startsWith("\\[") -> MathText(text.drop(2).dropLast(2))
                         text.startsWith("<center>") ->
                             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                RichText(text.drop(8).dropLast(9), users, depth + 1)
-                            }
-                        else ->
-                            Row {
-                                Box(
-                                    Modifier.width(3.dp)
-                                        .height(20.dp)
-                                        .background(MaterialTheme.colorScheme.outline)
-                                )
-                                Box(Modifier.padding(start = 12.dp)) {
-                                    RichText(
-                                        text.lines().joinToString("\n") {
-                                            it.removePrefix(">").trimStart()
-                                        },
-                                        users,
-                                        depth + 1,
-                                    )
+                                CompositionLocalProvider(
+                                    LocalMfmStyle provides LocalMfmStyle.current.copy(textAlign = TextAlign.Center),
+                                    LocalMfmInline provides true,
+                                ) {
+                                    RichText(text.drop(8).dropLast(9), users, depth + 1)
                                 }
                             }
+                        else -> {
+                            val quoteColor = MaterialTheme.colorScheme.outline
+                            Box(Modifier.drawBehind {
+                                drawRect(quoteColor, size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height))
+                            }.padding(start = 15.dp)) {
+                                RichText(
+                                    text.lines().joinToString("\n") { it.removePrefix(">").trimStart() },
+                                    users,
+                                    depth + 1,
+                                )
+                            }
+                        }
                     }
                 } else inline += segment
             }
-            if (inline.isNotEmpty())
+            if (inline.isNotEmpty() || editedAt != null)
                 InlineParagraph(inline, users, shortcodes, depth, editedAt, maxLines)
         }
     }
@@ -264,11 +185,14 @@ private suspend fun loadShortcodes(): Row = shortcodeLock.withLock {
     ).jsonObject.also { loadedShortcodes = it }
 }
 
+private data class EmbeddedMfm(val source: String, val style: SpanStyle, val inLink: Boolean)
+
 private data class CachedParagraph(
     val text: AnnotatedString,
     val mentions: Map<String, String>,
     val emojiParts: Map<String, Row>,
     val accountParts: Map<String, Row>,
+    val embeddedParts: Map<String, EmbeddedMfm>,
 )
 
 @Composable
@@ -284,18 +208,13 @@ private fun InlineParagraph(
     val fonts = LocalFonts.current
     val authzAccounts = app.accountProfiles.map { JsonObject(it + ("user_name" to JsonPrimitive(it.text("username")))) }
     val channels by app.repo.channels.rows.collectAsState()
-    val inheritedStyle = LocalMfmStyle.current
+    val inheritedStyle = MaterialTheme.typography.bodyMedium.merge(LocalMfmStyle.current)
+    val inheritedInLink = LocalMfmInLink.current
     val mentionForeground = MaterialTheme.colorScheme.onSecondaryContainer
     val mentionBackground = MaterialTheme.colorScheme.secondaryContainer
     val accent = LocalLinkColor.current
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val sizes = remember(segments) { mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>() }
-    val embedded = remember(segments) {
-        segments.mapIndexedNotNull { index, segment ->
-            if (segment.second) index.toString() to segment.first else null
-        }.toMap()
-    }
     val joined = LocalJoinedEmojis.current
     val workspace = if (joined == null) workspaceEmojis(app) else emptyList()
     val registeredEmojis = remember(joined, workspace) {
@@ -310,19 +229,33 @@ private fun InlineParagraph(
     val remoteEmojis = remember(activityPubEmojis, registeredEmojis) { activityPubEmojis + registeredEmojis }
     val paragraph = remember(
         app, segments, users, authzAccounts, shortcodes, fonts, channels, inheritedStyle,
-        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt,
+        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt, inheritedInLink,
     ) {
         val mentions = mutableMapOf<String, String>()
         val emojiParts = mutableMapOf<String, Row>()
         val accountParts = mutableMapOf<String, Row>()
+        val embeddedParts = mutableMapOf<String, EmbeddedMfm>()
         val text = buildAnnotatedString {
             fun write(
                 source: String,
                 level: Int = 0,
                 inheritedWeight: FontWeight? = inheritedStyle.fontWeight,
+                inheritedSpan: SpanStyle = inheritedStyle.toSpanStyle(),
+                inLink: Boolean = inheritedInLink,
             ) {
                 parseInline(source).forEach { token ->
                     var value = token.value
+                    if (token.kind in setOf("effect", "math")) {
+                        val id = "embedded-${embeddedParts.size}"
+                        embeddedParts[id] = EmbeddedMfm(
+                            if (token.kind == "math") "\\($value\\)" else value,
+                            inheritedSpan,
+                            inLink,
+                        )
+                        // Placeholder spans cannot cross Android paragraph boundaries or be empty.
+                        appendInlineContent(id, value.replace('\r', ' ').replace('\n', ' ').ifEmpty { "\uFFFC" })
+                        return@forEach
+                    }
                     if (token.kind == "accountEmoji") {
                         val account = authzAccounts.find { it.text("username") == value.removePrefix(":@").removeSuffix(":") }
                         if (account != null) {
@@ -343,40 +276,40 @@ private fun InlineParagraph(
                         value = (shortcodes[value.trim(':')] as? JsonPrimitive)?.contentOrNull ?: value
                     }
 
+                    val channel =
+                        if (token.kind == "hashtag" && !inLink)
+                            channels.find {
+                                it.text("channel_name") == value.removePrefix("#") &&
+                                    !it.present("deleted_at")
+                            }
+                        else null
                     val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
                     val style =
                         when (token.kind) {
                             "bold" -> SpanStyle(fontWeight = FontWeight.Bold)
                             "italic" -> SpanStyle(fontStyle = FontStyle.Italic)
                             "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-                            "small" -> SpanStyle(fontSize = 11.2.sp)
+                            "small" -> SpanStyle(fontSize = (inheritedSpan.fontSize.value * .8f).sp)
                             "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
-                            "mention" ->
+                            "mention" -> if (inLink) SpanStyle() else
                                 SpanStyle(
                                     color = mentionForeground,
                                     background = mentionBackground,
                                     fontWeight = FontWeight.Medium,
                                 )
-                            "hashtag",
+                            "hashtag" -> if (channel == null) SpanStyle() else SpanStyle(color = accent)
                             "link" -> SpanStyle(color = accent)
                             else -> SpanStyle()
                         }
-                    val channel =
-                        if (token.kind == "hashtag")
-                            channels.find {
-                                it.text("channel_name") == value.removePrefix("#") &&
-                                    !it.present("deleted_at")
-                            }
-                        else null
                     val remote =
-                        if (token.kind == "mention" && value.count { it == '@' } == 2)
+                        if (!inLink && token.kind == "mention" && value.count { it == '@' } == 2)
                             value.drop(1).split('@').takeIf { it.size == 2 && it[1].contains('.') }
                         else null
-                    val link =
+                    val link = if (inLink) null else
                         token.url
                             ?: channel?.let { "/channels/${it.text("id")}" }
                             ?: remote?.let { "https://${it[1]}/@${it[0]}" }
-                    if (token.kind == "mention" && link == null) {
+                    if (token.kind == "mention" && link == null && !inLink) {
                         val id = "mention-${mentions.size}"
                         mentions[id] = value
                         appendInlineContent(id, value)
@@ -391,7 +324,9 @@ private fun InlineParagraph(
                             )
                         ) {
                             withStyle(style) {
-                                append(
+                                if (token.kind == "link" && token.value != token.url && level + depth < 20)
+                                    write(value, level + 1, inlineWeight, inheritedSpan.merge(style), true)
+                                else append(
                                     fontText(
                                         if (token.kind == "link" && token.value == token.url)
                                             value.replace(
@@ -407,138 +342,183 @@ private fun InlineParagraph(
                         }
                     else
                         withStyle(style) {
-                            if (token.kind in setOf("bold", "italic", "strike", "small") && level < 8)
-                                write(value, level + 1, inlineWeight)
+                            if ((token.kind in setOf("bold", "italic", "strike", "small") ||
+                                    (token.kind == "link" && token.value != token.url)) && level + depth < 20)
+                                write(value, level + 1, inlineWeight, inheritedSpan.merge(style), inLink)
                             else if (token.kind == "code") append(value)
                             else append(fontText(value, fonts, inlineWeight))
                         }
                 }
             }
-            segments.forEachIndexed { index, segment ->
-                if (segment.second) appendInlineContent(index.toString(), segment.first)
-                else write(segment.first)
-            }
+            write(segments.joinToString("") { it.first })
             if (editedAt != null) {
                 append(" ")
                 appendInlineContent("edited", " ")
             }
         }
-        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap())
+        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap(), embeddedParts.toMap())
     }
     val text = paragraph.text
     val mentions = paragraph.mentions
     val emojiParts = paragraph.emojiParts
     val accountParts = paragraph.accountParts
-    val content =
-        embedded.mapValues { (id, source) ->
-            val measured = sizes[id]
-            val width =
-                measured?.let { with(density) { it.width.toSp() } }
-                    ?: (source.length * 7).coerceIn(16, 600).sp
-            val height = measured?.let { with(density) { it.height.toSp() } } ?: 20.sp
-            androidx.compose.foundation.text.InlineTextContent(
-                Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)
+    val embeddedContent = paragraph.embeddedParts.mapValues { (_, embedded) ->
+        val source = embedded.source
+        val ruby = source.startsWith("$[") && mfmFunction(source.drop(2).dropLast(1)).name == "ruby"
+        MfmInlineBody(if (ruby) PlaceholderVerticalAlign.TextBottom else PlaceholderVerticalAlign.TextCenter) {
+            CompositionLocalProvider(
+                LocalMfmStyle provides inheritedStyle.merge(embedded.style),
+                LocalMfmInline provides true,
+                LocalMfmInLink provides embedded.inLink,
             ) {
-                Box(
-                    Modifier.wrapContentSize(unbounded = true)
-                        .then(Modifier.onSizeChanged { sizes[id] = it })
-                ) {
-                    if (source.startsWith("$["))
-                        MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
-                    else if (source.startsWith("<plain>")) Text(source.drop(7).dropLast(8))
-                    else MathInline(source.drop(2).dropLast(2))
-                }
+                if (source.startsWith("$[")) MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
+                else MathInline(source.drop(2).dropLast(2))
             }
         }
-    val mentionContent =
-        mentions.mapValues { (id, value) ->
-            val measured = sizes[id]
-            androidx.compose.foundation.text.InlineTextContent(
-                Placeholder(
-                    measured?.let { with(density) { it.width.toSp() } }
-                        ?: (value.length * 7 + 4).sp,
-                    measured?.let { with(density) { it.height.toSp() } } ?: 20.sp,
-                    PlaceholderVerticalAlign.TextCenter,
+    }
+    val mentionContent = mentions.mapValues { (_, value) ->
+        MfmInlineBody(PlaceholderVerticalAlign.TextCenter) {
+            val account = authzAccounts.find { it.text("username") == value.removePrefix("@") }
+            Row(
+                Modifier.background(mentionBackground, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (account != null) {
+                    Text("@", color = mentionForeground)
+                    Avatar(account, size = with(density) { inheritedStyle.fontSize.toDp() })
+                }
+                androidx.compose.material3.Text(
+                    fontText(account?.let(::author) ?: value, fonts, FontWeight.Medium),
+                    color = mentionForeground,
+                    style = inheritedStyle.copy(fontFamily = fonts.latin, lineHeight = TextUnit.Unspecified),
+                    fontWeight = FontWeight.Medium,
                 )
-            ) {
-                val account = authzAccounts.find { it.text("username") == value.removePrefix("@") }
-                Row(
-                    Modifier.wrapContentSize(unbounded = true)
-                        .onSizeChanged { sizes[id] = it }
-                        .background(mentionBackground, RoundedCornerShape(4.dp))
-                        .padding(horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    if (account != null) {
-                        Text("@", color = mentionForeground)
-                        Avatar(account, size = 18.dp)
-                    }
-                    androidx.compose.material3.Text(
-                        fontText(account?.let(::author) ?: value, fonts, FontWeight.Medium),
-                        color = mentionForeground,
-                        style = MaterialTheme.typography.bodyMedium.merge(inheritedStyle)
-                            .copy(fontFamily = fonts.latin, lineHeight = TextUnit.Unspecified),
-                        fontWeight = FontWeight.Medium,
-                    )
-                }
             }
         }
+    }
+    val fixedContent = emojiParts.mapValues { (_, emoji) ->
+        androidx.compose.foundation.text.InlineTextContent(
+            Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            ActivityPubEmoji(emoji, with(density) { (inheritedStyle.fontSize.value * 1.5f).sp.toDp() })
+        }
+    } + accountParts.mapValues { (_, account) ->
+        androidx.compose.foundation.text.InlineTextContent(
+            Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            Avatar(account,
+                modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" },
+                size = with(density) { (inheritedStyle.fontSize.value * 1.15f).sp.toDp() })
+        }
+    } + if (editedAt != null) mapOf(
+        "edited" to androidx.compose.foundation.text.InlineTextContent(
+            Placeholder(12.sp, 12.sp, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            Hint("${app.t("messages.edited")} · ${app.platform.fullTimestamp(editedAt)}") { hintModifier ->
+                Icon("pencil", app.t("messages.edited"), hintModifier.size(12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    ) else emptyMap()
     val paragraphLayout = remember { arrayOfNulls<TextLayoutResult>(1) }
     val currentText by rememberUpdatedState(text)
-    InlineLinks(text) { displayText, linkLayout ->
-        androidx.compose.material3.Text(
-            displayText,
-            modifier =
-                Modifier.preventMessageHold { position ->
+    MeasuredMfmParagraph(text, embeddedContent + mentionContent, fixedContent) { inlineContent, reportLayout ->
+        fun inSp(unit: TextUnit): Float =
+            if (unit.isEm) unit.value * inheritedStyle.fontSize.value else unit.value
+        val tallInline = inheritedStyle.lineHeight != TextUnit.Unspecified &&
+            inlineContent.values.any { inSp(it.placeholder.height) > inSp(inheritedStyle.lineHeight) }
+        // Android caches fixed/minimum line-height metrics from the first line. A later tall
+        // replacement span must use natural metrics, otherwise its height is overwritten.
+        val paragraphStyle = if (tallInline) inheritedStyle.copy(lineHeight = TextUnit.Unspecified)
+            else inheritedStyle
+        InlineLinks(text) { displayText, linkLayout ->
+            androidx.compose.material3.Text(
+                displayText,
+                modifier = Modifier.preventMessageHold { position ->
                     paragraphLayout[0]?.let {
                         val offset = it.getOffsetForPosition(position)
                         currentText.getLinkAnnotations(offset, offset).isNotEmpty()
                     } ?: false
                 },
-            onTextLayout = {
-                paragraphLayout[0] = it
-                linkLayout(it)
-            },
-            maxLines = maxLines,
-            overflow = TextOverflow.Ellipsis,
-            inlineContent =
-                content +
-                    emojiParts.mapValues { (_, emoji) ->
-                        androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
-                            ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() })
-                        }
-                    } +
-                    accountParts.mapValues { (_, account) ->
-                        androidx.compose.foundation.text.InlineTextContent(Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)) {
-                            Avatar(account, modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" }, size = with(density) { 18.sp.toDp() })
-                        }
-                    } +
-                    mentionContent +
-                    if (editedAt != null)
-                        mapOf(
-                            "edited" to
-                                androidx.compose.foundation.text.InlineTextContent(
-                                    Placeholder(12.sp, 12.sp, PlaceholderVerticalAlign.TextCenter)
-                                ) {
-                                    Hint(
-                                        "${app.t("messages.edited")} · ${app.platform.fullTimestamp(editedAt)}"
-                                    ) { hintModifier ->
-                                        Icon(
-                                            "pencil",
-                                            app.t("messages.edited"),
-                                            hintModifier.size(12.dp),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                        )
-                    else emptyMap(),
-            style = MaterialTheme.typography.bodyMedium.merge(inheritedStyle),
-            color =
-                inheritedStyle.color.takeIf { it != androidx.compose.ui.graphics.Color.Unspecified }
+                onTextLayout = {
+                    paragraphLayout[0] = it
+                    reportLayout(it)
+                    linkLayout(it)
+                },
+                maxLines = maxLines,
+                overflow = TextOverflow.Ellipsis,
+                inlineContent = inlineContent,
+                style = paragraphStyle,
+                color = inheritedStyle.color.takeIf { it != Color.Unspecified }
                     ?: MaterialTheme.colorScheme.onBackground,
-        )
+            )
+        }
+    }
+}
+
+private class MfmInlineBody(
+    val alignment: PlaceholderVerticalAlign,
+    val children: @Composable () -> Unit,
+)
+
+/** Measure each body once, then lay out the paragraph with its final placeholder dimensions. */
+@Composable
+private fun MeasuredMfmParagraph(
+    text: AnnotatedString,
+    bodies: Map<String, MfmInlineBody>,
+    fixed: Map<String, androidx.compose.foundation.text.InlineTextContent>,
+    content: @Composable (Map<String, androidx.compose.foundation.text.InlineTextContent>, (TextLayoutResult) -> Unit) -> Unit,
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val textLayout = remember(text) { arrayOfNulls<TextLayoutResult>(1) }
+    val linksEnabled = LocalInlineLinksEnabled.current
+    SubcomposeLayout { constraints ->
+        val measured = bodies.mapValues { (id, body) ->
+            subcompose("body-$id") { Box { body.children() } }.single()
+                .measure(Constraints(maxWidth = constraints.maxWidth))
+        }
+        val placeholders = measured.mapValues { (id, child) ->
+            androidx.compose.foundation.text.InlineTextContent(
+                Placeholder(
+                    with(density) { child.width.coerceAtLeast(1).toSp() },
+                    with(density) { child.height.coerceAtLeast(1).toSp() },
+                    bodies.getValue(id).alignment,
+                )
+            ) {}
+        } + fixed
+        val paragraph = subcompose("paragraph") {
+            content(placeholders) { textLayout[0] = it }
+        }.single().measure(constraints)
+        val ranges = text.getStringAnnotations(0, text.length)
+            .filter { it.item in placeholders }
+        val ids = ranges.map { it.item }
+        // Measured bodies are siblings of the paragraph, so its link overlay cannot
+        // receive their taps. Put the same native link above each linked body.
+        val bodyLinks = ranges.mapNotNull { range ->
+            if (!linksEnabled) return@mapNotNull null
+            val body = measured[range.item] ?: return@mapNotNull null
+            val url = text.getLinkAnnotations(range.start, range.end)
+                .mapNotNull { (it.item as? LinkAnnotation.Url)?.url }.firstOrNull()
+                ?: return@mapNotNull null
+            range.item to subcompose("link-${range.item}") {
+                NativeLink(url, Modifier.semantics { contentDescription = url }) {}
+            }.single().measure(Constraints.fixed(body.width, body.height))
+        }.toMap()
+        val positions = textLayout[0]?.placeholderRects.orEmpty()
+        layout(paragraph.width, paragraph.height) {
+            paragraph.place(0, 0)
+            ids.forEachIndexed { index, id ->
+                val bounds = positions.getOrNull(index)
+                val body = measured[id]
+                // A truncated placeholder has no rectangle and must not draw or receive taps.
+                if (bounds != null && body != null) {
+                    body.place(bounds.left.roundToInt(), bounds.top.roundToInt())
+                    bodyLinks[id]?.place(bounds.left.roundToInt(), bounds.top.roundToInt())
+                }
+            }
+        }
     }
 }
 
@@ -1040,76 +1020,6 @@ fun EmojiPicker(
                 ),
             content = content,
         )
-}
-
-/** Find balanced MFM functions without swallowing nested closing brackets. */
-fun richSegments(source: String): List<Pair<String, Boolean>> {
-    val result = mutableListOf<Pair<String, Boolean>>()
-    var at = 0
-    var plain = 0
-    while (at < source.length) {
-        if (source[at] == '`' && !source.startsWith("```", at)) {
-            val end = source.indexOf('`', at + 1)
-            val newline = source.indexOf('\n', at + 1).let { if (it < 0) source.length else it }
-            if (end >= 0 && end < newline) {
-                at = end + 1
-                continue
-            }
-        }
-        if ((at == 0 || source[at - 1] == '\n') && source[at] == '>') {
-            var end = source.indexOf('\n', at).let { if (it < 0) source.length else it }
-            while (end < source.length && source.getOrNull(end + 1) == '>') end =
-                source.indexOf('\n', end + 1).let { if (it < 0) source.length else it }
-            if (at > plain) result += source.substring(plain, at) to false
-            result += source.substring(at, end) to true
-            at = end
-            plain = end
-            continue
-        }
-        val opener =
-            when {
-                source.startsWith("```", at) -> "```" to "```"
-                source.startsWith("<plain>", at) -> "<plain>" to "</plain>"
-                source.startsWith("\\[", at) -> "\\[" to "\\]"
-                source.startsWith("\\(", at) -> "\\(" to "\\)"
-                source.startsWith("<center>", at) -> "<center>" to "</center>"
-                source.startsWith("$[", at) -> "$[" to "]"
-                else -> null
-            }
-        if (opener == null) {
-            at++
-            continue
-        }
-        var end = -1
-        if (opener.first == "$[") {
-            var depth = 1
-            var cursor = at + 2
-            while (cursor < source.length && depth > 0) {
-                if (source.startsWith("$[", cursor)) {
-                    depth++
-                    cursor += 2
-                } else {
-                    if (source[cursor] == ']') depth--
-                    cursor++
-                }
-            }
-            if (depth == 0) end = cursor
-        } else
-            source
-                .indexOf(opener.second, at + opener.first.length)
-                .takeIf { it >= 0 }
-                ?.let { end = it + opener.second.length }
-        if (end < 0) {
-            at += opener.first.length
-            continue
-        }
-        if (at > plain) result += source.substring(plain, at) to false
-        result += source.substring(at, end) to true
-        at = end
-        plain = end
-    }
-    if (plain < source.length) result += source.substring(plain) to false
-    return result
 }
 
 /** Mirror the server-owned integration card envelope; invalid data keeps the original text. */

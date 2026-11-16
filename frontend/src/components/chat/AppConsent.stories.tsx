@@ -30,6 +30,7 @@ const meta = {
     msw: { handlers: [http.get("*/api/apps/consent-story", () => HttpResponse.json(app))] },
   },
   beforeEach: () => {
+    localStorage.setItem("zoo:onboarding:v1:user-alice", "done");
     const original = window.location.href;
     const url = new URL(original);
     const params = {

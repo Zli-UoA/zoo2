@@ -1,3 +1,6 @@
+import { ShellSkeleton } from "./ShellSkeleton";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { OnboardingProvider } from "./OnboardingTour";
 import "./navigation";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -37,7 +40,7 @@ import { useVisualViewport } from "./useVisualViewport";
  * メンバーの既定は閉じ。このコンポーネントは Electric のコレクションを触るため、
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
-export function AppShell({ children }: { children: ReactNode }) {
+function AppShellContent({ children }: { children: ReactNode }) {
   const accounts = useAuthZAccounts();
   usePresence();
   const viewportRef = useVisualViewport();
@@ -295,5 +298,44 @@ export function AppShell({ children }: { children: ReactNode }) {
         </ShellContext.Provider>
       </PwaProvider>
     </SearchPreferencesProvider>
+  );
+}
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const channelId = useRouterState({
+    select: (state) => {
+      const id = state.location.pathname.startsWith("/channels/")
+        ? state.location.pathname.split("/")[2]
+        : null;
+      return isUuid(id) ? id : null;
+    },
+  });
+  const lastChannel = useRef<string | null>(null);
+  useEffect(() => {
+    if (channelId) lastChannel.current = channelId;
+  }, [channelId]);
+  const { currentUserId, isLoading } = useCurrentUser();
+  if (isLoading && currentUserId === null) return <ShellSkeleton />;
+  return (
+    <OnboardingProvider
+      key={currentUserId ?? "anonymous"}
+      userId={currentUserId}
+      channelSelected={!!channelId}
+      onStepChange={async (step) => {
+        if (step === "welcome" || step === "channels") await router.navigate({ to: "/" });
+        if (step === "messages" && lastChannel.current)
+          await router.navigate({
+            to: "/channels/$channelId",
+            params: { channelId: lastChannel.current },
+          });
+        if (step === "notifications") await router.navigate({ to: "/notifications" });
+        if (step === "slack") await router.navigate({ to: "/settings", search: { tab: "slack" } });
+        if (step === "settings")
+          await router.navigate({ to: "/settings", search: { tab: "general" } });
+      }}
+    >
+      <AppShellContent>{children}</AppShellContent>
+    </OnboardingProvider>
   );
 }
