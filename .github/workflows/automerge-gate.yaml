@@ -5,11 +5,10 @@ on:
     types: [opened, synchronize, reopened, auto_merge_enabled, auto_merge_disabled]
   pull_request_target:
     types: [opened, synchronize, reopened, auto_merge_enabled, auto_merge_disabled]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
   workflow_run:
     # Explicit list excludes this gate itself and prevents event recursion.
     workflows:
+      - "PR review relay"
       - "CI"
       - "CI Android"
       - "CI Crypto"
@@ -30,7 +29,7 @@ on:
   check_run:
     types: [created, completed, rerequested]
   check_suite:
-    types: [completed, rerequested]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pull_number:
@@ -42,15 +41,47 @@ permissions:
   contents: read
 
 jobs:
-  gate:
+  resolve:
     if: >-
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
       (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name != github.repository) &&
       (github.event_name != 'check_run' || github.event.check_run.app.slug != 'github-actions') &&
       (github.event_name != 'check_suite' || github.event.check_suite.app.slug != 'github-actions')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      numbers: ${{ steps.prs.outputs.numbers }}
+      has_prs: ${{ steps.prs.outputs.has_prs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.sha || github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          sparse-checkout: .github
+          persist-credentials: false
+      - id: prs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const {resolvePullRequestNumbers} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/automerge-gate.mjs`);
+            const numbers = await resolvePullRequestNumbers({github, context});
+            core.setOutput('numbers', JSON.stringify(numbers));
+            core.setOutput('has_prs', numbers.length > 0);
+
+  gate:
+    needs: resolve
+    if: needs.resolve.outputs.has_prs == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        number: ${{ fromJSON(needs.resolve.outputs.numbers) }}
     concurrency:
-      group: gate-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.event.check_run.head_sha || github.event.check_suite.head_sha || inputs.pull_number || github.sha }}
-      cancel-in-progress: true
+      # Dispatch, PR, review relay and CI events use the same PR identifier.
+      # Never cancel a writer; newer pending snapshots may replace older ones.
+      group: gate-${{ github.repository }}-pr-${{ matrix.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -60,21 +91,18 @@ jobs:
       pull-requests: read
       actions: read
     steps:
-      # Privileged workflow_run/fork events only execute trusted default-branch
-      # code. Same-repository PRs/reviews and explicit dispatch can validate gate edits.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.head.repo.full_name == github.repository && github.sha || github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.sha || github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
           sparse-checkout: .github
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24
       - name: Gate regression tests
         run: node --test .github/scripts/automerge-gate.test.mjs
       - name: Evaluate once and release the runner
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          PR_NUMBER: ${{ matrix.number }}
         with:
           script: |
             const {default: gate} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/automerge-gate.mjs`);
-            await gate({github, context, core});
+            await gate({github, context, core, pullNumber: Number(process.env.PR_NUMBER)});

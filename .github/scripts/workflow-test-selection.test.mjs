@@ -68,3 +68,10 @@ test('Tauri Linux-only edits do not select macOS; frontend proxy-only edits need
   assert.equal(plan.frontend.browser, false);
   assert.deepEqual(plan.frontendBuild, { check: false, build: false, wasm: false });
 });
+
+test('needs parses its entire multiline block, including comments and later entries', () => {
+  const multiline = source.replaceAll('needs: [runner, test-selection]', 'needs:\n      - runner\n      # selection output\n      - test-selection');
+  assert.deepEqual([...jobClosure(multiline, new Set(['test-selection']))].sort(), ['check', 'deploy-image', 'e2e', 'runner', 'test-selection']);
+  assert.equal(jobClosure(multiline.replace('      - test-selection', '      unexpected: test-selection'), new Set(['runner'])), null);
+  assert.equal(jobClosure(multiline.replace('      - test-selection', '      - *unknown'), new Set(['runner'])), null);
+});

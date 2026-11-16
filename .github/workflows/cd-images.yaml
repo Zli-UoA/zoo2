@@ -2,51 +2,9 @@ name: Publish images
 on:
   push:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - "backend/**"
-      - "crates/zoo-crypto/**"
-      - "crates/zoo-crypto-wasm/**"
-      - "rust-toolchain.toml"
-      - "docs/slack-event-coverage.json"
-      - "infra/db/**"
-      - "infra/Dockerfile-frontend-deploy*"
-      - "infra/Dockerfile-backend-deploy*"
-      - "infra/Dockerfile-migrate-deploy*"
-      - "infra/frontend-nginx.conf"
-      - "infra/frontend-entrypoint.sh"
-      - "infra/csp-hashes.mjs"
-      - ".dockerignore"
-      - ".github/scripts/image-plan.mjs"
-      - ".github/scripts/image-cleanup.mjs"
-      - ".github/scripts/images.test.mjs"
-      - ".github/scripts/select-runner.test.mjs"
-      - ".github/workflows/select-runner.yaml"
-      - ".github/workflows/cd-images.yaml"
   pull_request:
     # labeled publishes the tags a PR opened before the preview existed may lack.
     types: [opened, synchronize, reopened, labeled]
-    paths:
-      - "frontend/**"
-      - "backend/**"
-      - "crates/zoo-crypto/**"
-      - "crates/zoo-crypto-wasm/**"
-      - "rust-toolchain.toml"
-      - "docs/slack-event-coverage.json"
-      - "infra/db/**"
-      - "infra/Dockerfile-frontend-deploy*"
-      - "infra/Dockerfile-backend-deploy*"
-      - "infra/Dockerfile-migrate-deploy*"
-      - "infra/frontend-nginx.conf"
-      - "infra/frontend-entrypoint.sh"
-      - "infra/csp-hashes.mjs"
-      - ".dockerignore"
-      - ".github/scripts/image-plan.mjs"
-      - ".github/scripts/image-cleanup.mjs"
-      - ".github/scripts/images.test.mjs"
-      - ".github/scripts/select-runner.test.mjs"
-      - ".github/workflows/select-runner.yaml"
-      - ".github/workflows/cd-images.yaml"
   workflow_dispatch:
 permissions:
   contents: read

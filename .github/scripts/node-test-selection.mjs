@@ -25,7 +25,7 @@ export function selectNodeTests(entries, changes, { compiler, read = path => rea
       if (compiler.isImportDeclaration(node) || compiler.isExportDeclaration(node)) {
         if (node.isTypeOnly || node.importClause?.isTypeOnly) return;
         const clause = node.importClause;
-        if (clause && !clause.name && clause.namedBindings && compiler.isNamedImports(clause.namedBindings) && clause.namedBindings.elements.every(e => e.isTypeOnly)) return;
+        if (clause && !clause.name && clause.namedBindings && compiler.isNamedImports(clause.namedBindings) && clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every(e => e.isTypeOnly)) return;
         if (node.moduleSpecifier) imports.push(node.moduleSpecifier.text);
       } else if (compiler.isCallExpression(node) && (node.expression.kind === compiler.SyntaxKind.ImportKeyword || node.expression.getText(ast) === 'require')) {
         if (!node.arguments[0] || !compiler.isStringLiteral(node.arguments[0])) throw new Error('Computed import');

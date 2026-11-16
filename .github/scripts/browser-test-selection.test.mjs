@@ -48,6 +48,23 @@ test('parameterized cases use Playwright location, but unknown Vitest titles rem
   assert.deepEqual(selectChangedCases(source, source, hunks, compiler, { requireTitle: false }), [{ start: 3, end: 5, title: null }]);
 });
 
+test('deleting a line in a later duplicate title selects its position, not the first title', () => {
+  const source = `describe('one', () => {
+  test('same', () => {
+    expect(1).toBe(1);
+  });
+});
+describe('two', () => {
+  test('same', () => {
+    const removed = 1;
+    expect(2).toBe(2);
+  });
+});
+`;
+  const result = selectChangedCases(source, source.replace('    const removed = 1;\n', ''), parseHunks('@@ -8 +7,0 @@'), compiler, { requireTitle: false });
+  assert.deepEqual(result, [{ start: 7, end: 9, title: 'same' }]);
+});
+
 const gitFor = (path, diff = '@@ -4 +4 @@') => (command, args) => {
   if (args[0] === 'cat-file') return '';
   if (args[0] === 'show') return args[1].startsWith('HEAD:') ? after : before;
@@ -128,4 +145,33 @@ test('Vite URL resources and frontend aliases resolve to file dependencies; type
   const options = { compiler, frontendAliases: true, read: path => sources[path], exists: path => Object.hasOwn(sources, path) };
   assert.deepEqual(selectNodeTests(['frontend/test.ts'], [{ status: 'M', path: 'frontend/src/data.ts' }], options), ['frontend/test.ts']);
   assert.deepEqual(selectNodeTests(['frontend/test.ts'], [{ status: 'M', path: 'frontend/unused.ts' }], options), []);
+});
+
+test('empty named imports retain their runtime side-effect dependency', () => {
+  const sources = { 'test.mjs': 'import {} from "./shared.mjs";', 'shared.mjs': 'globalThis.loaded = true;' };
+  assert.deepEqual(selectNodeTests(['test.mjs'], [{ status: 'M', path: 'shared.mjs' }], {
+    compiler, read: path => sources[path], exists: path => Object.hasOwn(sources, path),
+  }), ['test.mjs']);
+});
+
+test('shared assignments retain dependencies and computed object names prevent case narrowing', () => {
+  const path = 'frontend/src/First.tsx', testPath = 'frontend/src/example.vrt.test.tsx';
+  const sources = {
+    [path]: 'export function First(){return "new";}',
+    [testPath]: `import {First} from './First';
+import {test} from 'vitest';
+let renderer;
+renderer = First;
+test('first', () => {
+  renderer();
+});
+`,
+  };
+  const related = { mode: 'related', files: ['src/First.tsx'] };
+  const options = { compiler, files: [testPath], read: path => sources[path], exists: path => Object.hasOwn(sources, path), git: () => 'export function First(){return "old";}' };
+  assert.deepEqual(selectSourceCases('vrt', related, [{ status: 'M', path }], base, options).patterns, ['(?:^| )first$']);
+  for (const expression of ['{ [initialize()]: 0 }', '{ [initialize()]() { return 0; } }']) {
+    sources[path] = `export const state = ${expression}; export function First(){return "new";}`;
+    assert.equal(selectSourceCases('vrt', related, [{ status: 'M', path }], base, options).patterns, undefined);
+  }
 });

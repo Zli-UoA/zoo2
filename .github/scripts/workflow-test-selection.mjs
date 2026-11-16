@@ -44,13 +44,33 @@ export function jobClosure(source, changed) {
   if (!jobs || changed === null) return null;
   const dependencies = new Map();
   for (const job of jobs) {
-    let needs = job.text.match(/^    needs: ([^\n]+)$/m)?.[1];
-    if (needs?.includes('${{')) return null;
-    if (needs) needs = needs.replace(/[\[\]"']/g, '').split(',').map(s => s.trim());
-    else {
-      const block = job.text.match(/^    needs:\s*\n((?:      - [\w-]+\s*\n)+)/m)?.[1];
-      if (/^    needs:/m.test(job.text) && !block) return null;
-      needs = [...(block ?? '').matchAll(/- ([\w-]+)/g)].map(m => m[1]);
+    const lines = job.text.split('\n');
+    const indexes = lines.flatMap((line, i) => /^    needs:/.test(line) ? [i] : []);
+    if (indexes.length > 1) return null;
+    let needs = [];
+    if (indexes.length) {
+      const i = indexes[0];
+      const value = lines[i].replace(/^    needs:\s*/, '').replace(/\s+#.*$/, '').trim();
+      if (value) {
+        const match = value.match(/^(?:\[([^\]]*)\]|([\w-]+|"[\w-]+"|'[\w-]+'))$/);
+        if (!match) return null;
+        const values = match[1] === undefined ? [match[2]] : match[1].split(',');
+        if (values.length === 1 && !values[0].trim()) needs = [];
+        else {
+          if (values.some(v => !/^["']?[\w-]+["']?$/.test(v.trim()))) return null;
+          needs = values.map(v => v.trim().replace(/^["']|["']$/g, ''));
+        }
+      } else {
+        for (let j = i + 1; j < lines.length; j++) {
+          const line = lines[j];
+          if (!line.trim() || line.trimStart().startsWith('#')) continue;
+          if (/^ {0,4}\S/.test(line)) break;
+          const match = line.match(/^      - ([\w-]+|"[\w-]+"|'[\w-]+')\s*(?:#.*)?$/);
+          if (!match) return null;
+          needs.push(match[1].replace(/^["']|["']$/g, ''));
+        }
+        if (!needs.length) return null;
+      }
     }
     if (needs.some(id => !jobs.some(j => j.id === id))) return null;
     dependencies.set(job.id, needs);

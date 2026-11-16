@@ -78,6 +78,21 @@ export async function promotedMainSha(github, org) {
   return sha;
 }
 
+export async function mainRequiresImages(github, repo, sha) {
+  let promoted;
+  try { promoted = await promotedMainSha(github, repo.owner); }
+  catch (error) {
+    if (error.status === 404 || /has no main commit tag/.test(error.message)) return true;
+    throw error;
+  }
+  if (promoted === sha) return false;
+  const { data } = await github.rest.repos.compareCommitsWithBasehead({ ...repo, basehead: `${promoted}...${sha}`, per_page: 100 });
+  // Compare truncates its file list at 300. Unknown/diverged history and
+  // truncated diffs must build, rather than hide an unpromoted application.
+  if (!['ahead', 'identical'].includes(data.status) || !Array.isArray(data.files) || data.files.length >= 300) return true;
+  return pullRequestComponents(data.files).length > 0;
+}
+
 // ビルド計画を作り、ジョブの出力に渡す。
 // - main への push・手動実行: 全コンポーネントをビルドし、タグは `<SHA>`
 // - PR: 変更のあるコンポーネントだけをビルドする。タグは全コンポーネントで `pr-<番号>-<SHA>` にそろえ、
@@ -92,6 +107,10 @@ export default async function plan({github, context, core}) {
     return;
   }
   let selected = components;
+  if (!pr && context.eventName === 'push' && !await mainRequiresImages(github, context.repo, context.sha)) {
+    core.setOutput('enabled', 'false');
+    return;
+  }
   if (pr) {
     // イベントの発生後に PR が close・更新されていれば、古いコミットはビルドしない。
     const {data: current} = await github.rest.pulls.get({...context.repo, pull_number: pr.number});

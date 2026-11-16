@@ -15,7 +15,8 @@ function pureModule(source, ts) {
     ts.isArrowFunction(node) || ts.isFunctionExpression(node) ||
     ((ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isParenthesizedExpression(node)) && pure(node.expression)) ||
     (ts.isArrayLiteralExpression(node) && node.elements.every(pure)) ||
-    (ts.isObjectLiteralExpression(node) && node.properties.every(p => ts.isPropertyAssignment(p) ? pure(p.initializer) : ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p)));
+    (ts.isObjectLiteralExpression(node) && node.properties.every(p =>
+      !(p.name && ts.isComputedPropertyName(p.name)) && (ts.isPropertyAssignment(p) ? pure(p.initializer) : ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p))));
   return ast.statements.every(s => ts.isImportDeclaration(s) || ts.isExportDeclaration(s) || ts.isFunctionDeclaration(s) ||
     ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isEmptyStatement(s) ||
     (ts.isExpressionStatement(s) && ts.isStringLiteral(s.expression)) ||
@@ -28,6 +29,10 @@ export function caseDependencies(source, ts) {
   const imports = new Map(), declarations = new Map(), shared = [], cases = [];
   let aliasedRunner = false;
   function collect(node) {
+    if (ts.isExpressionStatement(node) && !ts.isCallExpression(node.expression)) shared.push({ node });
+    if (ts.isIfStatement(node) || ts.isSwitchStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) shared.push({ node: node.expression });
+    if (ts.isForStatement(node)) for (const expression of [node.initializer, node.condition, node.incrementor]) if (expression) shared.push({ node: expression });
+    if (ts.isForOfStatement(node) || ts.isForInStatement(node)) shared.push({ node: node.expression });
     if (ts.isImportDeclaration(node)) {
       const spec = node.moduleSpecifier.text;
       const clause = node.importClause;

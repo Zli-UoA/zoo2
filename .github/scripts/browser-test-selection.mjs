@@ -64,7 +64,13 @@ export function selectChangedCases(before, after, hunks, ts, { requireTitle = tr
     const oldCase = hunk.before.count ? containing(oldCases, hunk.before) : null;
     const newCase = hunk.after.count ? containing(newCases, hunk.after) : null;
     if ((hunk.before.count && !oldCase) || (hunk.after.count && !newCase)) return null;
-    const target = newCase ?? (oldCase?.title && newCases.find(c => c.title === oldCase.title));
+    let target = newCase;
+    if (!target && oldCase) {
+      const offset = hunks.filter(h => h.before.start < oldCase.start).reduce((sum, h) => sum + h.after.count - h.before.count, 0);
+      const matches = newCases.filter(c => c.start === oldCase.start + offset && c.title === oldCase.title);
+      if (matches.length !== 1) return null;
+      target = matches[0];
+    }
     if (!target || (requireTitle && target.title === null)) return null;
     // A removed test must not be mistaken for the next remaining test.
     if (oldCase && hunk.before.start <= oldCase.start && hunk.before.start + hunk.before.count - 1 >= oldCase.end && !newCase) return null;

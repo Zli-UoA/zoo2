@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { pullRequestPaths, globToRegExp } from './merge-queue-changes.mjs';
 
 export const ignoredWorkflows = new Set(['automerge-gate.yaml', 'cd-images.yaml', 'cd-preview-label.yaml', 'cd-storybook.yaml']);
@@ -55,7 +56,28 @@ export async function hasMergeIntent(github, repo, pr) {
   return false;
 }
 
-export async function evaluatePullRequest({ github, repo, number, workflows, targetUrl }) {
+export async function pullRequestWorkflows(github, repo, pr, localWorkflows = []) {
+  const ref = pr.merge_commit_sha;
+  if (!/^[a-f0-9]{40}$/.test(ref ?? '')) throw new Error('PR merge result is not ready');
+  let files;
+  try {
+    ({ data: files } = await github.rest.repos.getContent({ ...repo, path: '.github/workflows', ref }));
+  } catch (error) { if (error.status === 404) return []; throw error; }
+  if (!Array.isArray(files)) throw new Error('Expected workflow directory');
+  const local = new Map(localWorkflows.map(w => [basename(w.path), w.source]));
+  return Promise.all(files.filter(f => f.type === 'file' && /\.ya?ml$/.test(f.name)).map(async file => {
+    const source = local.get(file.name);
+    const hash = source === undefined ? null : createHash('sha1').update(`blob ${Buffer.byteLength(source)}\0`).update(source).digest('hex');
+    if (hash === file.sha) return { path: file.path, source };
+    const { data } = await github.rest.git.getBlob({ ...repo, file_sha: file.sha });
+    if (data.encoding !== 'base64') throw new Error('Expected base64 workflow blob');
+    // Workflow definitions from the merge result are data only: never import,
+    // eval, or check out their code in this privileged workflow.
+    return { path: file.path, source: Buffer.from(data.content, 'base64').toString('utf8') };
+  }));
+}
+
+export async function evaluatePullRequest({ github, repo, number, workflows, loadWorkflows, targetUrl }) {
   const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: number });
   if (pr.state !== 'open') return { state: 'skipped' };
   const sha = pr.head.sha;
@@ -83,14 +105,15 @@ export async function evaluatePullRequest({ github, repo, number, workflows, tar
       const list = await github.paginate(github.rest.checks.listForSuite, { ...repo, check_suite_id: suite.id, per_page: 100 });
       return list.map(check => ({ ...check, suite_id: suite.id }));
     }))).flat();
-    return publish(aggregateChecks(checks, runs, expectedWorkflows(files.map(f => f.filename), workflows)));
+    const definitions = loadWorkflows ? await loadWorkflows(pr) : workflows;
+    return publish(aggregateChecks(checks, runs, expectedWorkflows(files.map(f => f.filename), definitions)));
   } catch (error) {
     await publish({ state: 'pending', description: 'Could not read all checks; retry on the next event or manual run' });
     throw error;
   }
 }
 
-export default async function gate({ github, context, core }) {
+export async function resolvePullRequestNumbers({ github, context }) {
   const payload = context.payload;
   let numbers;
   if (context.eventName === 'workflow_dispatch') {
@@ -100,14 +123,24 @@ export default async function gate({ github, context, core }) {
   } else if (payload.pull_request) numbers = [payload.pull_request.number];
   else {
     const sha = payload.workflow_run?.head_sha ?? payload.check_run?.head_sha ?? payload.check_suite?.head_sha;
-    if (!sha) return;
-    const prs = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, { ...context.repo, commit_sha: sha, per_page: 100 });
-    numbers = prs.filter(pr => pr.state === 'open' && pr.head.sha === sha).map(pr => pr.number);
+    if (!sha) return [];
+    const linked = payload.workflow_run?.pull_requests ?? payload.check_run?.pull_requests ?? payload.check_suite?.pull_requests ?? [];
+    const prs = linked.length ? linked : await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, { ...context.repo, commit_sha: sha, per_page: 100 });
+    const current = await Promise.all(prs.map(async pr => (await github.rest.pulls.get({ ...context.repo, pull_number: pr.number })).data));
+    const reviewRelay = payload.workflow_run?.name === 'PR review relay' && linked.length > 0;
+    numbers = current.filter(pr => pr.state === 'open' && (reviewRelay || pr.head.sha === sha || pr.merge_commit_sha === sha)).map(pr => pr.number);
   }
+  return [...new Set(numbers ?? [])];
+}
+
+export default async function gate({ github, context, core, pullNumber }) {
+  const numbers = pullNumber ? [pullNumber] : await resolvePullRequestNumbers({ github, context });
   const dir = new URL('../workflows/', import.meta.url);
   const workflows = readdirSync(dir).filter(p => /\.ya?ml$/.test(p)).map(path => ({ path, source: readFileSync(new URL(path, dir), 'utf8') }));
   for (const number of numbers) {
-    const result = await evaluatePullRequest({ github, repo: context.repo, number, workflows, targetUrl: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` });
+    const result = await evaluatePullRequest({ github, repo: context.repo, number, workflows,
+      loadWorkflows: pr => pullRequestWorkflows(github, context.repo, pr, workflows),
+      targetUrl: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` });
     core.info(`PR #${number}: ${result.state}`);
   }
 }

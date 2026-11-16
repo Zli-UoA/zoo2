@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
-import { aggregateChecks, evaluatePullRequest, expectedWorkflows, hasMergeIntent, ignoredWorkflows } from './automerge-gate.mjs';
+import { createHash } from 'node:crypto';
+import { aggregateChecks, evaluatePullRequest, expectedWorkflows, hasMergeIntent, ignoredWorkflows, pullRequestWorkflows, resolvePullRequestNumbers } from './automerge-gate.mjs';
 
 const run = (overrides = {}) => ({ id: 10, path: '.github/workflows/ci.yaml', event: 'pull_request', check_suite_id: 1, status: 'completed', conclusion: 'success', ...overrides });
 const check = (overrides = {}) => ({ suite_id: 1, name: 'test', status: 'completed', conclusion: 'success', ...overrides });
@@ -115,4 +116,42 @@ test('workflow completion subscription covers every non-optional PR workflow and
   assert.ok(!subscription.includes('"automerge-gate"'));
   assert.ok(!gate.includes('pkgdeps/automerge-gate'));
   assert.match(gate, /timeout-minutes: 5/);
+  assert.match(gate, /group: gate-\$\{\{ github.repository \}\}-pr-\$\{\{ matrix.number \}\}/);
+  assert.match(gate, /cancel-in-progress: false/);
+  assert.match(gate, /check_suite:\n    types: \[completed\]/);
+  assert.ok(subscription.includes('"PR review relay"'));
+  const relay = readFileSync(new URL('pr-review-relay.yaml', dir), 'utf8');
+  assert.match(relay, /permissions: \{\}/);
+  assert.doesNotMatch(relay, /^\s+uses:.*checkout/m);
+});
+
+test('expected workflows use PR merge definitions as data, including deletion and edits', async () => {
+  const source = 'on:\n  pull_request:\n    paths:\n      - "frontend/**"\n';
+  const hash = createHash('sha1').update(`blob ${Buffer.byteLength(source)}\0`).update(source).digest('hex');
+  const local = [{ path: 'deleted.yaml', source }, { path: 'retained.yaml', source }];
+  let fetched = 0;
+  const github = { rest: { repos: { getContent: async params => {
+    assert.equal(params.ref, 'f'.repeat(40));
+    return { data: [
+      { name: 'retained.yaml', path: '.github/workflows/retained.yaml', type: 'file', sha: hash },
+      { name: 'added.yaml', path: '.github/workflows/added.yaml', type: 'file', sha: 'new' },
+    ] };
+  } }, git: { getBlob: async () => {
+    fetched++;
+    return { data: { encoding: 'base64', content: Buffer.from('on:\n  pull_request:\n# globalThis.mustNeverExecute = true').toString('base64') } };
+  } } } };
+  const definitions = await pullRequestWorkflows(github, {}, { merge_commit_sha: 'f'.repeat(40) }, local);
+  assert.deepEqual(expectedWorkflows(['frontend/a.ts'], definitions), ['retained.yaml', 'added.yaml']);
+  assert.equal(fetched, 1);
+  assert.equal(globalThis.mustNeverExecute, undefined);
+  await assert.rejects(pullRequestWorkflows(github, {}, {}, local), /merge result/);
+});
+
+test('manual and workflow/review relay events resolve to the same PR identifier', async () => {
+  const pr = { number: 7, state: 'open', head: { sha: 'a'.repeat(40) }, merge_commit_sha: 'b'.repeat(40) };
+  const github = { rest: { pulls: { get: async () => ({ data: pr }) } } };
+  assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_dispatch', payload: { inputs: { pull_number: '7' } } } }), [7]);
+  assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { name: 'PR review relay', head_sha: pr.merge_commit_sha, pull_requests: [{ number: 7 }] } } } }), [7]);
+  assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { name: 'PR review relay', head_sha: 'c'.repeat(40), pull_requests: [{ number: 7 }] } } } }), [7]);
+  assert.deepEqual(await resolvePullRequestNumbers({ github, context: { eventName: 'workflow_run', repo: {}, payload: { workflow_run: { head_sha: 'c'.repeat(40), pull_requests: [{ number: 7 }] } } } }), []);
 });

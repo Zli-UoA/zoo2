@@ -92,7 +92,8 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan, {promotedMainSha, pullRequestComponents, wantsPreview, hadPreviewChanges} from './image-plan.mjs';
+import plan, {promotedMainSha, pullRequestComponents, wantsPreview, hadPreviewChanges, mainRequiresImages} from './image-plan.mjs';
+import {readFileSync} from 'node:fs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
@@ -186,6 +187,36 @@ test('main plans all images with full SHA tags', async () => {
   assert.deepEqual(JSON.parse(fixture.outputs.aliases), []);
   assert.equal(fixture.outputs.pr, '');
   assert.equal(fixture.outputs.release, '0.0.42');
+});
+
+test('main compares against the last promotion so a later docs push retains pending application changes', async () => {
+  const fixture = planFixture(); fixture.context.payload = {}; fixture.context.eventName = 'push'; fixture.context.runNumber = 42;
+  fixture.github.rest.repos = { compareCommitsWithBasehead: async params => {
+    assert.equal(params.basehead, `${sha(98)}...${sha(99)}`);
+    return { data: { status: 'ahead', files: [{ filename: 'backend/src/main.rs' }, { filename: 'docs/later.md' }] } };
+  } };
+  await plan(fixture);
+  assert.equal(fixture.outputs.enabled, 'true');
+  assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 3);
+  fixture.github.rest.repos.compareCommitsWithBasehead = async () => ({ data: { status: 'ahead', files: [{ filename: 'docs/later.md' }] } });
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), false);
+});
+
+test('truncated main comparisons and new registries build; API permission errors fail', async () => {
+  const fixture = planFixture();
+  fixture.github.rest.repos = { compareCommitsWithBasehead: async () => ({ data: { status: 'ahead', files: Array.from({ length: 300 }, () => ({ filename: 'docs/a.md' })) } }) };
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
+  fixture.github.paginate = async () => [];
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
+  fixture.github.paginate = async () => { throw Object.assign(new Error('forbidden'), { status: 403 }); };
+  await assert.rejects(mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), /forbidden/);
+});
+
+test('image planning cannot be excluded by GitHub path truncation', () => {
+  const workflow = readFileSync(new URL('../workflows/cd-images.yaml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /^    paths:/m);
+  assert.match(workflow, /pull_request:\n/);
+  assert.match(workflow, /push:\n    branches: \[main\]/);
 });
 
 import cleanup from './image-cleanup.mjs';
