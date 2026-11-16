@@ -2,9 +2,14 @@ package zoo
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -45,6 +50,90 @@ class ReviewRegressionUiTest {
             scope, initial,
         )
         fun close() { app.close(); scope.cancel() }
+    }
+
+    @Test
+    fun aDownConsumedByTheScrollingParentDoesNotNavigateOnRelease() {
+        val fixture = Fixture(Environment(path = "/home", touch = true))
+        var stoppingScroll = true
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Box(Modifier.size(320.dp).pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(false, PointerEventPass.Main)
+                                // LazyColumn consumes this down when a finger stops its fling.
+                                if (stoppingScroll) down.consume()
+                                waitForUpOrCancellation()
+                            }
+                        }) {
+                            NativeLink("/home/posts/target", Modifier.size(160.dp).testTag("target")) {
+                                Text("target")
+                            }
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithTag("target").performTouchInput { click() }
+            ui.runOnIdle {
+                assertEquals("/home", fixture.app.env.path)
+                stoppingScroll = false
+            }
+            ui.onNodeWithTag("target").performTouchInput {
+                down(center)
+                moveTo(center.copy(y = center.y + 60f))
+                moveTo(center)
+                up()
+            }
+            ui.runOnIdle { assertEquals("/home", fixture.app.env.path) }
+            ui.onNodeWithTag("target").performTouchInput { click() }
+            ui.runOnIdle { assertEquals("/home/posts/target", fixture.app.env.path) }
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun tallHomeMediaDoesNotOverlapTheNextRowAtPhoneWidth() {
+        val fixture = Fixture()
+        val tall = obj("url" to "/api/home/images/abcd-1234", "width" to 100,
+            "height" to 10000, "is_sensitive" to true)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column(Modifier.width(240.dp).testTag("media-container")) {
+                            HomeMedia(listOf(tall))
+                            Text("next row", Modifier.testTag("next"))
+                        }
+                    }
+                }
+            }
+            val media = ui.onNodeWithContentDescription("attachments.showSensitive").fetchSemanticsNode().boundsInRoot
+            val next = ui.onNodeWithTag("next").fetchSemanticsNode().boundsInRoot
+            val container = ui.onNodeWithTag("media-container").fetchSemanticsNode().boundsInRoot
+            assertTrue(media.left >= container.left && media.right <= container.right)
+            assertTrue(media.bottom <= next.top, "Tall images must remain inside their measured row")
+            ui.onNodeWithTag("next").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun homeQuotesRenderFromTheDtoWithoutAnotherPostRequest() {
+        val fixture = Fixture()
+        val quoted = obj("id" to "quoted", "remote" to false, "user_name" to "bob",
+            "content" to "quoted body", "created_at" to "2026-11-15T00:00:00Z")
+        val post = kotlinx.serialization.json.JsonObject(obj("content" to "comment\n\n<https://zoo.test/note>") +
+            ("quote" to kotlinx.serialization.json.JsonObject(obj("uri" to "https://zoo.test/note") + ("post" to quoted))))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme { Box(Modifier.width(300.dp)) { HomePostContent(fixture.app, post, previewLinks = false) } }
+                }
+            }
+            ui.onNodeWithText("quoted body").assertIsDisplayed()
+            ui.onNodeWithText("comment").assertIsDisplayed()
+            ui.onNodeWithText("<https://zoo.test/note>").assertDoesNotExist()
+        } finally { fixture.close() }
     }
 
     @Test

@@ -72,3 +72,16 @@ export function reachedTimelineTail(
   // If the tail was deleted, continue through ties until crossing its exact timestamp.
   return key !== null && tail.sortKey !== null && key < tail.sortKey;
 }
+
+/** Ignore stale virtual ranges and overscan when deciding whether the viewport is near the tail. */
+export function visibleTimelineTail(
+  items: readonly { index: number; start: number; end: number }[],
+  scrollTop: number,
+  viewportHeight: number,
+): number {
+  if (viewportHeight <= 0) return -1;
+  const bottom = scrollTop + viewportHeight;
+  for (let i = items.length - 1; i >= 0; i--)
+    if (items[i].start < bottom && items[i].end > scrollTop) return items[i].index;
+  return -1;
+}

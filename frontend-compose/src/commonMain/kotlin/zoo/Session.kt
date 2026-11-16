@@ -236,11 +236,14 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 )
                 .also { assets[path] = it }
 
-    suspend fun image(url: String): ByteArray =
-        platform.image(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-            ?: assetClient
-                .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-                .body()
+    private val imageCache = ImageCache(scope)
+
+    suspend fun image(url: String): ByteArray {
+        val resolved = if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url
+        return imageCache.get(resolved) {
+            platform.image(resolved) ?: assetClient.get(resolved).body()
+        }
+    }
 
     /** Static images use the same platform decoder as attachments and animated media. */
     suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
@@ -466,6 +469,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         activityPubNotifications.close()
         toastController.close()
         if (preferenceState.isInitialized()) preferenceState.value.close()
+        imageCache.close()
         assetClient.close()
         repo.close()
     }

@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +39,13 @@ fun HomeScreen(
             HomeTimeline(app, scope, selectedPost, selectedActor)
         }
     val scroll = rememberLazyListState()
+    LaunchedEffect(feed, scroll, app) {
+        snapshotFlow {
+            val layout = scroll.layoutInfo
+            val nearEnd = (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 3
+            nearEnd && layout.totalItemsCount > 0 && feed.canLoadOlder && app.env.visible && app.env.online
+        }.collect { ready -> if (ready) feed.older() }
+    }
     val composer = rememberHomeComposerState()
     var enabled by remember { mutableStateOf(false) }
     var controlsError by remember { mutableStateOf(false) }

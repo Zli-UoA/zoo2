@@ -54,6 +54,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private var notificationIntent by mutableStateOf<Intent?>(null)
+    private var notificationPermissionRevision by mutableStateOf(0)
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationPermissionRevision++
+        }
+
+    private fun enableNotifications() {
+        val prefs = getSharedPreferences("notification-permission", MODE_PRIVATE)
+        val requested = prefs.getBoolean("requested", false)
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            (!requested || shouldShowRequestPermissionRationale(android.Manifest.permission.POST_NOTIFICATIONS))) {
+            prefs.edit().putBoolean("requested", true).apply()
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -79,12 +100,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationIntent = intent
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
+        notificationIntent = intent
         // 再認証のリダイレクト（ReauthCallbackActivity から）。待っている再認証の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
@@ -118,6 +142,12 @@ class MainActivity : ComponentActivity() {
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        LaunchedEffect(current, notificationIntent) {
+            if (current != null) {
+                notificationIntent?.let { current.notifications.open(it) }
+                notificationIntent = null
+            }
+        }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
         suspend fun connect(connection: LoginConnection, refresh: String?, show: (String, String) -> Unit) {
@@ -210,9 +240,11 @@ class MainActivity : ComponentActivity() {
                     var disposed = false
                     val observer = LifecycleEventObserver { _, _ ->
                         platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                        current.session.update(platform.env)
                     }
                     lifecycle.addObserver(observer)
                     platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                    current.session.update(platform.env)
                     val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                     fun updateOnline() = runOnUiThread {
                         if (!disposed) platform.online(hasInternet(
@@ -259,8 +291,19 @@ class MainActivity : ComponentActivity() {
                     LocalTouchUi provides true,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-                            NativeWindow(current.session) { ZooApp(current.session) }
+                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
+                            val notificationsAllowed = remember(notificationPermissionRevision, platform.env.visible) {
+                                current.notifications.allowed()
+                            }
+                            if (!notificationsAllowed) {
+                                TextButton(onClick = ::enableNotifications) {
+                                    Text(current.session.t("androidNotifications.enable"))
+                                }
+                                Text(current.session.t("androidNotifications.scope"), style = MaterialTheme.typography.bodySmall)
+                            }
+                            Box(Modifier.weight(1f)) {
+                                NativeWindow(current.session) { ZooApp(current.session) }
+                            }
                         }
                         unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                     }
@@ -360,7 +403,7 @@ class MainActivity : ComponentActivity() {
                     copySecret = ::copySecret,
                 )
             }
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings).also {
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session)).also {
                 session.start()
                 e2ee.start()
             }
@@ -537,6 +580,7 @@ private class RunningSession(
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
+    val notifications: AndroidNotifications,
 ) {
     fun logout() {
         try { auth.forget() } finally { close() }
@@ -544,9 +588,11 @@ private class RunningSession(
 
     fun close() {
         e2ee.stop()
+        notifications.close()
         auth.close()
         session.close()
         scope.cancel()
+        platform.close()
         http.close()
     }
 }

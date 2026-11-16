@@ -15,6 +15,9 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
+import kotlin.time.Duration.Companion.minutes
 
 fun publicUrl(raw: String): Url? =
     try {
@@ -36,7 +39,7 @@ fun publicUrl(raw: String): Url? =
     }
 
 /** Only visible links create cards: code, plain and MFM silent links stay private. */
-fun previewUrls(content: String): List<String> {
+fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =
         content.replace(
             Regex(
@@ -48,6 +51,7 @@ fun previewUrls(content: String): List<String> {
         .findAll(visible)
         .mapNotNull { publicUrl(it.value.trimEnd(')', ',', '.', '!', '?', '、', '。'))?.toString() }
         .distinct()
+        .filter { it != publicUrl(excludeUrl.orEmpty())?.toString() }
         .take(3)
         .toList()
 }
@@ -87,7 +91,8 @@ fun parsePreview(data: Row, url: String) =
     )
 
 class PreviewLoader(private val app: Session) {
-    private val cache = mutableMapOf<String, PreviewData>()
+    private data class Cached(val data: PreviewData, val storedAt: TimeMark)
+    private val cache = linkedMapOf<String, Cached>()
 
     private data class Work(val request: Deferred<PreviewData?>, var users: Int = 0)
 
@@ -101,6 +106,7 @@ class PreviewLoader(private val app: Session) {
                 }
                 var wait = 2000L
                 while (currentCoroutineContext().isActive) {
+                    if (!app.env.online || !app.env.visible) { delay(wait); continue }
                     try {
                         suspend fun runtime(path: String): String {
                             val value =
@@ -143,13 +149,17 @@ class PreviewLoader(private val app: Session) {
 
     suspend fun load(service: String, url: String): PreviewData? {
         val key = "$service:$url"
-        cache[key]?.let {
-            return it
+        cache.remove(key)?.let {
+            if (it.storedAt.elapsedNow() < 5.minutes) {
+                cache[key] = it
+                return it.data
+            }
         }
         val work =
             pending.getOrPut(key) {
                 Work(
                     app.scope.async {
+                        repeat(3) { attempt ->
                         try {
                             val target =
                                 publicUrl(
@@ -173,19 +183,21 @@ class PreviewLoader(private val app: Session) {
                                         )
                                     )
                                     .jsonObject
-                            parsePreview(
+                            return@async parsePreview(
                                     json.parseToJsonElement(response.text("body")).jsonObject,
                                     url,
                                 )
                                 .also {
-                                    if (cache.size >= 200) cache.remove(cache.keys.first())
-                                    cache[key] = it
+                                    if (cache.size >= 256) cache.remove(cache.keys.first())
+                                    cache[key] = Cached(it, TimeSource.Monotonic.markNow())
                                 }
                         } catch (e: CancellationException) {
                             throw e
                         } catch (_: Exception) {
-                            null
+                            if (attempt < 2) delay(250L * (attempt + 1))
                         }
+                        }
+                        null
                     }
                 )
             }
@@ -203,17 +215,18 @@ class PreviewLoader(private val app: Session) {
 }
 
 @Composable
-fun LinkPreviews(app: Session, content: String) {
-    val urls = remember(content) { previewUrls(content) }
+fun LinkPreviews(app: Session, content: String, excludeUrl: String? = null, showFallback: Boolean = true) {
+    val urls = remember(content, excludeUrl) { previewUrls(content, excludeUrl) }
     if (urls.isEmpty()) return
     val sources by app.previews.endpoints.collectAsState()
     val (service, media) = sources
     urls.forEach { url ->
         var data by remember(url, service) { mutableStateOf<PreviewData?>(null) }
-        LaunchedEffect(url, service, app.env.online) {
-            if (app.env.online && service.isNotBlank()) data = app.previews.load(service, url)
+        LaunchedEffect(url, service, app.env.online, app.env.visible) {
+            if (app.env.online && app.env.visible && service.isNotBlank()) data = app.previews.load(service, url)
         }
-        PreviewCard(app, url, data ?: PreviewData(url, "", "", "", Url(url).host), media)
+        if (data != null || showFallback)
+            PreviewCard(app, url, data ?: PreviewData(url, "", "", "", Url(url).host), media)
     }
 }
 

@@ -698,7 +698,10 @@ internal fun Message(
     CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration,
         LocalJoinedEmojis provides joined) {
         Box(
-            Modifier.messageHold(!editing, gestureArbitration) { menuOpen = true }
+            Modifier.messageHold(!editing, gestureArbitration) {
+                app.platform.action("haptic:longPress")
+                menuOpen = true
+            }
                 .semantics { testTag = "message:$id" }
                 .fillMaxWidth()
                 .background(

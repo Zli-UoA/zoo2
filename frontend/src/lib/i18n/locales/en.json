@@ -1622,5 +1622,12 @@
     "description": "Select public channels to join automatically when an account is created. Existing accounts are unaffected.",
     "empty": "No public channels are available.",
     "saved": "Saved."
+  },
+  "androidNotifications": {
+    "enable": "Enable notifications",
+    "scope": "Receive new notifications while your signed-in session is syncing.",
+    "mentions": "Mentions and replies",
+    "messages": "Direct messages",
+    "reactions": "Reactions"
   }
 }

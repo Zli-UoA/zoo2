@@ -1622,5 +1622,12 @@
     "description": "選擇建立帳號時自動加入的公開頻道。不會影響現有帳號。",
     "empty": "沒有可用的公開頻道。",
     "saved": "已儲存。"
+  },
+  "androidNotifications": {
+    "enable": "啟用通知",
+    "scope": "登入工作階段同步期間接收新通知。",
+    "mentions": "提及和回覆",
+    "messages": "私訊",
+    "reactions": "回應"
   }
 }

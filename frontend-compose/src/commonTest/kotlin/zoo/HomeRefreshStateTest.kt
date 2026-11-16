@@ -6,9 +6,58 @@ import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.*
 import kotlin.test.*
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
+import kotlinx.serialization.json.JsonArray
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HomeRefreshStateTest {
+    @Test
+    fun nearEndPagingResumesAfterAnIdenticalRetainedRefresh() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var requests = 0
+        val head = JsonArray((50 downTo 1).map { obj("id" to "$it", "sort_key" to "$it") }).toString()
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    requests++
+                    if (request.url.parameters["before"] != null) respond("[{\"id\":\"older\",\"sort_key\":\"0\"}]")
+                    else {
+                        if (requests > 1) gate.await()
+                        respond(head)
+                    }
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false),
+            TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh()
+            runCurrent()
+            feed.refresh(retain = true)
+            runCurrent()
+            assertTrue(feed.updating)
+            assertFalse(feed.refreshing)
+            val paging = backgroundScope.launch {
+                snapshotFlow { feed.canLoadOlder }.collect { ready -> if (ready) feed.older() }
+            }
+            runCurrent()
+            assertEquals(2, requests)
+            gate.complete(Unit)
+            runCurrent()
+            Snapshot.sendApplyNotifications()
+            runCurrent()
+            assertFalse(feed.updating)
+            assertEquals(3, requests)
+            assertEquals("older", feed.posts.last().text("id"))
+            paging.cancel()
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
     private class TestPlatform : Platform {
         override suspend fun headers() = emptyMap<String, String>()
         override suspend fun readCache(key: String): String? = null

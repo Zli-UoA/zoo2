@@ -34,7 +34,8 @@ fun HomePostCard(
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
-            .nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null).padding(16.dp),
+            .then(if (!editing) Modifier.nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null) else Modifier)
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
@@ -46,13 +47,7 @@ fun HomePostCard(
                     Text(app.t("home.replyTo", "name" to name), size = 12.sp)
                 }
                 parent?.let {
-                    if (it.text("content").isNotBlank()) ActivityPubContent(
-                        it.text("content"),
-                        it.homeRows("emojis"),
-                        textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-                    )
-                    MessageAttachments(app, it.homeRows("attachments"))
-                    if (it.homeRows("attachments").isEmpty()) HomeMedia(it.homeRows("media"))
+                    HomePostContent(app, it)
                 }
             }
         }
@@ -171,17 +166,9 @@ fun HomePostCard(
                         }
                         Button(app.t("common.cancel"), enabled = !saving) { editing = false }
                     }
-                } else if (post.text("content").isNotBlank()) {
-                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
-                        ActivityPubContent(
-                            post.text("content"),
-                            post.homeRows("emojis"),
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
+                } else {
+                    HomePostContent(app, post)
                 }
-                MessageAttachments(app, post.homeRows("attachments"))
-                if (post.homeRows("attachments").isEmpty()) HomeMedia(post.homeRows("media"))
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -276,7 +263,10 @@ fun HomePostCard(
                             }
                             add(
                                 MenuAction("copy", app.t("home.copyContent")) {
-                                    app.run { app.platform.invoke("copy", post.text("content")) }
+                                    app.run {
+                                        app.platform.invoke("copy", post.text("content"))
+                                        app.showToast(app.t("messages.copied"), kind = ToastKind.Success)
+                                    }
                                 }
                             )
                         },

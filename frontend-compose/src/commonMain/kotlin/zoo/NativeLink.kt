@@ -65,14 +65,21 @@ fun Modifier.nativeNavigation(
                         (!currentEvent.buttons.isPrimaryPressed && !(middle && role == "link"))
                 )
                     return@awaitEachGesture
-                var dragged = false
+                // A scrolling ancestor consumes the down that stops a fling in Main.
+                // Wait until Final before deciding whether this is a fresh tap.
+                val initialFinal = awaitPointerEvent(PointerEventPass.Final)
+                var dragged = initialFinal.changes.any { it.id == down.id && it.isConsumed }
+                val origin = down.position
                 while (true) {
                     // Main dispatch runs from descendants toward ancestors. A nested link
                     // therefore consumes its release before the containing notification row.
                     val event = awaitPointerEvent(PointerEventPass.Main)
                     val pointer = event.changes.find { it.id == down.id } ?: break
                     if (
-                        (pointer.position - down.position).getDistance() >
+                        (pointer.isConsumed &&
+                            (down.type == PointerType.Touch || pointer.position != pointer.previousPosition)) ||
+                        event.changes.count { it.pressed } > 1 ||
+                        (pointer.position - origin).getDistance() >
                             viewConfiguration.touchSlop
                     )
                         dragged = true
@@ -89,6 +96,13 @@ fun Modifier.nativeNavigation(
                             pointer.consume()
                         break
                     }
+                    // Scrolling ancestors consume movement after our Main pass.
+                    val finalEvent = awaitPointerEvent(PointerEventPass.Final)
+                    if (finalEvent.changes.any {
+                        it.id == down.id && it.isConsumed &&
+                            (down.type == PointerType.Touch || it.position != it.previousPosition)
+                    })
+                        dragged = true
                 }
             }
         }

@@ -1622,5 +1622,12 @@
     "description": "选择创建账号时自动加入的公开频道。不会影响现有账号。",
     "empty": "没有可用的公开频道。",
     "saved": "已保存。"
+  },
+  "androidNotifications": {
+    "enable": "启用通知",
+    "scope": "登录会话同步期间接收新通知。",
+    "mentions": "提及和回复",
+    "messages": "私信",
+    "reactions": "回应"
   }
 }

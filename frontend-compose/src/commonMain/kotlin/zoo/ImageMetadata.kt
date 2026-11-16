@@ -26,6 +26,11 @@ fun imageAspectRatio(row: Row, fallback: Float = 4f / 3f): Float {
     return if (width > 0 && height > 0) (width.toFloat() / height).coerceIn(0.1f, 10f) else fallback
 }
 
+/** Fix the frame size before drawing so tall media cannot escape its measured row. */
+internal fun constrainedImageHeight(width: androidx.compose.ui.unit.Dp, row: Row,
+    maximum: androidx.compose.ui.unit.Dp, minimum: androidx.compose.ui.unit.Dp = 0.dp): androidx.compose.ui.unit.Dp =
+    (width / imageAspectRatio(row)).coerceIn(minimum, maximum)
+
 /** Decode a small preview independently of untrusted image dimensions. */
 fun decodeBlurhash(hash: String, size: Int = 24): IntArray? {
     val alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#\u0024%*+,-.:;=?@[]^_{|}~"
