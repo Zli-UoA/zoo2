@@ -262,7 +262,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
         }
       },
       mute: (muted) => media?.mute(muted),
-      dtmf: (tone) => send({ action: "dtmf", tone }).then(() => undefined),
+      dtmf: (tone) => send({ action: "dtmf", tone }, generation).then(() => undefined),
     };
   };
 }

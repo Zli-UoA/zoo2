@@ -245,3 +245,44 @@ it("ignores a rejected hangup after the old call already ended", async () => {
   await next;
   expect(f.events.disconnected).not.toHaveBeenCalled();
 });
+
+it("drops queued DTMF when its call has ended", async () => {
+  const f = await fixture();
+  await f.driver.call("101");
+  f.connected();
+  await vi.waitFor(() => expect(f.events.answered).toHaveBeenCalledOnce());
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = f.post.getMockImplementation()!;
+  f.post.mockImplementation(async (path, body) => {
+    if ((body as { action: string }).action === "candidate") await pending;
+    return original(path, body);
+  });
+  f.peers[0].dispatchEvent(
+    new RTCPeerConnectionIceEvent("icecandidate", {
+      candidate: new RTCIceCandidate({
+        candidate: "candidate:1 1 UDP 1 192.0.2.1 1234 typ host",
+        sdpMid: "0",
+        sdpMLineIndex: 0,
+      }),
+    }),
+  );
+  await vi.waitFor(() =>
+    expect(
+      f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "candidate"),
+    ).toBe(true),
+  );
+  const tone = f.driver.dtmf("1");
+  f.send("ended");
+  await vi.waitFor(() => expect(f.events.ended).toHaveBeenCalledOnce());
+  const next = f.driver.call("102");
+  await vi.waitFor(() => expect(f.peers).toHaveLength(2));
+  release();
+  await Promise.all([tone, next]);
+  expect(f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "dtmf")).toBe(
+    false,
+  );
+  expect(f.events.disconnected).not.toHaveBeenCalled();
+});
