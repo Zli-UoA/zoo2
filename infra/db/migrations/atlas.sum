@@ -1,4 +1,4 @@
-h1:vfQUpBJjmXN+Bb5NFrNN7a87IWopefYgujrBIH+NiNM=
+h1:nFXCMf973qDoD9U4dQdEtuR85TTMMY6JJpbL9qXJvnU=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -86,3 +86,8 @@ h1:vfQUpBJjmXN+Bb5NFrNN7a87IWopefYgujrBIH+NiNM=
 20261127000001_apub_quote_uri.sql h1:sjtwEd8QtJR69zKP2eIZ4frTKeA8F1vE7cH6KZnpKbI=
 20261128000000_thread_participants.sql h1:39ofODi5Rv4HuV02vsreV/ItuVsnldHe+s7y4UHRVKo=
 20261128010000_clear_deleted_message_content.sql h1:Kkuqpz8WSgCfyFmSDrg/r4imd/7QQyY0cFawHDpGbUI=
+20261128020001_home_timeline_seek.sql h1:NwylbE3b59+Hv2gfEyb3SG+KWcrHHC5YHmh5g/zIMrY=
+20261128020002_activitypub_foreign_key_indexes.sql h1:cmdEjOqfJZyaOOW0Y+BXQD0YJhmr1WHgtiauXW24om4=
+20261128020003_reply_counters.sql h1:1+XPr2Olr0zk47FqZwNlIdG1UfOemhL3mcvogojS5YE=
+20261128020004_home_engagement_totals.sql h1:5Ru0H0G+n8gPzGVTiTBfJ7nk+LLq2n5ghAhSsjDdA6w=
+20261128030000_read_state_worker_seek.sql h1:DM6Lm+a/6xyXvCWEnJGmDCi0Ep9ikyrfaobzfU7RtMM=

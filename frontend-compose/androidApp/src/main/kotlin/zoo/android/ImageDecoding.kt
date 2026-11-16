@@ -7,10 +7,10 @@ import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayInputStream
 
 /** Match browser EXIF handling on every supported Android version, including API 26. */
-internal fun decodeOrientedBitmap(bytes: ByteArray): Bitmap {
+internal fun decodeOrientedBitmap(bytes: ByteArray, maxEdge: Int = 2048): Bitmap {
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-    options.inSampleSize = imageSampleSize(options.outWidth, options.outHeight)
+    options.inSampleSize = imageSampleSize(options.outWidth, options.outHeight, maxEdge)
     options.inJustDecodeBounds = false
     val bitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)) { "Invalid image" }
     val orientation = runCatching {
@@ -42,10 +42,11 @@ internal fun decodeOrientedBitmap(bytes: ByteArray): Bitmap {
     return oriented
 }
 
-/** Bound decoded previews to 2048 pixels per edge before allocating a bitmap (at most 16 MiB). */
-internal fun imageSampleSize(width: Int, height: Int): Int {
+/** Bound decoded previews before allocating a bitmap (2048 pixels / 16 MiB by default). */
+internal fun imageSampleSize(width: Int, height: Int, maxEdge: Int = 2048): Int {
     require(width > 0 && height > 0) { "Invalid image dimensions" }
+    require(maxEdge > 0) { "Invalid image limit" }
     var sample = 1
-    while ((maxOf(width, height).toLong() + sample - 1) / sample > 2048) sample *= 2
+    while ((maxOf(width, height).toLong() + sample - 1) / sample > maxEdge) sample *= 2
     return sample
 }

@@ -98,6 +98,12 @@ const config = defineConfig({
         optimizeDeps: {
           include: [
             "vite-plus/test/browser/context",
+            // Lazy imports must be optimized before browser tests start;
+            // discovering them mid-run reloads tests and splits React state.
+            "@base-ui/react/tooltip",
+            "@tanstack/browser-db-sqlite-persistence",
+            "jsqr",
+            "qrcode-generator",
             // 暗号ストアの Worker（lib/e2ee）が読む。テストの途中で最適化し直して読み込み直さないように。
             "@journeyapps/wa-sqlite",
             "@journeyapps/wa-sqlite/dist/wa-sqlite.mjs",

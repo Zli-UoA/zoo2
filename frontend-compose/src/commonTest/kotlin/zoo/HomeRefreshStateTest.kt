@@ -145,4 +145,96 @@ class HomeRefreshStateTest {
             app.close()
         }
     }
+    @Test
+    fun retainedRefreshChecksOnlyTheHeadAndVisibleHistoryAndNavigationRestoresTheWindow() = runTest {
+        val calls = mutableListOf<String>()
+        var checked = false
+        fun page(from: Int) = JsonArray((from downTo from - 49).map { obj("id" to "$it", "sort_key" to "$it") }).toString()
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    calls += request.url.toString()
+                    if (request.url.encodedPath == "/api/home/entries") {
+                        checked = true
+                        respond("[{\"id\":\"400\",\"sort_key\":\"400\",\"content\":\"edited\"}]")
+                    } else respond(page(request.url.parameters["before"]?.toInt()?.minus(1) ?: 500))
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh(); runCurrent()
+            repeat(3) { feed.older(); runCurrent() }
+            assertEquals(200, feed.posts.size)
+            feed.viewport(listOf("400", "399"), top = false)
+            val before = calls.size
+            feed.refresh(true); runCurrent()
+            assertEquals(2, calls.size - before, "History length must not increase refresh requests")
+            assertTrue(checked)
+            assertEquals(199, feed.posts.size, "An authoritative missing viewport row is removed")
+            assertEquals("edited", feed.posts.first { it.text("id") == "400" }.text("content"))
+            val checkedBefore = calls.size
+            feed.viewport(listOf("400"), top = false)
+            feed.refresh(true, includeHead = false); runCurrent()
+            assertEquals(1, calls.size - checkedBefore, "Moving within history must not refetch the head")
+            assertTrue(calls.last().endsWith("/api/home/entries"))
+            feed.close(101, 17)
+            val restored = HomeTimeline(app, backgroundScope)
+            assertEquals(101, restored.restore()?.index)
+            assertEquals(199, restored.posts.size)
+            assertFalse(restored.needsRefresh())
+            assertTrue(restored.hasMore)
+            restored.close()
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test
+    fun anOlderPageFailureStopsAutomaticPagingUntilAnExplicitRetry() = runTest {
+        var fail = true
+        val http = HttpClient(MockEngine) {
+            engine {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler { request ->
+                    if (request.url.parameters["before"] != null) {
+                        if (fail) respond("{}", HttpStatusCode.ServiceUnavailable) else respond("[]")
+                    } else respond(JsonArray((50 downTo 1).map { obj("id" to "$it") }).toString())
+                }
+            }
+        }
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), TestPlatform(), http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val feed = HomeTimeline(app, backgroundScope)
+        try {
+            feed.refresh(); runCurrent(); feed.older(); runCurrent()
+            assertTrue(feed.olderError)
+            assertFalse(feed.canLoadOlder)
+            fail = false
+            feed.older(); runCurrent()
+            assertFalse(feed.olderError)
+            assertFalse(feed.hasMore)
+        } finally { feed.close(); app.close(); http.close() }
+    }
+
+    @Test fun returningToTheTopFetchesAPreviouslyUnappliedHead() = runTest {
+        var fresh = false
+        fun page(from:Int) = JsonArray((from downTo from-49).map { obj("id" to "$it", "sort_key" to "$it") }).toString()
+        val http = HttpClient(MockEngine) { engine { dispatcher=StandardTestDispatcher(testScheduler); addHandler { request ->
+            if(request.url.encodedPath=="/api/home/entries") respond(JsonArray(listOf(obj("id" to "200", "sort_key" to "200"))).toString())
+            else respond(page(if(fresh) 500 else 200))
+        } } }
+        val app = Session(Repository(Config("https://zoo.test","/shapes","alice",false),TestPlatform(),http,backgroundScope,synchronize=false),backgroundScope,Environment())
+        val feed = HomeTimeline(app,backgroundScope)
+        try {
+            feed.refresh(); runCurrent()
+            feed.viewport(listOf("200"),false)
+            fresh=true
+            feed.refresh(true,true); runCurrent()
+            assertFalse(feed.posts.any { it.text("id")=="500" })
+            assertTrue(feed.needsRefresh())
+            assertTrue(feed.viewport(listOf("200"),true))
+            feed.refresh(true,false); runCurrent()
+            assertEquals("500",feed.posts.first().text("id"))
+        } finally { feed.close(); app.close(); http.close() }
+    }
 }

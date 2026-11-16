@@ -53,6 +53,45 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun messageMenuUsesInsetHostCoordinatesAndFlipsAboveBottomTrigger() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column {
+                            Spacer(Modifier.height(64.dp))
+                            NativeWindow(fixture.app, Modifier.size(320.dp, 500.dp)) {
+                                Box(Modifier.fillMaxSize().padding(8.dp), contentAlignment = androidx.compose.ui.Alignment.BottomEnd) {
+                                    Menu("message actions", List(6) { index ->
+                                        MenuAction("copy", "action $index") {}
+                                    })
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            val trigger = ui.onNodeWithContentDescription("message actions")
+            val triggerBounds = trigger.fetchSemanticsNode().boundsInRoot
+            trigger.performClick()
+            val menu = ui.onNode(SemanticsMatcher.expectValue(
+                androidx.compose.ui.semantics.SemanticsProperties.PaneTitle, "message actions",
+            ))
+            menu.assertIsDisplayed()
+            val bounds = menu.fetchSemanticsNode().boundsInRoot
+            assertTrue(bounds.height <= triggerBounds.height * 248f / 48f + 1f,
+                "Menu height should stay within 240dp plus its padding")
+            assertTrue(bounds.bottom <= triggerBounds.top, "Menu should flip above its trigger")
+            assertTrue(kotlin.math.abs(bounds.right - triggerBounds.right) <= 1f,
+                "Menu should align with the trigger inside the inset host")
+            ui.onNodeWithText("action 5").performScrollTo().assertIsDisplayed()
+            ui.onNodeWithText("action 5").performClick()
+            menu.assertDoesNotExist()
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun aDownConsumedByTheScrollingParentDoesNotNavigateOnRelease() {
         val fixture = Fixture(Environment(path = "/home", touch = true))
         var stoppingScroll = true
@@ -226,4 +265,25 @@ class ReviewRegressionUiTest {
             ui.runOnIdle { assertEquals("", state.content); assertEquals(1, posts) }
         } finally { fixture.close() }
     }
+    @Test
+    fun reactionGlyphsAndMissingCustomEmojiNamesAreNotReplacedByAnEllipsis() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column {
+                            ReactionEmoji("👩🏽‍💻", size = 16.dp)
+                            ActivityPubEmoji(obj("name" to ":missing_custom_emoji:", "image_id" to "invalid"), size = 18.dp)
+                        }
+                    }
+                }
+            }
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText("👩🏽‍💻").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertFalse(layouts.single().isLineEllipsized(0))
+            ui.onNodeWithText(":missing_custom_emoji:").assertWidthIsAtLeast(40.dp)
+        } finally { fixture.close() }
+    }
+
 }

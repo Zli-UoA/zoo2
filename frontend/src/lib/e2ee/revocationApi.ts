@@ -1,7 +1,7 @@
 import type { JsonObject, SignatureUpload } from "@zoo/crypto-wasm";
 
 import { ApiError, type ApiClient } from "../api/client";
-import { REAUTH_HEADER, errorCode } from "./secretStorageApi";
+import { REAUTH_HEADER, backupProofHeaders, errorCode } from "./secretStorageApi";
 
 /**
  * 端末一覧、失効、他のユーザーの検証で使う API（docs/e2ee.md の「端末とワンタイム鍵」「クロス署名」
@@ -142,6 +142,21 @@ export async function currentBackupVersion(client: ApiClient): Promise<JsonObjec
   }
 }
 
+/** `GET /api/e2ee/key_backup/versions/{version}`。消した版と、ない版は `null`。 */
+export async function getBackupVersion(
+  client: ApiClient,
+  version: string,
+): Promise<JsonObject | null> {
+  try {
+    return await client.get<JsonObject>(
+      `/api/e2ee/key_backup/versions/${encodeURIComponent(version)}`,
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 /** `GET /api/e2ee/key_backup/keys?version=` を `next` が `null` になるまで読む。消した版は `null`。 */
 export async function listBackupSessions(
   client: ApiClient,
@@ -168,16 +183,22 @@ export async function listBackupSessions(
 /** 1 回のアップロードの上限（サーバーの `backup_sessions`）。 */
 export const BACKUP_UPLOAD_BATCH = 1000;
 
+/**
+ * 新しい版へ移行の行を送る。`proof` はアップロードの証明（docs/e2ee.md の「アップロードの証明」。版に
+ * `upload_key` がなければ `null` で、ヘッダーを送らない）。
+ */
 export async function uploadBackupSessions(
   client: ApiClient,
   version: string,
   secretsRevision: number,
   sessions: JsonObject[],
+  proof: string | null,
 ): Promise<void> {
   for (let start = 0; start < sessions.length; start += BACKUP_UPLOAD_BATCH) {
     await client.post(
       `/api/e2ee/key_backup/keys?version=${encodeURIComponent(version)}&secrets_revision=${secretsRevision}`,
       { sessions: sessions.slice(start, start + BACKUP_UPLOAD_BATCH) },
+      { headers: backupProofHeaders(proof) },
     );
   }
 }

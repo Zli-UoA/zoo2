@@ -44,4 +44,16 @@ class ImageCacheTest {
         assertContentEquals(byteArrayOf(1), cache.get("a") { byteArrayOf(1) })
         cache.close()
     }
+    @Test fun decodedAssetsShareWorkAndEvictByDecodedMemoryRatherThanCompressedBytes() = runTest {
+        data class Frame(val pixels: Int)
+        val cache = AssetCache<Frame>(backgroundScope, maxBytes = 16, maxEntries = 10) { it.pixels * 4 }
+        var decodes = 0
+        val frame = cache.get("emoji") { decodes++; Frame(2) }
+        assertSame(frame, cache.get("emoji") { error("Decode should be reused") })
+        cache.get("avatar") { Frame(3) }
+        cache.get("emoji") { decodes++; Frame(2) }
+        assertEquals(2, decodes, "Decoded bitmap memory must enforce the LRU budget")
+        cache.close()
+    }
+
 }

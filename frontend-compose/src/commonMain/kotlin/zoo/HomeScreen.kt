@@ -39,13 +39,6 @@ fun HomeScreen(
             HomeTimeline(app, scope, selectedPost, selectedActor)
         }
     val scroll = rememberLazyListState()
-    LaunchedEffect(feed, scroll, app) {
-        snapshotFlow {
-            val layout = scroll.layoutInfo
-            val nearEnd = (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 3
-            nearEnd && layout.totalItemsCount > 0 && feed.canLoadOlder && app.env.visible && app.env.online
-        }.collect { ready -> if (ready) feed.older() }
-    }
     val composer = rememberHomeComposerState()
     var enabled by remember { mutableStateOf(false) }
     var controlsError by remember { mutableStateOf(false) }
@@ -100,22 +93,44 @@ fun HomeScreen(
             }
         }
     }
-    val controlUpdates = remember(app, feed) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) { controls() } }
+    val controlUpdates = remember(app, feed) { CoalescedRefresh(scope, interval = 60_000, allowed = { app.env.visible && app.env.online }) { controls() } }
+    var requestHead by remember(app, feed) { mutableStateOf(false) }
+    val feedUpdates = remember(app, feed) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) {
+        val head = requestHead
+        requestHead = false
+        feed.refresh(true, head)
+        feed.awaitUpdate()
+    } }
+    LaunchedEffect(feed, scroll, app) {
+        snapshotFlow {
+            val layout = scroll.layoutInfo
+            val ids = layout.visibleItemsInfo.mapNotNull { it.key as? String }
+            val nearEnd = (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 10
+            Triple(ids, scroll.firstVisibleItemIndex == 0, nearEnd && layout.totalItemsCount > 0 && feed.canLoadOlder && app.env.visible && app.env.online)
+        }.collect { (ids, top, ready) ->
+            if (feed.viewport(ids, top) && !feed.loading) feedUpdates.request()
+            if (ready) feed.older()
+        }
+    }
+
     LaunchedEffect(app, feed) {
         feed.restoreSelection()
-        feed.refresh()
+        feed.restore()?.let { scroll.scrollToItem(it.index, it.offset) }
+        if (app.env.visible && app.env.online && feed.needsRefresh()) feed.refresh(retain = feed.posts.isNotEmpty())
         controlUpdates.request()
     }
     DisposableEffect(app, feed) {
         val dispose =
             app.homeLive.subscribe {
-                feed.refresh(true)
+                requestHead = true
+                feedUpdates.request()
                 controlUpdates.request()
             }
         onDispose {
             dispose()
             controlUpdates.close()
-            feed.close()
+            feedUpdates.close()
+            feed.close(scroll.firstVisibleItemIndex, scroll.firstVisibleItemScrollOffset)
         }
     }
     Box(Modifier.fillMaxSize()) {
@@ -129,15 +144,15 @@ fun HomeScreen(
             ) {
                 IconButton("user-search", app.t("home.userSearch")) { search = true }
                 IconButton("refresh-cw", app.t("home.refresh")) {
-                    feed.refresh()
+                    scope.launch { scroll.scrollToItem(0); feed.refresh() }
                     controlUpdates.request()
                 }
             }
             HorizontalDivider()
             PullToRefreshBox(
                 isRefreshing = feed.refreshing && !feed.loading,
-                onRefresh = { if (app.env.online && !feed.refreshing) feed.refresh() },
-                modifier = Modifier.weight(1f),
+                onRefresh = { if (app.env.online && !feed.refreshing) scope.launch { scroll.scrollToItem(0); feed.refresh() } },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
             ) {
                 LazyColumn(
                     state = scroll,
@@ -154,10 +169,6 @@ fun HomeScreen(
                     item {
                         HomeWidth {
                             selectedActor?.let { ActivityPubProfile(app, it) }
-                            if (selectedPost != null || selectedActor != null)
-                                NativeLink("/home", Modifier.padding(12.dp)) {
-                                    Text(app.t("home.title"), color = LocalLinkColor.current)
-                                }
                             if (selectedPost == null && selectedActor == null) {
                                 val timelines = listOf("home", "local", "social")
                                 PrimaryScrollableTabRow(
@@ -167,7 +178,7 @@ fun HomeScreen(
                                     timelines.forEach { value ->
                                         Tab(
                                             selected = feed.timeline == value,
-                                            onClick = { if (feed.timeline != value) feed.select(value) },
+                                            onClick = { if (feed.timeline != value) scope.launch { scroll.scrollToItem(0); feed.select(value) } },
                                             text = {
                                                 Text(
                                                     app.t("home.timelineLabels.$value"), maxLines = 1,
@@ -183,7 +194,7 @@ fun HomeScreen(
                             HorizontalDivider()
                         }
                     }
-                    if (feed.error)
+                    if (feed.error || feed.viewportError || feed.olderError)
                         item {
                             HomeWidth {
                                 LoadErrorState(app.t("home.loadError"), app.t("home.refresh")) { feed.refresh() }
@@ -302,7 +313,8 @@ fun HomeScreen(
                 try {
                     app.api.request("/api/home/${post.text("id").encodeURLParameter()}", "DELETE")
                     delete = null
-                    feed.refresh()
+                    feed.remove(post.text("id"))
+                    feed.refresh(true)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {

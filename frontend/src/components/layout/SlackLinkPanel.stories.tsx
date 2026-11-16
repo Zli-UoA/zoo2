@@ -1,12 +1,10 @@
+import { slackNotLinkedHandler as notLinked } from "../../../.storybook/slack-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 
-const notLinked = http.get("*/api/slack/link", () =>
-  HttpResponse.json({ configured: true, link: null }),
-);
 const linked = http.get("*/api/slack/link", () =>
   HttpResponse.json({
     configured: true,

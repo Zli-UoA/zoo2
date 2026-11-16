@@ -70,28 +70,36 @@ async fn authorize(
     Ok(())
 }
 
+/// The production SQL is shared with bounded-work regression tests.
+#[doc(hidden)]
+pub fn states_sql(single: bool) -> String {
+    let scope = match single {
+        true => "c.id = $2".to_string(),
+        false => {
+            "EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)"
+                .to_string()
+        }
+    };
+    format!(
+        "SELECT json_build_object(
+        'channel_id', c.id, 'last_read_at', r.last_read_at,
+        'has_unread', EXISTS (SELECT 1 FROM (
+            SELECT a.user_id FROM channel_message_authors a WHERE a.channel_id=c.id
+              AND a.latest_at>COALESCE(r.last_read_at,'-infinity'::timestamp)
+            ORDER BY a.latest_at DESC,a.user_id DESC LIMIT 2
+        ) latest WHERE latest.user_id<>$1)
+        )::text FROM channels c LEFT JOIN channel_read_states r
+        ON r.channel_id = c.id AND r.user_id = $1
+        WHERE c.deleted_at IS NULL AND {scope}"
+    )
+}
+
 async fn states(
     tx: &mut toasty::Transaction<'_>,
     actor: &str,
     channel: Option<&str>,
 ) -> Result<Vec<Value>, AppError> {
-    let scope = match channel {
-        Some(_) => "c.id = $2".to_string(),
-        None => {
-            "EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)"
-                .to_string()
-        }
-    };
-    let sql = format!(
-        "SELECT json_build_object(
-        'channel_id', c.id, 'last_read_at', r.last_read_at,
-        'has_unread', EXISTS (SELECT 1 FROM messages m
-            WHERE m.channel_id = c.id AND m.parent_id IS NULL AND m.deleted_at IS NULL
-            AND m.user_id <> $1 AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at))
-        )::text FROM channels c LEFT JOIN channel_read_states r
-        ON r.channel_id = c.id AND r.user_id = $1
-        WHERE c.deleted_at IS NULL AND {scope}"
-    );
+    let sql = states_sql(channel.is_some());
     let mut query = toasty::sql::query(sql).bind(actor);
     if let Some(id) = channel {
         query = query.bind(id);

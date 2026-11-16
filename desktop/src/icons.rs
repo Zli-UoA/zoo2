@@ -55,6 +55,7 @@ icons! {
     ChevronUp => "chevron-up",
     Clock => "clock",
     CloudOff => "cloud-off",
+    Compass => "compass",
     Copy => "copy",
     Download => "download",
     Eraser => "eraser",

@@ -93,8 +93,8 @@ fun ZooTheme(
         TextStyle(
             fontFamily = latin,
             localeList = androidx.compose.ui.text.intl.LocaleList(locale),
-            fontSize = if (LocalTouchUi.current) 16.sp else 14.sp,
-            lineHeight = browserLineHeight(if (LocalTouchUi.current) 24.sp else 20.sp),
+            fontSize = if (LocalTouchUi.current) 17.sp else 14.sp,
+            lineHeight = browserLineHeight(if (LocalTouchUi.current) 25.sp else 20.sp),
             platformStyle = webTextStyle(),
             lineHeightStyle =
                 LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
@@ -114,7 +114,7 @@ fun ZooTheme(
                 Typography(
                     bodyMedium = body,
                     bodySmall = body.copy(
-                        fontSize = if (LocalTouchUi.current) 13.sp else 12.sp,
+                        fontSize = if (LocalTouchUi.current) 14.sp else 12.sp,
                         lineHeight = browserLineHeight(if (LocalTouchUi.current) 20.sp else 16.sp),
                     ),
                     titleSmall = body.copy(fontWeight = FontWeight.SemiBold),
@@ -125,7 +125,7 @@ fun ZooTheme(
                             fontWeight = FontWeight.SemiBold,
                         ),
                     labelLarge = body,
-                    labelSmall = body.copy(fontSize = 11.sp),
+                    labelSmall = body.copy(fontSize = if (LocalTouchUi.current) 12.sp else 11.sp),
                 ),
         ) {
             content()
@@ -278,6 +278,8 @@ fun Text(
     lineHeight: TextUnit = TextUnit.Unspecified,
     textAlign: TextAlign? = null,
     letterSpacing: TextUnit = TextUnit.Unspecified,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
+    softWrap: Boolean = true,
     onTextLayout: (androidx.compose.ui.text.TextLayoutResult) -> Unit = {},
 ) {
     val fonts = LocalFonts.current
@@ -296,7 +298,8 @@ fun Text(
                 .let { it.copy(lineHeight = browserLineHeight(it.lineHeight)) },
         fontWeight = weight,
         maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis,
+        overflow = overflow,
+        softWrap = softWrap,
         fontSize = size,
         lineHeight = browserLineHeight(lineHeight),
         textAlign = textAlign,
@@ -450,6 +453,7 @@ fun Button(
                     endPadding.toPx() +
                     if (icon != null) resolvedIconSize.toPx() + gap.toPx() else 0f
         }
+    val compactChrome = LocalTouchUi.current
     val shape = RoundedCornerShape(radius)
     val destructiveColor = if (dark) Color(0xffff6467) else Color(0xffc2000f)
     val focusBorder =
@@ -526,15 +530,17 @@ fun Button(
             .clip(shape)
             .drawBehind {
                 val width = cssPaintWidth(this.size.width, preferredWidth)
+                val insetY = if (compactChrome) 4.dp.toPx() else 0f
+                val paintedHeight = (this.size.height - insetY * 2).coerceAtLeast(0f)
                 val border = if (variant == "tab") 0f else 1.dp.toPx()
                 val corner = radius.toPx()
                 // React's bg-clip-padding excludes the transparent one-pixel border.
                 drawRoundRect(
                     background,
-                    Offset(border, border),
+                    Offset(border, insetY + border),
                     androidx.compose.ui.geometry.Size(
                         (width - 2 * border).coerceAtLeast(0f),
-                        (this.size.height - 2 * border).coerceAtLeast(0f),
+                        (paintedHeight - 2 * border).coerceAtLeast(0f),
                     ),
                     androidx.compose.ui.geometry.CornerRadius((corner - border).coerceAtLeast(0f)),
                 )
@@ -546,10 +552,10 @@ fun Button(
                 if (variant != "tab")
                     drawRoundRect(
                         borderColor,
-                        Offset(border / 2, border / 2),
+                        Offset(border / 2, insetY + border / 2),
                         androidx.compose.ui.geometry.Size(
                             width - border,
-                            this.size.height - border,
+                            paintedHeight - border,
                         ),
                         androidx.compose.ui.geometry.CornerRadius(corner - border / 2),
                         style = Stroke(border),
@@ -592,7 +598,7 @@ fun Button(
                         lineHeight = textStyle?.lineHeight ?: TextUnit.Unspecified,
                         size =
                             textStyle?.fontSize?.takeIf { it.isSpecified }
-                                ?: if (LocalTouchUi.current) 14.sp else when (size) {
+                                ?: if (LocalTouchUi.current) 15.sp else when (size) {
                                     "xs" -> 12.sp
                                     "sm" -> 12.8.sp
                                     else -> 14.sp
@@ -1120,7 +1126,7 @@ fun Menu(
         IconButton(icon, label, size = size) { setOpen(true) }
     }
     if (open)
-        OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor, role = "menu") {
+        OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor, role = "menu", alignEnd = LocalTouchUi.current) {
             LaunchedEffect(Unit) {
                 withFrameNanos {}
                 actions
@@ -1129,7 +1135,7 @@ fun Menu(
                     ?.let { requesters[it].requestFocus() }
             }
             Column(
-                Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()).onPreviewKeyEvent {
+                Modifier.wrapContentHeight().heightIn(max = if (LocalTouchUi.current) 240.dp else 320.dp).verticalScroll(rememberScrollState()).onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Escape || it.key == Key.Tab) {
                         setOpen(false)
@@ -1167,7 +1173,7 @@ fun Menu(
                                 setOpen(false)
                                 item.action()
                             }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            .padding(horizontal = 8.dp, vertical = if (LocalTouchUi.current) 0.dp else 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (item.icon.isNotBlank()) Icon(item.icon, modifier = Modifier.size(16.dp))

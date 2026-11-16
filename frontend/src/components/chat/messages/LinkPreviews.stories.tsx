@@ -1,8 +1,10 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
+import { Button } from "../../ui/button";
 import { http, HttpResponse } from "msw";
-import { expect, within } from "storybook/test";
+import { expect, within, userEvent } from "storybook/test";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 const svg = (wide: boolean) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${wide ? 1200 : 400}" height="630"><rect width="100%" height="100%" fill="#2468aa"/></svg>`;
@@ -60,3 +62,46 @@ export const Landscape: Story = {
 export const Portrait: Story = { args: { content: "https://example.com/portrait" } };
 export const TextOnly: Story = { args: { content: "https://example.com/text" } };
 export const Mobile: Story = { ...Landscape, globals: { viewport: { value: "mobile" } } };
+
+let cachedRun = "";
+let cachedRequests = 0;
+function CachedPreviewStory() {
+  const [visible, setVisible] = useState(true);
+  return (
+    <>
+      <Button onClick={() => setVisible((value) => !value)}>表示を切り替え</Button>
+      {visible ? <LinkPreviews content={`https://example.com/cached-${cachedRun}`} /> : null}
+    </>
+  );
+}
+export const CachedOnReturn: Story = {
+  beforeEach: () => {
+    cachedRun = crypto.randomUUID();
+    cachedRequests = 0;
+  },
+  render: () => <CachedPreviewStory />,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("https://storybook.example/summaly", () => {
+          cachedRequests++;
+          return HttpResponse.json({
+            title: "保存済みのプレビュー",
+            description: "再表示では取得を待ちません。",
+          });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("link", { name: /保存済みのプレビュー/ });
+    await expect(cachedRequests).toBe(1);
+    const toggle = canvas.getByRole("button", { name: "表示を切り替え" });
+    await userEvent.click(toggle);
+    await expect(canvas.queryByRole("link")).not.toBeInTheDocument();
+    await userEvent.click(toggle);
+    await expect(canvas.getByRole("link", { name: /保存済みのプレビュー/ })).toBeVisible();
+    await expect(cachedRequests).toBe(1);
+  }),
+};
