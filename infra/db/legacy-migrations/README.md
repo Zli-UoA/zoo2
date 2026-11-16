@@ -5,7 +5,7 @@ Files here are retained for reference only and are not part of Atlas's canonical
 `20261123000001_channel_notes_expiry_index.sql` before main reached migration
 `20261126000000`; keeping it in the canonical directory makes Atlas reject main
 history as out of order. The later canonical migration
-`20261128020006_channel_notes_expiry_index.sql` drops the conflicting index by
+`20261128030002_channel_notes_expiry_index.sql` drops the conflicting index by
 name and recreates it with the current `(channel_id, deleted_at, id)` order.
 This preserves both applied histories and their stored checksums while fixing
 the old index; `IF NOT EXISTS` alone would leave the old definition in place.
@@ -67,13 +67,13 @@ databases on the same instance. The migrations applied were:
    `20261123000001`. Run `atlas migrate hash --dir file://<legacy-dir>` and
    `atlas migrate apply --dir file://<legacy-dir> --url <case1-url>`. This
    applies 76 files through the old expiry revision. Then apply the current
-   canonical directory to the same URL; it applies the remaining 23 files.
+   canonical directory to the same URL; it applies the remaining 24 files.
 2. **Old expiry and later main history:** build the same temporary directory,
    retaining migrations through `20261126010000` and removing the `20261127*`
    and `20261128*` files. Hash it, apply it to `notes_case2` (84 files), then
-   apply the current canonical directory (15 files).
+   apply the current canonical directory (16 files).
 3. **Clean current history:** apply the current canonical directory directly
-   to `notes_case3` (98 files).
+   to `notes_case3` (99 files).
 
 For each database, run this SQL to inspect both the retained historical hash
 and the canonical replacement:
@@ -82,7 +82,7 @@ and the canonical replacement:
 SELECT version, description, hash
 FROM atlas_schema_revisions.atlas_schema_revisions
 WHERE version IN (
-  '20261123000001', '20261123100000', '20261128020006'
+  '20261123000001', '20261123100000', '20261128030002'
 )
 ORDER BY version;
 
@@ -91,17 +91,17 @@ FROM atlas_schema_revisions.atlas_schema_revisions;
 ```
 
 Then run `atlas migrate status --dir file://infra/db/migrations --url
-<case-url>`. After rebasing onto main through `20261128020004`, the runs were
+<case-url>`. After rebasing onto main through `20261128030000`, the runs were
 repeated on PostgreSQL 16.15 with Atlas `v1.3.0`; the observed results were:
 
 | History | Atlas apply result | SQL evidence | Atlas status |
 | --- | --- | --- | --- |
-| Old expiry only | 76 legacy + 23 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261128020006` was added with hash `PCOa3uS/Rk4R+8wbXH4rQBqv0FOecIfuKgyAApiRFjc=` | OK, current `20261128020011`, 99 executed, 0 pending |
-| Old expiry + main through `20261126010000` | 84 legacy + 15 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261128020006` was added with hash `PCOa3uS/Rk4R+8wbXH4rQBqv0FOecIfuKgyAApiRFjc=` | OK, current `20261128020011`, 99 executed, 0 pending |
-| Clean current history | 98 canonical files succeeded | no old expiry revision; canonical expiry `20261128020006` hash `PCOa3uS/Rk4R+8wbXH4rQBqv0FOecIfuKgyAApiRFjc=` | OK, current `20261128020011`, 98 executed, 0 pending |
+| Old expiry only | 76 legacy + 24 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261128030002` was added with hash `gdfypT4jJ6NQDvVRULtQNDjtWfkeUAbs2FnfrWH8eMc=` | OK, current `20261128030007`, 100 executed, 0 pending |
+| Old expiry + main through `20261126010000` | 84 legacy + 16 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261128030002` was added with hash `gdfypT4jJ6NQDvVRULtQNDjtWfkeUAbs2FnfrWH8eMc=` | OK, current `20261128030007`, 100 executed, 0 pending |
+| Clean current history | 99 canonical files succeeded | no old expiry revision; canonical expiry `20261128030002` hash `gdfypT4jJ6NQDvVRULtQNDjtWfkeUAbs2FnfrWH8eMc=` | OK, current `20261128030007`, 99 executed, 0 pending |
 
 These results show the old revision remains intact where it was applied, and
-the corrective `20261128020006` migration converges both legacy histories from
+the corrective `20261128030002` migration converges both legacy histories from
 `main` (or the pre-`20261123000001` branch). Do not delete or edit rows in
 `atlas_schema_revisions` on those databases; let Atlas apply the new canonical
 migration without manual revision-table rewrites.
@@ -109,8 +109,10 @@ migration without manual revision-table rewrites.
 Note: disposable dev/test databases that previously applied earlier
 `split/notes-api` drafts (`20261127000000`–`20261127000005` or
 `20261128000001`–`20261128000006` before the rebase onto `main`
-`20261128010000`, or `20261128010001`–`20261128010007` before the rebase
-onto `main` `20261128020000`) must be recreated rather than upgraded in place.
+`20261128010000`, `20261128010001`–`20261128010007` before the rebase onto
+`main` `20261128020000`, or `20261128020005`–`20261128020011` before the
+rebase onto `main` `20261128030000`) must be recreated rather than upgraded in
+place.
 
 Compare each final application schema with the checked-in `schema.sql`. Give
 each comparison its own empty dev database: Atlas imports `schema.sql` into
@@ -145,8 +147,8 @@ atlas schema diff \
 
 On PostgreSQL 16.15 with Atlas `v1.3.9-1824371-canary`, all three commands
 reported "Schemas are synced, no changes to be made." Migration status was
-OK for all three final databases: the two legacy histories had 99 executed
-files after convergence and the clean current history had 98. No application
+OK for all three final databases: the two legacy histories had 100 executed
+files after convergence and the clean current history had 99. No application
 schema differences remained (including triggers and functions, which were also
 checked via `pg_dump --schema-only` parity). `pg_get_indexdef` returned
 `(channel_id, deleted_at, id)` for all three databases.

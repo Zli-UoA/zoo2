@@ -257,7 +257,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             platform.imageFrames(image(url)).first()
         }
 
-    fun update(next: Environment) {
+    fun update(next: Environment): Unit = androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
         val old = env
         env = next
         toastController.setVisible(next.visible)

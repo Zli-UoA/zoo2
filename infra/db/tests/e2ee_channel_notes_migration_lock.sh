@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${NOTES_TEST_DATABASE_URL:?Set NOTES_TEST_DATABASE_URL to a disposable PostgreSQL database with canonical migrations through 20261128020006 applied}"
+: "${NOTES_TEST_DATABASE_URL:?Set NOTES_TEST_DATABASE_URL to a disposable PostgreSQL database with canonical migrations through 20261128030002 applied}"
 command -v psql >/dev/null
 command -v atlas >/dev/null
 
 migration_dir="$(cd "$(dirname "$0")/.." && pwd)/migrations"
 atlas_dir="file://${migration_dir}"
-target_version=20261128020007
+target_version=20261128030003
 suffix="$(date +%s)_$$"
 user_id="notes_migration_user_${suffix}"
 channel_id="notes_migration_channel_${suffix}"

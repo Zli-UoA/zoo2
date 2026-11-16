@@ -21,7 +21,7 @@ END $$;
 SET test.mode = :'mode';
 SELECT set_config('test.encryption_function_before', pg_get_functiondef('e2ee_protect_channel_encryption()'::regprocedure), true);
 
-\ir ../migrations/20261128020007_e2ee_channel_notes.sql
+\ir ../migrations/20261128030003_e2ee_channel_notes.sql
 
 DO $$
 DECLARE

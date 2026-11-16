@@ -37,7 +37,7 @@
 
 - Compose for Web は、動作が重く実用に耐えないため実験を中止する。Web の開発は React で継続する。
 - React の変更や main の取り込みで、Compose Web への機能・UI追従、Kotlin/Wasm のビルド・ブラウザーテスト、Storybook の Kotlin 登録を必須にしない。
-- Compose for Android は継続する。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
+- Compose for Android に廃止予定はなく、開発・検証・署名付き配布を継続する。実験中止の対象は Compose for Web のみであり、Compose 全体や `frontend-compose/` 全体を廃止対象として扱わない。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
 - 共通 Kotlin・API・認証・同期を変更するときは Android への影響を確認し、必要な修正と Android の検証を同じ PR に含める。Android の開発・検証・署名付き配布を Web 実験と一緒に停止しない。
 - Web 専用コード・テストは削除済み。Android が利用する共有資源を削除しない。詳細は `docs/android.md` を参照する。
 
