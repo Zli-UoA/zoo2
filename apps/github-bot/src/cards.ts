@@ -129,7 +129,7 @@ export function messageBlocks(notice: Notice, s: Json, payload: Json, reply = fa
     for (const commit of (payload.commits ?? []).slice(-8))
       field(
         String(commit.id).slice(0, 7),
-        text(commit.message, 400),
+        text(commit.message, 100),
         false,
         `https://github.com/${repo}/commit/${encodeURIComponent(commit.id)}`,
       );
@@ -178,7 +178,7 @@ export function messageBlocks(notice: Notice, s: Json, payload: Json, reply = fa
 }
 
 /** 部品の id（テストと読み手が、部品の役割を見分けるのに使う）。 */
-export const PART = { heading: 1, title: 2, description: 3, fields: 4, footer: 5 } as const;
+export const PART = { heading: 1, title: 2, description: 3, fields: 4, footer: 5, author: 6 } as const;
 
 /** カードの 1 項目の値を MFM にする（コードは `` ` ``、リンクは `[値](URL)`）。 */
 function fieldValue(f: Json): string {
@@ -188,9 +188,11 @@ function fieldValue(f: Json): string {
 
 /** カード（見出しの文字と、container 1 つ）を部品の文書にする。本文は通知用の代わりの文字として残す。 */
 export function cardComponents(heading: string | undefined, card: Json): Component[] {
-  const parts: Component[] = [
-    { type: 10, id: PART.title, content: card.url ? `**[${plain(card.title)}](${card.url})**` : `**${plain(card.title)}**` },
-  ];
+  const parts: Component[] = [];
+  // リンクの展開では、投稿者と状態（closed・merged など）も出す
+  if (card.author) parts.push({ type: 10, id: PART.author, content: `<small>${plain(String(card.author))}</small>` });
+  const title = card.url ? `**[${plain(card.title)}](${card.url})**` : `**${plain(card.title)}**`;
+  parts.push({ type: 10, id: PART.title, content: card.badge ? `${title} \`${String(card.badge).replaceAll("`", "'")}\`` : title });
   if (card.description) parts.push({ type: 10, id: PART.description, content: plain(card.description) });
   if (card.fields?.length)
     parts.push({

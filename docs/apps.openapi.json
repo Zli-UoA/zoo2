@@ -7983,7 +7983,8 @@
             ]
           },
           "blocks": {
-            "oneOf": [
+            "description": "Slack Block Kit か旧形式",
+            "anyOf": [
               {
                 "type": "array",
                 "items": {
@@ -7993,8 +7994,7 @@
               {
                 "$ref": "#/components/schemas/LegacyBlocks"
               }
-            ],
-            "description": "Slack Block Kit か旧形式"
+            ]
           },
           "components": {
             "type": "array",
@@ -8303,7 +8303,7 @@
         }
       },
       "ComponentsInput": {
-        "oneOf": [
+        "anyOf": [
           {
             "$ref": "#/components/schemas/ComponentDocument"
           },

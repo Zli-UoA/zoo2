@@ -357,7 +357,7 @@ async fn apply(
     };
     let existing = query(
         &mut tx,
-        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''))::text \
+        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''))::text \
          FROM messages WHERE id=$1 AND channel_id=$2 \
          AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
         &[&id, zoo_channel, if zoo_mapped || !super::is_valid_ts(ts) { "" } else { ts }],

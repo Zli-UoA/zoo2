@@ -42,7 +42,7 @@ function componentFile(c, f) {
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
-    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/')));
+    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
 }
 
 const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));

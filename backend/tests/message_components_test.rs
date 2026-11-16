@@ -444,16 +444,20 @@ async fn backfill_moves_legacy_cards_and_blocks_and_can_be_restored() -> anyhow:
     )
     .await;
     // 2 回目は何も変えない
-    let again = backend::components::backfill::run(&f.state.db, true, |_| Ok(())).await?;
-    assert!(!lines.is_empty());
-    let mine: Vec<_> = lines
+    // 2 回目は何も変えない
+    let again = backend::components::backfill::run(&f.state.db, true, |c| {
+        lines.push(backend::components::backfill::to_line(c));
+        Ok(())
+    })
+    .await?;
+    assert_eq!(again.applied, 0, "{again:?}");
+    let all: Vec<_> = lines
         .iter()
         .map(|l| backend::components::backfill::from_line(l).unwrap())
-        .filter(|c| c.id == mid)
         .collect();
-    assert_eq!(mine.len(), 1);
-    let _ = again;
-    backend::components::backfill::restore(&f.state.db, &mine).await?;
+    assert_eq!(all.iter().filter(|c| c.id == mid).count(), 1);
+    // 共有の DB にある、ほかのテストの旧データの変換も含めて、すべて戻す
+    backend::components::backfill::restore(&f.state.db, &all).await?;
     assert!(read(&mut db).await["c"].is_null());
     Ok(())
 }

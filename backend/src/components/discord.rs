@@ -14,7 +14,20 @@ use zoo_components::*;
 pub fn markdown_to_mfm(text: &str) -> String {
     let mut out = Vec::new();
     let mut quote_rest = false;
+    // コードブロック（``` で囲んだ行）の中は変えない
+    let mut in_code = false;
     for line in text.split('\n') {
+        if line.trim_start().starts_with("```") || in_code {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+            }
+            out.push(if quote_rest {
+                format!("> {line}")
+            } else {
+                line.to_string()
+            });
+            continue;
+        }
         let line = if quote_rest {
             format!("> {line}")
         } else if let Some(rest) = line.strip_prefix(">>> ") {
@@ -30,7 +43,25 @@ pub fn markdown_to_mfm(text: &str) -> String {
     out.join("\n")
 }
 
+/// 1 行を変換する。インラインコード（` で囲んだ部分）の中は変えない。
 fn inline(line: &str) -> String {
+    let mut out = String::new();
+    let ticks = line.matches('`').count();
+    for (i, part) in line.split('`').enumerate() {
+        if i > 0 {
+            out.push('`');
+        }
+        // 奇数番目で、後ろに閉じる ` があればコードの中
+        if i % 2 == 1 && i < ticks {
+            out.push_str(part);
+        } else {
+            out.push_str(&inline_text(part));
+        }
+    }
+    out
+}
+
+fn inline_text(line: &str) -> String {
     let mut out = String::new();
     let mut rest = line;
     loop {
@@ -247,6 +278,11 @@ mod tests {
             "hi <plain>@123</plain> in <plain>#45</plain> :wave:"
         );
         assert_eq!(markdown_to_mfm(">>> a\nb"), "> a\n> b");
+        assert_eq!(markdown_to_mfm("`||x||` ||y||"), "`||x||` $[blur y]");
+        assert_eq!(
+            markdown_to_mfm("```\n||x|| <t:1:R>\n```"),
+            "```\n||x|| <t:1:R>\n```"
+        );
         assert_eq!(
             markdown_to_mfm("**bold** [x](https://e.x) <b>keep</b>"),
             "**bold** [x](https://e.x) <b>keep</b>"

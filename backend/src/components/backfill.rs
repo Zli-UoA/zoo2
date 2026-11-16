@@ -30,9 +30,14 @@ pub struct Report {
     pub scanned: usize,
     pub changed: usize,
     pub applied: usize,
+    /// 変換すると内容が欠ける行（旧形式の select の選択肢が多すぎるなど）。旧列のまま残す
+    pub skipped: usize,
 }
 
 /// `messages.card` と `messages.app_blocks` から文書を作る。両方あれば card が先。
+///
+/// 本文（`content`）は入れない。旧形式でも、カードのある投稿では本文を表示せず（本文はカードの要約か、
+/// Slack の取り込みでは先頭の「Slack」カードと同じ文）、新形式でも IS_COMPONENTS_V2 で同じく本文を隠す。
 pub fn message_document(card: Option<&Value>, blocks: Option<&Value>) -> Option<Document> {
     let mut doc = Document::default();
     if let Some(card) = card.filter(|c| c.is_object()) {
@@ -55,19 +60,31 @@ async fn suppress(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 変換の結果。
+pub enum Converted {
+    /// 変える必要がない
+    Same,
+    /// この値に書き換える
+    New(String),
+    /// 変換すると内容が欠けるので、旧列のまま残す（理由）
+    Lossy(String),
+}
+
 #[allow(clippy::too_many_arguments)]
-/// 1 つの表を進める。`select` は `$1`（前回の最後の id）を受け取り、`id` と `old` と変換元を返す。
+/// 1 つの表を主キーの順に進める（keyset）。`select` は `$1`（前回の最後のキー。最初は `start`）を受け取り、
+/// `id`（文字列のキー）と `old` と変換元を返す。`update` は `$1`（キー）と `$2`（新しい値）を受け取る。
 async fn each_batch(
     db: &toasty::Db,
+    start: &str,
     select: &str,
     update: &str,
     table: &str,
     apply: bool,
     report: &mut Report,
-    convert: impl Fn(&Value) -> Option<String>,
+    convert: impl Fn(&Value) -> Converted,
     on_change: &mut impl FnMut(&Change) -> std::io::Result<()>,
 ) -> Result<(), AppError> {
-    let mut last = String::new();
+    let mut last = start.to_string();
     loop {
         let mut db = db.clone();
         let mut tx = db.transaction().await?;
@@ -80,7 +97,15 @@ async fn each_batch(
         for row in &rows {
             let id = row["id"].as_str().unwrap_or_default().to_string();
             last = id.clone();
-            let Some(new) = convert(row) else { continue };
+            let new = match convert(row) {
+                Converted::Same => continue,
+                Converted::Lossy(reason) => {
+                    report.skipped += 1;
+                    tracing::warn!(table, id, reason, "backfill kept the legacy value");
+                    continue;
+                }
+                Converted::New(new) => new,
+            };
             report.changed += 1;
             let change = Change {
                 table: table.into(),
@@ -116,70 +141,101 @@ fn parse(v: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// 展開の一覧（`messages.app_unfurls`）を `app_link_unfurls` から作り直す式（`ui.rs` の unfurl と同じ）。
+const UNFURLS_OF: &str = "(SELECT COALESCE(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb,'components',u.components::jsonb))),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=m.id)";
+
 pub async fn run(
     db: &toasty::Db,
     apply: bool,
     mut on_change: impl FnMut(&Change) -> std::io::Result<()>,
 ) -> Result<Report, AppError> {
     let mut report = Report::default();
+    // 読んだ行は FOR UPDATE でロックし、読み取りと書き換えの間に旧バックエンドが書いた値を上書きしない
     each_batch(
         db,
+        "",
         "SELECT json_build_object('id',m.id,'old',NULL,'card',m.card,'blocks',m.app_blocks)::text FROM messages m \
          JOIN channels c ON c.id=m.channel_id \
          WHERE m.id>$1 AND m.components IS NULL AND (m.card IS NOT NULL OR m.app_blocks IS NOT NULL) \
-         AND m.deleted_at IS NULL AND NOT c.encrypted ORDER BY m.id LIMIT 500",
+         AND m.deleted_at IS NULL AND NOT c.encrypted ORDER BY m.id LIMIT 500 FOR UPDATE OF m",
         "UPDATE messages SET components=$2 WHERE id=$1 AND components IS NULL RETURNING json_build_object('ok',true)::text",
         "messages",
         apply,
         &mut report,
-        |row| message_document(Some(&parse(&row["card"])), Some(&parse(&row["blocks"]))).map(|d| d.to_json()),
+        |row| {
+            let blocks = parse(&row["blocks"]);
+            if let Err(reason) = legacy::lossless_blocks(&blocks) {
+                return Converted::Lossy(reason);
+            }
+            match message_document(Some(&parse(&row["card"])), Some(&blocks)) {
+                Some(d) => Converted::New(d.to_json()),
+                None => Converted::Same,
+            }
+        },
         &mut on_change,
     )
     .await?;
+    // 主キー (message_id, installation_id, url) の順に進める。キーは 3 つの値の JSON 配列
     each_batch(
         db,
-        "SELECT json_build_object('id',u.message_id||' '||u.installation_id||' '||u.url,'old',NULL,'card',u.card)::text FROM app_link_unfurls u \
-         WHERE u.message_id||' '||u.installation_id||' '||u.url>$1 AND u.components IS NULL AND u.card IS NOT NULL \
-         ORDER BY u.message_id||' '||u.installation_id||' '||u.url LIMIT 500",
-        "UPDATE app_link_unfurls SET components=$2 WHERE message_id||' '||installation_id||' '||url=$1 AND components IS NULL RETURNING json_build_object('ok',true)::text",
+        r#"["","",""]"#,
+        "SELECT json_build_object('id',json_build_array(u.message_id,u.installation_id,u.url)::text,'old',NULL,'card',u.card)::text \
+         FROM app_link_unfurls u \
+         WHERE (u.message_id,u.installation_id,u.url)>($1::jsonb->>0,$1::jsonb->>1,$1::jsonb->>2) \
+         AND u.components IS NULL AND u.card IS NOT NULL \
+         ORDER BY u.message_id,u.installation_id,u.url LIMIT 500 FOR UPDATE OF u",
+        "UPDATE app_link_unfurls SET components=$2 \
+         WHERE message_id=$1::jsonb->>0 AND installation_id=$1::jsonb->>1 AND url=$1::jsonb->>2 AND components IS NULL \
+         RETURNING json_build_object('ok',true)::text",
         "app_link_unfurls",
         apply,
         &mut report,
         |row| {
             let card = parse(&row["card"]);
             if !card.is_object() {
-                return None;
+                return Converted::Same;
             }
             let mut d = legacy::cards(&card);
             d.flags = 0;
-            (!d.components.is_empty()).then(|| d.to_json())
+            if d.components.is_empty() { Converted::Same } else { Converted::New(d.to_json()) }
         },
         &mut on_change,
     )
     .await?;
-    // 展開の一覧（messages.app_unfurls）を、変換した app_link_unfurls から作り直す
+    // 展開の一覧を、変換した app_link_unfurls から作り直す。作り直した値を new に記録し、restore はその値のままの行だけを戻す
     each_batch(
         db,
-        "SELECT json_build_object('id',m.id,'old',m.app_unfurls::jsonb)::text FROM messages m JOIN channels c ON c.id=m.channel_id \
+        "",
+        &format!("SELECT json_build_object('id',m.id,'old',m.app_unfurls,'new',{UNFURLS_OF})::text FROM messages m JOIN channels c ON c.id=m.channel_id \
          WHERE m.id>$1 AND m.app_unfurls IS JSON ARRAY AND m.deleted_at IS NULL AND NOT c.encrypted \
-         AND EXISTS(SELECT 1 FROM jsonb_array_elements(m.app_unfurls::jsonb) e WHERE NOT e ? 'components') ORDER BY m.id LIMIT 500",
-        "UPDATE messages SET app_unfurls=(SELECT COALESCE(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb,'components',u.components::jsonb))),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=$1) WHERE id=$1 AND $2<>'' RETURNING json_build_object('ok',true)::text",
+         AND EXISTS(SELECT 1 FROM jsonb_array_elements(m.app_unfurls::jsonb) e WHERE NOT e ? 'components') ORDER BY m.id LIMIT 500 FOR UPDATE OF m"),
+        "UPDATE messages SET app_unfurls=$2 WHERE id=$1 RETURNING json_build_object('ok',true)::text",
         "messages.app_unfurls",
         apply,
         &mut report,
-        |_| Some("rebuild".into()),
+        |row| match row["new"].as_str() {
+            Some(new) if Some(new) != row["old"].as_str() => Converted::New(new.to_string()),
+            _ => Converted::Same,
+        },
         &mut on_change,
     )
     .await?;
     each_batch(
         db,
+        "",
         "SELECT json_build_object('id',id,'old',document::jsonb,'kind',kind)::text FROM app_ui \
-         WHERE id>$1 AND kind IN('home','modal','ephemeral') AND document IS JSON OBJECT AND document::jsonb ? 'blocks' ORDER BY id LIMIT 500",
+         WHERE id>$1 AND kind IN('home','modal','ephemeral') AND document IS JSON OBJECT AND document::jsonb ? 'blocks' ORDER BY id LIMIT 500 FOR UPDATE",
         "UPDATE app_ui SET document=$2 WHERE id=$1 AND document::jsonb ? 'blocks' RETURNING json_build_object('ok',true)::text",
         "app_ui",
         apply,
         &mut report,
-        |row| Some(legacy::blocks(&row["old"]["blocks"], row["kind"] == "modal").to_json()),
+        |row| {
+            let blocks = &row["old"]["blocks"];
+            if let Err(reason) = legacy::lossless_blocks(blocks) {
+                return Converted::Lossy(reason);
+            }
+            Converted::New(legacy::blocks(blocks, row["kind"] == "modal").to_json())
+        },
         &mut on_change,
     )
     .await?;

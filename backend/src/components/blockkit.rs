@@ -1155,11 +1155,11 @@ pub fn attachments<R: Resolver>(
             }));
         }
         if let Ok(nested) = conv.blocks(arr(a, "blocks")) {
-            parts.extend(
-                nested
-                    .into_iter()
-                    .filter(|c| !matches!(c, Component::Container(_))),
-            );
+            // attachment は container になるので、中の container は開いて中身を入れる（container の入れ子はできない）
+            parts.extend(nested.into_iter().flat_map(|c| match c {
+                Component::Container(inner) => inner.components,
+                other => vec![other],
+            }));
         }
         let footer: Vec<String> = [
             opt(a, "footer").map(|f| field_text_plain(&f)),
@@ -1196,9 +1196,18 @@ pub fn attachments<R: Resolver>(
 
 /// Slack の markdown ブロック（標準の markdown）を MFM に寄せる。MFM にない書き方だけ直す。
 pub fn markdown_to_mfm(text: &str) -> String {
+    // コードブロック（``` で囲んだ行）の中は変えない
+    let mut in_code = false;
     text.lines()
         .map(|line| {
             let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                in_code = !in_code;
+                return line.to_string();
+            }
+            if in_code {
+                return line.to_string();
+            }
             let indent = &line[..line.len() - trimmed.len()];
             if let Some(rest) = trimmed
                 .strip_prefix("- [ ] ")
@@ -1332,6 +1341,14 @@ mod tests {
         );
         assert!(
             matches!(doc.find("n"), Some(Component::TextInput(t)) if t.format == TextFormat::Number && t.required == Some(true))
+        );
+    }
+
+    #[test]
+    fn markdown_keeps_code_blocks() {
+        assert_eq!(
+            markdown_to_mfm("- [ ] todo\n```\n- [ ] literal\n```"),
+            "☐ todo\n```\n- [ ] literal\n```"
         );
     }
 

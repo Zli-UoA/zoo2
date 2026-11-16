@@ -110,9 +110,9 @@ App のメッセージ・ホーム・モーダル・一時メッセージ・リ�
 
 - **Discord**：`{"flags": 32768, "components": [...]}`。`type` は数値でも Discord の名前（`"container"` など）でもよく、保存と応答では数値になります。
 - **Slack**：`{"blocks": [...]}`（Block Kit）。対応はブロック・要素ともに [Webhook の部品の一覧](webhooks.md#部品の一覧)と同じです。App API では、知らないブロックや要素は 400 にします（Webhook では文字だけ残します）。
-- **旧形式**：`[{"type":"text"|"card"|"button"|"input"|"select", ...}]`。廃止予定です。受け付けますが、応答に `Deprecation: true` ヘッダーを付けます。
+- **旧形式**：`[{"type":"text"|"card"|"button"|"input"|"select", ...}]`。廃止予定です。受け付けますが、応答に `Deprecation: true` ヘッダーを付けます。部品に変換すると欠ける select（選択肢が 25 件を超える、または 100 文字を超える）は 400 にします。
 
-`flags` に `32768`（IS_COMPONENTS_V2）を立てると、本文（`content`）を表示せず部品だけを表示します。立てなければ、本文の下に部品を表示します。部品を付けたとき本文が空なら、部品の文字から作った代わりの文字を本文に入れます（通知・検索・TUI 用）。部品を付けるときは、本文も通知に適した文に更新してください。
+`flags` に `32768`（IS_COMPONENTS_V2）を立てると、本文（`content`）を表示せず部品だけを表示します（クライアントの描画は Zli-UoA/zoo2#600 から。それまでは本文だけを表示します）。立てなければ、本文の下に部品を表示します。部品を付けたとき本文が空か、前の部品から作った代わりの文字のままなら、新しい部品の文字から作った代わりの文字を本文に入れます（通知・検索・TUI 用）。アプリが書いた本文は変えません。部品を付けるときは、本文も通知に適した文に更新してください。
 
 `text_display.content` などの文字は zoo の MFM（[MFM 対応表](mfm.md)）です。Discord markdown の `-#`・`||…||`・`<t:…>` は MFM に直します（[記法](webhooks.md#記法テキストの書き方)）。利用者の入力など信頼できない文字は、SDK の `plain()` で囲んでください。
 
@@ -179,7 +179,7 @@ await zoo.setComponents(id, message([
 
 External Select（1001、Slack の `external_select`）は、利用者の入力に合わせて選択肢をアプリに問い合わせます。
 
-1. クライアントが `invoke` の `kind: "options"`（`values.query` に入力）を送ると、アプリに `options.requested` イベントが届きます。`data.request_id` と `data.query` を持ちます。
+1. クライアントが `invoke` の `kind: "options"`（`values.query` に入力）を送ると、アプリに `options.requested` イベントが届きます。`data.request_id` と、入力を入れた `data.values.query` を持ちます。
 2. アプリは 1 分以内に `POST /api/apps/v1/options/{request_id}` に `{"options":[{"label":"…","value":"…"}]}` を返します。Slack 形式（`{"text":{"type":"plain_text","text":"…"},"value":"…"}` と `option_groups`）も受け付けます。最大 100 件です。
 3. クライアントは `GET /api/apps/{app_id}/options/{request_id}` で選択肢を受け取ります。サーバーはアプリの応答を最大 3 秒待ち（150 ms ごとに最大 20 回確かめて止めます）、応答がなければ `{"options":null}` を返します。クライアントは入力が変わったときだけ問い合わせ直します。
 
@@ -188,7 +188,7 @@ External Select（1001、Slack の `external_select`）は、利用者の入力�
 旧形式の `messages.card`（Webhook と Slack 取り込みのカード）と `messages.app_blocks`（旧 Block）は、`messages.components` に移しました。
 
 - 新しい書き込みは `components` だけに入ります。旧列は、古いクライアントのために残しています。後のマイグレーションで消します。
-- 既存の行は `zoo_components_backfill` で移します（既定は dry-run。`--apply` で書き込み、変更前後を JSON Lines で標準出力に出します。`--restore <file>` で戻せます）。暗号化チャンネルの行は移しません。
+- 既存の行は、クライアントの対応（Zli-UoA/zoo2#600）を出したあとに `zoo_components_backfill` で移します。`app_ui` の文書（ホーム・モーダル・一時メッセージ）は旧形式を残さず書き換えるので、先に流すと、旧版の Web にはそれらが表示されません。旧形式の select で、選択肢が 25 件を超えるものや 100 文字を超えるものは、変換すると欠けるので移さず、旧形式のまま残します（件数を出力します）（既定は dry-run。`--apply` で書き込み、変更前後を JSON Lines で標準出力に出します。`--restore <file>` で戻せます）。暗号化チャンネルの行は移しません。
 - 移す前の行は、クライアントが旧列を読んで同じ形に変換して表示します。
 
 ## 既存Webhookと移行
