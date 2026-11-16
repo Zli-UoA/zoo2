@@ -75,7 +75,9 @@ class PhoneService : Service() {
                 .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(privateVersion)
             if (Build.VERSION.SDK_INT >= 31) ringing.setStyle(Notification.CallStyle.forIncomingCall(Person.Builder().setName(call.label.ifBlank { "Zoo" }).build(), end(), answer))
             else { ringing.addAction(Notification.Action.Builder(null as Icon?, app.t("sip.answer"), answer).build()); ringing.addAction(Notification.Action.Builder(null as Icon?, app.t("sip.hangup"), end()).build()) }
-            manager.notify(604, ringing.build().apply { flags = flags or Notification.FLAG_INSISTENT })
+            postIncomingNotification(ringing,
+                Notification.Action.Builder(null as Icon?, app.t("sip.answer"), answer).build(),
+                Notification.Action.Builder(null as Icon?, app.t("sip.hangup"), end()).build()) { manager.notify(604, it) }
         } else manager.cancel(604)
     }
     override fun onDestroy() {
@@ -83,5 +85,16 @@ class PhoneService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         host?.serviceDestroyed(this); host = null
         super.onDestroy()
+    }
+}
+
+/** Some Android builds reject a separate CallStyle notification without a full-screen intent. */
+internal fun postIncomingNotification(builder: Notification.Builder, answer: Notification.Action, end: Notification.Action, post: (Notification) -> Unit) {
+    fun notification() = builder.build().apply { flags = flags or Notification.FLAG_INSISTENT }
+    try { post(notification()) }
+    catch (failure: IllegalArgumentException) {
+        if (Build.VERSION.SDK_INT < 31) throw failure
+        builder.setStyle(null).setActions(answer, end)
+        post(notification())
     }
 }

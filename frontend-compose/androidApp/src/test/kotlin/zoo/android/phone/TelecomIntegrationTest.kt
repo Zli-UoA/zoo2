@@ -64,4 +64,23 @@ class TelecomIntegrationTest {
         ZooConnection(actions,"next",false).onCallAudioStateChanged(CallAudioState(false,CallAudioState.ROUTE_SPEAKER,(CallAudioState.ROUTE_SPEAKER or CallAudioState.ROUTE_EARPIECE)))
         assertTrue(actions.appMuted)
     }
+    @Test fun rejectedCallStyleFallsBackToAnswerAndEndActions() {
+        val context=org.robolectric.RuntimeEnvironment.getApplication()
+        val intent=android.app.PendingIntent.getBroadcast(context,1,android.content.Intent("answer"),android.app.PendingIntent.FLAG_IMMUTABLE)
+        val answer=android.app.Notification.Action.Builder(null as android.graphics.drawable.Icon?,"Answer",intent).build()
+        val end=android.app.Notification.Action.Builder(null as android.graphics.drawable.Icon?,"End",intent).build()
+        val builder=android.app.Notification.Builder(context,"calls").setSmallIcon(android.R.drawable.ic_menu_call)
+        if (android.os.Build.VERSION.SDK_INT>=31) builder.setStyle(android.app.Notification.CallStyle.forIncomingCall(android.app.Person.Builder().setName("Caller").build(),intent,intent))
+        else builder.setActions(answer,end)
+        val posted=mutableListOf<android.app.Notification>(); var attempts=0
+        postIncomingNotification(builder,answer,end) { notification ->
+            attempts++
+            if (android.os.Build.VERSION.SDK_INT>=31 && attempts==1) throw IllegalArgumentException("CallStyle requires FGS")
+            posted.add(notification)
+        }
+        assertEquals(if (android.os.Build.VERSION.SDK_INT>=31) 2 else 1,attempts)
+        assertEquals(listOf("Answer","End"),posted.single().actions.map {it.title.toString()})
+        assertTrue(posted.single().flags and android.app.Notification.FLAG_INSISTENT != 0)
+    }
+
 }
