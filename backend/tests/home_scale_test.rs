@@ -186,7 +186,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
         return result;
     }
     // A wide conversation must not materialize thousands of payloads. Counts
-    // remain exact and therefore necessarily inspect its actual direct replies.
+    // remain exact through audience-scoped counters, without scanning replies.
     let root = format!("{prefix}/posts/000000001");
     tx.execute(
         "UPDATE apub_remote_posts SET parent_id=$1 WHERE actor_id=$2 AND id<>$1",
@@ -325,6 +325,14 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
     // Fixture positioning, outside the timed application queries.
     let deep:String=fixture.query_one("SELECT id FROM home_posts WHERE user_id=$1 ORDER BY created_at,id LIMIT 1 OFFSET 10000", &[&user]).await?.get(0);
     let remote_author = format!("{}/actors/0", root.split("/posts/").next().unwrap());
+    let reply = root.replace("/posts/000000001", "/posts/000000020");
+    let writer = format!("{user}-budget-writer");
+    fixture
+        .execute(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text) ON CONFLICT DO NOTHING",
+            &[&writer],
+        )
+        .await?;
     let make = |name: &str, sql: String, args: &[&str]| {
         (
             name.to_owned(),
@@ -398,24 +406,45 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
             timeline_query_for(true, false, true, false, false),
             &[user, "", "social", "false", "500", root, "", "true", "[]"],
         ),
+        make(
+            "receipt_insert",
+            "WITH bound_params AS (SELECT $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,$9::text) INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($6,$1) RETURNING post_id".into(),
+            &[&writer, "", "", "", "", &reply, "", "", ""],
+        ),
+        make(
+            "post_delete",
+            "WITH bound_params AS (SELECT $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,$9::text) UPDATE apub_remote_posts SET deleted_at=now() WHERE id=$6 RETURNING id".into(),
+            &[user, "", "", "", "", &reply, "", "", ""],
+        ),
     ];
     let mut connections = Vec::new();
-    for _ in 0..backend::routes::home::HOME_QUERY_CONCURRENCY {
+    // Writes do not use Home's admission limiter; exercise eight DB writers.
+    for _ in 0..8 {
         let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
         tokio::spawn(connection);
         client
             .batch_execute("SET jit=off; SET plan_cache_mode=force_generic_plan")
             .await?;
-        connections.push(tokio::sync::Mutex::new((
+        connections.push(std::sync::Arc::new(tokio::sync::Mutex::new((
             client,
             std::collections::HashSet::<String>::new(),
-        )));
+        ))));
     }
     let pool = std::sync::Arc::new(connections);
     let mut violations = Vec::new();
     for (name, sql, args) in queries {
         for concurrency in [1, 8] {
             let mut tasks = tokio::task::JoinSet::new();
+            let pool = if is_budget_write(&name) {
+                pool.clone()
+            } else {
+                std::sync::Arc::new(
+                    pool.iter()
+                        .take(backend::routes::home::HOME_QUERY_CONCURRENCY)
+                        .cloned()
+                        .collect(),
+                )
+            };
             for worker in 0..concurrency {
                 let pool = pool.clone();
                 let sql = sql.clone();
@@ -425,13 +454,16 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
             }
             let mut samples = Vec::new();
             let mut waits = Vec::new();
+            let mut round_trips = Vec::new();
             while let Some(result) = tasks.join_next().await {
-                let (s, w) = result??;
+                let (s, w, r) = result??;
                 samples.extend(s);
                 waits.extend(w);
+                round_trips.extend(r);
             }
             samples.sort_by(f64::total_cmp);
             waits.sort_by(f64::total_cmp);
+            round_trips.sort_by(f64::total_cmp);
             eprintln!(
                 "budget {name} concurrency={concurrency} samples={} p50={:.2} p95={:.2} max={:.2}; pool-wait p95={:.2} max={:.2}",
                 samples.len(),
@@ -440,6 +472,12 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
                 samples.last().unwrap(),
                 waits[(waits.len() - 1) * 95 / 100],
                 waits.last().unwrap()
+            );
+            eprintln!(
+                "SQL round-trip {name} concurrency={concurrency}: p50={:.2} p95={:.2} max={:.2} (EXPLAIN JSON transfer included)",
+                round_trips[round_trips.len() / 2],
+                round_trips[(round_trips.len() - 1) * 95 / 100],
+                round_trips.last().unwrap()
             );
             if *samples.last().unwrap() > 100. {
                 violations.push(format!(
@@ -457,15 +495,19 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn is_budget_write(name: &str) -> bool {
+    matches!(name, "receipt_insert" | "post_delete")
+}
+
 type BudgetConnection =
-    tokio::sync::Mutex<(tokio_postgres::Client, std::collections::HashSet<String>)>;
+    std::sync::Arc<tokio::sync::Mutex<(tokio_postgres::Client, std::collections::HashSet<String>)>>;
 async fn budget_samples(
     pool: std::sync::Arc<Vec<BudgetConnection>>,
     worker: usize,
     name: String,
     sql: String,
     args: Vec<String>,
-) -> anyhow::Result<(Vec<f64>, Vec<f64>)> {
+) -> anyhow::Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
     let execution = format!(
         "EXPLAIN (ANALYZE,TIMING OFF,FORMAT JSON) EXECUTE budget_{}({})",
         name,
@@ -476,6 +518,7 @@ async fn budget_samples(
     );
     let mut samples = Vec::new();
     let mut waits = Vec::new();
+    let mut round_trips = Vec::new();
     for _ in 0..30 {
         let waiting = std::time::Instant::now();
         let mut connection = pool[worker % pool.len()].lock().await;
@@ -489,6 +532,7 @@ async fn budget_samples(
             })
             .await?;
         let mut prepare_ms = 0.;
+        let mut prepare_round_trip_ms = 0.;
         if !connection.1.contains(&name) {
             let prepare = format!(
                 "PREPARE budget_{}(text,text,text,text,text,text,text,text,text) AS {sql}",
@@ -511,13 +555,24 @@ async fn budget_samples(
                 .last()
                 .unwrap()
                 .parse::<f64>()?;
+            prepare_round_trip_ms = start.elapsed().as_secs_f64() * 1000.;
             eprintln!(
                 "prepare {name}: server={prepare_ms:.3}ms round-trip={:.3}ms",
-                start.elapsed().as_secs_f64() * 1000.
+                prepare_round_trip_ms
             );
             connection.1.insert(name.clone());
         }
+        // Roll back writes so every sample exercises the same actual change,
+        // including receipt metadata, reply deltas and their lock contention.
+        if is_budget_write(&name) {
+            connection.0.batch_execute("BEGIN").await?;
+        }
+        let started = std::time::Instant::now();
         let rows = connection.0.simple_query(&execution).await?;
+        round_trips.push(prepare_round_trip_ms + started.elapsed().as_secs_f64() * 1000.);
+        if is_budget_write(&name) {
+            connection.0.batch_execute("ROLLBACK").await?;
+        }
         drop(connection);
         let raw = rows
             .iter()
@@ -533,7 +588,7 @@ async fn budget_samples(
                 + plan[0]["Execution Time"].as_f64().unwrap(),
         );
     }
-    Ok((samples, waits))
+    Ok((samples, waits, round_trips))
 }
 
 #[tokio::test]
