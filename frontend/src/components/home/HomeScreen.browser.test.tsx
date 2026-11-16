@@ -212,6 +212,12 @@ it("refreshes only the head and viewport, applies edits/deletions, and preserves
       ),
     ).toBe(true),
   );
+  // The virtual rows render before their animation-frame ResizeObserver
+  // measurements. Capture the reading position after those measurements.
+  await act(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+  });
   let visible: HTMLElement[] = [];
   await waitFor(() => {
     const viewport = root.getBoundingClientRect();
@@ -240,11 +246,15 @@ it("refreshes only the head and viewport, applies edits/deletions, and preserves
   });
   await screen.findByText("表示中の編集", {}, { timeout: 10000 });
   await waitFor(() => expect(root.querySelector(`[data-home-post="${deletedId}"]`)).toBeNull());
-  expect(
-    Math.abs(
-      root.querySelector(`[data-home-post="${anchorId}"]`)!.getBoundingClientRect().top - top,
-    ),
-  ).toBeLessThan(5);
+  // Text updates alone do not mean the virtualizer has applied its measured
+  // scroll correction. Keep the same tolerance, waiting for that correction.
+  await waitFor(() =>
+    expect(
+      Math.abs(
+        root.querySelector(`[data-home-post="${anchorId}"]`)!.getBoundingClientRect().top - top,
+      ),
+    ).toBeLessThan(5),
+  );
   expect(prefetchDistances).toHaveLength(pagesBefore);
   const checks = requests.filter((url) => url.searchParams.has("entries"));
   expect(checks.length).toBeGreaterThan(0);
