@@ -164,3 +164,53 @@ it("revokes the gateway session when a submitted call outlives signaling timeout
   finish();
   await expect(f.driver.call("102")).rejects.toThrow("Phone call unavailable");
 }, 20000);
+
+it("ignores a candidate failure from the previous call", async () => {
+  const f = await fixture();
+  await f.driver.call("101");
+  let reject!: (error: Error) => void;
+  const pending = new Promise<never>((_, no) => {
+    reject = no;
+  });
+  const original = f.post.getMockImplementation()!;
+  f.post.mockImplementation((path, body) =>
+    (body as { action: string }).action === "candidate" ? pending : original(path, body),
+  );
+  f.peers[0].dispatchEvent(
+    new RTCPeerConnectionIceEvent("icecandidate", {
+      candidate: new RTCIceCandidate({
+        candidate: "candidate:1 1 UDP 1 192.0.2.1 1234 typ host",
+        sdpMid: "0",
+        sdpMLineIndex: 0,
+      }),
+    }),
+  );
+  await vi.waitFor(() =>
+    expect(
+      f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "candidate"),
+    ).toBe(true),
+  );
+  f.send("ended");
+  await vi.waitFor(() => expect(f.events.ended).toHaveBeenCalledOnce());
+  const next = f.driver.call("102");
+  reject(new Error("old candidate failed"));
+  await next;
+  expect(f.events.disconnected).not.toHaveBeenCalled();
+  expect(
+    f.post.mock.calls.filter(([, body]) => (body as { action: string }).action === "call"),
+  ).toHaveLength(2);
+});
+
+it("disconnects the session when hangup is rejected", async () => {
+  const f = await fixture();
+  await f.driver.call("101");
+  const original = f.post.getMockImplementation()!;
+  f.post.mockImplementation((path, body) =>
+    (body as { action: string }).action === "hangup"
+      ? Promise.reject(new Error("rejected hangup"))
+      : original(path, body),
+  );
+  await expect(f.driver.hangup()).rejects.toThrow("rejected hangup");
+  expect(f.events.disconnected).toHaveBeenCalledOnce();
+  await expect(f.driver.call("102")).rejects.toThrow("Phone call unavailable");
+});

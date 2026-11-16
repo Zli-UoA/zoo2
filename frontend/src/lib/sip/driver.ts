@@ -90,6 +90,9 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
     const signal = (value: Record<string, unknown>, mine: number) => {
       const rtc = value.signal as Record<string, unknown>;
       if (mine !== generation || closed) return;
+      const failIfCurrent = () => {
+        if (mine === generation) fail();
+      };
       if (rtc.type === "candidate") {
         if (!descriptionSent) {
           if (candidates.length >= 128) {
@@ -97,7 +100,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
             return;
           }
           candidates.push(rtc);
-        } else void send({ action: "candidate", signal: rtc }, mine).catch(fail);
+        } else void send({ action: "candidate", signal: rtc }, mine).catch(failIfCurrent);
       } else if (rtc.type === "offer" || rtc.type === "answer") {
         const done = description;
         void send(
@@ -112,7 +115,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
             if (mine !== generation || closed) return;
             descriptionSent = true;
             for (const candidate of candidates.splice(0))
-              void send({ action: "candidate", signal: candidate }, mine).catch(fail);
+              void send({ action: "candidate", signal: candidate }, mine).catch(failIfCurrent);
             done?.resolve();
           })
           .catch(() => {
@@ -241,9 +244,9 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
         ending = deferred();
         const done = ending;
         media?.close();
-        await send({ action: decline ? "decline" : "hangup" });
         let timeout!: ReturnType<typeof setTimeout>;
         try {
+          await send({ action: decline ? "decline" : "hangup" });
           await Promise.race([
             done.promise,
             new Promise<never>((_, reject) => {
