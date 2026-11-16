@@ -58,42 +58,51 @@ afterEach(async () => {
   await act(async () => root.unmount());
   vi.unstubAllGlobals();
 });
-it("shares fetches, pagination and optimistic reads between badge and screen across navigation", async () => {
-  mocks.get.mockResolvedValueOnce({ items: [row], unread_count: 2, next_cursor: "next" });
-  await act(async () => root.render(tree(false)));
-  expect(mocks.get).toHaveBeenCalledTimes(1);
-  await act(async () => root.render(tree(true)));
-  expect(mocks.get).toHaveBeenCalledTimes(1);
-  expect(results.badge).toBe(results.screen);
-  mocks.get.mockResolvedValueOnce({
-    items: [{ ...row, id: "older" }],
-    unread_count: 2,
-    next_cursor: null,
-  });
-  await act(async () => results.screen.activitypub.loadMore());
-  expect(results.badge.activitypub.items.map((item) => item.id)).toEqual(["notification", "older"]);
-  let finish!: () => void;
-  mocks.request.mockImplementationOnce(
-    () =>
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      }),
-  );
-  let read!: Promise<void>;
-  await act(async () => {
-    read = results.screen.markRead(["activitypub:notification"]);
-  });
-  expect(results.badge.unreadCount).toBe(1);
-  expect(results.screen.unreadCount).toBe(1);
-  await act(async () => {
-    finish();
-    await read;
-  });
-  await act(async () => root.render(tree(false)));
-  await act(async () => root.render(tree(true)));
-  expect(mocks.get).toHaveBeenCalledTimes(2);
-  expect(results.screen.activitypub.items).toHaveLength(2);
-});
+it.each([
+  { olderId: "older", createdAt: "2026-10-31T23:59:59Z" },
+  { olderId: "before", createdAt: row.created_at },
+])(
+  "shares pagination and reads across navigation with older row $olderId",
+  async ({ olderId, createdAt }) => {
+    mocks.get.mockResolvedValueOnce({ items: [row], unread_count: 2, next_cursor: "next" });
+    await act(async () => root.render(tree(false)));
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(tree(true)));
+    expect(mocks.get).toHaveBeenCalledTimes(1);
+    expect(results.badge).toBe(results.screen);
+    mocks.get.mockResolvedValueOnce({
+      items: [{ ...row, id: olderId, created_at: createdAt }],
+      unread_count: 2,
+      next_cursor: null,
+    });
+    await act(async () => results.screen.activitypub.loadMore());
+    expect(results.badge.activitypub.items.map((item) => item.id)).toEqual([
+      "notification",
+      olderId,
+    ]);
+    let finish!: () => void;
+    mocks.request.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let read!: Promise<void>;
+    await act(async () => {
+      read = results.screen.markRead(["activitypub:notification"]);
+    });
+    expect(results.badge.unreadCount).toBe(1);
+    expect(results.screen.unreadCount).toBe(1);
+    await act(async () => {
+      finish();
+      await read;
+    });
+    await act(async () => root.render(tree(false)));
+    await act(async () => root.render(tree(true)));
+    expect(mocks.get).toHaveBeenCalledTimes(2);
+    expect(results.screen.activitypub.items).toHaveLength(2);
+  },
+);
 it("clears the old account and aborts its pending request on account switch", async () => {
   let signal!: AbortSignal;
   mocks.get

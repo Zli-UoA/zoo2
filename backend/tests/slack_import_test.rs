@@ -2425,6 +2425,14 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
     let state = AppState::new(db.clone(), config.clone());
     ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
     let app = create_router(state.clone());
+    // Fresh test databases start in collecting mode. Exercise the production
+    // thread constraints too, including BEFORE INSERT on an upserted reply.
+    sql(
+        &state,
+        "UPDATE thread_rollout SET phase='ready' RETURNING json_build_object('ok',true)::text",
+        &[],
+    )
+    .await?;
     let admin = create_user(&app, "slack_admin_history_same").await?;
     sql(
         &state,
@@ -2572,6 +2580,16 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
     assert_eq!(row("C1", b).await[0]["deleted"], true);
     assert_eq!(row("C1", x).await[0]["deleted"], false);
     assert_eq!(live("C2").await, 1);
+    let retained = sql(
+        &state,
+        "SELECT json_build_object('parent',parent_id)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(&team, "C1", reply)],
+    )
+    .await?;
+    assert_eq!(
+        retained[0]["parent"],
+        backend::slack::message_id(&team, "C1", b)
+    );
     Ok(())
 }
 
