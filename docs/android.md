@@ -9,7 +9,8 @@ Android 用に別のチャット画面や同期クライアントは持ちませ
 
 ## ビルド
 
-JDK 21、Android SDK Platform 35、Build Tools 35.0.0 を用意してください。
+JDK 21、Android SDK Platform 35、Build Tools 35.0.0、Node.js 24とリポジトリ指定のpnpmを用意してください。
+初回は `pnpm --dir frontend install --frozen-lockfile` を実行します。
 Android Studio で `frontend-compose` を開き、Gradle プロパティに
 `zoo.android=true` を設定するか、コマンドで指定します。
 `nix develop .#android` は CI と同じ Android 35 / Build Tools 35.0.0 と NDK を含め、
@@ -27,6 +28,20 @@ Android ターゲットは `zoo.android=true` で明示的に有効にします�
 フォントはチェックサムを固定して取得・生成し、翻訳辞書は
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
+
+## SIP・DM通話とAndroid Telecom
+
+「設定 → 電話（SIP）」で個人用・共有用の回線、利用メンバー、電話機の連絡先を登録・編集できます。共有回線の管理は管理者、利用は明示したメンバーのみです。個人回線は本人だけが利用します。PBX・TURN・VPNの構成は [SIP電話](sip.md) を参照してください。
+
+DMヘッダーの通話ボタンは既存の通話SSEとWebRTCへ接続します。DM着信を受ける場合は、設定で「DMの着信を受ける」を有効にします。招待のShapeはセッション全体で1本、永続キャッシュなしで購読します。回線一覧は設定表示・手動更新・変更後に取得し、ポーリングしません。通話SSEは通話中だけ1本、既存APIへのheartbeatは10秒ごとで、終了・ログアウト時に停止します。開始前のイベントは最大128件を初期状態まで保留し、未応答の発信は45秒で終了します。
+
+両方の通話をAndroid Telecomのself-managed `ConnectionService`へ登録します。着信・発信の管理、ヘッドセットからの応答・終了、OSからのミュート・音声経路変更をアプリの通話へ渡します。Android 12以降はネイティブのCallStyle通知、古い版は応答・終了ボタン付き通知です。画面内にも応答・終了・ミュート・スピーカー、SIPのDTMF操作を表示します。既定の電話アプリへの変更、通話履歴への書き込み、保留・転送は行いません。同時に扱う通話はSIP・DMを合わせて1つです。
+
+音声はWebRTC、SIPの呼制御はWSSです。Compose画面から、APKに同梱したJavaScriptだけを読み込む専用WebViewを操作します。WebのSIPドライバーを共有し、音声エンジンはビルド時に `pnpm build:android-phone` で生成します。読み込みは認証先HTTPSオリジンの専用2パスに限定し、外部ページ・遷移・ファイルアクセスを拒否します。マイクはAndroidの許可とTelecomによる通話の受け入れ後に限って許可し、カメラは許可しません。API認証トークンはWebViewへ渡さず、SIP認証情報もメモリだけで保持します。
+
+待ち受けを有効にしている間は常駐通知を表示します。Android 14以降は待ち受け用のspecialUse foreground service、通話中はphoneCallとmicrophoneの種類を使います。通知から待ち受けを停止でき、ログアウト・アカウント切替でも終了します。古い通知操作はセッションと通話IDで検証します。通知の許可と最新のAndroid System WebViewが必要です。バックグラウンド待ち受けはプロセス・認証セッションが生きている間に限り、強制停止・プロセス終了・端末再起動後の自動復帰や、Pushによる通話起動は含みません。
+
+共通Kotlinテストで権限再確認・期限切れ・応答中の同期競合・遅延応答・通話の排他を、Robolectric（API 28/35）でTelecomコールバックとWebViewのオリジン制限を検証します。Chromiumでは実際のaudio-only SDP交渉とマイク解放を検証します。この開発環境のChromiumは管理ポリシーで直接WebRTC通信が制限されるため、双方向音声は未確認です。実機のBluetooth・有線ヘッドセット・ロック画面・通常電話との競合・バックグラウンド着信・TURN越しの音声とDTMFは、PBXを用意した端末で確認してください。
 
 ## 安定性と端末での確認
 
