@@ -113,3 +113,10 @@ fun MfmFunction.motion(phase: Float, reducedMotion: Boolean, inheritedScale: Flo
         else -> MfmMotion()
     }
 }
+
+/** Match the interoperable JavaScript Date range and preserve malformed input. */
+fun mfmUnixSeconds(source: String): Long? {
+    val raw = source.trim()
+    if (!Regex("-?\\d+").matches(raw)) return null
+    return raw.toLongOrNull()?.takeIf { it in -8_640_000_000_000L..8_640_000_000_000L }
+}

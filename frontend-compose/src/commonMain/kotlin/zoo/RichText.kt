@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
@@ -219,6 +220,7 @@ private fun InlineParagraphContent(
     val authzAccounts = app.accountProfiles.map { JsonObject(it + ("user_name" to JsonPrimitive(it.text("username")))) }
     val channels by app.repo.channels.rows.collectAsState()
     val inheritedStyle = MaterialTheme.typography.bodyMedium.merge(LocalMfmStyle.current)
+    val inheritedInLink = LocalMfmInLink.current
     val mentionForeground = MaterialTheme.colorScheme.onSecondaryContainer
     val mentionBackground = MaterialTheme.colorScheme.secondaryContainer
     val accent = LocalLinkColor.current
@@ -241,7 +243,7 @@ private fun InlineParagraphContent(
     val remoteEmojis = remember(activityPubEmojis, registeredEmojis) { activityPubEmojis + registeredEmojis }
     val paragraph = remember(
         app, segments, users, authzAccounts, shortcodes, fonts, channels, inheritedStyle,
-        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt,
+        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt, inheritedInLink,
     ) {
         val mentions = mutableMapOf<String, String>()
         val emojiParts = mutableMapOf<String, Row>()
@@ -253,7 +255,7 @@ private fun InlineParagraphContent(
                 level: Int = 0,
                 inheritedWeight: FontWeight? = inheritedStyle.fontWeight,
                 inheritedSpan: SpanStyle = inheritedStyle.toSpanStyle(),
-                inLink: Boolean = false,
+                inLink: Boolean = inheritedInLink,
             ) {
                 parseInline(source).forEach { token ->
                     var value = token.value
@@ -287,6 +289,13 @@ private fun InlineParagraphContent(
                         value = (shortcodes[value.trim(':')] as? JsonPrimitive)?.contentOrNull ?: value
                     }
 
+                    val channel =
+                        if (token.kind == "hashtag" && !inLink)
+                            channels.find {
+                                it.text("channel_name") == value.removePrefix("#") &&
+                                    !it.present("deleted_at")
+                            }
+                        else null
                     val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
                     val style =
                         when (token.kind) {
@@ -295,23 +304,16 @@ private fun InlineParagraphContent(
                             "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
                             "small" -> SpanStyle(fontSize = (inheritedSpan.fontSize.value * .8f).sp)
                             "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
-                            "mention" ->
+                            "mention" -> if (inLink) SpanStyle() else
                                 SpanStyle(
                                     color = mentionForeground,
                                     background = mentionBackground,
                                     fontWeight = FontWeight.Medium,
                                 )
-                            "hashtag",
+                            "hashtag" -> if (channel == null) SpanStyle() else SpanStyle(color = accent)
                             "link" -> SpanStyle(color = accent)
                             else -> SpanStyle()
                         }
-                    val channel =
-                        if (token.kind == "hashtag" && !inLink)
-                            channels.find {
-                                it.text("channel_name") == value.removePrefix("#") &&
-                                    !it.present("deleted_at")
-                            }
-                        else null
                     val remote =
                         if (!inLink && token.kind == "mention" && value.count { it == '@' } == 2)
                             value.drop(1).split('@').takeIf { it.size == 2 && it[1].contains('.') }
@@ -386,11 +388,7 @@ private fun InlineParagraphContent(
             androidx.compose.foundation.text.InlineTextContent(
                 Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)
             ) {
-                Box(
-                    Modifier.wrapContentSize(unbounded = true)
-                        .widthIn(max = availableWidth)
-                        .onSizeChanged { sizes[id] = it }
-                ) {
+                MeasuredInlineContent(availableWidth, { if (sizes[id] != it) sizes[id] = it }) {
                     CompositionLocalProvider(
                         LocalMfmStyle provides inheritedStyle.merge(embedded.style),
                         LocalMfmInline provides true,
@@ -492,6 +490,26 @@ private fun InlineParagraphContent(
                 inheritedStyle.color.takeIf { it != androidx.compose.ui.graphics.Color.Unspecified }
                     ?: MaterialTheme.colorScheme.onBackground,
         )
+    }
+}
+
+/** Measure the body independently from its provisional text placeholder. */
+@Composable
+private fun MeasuredInlineContent(
+    maximumWidth: Dp,
+    measured: (IntSize) -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val maximum = with(androidx.compose.ui.platform.LocalDensity.current) {
+        if (maximumWidth.value.isFinite()) maximumWidth.roundToPx().coerceAtLeast(1)
+        else androidx.compose.ui.unit.Constraints.Infinity
+    }
+    Layout(content = { Box { content() } }) { children, constraints ->
+        val child = children.single().measure(androidx.compose.ui.unit.Constraints(maxWidth = maximum))
+        measured(IntSize(child.width, child.height))
+        layout(constraints.constrainWidth(child.width), constraints.constrainHeight(child.height)) {
+            child.placeRelative(0, 0)
+        }
     }
 }
 

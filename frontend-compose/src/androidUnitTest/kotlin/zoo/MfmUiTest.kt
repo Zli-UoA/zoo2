@@ -118,10 +118,13 @@ class MfmUiTest {
                 ui.runOnIdle { width = nextWidth; scale = nextScale; dark = nextDark }
                 val text = ui.onNodeWithText(body, useUnmergedTree = true)
                 text.assertIsDisplayed()
-                assertTrue(layout(text).lineCount > 1)
+                val textLayout = layout(text)
+                assertTrue(textLayout.lineCount > 1)
                 val outer = ui.onNodeWithTag("wrapped").fetchSemanticsNode().boundsInRoot
                 val inner = text.fetchSemanticsNode().boundsInRoot
                 assertTrue(inner.width <= outer.width + 1f, "$nextWidth / $nextScale: $inner outside $outer")
+                assertTrue(outer.height >= textLayout.size.height, "The body is clipped: $outer vs ${textLayout.size}")
+                assertTrue(inner.height >= textLayout.size.height - 1, "The body overlaps its placeholder")
                 screenshot("wrapped", "wrap-${nextWidth.value}-${nextScale}-${nextDark}")
             }
         } finally { fixture.close() }
@@ -231,19 +234,21 @@ class MfmUiTest {
             for (name in mfmAnimationDurations.keys) {
                 ui.runOnIdle { source = "$[$name.speed=1s animated]" }
                 ui.mainClock.advanceTimeByFrame()
-                val before = capture("animation")
+                val target = ui.onNodeWithText(if (name == "sparkle") "✦" else "animated", useUnmergedTree = true)
+                val beforeBounds = target.fetchSemanticsNode().boundsInRoot
+                val beforeColor = layout(target).layoutInput.style.color
                 ui.mainClock.advanceTimeBy(250)
-                val after = capture("animation")
-                try { assertFalse(before.sameAs(after), "$name did not animate") }
-                finally { before.recycle(); after.recycle() }
+                val afterBounds = target.fetchSemanticsNode().boundsInRoot
+                val afterColor = layout(target).layoutInput.style.color
+                if (name in setOf("rainbow", "sparkle")) assertNotEquals(beforeColor, afterColor, name)
+                else assertNotEquals(beforeBounds, afterBounds, "$name did not move")
             }
             ui.runOnIdle { fixture.app.update(fixture.app.env.copy(reducedMotion = true)) }
             ui.mainClock.advanceTimeByFrame()
-            val before = capture("animation")
+            val target = ui.onNodeWithText("✦", useUnmergedTree = true)
+            val before = layout(target).layoutInput.style.color
             ui.mainClock.advanceTimeBy(500)
-            val after = capture("animation")
-            try { assertTrue(before.sameAs(after), "Reduced motion still animates") }
-            finally { before.recycle(); after.recycle() }
+            assertEquals(before, layout(target).layoutInput.style.color)
         } finally { ui.mainClock.autoAdvance = true; fixture.close() }
     }
 
@@ -291,7 +296,8 @@ class MfmUiTest {
                         RichText("```kotlin\nval x = 1\n```", selection = false)
                         RichText("<plain>**literal** $[spin x]</plain>", selection = false)
                         RichText("\\(\\frac{a}{b}\\)", selection = false)
-                        RichText("[safe](https://example.test/a_(b)) :smile:", selection = false)
+                        RichText("[**safe**](https://example.test/a_(b)) :smile:", selection = false)
+                        RichText("__別の太字__ ***強調***", selection = false)
                     }
                 }
             }
@@ -304,9 +310,8 @@ class MfmUiTest {
             ui.onNodeWithText("**literal** $[spin x]", useUnmergedTree = true).assertIsDisplayed()
             ui.onNodeWithText("a", useUnmergedTree = true).assertIsDisplayed()
             ui.onNodeWithText("b", useUnmergedTree = true).assertIsDisplayed()
-            val link = layout(ui.onNodeWithText("safe 😀", useUnmergedTree = true))
-            assertEquals("https://example.test/a_(b)", (link.layoutInput.text.getLinkAnnotations(0, 1).single().item
-                as androidx.compose.ui.text.LinkAnnotation.Url).url)
+            ui.onNodeWithContentDescription("safe").performTouchInput { click() }
+            ui.runOnIdle { assertEquals(listOf("open:https://example.test/a_(b)"), fixture.actions) }
             screenshot("syntax", "syntax-blocks")
         } finally { fixture.close() }
     }

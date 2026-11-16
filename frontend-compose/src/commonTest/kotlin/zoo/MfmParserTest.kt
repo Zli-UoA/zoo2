@@ -94,4 +94,19 @@ class MfmParserTest {
             parseInline(prefix)
         }
     }
+
+    @Test
+    fun upstreamBoldAndTadaShorthandsHaveTheirMfmMeaning() {
+        assertEquals(listOf(Inline("bold", "bold")), parseInline("__bold__"))
+        assertEquals(listOf(Inline("https://example.test", "link", "https://example.test")),
+            parseInline("<https://example.test>"))
+        assertEquals(listOf(Inline("$[tada emphasis]", "effect")), parseInline("***emphasis***"))
+    }
+
+    @Test
+    fun ordinaryOpeningBracketsDoNotIntroduceAnMfmSubtree() {
+        assertEquals(listOf("$[spin a[b]" to true, " c]" to false), richSegments("$[spin a[b] c]"))
+        assertEquals(listOf("$[spin [docs](https://example.test) tail]" to true),
+            richSegments("$[spin [docs](https://example.test) tail]"))
+    }
 }

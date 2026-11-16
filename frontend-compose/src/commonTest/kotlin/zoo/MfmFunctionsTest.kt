@@ -108,4 +108,13 @@ class MfmFunctionsTest {
         )
         for ((source, expected) in cases) assertEquals(expected, mfmRuby(source), source)
     }
+
+    @Test
+    fun unixTimeAcceptsIntegerSecondsWithinTheInteroperableRange() {
+        assertEquals(0L, mfmUnixSeconds(" 0 "))
+        assertEquals(-1L, mfmUnixSeconds("-1"))
+        assertEquals(8_640_000_000_000L, mfmUnixSeconds("8640000000000"))
+        for (value in listOf("+1", "1.5", "NaN", "1e3", "8640000000001", "9223372036854775807"))
+            assertNull(mfmUnixSeconds(value), value)
+    }
 }

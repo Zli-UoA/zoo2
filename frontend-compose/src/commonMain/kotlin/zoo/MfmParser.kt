@@ -12,7 +12,9 @@ private val formats = listOf(
     Triple("<b>", "</b>", "bold"),
     Triple("<i>", "</i>", "italic"),
     Triple("<s>", "</s>", "strike"),
+    Triple("***", "***", "tada"),
     Triple("**", "**", "bold"),
+    Triple("__", "__", "bold"),
     Triple("~~", "~~", "strike"),
     Triple("*", "*", "italic"),
     Triple("_", "_", "italic"),
@@ -33,20 +35,21 @@ private fun literalEnd(source: String, at: Int): Int? {
     return end + close.length
 }
 
-private fun closing(source: String, from: Int, close: String, open: String? = null): Int? {
+private fun closing(source: String, from: Int, close: String, open: String? = null, budget: Int = 0): Int? {
+    if (budget > 20) return null
     var nesting = 1
     var at = from
     while (at < source.length) {
         // A nested function owns its formatting delimiters.
         if (source.startsWith("$[", at)) {
-            val nestedEnd = functionEnd(source, at)
+            val nestedEnd = functionEnd(source, at, budget + 1)
             if (nestedEnd != null) {
                 at = nestedEnd
                 continue
             }
         }
         if (close == "*" && source.startsWith("**", at)) {
-            val nestedEnd = closing(source, at + 2, "**")
+            val nestedEnd = closing(source, at + 2, "**", budget = budget + 1)
             if (nestedEnd != null) {
                 at = nestedEnd + 2
                 continue
@@ -73,7 +76,8 @@ private fun closing(source: String, from: Int, close: String, open: String? = nu
     return null
 }
 
-private fun functionEnd(source: String, at: Int): Int? {
+private fun functionEnd(source: String, at: Int, budget: Int = 0): Int? {
+    if (budget > 20) return null
     var cursor = at + 2
     var brackets = 1
     while (cursor < source.length) {
@@ -82,12 +86,22 @@ private fun functionEnd(source: String, at: Int): Int? {
             cursor = literal
             continue
         }
+        if (source.startsWith("$[", cursor)) {
+            brackets++
+            cursor += 2
+            continue
+        }
+        val link = if (source[cursor] == '[' || source.startsWith("?[", cursor))
+            linkAt(source, cursor, budget + 1) else null
+        if (link != null) {
+            cursor = link.second
+            continue
+        }
         when (source[cursor]) {
             '\\' -> {
                 cursor += 2
                 continue
             }
-            '[' -> brackets++
             ']' -> {
                 brackets--
                 if (brackets == 0) return cursor + 1
@@ -98,10 +112,11 @@ private fun functionEnd(source: String, at: Int): Int? {
     return null
 }
 
-private fun linkAt(source: String, at: Int): Pair<Inline, Int>? {
+private fun linkAt(source: String, at: Int, budget: Int = 0): Pair<Inline, Int>? {
+    if (budget > 20) return null
     val start = if (source.startsWith("?[", at)) at + 1 else at
     if (source.getOrNull(start) != '[') return null
-    val labelEnd = closing(source, start + 1, "](") ?: return null
+    val labelEnd = closing(source, start + 1, "](", budget = budget + 1) ?: return null
     val urlStart = labelEnd + 2
     if (!source.startsWith("https://", urlStart) && !source.startsWith("http://", urlStart)) return null
     var cursor = urlStart
@@ -153,6 +168,14 @@ private fun inlineSlices(source: String): List<InlineSlice> {
                 if (plain) "plain" else if (math) "math" else "code",
             )
             end = literal
+        } else if (source[at] == '<' &&
+            (source.startsWith("https://", at + 1) || source.startsWith("http://", at + 1))) {
+            val close = source.indexOf('>', at + 1)
+            if (close >= 0 && source.substring(at + 1, close).none { it.isWhitespace() }) {
+                val url = source.substring(at + 1, close)
+                token = Inline(url, "link", url)
+                end = close + 1
+            }
         } else if (source[at] == '\\' && at + 1 < source.length && source[at + 1] in "\\`*_{}[]()#+-.!~$<>@:") {
             pending.append(source[at + 1])
             at += 2
@@ -177,7 +200,7 @@ private fun inlineSlices(source: String): List<InlineSlice> {
                     if (stop == at + open.length) continue
                     val body = source.substring(at + open.length, stop)
                     if (open.length == 1 && '\n' in body) continue
-                    token = Inline(body, kind)
+                    token = if (kind == "tada") Inline("$[tada $body]", "effect") else Inline(body, kind)
                     end = stop + close.length
                     break
                 }

@@ -191,7 +191,7 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                 }
                 "unixtime" -> {
                     val time =
-                        text.trim().takeIf { Regex("-?\\d+").matches(it) }?.toLongOrNull()?.let {
+                        mfmUnixSeconds(text)?.let {
                             runCatching { kotlinx.datetime.Instant.fromEpochSeconds(it).toString() }
                                 .getOrNull()
                         }
@@ -215,8 +215,8 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                     val family =
                         when {
                             args.containsKey("monospace") -> LocalFonts.current.mono
-                            args.containsKey("serif") || args.containsKey("math") ->
-                                FontFamily.Serif
+                            args.containsKey("math") -> LocalFonts.current.math
+                            args.containsKey("serif") -> FontFamily.Serif
                             args.containsKey("cursive") || args.containsKey("fantasy") ->
                                 FontFamily.Cursive
                             args.containsKey("emoji") -> LocalFonts.current.emoji
