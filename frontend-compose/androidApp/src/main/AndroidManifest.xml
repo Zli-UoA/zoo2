@@ -1,5 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -34,6 +42,12 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <service android:name="zoo.android.phone.ZooConnectionService" android:exported="true" android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter><action android:name="android.telecom.ConnectionService" /></intent-filter>
+        </service>
+        <service android:name="zoo.android.phone.PhoneService" android:exported="false" android:foregroundServiceType="phoneCall|microphone|specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Maintain user-enabled VoIP registration and DM invitation signaling while waiting for calls" />
+        </service>
         <receiver android:name="zoo.android.NotificationActionReceiver" android:exported="false" />
         <activity
             android:name="zoo.android.MainActivity"

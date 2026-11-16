@@ -34,6 +34,9 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
+import zoo.phone.LocalPhoneController
+import zoo.phone.PhoneCallBanner
+import zoo.android.phone.AndroidPhoneHost
 import zoo.android.update.AndroidUpdateFrame
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
@@ -74,6 +77,18 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
         }
+    }
+
+    private var phonePermissionResult: CompletableDeferred<Boolean>? = null
+    private val phonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> phonePermissionResult?.complete(granted); phonePermissionResult = null }
+    private suspend fun preparePhone() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        check(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        val existing = phonePermissionResult
+        if (existing != null) { check(existing.await()); return }
+        val result = CompletableDeferred<Boolean>(); phonePermissionResult = result
+        try { phonePermission.launch(android.Manifest.permission.RECORD_AUDIO); check(result.await()) }
+        finally { if (phonePermissionResult === result) phonePermissionResult = null }
     }
 
     private var fileResult: CompletableDeferred<List<Uri>>? = null
@@ -153,7 +168,7 @@ class MainActivity : ComponentActivity() {
         }
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
-                notificationIntent?.let { if (!current.push.open(it, current.notifications::dismissTag)) current.notifications.open(it) }
+                notificationIntent?.let { if (!current.phone.open(it) && !current.push.open(it, current.notifications::dismissTag)) current.notifications.open(it) }
                 notificationIntent = null
             }
         }
@@ -311,6 +326,7 @@ class MainActivity : ComponentActivity() {
                     LocalApp provides current.session,
                     LocalEncryptionSettings provides encryption,
                     LocalTouchUi provides true,
+                    LocalPhoneController provides current.phone.controller,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
                         Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
@@ -326,6 +342,7 @@ class MainActivity : ComponentActivity() {
                             Box(Modifier.weight(1f)) {
                                 NativeWindow(current.session) { ZooApp(current.session) }
                             }
+                            PhoneCallBanner(current.session, current.phone.controller)
                         }
                         unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                     }
@@ -429,7 +446,7 @@ class MainActivity : ComponentActivity() {
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi)).also {
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
                 session.start()
                 e2ee.start()
             }
@@ -608,6 +625,7 @@ private class RunningSession(
     val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
     val notifications: AndroidNotifications,
     val push: AndroidPushRegistration,
+    val phone: AndroidPhoneHost,
 ) {
     suspend fun logout() {
         notifications.close()
@@ -617,6 +635,7 @@ private class RunningSession(
     }
 
     fun close(preserveNotifications: Boolean = true) {
+        phone.close()
         e2ee.stop()
         push.close()
         notifications.close(preserveNotifications = preserveNotifications)
