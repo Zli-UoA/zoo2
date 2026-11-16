@@ -10,6 +10,11 @@ import { isShellOutdated } from "../../lib/pwa/shell-update";
 export const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 /** ウィンドウを前に出したときに確かめる、最短の間隔。 */
 export const UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
+/**
+ * 開いてから最初に確かめるまでの時間。再読み込みしても、ブラウザーによっては Service Worker が
+ * 保存済みの画面を返し、裏で新しい画面を保存する。そのときも、すぐに知らせられるように。
+ */
+export const UPDATE_CHECK_FIRST_DELAY_MS = 10 * 1000;
 const TOAST_ID = "app-update";
 
 /** 新しい版があることを知らせる。読み込み直すかは利用者が決める (入力の途中や通話中に画面を変えない)。 */
@@ -36,7 +41,7 @@ export function isReloadShortcut(
 /**
  * デプロイされた画面が新しくなったら知らせる。開いたままのタブやデスクトップ版は、起動したときの
  * 確認 (`reloadIfShellUpdated`) のあと、新しい版に気づく手段がないため。
- * 一定の間隔と、ウィンドウを前に出したときに確かめる。
+ * 開いた少し後、一定の間隔、ウィンドウを前に出したときに確かめる。
  */
 export function AppUpdateNotice() {
   const { t } = useTranslation();
@@ -70,6 +75,7 @@ export function AppUpdateNotice() {
       window.location.reload();
     };
 
+    const first = setTimeout(() => void check(), UPDATE_CHECK_FIRST_DELAY_MS);
     const timer = setInterval(() => void check(), UPDATE_CHECK_INTERVAL_MS);
     document.addEventListener("visibilitychange", checkIfDue);
     window.addEventListener("focus", checkIfDue);
@@ -77,6 +83,7 @@ export function AppUpdateNotice() {
     window.addEventListener("keydown", onKeyDown);
     return () => {
       stopped = true;
+      clearTimeout(first);
       clearInterval(timer);
       document.removeEventListener("visibilitychange", checkIfDue);
       window.removeEventListener("focus", checkIfDue);
