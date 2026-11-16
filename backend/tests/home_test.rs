@@ -1638,7 +1638,7 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
         "POST",
         Some(&id),
         "/api/home",
-        Some(json!({"content":format!(":unknown-{}:",uuid::Uuid::new_v4().simple()),"parent_id":post["id"],"visibility":"public"})),
+        Some(json!({"content":format!(":unknown-{}:",uuid::Uuid::new_v4().simple()),"in_reply_to":post["id"],"visibility":"public"})),
     )
     .await?;
     assert_eq!(status, StatusCode::CREATED);
