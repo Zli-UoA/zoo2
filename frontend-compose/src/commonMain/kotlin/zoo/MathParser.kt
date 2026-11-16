@@ -244,4 +244,3 @@ class MathParser(private val source: String, private val budget: Int = 0) {
         }
     }
 }
-
