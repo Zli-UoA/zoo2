@@ -4,6 +4,7 @@ use backend::{
     slack::sync::claim_sql,
 };
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
 
 fn quoted(s: &str) -> String {
@@ -271,9 +272,80 @@ fn merge_work(target: &mut Option<Value>, next: Value) {
                     .max(next[key].as_f64().unwrap())
             );
         }
+        if let Some(nested) = next.get("nested") {
+            let mut merged = current.get("nested").cloned();
+            merge_work(&mut merged, nested.clone());
+            current["nested"] = merged.unwrap();
+        }
+        if let Some(statements) = next["statements"].as_u64() {
+            current["statements"] =
+                json!(current["statements"].as_u64().unwrap_or(0).max(statements));
+        }
     } else {
         *target = Some(next);
     }
+}
+
+fn nested_work(name: &str, plans: &[Value]) -> Value {
+    assert!(
+        !plans.is_empty() && plans.len() <= 128,
+        "{name}: missing or unbounded nested statements: {}",
+        plans.len()
+    );
+    assert!(
+        plans
+            .iter()
+            .any(|p| p["Query Text"].as_str().is_some_and(|sql| sql.contains(
+                "FROM messages WHERE channel_id=item.channel_id AND user_id=item.user_id"
+            ))),
+        "{name}: author watermark source plan was not captured"
+    );
+    let mut total = json!({"relations":{},"intermediate":0.,"sort_input":0.,"logical_blocks":0_u64,"statements":plans.len()});
+    for plan in plans {
+        // Each auto_explain notice is a real executed plan, including AFTER
+        // trigger SQL missing from the parent EXPLAIN's node instrumentation.
+        let metrics = work(&format!("{name}_nested"), plan);
+        for (relation, rows) in metrics["relations"].as_object().unwrap() {
+            total["relations"][relation] =
+                json!(total["relations"][relation].as_f64().unwrap_or(0.) + rows.as_f64().unwrap());
+        }
+        for key in ["intermediate", "sort_input"] {
+            total[key] = json!(
+                total[key]
+                    .as_f64()
+                    .unwrap()
+                    .max(metrics[key].as_f64().unwrap())
+            );
+        }
+        total["logical_blocks"] = json!(
+            total["logical_blocks"].as_u64().unwrap() + metrics["logical_blocks"].as_u64().unwrap()
+        );
+    }
+    for (relation, rows) in total["relations"].as_object().unwrap() {
+        assert!(
+            rows.as_f64().unwrap() <= 512.,
+            "{name}: nested {relation} work exceeds fixture budget: {rows}"
+        );
+    }
+    total
+}
+
+#[test]
+#[should_panic(expected = "messages scanned 300000 rows")]
+fn nested_history_scan_is_rejected_when_parent_returns_one_row() {
+    let parent = json!({"Plan":{"Node Type":"Insert","Relation Name":"messages","Actual Rows":1,"Actual Loops":1}});
+    assert_eq!(work("message_insert", &parent)["relations"]["messages"], 1.);
+    let source = json!({
+        "Query Text":"SELECT created_at FROM messages WHERE channel_id=item.channel_id AND user_id=item.user_id",
+        "Plan":{"Node Type":"Index Scan","Relation Name":"messages","Actual Rows":1,"Actual Loops":1}
+    });
+    let history = json!({
+        "Query Text":"SELECT count(*) FROM messages",
+        "Plan":{"Node Type":"Aggregate","Actual Rows":1,"Actual Loops":1,"Plans":[
+            {"Node Type":"Seq Scan","Relation Name":"messages","Actual Rows":300000,"Actual Loops":1}
+        ]}
+    });
+    nested_work("message_insert", &[source, history]);
 }
 
 async fn measure(
@@ -301,7 +373,21 @@ async fn measure(
                 let connected = std::time::Instant::now();
                 let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
                 let connection_ms = connected.elapsed().as_secs_f64() * 1000.;
-                tokio::spawn(connection);
+                let nested = Arc::new(Mutex::new(Vec::<Value>::new()));
+                let captured = nested.clone();
+                tokio::spawn(async move {
+                    let mut connection = connection;
+                    while let Some(message) = futures_util::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                        if let tokio_postgres::AsyncMessage::Notice(notice) = message?
+                            && let Some((_, plan)) = notice.message().split_once("plan:\n")
+                        {
+                            let mut plans = captured.lock().unwrap();
+                            assert!(plans.len() < 128, "unbounded auto_explain statements");
+                            plans.push(serde_json::from_str(plan).expect("auto_explain JSON plan"));
+                        }
+                    }
+                    Ok::<_, tokio_postgres::Error>(())
+                });
                 client
                     .batch_execute(if concurrency == 1 {
                         "SET jit=off;SET plan_cache_mode=force_custom_plan"
@@ -318,12 +404,19 @@ async fn measure(
                     ))
                     .await?;
                 let prepare = started.elapsed().as_secs_f64() * 1000.;
+                let capture_nested = matches!(name.as_str(), "message_insert" | "message_delete_latest");
+                if capture_nested {
+                    // Test-only superuser session. NOTICE transports the same
+                    // auto_explain JSON as server logs without global settings.
+                    client.batch_execute("LOAD 'auto_explain'; SET client_min_messages=notice; SET auto_explain.log_level=notice; SET auto_explain.log_format=json; SET auto_explain.log_nested_statements=on; SET auto_explain.log_analyze=on; SET auto_explain.log_buffers=on; SET auto_explain.log_timing=off; SET auto_explain.sample_rate=1; SET auto_explain.log_min_duration=0").await?;
+                }
                 args.resize(9, String::new());
                 let args = args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(",");
                 let mut times = Vec::new();
                 let mut roundtrips = Vec::new();
                 let mut sample_work = None;
                 for sample in 0..30 {
+                    nested.lock().unwrap().clear();
                     if write {
                         client.batch_execute("BEGIN").await?;
                     }
@@ -338,12 +431,19 @@ async fn measure(
                         client.batch_execute("ROLLBACK").await?;
                     }
                     let plan: Value = serde_json::from_str(rows(&raw)[0])?;
-                    let measured = work(&name, &plan[0]);
+                    let mut measured = work(&name, &plan[0]);
+                    let nested_plans = std::mem::take(&mut *nested.lock().unwrap());
+                    if capture_nested {
+                        measured["nested"] = nested_work(&name, &nested_plans);
+                    }
                     if sample == 0 && worker == 0 && let Some(dir) = &output {
                             std::fs::write(
                                 dir.join(format!("{name}-{concurrency}.json")),
                                 serde_json::to_vec_pretty(&plan)?,
                             )?;
+                            if capture_nested {
+                                std::fs::write(dir.join(format!("{name}-{concurrency}-nested.json")), serde_json::to_vec_pretty(&nested_plans)?)?;
+                            }
                     }
                     merge_work(&mut sample_work, measured);
                     times.push(

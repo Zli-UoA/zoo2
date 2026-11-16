@@ -44,6 +44,8 @@ jobs:
           workspaces: backend
           shared-key: backend-check
       - uses: ariga/setup-atlas@28f0b75814c08b1a265b75713c120cfad46433ae
+      - name: Verify trigger work regression detection
+        run: python3 infra/db/test-read-state-worker-work.py
       - name: Build benchmark before measuring
         run: cargo test --manifest-path backend/Cargo.toml --test read_state_worker_scale_test --no-run
       - name: Measure 300k and 1m posts
