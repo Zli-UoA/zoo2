@@ -449,24 +449,31 @@ it("does not retry a failed older page when a live head refresh succeeds", async
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 }, 15000);
 
-it("reloads timeline tabs from the top while keeping detail back-navigation restoration", async () => {
-  await mount();
-  approachTail();
-  await waitFor(() => expect(prefetchDistances).toHaveLength(1));
-  await waitFor(() =>
-    expect(screen.getByRole("button", { name: "過去の投稿を読む" })).not.toBeDisabled(),
-  );
-  expect(root.scrollTop).toBeGreaterThan(1000);
-  await userEvent.click(screen.getByRole("button", { name: "ローカル" }));
-  await waitFor(() => expect(root.scrollTop).toBe(0));
-  await screen.findByText(/^投稿 0/);
-  root.scrollTop = 1200;
-  fireEvent.scroll(root);
-  await userEvent.click(screen.getByRole("button", { name: "ホーム" }));
-  await waitFor(() => expect(root.scrollTop).toBe(0));
-  await screen.findByText(/^投稿 0/);
-  expect(prefetchDistances).toHaveLength(1);
-});
+it.each([390, 1440])(
+  "reloads timeline tabs from the top while keeping detail back-navigation restoration at width %s",
+  async (width) => {
+    await page.viewport(width, 900);
+    await mount();
+    approachTail();
+    await waitFor(() => expect(prefetchDistances).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "過去の投稿を読む" })).not.toBeDisabled(),
+    );
+    expect(root.scrollTop).toBeGreaterThan(1000);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      await userEvent.click(screen.getByRole("button", { name: "ローカル" }));
+      await waitFor(() => expect(root.scrollTop).toBe(0));
+      await screen.findByText(/^投稿 0/);
+      root.scrollTop = 1200;
+      fireEvent.scroll(root);
+      await userEvent.click(screen.getByRole("button", { name: "ホーム" }));
+      await waitFor(() => expect(root.scrollTop).toBe(0));
+      await screen.findByText(/^投稿 0/);
+      expect(prefetchDistances).toHaveLength(1);
+    }
+  },
+  15000,
+);
 
 it("revalidates a changed history viewport without fetching the head again", async () => {
   await mount();

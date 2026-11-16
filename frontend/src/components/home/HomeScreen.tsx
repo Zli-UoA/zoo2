@@ -11,6 +11,7 @@ import {
   timelineEntryId,
   mergeTimelineWindow,
   countNewTimelineEntries,
+  visibleTimelineTail,
 } from "../../lib/homeTimeline";
 import {
   ActivityPubText,
@@ -522,8 +523,14 @@ function HomeScreenContent({
     if (viewportKey && !loading && visibleIds.current.some((id) => !headIds.has(id)))
       scheduleRefresh.current(false);
   }, [viewportKey, loading]);
-  const lastVirtualIndex = virtualRows.at(-1)?.index ?? -1;
   useEffect(() => {
+    const root = scrollRoot.current;
+    // Timeline changes and anchor restoration can reset the DOM scroll position
+    // before the virtualizer observes it. Read the current viewport here, after
+    // layout effects, rather than fetching from a previous timeline's range.
+    const lastVisibleIndex = root
+      ? visibleTimelineTail(virtualRows, root.scrollTop, root.clientHeight)
+      : -1;
     if (
       !loading &&
       !refreshing &&
@@ -531,13 +538,14 @@ function HomeScreenContent({
       !error &&
       !olderError &&
       hasMore &&
-      lastVirtualIndex >= posts.length - 10 &&
+      lastVisibleIndex >= 0 &&
+      lastVisibleIndex >= posts.length - 10 &&
       document.visibilityState === "visible"
     ) {
       void older();
     }
   }, [
-    lastVirtualIndex,
+    virtualRows,
     posts.length,
     hasMore,
     loading,
