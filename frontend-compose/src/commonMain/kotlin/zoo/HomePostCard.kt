@@ -40,9 +40,9 @@ fun HomePostCard(
                     beforeNavigate = { app.homeTimelines.preparePost(post) },
                 ) else Modifier
             )
-            .padding(horizontal = if (LocalTouchUi.current) 8.dp else 16.dp,
-                vertical = if (LocalTouchUi.current) 6.dp else 16.dp),
-        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp),
+            .padding(horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 16.dp,
+                vertical = if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceSmall else 8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
             val parent = post["parent"] as? Row
@@ -69,10 +69,21 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        Row(horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp),
-            verticalAlignment = Alignment.Top) {
+        // Reserve a 48dp profile hit target while keeping the visible 40 + 12dp keyline.
+        val authorGap = if (LocalTouchUi.current)
+            AndroidDesign.avatarGap - (AndroidDesign.touchTarget - AndroidDesign.avatar)
+        else 12.dp
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(authorGap),
+            verticalAlignment = Alignment.Top,
+        ) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
-            NativeLink(profile) {
+            NativeLink(
+                profile,
+                if (LocalTouchUi.current) Modifier.sizeIn(
+                    minWidth = AndroidDesign.touchTarget, minHeight = AndroidDesign.touchTarget,
+                ) else Modifier,
+            ) {
                 val people by app.repo.users.rows.collectAsState()
                 if (!post.flag("remote"))
                     Avatar(
@@ -88,7 +99,7 @@ fun HomePostCard(
                     size = postAvatarSize(),
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceSmall else 8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),

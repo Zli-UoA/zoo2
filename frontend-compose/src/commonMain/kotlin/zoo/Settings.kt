@@ -66,7 +66,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
         app.platform.replace(builder.buildString().removePrefix("https://zoo.invalid"))
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val contentPadding = if (maxWidth < 640.dp) 16.dp else 24.dp
+        val contentPadding = if (LocalTouchUi.current) AndroidDesign.screenInset else if (maxWidth < 640.dp) 16.dp else 24.dp
         Column(Modifier.fillMaxSize()) {
             PaneHeader {
                 Button(
@@ -83,14 +83,14 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     app.t("settings.zooTitle"),
                     Modifier.semantics { heading() },
                     weight = FontWeight.SemiBold,
-                    size = 18.sp,
-                    lineHeight = 28.sp,
+                    size = if (LocalTouchUi.current) AndroidDesign.titleSize else 18.sp,
+                    lineHeight = AndroidDesign.titleLineHeight,
                 )
             }
             HorizontalDivider()
             Column(
                 Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(contentPadding),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.sectionGap else 16.dp),
             ) {
                 Row(
                     Modifier.fillMaxWidth()
@@ -124,7 +124,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                         }
                         .background(
                             MaterialTheme.colorScheme.surfaceVariant,
-                            RoundedCornerShape(10.dp),
+                            RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 10.dp),
                         )
                         .padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -166,7 +166,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
 private fun GeneralSettings(app: Session) {
     Column(
         Modifier.fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 10.dp))
             .padding(1.dp)
     ) {
         SettingRow(app.t("theme.title"), icon = "palette") { ThemeToggle(app) }
@@ -449,7 +449,7 @@ fun WorkspaceMembers(app: Session, users: List<Row>) {
         Column(
             Modifier.fillMaxWidth()
                 .then(webControlModifier("list"))
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 10.dp))
                 .padding(1.dp)
         ) {
             filtered.forEachIndexed { index, user ->

@@ -20,7 +20,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
@@ -459,7 +462,10 @@ internal fun MessageList(
                 Modifier.fillMaxSize(),
                 state = state,
                 contentPadding =
-                    PaddingValues(horizontal = 8.dp, vertical = if (parent != null) 8.dp else 12.dp),
+                    PaddingValues(
+                        horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 8.dp,
+                        vertical = if (LocalTouchUi.current) AndroidDesign.postVerticalInset else if (parent != null) 8.dp else 12.dp,
+                    ),
             ) {
                 if (messages.isEmpty())
                     item {
@@ -745,10 +751,10 @@ internal fun Message(
                     .padding(
                         start = if (LocalTouchUi.current) 0.dp else 12.dp,
                         end = if (LocalTouchUi.current) 0.dp else 12.dp,
-                        top = if (grouped) 0.dp else 6.dp,
-                        bottom = if (groupEnd) 6.dp else 0.dp,
+                        top = if (grouped) 0.dp else if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 6.dp,
+                        bottom = if (!groupEnd) 0.dp else if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 6.dp,
                     ),
-                horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.avatarGap else 12.dp),
                 verticalAlignment = Alignment.Top,
             ) {
                 if (grouped)
@@ -1259,13 +1265,20 @@ internal fun Composer(
     val key = "draft:$channel:${parent.orEmpty()}"
     var value by remember(key, initialValue) { mutableStateOf(initialValue) }
     var picker by remember(key) { mutableStateOf(false) }
+    var pickerSelection by remember(key) { mutableStateOf<TextRange?>(null) }
     var composing by remember(key) { mutableStateOf(false) }
     var caret by remember(key) { mutableStateOf(0) }
+    var expanded by remember(key) { mutableStateOf(false) }
+    var formatting by remember(key) { mutableStateOf(false) }
+    var textRange by remember(key) { mutableStateOf(TextRange(initialValue.length)) }
+    var requestedRange by remember(key) { mutableStateOf<TextRange?>(null) }
+    var focusSelection by remember(key) { mutableStateOf<TextRange?>(null) }
     var selection by remember(key) { mutableStateOf<Int?>(null) }
     var activeOption by remember(key) { mutableStateOf(0) }
     var dismissed by remember(key) { mutableStateOf(false) }
     var typingActive by remember(key) { mutableStateOf(false) }
     val composerFocusRequester = remember { FocusRequester() }
+    val editorState = remember(key) { FieldEditingState(initialValue) }
     var focusReturn by remember(key) { mutableIntStateOf(0) }
     fun updateTyping(active: Boolean) {
         typingActive = active
@@ -1273,9 +1286,29 @@ internal fun Composer(
     }
     LaunchedEffect(focusReturn) {
         if (focusReturn > 0 && enabled) {
+            val restore = focusSelection
             withFrameNanos {}
             composerFocusRequester.requestFocus()
+            // Native focus transfer can collapse the old field's selection during disposal.
+            // Restore after the new input connection owns focus.
+            if (restore != null) {
+                textRange = restore
+                requestedRange = restore
+                focusSelection = null
+            }
         }
+    }
+    LaunchedEffect(key, enabled) { if (!enabled) expanded = false }
+    fun applyEdit(edit: ComposerEdit) {
+        value = edit.text
+        textRange = edit.selection
+        requestedRange = edit.selection
+        focusSelection = edit.selection
+        selection = null
+        caret = if (edit.selection.collapsed) edit.selection.end else -1
+        dismissed = true
+        updateTyping(value.trim().isNotEmpty())
+        focusReturn++
     }
     val memberships by app.repo.members.rows.collectAsState()
     val channels by app.repo.channels.rows.collectAsState()
@@ -1326,6 +1359,8 @@ internal fun Composer(
             val (next, position) = insertCompletion(value, range, option.name)
             value = next
             caret = position
+            textRange = TextRange(position)
+            requestedRange = null
             selection = position
             dismissed = true
             updateTyping(true)
@@ -1340,6 +1375,7 @@ internal fun Composer(
         if (value.isEmpty()) {
             value = stored
             caret = stored.length
+            textRange = TextRange(stored.length)
         }
     }
     LaunchedEffect(value, key) {
@@ -1438,8 +1474,12 @@ internal fun Composer(
                     if (value.isEmpty()) {
                         value = sent
                         caret = sent.length
+                        textRange = TextRange(sent.length)
                     }
-                } else attachments.release(drafts)
+                } else {
+                    attachments.release(drafts)
+                    if (value.isEmpty()) expanded = false
+                }
             }
         }
         Unit
@@ -1453,212 +1493,279 @@ internal fun Composer(
     val sendFromButton = remember { { currentSend() } }
     if (showTyping) TypingStatus(app, typing)
     val composerBorder = MaterialTheme.colorScheme.outline
-    Column(
-        Modifier.fillMaxWidth()
-            .drawBehind {
-                drawLine(
-                    composerBorder,
-                    androidx.compose.ui.geometry.Offset(0f, .5.dp.toPx()),
-                    androidx.compose.ui.geometry.Offset(size.width, .5.dp.toPx()),
-                    1.dp.toPx(),
-                )
-            }
-            .padding(top = 1.dp)
-            .padding(horizontal = 12.dp, vertical = if (LocalTouchUi.current) 8.dp else 12.dp)
-    ) {
-        sendError?.let { error ->
-            Row(
-                Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    error,
-                    Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Assertive },
-                    color = MaterialTheme.colorScheme.error,
-                    small = true,
-                )
-                IconButton("x", app.t("common.close"), size = 24.dp) { sendError = null }
-            }
-        }
-        DraftAttachments(app, attachments)
-        if (options.isNotEmpty())
-            Column(
-                Modifier.fillMaxWidth()
-                    .padding(bottom = 8.dp)
-                    .heightIn(max = 192.dp)
-                    .verticalScroll(rememberScrollState())
-                    .then(
-                        webControlModifier(
-                            "listbox",
-                            attributes =
-                                mapOf(
-                                    "aria-label" to
-                                        app.t(
-                                            when (range?.kind) {
-                                                "command" -> "composer.commands"
-                                                "channel" -> "composer.channels"
-                                                "mfm" -> "mfm.suggestions"
-                                                else -> "mentions.suggestions"
-                                            }
-                                        )
-                                ),
-                        )
+    ChannelComposerSheet(app, enabled, expanded, {
+        focusSelection = textRange
+        requestedRange = textRange
+        expanded = it
+        focusReturn++
+    }) { fullScreen, availableHeight ->
+        val scrollEditor = fullScreen && availableHeight < 192.dp
+        Column(
+            Modifier.fillMaxWidth().then(if (fullScreen) Modifier.weight(1f) else Modifier)
+                .then(if (scrollEditor) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+                .then(if (LocalTouchUi.current) Modifier else Modifier.drawBehind {
+                    drawLine(
+                        composerBorder,
+                        androidx.compose.ui.geometry.Offset(0f, .5.dp.toPx()),
+                        androidx.compose.ui.geometry.Offset(size.width, .5.dp.toPx()),
+                        1.dp.toPx(),
                     )
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-                    .padding(4.dp)
-            ) {
-                options.forEachIndexed { index, option ->
-                    val optionName =
-                        when (range?.kind) {
-                            "mfm" -> "$[${option.name}]"
-                            "channel" -> "#${option.name}"
-                            "command" -> "/${option.name}"
-                            else -> "@${option.name}"
-                        }
-                    val optionLabel = if (range?.mfm == true) app.t(option.label) else option.label
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .then(
-                                webControlModifier(
-                                    "option",
-                                    selected = index == activeOption,
-                                    attributes =
-                                        mapOf(
-                                            "aria-label" to
-                                                if (optionLabel.isBlank()) optionName
-                                                else "$optionName $optionLabel"
-                                        ),
-                                )
-                            )
-                            .background(
-                                if (index == activeOption) MaterialTheme.colorScheme.surfaceVariant
-                                else Color.Transparent,
-                                RoundedCornerShape(4.dp),
-                            )
-                            .clickable { choose(option) }
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        androidx.compose.material3.Text(
-                            fontText(
-                                optionName,
-                                LocalFonts.current.copy(latin = LocalFonts.current.mono),
-                            ),
-                            style =
-                                MaterialTheme.typography.bodyMedium.copy(
-                                    fontFamily = LocalFonts.current.mono
-                                ),
-                            color = MaterialTheme.colorScheme.onBackground,
-                        )
-                        if (optionLabel.isNotBlank()) Text(optionLabel, muted = true, maxLines = 1)
-                    }
-                }
-            }
-        ComposerFrame(Modifier.fillMaxWidth()) {
-            if (allowAttachments)
-                IconButton(
-                    "paperclip",
-                    app.t("attachments.add"),
-                    enabled && app.env.online && attachments.items.size < MAX_ATTACHMENTS,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    size = if (app.env.touch) 44.dp else 36.dp,
+                }.padding(top = 1.dp).padding(12.dp))
+        ) {
+            val auxiliary = if (fullScreen && !scrollEditor)
+                (availableHeight - if (formatting) 192.dp else 144.dp).coerceIn(0.dp, 192.dp)
+            else Dp.Infinity
+            Column(Modifier.fillMaxWidth().heightIn(max = auxiliary)
+                .then(if (fullScreen && !scrollEditor) Modifier.verticalScroll(rememberScrollState()) else Modifier)) {
+            sendError?.let { error ->
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    attachments.pick()
+                    Text(
+                        error,
+                        Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Assertive },
+                        color = MaterialTheme.colorScheme.error,
+                        small = true,
+                    )
+                    IconButton("x", app.t("common.close"), size = 24.dp) { sendError = null }
                 }
-            Field(
-                value,
-                ariaLabel
-                    ?: placeholder
-                    ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
-                Modifier.weight(1f)
-                    .onGloballyPositioned { coordinates ->
-                        val bounds = coordinates.boundsInWindow()
-                        attachments.updateBounds(
-                            bounds.left / density,
-                            bounds.top / density,
-                            bounds.width / density,
-                            bounds.height / density,
-                        )
-                    }
-                    .onPreviewKeyEvent {
-                        if (composing || it.type != KeyEventType.KeyDown) false
-                        else if (
-                            options.isNotEmpty() &&
-                                !it.isCtrlPressed &&
-                                !it.isMetaPressed &&
-                                !it.isShiftPressed
-                        )
-                            when (it.key) {
-                                Key.DirectionDown -> {
-                                    activeOption = (activeOption + 1) % options.size
-                                    true
-                                }
-                                Key.DirectionUp -> {
-                                    activeOption = (activeOption + options.size - 1) % options.size
-                                    true
-                                }
-                                Key.Tab,
-                                Key.Enter -> {
-                                    choose(options[activeOption.coerceIn(0, options.lastIndex)])
-                                    true
-                                }
-                                Key.Escape -> {
-                                    dismissed = true
-                                    true
-                                }
-                                else -> false
-                            }
-                        else if (
-                            !it.isShiftPressed &&
-                                it.key == Key.Enter &&
-                                (if (app.env.mac) it.isMetaPressed else it.isCtrlPressed)
-                        ) {
-                            send()
-                            true
-                        } else false
-                    },
-                singleLine = false,
-                enabled = enabled,
-                readOnly = !enabled,
-                maximumHeight = if (app.env.touch) 160.dp else null,
-                placeholder =
-                    placeholder
-                        ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
-                focusRequester = composerFocusRequester,
-                onBlur = {
-                    dismissed = true
-                    updateTyping(false)
-                },
-                onComposition = { composing = it },
-                fileOwner = attachments.owner.takeIf { allowAttachments },
-                chrome = false,
-                selection = selection,
-                onSelection = {
-                    caret = it
-                    selection = null
-                },
-            ) {
-                value = it
-                updateTyping(it.trim().isNotEmpty())
-                if (selectedCommand?.let { command -> !it.startsWith("/${command.name} ") } == true)
-                    selectedCommand = null
-                dismissed = false
-                activeOption = 0
             }
-            ComposerSendButton(canSubmit, app.env.touch, app.t("messages.send"), sendFromButton)
+            DraftAttachments(app, attachments)
+            if (options.isNotEmpty())
+                Column(
+                    Modifier.fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                        .heightIn(max = 192.dp)
+                        .verticalScroll(rememberScrollState())
+                        .then(
+                            webControlModifier(
+                                "listbox",
+                                attributes =
+                                    mapOf(
+                                        "aria-label" to
+                                            app.t(
+                                                when (range?.kind) {
+                                                    "command" -> "composer.commands"
+                                                    "channel" -> "composer.channels"
+                                                    "mfm" -> "mfm.suggestions"
+                                                    else -> "mentions.suggestions"
+                                                }
+                                            )
+                                    ),
+                            )
+                        )
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                        .padding(4.dp)
+                ) {
+                    options.forEachIndexed { index, option ->
+                        val optionName =
+                            when (range?.kind) {
+                                "mfm" -> "$[${option.name}]"
+                                "channel" -> "#${option.name}"
+                                "command" -> "/${option.name}"
+                                else -> "@${option.name}"
+                            }
+                        val optionLabel = if (range?.mfm == true) app.t(option.label) else option.label
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .then(
+                                    webControlModifier(
+                                        "option",
+                                        selected = index == activeOption,
+                                        attributes =
+                                            mapOf(
+                                                "aria-label" to
+                                                    if (optionLabel.isBlank()) optionName
+                                                    else "$optionName $optionLabel"
+                                            ),
+                                    )
+                                )
+                                .background(
+                                    if (index == activeOption) MaterialTheme.colorScheme.surfaceVariant
+                                    else Color.Transparent,
+                                    RoundedCornerShape(4.dp),
+                                )
+                                .clickable { choose(option) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            androidx.compose.material3.Text(
+                                fontText(
+                                    optionName,
+                                    LocalFonts.current.copy(latin = LocalFonts.current.mono),
+                                ),
+                                style =
+                                    MaterialTheme.typography.bodyMedium.copy(
+                                        fontFamily = LocalFonts.current.mono
+                                    ),
+                                color = MaterialTheme.colorScheme.onBackground,
+                            )
+                            if (optionLabel.isNotBlank()) Text(optionLabel, muted = true, maxLines = 1)
+                        }
+                    }
+                }
+            }
+            val editor: @Composable (Modifier, Dp?) -> Unit = { fieldModifier, editorHeight ->
+                Field(
+                    value,
+                    ariaLabel
+                        ?: placeholder
+                        ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
+                    fieldModifier
+                        .onGloballyPositioned { coordinates ->
+                            val bounds = coordinates.boundsInWindow()
+                            attachments.updateBounds(
+                                bounds.left / density,
+                                bounds.top / density,
+                                bounds.width / density,
+                                bounds.height / density,
+                            )
+                        }
+                        .onPreviewKeyEvent {
+                            if (composing || it.type != KeyEventType.KeyDown) false
+                            else if (
+                                options.isNotEmpty() &&
+                                    !it.isCtrlPressed &&
+                                    !it.isMetaPressed &&
+                                    !it.isShiftPressed
+                            )
+                                when (it.key) {
+                                    Key.DirectionDown -> {
+                                        activeOption = (activeOption + 1) % options.size
+                                        true
+                                    }
+                                    Key.DirectionUp -> {
+                                        activeOption = (activeOption + options.size - 1) % options.size
+                                        true
+                                    }
+                                    Key.Tab,
+                                    Key.Enter -> {
+                                        choose(options[activeOption.coerceIn(0, options.lastIndex)])
+                                        true
+                                    }
+                                    Key.Escape -> {
+                                        dismissed = true
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            else if (
+                                !it.isShiftPressed &&
+                                    it.key == Key.Enter &&
+                                    (if (app.env.mac) it.isMetaPressed else it.isCtrlPressed)
+                            ) {
+                                send()
+                                true
+                            } else false
+                        },
+                    singleLine = false,
+                    enabled = enabled,
+                    readOnly = !enabled,
+                    minimumHeight = editorHeight,
+                    maximumHeight = editorHeight ?: if (app.env.touch) 160.dp else null,
+                    placeholder =
+                        placeholder
+                            ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
+                    focusRequester = composerFocusRequester,
+                    onBlur = {
+                        dismissed = true
+                        updateTyping(false)
+                    },
+                    onComposition = { composing = it },
+                    fileOwner = attachments.owner.takeIf { allowAttachments },
+                    chrome = false,
+                    selection = selection,
+                    textSelection = requestedRange,
+                    editingState = editorState,
+                    onTextSelection = { textRange = it; requestedRange = null },
+                    onSelection = {
+                        caret = it
+                        selection = null
+                    },
+                ) {
+                    value = it
+                    updateTyping(it.trim().isNotEmpty())
+                    if (selectedCommand?.let { command -> !it.startsWith("/${command.name} ") } == true)
+                        selectedCommand = null
+                    dismissed = false
+                    activeOption = 0
+                }
+            }
+            val attach: @Composable () -> Unit = {
+                if (allowAttachments) IconButton(
+                    "paperclip", app.t("attachments.add"),
+                    enabled && app.env.online && attachments.items.size < MAX_ATTACHMENTS,
+                ) { attachments.pick() }
+            }
+            if (LocalTouchUi.current) {
+                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                    .then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
+                    // Keep this call site stable when moving the same editor into the fullscreen host.
+                    BoxWithConstraints(Modifier.fillMaxWidth()
+                        .then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
+                        val editorHeight = if (fullScreen && !scrollEditor) maxHeight.coerceAtLeast(AndroidDesign.touchTarget)
+                            else if (scrollEditor) 96.dp else null
+                        editor(Modifier.fillMaxWidth().then(if (fullScreen && !scrollEditor) Modifier.fillMaxHeight() else Modifier), editorHeight)
+                    }
+                    if (formatting) Row(
+                        Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                    ) {
+                        ComposerFormat.entries.forEach { format ->
+                            val codeAllowed = format != ComposerFormat.Code || !value.substring(
+                                textRange.min.coerceIn(0, value.length), textRange.max.coerceIn(0, value.length),
+                            ).contains("```")
+                            Button(format.label, variant = "ghost", enabled = enabled && !composing && codeAllowed,
+                                accessibleLabel = app.t(format.title),
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = if (format == ComposerFormat.Bold) FontWeight.Bold else FontWeight.Normal,
+                                    fontStyle = if (format == ComposerFormat.Italic) FontStyle.Italic else FontStyle.Normal,
+                                    textDecoration = if (format == ComposerFormat.Strike) TextDecoration.LineThrough else null,
+                                ),
+                            ) { applyEdit(formatComposerText(value, textRange, format)) }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        attach()
+                        Button("Aa", variant = if (formatting) "secondary" else "ghost", enabled = enabled, selected = formatting,
+                            accessibleLabel = app.t("composer.formatting")) { formatting = !formatting }
+                        IconButton("smile-plus", app.t("reactions.tabEmoji"), enabled && !composing) { pickerSelection = textRange; picker = true }
+                        Spacer(Modifier.weight(1f))
+                        ComposerSendButton(canSubmit, true, app.t("messages.send"), sendFromButton)
+                    }
+                }
+            } else ComposerFrame(Modifier.fillMaxWidth()) {
+                attach()
+                editor(Modifier.weight(1f), null)
+                ComposerSendButton(canSubmit, false, app.t("messages.send"), sendFromButton)
+            }
+            if (!app.env.touch)
+                Text(
+                    app.t(if (app.env.mac) "composer.mac" else "composer.ctrl"),
+                    Modifier.padding(top = 6.dp, start = 4.dp),
+                    muted = true,
+                    small = true,
+                    size = 11.sp,
+                )
         }
-        if (!app.env.touch)
-            Text(
-                app.t(if (app.env.mac) "composer.mac" else "composer.ctrl"),
-                Modifier.padding(top = 6.dp, start = 4.dp),
-                muted = true,
-                small = true,
-                size = 11.sp,
-            )
     }
     if (picker)
-        EmojiPicker(app, { picker = false }) {
-            value += it
+        EmojiPicker(app, {
+            picker = false
+            pickerSelection?.let { saved ->
+                textRange = saved
+                requestedRange = saved
+                focusSelection = saved
+                focusReturn++
+            }
+            pickerSelection = null
+        }) {
+            val insertionRange = pickerSelection ?: textRange
+            pickerSelection = null
+            applyEdit(insertComposerText(value, insertionRange, it))
             picker = false
         }
 }
@@ -1717,21 +1824,20 @@ internal fun MessageEmptyState(
 private fun ComposerSendButton(canSubmit: State<Boolean>, touch: Boolean, label: String, send: () -> Unit) {
     val enabled by canSubmit
     Box(
-        Modifier.padding(bottom = 4.dp)
-            .then(webControlModifier("button", enabled))
-            .size(if (touch) 48.dp else 36.dp)
-            .padding(1.dp)
-            .clip(RoundedCornerShape(9.dp))
-            .background(
-                if (enabled) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.surfaceVariant
-            )
-            .clickable(enabled, role = Role.Button, onClick = send),
+        Modifier.then(webControlModifier("button", enabled))
+            .size(if (touch) AndroidDesign.touchTarget else 36.dp)
+            .clickable(enabled, role = Role.Button, onClick = send)
+            .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            "send", label, modifier = Modifier.size(16.dp),
-            color = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Box(
+            Modifier.size(if (touch) AndroidDesign.controlVisualSize else 34.dp)
+                .clip(RoundedCornerShape(if (touch) AndroidDesign.controlRadius else 9.dp))
+                .background(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon("send", modifier = Modifier.size(if (touch) AndroidDesign.icon else 16.dp),
+                color = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

@@ -347,6 +347,15 @@
     "yesterday": "Yesterday"
   },
   "composer": {
+    "editorTitle": "Edit message",
+    "expand": "Expand editor",
+    "collapse": "Collapse editor",
+    "dragHandle": "Swipe the editor handle up or down",
+    "formatting": "Formatting",
+    "bold": "Bold",
+    "italic": "Italic",
+    "strike": "Strikethrough",
+    "code": "Code block",
     "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
     "ctrl": "Ctrl+Enter to send / Enter for a new line",
     "other": "Cmd / Ctrl+Enter to send / Enter for a new line",

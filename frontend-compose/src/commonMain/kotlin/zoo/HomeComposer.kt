@@ -202,7 +202,10 @@ fun HomeComposer(
             Row(
                 Modifier.fillMaxWidth()
                     .background(colors.surface)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(
+                        horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 12.dp,
+                        vertical = AndroidDesign.spaceMedium,
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {

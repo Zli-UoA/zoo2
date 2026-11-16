@@ -93,8 +93,8 @@ fun ZooTheme(
         TextStyle(
             fontFamily = latin,
             localeList = androidx.compose.ui.text.intl.LocaleList(locale),
-            fontSize = if (LocalTouchUi.current) 17.sp else 14.sp,
-            lineHeight = browserLineHeight(if (LocalTouchUi.current) 25.sp else 20.sp),
+            fontSize = if (LocalTouchUi.current) AndroidDesign.bodySize else 14.sp,
+            lineHeight = browserLineHeight(if (LocalTouchUi.current) AndroidDesign.bodyLineHeight else 20.sp),
             platformStyle = webTextStyle(),
             lineHeightStyle =
                 LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
@@ -114,18 +114,18 @@ fun ZooTheme(
                 Typography(
                     bodyMedium = body,
                     bodySmall = body.copy(
-                        fontSize = if (LocalTouchUi.current) 14.sp else 12.sp,
-                        lineHeight = browserLineHeight(if (LocalTouchUi.current) 20.sp else 16.sp),
+                        fontSize = if (LocalTouchUi.current) AndroidDesign.supportingSize else 12.sp,
+                        lineHeight = browserLineHeight(if (LocalTouchUi.current) AndroidDesign.supportingLineHeight else 16.sp),
                     ),
                     titleSmall = body.copy(fontWeight = FontWeight.SemiBold),
                     titleLarge =
                         body.copy(
-                            fontSize = 20.sp,
-                            lineHeight = 28.sp,
+                            fontSize = AndroidDesign.titleSize,
+                            lineHeight = AndroidDesign.titleLineHeight,
                             fontWeight = FontWeight.SemiBold,
                         ),
                     labelLarge = body,
-                    labelSmall = body.copy(fontSize = if (LocalTouchUi.current) 12.sp else 11.sp),
+                    labelSmall = body.copy(fontSize = if (LocalTouchUi.current) AndroidDesign.labelSize else 11.sp),
                 ),
         ) {
             content()
@@ -427,24 +427,27 @@ fun Button(
     )
     val iconOnly = size.startsWith("icon")
     val radius =
-        if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
+        if (LocalTouchUi.current) AndroidDesign.controlRadius
+        else if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
         else 10.dp
     val horizontalPadding =
-        if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
+        if (LocalTouchUi.current) {
+            if (iconOnly) 0.dp else AndroidDesign.controlInset
+        } else if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
     val startPadding =
-        if (inlineStartIcon && icon != null && !iconOnly) horizontalPadding - 2.dp
+        if (!LocalTouchUi.current && inlineStartIcon && icon != null && !iconOnly) horizontalPadding - 2.dp
         else horizontalPadding
     val endPadding = horizontalPadding
     val resolvedIconSize =
         iconSize
-            ?: when (size) {
+            ?: if (LocalTouchUi.current) AndroidDesign.icon else when (size) {
                 "xs",
                 "icon-xs" -> 12.dp
                 "sm" -> 14.dp
                 else -> 16.dp
             }
-    val gap = contentGap ?: if (size == "xs" || size == "sm") 4.dp else 6.dp
-    val preferredWidth =
+    val gap = contentGap ?: if (LocalTouchUi.current) AndroidDesign.controlGap else if (size == "xs" || size == "sm") 4.dp else 6.dp
+    val contentWidth =
         with(density) {
             if (iconOnly) controlHeight.toPx()
             else
@@ -453,7 +456,12 @@ fun Button(
                     endPadding.toPx() +
                     if (icon != null) resolvedIconSize.toPx() + gap.toPx() else 0f
         }
+    val preferredWidth = if (LocalTouchUi.current) maxOf(contentWidth, with(density) { AndroidDesign.touchTarget.toPx() }) else contentWidth
     val compactChrome = LocalTouchUi.current
+    val minimumChromeHeight = with(density) {
+        maxOf(AndroidDesign.controlVisualSize.toPx(),
+            (textStyle?.lineHeight?.takeIf { it.isSpecified } ?: MaterialTheme.typography.bodyMedium.lineHeight).toPx())
+    }
     val shape = RoundedCornerShape(radius)
     val destructiveColor = if (dark) Color(0xffff6467) else Color(0xffc2000f)
     val focusBorder =
@@ -520,6 +528,7 @@ fun Button(
                     attributes = if (title == null) emptyMap() else mapOf("title" to title),
                 )
             )
+            .widthIn(min = if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp)
             .heightIn(min = controlHeight)
             .then(if (iconOnly) Modifier.width(controlHeight) else Modifier)
             .then(
@@ -529,17 +538,23 @@ fun Button(
             .focusVisibleRing(radius, focusRing, focusVisible, preferredWidth = preferredWidth)
             .clip(shape)
             .drawBehind {
-                val width = cssPaintWidth(this.size.width, preferredWidth)
-                val insetY = if (compactChrome) 4.dp.toPx() else 0f
+                val width = if (compactChrome) this.size.width else cssPaintWidth(this.size.width, preferredWidth)
+                val insetY = if (compactChrome) minOf(8.dp.toPx(), ((this.size.height - minimumChromeHeight) / 2).coerceAtLeast(0f)) else 0f
+                val paintedWidth = if (compactChrome) {
+                    val chromeWidth = if (iconOnly) AndroidDesign.controlVisualSize.toPx()
+                        else maxOf(AndroidDesign.controlVisualSize.toPx(), contentWidth.takeIf { it.isFinite() } ?: width)
+                    minOf(width, chromeWidth)
+                } else width
+                val insetX = (width - paintedWidth) / 2
                 val paintedHeight = (this.size.height - insetY * 2).coerceAtLeast(0f)
                 val border = if (variant == "tab") 0f else 1.dp.toPx()
                 val corner = radius.toPx()
                 // React's bg-clip-padding excludes the transparent one-pixel border.
                 drawRoundRect(
                     background,
-                    Offset(border, insetY + border),
+                    Offset(insetX + border, insetY + border),
                     androidx.compose.ui.geometry.Size(
-                        (width - 2 * border).coerceAtLeast(0f),
+                        (paintedWidth - 2 * border).coerceAtLeast(0f),
                         (paintedHeight - 2 * border).coerceAtLeast(0f),
                     ),
                     androidx.compose.ui.geometry.CornerRadius((corner - border).coerceAtLeast(0f)),
@@ -552,9 +567,9 @@ fun Button(
                 if (variant != "tab")
                     drawRoundRect(
                         borderColor,
-                        Offset(border / 2, insetY + border / 2),
+                        Offset(insetX + border / 2, insetY + border / 2),
                         androidx.compose.ui.geometry.Size(
-                            width - border,
+                            paintedWidth - border,
                             paintedHeight - border,
                         ),
                         androidx.compose.ui.geometry.CornerRadius(corner - border / 2),
@@ -598,7 +613,7 @@ fun Button(
                         lineHeight = textStyle?.lineHeight ?: TextUnit.Unspecified,
                         size =
                             textStyle?.fontSize?.takeIf { it.isSpecified }
-                                ?: if (LocalTouchUi.current) 15.sp else when (size) {
+                                ?: if (LocalTouchUi.current) AndroidDesign.buttonSize else when (size) {
                                     "xs" -> 12.sp
                                     "sm" -> 12.8.sp
                                     else -> 14.sp
@@ -700,10 +715,6 @@ fun IconButton(
         modifier
             .size(touchTargetSize(size, LocalTouchUi.current))
             .then(webControlModifier("button", enabled))
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
-            )
             .clickable(enabled, role = Role.Button, onClick = { if (enabled) click() })
             .semantics {
                 contentDescription = label
@@ -711,12 +722,26 @@ fun IconButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            name,
-            modifier = Modifier.size(if (size >= 40.dp) 20.dp else 16.dp),
-            color = color.copy(alpha = color.alpha * if (enabled) 1f else .4f),
-        )
+        Box(
+            Modifier.size(if (LocalTouchUi.current) AndroidDesign.controlVisualSize else size)
+                .clip(RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 8.dp))
+                .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                name,
+                modifier = Modifier.size(if (LocalTouchUi.current) AndroidDesign.icon else if (size >= 40.dp) 20.dp else 16.dp),
+                color = color.copy(alpha = color.alpha * if (enabled) 1f else .4f),
+            )
+        }
     }
+}
+
+/** Hoisted text/selection/composition shared when an editor changes its presentation. */
+@Stable
+class FieldEditingState(initialValue: String) {
+    internal val editing = mutableStateOf(TextFieldValue(initialValue))
+    internal val committed = mutableStateOf(TextFieldValue(initialValue))
 }
 
 @Composable
@@ -731,6 +756,9 @@ fun Field(
     chrome: Boolean = true,
     selection: Int? = null,
     onSelection: (Int) -> Unit = {},
+    textSelection: TextRange? = null,
+    onTextSelection: (TextRange) -> Unit = {},
+    editingState: FieldEditingState? = null,
     fileOwner: String? = null,
     showLabel: Boolean = chrome,
     enabled: Boolean = true,
@@ -760,8 +788,9 @@ fun Field(
     val requester = focusRequester ?: defaultRequester
     var focused by remember { mutableStateOf(false) }
     val blur by rememberUpdatedState(onBlur)
-    var editing by remember { mutableStateOf(TextFieldValue(value)) }
-    var committedEditing by remember { mutableStateOf(TextFieldValue(value)) }
+    val fieldEditingState = editingState ?: remember { FieldEditingState(value) }
+    var editing by fieldEditingState.editing
+    var committedEditing by fieldEditingState.committed
     val layout = remember { arrayOfNulls<TextLayoutResult>(1) }
     val viewport = LocalViewportWidth.current
     val colors = MaterialTheme.colorScheme
@@ -775,12 +804,13 @@ fun Field(
         if (invalid && !singleLine) errorColor.copy(alpha = if (dark) .5f else 1f)
         else if (focused) if (dark) Color(0xffbdbdbd) else Color(0xff737373)
         else if (singleLine) colors.outline else inputColor
-    val shape = RoundedCornerShape(10.dp)
+    val fieldRadius = if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp
+    val shape = RoundedCornerShape(fieldRadius)
     val type =
         MaterialTheme.typography.bodyMedium
             .copy(
-                fontSize = if (LocalTouchUi.current || (!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
-                lineHeight = if (LocalTouchUi.current || !chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
+                fontSize = if (LocalTouchUi.current) AndroidDesign.inputSize else if ((!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
+                lineHeight = if (LocalTouchUi.current) AndroidDesign.inputLineHeight else if (!chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
                 color = colors.onBackground,
             )
             .merge(inputTextStyle)
@@ -800,11 +830,13 @@ fun Field(
     LaunchedEffect(autoFocus, enabled) { if (autoFocus && enabled) requester.requestFocus() }
     // Reconcile external edits in this composition. A launched effect can run
     // after the next browser input event and overwrite newer text with its old value.
-    if (editing.text != value || selection != null && editing.selection.start != selection) {
+    val requestedSelection = textSelection ?: selection?.let(::TextRange)
+    if (editing.text != value || requestedSelection != null && editing.selection != requestedSelection) {
         editing =
             TextFieldValue(
                 value,
-                TextRange((selection ?: value.length).coerceIn(0, value.length)),
+                requestedSelection?.let { TextRange(it.start.coerceIn(0, value.length), it.end.coerceIn(0, value.length)) }
+                    ?: TextRange(value.length),
             )
         committedEditing = editing
     }
@@ -826,6 +858,7 @@ fun Field(
                     if (accepted.composition == null) committedEditing = accepted
                     onComposition(accepted.composition != null)
                     onSelection(if (accepted.selection.collapsed) accepted.selection.end else -1)
+                    onTextSelection(accepted.selection)
                     change(accepted.text)
                 },
                 modifier =
@@ -864,6 +897,7 @@ fun Field(
                                     else end
                                 editing = editing.copy(selection = TextRange(position))
                                 onSelection(position)
+                                onTextSelection(TextRange(position))
                                 true
                             } else false
                         }
@@ -882,7 +916,7 @@ fun Field(
                                 Modifier.heightIn(min = touchTargetSize(minimumHeight ?: 32.dp, LocalTouchUi.current))
                             else
                                 Modifier.heightIn(
-                                    min = minimumHeight ?: if (!chrome) 44.dp else 64.dp,
+                                    min = touchTargetSize(minimumHeight ?: if (!chrome) 44.dp else 64.dp, LocalTouchUi.current),
                                     max = maximumHeight ?: if (chrome) Dp.Infinity else 200.dp,
                                 )
                         )
@@ -896,7 +930,9 @@ fun Field(
                                         size.width + 3.dp.toPx(),
                                         size.height + 3.dp.toPx(),
                                     ),
-                                    androidx.compose.ui.geometry.CornerRadius(11.5.dp.toPx()),
+                                    androidx.compose.ui.geometry.CornerRadius(
+                                        (fieldRadius + 1.5.dp).toPx(),
+                                    ),
                                     style = Stroke(3.dp.toPx()),
                                 )
                         }
@@ -913,9 +949,15 @@ fun Field(
                                     .border(1.dp, borderColor, shape)
                             else Modifier
                         )
+                        .semantics { contentDescription = label }
                         .padding(
                             contentPadding
-                                ?: PaddingValues(
+                                ?: if (LocalTouchUi.current) PaddingValues(
+                                    start = if (leadingIcon != null) AndroidDesign.controlInset + AndroidDesign.icon + AndroidDesign.controlGap else AndroidDesign.controlInset,
+                                    end = AndroidDesign.controlInset,
+                                    top = AndroidDesign.spaceMedium,
+                                    bottom = AndroidDesign.spaceMedium,
+                                ) else PaddingValues(
                                     start =
                                         if (leadingIcon != null) 32.dp
                                         else if (chrome) if (singleLine) 9.dp else 11.dp else 8.dp,
@@ -923,8 +965,7 @@ fun Field(
                                     top = if (chrome) if (singleLine) 6.dp else 9.dp else 10.dp,
                                     bottom = if (chrome) if (singleLine) 6.dp else 9.dp else 10.dp,
                                 )
-                        )
-                        .semantics { contentDescription = label },
+                        ),
                 onTextLayout = { layout[0] = it },
                 singleLine = singleLine,
                 enabled = enabled,
@@ -938,8 +979,8 @@ fun Field(
                                     leadingIcon,
                                     modifier =
                                         Modifier.align(Alignment.CenterStart)
-                                            .offset(x = (-22).dp)
-                                            .size(16.dp),
+                                            .offset(x = if (LocalTouchUi.current) -(AndroidDesign.icon + AndroidDesign.controlGap) else (-22).dp)
+                                            .size(if (LocalTouchUi.current) AndroidDesign.icon else 16.dp),
                                 )
                             }
                         val placeholderText = placeholder ?: if (chrome) "" else label
@@ -1001,7 +1042,7 @@ fun Field(
 @Composable
 fun Check(label: String, checked: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
     Row(
-        Modifier.heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
+        Modifier.heightIn(min = if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp)
             .then(webControlModifier("checkbox", enabled, checked))
             .toggleable(checked, enabled, role = Role.Checkbox, onValueChange = change),
         verticalAlignment = Alignment.CenterVertically,
@@ -1165,7 +1206,7 @@ fun Menu(
                 actions.forEachIndexed { index, item ->
                     Row(
                         Modifier.fillMaxWidth()
-                            .heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
+                            .heightIn(min = if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp)
                             .then(webControlModifier("menuitem", item.enabled))
                             .focusRequester(requesters[index])
                             .onFocusChanged { if (it.isFocused) active = index }

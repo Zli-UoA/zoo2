@@ -8,7 +8,7 @@ import androidx.compose.ui.unit.dp
 val LocalTouchUi = staticCompositionLocalOf { false }
 
 internal fun touchTargetSize(size: Dp, touch: Boolean): Dp =
-    if (touch) maxOf(size, 48.dp) else size
+    if (touch) maxOf(size, AndroidDesign.touchTarget) else size
 
 /** Keep channel and DM rows aligned, including their loading placeholders. */
 internal fun navigationRowHeight(touch: Boolean, narrow: Boolean): Dp =

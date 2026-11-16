@@ -347,6 +347,15 @@
     "yesterday": "昨日"
   },
   "composer": {
+    "editorTitle": "メッセージの編集",
+    "expand": "入力欄を全画面に広げる",
+    "collapse": "入力欄を小さく戻す",
+    "dragHandle": "入力欄を上下にスワイプ",
+    "formatting": "書式設定",
+    "bold": "太字",
+    "italic": "斜体",
+    "strike": "取り消し線",
+    "code": "コードブロック",
     "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
     "ctrl": "Ctrl+Enter で送信 / Enter で改行",
     "other": "Cmd / Ctrl+Enter で送信 / Enter で改行",
