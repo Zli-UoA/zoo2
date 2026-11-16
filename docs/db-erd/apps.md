@@ -130,6 +130,7 @@ erDiagram
       text installation_id PK,FK
       text url PK
       text card
+      text components
     }
     app_link_unfurls }o--o| app_installations : app_link_unfurls_installation_id_fkey
     app_link_unfurls }o--o| messages : app_link_unfurls_message_id_fkey
