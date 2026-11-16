@@ -1,66 +1,61 @@
 # SIP電話
 
-「設定 → 電話（SIP）」で、個人用・サークル共有の回線と電話機の連絡先を登録できる。WebRTC対応PBXの内線としてブラウザーとAndroidアプリがSIP over WebSocketで接続し、音声はTURN経由のWebRTCで送受信する。既存のP2Pチャンネル通話とは別の機能。
+「設定 → 電話（SIP）」で個人用・サークル共有の回線と電話機を登録する。Web・Androidとzoo2間は通常通話と同じHTTP/SSE・WebRTC。SIPはサーバー内のJanusからPBXまでに限定し、SIP認証情報をクライアントへ渡さない。
 
-## 登録と利用
-
-- 個人回線は本人が登録・編集・削除する。ほかのユーザーには、管理者であっても一覧・認証情報を返さない。
-- 共有回線はワークスペース管理者が登録・編集・削除し、利用メンバーを選ぶ。管理者も接続するならメンバーに含める。自動的に全員へ共有しない。
-- 回線には名前、外線番号（任意の表示情報）、SIP接続パス、ドメイン、内線ユーザー名、パスワードを登録する。外線番号の入力で番号を取得したり、発信者番号を変更したりはしない。番号の付番・通知は回線契約とPBXで設定する。
-- 電話機には名前と発信先番号を登録する。所有区分と閲覧権限は回線から継承する。PBXに設定済みの内線・拠点へ、登録した番号から発信できる。物理電話機への設定配信やPBXの内線作成はこの機能の対象外。
-- 接続した1回線で発信・着信待ち受けする。別の回線へは切断して切り替える。画面の移動では接続を維持し、着信・通話の操作を常設バナーに出す。ブラウザーを閉じている間の着信、複数回線の同時待ち受け、通話転送・保留・録音・履歴は含めない。
-- 発信、応答、拒否・終了、ミュート、DTMFに対応する。発信先は数字1〜32桁と先頭の `+` のみ。任意のSIP URIやヘッダーは入力できない。
-- Webでは通話設定のマイクを音声取得時に、スピーカーをSIP接続時に適用する。スピーカー変更時は再接続する。着信音は既存の効果音設定に従い、ブラウザーの自動再生制限も受ける。
-- Webではチャンネル通話を始めるとSIPを切断し、マイクの同時利用を避ける。接続障害では未接続に戻し、利用者が再接続する。無制限の再接続・画面ごとのポーリングは行わない。
-
-## PBXとネットワーク
-
-公開経路は [zoo2-infraのSIP手順](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/sip.md) を参照する。
+## 経路と登録
 
 ```text
-呼制御: ブラウザー → WSS → CF Tunnel → Traefik → Asterisk
-音声:   ブラウザー → TURN → VPN → Asterisk
-拠点:   SIP電話機 → VPNルーター → Asterisk
-自宅:   中央Asterisk → VPN → 自宅Asterisk → ひかり電話HGW
+Web / Android ── 認証済みHTTP/SSE ── CF Tunnel ── zoo2 ── 内部HTTP ── Janus
+Web / Android ── 公開TURN ── WebRTC ── 公開TURN ── Janus ── SIP/RTP ── 中央Asterisk
+中央Asterisk ── WireGuardハブ ── 拠点Asterisk ── LAN ── ひかり電話HGW
 ```
 
-SIP接続パスは同一オリジンの `/sip/` 配下のみ受け付ける。外部PBXも、管理者が構成した同一オリジンの経路で接続する。接続先URLへのサーバーからの任意アクセスは行わない。Cloudflare TunnelにRTPを流す独自中継は実装しない。
+同じLAN内で完結する場合はVPS・VPN・TURNを使わず、`SIP_MEDIA_MODE=lan` と空のICE設定 `[]` で直接WebRTCを利用できる。JanusはLANから到達できるIPを広告する。LAN内でもブラウザーのマイクにはHTTPSが必要。backendだけがLAN内で端末が外にある場合はVPNかTURNが必要。
 
-PBXはWebRTC対応endpointを発行し、DTLS-SRTP、ICE、RTCP muxと音声codecを設定する。個人用と共有用で認証情報とdialplan contextを分ける。認証されたendpointのcontextで使用可能なトランクを決め、クライアントのFromヘッダーや外線番号の表示値を権限判定に使わない。`direct_media=no` を基本とし、拠点へのSIP/RTPはVPNで運ぶ。
+拠点越しの構成で固定公開IPが必要なのはTURN/WireGuardハブのVPSだけ。中央・拠点がVPSへ外向きに接続を維持し、拠点は動的IP・NAT配下でもよい。拠点Asteriskが中央へREGISTERし、中央は登録されたcontactを利用する。中央から自宅の公開IPやHGWへREGISTERしない。HGWの認証情報は自宅にだけ置く。通常のCloudflare TunnelにはHTTP/SSEだけを通す。TURNは公開relay候補を使い、VPN/Pod CIDRへの中継やPodネットワークの公開を必要としない。
 
-ひかり電話は、自宅のHGWがSIP内線登録を許可することを確認して、自宅Asteriskを内線登録する。一般のSIP電話機だけでは外線ゲートウェイにならない。HGWのユーザー名・パスワードをzoo2の共有回線へ登録しない。zoo2にはPBXが発行したWebRTC用内線の認証情報だけを登録する。
+[VPS・PBX・VPNの準備](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/sip.md) はinfra側で管理する。VPSは未用意であり、このPRでは設定を準備し、自動で有効化しない。
 
-## 保存と権限
+- 個人回線は本人だけが登録・閲覧・利用・編集できる。管理者にも他人の個人回線を返さない。
+- 共有回線は管理者が登録・編集し、利用者を明示する。管理者も使う場合はメンバーに含める。
+- 回線に名前、外線番号（表示用）、SIP realm、認証ID・パスワードを設定する。外線番号の入力で番号取得や発信者番号変更は行わない。
+- 電話機に名前と内線番号を登録する。保存済みの電話機UUIDを維持し、Asterisk Realtimeがzoo2の登録内容からendpoint・auth・AOR・回線別dialplanを読む。回線・電話機をGitOpsに登録する必要はない。物理電話機のSIPアカウントは `phone-<電話機UUID>`、認証ID/realm/passwordは所属回線の設定値。機器への設定入力は手動。
+- Janusは `line-<回線UUID>`、拠点ゲートウェイは `home-<回線UUID>` として登録する。認証したendpointの回線IDでトランクを選び、Fromや表示用番号を権限判定に使わない。
+- 登録済み電話機の内線番号はその電話機へ、それ以外の数字番号は同じ回線の登録済み拠点ゲートウェイへ送る。HGW着信はその回線に接続中のzooクライアントへ送る。個人回線と共有回線は別の回線ID・認証情報にする。
 
-`sip_lines`、`sip_line_members`、`sip_phones` に保存し、ElectricのShape・永続クライアントキャッシュには追加しない。DB変更は追加だけなので、旧backendも継続して動作する。
+## 通話とクライアント
 
-SIPパスワードは `SIP_ENCRYPTION_KEY` によるAES-256-GCMで暗号化し、回線IDを追加認証データに使う。鍵はbase64で表した32バイト。未設定なら機能を無効にして起動を続け、不正な鍵は起動時の設定検証でエラーにする。ConfigのDebug表示に鍵を出さない。DBバックアップとあわせて鍵を保持し、既存の暗号文を再暗号化せずに鍵を置き換えない。
+1回線を接続して待ち受けし、通話時にだけマイクを取得する。発信・応答・拒否・終了・ミュート・DTMFに対応する。発信先は数字1〜32桁と先頭の `+` のみ。任意のSIP URIやJanus命令を送信できない。
 
-パスワードは明示的な接続操作でのみ返す。クライアント内ではSIPドライバーのメモリに保持し、ストレージへ保存しない。SIP.jsの設定・SIPメッセージのログも無効にする。一覧・編集では既存パスワードを返さず、空欄の更新は現在値を保持する。REST応答は `private, no-store` とする。Traefik側もこれを上書きしてキャッシュ可能にしない。
+Webは発信・応答時のマイク・スピーカー設定と既存の効果音設定を利用する。通話途中の出力先変更は次の通話から反映する。チャンネル通話とのマイク利用を排他する。画面移動で接続を維持する。登録断・ログアウト・アカウント変更では破棄し、無制限の再接続や画面ごとのポーリングは行わない。ブラウザーを閉じている間の着信、保留・転送・録音・履歴は対象外。
 
-発信・応答前には認証情報を再取得せずに権限と回線の更新版を確認する。回線の設定が変わったら再接続が必要。ログアウト・アカウント切替・アンマウントでは接続を破棄し、遅れて届いた応答や旧回線のイベントを無視する。
+DMと電話で音声取得・RTCPeerConnection・SDP/ICE処理・SSE受信を共有する。AndroidはComposeがHTTP/SSEを所有し、WebViewはAPK同梱のWebRTC音声処理だけを実行する。SIP.js、SIP接続先、SIPパスワード、API認証トークンをWebViewへ渡さない。DM・電話ともAndroid Telecomへ統合する。[Android版](android.md#sipdm通話とandroid-telecom) を参照。
 
-共有回線のメンバーは同じSIP認証情報を利用する。**zoo2のメンバー削除や回線削除だけでは、配布済みの認証情報やPBX上のセッションを失効できない。** 利用者の削除時にはPBXのパスワード変更とセッションの切断も行う。PBXを直接操作できる人から個人回線を隠す仕組みではない。
+## 保存・認可・内部API
 
-## API
+回線情報は `sip_lines`・`sip_line_members`・`sip_phones` に保存し、ElectricのShape・永続クライアントキャッシュには載せない。パスワードは回線IDをAADとするAES-256-GCMで暗号化する。鍵は全レプリカとDB復元時に維持し、再暗号化せず変更しない。一覧・更新で既存パスワードを返さず、空欄更新では保持する。応答は `private, no-store`。
 
-すべて既存の認証を使用し、無効化したユーザーとBotは拒否する。ワークスペース管理者の権限で個人回線を読み取る例外は設けない。
+`phone_sessions` はユーザー・回線の更新版・内部Janus ID・SSEリースだけを保存する。ユーザー行のロックで全レプリカ合計4接続まで。接続準備は60秒、SSEリースは45秒、10秒ごとに権限を再確認・更新する。各コマンドでも所有者・有効ユーザー・メンバー・回線の更新版を確認する。メンバー解除・回線編集後は新たな操作を拒否し、待ち受けも次の確認で切断する。切断時に登録を破棄し、開かれなかったSSEはJanusの60秒タイムアウトで回収する。遅い受信者のキューは64件で切断する。長時間のJanusイベント受信を10秒ごとにキャンセルせず保持する。
 
 | API | 内容 |
 | --- | --- |
-| `GET /api/sip/lines` | 有効状態と閲覧可能な回線・連絡先。パスワードなし |
-| `POST /api/sip/lines` | 個人回線、または管理者による共有回線の登録 |
-| `POST /api/sip/lines/{id}` | 所有区分を固定したまま、設定・メンバー・連絡先を更新 |
-| `DELETE /api/sip/lines/{id}` | 管理権限がある回線を連絡先・メンバーとともに削除 |
-| `POST /api/sip/lines/{id}/connect` | 接続権限があるユーザーだけに内線認証情報・ICE設定・更新版を返す |
-| `POST /api/sip/lines/{id}/authorize` | 発信・応答時の権限と更新版の確認。認証情報は返さない |
+| `GET /api/sip/lines` | 有効状態と閲覧可能な回線・電話機。パスワードなし |
+| `POST /api/sip/lines` / `POST /api/sip/lines/{id}` | 登録・更新。所有区分の変更は不可 |
+| `DELETE /api/sip/lines/{id}` | 管理可能な回線を削除 |
+| `POST /api/sip/lines/{id}/connect` | サーバー側でSIP登録し、セッションUUID・相手UUID・ICE設定・更新版を返す |
+| `POST /api/sip/lines/{id}/authorize` | 発信・応答前の権限・更新版確認 |
+| `POST /api/phone/sessions/{id}/stream` | 認証付きSSE。登録・着信・SDP/ICE・終了イベントのみ |
+| `POST /api/phone/sessions/{id}/command` | 発信・応答・ICE・DTMF・拒否・終了・切断 |
+| `POST /api/internal/pbx/{table}/{single,multi,require}` | PBX専用Bearerで保護した読み取り専用Realtime。一般クライアントでは利用不可 |
 
-`WEBRTC_ICE_SERVERS_JSON` は既存の通話用設定を利用する。SIP接続は `iceTransportPolicy: relay` のため、`turn:` または `turns:` の設定を必須とする。設定がなければ接続APIは503を返す。TURNからPBXへはVPN上の往復経路と中継許可が必要で、外部TURNだけを用意してもLAN内PBXへ音声は届かない。
+PBX内部APIはUUIDの完全一致を起点に検索し、全endpoint列挙や書き込みを許可しない。パスワードを復号するのはauth参照だけ。Asteriskローカルのbridgeが認証ヘッダーを付け、秘密値をURLへ埋め込まない。既存外部PBXを使う場合は `SIP_PBX_CONFIG_SECRET` を設定せず、回線の認証IDでJanusが登録する。
 
-## クライアントと検証
+物理電話機・拠点には回線パスワードを手動設定するため、機器の廃止・所有者変更時には回線パスワードも変更し、PBXの既存contactを失効させる。アプリメンバー解除で機器に入力したパスワードまで回収することはできない。
 
-Web（React）とAndroidで利用できる。Androidの設定・通話操作はCompose、音声はAPKに同梱するWebRTC/SIP.jsエンジンを使う。Android Telecomとの統合と待ち受けの条件は [Android版](android.md#sipdm通話とandroid-telecom) を参照する。TauriのReact画面にも表示されるが、WebViewのWebRTC・マイク権限・WSS許可の実機確認が必要。通話機能のないTUI・GPUI・Leptos版には追加しない。Androidでは同じ回線登録・接続・権限確認APIを使い、個人用・共有用の管理権限を維持する。
+## 設定と検証
 
-APIテストは実PostgreSQLで、個人/共有の権限、管理者の境界、メンバー解除、暗号化保存、パスワード保持、無効ユーザー、無効設定を確認する。コントローラーテストとブラウザーテストは、接続数、登録完了、遅延応答、回線切替、ログアウト、アカウント切替、チャンネル通話との排他を確認する。Storybookで通常・空・読込・エラー・権限・着信・通話・編集・保存失敗・狭い画面を確認する。
+`SIP_ENCRYPTION_KEY`（base64 32バイト）がなければ回線機能を無効化する。`SIP_GATEWAY_URL`・`SIP_GATEWAY_API_SECRET`・`SIP_PBX_URI` は全部未設定ならゲートウェイを無効化し、一部だけなら起動時にエラーにする。管理PBXを使う場合は任意の `SIP_PBX_CONFIG_SECRET` も設定する。Debug表示で秘密値は出さない。設定はzoo2-infraのSOPS Secret `zoo2-sip` で管理する。
 
-実際のSIP電話機・HGW・電話回線を用いた発着信、TURN/VPN越しの双方向音声、DTMFと発信者番号は、この開発環境では未検証。有効化前にinfra側の受け入れ手順を実施する。
+既存の `WEBRTC_ICE_SERVERS_JSON` に認証付きTURNが必要。既定の `SIP_MEDIA_MODE=relay` はrelay-onlyで、Janusも公開TURNへ外向きに接続する。`lan` ではWeb・Androidとも直接候補を利用し、TURNを必須にしない。UDP制限下向けにTURN/TCP・TLSを用意する。SIP接続パスは互換用の列として残すが、UI・音声処理では使わない。
+
+APIは実PostgreSQL、メディアはChromiumの実SDP交渉・トラック解放、Androidは共通Kotlin・Robolectricで検証する。実際のVPS・SIP電話機・HGWでの発着信、TURN/VPN越しの双方向音声、発信者番号は未検証。infraの受け入れ手順で確認してから有効化する。管理ChromiumのUDP制限を回避して音声確認済みとはしない。TUIは音声機能がなく今回のAPIを利用しないため変更しない。

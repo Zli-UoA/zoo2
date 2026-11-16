@@ -37,7 +37,7 @@ DMヘッダーの通話ボタンは既存の通話SSEとWebRTCへ接続します
 
 両方の通話をAndroid Telecomのself-managed `ConnectionService`へ登録します。着信・発信の管理、ヘッドセットからの応答・終了、OSからのミュート・音声経路変更をアプリの通話へ渡します。Android 12以降はネイティブのCallStyle通知、古い版は応答・終了ボタン付き通知です。画面内にも応答・終了・ミュート・スピーカー、SIPのDTMF操作を表示します。既定の電話アプリへの変更、通話履歴への書き込み、保留・転送は行いません。同時に扱う通話はSIP・DMを合わせて1つです。
 
-音声はWebRTC、SIPの呼制御はWSSです。Compose画面から、APKに同梱したJavaScriptだけを読み込む専用WebViewを操作します。WebのSIPドライバーを共有し、音声エンジンはビルド時に `pnpm build:android-phone` で生成します。読み込みは認証先HTTPSオリジンの専用2パスに限定し、外部ページ・遷移・ファイルアクセスを拒否します。マイクはAndroidの許可とTelecomによる通話の受け入れ後に限って許可し、カメラは許可しません。API認証トークンはWebViewへ渡さず、SIP認証情報もメモリだけで保持します。
+音声はDM・電話共通のWebRTC、呼制御はComposeが所有する認証済みHTTP/SSEです。専用WebViewにはAPK同梱の音声エンジンだけを読み込み、SIP.js・SIP認証情報・APIトークンを渡しません。音声エンジンは `pnpm build:android-phone` で生成します。外部ページ・遷移・ファイルアクセス・追加のfetch/WSSを拒否します。マイクはAndroidの許可とTelecomによる通話の受け入れ後に限って許可し、カメラは許可しません。
 
 待ち受けを有効にしている間は常駐通知を表示します。Android 14以降は待ち受け用のspecialUse foreground service、通話中はphoneCallとmicrophoneの種類を使います。通知から待ち受けを停止でき、ログアウト・アカウント切替でも終了します。古い通知操作はセッションと通話IDで検証します。通知の許可と最新のAndroid System WebViewが必要です。バックグラウンド待ち受けはプロセス・認証セッションが生きている間に限り、強制停止・プロセス終了・端末再起動後の自動復帰や、Pushによる通話起動は含みません。
 
