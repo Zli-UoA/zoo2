@@ -4067,3 +4067,29 @@ CREATE TRIGGER messages_channel_author_latest AFTER INSERT OR DELETE OR UPDATE O
 CREATE INDEX slack_import_jobs_active_team ON slack_import_jobs(team_id) WHERE status IN ('analyzing','importing');
 CREATE INDEX slack_channel_syncs_due_order ON slack_channel_syncs(available_at,team_id,slack_channel_id);
 CREATE INDEX slack_channel_wakes_due_order ON slack_channel_wakes(first_at,team_id,slack_channel_id);
+-- SIP credentials stay outside Electric/publication; only authenticated REST may read them.
+CREATE TABLE sip_lines (
+ id text PRIMARY KEY,
+ name text NOT NULL,
+ owner_user_id text REFERENCES users(id),
+ websocket_path text NOT NULL,
+ sip_domain text NOT NULL,
+ username text NOT NULL,
+ password_ciphertext text NOT NULL,
+ phone_number text NOT NULL DEFAULT '',
+ created_by text NOT NULL REFERENCES users(id),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE sip_line_members (
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ user_id text NOT NULL REFERENCES users(id),
+ PRIMARY KEY(line_id,user_id)
+);
+CREATE TABLE sip_phones (
+ id text PRIMARY KEY,
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ extension text NOT NULL
+);
+CREATE INDEX sip_lines_owner_idx ON sip_lines(owner_user_id);
+CREATE INDEX sip_line_members_user_idx ON sip_line_members(user_id);

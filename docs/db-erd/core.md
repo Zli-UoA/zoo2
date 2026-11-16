@@ -351,6 +351,33 @@ erDiagram
       text image_id
       timestamptz updated_at
     }
+    sip_line_members {
+      text line_id PK,FK
+      text user_id PK,FK
+    }
+    sip_line_members }o--o| sip_lines : sip_line_members_line_id_fkey
+    sip_line_members }o--o| users : sip_line_members_user_id_fkey
+    sip_lines {
+      text id PK
+      text name
+      text owner_user_id FK
+      text websocket_path
+      text sip_domain
+      text username
+      text password_ciphertext
+      text phone_number
+      text created_by FK
+      timestamptz updated_at
+    }
+    sip_lines }o--o| users : sip_lines_created_by_fkey
+    sip_lines }o--o| users : sip_lines_owner_user_id_fkey
+    sip_phones {
+      text id PK
+      text line_id FK
+      text name
+      text extension
+    }
+    sip_phones }o--o| sip_lines : sip_phones_line_id_fkey
     thread_migration_completed {
       text thread_id PK,FK
       timestamptz completed_at
