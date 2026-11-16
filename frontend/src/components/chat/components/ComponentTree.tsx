@@ -64,6 +64,9 @@ interface Ctx extends ComponentTarget {
 const ComponentContext = createContext<Ctx | null>(null);
 const useCtx = () => useContext(ComponentContext)!;
 
+/** 空や空白だけの文字は名前にならないので、undefined にして既定の名前へ戻す。 */
+const named = (s: string | null | undefined) => s?.trim() || undefined;
+
 function initialValues(doc: ComponentDocument): Record<string, Value> {
   const out: Record<string, Value> = {};
   const walk = (c?: Component) => {
@@ -889,8 +892,8 @@ function InteractiveControl({
         <>
           <Select
             aria-label={
-              c.placeholder ??
-              c.label ??
+              named(c.placeholder) ??
+              named(c.label) ??
               (c.type === T.Overflow ? t("apps.components.more") : undefined)
             }
             className={c.type === T.Overflow ? "w-auto" : "w-full max-w-xs"}
@@ -986,7 +989,7 @@ function InteractiveControl({
           aria-label={
             labelled
               ? undefined
-              : (c.placeholder ??
+              : (named(c.placeholder) ??
                 t(
                   c.type === T.DatePicker
                     ? "apps.components.date"
@@ -1051,7 +1054,7 @@ function CheckList({
 }) {
   const list = Array.isArray(value) ? value : [];
   return (
-    <fieldset className="flex flex-col gap-1" aria-label={c.placeholder ?? c.label}>
+    <fieldset className="flex flex-col gap-1" aria-label={named(c.placeholder) ?? named(c.label)}>
       {c.options?.map((o) => (
         <label key={o.value} className="flex items-center gap-2">
           <input
@@ -1119,7 +1122,7 @@ function EntitySelect({
   const value = ctx.values[c.custom_id ?? ""];
   return (
     <Select
-      aria-label={c.placeholder ?? t("apps.components.choose")}
+      aria-label={named(c.placeholder) ?? t("apps.components.choose")}
       className="w-full max-w-xs"
       multiple={many}
       disabled={disabled}
@@ -1196,7 +1199,7 @@ function ExternalSelect({
       <Input
         value={query}
         disabled={disabled}
-        placeholder={c.placeholder ?? t("apps.components.search")}
+        placeholder={named(c.placeholder) ?? t("apps.components.search")}
         onChange={(e) => setQuery(e.target.value)}
         // 検索欄の Enter でモーダルのフォームを送らない
         onKeyDown={(e) => {
@@ -1204,7 +1207,7 @@ function ExternalSelect({
         }}
       />
       <Select
-        aria-label={c.placeholder ?? t("apps.components.choose")}
+        aria-label={named(c.placeholder) ?? t("apps.components.choose")}
         disabled={disabled || !options.length}
         value={((ctx.values[c.custom_id ?? ""] as string[]) ?? [])[0] ?? ""}
         onChange={(e) => choose([e.target.value].filter(Boolean))}

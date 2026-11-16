@@ -36,6 +36,28 @@ describe("ComponentTree", () => {
       expect(screen.getByLabelText(name)).toBeInTheDocument();
   });
 
+  it("falls back to the default name when a picker placeholder is blank", async () => {
+    const blank = parseComponents({
+      components: [
+        {
+          type: 1,
+          components: [{ type: 1003, custom_id: "d", placeholder: "" }],
+        },
+        {
+          type: 1,
+          components: [{ type: 1004, custom_id: "t", placeholder: "   " }],
+        },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={blank} />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByLabelText("日付")).toBeInTheDocument();
+    expect(screen.getByLabelText("時刻")).toBeInTheDocument();
+  });
+
   it("asks for confirmation before sending and sends picker values only on submit", async () => {
     render(
       <LocaleProvider>
