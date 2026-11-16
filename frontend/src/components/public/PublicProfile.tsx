@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityPubProfileDetails, type ProfileDetails } from "../home/ActivityPubProfileDetails";
 import { HomePostContent } from "../home/HomePostContent";
@@ -30,6 +30,12 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
   const [data, setData] = useState<PublicProfileData | null>(null);
   const [error, setError] = useState<number | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const scrollRoot = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    // A fast response may skip the shorter loading layout; reset explicitly
+    // rather than relying on the browser to clamp the previous scroll position.
+    if (scrollRoot.current) scrollRoot.current.scrollTop = 0;
+  }, [userId, before]);
   useEffect(() => {
     const controller = new AbortController();
     setData(null);
@@ -65,7 +71,7 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
   const name = account?.display_name || account?.user_name || "";
   const address = account ? `@${account.user_name}@${new URL(account.actor_id).host}` : "";
   return (
-    <main className="h-dvh overflow-y-auto bg-muted text-foreground">
+    <main ref={scrollRoot} className="h-dvh overflow-y-auto bg-muted text-foreground">
       <div className="mx-auto max-w-2xl space-y-6 px-4 py-6 sm:py-12">
         <Link
           to="/"

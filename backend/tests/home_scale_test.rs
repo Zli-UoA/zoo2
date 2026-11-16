@@ -613,6 +613,17 @@ async fn budget_samples(
             })
             .unwrap();
         let plan: Value = serde_json::from_str(raw)?;
+        if name == "page_render" {
+            assert_eq!(plan[0]["Plan"]["Actual Rows"], 500);
+            visit(&plan[0]["Plan"], &|node| {
+                if node["Function Name"] == "jsonb_array_elements_text" {
+                    assert!(
+                        node["Actual Loops"].as_f64().unwrap() <= 1.,
+                        "request IDs must be parsed once, not once per row"
+                    );
+                }
+            });
+        }
         samples.push(
             prepare_ms
                 + plan[0]["Planning Time"].as_f64().unwrap()

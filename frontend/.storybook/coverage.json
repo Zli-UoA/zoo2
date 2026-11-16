@@ -1349,7 +1349,7 @@
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
-      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移と戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
+      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移・ページ切替時の先頭復帰・戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubProfileDetails.tsx",

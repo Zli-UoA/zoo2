@@ -1,9 +1,12 @@
 -- Resolve keys through primary/parent indexes before constructing payloads.
 -- Recursive reads are demand-limited, including very wide conversations.
-WITH RECURSIVE visible AS NOT MATERIALIZED (
+WITH RECURSIVE request_entries AS MATERIALIZED (
+  -- $9 is text: casting a 500-ID array for every row makes filtering O(K²).
+  SELECT entry_id FROM jsonb_array_elements_text($9::jsonb) ids(entry_id)
+), visible AS NOT MATERIALIZED (
 /* visible_posts */
 ), requested_reposts AS MATERIALIZED (
-  SELECT substr(entry_id,8) AS activity_id FROM jsonb_array_elements_text($9::jsonb) ids(entry_id)
+  SELECT substr(entry_id,8) AS activity_id FROM request_entries
     WHERE $6='' AND starts_with(entry_id,'repost:')
   UNION SELECT substr($2,8) WHERE $6='' AND starts_with($2,'repost:')
 ), scoped_reposts AS MATERIALIZED (
@@ -12,7 +15,7 @@ WITH RECURSIVE visible AS NOT MATERIALIZED (
   ) r
 ), target_ids(id) AS MATERIALIZED (
   SELECT $6::text WHERE $6<>''
-  UNION SELECT jsonb_array_elements_text($9::jsonb) WHERE $6=''
+  UNION SELECT entry_id FROM request_entries WHERE $6=''
   UNION SELECT post_id FROM scoped_reposts
 ), ancestor_scope(id,parent_id,visited,depth) AS (
   SELECT b.id,b.parent_id,ARRAY[b.id],0 FROM target_ids t CROSS JOIN LATERAL (
@@ -63,7 +66,7 @@ WITH RECURSIVE visible AS NOT MATERIALIZED (
       FROM entries f
       LEFT JOIN ancestors a ON $8::boolean AND a.id=f.id
       LEFT JOIN descendants d ON $8::boolean AND d.id=f.id
-      WHERE (jsonb_array_length($9::jsonb)=0 OR f.entry_id IN (SELECT jsonb_array_elements_text($9::jsonb)))
+      WHERE (NOT EXISTS(SELECT 1 FROM request_entries) OR f.entry_id IN (SELECT entry_id FROM request_entries))
         AND ($6='' OR f.id=$6 OR $8::boolean AND (a.id IS NOT NULL OR d.id IS NOT NULL))
         AND ($7='' OR f.user_id=$7)
         AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2))
