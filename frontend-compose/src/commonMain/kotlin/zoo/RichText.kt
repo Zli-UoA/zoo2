@@ -26,6 +26,8 @@ import kotlinx.serialization.json.*
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import zoo_compose.generated.resources.Res
 
+internal val LocalMfmInline = staticCompositionLocalOf { false }
+
 @Composable
 private fun RichSelection(enabled: Boolean, content: @Composable () -> Unit) {
     if (enabled) SelectionContainer { content() } else content()
@@ -41,7 +43,7 @@ fun RichText(
     maxLines: Int = Int.MAX_VALUE,
     selection: Boolean = true,
 ) {
-    if (depth > 12) {
+    if (depth > 20) {
         Text(content)
         return
     }
@@ -118,7 +120,10 @@ fun RichText(
     }
     val shortcodes = app.standardShortcodes ?: fallbackShortcodes
     RichSelection(selection) {
-        Column(Modifier.fillMaxWidth().clipToBounds(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            if (LocalMfmInline.current) Modifier else Modifier.fillMaxWidth().clipToBounds(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
             val inline = mutableListOf<Pair<String, Boolean>>()
             segments.forEach { segment ->
                 val text = segment.first
@@ -135,23 +140,21 @@ fun RichText(
                     }
                     when {
                         text.startsWith("```") ->
-                            CodeBlock(
-                                text.substringAfter('\n').substringBeforeLast("```"),
-                                text.drop(3).substringBefore('\n').trim(),
-                            )
+                            mfmCodeBlock(text).let { CodeBlock(it.body, it.language) }
                         text.startsWith("\\[") -> MathText(text.drop(2).dropLast(2))
                         text.startsWith("<center>") ->
-                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            CompositionLocalProvider(LocalMfmStyle provides
+                                LocalMfmStyle.current.copy(textAlign = TextAlign.Center)) {
                                 RichText(text.drop(8).dropLast(9), users, depth + 1)
                             }
                         else ->
-                            Row {
+                            Row(Modifier.height(IntrinsicSize.Min)) {
                                 Box(
                                     Modifier.width(3.dp)
-                                        .height(20.dp)
+                                        .fillMaxHeight()
                                         .background(MaterialTheme.colorScheme.outline)
                                 )
-                                Box(Modifier.padding(start = 12.dp)) {
+                                Box(Modifier.weight(1f).padding(start = 12.dp)) {
                                     RichText(
                                         text.lines().joinToString("\n") {
                                             it.removePrefix(">").trimStart()
@@ -164,7 +167,7 @@ fun RichText(
                     }
                 } else inline += segment
             }
-            if (inline.isNotEmpty())
+            if (inline.isNotEmpty() || editedAt != null)
                 InlineParagraph(inline, users, shortcodes, depth, editedAt, maxLines)
         }
     }
@@ -200,17 +203,34 @@ private fun InlineParagraph(
     editedAt: String? = null,
     maxLines: Int = Int.MAX_VALUE,
 ) {
+    BoxWithConstraints {
+        InlineParagraphContent(segments, users, shortcodes, depth, editedAt, maxLines, maxWidth)
+    }
+}
+
+@Composable
+private fun InlineParagraphContent(
+    segments: List<Pair<String, Boolean>>,
+    users: List<Row>,
+    shortcodes: Row,
+    depth: Int,
+    editedAt: String?,
+    maxLines: Int,
+    availableWidth: Dp,
+) {
     val app = LocalApp.current
     val fonts = LocalFonts.current
     val authzAccounts = app.accountProfiles.map { JsonObject(it + ("user_name" to JsonPrimitive(it.text("username")))) }
     val channels by app.repo.channels.rows.collectAsState()
-    val inheritedStyle = LocalMfmStyle.current
+    val inheritedStyle = MaterialTheme.typography.bodyMedium.merge(LocalMfmStyle.current)
     val mentionForeground = MaterialTheme.colorScheme.onSecondaryContainer
     val mentionBackground = MaterialTheme.colorScheme.secondaryContainer
     val accent = LocalLinkColor.current
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val sizes = remember(segments) { mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>() }
+    val sizes = remember(segments, availableWidth, density.density, density.fontScale) {
+        mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>()
+    }
     val joined = LocalJoinedEmojis.current
     val workspace = if (joined == null) workspaceEmojis(app) else emptyList()
     val registeredEmojis = remember(joined, workspace) {
@@ -275,7 +295,7 @@ private fun InlineParagraph(
                             "bold" -> SpanStyle(fontWeight = FontWeight.Bold)
                             "italic" -> SpanStyle(fontStyle = FontStyle.Italic)
                             "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-                            "small" -> SpanStyle(fontSize = 11.2.sp)
+                            "small" -> SpanStyle(fontSize = (inheritedSpan.fontSize.value * .8f).sp)
                             "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
                             "mention" ->
                                 SpanStyle(
@@ -333,7 +353,7 @@ private fun InlineParagraph(
                         }
                     else
                         withStyle(style) {
-                            if (token.kind in setOf("bold", "italic", "strike", "small") && level < 8)
+                            if (token.kind in setOf("bold", "italic", "strike", "small") && level + depth < 20)
                                 write(value, level + 1, inlineWeight, inheritedSpan.merge(style))
                             else if (token.kind == "code") append(value)
                             else append(fontText(value, fonts, inlineWeight))
@@ -356,19 +376,23 @@ private fun InlineParagraph(
         paragraph.embeddedParts.mapValues { (id, embedded) ->
             val source = embedded.source
             val measured = sizes[id]
-            val width =
-                measured?.let { with(density) { it.width.toSp() } }
-                    ?: (source.length * 7).coerceIn(16, 600).sp
+            val maximum = with(density) { availableWidth.toSp() }
+            val estimate = measured?.let { with(density) { it.width.toSp() } }
+                ?: (source.length * 7).coerceIn(16, 600).sp
+            val width = if (maximum.isSp && maximum.value.isFinite())
+                minOf(estimate.value, maximum.value).coerceAtLeast(1f).sp else estimate
             val height = measured?.let { with(density) { it.height.toSp() } } ?: 20.sp
             androidx.compose.foundation.text.InlineTextContent(
                 Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)
             ) {
                 Box(
                     Modifier.wrapContentSize(unbounded = true)
-                        .then(Modifier.onSizeChanged { sizes[id] = it })
+                        .widthIn(max = availableWidth)
+                        .onSizeChanged { sizes[id] = it }
                 ) {
                     CompositionLocalProvider(
-                        LocalMfmStyle provides inheritedStyle.merge(embedded.style)
+                        LocalMfmStyle provides inheritedStyle.merge(embedded.style),
+                        LocalMfmInline provides true,
                     ) {
                         if (source.startsWith("$["))
                             MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
@@ -433,12 +457,12 @@ private fun InlineParagraph(
                 content +
                     emojiParts.mapValues { (_, emoji) ->
                         androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
-                            ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() })
+                            ActivityPubEmoji(emoji, with(density) { (inheritedStyle.fontSize.value * 1.5f).sp.toDp() })
                         }
                     } +
                     accountParts.mapValues { (_, account) ->
                         androidx.compose.foundation.text.InlineTextContent(Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)) {
-                            Avatar(account, modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" }, size = with(density) { 18.sp.toDp() })
+                            Avatar(account, modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" }, size = with(density) { (inheritedStyle.fontSize.value * 1.15f).sp.toDp() })
                         }
                     } +
                     mentionContent +

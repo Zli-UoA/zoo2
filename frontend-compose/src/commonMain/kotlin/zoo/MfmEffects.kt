@@ -12,9 +12,14 @@ import androidx.compose.ui.draw.*
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.*
@@ -26,118 +31,24 @@ private val LocalMfmScale = staticCompositionLocalOf { 1f }
 @Composable
 fun MfmEffect(source: String, users: List<Row>, depth: Int) {
     val app = LocalApp.current
-    val separator = source.indexOfFirst { it.isWhitespace() }
-    val header = if (separator < 0) source else source.take(separator)
-    val name = header.substringBefore('.')
-    val known =
-        setOf(
-            "tada",
-            "jelly",
-            "twitch",
-            "shake",
-            "spin",
-            "jump",
-            "bounce",
-            "rainbow",
-            "sparkle",
-            "flip",
-            "scale",
-            "position",
-            "rotate",
-            "blur",
-            "border",
-            "bg",
-            "fg",
-            "clickable",
-            "ruby",
-            "unixtime",
-            "x2",
-            "x3",
-            "x4",
-            "font",
-        )
-    if (name !in known) {
+    val function = remember(source) { mfmFunction(source) }
+    val name = function.name
+    val args = function.args
+    val text = function.body
+    if (name !in supportedMfmFunctions) {
         Text("$[$source]")
         return
     }
-    val inherited = LocalMfmStyle.current
+    val inherited = androidx.compose.material3.MaterialTheme.typography.bodyMedium
+        .merge(LocalMfmStyle.current)
     val cumulativeScale = LocalMfmScale.current
-    val remainingScale = (8f / cumulativeScale).coerceAtLeast(1f)
-    val args =
-        header
-            .substringAfter('.', "")
-            .split(',')
-            .filter { it.isNotEmpty() }
-            .associate { it.substringBefore('=') to it.substringAfter('=', "true") }
-    val text = if (separator < 0) "" else source.substring(separator + 1)
-    fun number(key: String, fallback: Float, min: Float = -100f, max: Float = 100f): Float =
-        args[key]?.toFloatOrNull()?.takeIf { it.isFinite() }?.coerceIn(min, max) ?: fallback
-    fun color(key: String, fallback: Color): Color {
-        val s = args[key] ?: return fallback
-        val v = s.toLongOrNull(16) ?: return fallback
-        return when (s.length) {
-            3 ->
-                Color(
-                    0xff000000 or
-                        (((v shr 8) and 15) * 17 shl 16) or
-                        (((v shr 4) and 15) * 17 shl 8) or
-                        ((v and 15) * 17)
-                )
-            4 ->
-                Color(
-                    (((v and 15) * 17) shl 24) or
-                        (((v shr 12) and 15) * 17 shl 16) or
-                        (((v shr 8) and 15) * 17 shl 8) or
-                        (((v shr 4) and 15) * 17)
-                )
-            6 -> Color(0xff000000 or v)
-            8 -> Color(((v and 255) shl 24) or (v shr 8))
-            else -> fallback
-        }
-    }
-    val animated =
-        name in
-            setOf(
-                "tada",
-                "jelly",
-                "twitch",
-                "shake",
-                "spin",
-                "jump",
-                "bounce",
-                "rainbow",
-                "sparkle",
-            ) && !app.env.reducedMotion
-    val fallback =
-        when (name) {
-            "spin",
-            "sparkle" -> 1.5f
-            "twitch",
-            "shake" -> .5f
-            "jump",
-            "bounce" -> .75f
-            else -> 1f
-        }
-    val speed =
-        args["speed"]
-            ?.let {
-                it.removeSuffix("ms")
-                    .removeSuffix("s")
-                    .toFloatOrNull()
-                    ?.takeIf(Float::isFinite)
-                    ?.div(if (it.endsWith("ms")) 1000 else 1)
-            }
-            ?.coerceIn(.5f, 86400f) ?: fallback
-    val delaySeconds =
-        args["delay"]
-            ?.let {
-                it.removeSuffix("ms")
-                    .removeSuffix("s")
-                    .toFloatOrNull()
-                    ?.takeIf(Float::isFinite)
-                    ?.div(if (it.endsWith("ms")) 1000 else 1)
-            }
-            ?.coerceIn(-86400f, 86400f) ?: 0f
+    val sizing = function.scale(cumulativeScale)
+    fun number(key: String, fallback: Float, min: Float = -100f, max: Float = 100f) =
+        function.number(key, fallback, min, max)
+    fun color(key: String, fallback: Color) = function.argb(key)?.let { Color(it) } ?: fallback
+    val animated = name in mfmAnimationDurations && !app.env.reducedMotion
+    val speed = function.seconds("speed", mfmAnimationDurations[name] ?: 1f)
+    val delaySeconds = function.seconds("delay", 0f, delay = true)
     val phase =
         if (animated)
             rememberInfiniteTransition()
@@ -163,57 +74,26 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
     val hovered by blurInteraction.collectIsHoveredAsState()
     var focused by remember { mutableStateOf(false) }
     var revealed by remember(source) { mutableStateOf(false) }
-    var modifier: Modifier = Modifier
-    modifier =
-        when (name) {
-            "spin" ->
-                modifier.graphicsLayer {
-                    val rotation = phase * 360 * if (args.containsKey("left")) -1 else 1
-                    if (args.containsKey("x")) rotationX = rotation
-                    else if (args.containsKey("y")) rotationY = rotation else rotationZ = rotation
-                }
-            "shake",
-            "twitch" ->
-                modifier.offset(
-                    (wave * if (name == "shake") 3 else 1).dp,
-                    (cos(phase * 14 * PI) * 2).dp,
-                )
-            "jump",
-            "bounce" -> modifier.offset(y = (-abs(wave) * 10).dp)
-            "tada" ->
-                modifier.graphicsLayer {
-                    rotationZ = wave * 8
-                    scaleX = 1 + abs(wave) * .1f
-                    scaleY = scaleX
-                }
-            "jelly" ->
-                modifier.graphicsLayer {
-                    scaleX = 1 + wave * .15f
-                    scaleY = 1 - wave * .15f
-                }
-            "flip" ->
-                modifier.graphicsLayer {
-                    scaleX = if (args.containsKey("h") || !args.containsKey("v")) -1f else 1f
-                    scaleY = if (args.containsKey("v")) -1f else 1f
-                }
-            "scale" ->
-                modifier.graphicsLayer {
-                    scaleX = number("x", 1f, -5f, 5f).coerceIn(-remainingScale, remainingScale)
-                    scaleY = number("y", 1f, -5f, 5f).coerceIn(-remainingScale, remainingScale)
-                }
-            "position" ->
-                modifier.offset(
-                    (number("x", 0f, -2f, 2f) * 14).dp,
-                    (number("y", 0f, -2f, 2f) * 14).dp,
-                )
-            "rotate" -> modifier.rotate(number("deg", 90f, -3600f, 3600f))
+    val motion = function.motion(phase, app.env.reducedMotion, cumulativeScale)
+    val em = with(androidx.compose.ui.platform.LocalDensity.current) { inherited.fontSize.toPx() }
+    var modifier: Modifier = Modifier.graphicsLayer {
+        scaleX = motion.scaleX
+        scaleY = motion.scaleY
+        rotationX = motion.rotationX
+        rotationY = motion.rotationY
+        rotationZ = motion.rotationZ
+        translationX = motion.x * em
+        translationY = motion.y * em
+    }
+    modifier = when (name) {
             "blur" -> modifier
                 .hoverable(blurInteraction)
                 .onFocusChanged { focused = it.isFocused }
+                .semantics { selected = revealed || hovered || focused }
                 .clickable(role = Role.Button) { revealed = !revealed }
                 .then(if (revealed || hovered || focused) Modifier else Modifier.blur(6.dp))
             "border" -> {
-                val radius = number("radius", 0f, 0f, 100f).dp
+                val radius = number("radius", 0f, 0f, 1000f).dp
                 val borderColor =
                     color(
                         "color",
@@ -222,40 +102,56 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                 val strokeWidth = number("width", 1f, 0f, 100f).dp
                 val style = args["style"]
                 val drawing = modifier.drawBehind {
-                    val w = strokeWidth.toPx()
-                    val pattern =
-                        when (style) {
-                            "dashed" -> floatArrayOf(w * 3, w * 2)
-                            "dotted" -> floatArrayOf(w, w)
+                    val w = minOf(strokeWidth.toPx(), size.minDimension / 2)
+                    val r = radius.toPx().coerceAtMost(size.minDimension / 2)
+                    fun stroke(inset: Float, width: Float, first: Color, second: Color = first) {
+                        val extent = Size((size.width - inset * 2).coerceAtLeast(0f),
+                            (size.height - inset * 2).coerceAtLeast(0f))
+                        val pattern = when (style) {
+                            "dashed" -> floatArrayOf(width * 3, width * 2)
+                            "dotted" -> floatArrayOf(width, width)
                             else -> null
                         }
-                    if (w > 0)
-                        drawRoundRect(
-                            borderColor,
-                            cornerRadius = CornerRadius(radius.toPx()),
-                            style =
-                                Stroke(
-                                    w,
-                                    pathEffect = pattern?.let { PathEffect.dashPathEffect(it) },
-                                ),
-                        )
-                }
+                        val line = Stroke(width, pathEffect = pattern?.let { PathEffect.dashPathEffect(it) })
+                        fun draw(color: Color) = drawRoundRect(color, Offset(inset, inset), extent,
+                            CornerRadius((r - inset).coerceAtLeast(0f)), style = line)
+                        draw(second)
+                        if (first != second) {
+                            val upperLeft = Path().apply {
+                                moveTo(0f, size.height)
+                                lineTo(0f, 0f)
+                                lineTo(size.width, 0f)
+                                close()
+                            }
+                            clipPath(upperLeft) { draw(first) }
+                        }
+                    }
+                    if (w > 0 && style !in setOf("hidden", "none")) {
+                        val dark = lerp(borderColor, Color.Black, .4f)
+                        val light = lerp(borderColor, Color.White, .4f)
+                        when (style) {
+                            "double" -> {
+                                stroke(w / 6, w / 3, borderColor)
+                                stroke(w * 5 / 6, w / 3, borderColor)
+                            }
+                            "inset" -> stroke(w / 2, w, dark, light)
+                            "outset" -> stroke(w / 2, w, light, dark)
+                            "groove", "ridge" -> {
+                                val first = if (style == "groove") dark else light
+                                val second = if (style == "groove") light else dark
+                                stroke(w / 4, w / 2, first, second)
+                                stroke(w * 3 / 4, w / 2, second, first)
+                            }
+                            else -> stroke(w / 2, w, borderColor)
+                        }
+                    }
+                }.padding(if (style in setOf("hidden", "none")) 0.dp else strokeWidth)
                 if (args.containsKey("noclip")) drawing
                 else drawing.clip(RoundedCornerShape(radius))
             }
-            "bg" -> modifier.background(color("color", Color.Transparent))
-            "clickable" -> modifier.clickable { app.platform.action("mfm:${args["ev"].orEmpty()}") }
+            "bg" -> modifier.background(color("color", Color.Red))
+            "clickable" -> modifier.clickable(role = Role.Button) { app.platform.action("mfm:${args["ev"].orEmpty()}") }
             else -> modifier
-        }
-    val scale =
-        when (name) {
-            "scale" ->
-                max(abs(number("x", 1f, -5f, 5f)), abs(number("y", 1f, -5f, 5f)))
-                    .coerceAtMost(remainingScale)
-            "x2",
-            "x3",
-            "x4" -> name.drop(1).toFloat().coerceAtMost(remainingScale)
-            else -> 1f
         }
     val style =
         when (name) {
@@ -264,33 +160,37 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
             "x4" ->
                 inherited.copy(
                     fontSize =
-                        ((if (inherited.fontSize.isSp) inherited.fontSize.value else 14f) * scale)
+                        ((if (inherited.fontSize.isSp) inherited.fontSize.value else 14f) * sizing.x)
                             .sp,
                     lineHeight =
                         ((if (inherited.lineHeight.isSp) inherited.lineHeight.value else 20f) *
-                                scale)
+                                sizing.x)
                             .sp,
                 )
-            "fg" -> inherited.copy(color = color("color", inherited.color))
+            "fg" -> inherited.copy(color = color("color", Color.Red))
             "rainbow" -> inherited.copy(color = Color.hsv(phase * 360, .8f, .85f))
             else -> inherited
         }
     CompositionLocalProvider(
         LocalMfmStyle provides style,
-        LocalMfmScale provides cumulativeScale * scale.coerceAtLeast(1f),
+        LocalMfmScale provides sizing.cumulative,
     ) {
         Box(modifier) {
             when (name) {
                 "ruby" -> {
-                    val parts = text.split(' ')
+                    val ruby = remember(text) { mfmRuby(text) }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(parts.drop(1).joinToString(" "), small = true)
-                        RichText(parts.firstOrNull().orEmpty(), users, depth)
+                        Text(
+                            ruby.reading,
+                            size = (inherited.fontSize.value * .5f).sp,
+                            lineHeight = (inherited.fontSize.value * .65f).sp,
+                        )
+                        RichText(ruby.base, users, depth, selection = false)
                     }
                 }
                 "unixtime" -> {
                     val time =
-                        text.toLongOrNull()?.let {
+                        text.trim().takeIf { Regex("-?\\d+").matches(it) }?.toLongOrNull()?.let {
                             runCatching { kotlinx.datetime.Instant.fromEpochSeconds(it).toString() }
                                 .getOrNull()
                         }
@@ -305,10 +205,10 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                 "fg",
                 "rainbow" -> RichText(text, users, depth)
                 "sparkle" ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("✦", color = Color(0xffffbb00).copy(alpha = .5f + abs(wave) * .5f))
+                    Box {
+                        Text("✦", Modifier.align(Alignment.TopStart), color = Color(0xffffbb00).copy(alpha = .5f + abs(wave) * .5f))
                         RichText(text, users, depth)
-                        Text("✧", color = Color(0xffffbb00))
+                        Text("✧", Modifier.align(Alignment.BottomEnd), color = Color(0xffffbb00))
                     }
                 "font" -> {
                     val family =

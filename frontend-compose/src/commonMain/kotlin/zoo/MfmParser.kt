@@ -123,16 +123,21 @@ private fun linkAt(source: String, at: Int): Pair<Inline, Int>? {
     return null
 }
 
-fun parseInline(source: String): List<Inline> {
-    val result = mutableListOf<Inline>()
+private data class InlineSlice(val token: Inline, val start: Int, val end: Int)
+
+fun parseInline(source: String): List<Inline> = inlineSlices(source).map { it.token }
+
+private fun inlineSlices(source: String): List<InlineSlice> {
+    val result = mutableListOf<InlineSlice>()
+    var at = 0
+    var pendingStart = 0
     val pending = StringBuilder()
     fun flush() {
         if (pending.isNotEmpty()) {
-            result += Inline(pending.toString())
+            result += InlineSlice(Inline(pending.toString()), pendingStart, at)
             pending.clear()
         }
     }
-    var at = 0
     while (at < source.length) {
         var token: Inline? = null
         var end = at
@@ -191,7 +196,7 @@ fun parseInline(source: String): List<Inline> {
                             !it.isLetterOrDigit() && it !in "_/@"
                         } != false
                         if (kind !in setOf("mention", "hashtag") || boundary) {
-                            val trimmed = if (kind == "link") value.trimEnd('.', ',', '!', '?', ';', ':') else value
+                            val trimmed = if (kind == "link") trimMfmUrl(value) else value
                             token = Inline(trimmed, kind, trimmed.takeIf { kind == "link" })
                             end = at + trimmed.length
                         }
@@ -201,8 +206,9 @@ fun parseInline(source: String): List<Inline> {
         }
         if (token != null) {
             flush()
-            result += token
+            result += InlineSlice(token, at, end)
             at = end
+            pendingStart = at
         } else {
             pending.append(source[at])
             at++
@@ -278,6 +284,9 @@ data class MessageHeadingBlock(val content: String, val level: Int? = null)
 /** Heading markers only belong to root text, never to code or an MFM subtree. */
 fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
     val protectedRanges = BooleanArray(content.length)
+    inlineSlices(content).filter { it.token.kind != "text" }.forEach { slice ->
+        for (index in slice.start until slice.end) protectedRanges[index] = true
+    }
     var cursor = 0
     richSegments(content).forEach { (text, embedded) ->
         if (embedded) for (index in cursor until cursor + text.length) protectedRanges[index] = true
@@ -313,4 +322,40 @@ fun messageHeadingBlocks(content: String): List<MessageHeadingBlock> {
     }
     flush()
     return blocks
+}
+
+private fun trimMfmUrl(value: String): String {
+    var result = value.trimEnd('.', ',', '!', '?', ';', ':')
+    for ((open, close) in listOf('(' to ')', '[' to ']', '{' to '}')) {
+        var excess = result.count { it == close } - result.count { it == open }
+        while (excess > 0 && result.endsWith(close)) {
+            result = result.dropLast(1)
+            excess--
+        }
+    }
+    return result
+}
+
+data class MfmRuby(val base: String, val reading: String)
+
+/** The reading is root text; spaces inside markup belong to the base. */
+fun mfmRuby(source: String): MfmRuby {
+    val slices = inlineSlices(source)
+    val last = slices.lastOrNull() ?: return MfmRuby(source, "")
+    if (last.token.kind != "text") return MfmRuby(source, "")
+    if (slices.size == 1) {
+        val separator = source.indexOfFirst { it.isWhitespace() }
+        return if (separator < 0) MfmRuby(source, "")
+        else MfmRuby(source.take(separator), source.substring(separator + 1).trim())
+    }
+    return MfmRuby(source.take(last.start).trimEnd(), last.token.value.trim())
+}
+
+data class MfmCodeBlock(val body: String, val language: String)
+
+fun mfmCodeBlock(source: String): MfmCodeBlock {
+    val inner = source.removePrefix("```").removeSuffix("```")
+    val newline = inner.indexOf('\n')
+    return if (newline < 0) MfmCodeBlock(inner, "")
+    else MfmCodeBlock(inner.substring(newline + 1), inner.take(newline).trim())
 }

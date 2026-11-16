@@ -64,4 +64,34 @@ class MfmParserTest {
             assertEquals(source, parseInline(source).joinToString("") { it.value })
         }
     }
+
+    @Test
+    fun urlsLeaveSentencePunctuationOutsideBalancedDestinations() {
+        assertEquals("https://example.test/a_(b)", parseInline("(https://example.test/a_(b)).")
+            .single { it.kind == "link" }.url)
+        assertEquals("https://example.test/a", parseInline("[https://example.test/a]")
+            .single { it.kind == "link" }.url)
+    }
+
+    @Test
+    fun fencedCodeRetainsItsBodyWithAndWithoutLanguageAndLineBreaks() {
+        assertEquals(MfmCodeBlock("code", ""), mfmCodeBlock("```code```"))
+        assertEquals(MfmCodeBlock("val x = 1\n", "kotlin"), mfmCodeBlock("```kotlin\nval x = 1\n```"))
+        assertEquals(MfmCodeBlock("code", ""), mfmCodeBlock("```\ncode```"))
+    }
+
+    @Test
+    fun multilineInlineStylesProtectHeadingLikeContent() {
+        assertTrue(messageHeadingBlocks("**bold\n# literal\nend**").all { it.level == null })
+    }
+
+    @Test
+    fun everyTruncationOfNestedInputRemainsParseableWithoutSourceLoss() {
+        val source = "$[ruby **base $[fg.color=f00 `a]b`]** reading]\n<center>x</center>"
+        for (length in 0..source.length) {
+            val prefix = source.take(length)
+            assertEquals(prefix, richSegments(prefix).joinToString("") { it.first })
+            parseInline(prefix)
+        }
+    }
 }
