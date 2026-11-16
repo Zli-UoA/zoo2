@@ -63,4 +63,4 @@ TUIにはメディア描画画面がないため、既存の添付名・種類�
 Storybookの `Components/Media/MediaPreview` と関連するブラウザーテストで形式・読み込み・失敗・狭い幅・ページ送りを確認する。
 `.storybook/fixtures/README.md` にサンプルの由来を記載する。
 
-Androidの回帰テストでは、ネイティブPDFの複数ページ描画、サイズ上限、読み込み中のキャンセル、一時ファイル削除、文書WebViewの取り外し後の破棄、閉じる・開き直す操作を確認する。
+Androidの端末テスト（`connectedDebugAndroidTest`）でネイティブPDFの複数ページ描画を確認する。CIでは端末テストAPKのビルドまでを行う。Robolectricの回帰テストでは、サイズ上限、読み込み中のキャンセル、一時ファイル削除、文書WebViewの取り外し後の破棄、閉じる・開き直す操作を確認する。
