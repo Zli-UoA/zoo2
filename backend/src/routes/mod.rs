@@ -23,6 +23,7 @@ pub mod read_states;
 pub mod response;
 pub mod shape_limit;
 pub mod shapes;
+pub mod sip;
 pub mod telemetry;
 pub mod threads;
 pub mod typing;
@@ -115,6 +116,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(calls::router())
+        .merge(sip::router())
         .merge(notifications::router())
         .merge(push::router())
         .merge(read_states::router())
