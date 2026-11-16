@@ -68,6 +68,20 @@ class PhoneUiTest {
             ui.onNodeWithText("sip.save").performScrollTo().assertIsNotEnabled()
         } finally { f.close() }
     }
+    @Test fun failureRemainsVisibleAfterTheCallHasEndedAndCanBeDismissed() {
+        val f = Fixture()
+        try {
+            ui.runOnIdle { f.controller.nativeUnavailable() }
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
+                    MaterialTheme { PhoneCallBanner(f.app, f.controller) }
+                }
+            }
+            ui.onNodeWithText("androidPhone.callError").assertIsDisplayed()
+            ui.onNodeWithText("common.close").performClick()
+            ui.onNodeWithText("androidPhone.callError").assertDoesNotExist()
+        } finally { f.close() }
+    }
     @Test fun incomingBannerOffersAnswerAndEndWithoutOpeningTheMicrophone() {
         val f = Fixture()
         try {

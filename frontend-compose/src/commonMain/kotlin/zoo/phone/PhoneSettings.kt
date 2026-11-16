@@ -120,7 +120,11 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
 
 @Composable
 fun PhoneCallBanner(app: Session, controller: PhoneController) {
-    val call = controller.call ?: return
+    val call = controller.call
+    if (call == null) {
+        if (controller.error) LoadErrorState(app.t("androidPhone.callError"), app.t("common.close"), retry = controller::clearError)
+        return
+    }
     SettingsSection(call.label.ifBlank { app.t("sip.title") }, app.t("sip.status.${call.status}") + call.peer.let { if (it.isBlank()) "" else " · $it" }) {
         CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
             if (call.status == "incoming") Button(app.t("sip.answer"), enabled = !controller.busy) { controller.answer() }

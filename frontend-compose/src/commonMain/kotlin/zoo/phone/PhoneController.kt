@@ -298,6 +298,7 @@ class PhoneController(
     fun speaker() { val current = call ?: return; telecom.speaker(current.id, !current.speaker) }
     fun audioRoute(speaker: Boolean) { call = call?.copy(speaker = speaker) }
     fun dtmf(tone: String) { if (call?.kind != "sip" || call?.status != "active" || !Regex("[0-9*#]").matches(tone)) return; operation(callEpoch, fatal = false) { sip?.command("sip.dtmf", obj("tone" to tone)) } }
+    fun clearError() { error = false }
     fun nativeUnavailable() { stop(); error = true }
     fun nativeFailed(id: String) { if (call?.id == id) { hangup(); error = true } }
     fun stop() { hangup(); disconnectSip(); dmWaiting = false; waiting(false) }
