@@ -204,10 +204,9 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
                 let read = (n["Actual Rows"].as_f64().unwrap_or(0.)
                     + n["Rows Removed by Filter"].as_f64().unwrap_or(0.))
                     * n["Actual Loops"].as_f64().unwrap_or(0.);
-                let direct_replies = (count - local) / 20;
                 assert!(
-                    read <= (direct_replies + 5000) as f64,
-                    "reply count scanned unrelated recipient history: {n}"
+                    read <= 5000.,
+                    "reply count scanned recipient history instead of counters: {n}"
                 );
             }
             if thread == "true" && n["Subplan Name"] == "CTE page_parent_previews" {
@@ -333,6 +332,26 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
             &[&writer],
         )
         .await?;
+    let page = bind(
+        timeline_page_query_for("home", false),
+        &[user, "", "home", "false", "500", "", "", "false", "[]"],
+    );
+    let entries: Vec<String> = fixture
+        .simple_query(&page)
+        .await?
+        .iter()
+        .filter_map(|r| match r {
+            SimpleQueryMessage::Row(row) => row.get(0).map(|s| {
+                serde_json::from_str::<Value>(s).unwrap()["entry_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            }),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(entries.len(), 500, "exercise the full supported page size");
+    let entries = serde_json::to_string(&entries)?;
     let make = |name: &str, sql: String, args: &[&str]| {
         (
             name.to_owned(),
@@ -345,6 +364,16 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
             "home",
             timeline_page_query_for("home", false),
             &[user, "", "home", "false", "50", "", "", "false", "[]"],
+        ),
+        make(
+            "home_max",
+            timeline_page_query_for("home", false),
+            &[user, "", "home", "false", "500", "", "", "false", "[]"],
+        ),
+        make(
+            "page_render",
+            timeline_query_for(false, false, false, false, false),
+            &[user, "", "home", "false", "500", "", "", "false", &entries],
         ),
         make(
             "deep",
@@ -525,11 +554,13 @@ async fn budget_samples(
         waits.push(waiting.elapsed().as_secs_f64() * 1000.);
         connection
             .0
-            .batch_execute(if matches!(name.as_str(), "detail" | "thread") {
-                "SET plan_cache_mode=force_generic_plan"
-            } else {
-                "SET plan_cache_mode=force_custom_plan"
-            })
+            .batch_execute(
+                if matches!(name.as_str(), "detail" | "thread" | "page_render") {
+                    "SET plan_cache_mode=force_generic_plan"
+                } else {
+                    "SET plan_cache_mode=force_custom_plan"
+                },
+            )
             .await?;
         let mut prepare_ms = 0.;
         let mut prepare_round_trip_ms = 0.;
