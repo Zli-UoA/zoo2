@@ -96,7 +96,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
 }
 
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "automerge-gate.yaml": ["gate"]};
-const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
+const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
   "ci-desktop-tauri.yaml": ["check"],
@@ -255,4 +255,16 @@ test('fixed jobs keep their result dependencies and trusted deployment boundary'
     const text = readFileSync(new URL(`.github/workflows/${file}`, root), 'utf8');
     assert.match(text, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
   }
+});
+
+
+test('ER diagram deployment only publishes main artifacts without checking out code', () => {
+  const text = readFileSync(new URL('.github/workflows/cd-db-erd.yaml', root), 'utf8');
+  const build = text.split('  build:\n')[1].split('  deploy:\n')[0];
+  const deploy = text.split('  deploy:\n')[1];
+  assert.match(build, /needs\.runner\.outputs\.docker-runs-on/);
+  assert.match(deploy, /needs: \[runner, build\]/);
+  assert.match(deploy, /if: github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request'/);
+  assert.match(deploy, /actions\/download-artifact/);
+  assert.doesNotMatch(deploy, /actions\/checkout/);
 });
