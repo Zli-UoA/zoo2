@@ -391,14 +391,15 @@ Android固有の表示調整のため、ReactのStorybookとTUIの表示仕様�
 ## Androidのプッシュ通知の設定
 
 `Zli-UoA/zoo2-infra` の `terraform/firebase` で、Firebaseプロジェクト、Androidアプリ `works.zli.zoo`、
-FCM HTTP v1、送信アカウントと鍵、以下のGitHub Actions Variablesを管理します。
+FCM HTTP v1、送信アカウントと鍵、WIF、以下のAndroid公開設定を管理します。
 OpenTofuの機密outputは同リポジトリのSOPS exporterで暗号化SecretのPRにします。
 初回のGoogle認証・規約同意、state認証、plan/applyと配布手順は同ディレクトリのREADMEを参照してください。
 Google Play開発者サービスが利用できる端末を対象とします。Firebaseの管理用秘密鍵はAPKへ入れません。
 
 APKのビルドでは次の公開識別子を4つまとめて設定します。全て未設定ならFCMを無効にしてビルドでき、
 一部だけ設定されている場合はビルドを失敗させます。`google-services.json`や追加のGradleプラグインは不要です。
-署名付き配布のCIは同名のGitHub Actions Variablesから読みます。
+署名付き配布のCIは同名のGitHub Actions Variablesがあれば優先し、未設定なら
+`androidApp/firebase-public.properties` の公開識別子を使います。管理用秘密鍵はこのファイルに入れません。
 
 | 環境変数 | Firebase Android設定の値 |
 | --- | --- |

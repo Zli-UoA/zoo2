@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     kotlin("android")
@@ -21,12 +23,26 @@ android {
         manifestPlaceholders["reauthHost"] = reauthHost
         buildConfigField("String", "REAUTH_HOST", "\"$reauthHost\"")
         // Firebase's public Android identifiers; service-account credentials belong on the server.
-        val firebase = mapOf(
+        val firebaseDefaults = Properties().apply {
+            val config = file("firebase-public.properties")
+            if (config.isFile) config.inputStream().use { load(it) }
+        }
+        val firebaseKeys = mapOf(
             "google_app_id" to "APP_ID",
             "google_api_key" to "API_KEY",
             "gcm_defaultSenderId" to "SENDER_ID",
             "project_id" to "PROJECT_ID",
-        ).mapValues { (_, key) -> providers.environmentVariable("ZOO_ANDROID_FIREBASE_$key").orNull.orEmpty() }
+        )
+        val firebaseEnvironment = firebaseKeys.mapValues { (_, key) ->
+            providers.environmentVariable("ZOO_ANDROID_FIREBASE_$key").orNull.orEmpty()
+        }
+        require(firebaseEnvironment.values.all { it.isBlank() } || firebaseEnvironment.values.all { it.isNotBlank() }) {
+            "Configure all four ZOO_ANDROID_FIREBASE_* environment overrides, or leave all unset"
+        }
+        val firebase = firebaseKeys.mapValues { (name, key) ->
+            if (firebaseEnvironment.values.any { it.isNotBlank() }) firebaseEnvironment.getValue(name)
+            else firebaseDefaults.getProperty("ZOO_ANDROID_FIREBASE_$key").orEmpty()
+        }
         require(firebase.values.all { it.isEmpty() } || firebase.values.all { it.isNotEmpty() }) {
             "Configure all four ZOO_ANDROID_FIREBASE_* identifiers, or leave all unset"
         }
