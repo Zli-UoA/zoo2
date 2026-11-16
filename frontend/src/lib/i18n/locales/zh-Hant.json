@@ -700,7 +700,9 @@
       "search": "搜尋",
       "noOptions": "沒有選項",
       "uploading": "正在上傳…",
-      "page": "第 {{page}} / {{pages}} 頁"
+      "page": "第 {{page}} / {{pages}} 頁",
+      "spoiler": "包含劇透內容（可在網頁版查看）",
+      "webOnly": "請在網頁版進行此操作"
     }
   },
   "search": {

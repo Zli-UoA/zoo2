@@ -700,7 +700,9 @@
       "search": "Search",
       "noOptions": "No options",
       "uploading": "Uploading…",
-      "page": "Page {{page}} of {{pages}}"
+      "page": "Page {{page}} of {{pages}}",
+      "spoiler": "Contains a spoiler (open it in the web app)",
+      "webOnly": "Use the web app for this control"
     }
   },
   "search": {

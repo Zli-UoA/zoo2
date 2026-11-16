@@ -5037,6 +5037,28 @@ impl AppState {
         }
     }
 
+    /// メッセージ部品のボタン・選択肢を押したことを、部品を付けたアプリへ送る。
+    pub fn invoke_component(
+        &mut self,
+        app_id: &str,
+        message_id: &str,
+        custom_id: &str,
+        value: serde_json::Value,
+    ) {
+        let (Some(channel_id), Some(api)) = (self.current_channel.clone(), self.api.clone()) else {
+            return;
+        };
+        let (app_id, message_id, custom_id) = (
+            app_id.to_string(),
+            message_id.to_string(),
+            custom_id.to_string(),
+        );
+        self.spawn_api("アプリの操作", async move {
+            api.invoke_app_action(&app_id, &channel_id, &message_id, &custom_id, value)
+                .await
+        });
+    }
+
     /// ショートコードまたは絵文字入力を受け取ってリアクションをトグルする。
     pub fn submit_reaction_input(&mut self, message_id: &str, input: &str) -> bool {
         let Some(emoji) = resolve_emoji(input) else {

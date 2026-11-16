@@ -700,7 +700,9 @@
       "search": "検索",
       "noOptions": "候補がありません",
       "uploading": "アップロード中…",
-      "page": "{{page}} / {{pages}} ページ"
+      "page": "{{page}} / {{pages}} ページ",
+      "spoiler": "ネタバレを含む部品です（Web 版で表示できます）",
+      "webOnly": "この操作は Web 版で行えます"
     }
   },
   "search": {
