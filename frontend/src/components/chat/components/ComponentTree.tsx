@@ -894,7 +894,7 @@ function InteractiveControl({
             aria-label={
               named(c.placeholder) ??
               named(c.label) ??
-              (c.type === T.Overflow ? t("apps.components.more") : undefined)
+              (c.type === T.Overflow ? t("apps.components.more") : t("apps.components.choose"))
             }
             className={c.type === T.Overflow ? "w-auto" : "w-full max-w-xs"}
             multiple={many}

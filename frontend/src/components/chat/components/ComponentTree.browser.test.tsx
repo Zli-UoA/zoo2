@@ -58,6 +58,23 @@ describe("ComponentTree", () => {
     expect(screen.getByLabelText("時刻")).toBeInTheDocument();
   });
 
+  it("names a string select without placeholder or label", async () => {
+    const select = parseComponents({
+      components: [
+        {
+          type: 1,
+          components: [{ type: 3, custom_id: "s", options: [{ label: "A", value: "a" }] }],
+        },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={select} />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByRole("combobox")).toHaveAccessibleName();
+  });
+
   it("asks for confirmation before sending and sends picker values only on submit", async () => {
     render(
       <LocaleProvider>
