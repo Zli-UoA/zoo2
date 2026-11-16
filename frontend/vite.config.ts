@@ -60,6 +60,16 @@ const config = defineConfig({
   resolve: { tsconfigPaths: true, alias: { buffer: "buffer/" } },
   preview: { host: "127.0.0.1" },
   server: {
+    // Local PBX development only; production uses the matching Traefik route.
+    proxy: process.env.SIP_DEV_PROXY_URL
+      ? {
+          "/sip/": {
+            target: process.env.SIP_DEV_PROXY_URL,
+            ws: true,
+            rewrite: (path: string) => path.replace(/^\/sip/, ""),
+          },
+        }
+      : undefined,
     // @zoo/crypto-wasm は link: で frontend の外（crates/zoo-crypto-wasm/pkg）を指す。
     // dev サーバーとブラウザーのテストが *_bg.wasm を返せるよう、そのディレクトリーだけ許可する。
     fs: { allow: [dirname, path.resolve(dirname, "../crates/zoo-crypto-wasm/pkg")] },
