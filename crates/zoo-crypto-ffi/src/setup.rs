@@ -245,6 +245,13 @@ impl OwnKeys {
         self.inner.self_signing.public_key().to_base64()
     }
 
+    /// 配布先の判定に使う自分のユーザー署名鍵。秘密鍵は Rust 内に保持する。
+    pub fn user_signing(&self) -> Arc<crate::CrossSigningKeyPair> {
+        crate::CrossSigningKeyPair::wrap(crate::CrossSigningKeyPair::duplicate(
+            &self.inner.user_signing,
+        ))
+    }
+
     /// 今の版のバックアップ鍵。
     pub fn backup_key(&self) -> Arc<BackupDecryptionKey> {
         BackupDecryptionKey::wrap(self.inner.backup_key.clone())

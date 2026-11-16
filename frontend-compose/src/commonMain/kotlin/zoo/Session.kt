@@ -275,8 +275,54 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         if (!old.online && next.online) repo.refresh()
     }
 
+    private val encryptedChannels by lazy { EncryptedChannelHistory(platform, config) }
+
+    suspend fun rememberEncryptedChannel(id: String) = encryptedChannels.remember(listOf(id))
+
+    suspend fun requirePlaintextChannel(id: String) {
+        encryptedChannels.remember()
+        check(!isEncryptedChannel(id)) { "e2ee.downgraded" }
+    }
+
+    /** 作成前に UUID と暗号化の指定を保存し、応答の格下げも拒否する。 */
+    suspend fun createChannel(body: Row): JsonElement {
+        val id = body.text("id").ifEmpty { platform.uuid() }
+        val requested = body.flag("is_private") && body.flag("encrypted")
+        if (requested) rememberEncryptedChannel(id)
+        val result = repo.channels.write(api, "/api/channels", "POST", JsonObject(body + ("id" to JsonPrimitive(id))))
+        if (requested) verifyEncryptedCreation(result, id)
+        return result
+    }
+
+    suspend fun createDm(targets: Set<String>, encrypted: Boolean): String {
+        val id = platform.uuid()
+        if (encrypted) rememberEncryptedChannel(id)
+        val result = api.request("/api/dms", "POST", buildJsonObject {
+            put("id", id)
+            put("target_user_ids", JsonArray(targets.map(::JsonPrimitive)))
+            if (encrypted) put("encrypted", true)
+        })
+        if (encrypted) verifyEncryptedCreation(result, id)
+        return result.jsonObject.getValue("data").jsonObject.text("id")
+    }
+
+    private suspend fun verifyEncryptedCreation(result: JsonElement, requestedId: String) {
+        val row = (result as? JsonObject)?.get("data") as? JsonObject ?: error("e2ee.downgraded")
+        val id = row.text("id").ifEmpty { requestedId }
+        // 既存の 1 対 1 DM が返る場合も、応答を信用する前に暗号化指定を記録する。
+        rememberEncryptedChannel(id)
+        check(row.flag("encrypted")) { "e2ee.downgraded" }
+    }
+
     fun start() {
         if (isPublicProfilePath(env.path)) return
+        scope.launch {
+            repo.channels.rows.collect { rows ->
+                try { encryptedChannels.remember(rows.filter { it.flag("encrypted") }.map { it.text("id") }) }
+                catch (failure: CancellationException) { throw failure }
+                catch (_: Exception) { toast = t("common.writeError") }
+            }
+        }
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =
@@ -341,10 +387,27 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         attachmentIds: List<String> = emptyList(),
         sensitiveAttachmentIds: List<String> = emptyList(),
     ): Boolean {
-        // 暗号化チャンネルには、暗号化の送信を入れるまで本文もコマンドも送らない（docs/e2ee.md、#361）。
+        try { encryptedChannels.remember() }
+        catch (failure: CancellationException) { throw failure }
+        catch (_: Exception) { toast = t("common.writeError"); return false }
         if (isEncryptedChannel(channel)) {
-            toast = t("e2ee.sendUnavailable")
-            return false
+            // 観測済みの設定も、本文を送る前に保存する。
+            try { rememberEncryptedChannel(channel) }
+            catch (failure: CancellationException) { throw failure }
+            catch (_: Exception) { toast = t("common.writeError"); return false }
+            val encryption = platform.messageEncryption
+            if (encryption == null || attachmentIds.isNotEmpty() || commandAppId != null) {
+                toast = t("e2ee.sendUnavailable")
+                return false
+            }
+            return try {
+                encryption.send(channel, platform.uuid(), parent, content)
+                true
+            } catch (failure: CancellationException) { throw failure }
+            catch (failure: Exception) {
+                toast = t(failure.message?.takeIf { it.startsWith("e2ee.") } ?: "common.writeError")
+                false
+            }
         }
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
@@ -412,7 +475,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     /** 暗号化チャンネルか。Channels の Shape の行の `encrypted` で決める。 */
-    fun isEncryptedChannel(channel: String): Boolean = isEncryptedChannel(repo.channels.rows.value, channel)
+    fun isEncryptedChannel(channel: String): Boolean {
+        if (isEncryptedChannel(repo.channels.rows.value, channel)) encryptedChannels.observe(channel)
+        return encryptedChannels.contains(channel)
+    }
 
     fun configureMembersLayout(wide: Boolean) {
         if (membersWide != wide) {
