@@ -1279,7 +1279,6 @@
     "sendStaleEpoch": "The member list kept changing, so the message wasn't sent. Try again.",
     "editConflict": "This message was edited elsewhere. Reload it and edit again.",
     "recipients": {
-      "summary": "Encrypted for {{users}} people on {{devices}} devices.",
       "added": "New since your last message: {{names}}"
     },
     "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted.",
