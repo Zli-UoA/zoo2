@@ -357,7 +357,7 @@ class MfmUiTest {
         try {
             ui.setContent {
                 Shell(fixture) {
-                    Column(Modifier.width(320.dp)) {
+                    Column(Modifier.width(320.dp).testTag("review-cases")) {
                         RichText("before \\(\\) after", selection = false)
                         RichText("$[fg.color=f00 A\nB]", selection = false)
                         RichText("[$[fg.color=f00 $[clickable.ev=wrong linked body]]](https://example.test/outer)")
@@ -369,6 +369,7 @@ class MfmUiTest {
             // Tap the actual visible body, not the paragraph's semantics link.
             ui.onNodeWithText("linked body", useUnmergedTree = true).performTouchInput { click() }
             ui.runOnIdle { assertEquals(listOf("open:https://example.test/outer"), fixture.actions) }
+            screenshot("review-cases", "review-cases")
         } finally { fixture.close() }
     }
 

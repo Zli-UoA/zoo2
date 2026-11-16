@@ -473,6 +473,7 @@ private fun MeasuredMfmParagraph(
 ) {
     val density = androidx.compose.ui.platform.LocalDensity.current
     val textLayout = remember(text) { arrayOfNulls<TextLayoutResult>(1) }
+    val linksEnabled = LocalInlineLinksEnabled.current
     SubcomposeLayout { constraints ->
         val measured = bodies.mapValues { (id, body) ->
             subcompose("body-$id") { Box { body.children() } }.single()
@@ -496,6 +497,7 @@ private fun MeasuredMfmParagraph(
         // Measured bodies are siblings of the paragraph, so its link overlay cannot
         // receive their taps. Put the same native link above each linked body.
         val bodyLinks = ranges.mapNotNull { range ->
+            if (!linksEnabled) return@mapNotNull null
             val body = measured[range.item] ?: return@mapNotNull null
             val url = text.getLinkAnnotations(range.start, range.end)
                 .mapNotNull { (it.item as? LinkAnnotation.Url)?.url }.firstOrNull()
