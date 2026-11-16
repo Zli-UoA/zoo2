@@ -5,16 +5,16 @@ Files here are retained for reference only and are not part of Atlas's canonical
 `20261123000001_channel_notes_expiry_index.sql` before main reached migration
 `20261126000000`; keeping it in the canonical directory makes Atlas reject main
 history as out of order. The later canonical migration
-`20261128000002_channel_notes_expiry_index.sql` drops the conflicting index by
+`20261128010002_channel_notes_expiry_index.sql` drops the conflicting index by
 name and recreates it with the current `(channel_id, deleted_at, id)` order.
 This preserves both applied histories and their stored checksums while fixing
 the old index; `IF NOT EXISTS` alone would leave the old definition in place.
 
 ## Reproducing the branch histories
 
-The regression was checked on an isolated PostgreSQL 16.15 container with
+The regression was checked on an isolated PostgreSQL 16.15 instance with
 Atlas `v1.3.9-1824371-canary`. Use a disposable PostgreSQL instance and create
-three empty databases (`notes_case1`, `notes_case2`, `notes_case3`):
+the test databases (`notes_case1`, `notes_case2`, `notes_case3`, and three dev DBs):
 
 ```sql
 CREATE DATABASE notes_case1;
@@ -37,7 +37,7 @@ cp infra/db/legacy-migrations/20261123000001_channel_notes_expiry_index.sql "$le
 for path in "$legacy_dir"/2026*.sql; do
   version=${path##*/}
   version=${version%%_*}
-  if [[ "$version" -gt "20261123000001" ]]; then
+  if [ "$version" -gt "20261123000001" ]; then
     rm "$path"
   fi
 done
@@ -67,13 +67,13 @@ databases on the same instance. The migrations applied were:
    `20261123000001`. Run `atlas migrate hash --dir file://<legacy-dir>` and
    `atlas migrate apply --dir file://<legacy-dir> --url <case1-url>`. This
    applies 76 files through the old expiry revision. Then apply the current
-   canonical directory to the same URL; it applies the remaining 17 files.
+   canonical directory to the same URL; it applies the remaining 18 files.
 2. **Old expiry and later main history:** build the same temporary directory,
    retaining migrations through `20261126010000` and removing the `20261127*`
    and `20261128*` files. Hash it, apply it to `notes_case2` (84 files), then
-   apply the current canonical directory (9 files).
+   apply the current canonical directory (10 files).
 3. **Clean current history:** apply the current canonical directory directly
-   to `notes_case3` (92 files).
+   to `notes_case3` (93 files).
 
 For each database, run this SQL to inspect both the retained historical hash
 and the canonical replacement:
@@ -82,7 +82,7 @@ and the canonical replacement:
 SELECT version, description, hash
 FROM atlas_schema_revisions.atlas_schema_revisions
 WHERE version IN (
-  '20261123000001', '20261123100000', '20261128000002'
+  '20261123000001', '20261123100000', '20261128010002'
 )
 ORDER BY version;
 
@@ -95,27 +95,33 @@ Then run `atlas migrate status --dir file://infra/db/migrations --url
 
 | History | Atlas apply result | SQL evidence | Atlas status |
 | --- | --- | --- | --- |
-| Old expiry only | 76 legacy + 17 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261128000002` was added | OK, current `20261128000006`, 93 executed, 0 pending |
-| Old expiry + main through `20261126010000` | 84 legacy + 9 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry was added | OK, current `20261128000006`, 93 executed, 0 pending |
-| Clean current history | 92 canonical files succeeded | no old expiry revision; canonical expiry hash `v5Tc4BW9V0O+1pRUfvvt97xYWVgoHkuy0iN1mPEL56s=` | OK, current `20261128000006`, 92 executed, 0 pending |
+| Old expiry only | 76 legacy + 18 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261128010002` was added with hash `ly49TZg3DAXWy6dTbkSVjRksJiyo/k7mzNLvTd+SjTA=` | OK, current `20261128010006`, 94 executed, 0 pending |
+| Old expiry + main through `20261126010000` | 84 legacy + 10 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261128010002` was added | OK, current `20261128010006`, 94 executed, 0 pending |
+| Clean current history | 93 canonical files succeeded | no old expiry revision; canonical expiry `20261128010002` hash `ly49TZg3DAXWy6dTbkSVjRksJiyo/k7mzNLvTd+SjTA=` | OK, current `20261128010006`, 93 executed, 0 pending |
 
 These results show the old revision remains intact where it was applied, and
-the corrective `20261128000002` migration converges both legacy histories from
+the corrective `20261128010002` migration converges both legacy histories from
 `main` (or the pre-`20261123000001` branch). Do not delete or edit rows in
 `atlas_schema_revisions` on those databases; let Atlas apply the new canonical
 migration without manual revision-table rewrites.
 
-Note: disposable dev/test databases that previously applied the pre-rebase
-`split/notes-api` drafts (`20261127000000`–`20261127000005` before they were
-renumbered to `20261128000001`–`20261128000006`) share `20261127000000` /
-`20261127000001` version numbers with later `main` migrations and must be
-recreated rather than upgraded in place.
+Note: disposable dev/test databases that previously applied earlier
+`split/notes-api` drafts (`20261127000000`–`20261127000005` or
+`20261128000001`–`20261128000006` before the rebase onto `main`
+`20261128010000`) must be recreated rather than upgraded in place.
 
-Compare each final application schema with the checked-in schema.sql. Give
-each comparison its own empty dev database: Atlas imports the SQL file into
+Compare each final application schema with the checked-in `schema.sql`. Give
+each comparison its own empty dev database: Atlas imports `schema.sql` into
 that database while computing the diff. The migration revision bookkeeping
 schema exists only in the migrated databases, so exclude it from the
-application-schema comparison:
+application-schema comparison.
+
+Note: `atlas schema diff` against triggers/functions in `schema.sql` works
+without login on Atlas `v1.3.9-1824371-canary`; standard non-canary Atlas OSS
+builds require `atlas login` for triggers/functions, so if you are using a
+non-canary binary, load `schema.sql` into a reference DB with `psql` and
+compare `pg_dump --schema-only --no-owner --no-privileges --exclude-schema=atlas_schema_revisions`
+(ignoring `ALTER TABLE` column-order differences, matching CI):
 
 ```sh
 atlas schema diff \
@@ -135,12 +141,12 @@ atlas schema diff \
   --dev-url "$NOTES_SCHEMA_DEV3_URL"
 ```
 
-On PostgreSQL 16.15 with Atlas v1.3.9-1824371-canary, all three commands
+On PostgreSQL 16.15 with Atlas `v1.3.9-1824371-canary`, all three commands
 reported "Schemas are synced, no changes to be made." Migration status was
-OK for all three final databases; after the rebased migration numbering, the two
-legacy histories had 93 executed files after convergence and the clean current
-history had 92. No application
-schema differences remained. `pg_get_indexdef` returned
+OK for all three final databases: the two legacy histories had 94 executed
+files after convergence and the clean current history had 93. No application
+schema differences remained (including triggers and functions, which were also
+checked via `pg_dump --schema-only` parity). `pg_get_indexdef` returned
 `(channel_id, deleted_at, id)` for all three databases.
 
 The explicit regression fixture applied the old-only history first and

@@ -177,6 +177,20 @@ async fn run_inner(
 
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
+    // apply_chunk / hints::apply と同じロック順 (advisory -> slack_channels -> slack_channel_syncs -> channels) を保つ。
+    lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
+    super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
+    let done = query(
+        &mut tx,
+        "UPDATE slack_channel_syncs SET rechecked_at=now(),lease_until=now()+interval '5 minutes' \
+         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team, slack_channel, lease_token],
+    )
+    .await?;
+    if done.is_empty() {
+        return Err(SyncError::LeaseLost);
+    }
     // 最後の `apply_chunk` のあとに暗号化へ切り替わっていたら (#367)、Slack にない投稿の削除もしない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     if complete && intact {
@@ -209,17 +223,6 @@ async fn run_inner(
                 }
             }
         }
-    }
-    let done = query(
-        &mut tx,
-        "UPDATE slack_channel_syncs SET rechecked_at=now(),lease_until=now()+interval '5 minutes' \
-         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
-         RETURNING json_build_object('ok',true)::text",
-        &[team, slack_channel, lease_token],
-    )
-    .await?;
-    if done.is_empty() {
-        return Err(SyncError::LeaseLost);
     }
     tx.commit().await.map_err(AppError::from)?;
     Ok(())
@@ -333,11 +336,12 @@ async fn apply_chunk(
 ) -> Result<(), SyncError> {
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
-    // sync::store / hints::apply と同じロック順 (advisory -> users -> slack_channel_syncs -> channels) を保つ。
+    // sync::store / hints::apply と同じロック順 (advisory -> users -> slack_channels -> slack_channel_syncs -> channels) を保つ。
     lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
     let pre_state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
     let slack_ids = collect_chunk_users(chunk, &pre_state);
     resolve_users(&mut tx, ctx, &slack_ids, &HashMap::new()).await?;
+    super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
     let leased = query(
         &mut tx,
         "UPDATE slack_channel_syncs SET lease_until=now()+interval '5 minutes' \

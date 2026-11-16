@@ -339,7 +339,7 @@ async fn apply(
 
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
-    // sync::store / recheck と同じロック順 (advisory -> users -> slack_channel_syncs -> channels) を保つ。
+    // sync::store / recheck と同じロック順 (advisory -> users -> slack_channels -> slack_channel_syncs -> channels) を保つ。
     // ensure_plaintext_allowed (channels FOR KEY SHARE) のあとで ctx.user / ensure_user が users を更新・挿入すると、
     // 暗号化変換 (users -> channels FOR UPDATE) とロック順が逆転してデッドロックする。
     lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
@@ -356,6 +356,7 @@ async fn apply(
         );
         resolve_users(&mut tx, ctx, &slack_ids, &fallbacks).await?;
     }
+    super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
     // 長くかかっても、リースを持ち続ける。失っていたら (別の台が同期を始めた) 何も書かない
     let leased = query(
         &mut tx,

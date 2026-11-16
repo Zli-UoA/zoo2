@@ -985,69 +985,83 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
     .await;
     // This integration test uses the shared backend test database. Remove every row
     // committed by the import, including the message author U-OTHER, after asserting.
-    let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
-    exec(&mut tx, "SET LOCAL zoo.suppress_app_events = 'on'", &[]).await?;
-    exec(
-        &mut tx,
-        "DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
-        &[&channel_name],
-    )
-    .await?;
-    exec(
-        &mut tx,
-        "DELETE FROM channel_user WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
-        &[&channel_name],
-    )
-    .await?;
-    exec(
-        &mut tx,
-        "DELETE FROM app_deliveries WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
-        &[&channel_name],
-    )
-    .await?;
-    exec(
-        &mut tx,
-        "DELETE FROM slack_channels WHERE team_id=$1",
-        &[&team],
-    )
-    .await?;
-    exec(
-        &mut tx,
-        "DELETE FROM channels WHERE channel_name=$1",
-        &[&channel_name],
-    )
-    .await?;
-    exec(
-        &mut tx,
-        "DELETE FROM slack_users WHERE team_id=$1",
-        &[&team],
-    )
-    .await?;
+    let mut cleanup_errors = Vec::new();
     let fallback_user = backend::slack::user_id(&team, "U-FALLBACK");
     let bot_user = backend::slack::user_id(&team, "B-BOT");
     let other_user = backend::slack::user_id(&team, "U-OTHER");
-    exec(
-        &mut tx,
-        "DELETE FROM users WHERE id IN ($1,$2,$3)",
-        &[&fallback_user, &bot_user, &other_user],
-    )
-    .await?;
-    let mut cleanup_errors = Vec::new();
-    if let Some(run) = run_id.as_deref() {
-        exec(&mut tx, "DELETE FROM slack_import_jobs WHERE id=$1", &[run]).await?;
+    let db_cleanup: anyhow::Result<()> = async {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        exec(&mut tx, "SET LOCAL zoo.suppress_app_events = 'on'", &[]).await?;
+        exec(
+            &mut tx,
+            "DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM channel_user WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM app_deliveries WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM slack_channels WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM channels WHERE channel_name=$1",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM slack_users WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM users WHERE id IN ($1,$2,$3)",
+            &[&fallback_user, &bot_user, &other_user],
+        )
+        .await?;
+        if let Some(run) = run_id.as_deref() {
+            exec(&mut tx, "DELETE FROM slack_import_jobs WHERE id=$1", &[run]).await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
+    .await;
+    if let Err(error) = db_cleanup {
+        cleanup_errors.push(format!("clean up imported DB rows: {error:#}"));
+    }
+
     let mut export_removed_or_absent = true;
     if let Some(export) = export_id.as_deref() {
         let key = format!("slack-imports/{export}/export.zip");
         match delete_s3_object_and_confirm(&state, &state.config.s3.bucket, &key).await {
             Ok(()) => {
-                exec(
-                    &mut tx,
+                if let Err(error) = cleanup_statement(
+                    &state,
                     "DELETE FROM slack_import_jobs WHERE id=$1",
                     &[export],
                 )
-                .await?;
+                .await
+                {
+                    cleanup_errors.push(format!(
+                        "delete export job row after ZIP deletion (job_id={export}): {error:#}"
+                    ));
+                }
             }
             Err(error) => {
                 export_removed_or_absent = false;
@@ -1059,11 +1073,18 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
         }
     }
     if export_removed_or_absent {
-        exec(&mut tx, "DELETE FROM user_role WHERE user_id=$1", &[&admin]).await?;
-        exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
-    }
-    if let Err(error) = tx.commit().await {
-        cleanup_errors.push(format!("commit cleanup transaction: {error:#}"));
+        let admin_cleanup: anyhow::Result<()> = async {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            exec(&mut tx, "DELETE FROM user_role WHERE user_id=$1", &[&admin]).await?;
+            exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = admin_cleanup {
+            cleanup_errors.push(format!("delete admin cleanup user {admin}: {error:#}"));
+        }
     }
     finish_test_result(test_result, cleanup_errors)
 }

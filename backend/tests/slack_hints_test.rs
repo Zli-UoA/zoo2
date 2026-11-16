@@ -1343,3 +1343,114 @@ async fn test_hints_edit_reaction_and_zoo_origin_preresolve_unlinked_users() -> 
     assert_eq!(message_row(&f, &ts).await["content"], "new post");
     Ok(())
 }
+
+#[tokio::test]
+async fn test_hints_rejects_remapped_slack_channel_target() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let ts = f.ts_new.clone();
+    let owner = create_user(&f.app, "hints_remap_owner").await?;
+    let new_channel = create_channel(&f.app, &owner).await?;
+
+    f.slack.reset().await;
+    mount_basics(&f).await;
+    let edited_ts = format!("{}.000000", now_secs() + 10);
+    mock_fetch(
+        &f,
+        &ts,
+        json!([{
+            "type": "message",
+            "ts": &ts,
+            "user": "UA",
+            "text": "edited after remap",
+            "edited": {"user": "UA", "ts": &edited_ts}
+        }]),
+    )
+    .await;
+
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &changed_event(&f.team, "C1", &ts),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    sql(
+        &f.state,
+        "INSERT INTO slack_channel_wakes(team_id,slack_channel_id) VALUES($1,'C1') \
+         ON CONFLICT (team_id,slack_channel_id) DO UPDATE SET last_at=now() RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    set_sync_state(&f.state, &f.team, "1 hour", "1 hour").await?;
+
+    let mut remap_db = f.state.db.clone();
+    let mut remap_tx = remap_db.transaction().await?;
+    let pid = query(
+        &mut remap_tx,
+        "SELECT json_build_object('pid',pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("slack-channel:{}:C1", f.team))
+        .exec(&mut remap_tx)
+        .await?;
+
+    let sync_state = f.state.clone();
+    let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+
+    let mut blocked = false;
+    for _ in 0..200 {
+        let rows = sql(
+            &f.state,
+            "SELECT json_build_object('blocked',EXISTS(\
+             SELECT 1 FROM pg_stat_activity \
+             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
+             ))::text",
+            &[&pid],
+        )
+        .await?;
+        if rows[0]["blocked"] == true {
+            blocked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked,
+        "hints::apply did not wait on Slack-channel advisory lock before updating"
+    );
+
+    toasty::sql::statement(
+        "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1'",
+    )
+    .bind(f.team.as_str())
+    .bind(new_channel.as_str())
+    .exec(&mut remap_tx)
+    .await?;
+    remap_tx.commit().await?;
+
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+    assert!(ran);
+    assert_eq!(message_row(&f, &ts).await["content"], "new post");
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert!(
+        sync_rows[0]["last_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
+        "expected target change error, got {:?}",
+        sync_rows
+    );
+    Ok(())
+}

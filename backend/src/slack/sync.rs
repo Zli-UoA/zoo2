@@ -957,6 +957,28 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     Ok(Step::More)
 }
 
+/// ZIP 再マッピング等で `slack_channels` の対応先が変わっていないか、`FOR SHARE` で固定して確かめる。
+pub(super) async fn ensure_target_unchanged(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_channel: &str,
+    zoo_channel: &str,
+) -> Result<(), SyncError> {
+    let mapping = query(
+        tx,
+        "SELECT json_build_object('valid',channel_id=$3)::text FROM slack_channels \
+         WHERE team_id=$1 AND slack_channel_id=$2 FOR SHARE",
+        &[team, slack_channel, zoo_channel],
+    )
+    .await?;
+    if mapping.first().is_none_or(|row| row["valid"] != true) {
+        return Err(
+            AppError::BadRequest("Slack sync target changed or no longer exists".into()).into(),
+        );
+    }
+    Ok(())
+}
+
 /// 1 ページ分の投稿と途中経過を、同じトランザクションで保存する
 async fn store(
     slack: &mut Slack,
@@ -980,18 +1002,14 @@ async fn store(
     super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
     let message_refs: Vec<&SlackMessage> = importable.to_vec();
     resolve_message_users(&mut tx, ctx, &task.slack_channel_id, &message_refs).await?;
-    let mapping = query(
+    ensure_target_unchanged(
         &mut tx,
-        "SELECT json_build_object('valid',channel_id=$3)::text FROM slack_channels \
-         WHERE team_id=$1 AND slack_channel_id=$2 FOR SHARE",
-        &[&task.team_id, &task.slack_channel_id, &task.channel_id],
+        &task.team_id,
+        &task.slack_channel_id,
+        &task.channel_id,
     )
     .await?;
-    if mapping.first().is_none_or(|row| row["valid"] != true) {
-        return Err(
-            AppError::BadRequest("Slack sync target changed or no longer exists".into()).into(),
-        );
-    }
+
     let pending = serde_json::to_string(&progress.pending).unwrap_or_else(|_| "[]".into());
     let saved = query(
         &mut tx,

@@ -26,6 +26,27 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/dms", post(create_or_get_dm))
 }
 
+async fn ensure_guest_can_dm(
+    tx: &mut toasty::Transaction<'_>,
+    auth_user_id: &str,
+    target_ids: &[&str],
+) -> Result<(), AppError> {
+    if crate::apps::events::guest(tx, auth_user_id).await? {
+        for target in target_ids {
+            crate::apps::one(
+                tx,
+                "SELECT '{}'::text FROM channel_user me \
+                 JOIN channel_user other ON other.channel_id=me.channel_id \
+                 JOIN channels c ON c.id=me.channel_id \
+                 WHERE me.user_id=$1 AND other.user_id=$2 AND c.deleted_at IS NULL LIMIT 1",
+                &[auth_user_id, target],
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn try_create_or_get_1on1_dm(
     db: &mut toasty::Db,
     auth_user_id: &str,
@@ -44,6 +65,8 @@ async fn try_create_or_get_1on1_dm(
         // ロックし、channel KEY SHARE を取った後で users を待つ逆順を作らない。
         e2ee_channels::lock_membership_users(&mut tx, &[auth_user_id, target_id]).await?;
     }
+    // users 行をロックした後に、待機中にゲストへ変更されていないか再確認する（ロック順は users → 読み取り専用 SELECT）。
+    ensure_guest_can_dm(&mut tx, auth_user_id, &[target_id]).await?;
 
     let existing = Channel::filter(
         Channel::fields()
@@ -262,11 +285,10 @@ pub(crate) async fn create_or_get_dm(
 
     let mut db = state.db.clone();
 
+    let target_refs: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
     if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let mut tx = db.transaction().await?;
-        for target in &payload.target_user_ids {
-            crate::apps::one(&mut tx,"SELECT '{}'::text FROM channel_user me JOIN channel_user other ON other.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.user_id=$1 AND other.user_id=$2 AND c.deleted_at IS NULL LIMIT 1",&[&auth_user.id,target]).await?;
-        }
+        ensure_guest_can_dm(&mut tx, &auth_user.id, &target_refs).await?;
     }
     // 参加予定ユーザーの存在確認 (リード操作のためトランザクション外で実行)
     for uid in &payload.target_user_ids {
@@ -334,6 +356,8 @@ pub(crate) async fn create_or_get_dm(
     } else {
         e2ee_channels::lock_membership_users(&mut tx, &members).await?;
     }
+    // users 行をロックした後に、待機中にゲストへ変更されていないか再確認する（ロック順は users → 読み取り専用 SELECT）。
+    ensure_guest_can_dm(&mut tx, &auth_user.id, &target_refs).await?;
     let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let group_uuid = Uuid::new_v4().to_string();
     let channel_name = format!("dm:group:{group_uuid}");

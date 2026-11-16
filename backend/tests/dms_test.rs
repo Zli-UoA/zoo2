@@ -1257,3 +1257,114 @@ async fn test_concurrent_dm_creation() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_concurrent_guest_transition_rejects_dm_creation() -> anyhow::Result<()> {
+    let (app, state) = setup_app().await?;
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let bob_id = uuid::Uuid::new_v4().to_string();
+    let carol_id = uuid::Uuid::new_v4().to_string();
+    create_test_user(&app, &alice_id, "alice_guest_race").await?;
+    create_test_user(&app, &bob_id, "bob_guest_race").await?;
+    create_test_user(&app, &carol_id, "carol_guest_race").await?;
+
+    for (label, target_ids) in [
+        ("1on1", vec![bob_id.clone()]),
+        ("group", vec![bob_id.clone(), carol_id.clone()]),
+    ] {
+        let mut db = state.db.clone();
+        // 各ケースの最初に非ゲストへ戻す（1on1 の後に group を同じユーザーで試すため）
+        toasty::sql::statement("UPDATE users SET guest_kind = 'none' WHERE id = $1")
+            .bind(alice_id.as_str())
+            .exec(&mut db)
+            .await?;
+
+        let mut blocker_db = state.db.clone();
+        let mut blocker = blocker_db.transaction().await?;
+        let pid_rows = backend::apps::query(
+            &mut blocker,
+            "SELECT json_build_object('pid', pg_backend_pid())::text",
+            &[],
+        )
+        .await?;
+        let blocker_pid = pid_rows[0]["pid"].as_i64().unwrap() as i32;
+
+        // users 行をロックしつつ、まだ未コミットのままゲストへ変更する
+        toasty::sql::statement("UPDATE users SET guest_kind = 'multi' WHERE id = $1")
+            .bind(alice_id.as_str())
+            .exec(&mut blocker)
+            .await?;
+
+        let dm_id = uuid::Uuid::new_v4().to_string();
+        let app_clone = app.clone();
+        let actor = alice_id.clone();
+        let dm_id_req = dm_id.clone();
+        let targets = target_ids.clone();
+        let handle = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/dms")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &actor)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "id": dm_id_req,
+                        "target_user_ids": targets,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap();
+            app_clone.oneshot(req).await.unwrap()
+        });
+
+        let mut waited = false;
+        let blocker_str = blocker_pid.to_string();
+        for _ in 0..100 {
+            let mut wait_tx = db.transaction().await?;
+            let rows = backend::apps::query(
+                &mut wait_tx,
+                "SELECT json_build_object('pid', a.pid)::text
+                 FROM pg_stat_activity a
+                 WHERE a.wait_event_type = 'Lock'
+                   AND $1::int = ANY(pg_blocking_pids(a.pid))
+                 LIMIT 1",
+                &[blocker_str.as_str()],
+            )
+            .await?;
+            wait_tx.commit().await?;
+            if !rows.is_empty() {
+                waited = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            waited,
+            "{label} DM request did not block on users row lock held by {blocker_pid}"
+        );
+
+        blocker.commit().await?;
+        let resp = handle.await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "{label} DM must reject user who became guest while waiting on users lock"
+        );
+
+        let mut check_tx = db.transaction().await?;
+        let created = backend::apps::query(
+            &mut check_tx,
+            "SELECT json_build_object('id', id)::text FROM channels WHERE id = $1",
+            &[dm_id.as_str()],
+        )
+        .await?;
+        check_tx.commit().await?;
+        assert!(
+            created.is_empty(),
+            "{label} DM channel {dm_id} must not be created after concurrent guest transition"
+        );
+    }
+
+    Ok(())
+}

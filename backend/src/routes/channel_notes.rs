@@ -202,10 +202,9 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
                     Some(toasty::stmt::Value::String(channel_id)),
                     Some(toasty::stmt::Value::Bool(true)),
                 ) = (fields.next(), fields.next())
+                    && seen_channels.insert(channel_id.clone())
                 {
-                    if seen_channels.insert(channel_id.clone()) {
-                        unlocked_channels.push(channel_id);
-                    }
+                    unlocked_channels.push(channel_id);
                 }
             }
         }

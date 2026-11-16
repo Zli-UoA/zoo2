@@ -858,3 +858,248 @@ async fn test_recheck_with_mentioned_unlinked_user_waits_for_users_before_lockin
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel_target()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+
+    // 1. apply_chunk で編集を適用する直前に slack_channels が別チャンネルへ再マッピングされた場合
+    {
+        let f = fixture(Some(SECRET), None).await?;
+        let owner = create_user(&f.app, "recheck_remap_owner1").await?;
+        let new_channel = create_channel(&f.app, &owner).await?;
+        let msg_id = backend::slack::message_id(&f.team, "C1", &f.ts_new);
+        sql(
+            &f.state,
+            "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+             SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+             (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+             FROM slack_user_links WHERE team_id=$4 \
+             RETURNING json_build_object('ok',true)::text",
+            &[&msg_id, &f.channel, &f.ts_new, &f.team],
+        )
+        .await?;
+
+        f.slack.reset().await;
+        mount_basics(&f).await;
+        let edited_ts = format!("{}.000000", now_secs() + 10);
+        Mock::given(method("GET"))
+            .and(path("/conversations.history"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [{
+                    "type": "message",
+                    "ts": &f.ts_new,
+                    "user": "UA",
+                    "text": "rechecked after remap",
+                    "edited": {"user": "UA", "ts": &edited_ts}
+                }],
+                "has_more": false
+            })))
+            .with_priority(1)
+            .mount(&f.slack)
+            .await;
+
+        sql(
+            &f.state,
+            "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+             WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&f.team],
+        )
+        .await?;
+
+        let mut remap_db = f.state.db.clone();
+        let mut remap_tx = remap_db.transaction().await?;
+        let pid = query(
+            &mut remap_tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap()
+            .to_string();
+        toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("slack-channel:{}:C1", f.team))
+            .exec(&mut remap_tx)
+            .await?;
+
+        let sync_state = f.state.clone();
+        let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+
+        let mut blocked = false;
+        for _ in 0..200 {
+            let rows = sql(
+                &f.state,
+                "SELECT json_build_object('blocked',EXISTS(\
+                 SELECT 1 FROM pg_stat_activity \
+                 WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
+                 ))::text",
+                &[&pid],
+            )
+            .await?;
+            if rows[0]["blocked"] == true {
+                blocked = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            blocked,
+            "recheck::apply_chunk did not wait on Slack-channel advisory lock"
+        );
+
+        toasty::sql::statement(
+            "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1'",
+        )
+        .bind(f.team.as_str())
+        .bind(new_channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+        remap_tx.commit().await?;
+
+        let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+        assert!(ran);
+        assert_eq!(row(&f, &msg_id).await["content"], "before");
+        let sync_rows = sql(
+            &f.state,
+            "SELECT json_build_object('last_error',last_error)::text \
+             FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+            &[&f.team],
+        )
+        .await?;
+        assert!(
+            sync_rows[0]["last_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
+            "expected target change error, got {:?}",
+            sync_rows
+        );
+        // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
+        let minutes = retry_in_minutes(&f).await;
+        assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    }
+
+    // 2. run_inner の最終削除トランザクション直前に slack_channels が別チャンネルへ再マッピングされた場合
+    {
+        let f = fixture(Some(SECRET), None).await?;
+        let owner = create_user(&f.app, "recheck_remap_owner2").await?;
+        let new_channel = create_channel(&f.app, &owner).await?;
+        let msg_id = backend::slack::message_id(&f.team, "C1", &f.ts_new);
+        sql(
+            &f.state,
+            "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+             SELECT $1,user_id,$2,'keep me',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+             (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+             FROM slack_user_links WHERE team_id=$4 \
+             RETURNING json_build_object('ok',true)::text",
+            &[&msg_id, &f.channel, &f.ts_new, &f.team],
+        )
+        .await?;
+        sql(
+            &f.state,
+            "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+             VALUES($1,'C1',$2,$3,'slack') RETURNING json_build_object('ok',true)::text",
+            &[&f.team, &f.ts_new, &msg_id],
+        )
+        .await?;
+
+        f.slack.reset().await;
+        mount_basics(&f).await;
+        // 空の一覧を返すことで apply_chunk を通らず run_inner の最終削除トランザクションに直接入る
+        Mock::given(method("GET"))
+            .and(path("/conversations.history"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [],
+                "has_more": false
+            })))
+            .with_priority(1)
+            .mount(&f.slack)
+            .await;
+
+        sql(
+            &f.state,
+            "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+             WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&f.team],
+        )
+        .await?;
+
+        let mut remap_db = f.state.db.clone();
+        let mut remap_tx = remap_db.transaction().await?;
+        let pid = query(
+            &mut remap_tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap()
+            .to_string();
+        toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("slack-channel:{}:C1", f.team))
+            .exec(&mut remap_tx)
+            .await?;
+
+        let sync_state = f.state.clone();
+        let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+
+        let mut blocked = false;
+        for _ in 0..200 {
+            let rows = sql(
+                &f.state,
+                "SELECT json_build_object('blocked',EXISTS(\
+                 SELECT 1 FROM pg_stat_activity \
+                 WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
+                 ))::text",
+                &[&pid],
+            )
+            .await?;
+            if rows[0]["blocked"] == true {
+                blocked = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            blocked,
+            "recheck::run_inner final tx did not wait on Slack-channel advisory lock"
+        );
+
+        toasty::sql::statement(
+            "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1'",
+        )
+        .bind(f.team.as_str())
+        .bind(new_channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+        remap_tx.commit().await?;
+
+        let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+        assert!(ran);
+        let msg = row(&f, &msg_id).await;
+        assert_eq!(msg["deleted"], false);
+        assert_eq!(msg["content"], "keep me");
+        let sync_rows = sql(
+            &f.state,
+            "SELECT json_build_object('last_error',last_error)::text \
+             FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+            &[&f.team],
+        )
+        .await?;
+        assert!(
+            sync_rows[0]["last_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
+            "expected target change error, got {:?}",
+            sync_rows
+        );
+        // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
+        let minutes = retry_in_minutes(&f).await;
+        assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    }
+
+    Ok(())
+}
