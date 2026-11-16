@@ -198,3 +198,20 @@ export const RemoveUnavailableMember: Story = {
     );
   }),
 };
+
+export const NarrowPhoneForm: Story = {
+  decorators: [
+    (Story) => (
+      <div style={{ width: 320, maxWidth: "100%" }}>
+        <Story />
+      </div>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    await userEvent.click(c.getAllByRole("button", { name: "編集" })[0]);
+    const name = c.getByLabelText("電話機・拠点名").getBoundingClientRect();
+    const number = c.getByLabelText("発信先番号").getBoundingClientRect();
+    await expect(number.top).toBeGreaterThanOrEqual(name.bottom);
+  }),
+};

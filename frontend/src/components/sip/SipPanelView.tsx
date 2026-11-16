@@ -81,7 +81,7 @@ export function SipPanelView(props: SipPanelViewProps) {
     }
   }
   return (
-    <div className="space-y-5">
+    <div className="@container space-y-5">
       <p className="text-sm text-muted-foreground">{t("sip.description")}</p>
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" onClick={props.onRefresh} disabled={loading}>
@@ -336,8 +336,11 @@ export function SipPanelView(props: SipPanelViewProps) {
               <legend className="text-sm font-medium">{t("sip.phones")}</legend>
               <p className="text-xs text-muted-foreground">{t("sip.phonesHelp")}</p>
               {editing.input.phones.map((phone, index) => (
-                <div key={index} className="flex flex-wrap items-end gap-2 rounded border p-2">
-                  <label className="grid min-w-0 flex-1 gap-1 text-sm">
+                <div
+                  key={index}
+                  className="grid grid-cols-1 gap-2 rounded border p-2 @lg:grid-cols-[minmax(0,1fr)_8rem_auto]"
+                >
+                  <label className="grid min-w-0 gap-1 text-sm">
                     {t("sip.phoneName")}
                     <Input
                       required
@@ -357,7 +360,7 @@ export function SipPanelView(props: SipPanelViewProps) {
                     <Input
                       required
                       type="tel"
-                      className="w-32"
+                      className="w-full"
                       maxLength={33}
                       pattern="\+?[0-9]{1,32}"
                       value={phone.extension}

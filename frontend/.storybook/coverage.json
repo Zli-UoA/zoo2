@@ -884,7 +884,8 @@
         "RegisterSharedLine",
         "Saving",
         "DeleteConfirmation",
-        "RemoveUnavailableMember"
+        "RemoveUnavailableMember",
+        "NarrowPhoneForm"
       ]
     }
   ],
