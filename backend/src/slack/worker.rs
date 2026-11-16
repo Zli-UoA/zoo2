@@ -1748,6 +1748,24 @@ pub(super) async fn resolve_message_users(
     Ok(())
 }
 
+/// Pre-resolve a specific set of Slack users (with optional author fallbacks)
+/// under the link and user-row locks before any `channels` row lock is taken.
+pub(super) async fn resolve_users(
+    tx: &mut toasty::Transaction<'_>,
+    ctx: &mut Context,
+    slack_ids: &[String],
+    fallbacks: &HashMap<String, String>,
+) -> Result<(), AppError> {
+    if slack_ids.is_empty() {
+        return Ok(());
+    }
+    // Serialize mapping reads and profile updates with link/reconcile before
+    // taking any user-row locks (linking takes slack_users before users).
+    super::link::lock_links(tx).await?;
+    resolve_users_in_id_order_with_fallbacks(ctx, tx, slack_ids, fallbacks).await?;
+    Ok(())
+}
+
 /// Collect final fallback names before any ZIP user placeholder or message is written.
 fn collect_archive_fallback_names<R: std::io::Read + std::io::Seek>(
     archive: &mut ExportArchive<R>,
@@ -1787,7 +1805,7 @@ fn collect_archive_fallback_names<R: std::io::Read + std::io::Seek>(
         .collect())
 }
 
-fn message_fallback_name(message: &SlackMessage) -> Option<(u8, &str)> {
+pub(super) fn message_fallback_name(message: &SlackMessage) -> Option<(u8, &str)> {
     message
         .username
         .as_deref()

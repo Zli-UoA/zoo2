@@ -715,3 +715,146 @@ async fn test_a_rate_limited_recheck_waits_for_retry_after() -> anyhow::Result<(
     assert_eq!(count_messages(&f.state, &f.channel).await, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_recheck_with_mentioned_unlinked_user_waits_for_users_before_locking_channel()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    sql(
+        &f.state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+         FROM slack_user_links WHERE team_id=$4 \
+         RETURNING json_build_object('ok',true)::text",
+        &[
+            &backend::slack::message_id(&f.team, "C1", &f.ts_new),
+            &f.channel,
+            &f.ts_new,
+            &f.team,
+        ],
+    )
+    .await?;
+    sql(
+        &f.state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.channel],
+    )
+    .await?;
+
+    let ub_id = backend::slack::user_id(&f.team, "UB");
+    sql(
+        &f.state,
+        "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Old UB') \
+         RETURNING json_build_object('ok',true)::text",
+        &[
+            &ub_id,
+            &format!("slack_ub_{}", uuid::Uuid::new_v4().simple()),
+        ],
+    )
+    .await?;
+    sql(
+        &f.state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name,real_name,profile_source) \
+         VALUES($1,'UB',$2,false,'UB','','fallback') RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &ub_id],
+    )
+    .await?;
+
+    f.slack.reset().await;
+    mount_basics(&f).await;
+    let edited_ts = format!("{}.000000", now_secs() + 10);
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": &f.ts_new,
+                "user": "UA",
+                "text": "rechecked mentioning <@UB>",
+                "edited": {"user": "UA", "ts": &edited_ts},
+                "reactions": [{"name": "thumbsup", "users": ["UC"], "count": 1}]
+            }],
+            "has_more": false
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": false, "error": "user_not_found"})),
+        )
+        .mount(&f.slack)
+        .await;
+
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+
+    let mut conv_db = f.state.db.clone();
+    let mut conv_tx = conv_db.transaction().await?;
+    toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
+        .exec(&mut conv_tx)
+        .await?;
+    let pid = query(
+        &mut conv_tx,
+        "SELECT json_build_object('pid',pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    backend::routes::e2ee_channels::lock_membership_users(&mut conv_tx, &[ub_id.as_str()]).await?;
+
+    let sync_state = f.state.clone();
+    let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+
+    let mut blocked = false;
+    for _ in 0..200 {
+        let rows = sql(
+            &f.state,
+            "SELECT json_build_object('blocked',EXISTS(\
+             SELECT 1 FROM pg_stat_activity \
+             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
+             ))::text",
+            &[&pid],
+        )
+        .await?;
+        if rows[0]["blocked"] == true {
+            blocked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked,
+        "recheck::apply_chunk did not block on users before locking channel"
+    );
+
+    toasty::sql::query("SELECT id FROM channels WHERE id=$1 FOR UPDATE")
+        .bind(f.channel.as_str())
+        .exec(&mut conv_tx)
+        .await?;
+    toasty::sql::statement("UPDATE channels SET encrypted=true WHERE id=$1")
+        .bind(f.channel.as_str())
+        .exec(&mut conv_tx)
+        .await?;
+    conv_tx.commit().await?;
+
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+    assert!(ran);
+    assert_eq!(
+        row(&f, &backend::slack::message_id(&f.team, "C1", &f.ts_new)).await["content"],
+        "before"
+    );
+    Ok(())
+}

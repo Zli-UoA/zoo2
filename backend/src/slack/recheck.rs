@@ -20,10 +20,13 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use super::{
+    convert::{mentioned_users, reaction_emoji},
     export::SlackMessage,
     hints::{edit, exec_delete},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
-    worker::{Context, insert_reactions, suppress_app_events},
+    worker::{
+        Context, insert_reactions, lock_zip_target_advisory, resolve_users, suppress_app_events,
+    },
 };
 use crate::{apps::query, error::AppError};
 
@@ -222,36 +225,24 @@ async fn run_inner(
     Ok(())
 }
 
-/// 取り直した投稿のうち、すでに Zoo にあるものに、編集・リアクションの追加・tombstone の削除を反映する
-async fn apply_chunk(
-    ctx: &mut Context,
+struct ChunkState {
+    mapped: HashMap<String, (String, bool)>,
+    ids: Vec<String>,
+    rows: HashMap<String, Value>,
+}
+
+async fn load_chunk_state(
+    tx: &mut toasty::Transaction<'_>,
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
-    lease_token: &str,
     chunk: &[SlackMessage],
-    db: &mut toasty::Db,
-) -> Result<(), SyncError> {
-    let mut tx = db.transaction().await.map_err(AppError::from)?;
-    suppress_app_events(&mut tx).await?;
-    let leased = query(
-        &mut tx,
-        "UPDATE slack_channel_syncs SET lease_until=now()+interval '5 minutes' \
-         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
-         RETURNING json_build_object('ok',true)::text",
-        &[team, slack_channel, lease_token],
-    )
-    .await?;
-    if leased.is_empty() {
-        return Err(SyncError::LeaseLost);
-    }
-    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
-    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
-    // `slack_message_map` にある投稿は、その Zoo の ID を使う。Zoo で作った投稿 (`zoo`) は、編集・削除を反映しない
+) -> Result<ChunkState, AppError> {
+    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は、編集・削除を反映しない
     let tss: Vec<&str> = chunk.iter().map(|m| m.ts.as_str()).collect();
     let mut mapped: HashMap<String, (String, bool)> = HashMap::new();
     for row in query(
-        &mut tx,
+        tx,
         "SELECT json_build_object('ts',ts,'id',message_id,'origin',origin)::text FROM slack_message_map \
          WHERE team_id=$1 AND slack_channel_id=$2 AND ts IN (SELECT jsonb_array_elements_text($3::jsonb))",
         &[team, slack_channel, &serde_json::json!(tss).to_string()],
@@ -285,7 +276,7 @@ async fn apply_chunk(
         })
         .collect();
     for row in query(
-        &mut tx,
+        tx,
         "SELECT json_build_object('id',m.id,'content',m.content,'card',COALESCE(m.card,''),'deleted',m.deleted_at IS NOT NULL)::text \
          FROM messages m JOIN jsonb_to_recordset($1::jsonb) AS x(id text,ts text) ON x.id=m.id \
          WHERE m.channel_id=$2 \
@@ -298,12 +289,84 @@ async fn apply_chunk(
             rows.insert(id.to_string(), row.clone());
         }
     }
-    for (message, id) in chunk.iter().zip(&ids) {
+    Ok(ChunkState { mapped, ids, rows })
+}
+
+fn collect_chunk_users(chunk: &[SlackMessage], state: &ChunkState) -> Vec<String> {
+    let mut members = Vec::new();
+    for (message, id) in chunk.iter().zip(&state.ids) {
+        if state.rows.get(id).is_none_or(|r| r["deleted"] == true) {
+            continue;
+        }
+        if message.subtype.as_deref() == Some("tombstone") || !message.is_importable() {
+            continue;
+        }
+        let zoo_origin = state.mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
+        if !zoo_origin {
+            let edited = message
+                .edited
+                .as_ref()
+                .map(|e| e.ts.as_str())
+                .filter(|ts| super::is_valid_ts(ts));
+            if edited.is_some() || message.bot_id.is_some() {
+                members.extend(mentioned_users(&message.text));
+            }
+        }
+        for reaction in &message.reactions {
+            if reaction_emoji(&reaction.name).is_some() {
+                members.extend(reaction.users.iter().cloned());
+            }
+        }
+    }
+    members
+}
+
+/// 取り直した投稿のうち、すでに Zoo にあるものに、編集・リアクションの追加・tombstone の削除を反映する
+async fn apply_chunk(
+    ctx: &mut Context,
+    team: &str,
+    slack_channel: &str,
+    zoo_channel: &str,
+    lease_token: &str,
+    chunk: &[SlackMessage],
+    db: &mut toasty::Db,
+) -> Result<(), SyncError> {
+    let mut tx = db.transaction().await.map_err(AppError::from)?;
+    suppress_app_events(&mut tx).await?;
+    // sync::store / hints::apply と同じロック順 (advisory -> users -> slack_channel_syncs -> channels) を保つ。
+    lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
+    let pre_state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
+    let slack_ids = collect_chunk_users(chunk, &pre_state);
+    resolve_users(&mut tx, ctx, &slack_ids, &HashMap::new()).await?;
+    let leased = query(
+        &mut tx,
+        "UPDATE slack_channel_syncs SET lease_until=now()+interval '5 minutes' \
+         WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team, slack_channel, lease_token],
+    )
+    .await?;
+    if leased.is_empty() {
+        return Err(SyncError::LeaseLost);
+    }
+    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
+    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
+    let state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
+    let required_users = collect_chunk_users(chunk, &state);
+    if let Some(missing) = required_users
+        .iter()
+        .find(|id| !ctx.users.contains_key(*id))
+    {
+        return Err(SyncError::Failed(format!(
+            "Slack recheck user {missing} was not pre-resolved before locking channel {zoo_channel}"
+        )));
+    }
+    for (message, id) in chunk.iter().zip(&state.ids) {
         // Zoo にない投稿は作らない。消えた投稿は、そのまま
-        let Some(stored) = rows.get(id).filter(|r| r["deleted"] != true) else {
+        let Some(stored) = state.rows.get(id).filter(|r| r["deleted"] != true) else {
             continue;
         };
-        let zoo_origin = mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
+        let zoo_origin = state.mapped.get(&message.ts).is_some_and(|(_, zoo)| *zoo);
         if message.subtype.as_deref() == Some("tombstone") {
             if !zoo_origin {
                 exec_delete(&mut tx, id, zoo_channel).await?;
