@@ -424,6 +424,14 @@ private fun InlineParagraph(
     val paragraphLayout = remember { arrayOfNulls<TextLayoutResult>(1) }
     val currentText by rememberUpdatedState(text)
     MeasuredMfmParagraph(text, embeddedContent + mentionContent, fixedContent) { inlineContent, reportLayout ->
+        fun inSp(unit: TextUnit): Float =
+            if (unit.isEm) unit.value * inheritedStyle.fontSize.value else unit.value
+        val tallInline = inheritedStyle.lineHeight != TextUnit.Unspecified &&
+            inlineContent.values.any { inSp(it.placeholder.height) > inSp(inheritedStyle.lineHeight) }
+        // Android caches fixed/minimum line-height metrics from the first line. A later tall
+        // replacement span must use natural metrics, otherwise its height is overwritten.
+        val paragraphStyle = if (tallInline) inheritedStyle.copy(lineHeight = TextUnit.Unspecified)
+            else inheritedStyle
         InlineLinks(text) { displayText, linkLayout ->
             androidx.compose.material3.Text(
                 displayText,
@@ -441,11 +449,7 @@ private fun InlineParagraph(
                 maxLines = maxLines,
                 overflow = TextOverflow.Ellipsis,
                 inlineContent = inlineContent,
-                // Android's fixed line height otherwise overrides tall replacement spans.
-                style = inheritedStyle.copy(
-                    lineHeightStyle = (inheritedStyle.lineHeightStyle ?: LineHeightStyle.Default)
-                        .copy(mode = LineHeightStyle.Mode.Minimum),
-                ),
+                style = paragraphStyle,
                 color = inheritedStyle.color.takeIf { it != Color.Unspecified }
                     ?: MaterialTheme.colorScheme.onBackground,
             )
