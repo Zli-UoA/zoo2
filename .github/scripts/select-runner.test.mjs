@@ -102,7 +102,7 @@ const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storyboo
 // macOS でビルドを確かめるジョブ。GitHub ホストの macOS を使う (公開リポジトリなので無料)。
 const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
 // Keep timing comparisons on a fixed hosted OS, independent of shared runners.
-const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};
+const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}};
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
   "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
@@ -119,6 +119,19 @@ test('SQL and migration changes require the budget gate in the merge queue', () 
   assert.match(call, /if: needs\.changes\.outputs\.ci-home-query-budget == 'true'/);
   assert.match(call, /uses: \.\/\.github\/workflows\/ci-home-query-budget.yaml/);
   assert.match(queue.split('  all-passed:\n')[1], /^      - ci-home-query-budget$/m);
+});
+test('unread and worker plan budgets are mandatory in the merge queue', () => {
+  const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
+  const key = 'ci-read-state-worker-budget';
+  for (const path of ['backend/src/routes/read_states.rs', 'backend/src/slack/claim.sql', 'infra/db/schema.sql', `.github/workflows/${key}.yaml`]) {
+    assert.equal(selectWorkflows([path], readWorkflow)[key], true, path);
+  }
+  assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)[key], false);
+  const queue = readWorkflow('merge-queue');
+  assert.ok(queue.includes('      '+key+': ${{ steps.match.outputs.'+key+' }}'));
+  assert.ok(queue.includes(`    if: needs.changes.outputs.${key} == 'true'`));
+  assert.ok(queue.includes(`    uses: ./.github/workflows/${key}.yaml`));
+  assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${key}`));
 });
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
