@@ -122,6 +122,10 @@ class MfmUiTest {
             )) {
                 ui.runOnIdle { width = nextWidth; scale = nextScale; dark = nextDark }
                 val text = ui.onNodeWithText(body, useUnmergedTree = true)
+                ui.mainClock.advanceTimeByFrame()
+                ui.waitUntil(timeoutMillis = 5_000) {
+                    ui.onNodeWithTag("wrapped").fetchSemanticsNode().boundsInRoot.height >= layout(text).size.height
+                }
                 text.assertIsDisplayed()
                 val textLayout = layout(text)
                 assertTrue(textLayout.lineCount > 1)
@@ -227,6 +231,7 @@ class MfmUiTest {
     fun animatedFramesChangeWhileReducedMotionKeepsThemStill() {
         val fixture = Fixture(reducedMotion = false)
         var source by mutableStateOf("$[jelly.speed=1s animated]")
+        ui.mainClock.autoAdvance = false
         try {
             ui.setContent {
                 Shell(fixture) {
@@ -235,7 +240,7 @@ class MfmUiTest {
                     }
                 }
             }
-            ui.mainClock.autoAdvance = false
+            ui.mainClock.advanceTimeByFrame()
             for (name in mfmAnimationDurations.keys) {
                 ui.runOnIdle { source = "$[$name.speed=1s animated]" }
                 ui.mainClock.advanceTimeByFrame()
