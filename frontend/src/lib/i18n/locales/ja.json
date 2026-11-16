@@ -396,6 +396,11 @@
   "mentions": {
     "suggestions": "メンション候補"
   },
+  "appUpdate": {
+    "title": "新しい版の画面があります",
+    "description": "再読み込みすると、新しい版になります。入力中の内容があれば、送信してから再読み込みしてください。",
+    "reload": "再読み込み"
+  },
   "offline": {
     "bannerTitle": "オフラインです",
     "bannerDescription": "保存済みの内容を表示しています。接続が戻るまで送信できません。",

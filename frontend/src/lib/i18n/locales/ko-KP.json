@@ -396,6 +396,11 @@
   "mentions": {
     "suggestions": "지명 후보"
   },
+  "appUpdate": {
+    "title": "새 판의 화면이 있습니다",
+    "description": "다시 읽으면 새 판이 적용됩니다. 입력하던 내용이 있으면 먼저 보내십시오.",
+    "reload": "다시 읽기"
+  },
   "offline": {
     "bannerTitle": "오프라인입니다",
     "bannerDescription": "저장된 내용을 표시하고 있습니다. 접속이 회복될 때까지 보낼수 없습니다.",

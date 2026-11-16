@@ -396,6 +396,11 @@
   "mentions": {
     "suggestions": "Mention suggestions"
   },
+  "appUpdate": {
+    "title": "A new version is available",
+    "description": "Reload to use the new version. If you are typing something, send it first.",
+    "reload": "Reload"
+  },
   "offline": {
     "bannerTitle": "You're offline",
     "bannerDescription": "Showing saved content. Sending is disabled until you reconnect.",

@@ -396,6 +396,11 @@
   "mentions": {
     "suggestions": "提及建議"
   },
+  "appUpdate": {
+    "title": "有新版本的畫面",
+    "description": "重新載入即可使用新版本。如有正在輸入的內容，請先送出。",
+    "reload": "重新載入"
+  },
   "offline": {
     "bannerTitle": "你已離線",
     "bannerDescription": "正在顯示已儲存的內容。重新連線前無法傳送訊息。",
