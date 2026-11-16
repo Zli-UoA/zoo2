@@ -39,20 +39,20 @@ internal class GatewayPhone(
             attempt.notified = true; events("connected", obj())
         }
     }
-    private fun enqueue(block: suspend () -> Unit): Job {
+    private fun enqueue(attempt: Attempt? = null, block: suspend () -> Unit): Job {
         val previous = queue
         val job = scope.launch {
             try { previous?.join(); if (!closed) block() }
-            catch (timeout: TimeoutCancellationException) { if (!closed) events("failed", obj()) }
+            catch (timeout: TimeoutCancellationException) { if (!closed && (attempt == null || current === attempt)) events("failed", obj()) }
             catch (cancel: CancellationException) { throw cancel }
-            catch (_: Exception) { if (!closed) events("failed", obj()) }
+            catch (_: Exception) { if (!closed && (attempt == null || current === attempt)) events("failed", obj()) }
         }
         queue = job; return job
     }
     private fun signal(attempt: Attempt, payload: Row) {
         val signal = payload["signal"] as? JsonObject ?: return
         when (signal.text("type")) {
-            "offer", "answer" -> enqueue {
+            "offer", "answer" -> enqueue(attempt) {
                 if (current !== attempt) return@enqueue
                 attempt.submitted = true
                 post(obj("action" to if (signal.text("type") == "offer") "call" else "accept", "number" to attempt.number.takeIf { it.isNotEmpty() }, "signal" to signal))
@@ -67,7 +67,7 @@ internal class GatewayPhone(
                 if (!attempt.descriptionSent) {
                     check(attempt.candidates.size < 128) { "Too many phone candidates" }
                     attempt.candidates.add(signal)
-                } else enqueue { if (current === attempt) post(obj("action" to "candidate", "signal" to signal)) }
+                } else enqueue(attempt) { if (current === attempt) post(obj("action" to "candidate", "signal" to signal)) }
             }
         }
     }
@@ -116,7 +116,7 @@ internal class GatewayPhone(
                 if (current !== attempt) break
                 engine.command("rtc.event", obj("event" to "signal", "data" to pending))
             }
-            early.clear()
+            if (current === attempt) early.clear()
         } catch (failure: Exception) { if (current === attempt) { current = null; engine.close() }; throw failure }
     }
     override suspend fun command(method: String, payload: Row) {
