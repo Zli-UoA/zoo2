@@ -58,6 +58,17 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
     {
         db.batch_execute(&format!("INSERT INTO sip_line_members(line_id,user_id) SELECT 'noise-'||i,'{noise}' FROM generate_series(1,{n}) i; INSERT INTO sip_lines(id,name,owner_user_id,websocket_path,sip_domain,username,password_ciphertext,created_by) VALUES('550e8400-e29b-41d4-a716-446655440006','Shared',NULL,'/sip/ws','pbx.example','shared','dummy','{actor}'); INSERT INTO sip_line_members(line_id,user_id) VALUES('550e8400-e29b-41d4-a716-446655440006','{actor}'); UPDATE phone_sessions SET line_id='550e8400-e29b-41d4-a716-446655440006',line_revision=(SELECT updated_at FROM sip_lines WHERE id='550e8400-e29b-41d4-a716-446655440006') WHERE id='target-2'; ANALYZE;" )).await?;
     }
+    db.batch_execute(&format!("INSERT INTO sip_lines(id,name,owner_user_id,websocket_path,sip_domain,username,password_ciphertext,created_by) SELECT 'admin-'||i,'Admin '||i,'{noise}','/sip/ws','pbx.example','noise','dummy','{noise}' FROM generate_series(1,200) i ON CONFLICT DO NOTHING; UPDATE sip_lines SET owner_user_id='{noise}',created_by='{noise}' WHERE id IN (SELECT 'admin-'||i FROM generate_series(1,200) i); ANALYZE sip_lines;")).await?;
+    if db
+        .query_opt("SELECT id FROM users WHERE id='phone-noise-user-1'", &[])
+        .await?
+        .is_none()
+    {
+        db.batch_execute(&format!("INSERT INTO users(id,user_name,display_name) SELECT 'phone-noise-user-'||i,'phone-budget-noise-user-'||i,'Budget' FROM generate_series(1,{n}) i;")).await?;
+    }
+    db.batch_execute("ANALYZE users;").await?;
+    // Exercise full per-line child limits, including FK CASCADE on line removal.
+    db.batch_execute(&format!("INSERT INTO users(id,user_name,display_name) SELECT 'phone-member-'||i,'phone-budget-member-'||i,'Budget' FROM generate_series(1,100) i ON CONFLICT DO NOTHING; INSERT INTO sip_line_members(line_id,user_id) SELECT '{line}','phone-member-'||i FROM generate_series(1,100) i ON CONFLICT DO NOTHING; ANALYZE sip_line_members;")).await?;
     let revision = db
         .query_one(
             "SELECT updated_at::text FROM sip_lines WHERE id=$1",
@@ -78,13 +89,6 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
             )
         }) {
             if !sql.contains("FROM ") && !sql.starts_with("INSERT ") && !sql.starts_with("UPDATE ")
-            {
-                continue;
-            }
-            if name == "directory"
-                && !(sql.contains("FROM sip_lines WHERE created_by=$1")
-                    || sql == "SELECT to_json(id)::text FROM sip_phones WHERE line_id=$1"
-                    || sql.contains("ORDER BY l.name,l.id"))
             {
                 continue;
             }
@@ -131,13 +135,76 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
                 args[0] = actor.into();
                 args[1] = "false".into();
             }
-            let max = (1..=5)
-                .filter(|i| sql.contains(&format!("${i}")))
+            // Parse complete placeholder numbers: $10 must not be mistaken for $1.
+            let max = sql
+                .split('$')
+                .skip(1)
+                .filter_map(|part| {
+                    part.chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse::<usize>()
+                        .ok()
+                })
                 .max()
                 .unwrap_or(0);
+            let mut types = vec!["text"; max];
+            if name == "directory" {
+                let values: Vec<String> = if sql.starts_with("INSERT INTO sip_lines") {
+                    types[2] = "boolean";
+                    vec![
+                        "new-line",
+                        "New",
+                        "false",
+                        actor,
+                        "/sip/ws",
+                        "pbx.example",
+                        "alice",
+                        "dummy",
+                        "123",
+                    ]
+                } else if sql.starts_with("UPDATE sip_lines") {
+                    vec![
+                        line,
+                        "Updated",
+                        "/sip/ws",
+                        "pbx.example",
+                        "alice",
+                        "dummy",
+                        "123",
+                    ]
+                } else if sql.starts_with("INSERT INTO sip_phones") {
+                    vec!["new-phone", line, "New", "new-extension"]
+                } else if sql.starts_with("INSERT INTO sip_line_members") {
+                    vec![line, actor]
+                } else if sql.contains("ORDER BY l.name,l.id") {
+                    vec![actor, "false"]
+                } else if sql.contains("FROM users WHERE id=$1") || sql.contains("created_by=$1") {
+                    vec![actor]
+                } else if sql.contains("$2") {
+                    assert!(
+                        sql.contains("FROM sip_lines l WHERE id=$1"),
+                        "unclassified SQL: {sql}"
+                    );
+                    vec![line, actor]
+                } else {
+                    assert!(
+                        sql.contains("FROM sip_lines WHERE id=$1")
+                            || sql.contains("FROM sip_phones WHERE line_id=$1")
+                            || sql.starts_with("DELETE FROM sip_"),
+                        "unclassified SQL: {sql}"
+                    );
+                    vec![line]
+                }
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+                assert_eq!(values.len(), max, "argument contract changed: {sql}");
+                args = values;
+            }
             let prepared = format!(
                 "PREPARE budget({}) AS {sql}; EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE budget({});",
-                vec!["text"; max].join(","),
+                types.join(","),
                 args[..max]
                     .iter()
                     .map(|v| quote(v))
@@ -145,6 +212,20 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
                     .join(",")
             );
             queries.push((format!("{name}-{}", queries.len()), prepared));
+            if name == "directory" && sql == "DELETE FROM sip_lines WHERE id=$1" {
+                queries.push(("cascade-403".into(), format!("SELECT id FROM sip_lines WHERE id={} FOR UPDATE; INSERT INTO phone_sessions(id,user_id,line_id,line_revision,peer_id,expires_at) SELECT 'cascade-'||i,'phone-member-'||((i-1)/4+1),l.id,l.updated_at,'peer',now()-interval '1 hour' FROM sip_lines l CROSS JOIN generate_series(1,400) i WHERE l.id={}; PREPARE budget(text) AS {sql}; EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE budget({});",quote(line),quote(line),quote(line))));
+            }
+            if name == "directory" && sql.contains("FROM sip_lines WHERE created_by=$1") {
+                queries.push(("creator-limit".into(), format!("UPDATE sip_lines SET created_by={} WHERE id IN (SELECT 'admin-'||i FROM generate_series(1,48) i); PREPARE budget(text) AS {sql}; EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE budget({});", quote(actor),quote(actor))));
+            }
+            if name == "directory" && sql.contains("ORDER BY l.name,l.id") {
+                // Keep total history N fixed while varying visible shared lines L.
+                // Fixture changes run before the measured group and reset after it.
+                for visible in [20, 200] {
+                    queries.push((format!("admin-{visible}"), format!(
+                        "UPDATE sip_lines SET owner_user_id=NULL WHERE id IN (SELECT 'admin-'||i FROM generate_series(1,{visible}) i); PREPARE budget(text,text) AS {sql}; EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) EXECUTE budget({},'true');", quote(actor))));
+                }
+            }
             if sql.contains("JOIN sip_lines l ON l.id=s.line_id") {
                 for (suffix, first, second) in [
                     ("private", session, noise),
@@ -160,32 +241,52 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
         }
     }
     assert!(
-        queries.len() >= 24,
+        queries.len() >= 41,
         "new SQL must stay covered: {}",
         queries.len()
     );
     let queries = Arc::new(queries);
     let metrics = Arc::new(Mutex::new(Vec::<Value>::new()));
-    // First execution remains in the sample. Single then eight simultaneous connections, 30 repeats each.
-    for concurrency in [1, 8] {
-        let mut tasks = Vec::new();
-        for _ in 0..concurrency {
-            let (url, queries, metrics) = (url.clone(), queries.clone(), metrics.clone());
-            tasks.push(tokio::spawn(async move {
-                let db=client(&url).await.unwrap();
-                for sample in 0..30 {for (name,sql) in queries.iter() {
+    // Set up cardinality variants once, before timing. Read-only admin queries
+    // then run concurrently without fixture UPDATE locks or artificial deadlocks.
+    for (name, definition) in queries.iter() {
+        let variant = name.starts_with("admin-") || name == "creator-limit";
+        let sql = if variant {
+            let at = definition.find("PREPARE ").unwrap();
+            db.batch_execute(&definition[..at]).await?;
+            db.batch_execute("ANALYZE sip_lines;").await?;
+            definition[at..].to_owned()
+        } else {
+            definition.clone()
+        };
+        // First execution remains in the sample. Single then eight connections, 30 repeats.
+        for concurrency in [1, 8] {
+            let mut tasks = Vec::new();
+            for _ in 0..concurrency {
+                let (url, name, sql, metrics) =
+                    (url.clone(), name.clone(), sql.clone(), metrics.clone());
+                tasks.push(tokio::spawn(async move {
+                    let db=client(&url).await.unwrap();
+                    for sample in 0..30 {
                     let start=std::time::Instant::now();
                     // Each plan includes the complete write, FK checks and locks, but changes roll back.
                     let rows=db.simple_query(&format!("BEGIN; {sql} ROLLBACK; DEALLOCATE ALL;")).await.unwrap();
                     let raw=rows.iter().find_map(|row|match row {SimpleQueryMessage::Row(row)=>row.get(0).filter(|s|s.starts_with('[')),_=>None}).unwrap();
-                    let value:Value=serde_json::from_str(raw).unwrap();let plan=&value[0];let mut relations=std::collections::BTreeMap::new();scan(&plan["Plan"],&mut relations);
-                    for (relation,work) in &relations {let bound=if relation=="sip_phones" {100.} else if relation=="phone_sessions" {12.} else {8.};assert!(*work<=bound,"{name} {relation}: {work}>{bound}: {plan}");}
+                    let value:Value=serde_json::from_str(raw).unwrap();let plan=&value[0];
+                    if let Some(visible) = name.strip_prefix("admin-").and_then(|s|s.parse::<u64>().ok()) { assert_eq!(plan["Plan"]["Actual Rows"].as_u64(),Some(visible+2),"shared lines must never disappear"); }
+                    let mut relations=std::collections::BTreeMap::new();scan(&plan["Plan"],&mut relations);
+                    for (relation,work) in &relations {let visible = name.strip_prefix("admin-").and_then(|s|s.parse::<f64>().ok()).unwrap_or(0.);
+                    let bound=if visible > 0. { if relation=="sip_lines" {3.*(visible+2.)} else if relation=="sip_line_members" {visible+4.} else if relation=="sip_phones" {100.+visible+2.} else {8.} } else if relation=="sip_phones" {100.} else if relation=="phone_sessions" {12.} else if name=="creator-limit" && relation=="sip_lines" {50.} else if name.starts_with("directory-") && relation=="sip_line_members" {100.} else {8.};assert!(*work<=bound,"{name} {relation}: {work}>{bound}: {plan}");}
                     metrics.lock().unwrap().push(json!({"name":name,"concurrency":concurrency,"plan":if sample==0 {plan.clone()} else {Value::Null},"relations":relations,"blocks":plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)+plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0),"planning_ms":plan["Planning Time"],"execution_ms":plan["Execution Time"],"roundtrip_ms":start.elapsed().as_secs_f64()*1000.}));
-                }}
-            }));
+                    }
+                }));
+            }
+            for task in tasks {
+                task.await?;
+            }
         }
-        for task in tasks {
-            task.await?;
+        if variant {
+            db.batch_execute(&format!("UPDATE sip_lines SET owner_user_id='{noise}',created_by='{noise}' WHERE id IN (SELECT 'admin-'||i FROM generate_series(1,200) i); ANALYZE sip_lines;")).await?;
         }
     }
     // Includes authentication, pool wait, JSON/form serialization and the HTTP gateway hop.
@@ -243,7 +344,7 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
     std::fs::write(
         &output,
         serde_json::to_vec_pretty(
-            &json!({"rows":n,"queries":queries.len(),"samples":*metrics.lock().unwrap(),"api_samples":*api_metrics.lock().unwrap()}),
+            &json!({"rows":n,"queries":queries.len(),"query_definitions":*queries,"samples":*metrics.lock().unwrap(),"api_samples":*api_metrics.lock().unwrap()}),
         )?,
     )?;
     println!(
