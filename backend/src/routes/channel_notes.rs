@@ -211,19 +211,20 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
         scanned += page_rows.len();
     }
     let mut count = 0u64;
-    let channel_count = unlocked_channels.len();
-    while count < 100 && channel_count > 0 {
+    let mut active_channels = unlocked_channels;
+    while count < 100 && !active_channels.is_empty() {
         let before_pass = count;
-        for (index, channel_id) in unlocked_channels.iter().enumerate() {
+        let mut next_active = Vec::new();
+        for (index, channel_id) in active_channels.iter().enumerate() {
             let remaining = (100 - count) as usize;
             if remaining == 0 {
                 break;
             }
             // Share the bounded batch across channels so a single large backlog
             // cannot consume every pass while older rows in other channels wait.
-            let channels_remaining = channel_count - index;
+            let channels_remaining = active_channels.len() - index;
             let per_channel = remaining.div_ceil(channels_remaining);
-            count += toasty::sql::statement(
+            let deleted = toasty::sql::statement(
                 "DELETE FROM channel_notes WHERE id IN (
                 SELECT id FROM channel_notes
                 WHERE channel_id = $1
@@ -236,10 +237,17 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
             .bind(per_channel as i32)
             .exec(&mut tx)
             .await?;
+            count += deleted;
+            // A channel that could not fill its share is depleted. Do not count
+            // it in the denominator of the next pass.
+            if deleted >= per_channel as u64 {
+                next_active.push(channel_id.clone());
+            }
         }
         if count == before_pass {
             break;
         }
+        active_channels = next_active;
     }
     tx.commit().await?;
     Ok(count)
