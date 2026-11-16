@@ -132,7 +132,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = (file === 'ci-frontend.yaml' && ['check', 'browser-test'].includes(id)) ||
+      const large = (file === 'ci-frontend.yaml' && ['check', 'build', 'browser-test'].includes(id)) ||
         (file === 'ci-backend.yaml' && id === 'check');
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);

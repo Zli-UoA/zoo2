@@ -349,6 +349,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # check と build は同じ Wasm を使い、互いの成功を待たずに実行する。
   check:
     needs: [runner, crypto-wasm]
     # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
@@ -389,6 +390,40 @@ jobs:
 
       - name: format / lint / typecheck
         run: pnpm check
+
+  build:
+    needs: [runner, crypto-wasm]
+    # Build concurrently with check, with enough memory for bundling.
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download wasm package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: zoo-crypto-wasm
+          path: crates/zoo-crypto-wasm/pkg
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: build
         run: pnpm build

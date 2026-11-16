@@ -52,6 +52,14 @@ frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶�
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
 
-固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend単体テスト、Storybook deploy、automerge gate。backendの `check` とfrontendの `check`・`browser-test` は大容量用を使い、それ以外のRust build/lint/単体テストは通常の空き状況選択を残す。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend単体テスト、Storybook deploy、automerge gate。backendの `check` とfrontendの `check`・`build`・`browser-test` は大容量用を使い、それ以外のRust build/lint/単体テストは通常の空き状況選択を残す。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
 
 状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。
+
+## Check とビルドの並列実行
+
+CI Frontend の `check` と `build` は、`crypto-wasm` の成果物を受け取った後、互いの成功を待たずに起動します。Check が成功する想定でビルドを先行させるため、両方が成功する場合の所要時間は、直列実行の合計から並列実行の長い方へ近づきます。依存のインストールとRunnerの起動はジョブごとに必要で、Checkに失敗した場合は先行ビルドの計算が無駄になります。ビルドも大容量用Runnerを使います。
+
+`build` を含む全チェックの成功は、引き続き `automerge-gate/all-passed` が判定します。マージキューでは `merge-queue.yaml` の `all-passed` が、呼び出したworkflow全体の結果を判定します。Checkやビルドの失敗を許容する設定は入れません。
+
+PRをまたいで検証を先行させる場合は、リポジトリのmain向けRulesetでMerge Queueを有効にし、Build concurrencyをまず2〜3に設定します。キューは先行PRがマージされる想定で後続の組み合わせを検証し、先行PRが失敗した場合は影響を受ける後続を再検証します。`merge_group` を処理するworkflowは既存の `merge-queue.yaml` を使います。Rulesetはこのリポジトリのコードでは管理していないため、このworkflowの変更だけではMerge Queueは有効になりません。
