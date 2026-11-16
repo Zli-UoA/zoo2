@@ -79,6 +79,7 @@ internal class AndroidPhoneHost(
         val options = Bundle().apply { putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle); putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, extras(call)) }
         val address = if (call.kind == "sip") Uri.fromParts("tel", call.peer, null) else Uri.fromParts("sip", "dm-${call.target}@zoo.invalid", null)
         try { manager.placeCall(address, options); withTimeout(10_000) { ready.await() } }
+        catch (_: SecurityException) { throw IllegalStateException("Telecom permission unavailable") }
         finally { if (connectionReady === ready) connectionReady = null }
     }
     override fun incoming(call: PhoneCall) { check(available); manager.addNewIncomingCall(handle, extras(call)) }

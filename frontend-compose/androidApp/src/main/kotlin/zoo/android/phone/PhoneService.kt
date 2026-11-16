@@ -21,7 +21,7 @@ class PhoneService : Service() {
         if (intent?.getStringExtra(PHONE_SESSION) != current.token) return START_NOT_STICKY
         host = current; current.service = this
         when (intent.action) {
-            "zoo.phone.STOP" -> current.controller.stop()
+            "zoo.phone.STOP" -> if (current.controller.call == null) current.controller.stop()
             "zoo.phone.END" -> if (current.matches(current.token, intent.getStringExtra(PHONE_CALL))) current.controller.hangup()
         }
         if (current.desired) refresh() else stopSelf()
