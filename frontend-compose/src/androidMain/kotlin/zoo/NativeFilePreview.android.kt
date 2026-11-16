@@ -20,9 +20,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import java.io.File
 import java.io.IOException
 import java.net.InetAddress
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.*
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.*
 
 @Composable
@@ -46,7 +48,7 @@ internal fun NativeImagePreview(app: Session, src: String, name: String, modifie
 internal fun NativeFilePreview(app: Session, src: String, name: String, type: String, modifier: Modifier) {
     val context = LocalContext.current
     val file = remember(src) { File.createTempFile("media-preview-", ".tmp", context.cacheDir) }
-    val client = remember(src) { previewFileClient(Uri.parse(app.config.apiBaseUrl).host) }
+    val client = remember(src) { previewFileClient(app.config.apiBaseUrl.toHttpUrlOrNull()?.host) }
     var attempt by remember(src) { mutableStateOf(0) }
     var loaded by remember(src) { mutableStateOf(false) }
     var failed by remember(src) { mutableStateOf(false) }
@@ -74,11 +76,30 @@ internal fun previewFileClient(trustedHost: String?): OkHttpClient = OkHttpClien
     .followRedirects(false).followSslRedirects(false)
     .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
     .callTimeout(60, TimeUnit.SECONDS)
-    .dns(object : Dns {
-        override fun lookup(hostname: String): List<InetAddress> = Dns.SYSTEM.lookup(hostname).also { addresses ->
-            require(hostname == trustedHost || addresses.all(::publicPreviewAddress))
-        }
-    }).build()
+    .dns(PreviewDns(trustedHost))
+    .addInterceptor { chain ->
+        // OkHttp skips Dns.lookup for IP literals; check those before any connection.
+        validatePreviewLiteralHost(chain.request().url.host, trustedHost)
+        chain.proceed(chain.request())
+    }.build()
+
+internal class PreviewDns(private val trustedHost: String?, private val delegate: Dns = Dns.SYSTEM) : Dns {
+    override fun lookup(hostname: String): List<InetAddress> = delegate.lookup(hostname).also { addresses ->
+        validatePreviewAddresses(hostname, trustedHost, addresses)
+    }
+}
+
+private fun validatePreviewAddresses(host: String, trustedHost: String?, addresses: List<InetAddress>) {
+    if (host != trustedHost && addresses.any { !publicPreviewAddress(it) })
+        throw UnknownHostException("Private preview address is not allowed")
+}
+
+internal fun validatePreviewLiteralHost(host: String, trustedHost: String?) {
+    // HttpUrl has already canonicalized IPv4 and removed IPv6 brackets. This branch
+    // parses numeric hosts only; hostname resolution remains in PreviewDns.
+    if (':' in host || host.all { it in '0'..'9' || it == '.' })
+        validatePreviewAddresses(host, trustedHost, listOf(InetAddress.getByName(host)))
+}
 
 internal suspend fun downloadPreviewFile(client: OkHttpClient, src: String, target: File) = suspendCancellableCoroutine<Unit> { continuation ->
     val uri = Uri.parse(src)

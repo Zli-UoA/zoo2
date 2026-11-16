@@ -43,7 +43,7 @@ Webでは取得先のCORSや埋め込み制限によってプレビューでき�
 `buildMediaPreview` が `pnpm build:media-preview` を実行して `build/generated/media-preview-assets` へ出力し、APKのassetsに含める。
 依存の導入・ビルドはAndroid CIの検証・リリースの両方にも設定する。
 
-画像・PDF・動画・音声はAndroidのネイティブ要素で表示する。PDFはPdfRenderer、動画はVideoView、音声はMediaPlayerを使う。
+画像・PDF・動画・音声はAndroidのネイティブ要素で表示する。AVIFのネイティブ表示はAndroid 12（API 31）以降を対象とし、古い端末ではダウンロード操作を表示する。PDFはPdfRenderer、動画はVideoView、音声はMediaPlayerを使う。
 PDF・動画・音声は1回の取得を64 MiBまでに制限し、ページ移動やシークで同じ非公開一時ファイルを再利用する。閉じると取得を中断し、一時ファイルとプレイヤーを解放する。バックグラウンド移行時は再生を停止する。
 プレビューは画面内に収まる単一のネイティブウィンドウに表示し、アプリ本体の背景ブラーから分離する。
 メール・Office文書・ZIP・テキストには同梱の文書ビューアを利用し、Web側のモーダルを重ねない。

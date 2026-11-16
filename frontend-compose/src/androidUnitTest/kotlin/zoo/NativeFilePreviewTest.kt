@@ -3,6 +3,12 @@ package zoo
 import androidx.test.core.app.ApplicationProvider
 import java.io.File
 import java.io.IOException
+import java.net.InetAddress
+import java.net.UnknownHostException
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
@@ -19,6 +25,54 @@ import org.robolectric.annotation.GraphicsMode
 class NativeFilePreviewTest {
     private fun temporaryFile() = File.createTempFile("native-preview-test-", ".tmp",
         ApplicationProvider.getApplicationContext<android.content.Context>().cacheDir)
+
+    @Test fun avifUsesTheNativeDecoderOnlyOnSupportedAndroidVersions() {
+        assertFalse(nativeImagePreviewSupported("image/avif", 26))
+        assertFalse(nativeImagePreviewSupported("Image/AVIF; q=1", 30))
+        assertTrue(nativeImagePreviewSupported("image/avif", 31))
+        assertTrue(nativeImagePreviewSupported("image/png", 26))
+        assertTrue(nativeImagePreviewSupported("image/jpeg", 30))
+    }
+
+    @Test fun privateDnsIsAnOrdinaryAsyncFailureWithoutAnUncaughtWorkerException() = runBlocking {
+        val uncaught = AtomicReference<Throwable?>()
+        val executor = Executors.newCachedThreadPool { task -> Thread(task).apply {
+            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, error -> uncaught.set(error) }
+        } }
+        val client = previewFileClient("api.example.test").newBuilder()
+            .dns(PreviewDns("api.example.test", object : Dns { override fun lookup(hostname: String) = listOf(InetAddress.getByName("127.0.0.1")) }))
+            .dispatcher(Dispatcher(executor)).build()
+        val file = temporaryFile()
+        try {
+            assertFailsWith<UnknownHostException> { downloadPreviewFile(client, "https://peer.example.test/file", file) }
+            assertFalse(file.exists())
+        } finally {
+            executor.shutdown()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+            file.delete()
+        }
+        assertNull(uncaught.get(), "Rejected DNS must not terminate the Android process")
+    }
+
+    @Test fun privateIpLiteralsAreRejectedBeforeAConnectionIsAttempted() {
+        var connections = 0
+        val client = previewFileClient("api.example.test").newBuilder().eventListener(object : EventListener() {
+            override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) { connections++ }
+        }).build()
+        for (host in listOf("127.0.0.1", "192.168.1.2", "10.0.0.2", "169.254.1.1", "100.64.0.1", "[::1]", "[fc00::1]", "[fe80::1]", "[::ffff:127.0.0.1]")) {
+            assertFailsWith<UnknownHostException>(host) {
+                client.newCall(Request.Builder().url("https://$host/file").build()).execute().close()
+            }
+        }
+        assertEquals(0, connections)
+    }
+
+    @Test fun publicLiteralsAndTheConfiguredApiHostRemainAllowed() {
+        for (host in listOf("8.8.8.8", "2606:4700:4700::1111")) validatePreviewLiteralHost(host, "api.example.test")
+        validatePreviewLiteralHost("127.0.0.1", "127.0.0.1")
+        val address = InetAddress.getByName("127.0.0.1")
+        assertEquals(listOf(address), PreviewDns("api.example.test", object : Dns { override fun lookup(hostname: String) = listOf(address) }).lookup("api.example.test"))
+    }
 
     @Test fun webViewIsDetachedBeforeItsNativeResourcesAreDestroyed() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()

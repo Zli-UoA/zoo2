@@ -2,6 +2,7 @@ package zoo
 
 import android.annotation.SuppressLint
 import android.net.Uri
+import android.os.Build
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -23,6 +24,7 @@ import java.io.ByteArrayInputStream
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Call
 import okhttp3.Request
 import kotlinx.serialization.encodeToString
@@ -38,6 +40,11 @@ internal actual fun MediaPreviewSurface(app: Session, src: String, name: String,
     key(src, name, contentType, app.env.locale, dark) {
         val mime = contentType.substringBefore(';').trim().lowercase()
         when {
+            mime.startsWith("image/") && !nativeImagePreviewSupported(mime) -> Box(modifier) {
+                Button(app.t("attachments.downloadShort")) {
+                    app.run { app.platform.invoke("attachmentDownload", obj("url" to src, "name" to name).toString()) }
+                }
+            }
             mime.startsWith("image/") -> NativeImagePreview(app, src, name, modifier)
             mime == "application/pdf" || mime.startsWith("video/") || mime.startsWith("audio/") ->
                 NativeFilePreview(app, src, name, mime, modifier)
@@ -53,7 +60,7 @@ private fun BundledDocumentPreview(app: Session, src: String, name: String, cont
     val locale = app.env.locale
     val disposed = remember(src) { AtomicBoolean(false) }
     val calls = remember(src) { ConcurrentHashMap.newKeySet<Call>() }
-    val trustedHost = Uri.parse(app.config.apiBaseUrl).host
+    val trustedHost = app.config.apiBaseUrl.toHttpUrlOrNull()?.host
     val client = remember(src) { previewFileClient(trustedHost) }
     val view = remember(src, name, contentType, locale) {
         WebView(context).apply {
@@ -185,3 +192,6 @@ internal actual fun MediaPreviewPanel(title: String, close: () -> Unit, content:
         }
     }
 }
+
+internal fun nativeImagePreviewSupported(mime: String, sdk: Int = Build.VERSION.SDK_INT): Boolean =
+    mime.substringBefore(';').trim().lowercase() != "image/avif" || sdk >= 31
