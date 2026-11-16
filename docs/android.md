@@ -213,7 +213,8 @@ production の `backend.yaml` の `env` にあるので、今の値を残した�
 - 戻る操作はオーバーレイ、スレッド、画面履歴の順に閉じます。
 - システムバーと IME の領域を避け、テーマと表示状態を共有セッションへ渡します。
 - 公開画像・URL プレビュー・署名付き添付 URL には Zoo の認証ヘッダーを送りません。
-- Android の通知権限を許可すると、ログイン中に同期した新着のチャンネル通知を、アプリが非表示のときに表示します。
+- Android の通知権限を許可すると、ログイン中に同期した新着のチャンネル通知を、表示中・非表示のどちらでも表示します。
+  Android 13以降はログイン後に一度だけ通知権限を要求し、拒否した場合は既存の有効化ボタンから再設定します。
   メンション・DM・リアクションを別チャンネルにし、通知から対象投稿へ移動、既読化、直接返信できます。
   メンション・DM・返信は Android 標準の会話形式で表示し、送信者のアバターを既存の画像キャッシュ経由で補います。
   画像を待たずに本文を通知し、画像の失敗・8秒の期限超過では画像なしの表示を維持します。
@@ -234,8 +235,14 @@ production の `backend.yaml` の `env` にあるので、今の値を残した�
   応答を受け取れなかった返信は通知IDと送信本文の組でIDを保持し、同じ本文の再送だけで再利用します。
   本文を変えた場合は新しい投稿として送信します。期限超過した古い本文も保存済みだった場合は両方が残り、
   古い投稿を上書き・削除しません。平文APIは同一ID・異なる本文を競合として扱います（暗号化チャンネルへの直接返信は無効です）。
-- 通知は動作中のセッションの同期を使うため、プロセス終了後や OS が同期を停止した状態での受信は未対応です。
-  FCM等による永続的なバックグラウンド配送、連合専用の通知、外部URLからの deep link、共有受信は未対応です。
+- Firebaseを設定した配布物では、既存の通知作成後にFCM HTTP v1でdataメッセージを送り、
+  `FirebaseMessagingService`で表示中・バックグラウンド・通常のプロセス終了後も受信します。
+  同期とFCMは利用者ID・通知IDから同じ通知タグを作り、重複受信は既存通知を更新します。
+  通知を開くとログインを復元してから対象投稿へ移動します。ログアウトとアカウント切替では配送用のUUIDを更新し、
+  古い配送・古い通知タップを拒否します。認証トークンをFCMやIntentに入れません。
+  OSの「強制停止」中や通知権限を拒否した端末には配信できません。
+  Firebase未設定の配布物は動作中のセッション同期だけを使うため、OSによる同期停止後の配送は保証しません。
+  連合専用の通知、外部URLからの deep link、共有受信は未対応です。
 - 成立したタッチ操作には軽い触覚フィードバック、投稿メニューの長押しには長押しフィードバックを返します。
   スクロール・取り消し・マウス操作では振動しません。端末の触覚フィードバック設定に従います。
 - 画像データをセッション内で最大32 MiB・256件までLRUキャッシュし、同じURLの同時取得を共有します。
@@ -391,6 +398,51 @@ Androidの三点メニューは右端をトリガーへ揃え、高さ240dp以�
 Android固有の表示調整のため、ReactのStorybookとTUIの表示仕様は変更していません。
 メニューの座標・上下反転・高さ・末尾操作には `ReviewRegressionUiTest` の回帰テストを追加しています。
 今回の環境ではGradle 8.14.3の配布元への接続が拒否され、Androidテスト・lint・APKビルドは未実行です。実機表示も未確認です。`make tui-check` は `cargo` がなく実行できませんでした。`git diff --check` は通過しています。
+
+## Androidのプッシュ通知の設定
+
+`Zli-UoA/zoo2-infra` の `terraform/firebase` で、Firebaseプロジェクト、Androidアプリ `works.zli.zoo`、
+FCM HTTP v1、送信アカウントと鍵、WIF、以下のAndroid公開設定を管理します。
+OpenTofuの機密outputは同リポジトリのSOPS exporterで暗号化SecretのPRにします。
+初回のGoogle認証・規約同意、state認証、plan/applyと配布手順は同ディレクトリのREADMEを参照してください。
+Google Play開発者サービスが利用できる端末を対象とします。Firebaseの管理用秘密鍵はAPKへ入れません。
+
+APKのビルドでは次の公開識別子を4つまとめて設定します。全て未設定ならFCMを無効にしてビルドでき、
+一部だけ設定されている場合はビルドを失敗させます。`google-services.json`や追加のGradleプラグインは不要です。
+署名付き配布のCIは同名のGitHub Actions Variablesがあれば優先し、未設定なら
+`androidApp/firebase-public.properties` の公開識別子を使います。管理用秘密鍵はこのファイルに入れません。
+
+| 環境変数 | Firebase Android設定の値 |
+| --- | --- |
+| `ZOO_ANDROID_FIREBASE_APP_ID` | `mobilesdk_app_id` |
+| `ZOO_ANDROID_FIREBASE_API_KEY` | `api_key.current_key` |
+| `ZOO_ANDROID_FIREBASE_SENDER_ID` | `project_info.project_number` |
+| `ZOO_ANDROID_FIREBASE_PROJECT_ID` | `project_info.project_id` |
+
+バックエンドは `FCM_SERVICE_ACCOUNT_JSON` に同じプロジェクトのサービスアカウントJSONを設定します。
+未設定でも起動し、AndroidのFCM登録だけを無効にします。不正なJSON・秘密鍵は起動時にエラーにします。
+必要な権限は当該プロジェクトの `cloudmessaging.messages.create` です。
+この値は `Zli-UoA/zoo2-infra` のsops暗号化Secret（追加するSecret名 `zoo2-fcm`、キー `FCM_SERVICE_ACCOUNT_JSON`）
+とDeployment参照のPRで導入します。平文をGitへ置いたり、クラスタへ直接設定したりしません。
+
+登録は既存の認証付き `/api/push/config` と `/api/push/subscriptions` を使います。
+`fcmProjectId`がAPKのプロジェクトと一致し、通知が許可されている場合だけ、
+`transport: "fcm"`、`endpoint: "fcm:<registration-token>:<binding-uuid>"` を登録します。
+Firebase登録トークンとendpointは配送先の秘密情報としてログや同期データへ出しません。
+未設定・登録失敗時もセッション同期の通知は維持し、ログイン・復帰・接続回復・動作中のトークン更新で登録を再確認します。
+アプリが終了している間にFCMトークンが更新された場合は、次のログイン復元で再登録します。
+
+FCMは既存の通知作成・DND・本文の閲覧条件を使い、暗号化チャンネルの本文は「新しいメッセージ」のまま送ります。
+通話と連合専用通知はAndroidの配送対象に含めません。Web Pushの鍵・API・配信は維持します。
+React・TUI・デスクトップの通知作成・取得経路は変えません。Android専用の配送手段なのでTUIの機能変更・版更新は不要で、`make tui-check`で互換性を確認します。
+DBは既存の `push_subscriptions` と登録・解除・利用者別配送のクエリを再利用し、スキーマ・索引は変更しません。
+総購読数N、対象利用者の購読数Sに対し、主キー登録・解除はO(log N)、
+配送は既存の `idx_push_subscriptions_user_id` によるO(log N + S)です。新規の常設接続やポーリングはありません。
+
+実機では権限を許可してから別ユーザーでメンション・DM・返信・リアクションを作り、
+表示中、別アプリ使用中、画面ロック中、通常のプロセス終了後で通知とタップ先を確認します。
+ログアウト・アカウント切替、権限拒否、同一通知の同期とFCMでの二重配送も確認します。
+Firebaseの認証情報を用いた実配信と実機のDoze検証は、ビルド・単体テストとは別に必要です。
 
 ### E2EE の送受信の検証
 

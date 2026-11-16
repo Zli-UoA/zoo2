@@ -141,6 +141,10 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         .await?;
     tx.batch_execute("INSERT INTO channel_message_authors(channel_id,user_id,latest_at) SELECT channel_id,user_id,max(created_at) FROM messages WHERE parent_id IS NULL AND deleted_at IS NULL GROUP BY channel_id,user_id ON CONFLICT(channel_id,user_id) DO UPDATE SET latest_at=EXCLUDED.latest_at").await?;
     tx.commit().await?;
+    // The fixed event catalog is populated by migrations. Analyze it explicitly:
+    // autovacuum may otherwise switch its lookup from index to sequential scan
+    // between scales (1 vs 90 rows), which is unrelated to message history.
+    client.batch_execute("ANALYZE app_event_types;").await?;
     client.batch_execute("ANALYZE messages; ANALYZE users; ANALYZE channels; ANALYZE channel_user; ANALYZE channel_read_states; ANALYZE channel_message_authors; ANALYZE slack_import_jobs; ANALYZE slack_channels; ANALYZE slack_channel_syncs; ANALYZE slack_channel_wakes; ANALYZE display_refresh_queue;").await?;
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
     if let Some(dir) = &output {

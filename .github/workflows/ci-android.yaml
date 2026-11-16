@@ -239,6 +239,10 @@ jobs:
       - name: Build with the persistent Android signing key
         working-directory: frontend-compose
         env:
+          ZOO_ANDROID_FIREBASE_APP_ID: ${{ vars.ZOO_ANDROID_FIREBASE_APP_ID }}
+          ZOO_ANDROID_FIREBASE_API_KEY: ${{ vars.ZOO_ANDROID_FIREBASE_API_KEY }}
+          ZOO_ANDROID_FIREBASE_SENDER_ID: ${{ vars.ZOO_ANDROID_FIREBASE_SENDER_ID }}
+          ZOO_ANDROID_FIREBASE_PROJECT_ID: ${{ vars.ZOO_ANDROID_FIREBASE_PROJECT_ID }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ZOO_ANDROID_KEYSTORE: ${{ runner.temp }}/zoo-release.jks
           ZOO_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
