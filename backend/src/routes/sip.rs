@@ -1,4 +1,4 @@
-//! Private SIP directory. Physical phone/PBX provisioning remains on the PBX.
+//! Private SIP directory. Asterisk can read this directory through the server-only realtime adapter.
 use crate::{
     apps::{one, query},
     auth::{AuthUser, rbac::is_workspace_admin},
@@ -38,12 +38,17 @@ pub(crate) fn parse_key(value: Option<&str>) -> Result<Option<[u8; 32]>, String>
         })
         .transpose()
 }
-fn key(state: &AppState) -> Result<[u8; 32], AppError> {
+pub(crate) fn key(state: &AppState) -> Result<[u8; 32], AppError> {
     parse_key(state.config.sip_encryption_key.as_deref())
         .map_err(|_| AppError::ServiceUnavailable("SIP configuration is invalid".into()))?
         .ok_or_else(|| AppError::ServiceUnavailable("SIP is not enabled".into()))
 }
-fn crypt(key: &[u8; 32], id: &str, value: &str, decrypt: bool) -> Result<String, AppError> {
+pub(crate) fn crypt(
+    key: &[u8; 32],
+    id: &str,
+    value: &str,
+    decrypt: bool,
+) -> Result<String, AppError> {
     let invalid = || AppError::Internal(anyhow::anyhow!("SIP credential encryption failed"));
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| invalid())?;
     if decrypt {
@@ -78,7 +83,7 @@ fn crypt(key: &[u8; 32], id: &str, value: &str, decrypt: bool) -> Result<String,
         Ok(STANDARD.encode(data))
     }
 }
-fn private(value: Value) -> (HeaderMap, Json<Value>) {
+pub(crate) fn private(value: Value) -> (HeaderMap, Json<Value>) {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CACHE_CONTROL,
@@ -90,6 +95,8 @@ fn private(value: Value) -> (HeaderMap, Json<Value>) {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Phone {
+    #[serde(default)]
+    id: Option<String>,
     name: String,
     extension: String,
 }
@@ -98,6 +105,7 @@ struct Phone {
 struct LineInput {
     name: String,
     shared: bool,
+    #[serde(default = "legacy_path")]
     websocket_path: String,
     sip_domain: String,
     username: String,
@@ -109,6 +117,9 @@ struct LineInput {
     member_ids: Vec<String>,
     #[serde(default)]
     phones: Vec<Phone>,
+}
+fn legacy_path() -> String {
+    "/sip/ws".into()
 }
 fn safe_token(s: &str) -> bool {
     !s.is_empty()
@@ -187,7 +198,7 @@ async fn list(
     let mut tx = db.transaction().await?;
     active(&mut tx, &user).await?;
     let is_admin = admin(&mut tx, &state, &user).await?;
-    let lines=query(&mut tx,"SELECT json_build_object('id',l.id,'name',l.name,'owner_user_id',l.owner_user_id,'shared',l.owner_user_id IS NULL,'websocket_path',l.websocket_path,'sip_domain',l.sip_domain,'username',l.username,'phone_number',l.phone_number,'can_manage',(l.owner_user_id=$1 OR (l.owner_user_id IS NULL AND $2='true')) IS TRUE,'can_connect',(l.owner_user_id=$1 OR EXISTS(SELECT 1 FROM sip_line_members m WHERE m.line_id=l.id AND m.user_id=$1)) IS TRUE,'member_ids',CASE WHEN l.owner_user_id IS NULL AND $2='true' THEN COALESCE((SELECT json_agg(user_id ORDER BY user_id) FROM sip_line_members WHERE line_id=l.id),'[]'::json) ELSE '[]'::json END,'phones',COALESCE((SELECT json_agg(json_build_object('name',p.name,'extension',p.extension) ORDER BY p.name) FROM sip_phones p WHERE p.line_id=l.id),'[]'::json))::text FROM sip_lines l WHERE l.owner_user_id=$1 OR (l.owner_user_id IS NULL AND ($2='true' OR EXISTS(SELECT 1 FROM sip_line_members m WHERE m.line_id=l.id AND m.user_id=$1))) ORDER BY l.name,l.id",&[&user.id,if is_admin{"true"}else{"false"}]).await?;
+    let lines=query(&mut tx,"SELECT json_build_object('id',l.id,'name',l.name,'owner_user_id',l.owner_user_id,'shared',l.owner_user_id IS NULL,'websocket_path',l.websocket_path,'sip_domain',l.sip_domain,'username',l.username,'phone_number',l.phone_number,'can_manage',(l.owner_user_id=$1 OR (l.owner_user_id IS NULL AND $2='true')) IS TRUE,'can_connect',(l.owner_user_id=$1 OR EXISTS(SELECT 1 FROM sip_line_members m WHERE m.line_id=l.id AND m.user_id=$1)) IS TRUE,'member_ids',CASE WHEN l.owner_user_id IS NULL AND $2='true' THEN COALESCE((SELECT json_agg(user_id ORDER BY user_id) FROM sip_line_members WHERE line_id=l.id),'[]'::json) ELSE '[]'::json END,'phones',COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',p.name,'extension',p.extension) ORDER BY p.name) FROM sip_phones p WHERE p.line_id=l.id),'[]'::json))::text FROM sip_lines l WHERE l.id IN (SELECT id FROM sip_lines WHERE owner_user_id=$1 UNION SELECT line_id FROM sip_line_members WHERE user_id=$1 UNION SELECT id FROM sip_lines WHERE owner_user_id IS NULL AND $2='true') ORDER BY l.name,l.id",&[&user.id,if is_admin{"true"}else{"false"}]).await?;
     Ok(private(json!({"enabled":true,"lines":lines})))
 }
 async fn create(
@@ -220,6 +231,11 @@ async fn save(
     let id = existing
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // Use the same user → line → session lock order as gateway reservations.
+    toasty::sql::statement("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE")
+        .bind(user.id.clone())
+        .exec(&mut tx)
+        .await?;
     let old = if existing.is_some() {
         let row = locked(&mut tx, &id).await?;
         if !manageable(&row, &user, is_admin) {
@@ -253,11 +269,6 @@ async fn save(
             return Err(AppError::BadRequest("SIP member is unavailable".into()));
         }
     }
-    // Lock the actor to serialize quota checks for concurrent personal/shared creates.
-    toasty::sql::statement("SELECT id FROM users WHERE id=$1 FOR UPDATE")
-        .bind(user.id.clone())
-        .exec(&mut tx)
-        .await?;
     if old.is_none() {
         let count = one(
             &mut tx,
@@ -287,6 +298,22 @@ async fn save(
         .exec(&mut tx)
         .await?;
     }
+    let existing_phones = query(
+        &mut tx,
+        "SELECT to_json(id)::text FROM sip_phones WHERE line_id=$1",
+        &[&id],
+    )
+    .await?;
+    let existing_ids: std::collections::HashSet<&str> =
+        existing_phones.iter().filter_map(Value::as_str).collect();
+    let mut phone_ids = std::collections::HashSet::new();
+    for phone in &body.phones {
+        if let Some(phone_id) = &phone.id {
+            if !phone_ids.insert(phone_id.clone()) || !existing_ids.contains(phone_id.as_str()) {
+                return Err(AppError::BadRequest("Invalid or duplicate phone ID".into()));
+            }
+        }
+    }
     toasty::sql::statement("DELETE FROM sip_phones WHERE line_id=$1")
         .bind(id.clone())
         .exec(&mut tx)
@@ -295,7 +322,7 @@ async fn save(
         toasty::sql::statement(
             "INSERT INTO sip_phones(id,line_id,name,extension) VALUES($1,$2,$3,$4)",
         )
-        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
         .bind(id.clone())
         .bind(p.name.trim())
         .bind(p.extension)
@@ -357,14 +384,16 @@ async fn connect(
                     .is_some_and(|urls| urls.iter().any(|u| u.as_str().is_some_and(is_turn)))
         })
     });
-    if !has_turn {
+    if !ice.is_array() || (state.config.phone_gateway.relay_only() && !has_turn) {
         return Err(AppError::ServiceUnavailable(
             "SIP requires a TURN media relay".into(),
         ));
     }
-    Ok(private(
-        json!({"data":{"websocket_path":row["websocket_path"],"sip_domain":row["sip_domain"],"username":row["username"],"password":password,"ice_servers":ice,"revision":row["revision"]},"txid":null}),
-    ))
+    // Release the read lock before a separate reservation transaction or network I/O.
+    tx.commit().await?;
+    let connection =
+        super::phone_sessions::connect(&state, &user, &id, &row, &password, ice).await?;
+    Ok(private(json!({"data":connection,"txid":null})))
 }
 
 async fn authorize(

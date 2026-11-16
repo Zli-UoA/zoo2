@@ -18,6 +18,7 @@ pub mod home_images;
 pub mod home_live;
 pub mod messages;
 pub mod notifications;
+pub mod phone_sessions;
 pub mod push;
 pub mod read_states;
 pub mod response;
@@ -117,6 +118,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(bubble_chat::router())
         .merge(calls::router())
         .merge(sip::router())
+        .merge(phone_sessions::router())
         .merge(notifications::router())
         .merge(push::router())
         .merge(read_states::router())
