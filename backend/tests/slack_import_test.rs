@@ -1884,7 +1884,7 @@ async fn s3_foreign_writer_process_helper() -> anyhow::Result<()> {
 async fn stop_foreign_writer(child: &mut tokio::process::Child) -> anyhow::Result<()> {
     let status = child.try_wait()?;
     if status.is_none() {
-        child.kill().await.map_err(|error| {
+        child.start_kill().map_err(|error| {
             anyhow::anyhow!("stopping timed-out independent RustFS writer: {error}")
         })?;
         match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {

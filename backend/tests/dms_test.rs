@@ -591,6 +591,20 @@ async fn reopening_plain_dm_does_not_deadlock_with_concurrent_e2ee_conversion() 
     let reopened_id = reopened["data"]["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("DM response lacks channel ID"))?;
+    let reopened_encrypted = reopened["data"]["encrypted"]
+        .as_bool()
+        .ok_or_else(|| anyhow::anyhow!("DM response lacks encrypted flag"))?;
+    let reopened_name = reopened["data"]["channel_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("DM response lacks channel name"))?;
+    assert!(
+        !reopened_encrypted,
+        "a plaintext DM request must not return the encrypted channel"
+    );
+    assert!(
+        reopened_name.starts_with("dm:"),
+        "a plaintext DM request must return a plaintext DM"
+    );
     let original_encrypted: bool = observer
         .query_one(
             "SELECT encrypted FROM channels WHERE id = $1",
@@ -605,10 +619,8 @@ async fn reopening_plain_dm_does_not_deadlock_with_concurrent_e2ee_conversion() 
             &[&reopened_id, &actor, &target],
         )
         .await?;
-    let reopened_encrypted: bool = row.get(0);
     let members: i64 = row.get(1);
     assert_eq!(members, 2, "both users must belong to the returned DM");
-    assert_eq!(reopened_encrypted, reopened_id == channel_id);
     Ok(())
 }
 

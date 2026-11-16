@@ -12,8 +12,25 @@ converter_app="notes_race_converter_${suffix}"
 note_id="notes_race_note_${suffix}"
 message_id="notes_race_message_${suffix}"
 tmp_dir="$(mktemp -d)"
+writer_fifo="$tmp_dir/writer.fifo"
+converter_fifo="$tmp_dir/converter.fifo"
+mkfifo "$writer_fifo" "$converter_fifo"
+writer_pid=""
+converter_pid=""
+note_pid=""
+message_pid=""
+writer_fd_open=false
+converter_fd_open=false
 
 cleanup() {
+  if [[ "$writer_fd_open" == true ]]; then exec 3>&-; fi
+  if [[ "$converter_fd_open" == true ]]; then exec 4>&-; fi
+  for pid in "$writer_pid" "$converter_pid" "$note_pid" "$message_pid"; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
   psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
     "DELETE FROM channels WHERE id = '$channel_id'; DELETE FROM users WHERE id = '$user_id';" >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -48,30 +65,48 @@ expect_check_violation() {
 
 # A note writer that gets FOR SHARE first must commit before conversion checks
 # notes. The conversion then sees the committed note and rejects the switch.
+# Hold the writer's transaction open through a FIFO and release it only after
+# the converter is confirmed to be waiting on the channel row lock.
 PGAPPNAME="$writer_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-  -c "BEGIN; INSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('$note_id', '$channel_id', 'race', 'plaintext', '$user_id'); SELECT pg_sleep(3); COMMIT" \
+  -f - <"$writer_fifo" \
   >"$tmp_dir/writer-first.out" 2>&1 &
 writer_pid=$!
-wait_for_activity "$writer_app" "wait_event = 'PgSleep'"
+exec 3>"$writer_fifo"
+writer_fd_open=true
+printf "BEGIN;\nINSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('%s', '%s', 'race', 'plaintext', '%s');\n" \
+  "$note_id" "$channel_id" "$user_id" >&3
+wait_for_activity "$writer_app" \
+  "state = 'idle in transaction' AND EXISTS (SELECT 1 FROM pg_locks l WHERE l.pid = pg_stat_activity.pid AND l.relation = 'channel_notes'::regclass AND l.granted)"
 
 PGAPPNAME="$converter_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v VERBOSITY=verbose \
   -c "BEGIN; SELECT 1 FROM channels WHERE id = '$channel_id' FOR UPDATE; UPDATE channels SET encrypted = true WHERE id = '$channel_id'; COMMIT" \
   >"$tmp_dir/converter-first.out" 2>&1 &
 converter_pid=$!
 wait_for_activity "$converter_app" "wait_event_type = 'Lock'"
+printf "COMMIT;\n" >&3
+exec 3>&-
+writer_fd_open=false
 wait "$writer_pid"
+writer_pid=""
 if wait "$converter_pid"; then converter_status=0; else converter_status=$?; fi
+converter_pid=""
 expect_check_violation "$tmp_dir/converter-first.out" "$converter_status"
 
 # When conversion owns FOR UPDATE first, later note and message writers wait,
-# then read encrypted=true and fail with the database guard's SQLSTATE.
+# then read encrypted=true and fail with the database guard's SQLSTATE. Hold the
+# converter's transaction open through a FIFO until both writers are blocked.
 psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
   "DELETE FROM channel_notes WHERE id = '$note_id';"
 PGAPPNAME="$converter_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-  -c "BEGIN; SELECT 1 FROM channels WHERE id = '$channel_id' FOR UPDATE; UPDATE channels SET encrypted = true WHERE id = '$channel_id'; SELECT pg_sleep(3); COMMIT" \
+  -f - <"$converter_fifo" \
   >"$tmp_dir/converter-locks.out" 2>&1 &
 converter_pid=$!
-wait_for_activity "$converter_app" "wait_event = 'PgSleep'"
+exec 4>"$converter_fifo"
+converter_fd_open=true
+printf "BEGIN;\nSELECT 1 FROM channels WHERE id = '%s' FOR UPDATE;\nUPDATE channels SET encrypted = true WHERE id = '%s';\n" \
+  "$channel_id" "$channel_id" >&4
+wait_for_activity "$converter_app" \
+  "state = 'idle in transaction' AND EXISTS (SELECT 1 FROM pg_locks l WHERE l.pid = pg_stat_activity.pid AND l.relation = 'channels'::regclass AND l.granted)"
 
 PGAPPNAME="${writer_app}_note" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v VERBOSITY=verbose \
   -c "INSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('${note_id}_after', '$channel_id', 'race', 'plaintext', '$user_id')" \
@@ -83,9 +118,15 @@ PGAPPNAME="${writer_app}_message" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR
 message_pid=$!
 wait_for_activity "${writer_app}_note" "wait_event_type = 'Lock'"
 wait_for_activity "${writer_app}_message" "wait_event_type = 'Lock'"
+printf "COMMIT;\n" >&4
+exec 4>&-
+converter_fd_open=false
 wait "$converter_pid"
+converter_pid=""
 if wait "$note_pid"; then note_status=0; else note_status=$?; fi
+note_pid=""
 if wait "$message_pid"; then message_status=0; else message_status=$?; fi
+message_pid=""
 
 expect_check_violation "$tmp_dir/note-after.out" "$note_status"
 expect_check_violation "$tmp_dir/message-after.out" "$message_status"
