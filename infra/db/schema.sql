@@ -3605,6 +3605,13 @@ BEGIN
     WHERE id=NEW.parent_id AND deleted_at IS NULL FOR NO KEY UPDATE;
   IF NOT FOUND THEN RETURN NULL; END IF;
   live_post:=TG_OP='INSERT' AND NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC');
+  -- A thread from before participation tracking has no rows yet. Its first tracked reply
+  -- registers the earlier repliers too, so they stay in the tree before the batch migration.
+  IF NOT EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=NEW.parent_id) THEN
+    INSERT INTO thread_participants(thread_id,user_id)
+      SELECT NEW.parent_id,user_id FROM messages
+      WHERE parent_id=NEW.parent_id AND deleted_at IS NULL GROUP BY user_id ON CONFLICT DO NOTHING;
+  END IF;
   INSERT INTO thread_participants(thread_id,user_id)
     VALUES(NEW.parent_id,parent_author),(NEW.parent_id,NEW.user_id) ON CONFLICT DO NOTHING;
   IF live_post THEN

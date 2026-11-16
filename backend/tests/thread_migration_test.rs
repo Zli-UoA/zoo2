@@ -225,3 +225,50 @@ async fn home_first_preserves_original_parent_and_encrypted_parents_never_change
     driver.await??;
     Ok(())
 }
+
+#[tokio::test]
+async fn first_tracked_reply_registers_the_earlier_repliers_of_a_legacy_thread()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let config = Config::from_env();
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    tx.batch_execute("SELECT pg_advisory_xact_lock(56220261128)")
+        .await?;
+    let schema = format!("thread_seed_{}", uuid::Uuid::new_v4().simple());
+    tx.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema};"
+    ))
+    .await?;
+    tx.batch_execute(include_str!("../../infra/db/schema.sql"))
+        .await?;
+    tx.batch_execute("CREATE TABLE app_events(name text);
+        CREATE OR REPLACE FUNCTION app_emit(event_name text,event_data jsonb,actor text,channel text DEFAULT NULL,subject text DEFAULT NULL,target_installation text DEFAULT NULL,departed text DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$ BEGIN INSERT INTO app_events VALUES(event_name); END $$;
+        INSERT INTO users(id,user_name,display_name) VALUES ('a','a','A'),('b','b','B'),('c','c','C'),('d','d','D');
+        INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES('channel','channel','a',false);
+        INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES ('root','a','channel','root','2020-01-01');
+        INSERT INTO messages(id,user_id,channel_id,content,created_at,parent_id) VALUES ('r1','b','channel','one','2020-01-02','root');
+        INSERT INTO messages(id,user_id,channel_id,content,created_at,parent_id) VALUES ('r2','c','channel','two','2020-01-03','root');
+        -- Simulate a thread that predates participation tracking.
+        DELETE FROM thread_participants;").await?;
+    let count = |sql: &'static str| async {
+        Ok::<i64, tokio_postgres::Error>(tx.query_one(sql, &[]).await?.get(0))
+    };
+    assert_eq!(count("SELECT count(*) FROM thread_participants").await?, 0);
+    tx.batch_execute("INSERT INTO messages(id,user_id,channel_id,content,parent_id) VALUES('r3','d','channel','three','root');")
+        .await?;
+    // Parent author a, earlier repliers b and c, and the new replier d.
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM thread_participants WHERE thread_id='root' AND left_at IS NULL"
+        )
+        .await?,
+        4
+    );
+    tx.rollback().await?;
+    drop(client);
+    driver.await??;
+    Ok(())
+}

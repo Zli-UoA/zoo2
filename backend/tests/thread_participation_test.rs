@@ -269,6 +269,31 @@ async fn rollout_http_keeps_legacy_threads_readable_and_isolates_phases() -> any
         .await?;
     }
     let path = format!("/api/threads/{child}");
+    // A thread with tracked participants is filtered even before the migration is ready.
+    toasty::sql::statement("UPDATE thread_rollout SET phase='collecting'")
+        .exec(&mut db)
+        .await?;
+    let index = ok(&app, &reader, "GET", "/api/threads", Value::Null).await?;
+    assert!(
+        !index["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == root)
+    );
+    let index = ok(&app, &author, "GET", "/api/threads", Value::Null).await?;
+    assert!(
+        index["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["id"] == root)
+    );
+    // A thread from before tracking has no rows and stays visible to everyone until migrated.
+    toasty::sql::statement("DELETE FROM thread_participants WHERE thread_id=$1")
+        .bind(root.as_str())
+        .exec(&mut db)
+        .await?;
     for phase in ["collecting", "normalizing"] {
         toasty::sql::statement("UPDATE thread_rollout SET phase=$1")
             .bind(phase)

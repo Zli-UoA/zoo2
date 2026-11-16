@@ -78,7 +78,8 @@ async fn list_threads(
                AND root.thread_activity_at IS NOT NULL \
                AND root.thread_archive_at IS NULL \
                AND ((SELECT phase FROM thread_rollout WHERE id)<>'ready' OR root.parent_id IS NULL) \
-               AND ((SELECT phase FROM thread_rollout WHERE id)<>'ready' OR EXISTS(SELECT 1 FROM thread_participants tp WHERE tp.thread_id=root.id AND tp.user_id=$1 AND tp.left_at IS NULL)) \
+               AND (EXISTS(SELECT 1 FROM thread_participants tp WHERE tp.thread_id=root.id AND tp.user_id=$1 AND tp.left_at IS NULL) \
+                 OR ((SELECT phase FROM thread_rollout WHERE id)<>'ready' AND NOT EXISTS(SELECT 1 FROM thread_participants tp WHERE tp.thread_id=root.id))) \
                AND (root.thread_activity_at,root.id)<((COALESCE(NULLIF($3,'')::timestamptz,'infinity'::timestamptz) AT TIME ZONE 'UTC'),$4) \
                AND (root.thread_activity_at,root.id)>=((COALESCE(NULLIF($6,'')::timestamptz,'-infinity'::timestamptz) AT TIME ZONE 'UTC'),$7) \
                AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
