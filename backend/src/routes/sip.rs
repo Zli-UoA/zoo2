@@ -377,7 +377,10 @@ async fn connect(
         .map_err(|_| AppError::ServiceUnavailable("Invalid ICE configuration".into()))?;
     let has_turn = ice.as_array().is_some_and(|servers| {
         servers.iter().any(|server| {
-            let is_turn = |url: &str| url.starts_with("turn:") || url.starts_with("turns:");
+            let is_turn = |url: &str| {
+                let url = url.trim().to_ascii_lowercase();
+                url.starts_with("turn:") || url.starts_with("turns:")
+            };
             server["urls"].as_str().is_some_and(is_turn)
                 || server["urls"]
                     .as_array()
