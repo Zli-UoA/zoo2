@@ -184,3 +184,17 @@ export const DeleteConfirmation: Story = {
     await expect(args.onRemove).toHaveBeenCalledWith("home");
   }),
 };
+
+export const RemoveUnavailableMember: Story = {
+  args: { users: [{ id: "bob", name: "Bob" }] },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const c = within(canvasElement);
+    await userEvent.click(c.getAllByRole("button", { name: "編集" })[1]);
+    await userEvent.click(c.getByRole("checkbox", { name: "利用できないメンバー · alice" }));
+    await userEvent.click(c.getByRole("button", { name: "保存" }));
+    await expect(args.onSave).toHaveBeenCalledWith(
+      "circle",
+      expect.objectContaining({ member_ids: ["bob"] }),
+    );
+  }),
+};

@@ -883,7 +883,8 @@
         "Mobile",
         "RegisterSharedLine",
         "Saving",
-        "DeleteConfirmation"
+        "DeleteConfirmation",
+        "RemoveUnavailableMember"
       ]
     }
   ],
@@ -1601,9 +1602,7 @@
     {
       "file": "src/components/sip/SipProvider.tsx",
       "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
-      "checks": [
-        "src/components/sip/SipProvider.browser.test.tsx"
-      ]
+      "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
     }
   ]
 }

@@ -1751,6 +1751,7 @@
       "dialing": "Calling…",
       "incoming": "Incoming call",
       "active": "In call"
-    }
+    },
+    "unavailableMember": "Unavailable member"
   }
 }

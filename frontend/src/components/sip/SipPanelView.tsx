@@ -309,6 +309,26 @@ export function SipPanelView(props: SipPanelViewProps) {
                       <span className="break-words">{user.name}</span>
                     </label>
                   ))}
+                  {editing.input.member_ids
+                    .filter((id) => !props.users.some((user) => user.id === id))
+                    .map((id) => (
+                      <label key={id} className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={() =>
+                            patch({
+                              member_ids: editing.input.member_ids.filter(
+                                (member) => member !== id,
+                              ),
+                            })
+                          }
+                        />
+                        <span className="min-w-0 break-all">
+                          {t("sip.unavailableMember")} · {id}
+                        </span>
+                      </label>
+                    ))}
                 </div>
               </fieldset>
             ) : null}

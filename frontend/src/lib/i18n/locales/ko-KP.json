@@ -1751,6 +1751,7 @@
       "dialing": "발신 중…",
       "incoming": "수신 중",
       "active": "통화 중"
-    }
+    },
+    "unavailableMember": "사용할 수 없는 구성원"
   }
 }

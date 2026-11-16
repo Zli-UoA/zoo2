@@ -1751,6 +1751,7 @@
       "dialing": "呼び出し中…",
       "incoming": "着信中",
       "active": "通話中"
-    }
+    },
+    "unavailableMember": "利用できないメンバー"
   }
 }
