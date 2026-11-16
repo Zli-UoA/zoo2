@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, readdirSync } from 'node:fs';
+import { selectWorkflows } from './merge-queue-changes.mjs';
 
 const root = new URL('../../', import.meta.url);
 const yaml = readFileSync(new URL('.github/workflows/select-runner.yaml', root), 'utf8');
@@ -100,10 +101,25 @@ const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storyboo
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 // macOS でビルドを確かめるジョブ。GitHub ホストの macOS を使う (公開リポジトリなので無料)。
 const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
+// Keep timing comparisons on a fixed hosted OS, independent of shared runners.
+const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
   "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
   .matchAll(/^    uses: \.\/\.github\/workflows\/([\w-]+\.yaml)$/gm)].map(m => m[1])]);
+test('SQL and migration changes require the budget gate in the merge queue', () => {
+  const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
+  for (const path of ['backend/src/routes/home.rs', 'infra/db/migrations/example.sql', '.github/workflows/ci-home-query-budget.yaml']) {
+    assert.equal(selectWorkflows([path], readWorkflow)['ci-home-query-budget'], true, path);
+  }
+  assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)['ci-home-query-budget'], false);
+  const queue = readWorkflow('merge-queue');
+  assert.match(queue, /ci-home-query-budget: \$\{\{ steps\.match\.outputs\.ci-home-query-budget \}\}/);
+  const call = queue.split('  ci-home-query-budget:\n')[1].split(/^  [\w-]+:\s*$/m)[0];
+  assert.match(call, /if: needs\.changes\.outputs\.ci-home-query-budget == 'true'/);
+  assert.match(call, /uses: \.\/\.github\/workflows\/ci-home-query-budget.yaml/);
+  assert.match(queue.split('  all-passed:\n')[1], /^      - ci-home-query-budget$/m);
+});
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -122,6 +138,13 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       if (file === 'container.yml') {
         assert.match(block, /fromJSON\(inputs\.runs-on\)/);
+        continue;
+      }
+      if (benchmarkJobs[file]?.[id]) {
+        assert.ok(block.includes(`    runs-on: ${benchmarkJobs[file][id]}\n`), `${file}/${id}: pinned hosted benchmark OS`);
+        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        assert.match(text, /^  workflow_call:$/m, `${file}: merge queue must call the budget gate`);
+        checked++;
         continue;
       }
       if ((releaseJobs[file] || []).includes(id)) {
