@@ -6,20 +6,28 @@ on:
       - infra/db/schema.sql
       - docs/erd/**
       - .github/workflows/cd-db-erd.yaml
+      - .github/workflows/select-runner.yaml
   push:
     branches: [main]
     paths:
       - infra/db/schema.sql
       - docs/erd/**
       - .github/workflows/cd-db-erd.yaml
+      - .github/workflows/select-runner.yaml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   build:
-    runs-on: ubuntu-latest
+    needs: runner
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -42,9 +50,9 @@ jobs:
           retention-days: 7
 
   deploy:
-    needs: build
+    needs: [runner, build]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: zli-kubecamp-no-docker
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 10
     concurrency:
       group: db-erd-production
