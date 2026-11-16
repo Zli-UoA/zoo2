@@ -81,6 +81,7 @@ pub fn run() {
             commands::zoo_access_token,
             commands::zoo_notifications_observed,
             commands::zoo_take_call_accept,
+            commands::zoo_reauthenticate,
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -136,6 +137,7 @@ mod tests {
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
+            command::REAUTHENTICATE,
         ];
         assert_eq!(super::commands_list::COMMANDS, ipc);
     }

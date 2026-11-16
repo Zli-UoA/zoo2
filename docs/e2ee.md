@@ -929,6 +929,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
     - AuthZ（`src/lib/oauth-clients.ts`）は、本番ではリダイレクト URI に `https:` だけを受け付け、`http://127.0.0.1` は開発時だけ許している。このままでは TUI のループバックの URI を本番に登録できないので、AuthZ のコードと `docs/architecture.md` を変え、public client にループバックの `http`（RFC 8252 の 7.3）を許す。採用版の Provider は、認可のときにループバックのポートの違いを許す（`stripLoopbackRedirectPort`）ので、ポートは固定しなくてよい。
     - クライアントの登録は AuthZ の DB にあり、AuthZ の管理画面で行う（zoo2-infra の `docs/installation.md` の手順と同じ）。Android と TUI のクライアントに、認可コードのグラントとリダイレクト URI を足す。
   - 【決定】デスクトップ版（`desktop/`、`zoo2-desktop`。デバイスコードでログインする）は、最初の範囲では E2EE の対象にしない。AGENTS.md の追従の対象は TUI で、デスクトップ版は含まないため。デスクトップ版は端末を登録せず、暗号化チャンネルを「このクライアントでは暗号化チャンネルを表示できない」と表示する（[クライアントの構成](#クライアントの構成)）。この表示は #361 に入れる。#361 で暗号化チャンネルを作れるようになると、表示を変えていないデスクトップ版は空の `content` を表示してしまうため。対象にするときは、TUI と同じく zoo-crypto をネイティブで使い、再認証はループバックのリダイレクトで受け取る形になる（issue は未作成）。
+    - 【決定】Tauri 版（`desktop-tauri/`）の Web の画面（`desktop_ui = remote`。zli.chat の React をそのまま読み込む）は、暗号化を Web と同じ wasm で行うので、E2EE を使える。ただし再認証は Web と同じ別のウィンドウでは行えない。wry は新しいウィンドウのハンドラーがないとウィンドウを作らず（`window.open` が `null` を返す）、作ったとしても、AuthZ が再認証として認めるのはパスキーでのログインだけ（QR のログインは `authenticated_at` を入れない）で、アプリの WebView（WebKitGTK、macOS の WKWebView）ではパスキーを使えないため。そこで Web の `startReauth` は、Tauri の中では IPC の `zoo_reauthenticate` を呼ぶ。Rust 側は `client-core` の `auth/reauth.rs` で、既定のブラウザーで `max_age=0` の認可リクエストを開き、ループバックのリダイレクトで受け取った ID トークンを返す（TUI と同じ。今のセッションのトークンは変えない）。新しく始めたら、待っている前の再認証は取り消す。ID トークンの `aud` は Tauri 版のクライアント（AuthZ の「Zoo for Desktop」、`client-core` の `DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID`）になる。このクライアントに認可コードのグラントとループバックのリダイレクト URI（`http://127.0.0.1/callback`）を AuthZ の管理画面で足し、zoo2-infra の `OIDC_REAUTH_AUDIENCES` にこの ID を足すまでは、デスクトップ版での保存は 403 `E2EE_REAUTH_REQUIRED` になる。コマンドのない古い版のアプリでは、Web はアプリの更新を案内する（`desktopOutdated`。`PROTOCOL_VERSION` は上げない）。【未検証】パスキーでの解錠（PRF）もアプリの WebView では使えない見込みなので、デスクトップ版ではリカバリーキーで解錠する。
   - 【決定】すでにある自己署名鍵かユーザー署名鍵を差し替えるときも、同じ直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。初めて登録するとき（初回設定）も、上のマスター鍵と同じく求める。端末だけの失効でもこの 2 つを差し替えるので（[失効の手順](#失効の手順)の 4）、失効には再認証が要る。
   - 【決定】（2026-11-15 のセキュリティレビュー）アクセストークンだけでできる、取り消せない操作を見直した。秘密とスロットの追加には再認証を求めるようにした（[Secret Storage の API](#secret-storage356)）。次の 3 つは、今までどおり再認証を求めない。どれも、読めるようになる人は増えず、妨害（読めなくする）にとどまる。
     - 端末の削除（`DELETE /api/e2ee/devices/{device_id}`）：ログアウトでは、暗号ストアを消してから削除を送り、失敗したら次のログインで再試行する（[ログアウトと端末の削除](#ログアウトと端末の削除)）。再認証を求めると、ログアウトのたびにログインし直させることになり、再試行もできなくなる。ベアラートークンはユーザー単位なので、サーバーは「自分の端末の削除」と「別の端末の削除」を見分けられない（[脅威モデル](#脅威モデル)の「同じユーザーの端末どうし」）。消された端末は、未受信の to-device を失い、ログインし直して新しい端末になる。
@@ -2042,9 +2043,10 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 【決定】再認証の `OIDC_REAUTH_AUDIENCES`（[クロス署名](#クロス署名356)の「再認証の確かめ方」）も、zoo2-infra の production の overlay の `kubernetes/apps/zoo2/overlays/production/app/backend.yaml` の `env` に置き、Git で管理します（同じ [Zli-UoA/zoo2-infra#194](https://github.com/Zli-UoA/zoo2-infra/pull/194)）。値は zoo2 のクライアント ID をカンマで区切ったもので、公開情報です。OIDC の設定ですが、手動で作る ConfigMap `zoo2-oidc` には置きません（`env` は `envFrom` の `zoo2-oidc` より優先されます）。ないと、再認証が要る操作（初回設定の保存、失効など）がすべて 403 `E2EE_REAUTH_REQUIRED` になり、backend は起動時に `OIDC_REAUTH_AUDIENCES is not set` の警告を出します。
 
 - 今の値は、Web と TUI の共通の public client だけ（`client-core` の TUI の既定のクライアント ID と同じ）。Android のアプリは、ログインの画面で利用者がクライアント ID を入れる作りで、決まった ID がない。Android の再認証（#360）でクライアントを決めたら、zoo2-infra の PR でこの値に足す。
+- Tauri 版の Web の画面の再認証は、Tauri 版のクライアント（`client-core` の `DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID`）の ID トークンを使うので、この値に足す（zoo2-infra の PR）。あわせて AuthZ の管理画面で、このクライアントに認可コードのグラントとループバックのリダイレクト URI を足す。
 - preview は OIDC を使わないので、置かない。
 - 変えるときも zoo2-infra の PR で行い、`kubectl patch` や `kubectl set env` でクラスタを直接変えない。
-- 確かめ方：起動時の警告が出ないことだけでは足りない（一覧が空でなければ警告は出ないが、一覧にない ID を使うクライアントの再認証は 403 になる）。zoo2-infra の `backend.yaml` の値に、各クライアントの ID がすべて入っているかを照らし合わせる。Web は GitHub Actions の変数 `VITE_OIDC_CLIENT_ID`（`cd-images.yaml` が frontend のビルドに渡す）、TUI は `client-core/src/config.rs` の `TUI_DEFAULT_OIDC_CLIENT_ID`、Android は決めたクライアントの ID。配備された値は、読み取りだけの `kubectl -n zoo2 get deployment backend -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OIDC_REAUTH_AUDIENCES")].value}'` で確かめられる。
+- 確かめ方：起動時の警告が出ないことだけでは足りない（一覧が空でなければ警告は出ないが、一覧にない ID を使うクライアントの再認証は 403 になる）。zoo2-infra の `backend.yaml` の値に、各クライアントの ID がすべて入っているかを照らし合わせる。Web は GitHub Actions の変数 `VITE_OIDC_CLIENT_ID`（`cd-images.yaml` が frontend のビルドに渡す）、TUI は `client-core/src/config.rs` の `TUI_DEFAULT_OIDC_CLIENT_ID`、Tauri 版は同じファイルの `DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID`、Android は決めたクライアントの ID。配備された値は、読み取りだけの `kubectl -n zoo2 get deployment backend -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OIDC_REAUTH_AUDIENCES")].value}'` で確かめられる。
 
 ## クライアントの構成
 
@@ -2062,6 +2064,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | Compose Android | UniFFI で作った Kotlin バインディング | Credential Manager のパスキー【未検証】、リカバリーキー | #353、#359 |
 | TUI（`tui/`） | ネイティブの Rust クレートとして直接使う | リカバリーキー | #359、#360 |
 | デスクトップ版（`desktop/`） | 最初の範囲では対象にしない。暗号化チャンネルは表示できないと示す（[クロス署名の API](#クロス署名356)の【決定】）。この表示は、暗号化チャンネルを作れるようになる #361 に入れる | なし | #361 |
+| Tauri 版（`desktop-tauri/`）の Web の画面 | React と同じ（zli.chat を読み込む）。再認証だけは IPC の `zoo_reauthenticate` で Rust 側が行う（ブラウザーとループバック。[クロス署名の API](#クロス署名356)の【決定】） | リカバリーキー（パスキーは【未検証】） | |
 
 【決定】バインディングはコアとは別のクレートに分け、コアにプラットフォームの依存を入れません。Web 向けは `crates/zoo-crypto-wasm`（#352）です。Android 向けのクレートは #353 で決めます。例外は `wasm32-unknown-unknown` で乱数のバックエンドを選ぶ設定（vodozemac の `wasm_js` feature、[乱数](#乱数)）の 1 つだけです。
 
@@ -2345,7 +2348,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 | 本番のアクセストークンの有効期間（`accessTokenTtl`。推奨は 3600 秒）。#362 では確かめていない（実機の `expires_in` を見る） | 【未検証】 | #362 の後続 |
 | 再認証の AuthZ 側の変更（`authenticatedAt` の claim、本番のループバックのリダイレクト）。Android は App Links、TUI はループバックで受け取る。初回設定、失効、鍵の差し替えのすべてで使う | 【決定】（AuthZ#97） | #356、#360、#362 |
 | Android の再認証で、AuthZ からの 302 のリダイレクトを Custom Tabs が App Links としてアプリに渡すか。#360 では、渡らなかったときに nginx が案内のページを返し、アプリの「ログインをやめる」で戻れるようにした | 【未検証】 | #360、#369 |
-| デスクトップ版を E2EE の対象にするか | 【決定】最初の範囲では対象外（後続の issue は未作成） | 後続 |
+| デスクトップ版を E2EE の対象にするか | 【決定】最初の範囲では対象外（後続の issue は未作成）。Tauri 版の Web の画面は、再認証をブラウザーとループバックで行って対象にする（[クロス署名の API](#クロス署名356)） | 後続 |
 | 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する（自分の端末では、起動時の確認で暗号ストアの鍵とサーバーの鍵が違うと解錠し直しになり、SSSS の鍵とも違えば「失効が終わっていないか、SSSS が書き換えられた」と出る。他のユーザーの自己署名鍵の履歴は持たない） | 【提案】 | 後続 |
 | 一度置き換わったユーザー署名鍵に戻ったことを、暗号ストアのユーザー署名鍵の履歴と `confirmed_usk` で検出する（検出と保存形式は【決定】。検出は #350 の `zoo-crypto` に入れた。暗号ストアの保存は #359、警告の表示は #362 で設定の他のユーザーの検証に入れた） | 【決定】（保存形式は #350 で決定） | #350、#359、#362 |
 | AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る。#362 では入れていない） | 後続 |

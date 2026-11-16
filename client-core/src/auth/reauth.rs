@@ -27,6 +27,9 @@ pub const CALLBACK_PATH: &str = "/callback";
 pub const REAUTH_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 1 つの接続から要求を読む期限。
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// 発行者との 1 回の通信の期限（OIDC の設定の取得と、トークンの交換）。応答しない発行者を
+/// 待ち続けないように。
+pub const REAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// ID トークンの `exp` の許容のずれ（Web と同じ 60 秒）。
 const CLOCK_SKEW_SECS: i64 = 60;
 
@@ -170,7 +173,13 @@ impl LoopbackReauth {
             ("code_verifier", self.verifier.clone()),
         ];
         // 成功応答の `access_token` と `refresh_token` は使わない（今のセッションのトークンは変えない）。
-        let id_token = match token_request(http, discovery, oidc, form).await? {
+        let response = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            token_request(http, discovery, oidc, form),
+        )
+        .await
+        .map_err(|_| ReauthError::Timeout)??;
+        let id_token = match response {
             TokenResult::Ok(tokens) => tokens
                 .id_token
                 .ok_or_else(|| ReauthError::InvalidIdToken("id_token がありません".into()))?,
@@ -212,10 +221,11 @@ enum Callback {
     Error(String),
 }
 
-const DONE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2-tui</title>\
-<p>再認証が終わりました。このタブを閉じて、zoo2-tui に戻ってください。</p>";
-const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2-tui</title>\
-<p>再認証できませんでした。zoo2-tui に戻って、表示を確かめてください。</p>";
+// TUI とデスクトップ版の両方が使うので、アプリの名前は「zoo2」とだけ書く。
+const DONE_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
+<p>再認証が終わりました。このタブを閉じて、zoo2 のアプリに戻ってください。</p>";
+const ERROR_PAGE: &str = "<!doctype html><meta charset=\"utf-8\"><title>zoo2</title>\
+<p>再認証できませんでした。zoo2 のアプリに戻って、表示を確かめてください。</p>";
 
 async fn handle_connection(mut stream: TcpStream, state: &str) -> Result<Option<Callback>> {
     let target = tokio::time::timeout(READ_TIMEOUT, read_request_target(&mut stream))

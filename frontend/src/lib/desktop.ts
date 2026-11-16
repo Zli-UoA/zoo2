@@ -166,6 +166,35 @@ export async function desktopTakeCallAccept(): Promise<string | null> {
   }
 }
 
+/** `desktopReauthenticate` の失敗。`code` は Rust 側の `ErrorCode`（`client-types/src/ipc.rs`）。 */
+export class DesktopReauthError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "DesktopReauthError";
+  }
+}
+
+/**
+ * E2EE の再認証。Rust 側が既定のブラウザーで AuthZ にログインし直してもらい（`max_age=0`）、
+ * ループバックのリダイレクトで受け取った ID トークンを返す。Rust 側が dev モード
+ * （`ZOO_DEV_USER`。backend も再認証を確かめない）のときは null。
+ * 古い版のアプリにはこのコマンドがないので、`code` が `unsupported` の失敗にする。
+ */
+export async function desktopReauthenticate(): Promise<string | null> {
+  try {
+    return await invoke<string>("zoo_reauthenticate");
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "wrong_mode") return null;
+    if (typeof code === "string") throw new DesktopReauthError(code, errorMessage(error));
+    // 型の付いたエラーでないのは、コマンドがない（古い版のアプリ）か、許されていないとき。
+    throw new DesktopReauthError("unsupported", String(error));
+  }
+}
+
 export function desktopReportNotifications(batch: DesktopBatch): void {
   void invoke("zoo_notifications_observed", { observed: { batch } }).catch(() => {});
 }
