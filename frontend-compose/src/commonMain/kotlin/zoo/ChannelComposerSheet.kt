@@ -38,7 +38,7 @@ internal fun ChannelComposerSheet(
     }
     if (!expanded) {
         val shape = RoundedCornerShape(topStart = AndroidDesign.surfaceRadius, topEnd = AndroidDesign.surfaceRadius)
-        Column(Modifier.fillMaxWidth().clip(shape)
+        Column(Modifier.fillMaxWidth().semantics { testTag = "channel-composer-dock" }.clip(shape)
             .background(MaterialTheme.colorScheme.background)
             .border(1.dp, MaterialTheme.colorScheme.outline, shape)) {
             ComposerDragHandle(app, expanded = false, enabled = enabled) { changeExpanded(true) }
@@ -51,13 +51,13 @@ internal fun ChannelComposerSheet(
     ) {
         if (expanded) {
             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-            PaneHeader {
-                IconButton("arrow-left", app.t("composer.collapse")) { changeExpanded(false) }
-                Text(app.t("messages.compose"), Modifier.weight(1f),
-                    size = AndroidDesign.titleSize, lineHeight = AndroidDesign.titleLineHeight)
-            }
-            ComposerDragHandle(app, expanded = true, enabled = true) { changeExpanded(false) }
-            Box(Modifier.weight(1f).fillMaxWidth()) { editor(true) }
+                PaneHeader {
+                    IconButton("arrow-left", app.t("composer.collapse")) { changeExpanded(false) }
+                    Text(app.t("composer.editorTitle"), Modifier.weight(1f),
+                        size = AndroidDesign.titleSize, lineHeight = AndroidDesign.titleLineHeight)
+                }
+                ComposerDragHandle(app, expanded = true, enabled = true) { changeExpanded(false) }
+                Box(Modifier.weight(1f).fillMaxWidth()) { editor(true) }
             }
         }
     }

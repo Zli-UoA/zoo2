@@ -156,8 +156,8 @@ class TouchUiTest {
             ui.onNodeWithContentDescription("保存").assertHeightIsAtLeast(48.dp)
             ui.onNodeWithContentDescription("キャンセル").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
             ui.onNodeWithContentDescription("変更する").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
-            ui.onNodeWithContentDescription("日本語の表示名").assertHeightIsAtLeast(48.dp)
-            ui.onNodeWithContentDescription("返信").assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("日本語の表示名").assertTouchHeightIsEqualTo(48.dp)
+            ui.onNodeWithContentDescription("返信").assertTouchHeightIsEqualTo(48.dp)
             val container = ui.onNodeWithTag("design-primitives").fetchSemanticsNode().boundsInRoot
             val control = ui.onNodeWithContentDescription("変更する").fetchSemanticsNode().boundsInRoot
             assertTrue(control.left >= container.left && control.right <= container.right)
@@ -245,7 +245,12 @@ class TouchUiTest {
             ui.onNodeWithContentDescription("メッセージを送信").performTextInput("通信が戻るまで下書き")
             ui.onNodeWithContentDescription("送信").assertIsNotEnabled()
             ui.onNodeWithContentDescription("ファイルを添付").assertIsNotEnabled()
-            screenshot("channel-editor", "channel-editor-compact")
+            val host = ui.onNodeWithTag("channel-editor").fetchSemanticsNode().boundsInRoot
+            val dock = ui.onNodeWithTag("channel-composer-dock").fetchSemanticsNode().boundsInRoot
+            assertEquals(host.left, dock.left, 1f)
+            assertEquals(host.right, dock.right, 1f)
+            assertEquals(host.bottom, dock.bottom, 1f)
+            screenshot("channel-composer-dock", "channel-editor-compact")
             ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
             ui.onNodeWithContentDescription("書式設定").performClick()
             screenshot("channel-editor", "channel-editor-expanded-formatting")

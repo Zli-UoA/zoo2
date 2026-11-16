@@ -44,6 +44,7 @@ class ReviewRegressionUiTest {
             override fun action(name: String) {}
             override fun translate(key: String, args: Map<String, String>) = key
             override fun relativeTimestamp(timestamp: String) = "5分前"
+            override fun notificationTime(timestamp: String) = "11/15 09:00"
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
         }
@@ -239,6 +240,7 @@ class ReviewRegressionUiTest {
             val input = ui.onNodeWithContentDescription("messages.compose")
             val compact = input.fetchSemanticsNode().boundsInRoot.height
             input.performTextInputSelection(TextRange(0, 3))
+            input.assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(0, 3)))
             ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
             ui.onNodeWithContentDescription("composer.collapse").assertIsDisplayed()
             assertTrue(input.fetchSemanticsNode().boundsInRoot.height > compact * 2)

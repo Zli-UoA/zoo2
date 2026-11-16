@@ -897,6 +897,7 @@ fun Field(
                                     else end
                                 editing = editing.copy(selection = TextRange(position))
                                 onSelection(position)
+                                onTextSelection(TextRange(position))
                                 true
                             } else false
                         }

@@ -120,3 +120,17 @@ Homeのプロフィールリンクの48dp操作領域を検査する。
 `TouchUiTest` は320/600dp、明暗、大きな日本語入力、48dpタッチ領域、無効状態を検査し、
 共通部品のデザイン確認用キャプチャも保存する。
 実機のIME・TalkBack・配布前の画面確認は別途行う。テスト追加だけを検証済みとは扱わない。
+
+## 表示確認用キャプチャ
+
+Robolectric / API 35で実際のCompose部品を描画したキャプチャ。
+入力はモックの日本語下書きで、会話一覧・システムのIMEは含まない。
+通常入力は部品の範囲、全画面は320dp幅の表示領域全体を保存する。
+
+| 通常入力・320dp | 全画面・書式操作・320dp |
+| --- | --- |
+| ![画面端に密着するチャンネル入力](images/android-design/channel-editor-compact.png) | ![全画面の編集と下段の書式操作](images/android-design/channel-editor-expanded.png) |
+
+[320dp・明るいテーマ](images/android-design/primitives-320-light.png)、
+[320dp・文字倍率180%・暗いテーマ](images/android-design/primitives-320-large-text-dark.png)、
+[600dp・暗いテーマ](images/android-design/primitives-600-dark.png)も保存する。
