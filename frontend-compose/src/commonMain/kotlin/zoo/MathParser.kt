@@ -124,7 +124,12 @@ class MathParser(private val source: String, private val budget: Int = 0) {
     }
 
     private fun group(braced: Boolean): MathNode {
-        if (++depth > 32) return MathNode.Literal(source.drop(at).also { at = source.length })
+        if (++depth > 32) {
+            invalid = true
+            at = source.length
+            depth--
+            return MathNode.Literal("")
+        }
         val values = mutableListOf<MathNode>()
         while (at < source.length && (!braced || source[at] != '}')) {
             val c = source[at]
@@ -150,6 +155,16 @@ class MathParser(private val source: String, private val budget: Int = 0) {
     }
 
     private fun atom(): MathNode {
+        if (++depth > 32) {
+            invalid = true
+            at = source.length
+            depth--
+            return MathNode.Literal("")
+        }
+        return try { atomBody() } finally { depth-- }
+    }
+
+    private fun atomBody(): MathNode {
         if (at >= source.length) {
             invalid = true
             return MathNode.Literal("")

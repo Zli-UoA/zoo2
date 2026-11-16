@@ -252,7 +252,7 @@ private fun InlineParagraph(
                             inheritedSpan,
                             inLink,
                         )
-                        appendInlineContent(id, value)
+                        appendInlineContent(id, "\uFFFC")
                         return@forEach
                     }
                     if (token.kind == "accountEmoji") {
@@ -489,8 +489,20 @@ private fun MeasuredMfmParagraph(
         val paragraph = subcompose("paragraph") {
             content(placeholders) { textLayout[0] = it }
         }.single().measure(constraints)
-        val ids = text.getStringAnnotations(0, text.length)
-            .filter { it.item in placeholders }.map { it.item }
+        val ranges = text.getStringAnnotations(0, text.length)
+            .filter { it.item in placeholders }
+        val ids = ranges.map { it.item }
+        // Measured bodies are siblings of the paragraph, so its link overlay cannot
+        // receive their taps. Put the same native link above each linked body.
+        val bodyLinks = ranges.mapNotNull { range ->
+            val body = measured[range.item] ?: return@mapNotNull null
+            val url = text.getLinkAnnotations(range.start, range.end)
+                .mapNotNull { (it.item as? LinkAnnotation.Url)?.url }.firstOrNull()
+                ?: return@mapNotNull null
+            range.item to subcompose("link-${range.item}") {
+                NativeLink(url, Modifier.semantics { contentDescription = url }) {}
+            }.single().measure(Constraints.fixed(body.width, body.height))
+        }.toMap()
         val positions = textLayout[0]?.placeholderRects.orEmpty()
         layout(paragraph.width, paragraph.height) {
             paragraph.place(0, 0)
@@ -498,8 +510,10 @@ private fun MeasuredMfmParagraph(
                 val bounds = positions.getOrNull(index)
                 val body = measured[id]
                 // A truncated placeholder has no rectangle and must not draw or receive taps.
-                if (bounds != null && body != null)
+                if (bounds != null && body != null) {
                     body.place(bounds.left.roundToInt(), bounds.top.roundToInt())
+                    bodyLinks[id]?.place(bounds.left.roundToInt(), bounds.top.roundToInt())
+                }
             }
         }
     }

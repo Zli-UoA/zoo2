@@ -145,6 +145,16 @@ class MfmUiTest {
                 assertTrue(inner.width <= outer.width + 1f, "$nextWidth / $nextScale: $inner outside $outer")
                 assertTrue(outer.height >= textLayout.size.height, "The body is clipped: $outer vs ${textLayout.size}")
                 assertTrue(inner.height >= textLayout.size.height - 1, "The body overlaps its placeholder")
+                val parent = ui.onNodeWithText("先頭", substring = true, useUnmergedTree = true)
+                val parentLayout = layout(parent)
+                val parentBounds = parent.fetchSemanticsNode().boundsInRoot
+                val placeholder = parentLayout.placeholderRects.single()!!
+                    .translate(parentBounds.topLeft)
+                assertTrue(kotlin.math.abs(placeholder.height - inner.height) <= 1f,
+                    "Body $inner does not fit placeholder $placeholder")
+                val tail = parentLayout.getBoundingBox(parentLayout.layoutInput.text.text.lastIndex)
+                    .translate(parentBounds.topLeft)
+                assertFalse(inner.overlaps(tail), "Body $inner overlaps trailing text $tail")
                 screenshot("wrapped", "wrap-${nextWidth.value}-${nextScale}-${nextDark}")
             }
         } finally { fixture.close() }
@@ -338,6 +348,27 @@ class MfmUiTest {
             ui.onNodeWithContentDescription("safe").performTouchInput { click() }
             ui.runOnIdle { assertEquals(listOf("open:https://example.test/a_(b)"), fixture.actions) }
             screenshot("syntax", "syntax-blocks")
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun emptyMathAndMultilineEffectsKeepRenderingAndLinkedEffectsOpenTheOuterLink() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                Shell(fixture) {
+                    Column(Modifier.width(320.dp)) {
+                        RichText("before \\(\\) after", selection = false)
+                        RichText("$[fg.color=f00 A\nB]", selection = false)
+                        RichText("[$[fg.color=f00 $[clickable.ev=wrong linked body]]](https://example.test/outer)")
+                    }
+                }
+            }
+            ui.onNodeWithText("before", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            ui.onNodeWithText("A\nB", useUnmergedTree = true).assertIsDisplayed()
+            // Tap the actual visible body, not the paragraph's semantics link.
+            ui.onNodeWithText("linked body", useUnmergedTree = true).performTouchInput { click() }
+            ui.runOnIdle { assertEquals(listOf("open:https://example.test/outer"), fixture.actions) }
         } finally { fixture.close() }
     }
 

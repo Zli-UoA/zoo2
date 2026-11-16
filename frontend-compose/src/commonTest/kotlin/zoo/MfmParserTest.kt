@@ -4,6 +4,24 @@ import kotlin.test.*
 
 class MfmParserTest {
     @Test
+    fun unclosedRecursiveSearchesFinishAndPreserveTheSource() {
+        for (count in listOf(30, 40, 1000)) {
+            val source = "$[a [ ".repeat(count)
+            assertEquals(source, parseInline(source).joinToString("") { it.value })
+            assertEquals(source, richSegments(source).joinToString("") { it.first })
+        }
+    }
+
+    @Test
+    fun headingsAfterProtectedRegionsUseTheOriginalNewlineConvention() {
+        for (newline in listOf("\n", "\r\n", "\r")) {
+            val source = listOf("<plain>", "# literal", "</plain>", "# End").joinToString(newline)
+            assertEquals(MessageHeadingBlock("End", 1), messageHeadingBlocks(source).last())
+            assertEquals(2, messageHeadingBlocks(source).size)
+        }
+    }
+
+    @Test
     fun bracketsInLiteralRegionsAndLinksDoNotCloseFunctions() {
         for (body in listOf("`a]b`", "<plain>a]b</plain>", "\\(a]b\\)", "[docs](https://example.test/a_(b))", "$[fg.color=fff inner]")) {
             val source = "$[spin $body tail]"

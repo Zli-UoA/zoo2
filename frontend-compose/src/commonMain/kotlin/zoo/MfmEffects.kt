@@ -119,9 +119,12 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                         draw(second)
                         if (first != second) {
                             val upperLeft = Path().apply {
-                                moveTo(0f, size.height)
-                                lineTo(0f, 0f)
+                                moveTo(0f, 0f)
                                 lineTo(size.width, 0f)
+                                lineTo(size.width - w, w)
+                                lineTo(w, w)
+                                lineTo(w, size.height - w)
+                                lineTo(0f, size.height)
                                 close()
                             }
                             clipPath(upperLeft) { draw(first) }

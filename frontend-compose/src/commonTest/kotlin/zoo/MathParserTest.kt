@@ -26,6 +26,14 @@ class MathParserTest {
     }
 
     @Test
+    fun unbracedCommandChainsRespectTheDepthLimit() {
+        for (command in listOf("\\sqrt", "\\frac", "\\hat", "\\mathrm")) {
+            val source = command.repeat(5000)
+            assertEquals(MathNode.Literal(source), MathParser(source).parse())
+        }
+    }
+
+    @Test
     fun symbolAndEscapedPunctuationRemainLiteral() {
         val nodes = (MathParser("\\alpha\\{\\%\\}").parse() as MathNode.Group).values
         assertEquals(listOf("α", "{", "%", "}"), nodes.map { (it as MathNode.Literal).value })
