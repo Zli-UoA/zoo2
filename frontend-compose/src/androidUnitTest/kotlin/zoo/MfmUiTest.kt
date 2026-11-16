@@ -36,7 +36,7 @@ import org.robolectric.annotation.GraphicsMode
 class MfmUiTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
 
-    private class Fixture {
+    private class Fixture(reducedMotion: Boolean = true) {
         val actions = mutableListOf<String>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val platform = object : Platform {
@@ -57,7 +57,7 @@ class MfmUiTest {
                     respond("""{"shortcodes":{"smile":"😀"},"data":[],"accounts":[]}""",
                         HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/json"))
                 }), scope, synchronize = false),
-            scope, Environment(touch = true, reducedMotion = true),
+            scope, Environment(touch = true, reducedMotion = reducedMotion),
         )
         fun close() { app.close(); scope.cancel() }
     }
@@ -213,25 +213,129 @@ class MfmUiTest {
         } finally { fixture.close() }
     }
 
+    @Test
+    fun animatedFramesChangeWhileReducedMotionKeepsThemStill() {
+        val fixture = Fixture(reducedMotion = false)
+        var source by mutableStateOf("$[jelly.speed=1s animated]")
+        try {
+            ui.setContent {
+                Shell(fixture) {
+                    Box(Modifier.width(320.dp).height(160.dp).testTag("animation")) {
+                        RichText(source, selection = false)
+                    }
+                }
+            }
+            ui.mainClock.autoAdvance = false
+            for (name in mfmAnimationDurations.keys) {
+                ui.runOnIdle { source = "$[$name.speed=1s animated]" }
+                ui.mainClock.advanceTimeByFrame()
+                val before = capture("animation")
+                ui.mainClock.advanceTimeBy(250)
+                val after = capture("animation")
+                try { assertFalse(before.sameAs(after), "$name did not animate") }
+                finally { before.recycle(); after.recycle() }
+            }
+            ui.runOnIdle { fixture.app.update(fixture.app.env.copy(reducedMotion = true)) }
+            ui.mainClock.advanceTimeByFrame()
+            val before = capture("animation")
+            ui.mainClock.advanceTimeBy(500)
+            val after = capture("animation")
+            try { assertTrue(before.sameAs(after), "Reduced motion still animates") }
+            finally { before.recycle(); after.recycle() }
+        } finally { ui.mainClock.autoAdvance = true; fixture.close() }
+    }
+
+    @Test
+    fun borderStylesAndFontFamiliesRenderWithTheirArguments() {
+        val fixture = Fixture()
+        var source by mutableStateOf("")
+        try {
+            ui.setContent {
+                Shell(fixture) {
+                    Box(Modifier.width(320.dp).testTag("variants")) { RichText(source, selection = false) }
+                }
+            }
+            for (style in listOf("solid", "dotted", "dashed", "double", "groove", "ridge", "inset", "outset", "hidden")) {
+                ui.runOnIdle { source = "$[border.width=4,style=$style,color=f00,radius=4 border]" }
+                ui.onNodeWithText("border", useUnmergedTree = true).assertIsDisplayed()
+                val bitmap = capture("variants")
+                try {
+                    val pixels = IntArray(bitmap.width * bitmap.height)
+                    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                    val red = pixels.count { (it and 0x00ffffff) == 0x00ff0000 }
+                    if (style == "hidden") assertEquals(0, red) else if (style in listOf("solid", "dotted", "dashed", "double"))
+                        assertTrue(red > 0, "No red border for $style")
+                } finally { bitmap.recycle() }
+                screenshot("variants", "border-$style")
+            }
+            for (font in listOf("serif", "monospace", "cursive", "fantasy", "emoji", "math")) {
+                ui.runOnIdle { source = "$[font.$font Font 日本語 😀]" }
+                ui.onNodeWithText("Font 日本語 😀", useUnmergedTree = true).assertIsDisplayed()
+                screenshot("variants", "font-$font")
+            }
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun syntaxBlocksAndLiteralRegionsRenderWithoutInterpretation() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                Shell(fixture) {
+                    Column(Modifier.width(320.dp).testTag("syntax")) {
+                        RichText("# **見出し**", selection = false)
+                        RichText("<center>中央寄せ</center>", selection = false)
+                        RichText("> 引用1\n> 引用2", selection = false)
+                        RichText("```kotlin\nval x = 1\n```", selection = false)
+                        RichText("<plain>**literal** $[spin x]</plain>", selection = false)
+                        RichText("\\(\\frac{a}{b}\\)", selection = false)
+                        RichText("[safe](https://example.test/a_(b)) :smile:", selection = false)
+                    }
+                }
+            }
+            ui.onNodeWithText("見出し", useUnmergedTree = true).assertIsDisplayed()
+            ui.onNodeWithText("中央寄せ", useUnmergedTree = true).assertIsDisplayed()
+            val centered = layout(ui.onNodeWithText("中央寄せ", useUnmergedTree = true))
+            assertEquals(androidx.compose.ui.text.style.TextAlign.Center, centered.layoutInput.style.textAlign)
+            ui.onNodeWithText("引用1\n引用2", useUnmergedTree = true).assertIsDisplayed()
+            ui.onNodeWithText("val x = 1\n", useUnmergedTree = true).assertIsDisplayed()
+            ui.onNodeWithText("**literal** $[spin x]", useUnmergedTree = true).assertIsDisplayed()
+            ui.onNodeWithText("a", useUnmergedTree = true).assertIsDisplayed()
+            ui.onNodeWithText("b", useUnmergedTree = true).assertIsDisplayed()
+            val link = layout(ui.onNodeWithText("safe 😀", useUnmergedTree = true))
+            assertEquals("https://example.test/a_(b)", (link.layoutInput.text.getLinkAnnotations(0, 1).single().item
+                as androidx.compose.ui.text.LinkAnnotation.Url).url)
+            screenshot("syntax", "syntax-blocks")
+        } finally { fixture.close() }
+    }
+
     private fun layout(node: SemanticsNodeInteraction): TextLayoutResult {
         val result = mutableListOf<TextLayoutResult>()
         node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(result) }
         return result.single()
     }
 
-    private fun screenshot(tag: String, name: String) {
-        val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/ui").apply { mkdirs() }
+    private fun capture(tag: String): Bitmap {
         val bounds = ui.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        var result: Bitmap? = null
         ui.runOnIdle {
-            val content = ui.activity.findViewById<android.view.View>(android.R.id.content)
-            val full = Bitmap.createBitmap(content.width, content.height, Bitmap.Config.ARGB_8888)
+            val view = ui.activity.findViewById<android.view.View>(android.R.id.content)
+            val full = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
             try {
-                content.draw(Canvas(full))
-                val bitmap = Bitmap.createBitmap(full, bounds.left.roundToInt(), bounds.top.roundToInt(),
+                view.draw(Canvas(full))
+                result = Bitmap.createBitmap(full, bounds.left.roundToInt(), bounds.top.roundToInt(),
                     bounds.width.roundToInt().coerceAtLeast(1), bounds.height.roundToInt().coerceAtLeast(1))
-                try { File(directory, "mfm-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }
-                finally { bitmap.recycle() }
+                // createBitmap may return its input when the requested crop is the full image.
+                if (result === full) result = full.copy(Bitmap.Config.ARGB_8888, false)
             } finally { full.recycle() }
         }
+        return checkNotNull(result)
+    }
+
+    private fun screenshot(tag: String, name: String) {
+        val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/ui").apply { mkdirs() }
+        val bitmap = capture(tag)
+        try { File(directory, "mfm-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+        finally { bitmap.recycle() }
     }
 }

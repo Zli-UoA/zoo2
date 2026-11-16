@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.*
 import kotlin.math.*
 
 val LocalMfmStyle = staticCompositionLocalOf { TextStyle() }
+internal val LocalMfmInLink = staticCompositionLocalOf { false }
 private val LocalMfmScale = staticCompositionLocalOf { 1f }
 
 @Composable
@@ -150,7 +151,7 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                 else drawing.clip(RoundedCornerShape(radius))
             }
             "bg" -> modifier.background(color("color", Color.Red))
-            "clickable" -> modifier.clickable(role = Role.Button) { app.platform.action("mfm:${args["ev"].orEmpty()}") }
+            "clickable" -> if (LocalMfmInLink.current) modifier else modifier.clickable(role = Role.Button) { app.platform.action("mfm:${args["ev"].orEmpty()}") }
             else -> modifier
         }
     val style =

@@ -184,7 +184,7 @@ private suspend fun loadShortcodes(): Row = shortcodeLock.withLock {
     ).jsonObject.also { loadedShortcodes = it }
 }
 
-private data class EmbeddedMfm(val source: String, val style: SpanStyle)
+private data class EmbeddedMfm(val source: String, val style: SpanStyle, val inLink: Boolean)
 
 private data class CachedParagraph(
     val text: AnnotatedString,
@@ -257,6 +257,7 @@ private fun InlineParagraphContent(
                 level: Int = 0,
                 inheritedWeight: FontWeight? = inheritedStyle.fontWeight,
                 inheritedSpan: SpanStyle = inheritedStyle.toSpanStyle(),
+                inLink: Boolean = false,
             ) {
                 parseInline(source).forEach { token ->
                     var value = token.value
@@ -265,6 +266,7 @@ private fun InlineParagraphContent(
                         embeddedParts[id] = EmbeddedMfm(
                             if (token.kind == "math") "\\($value\\)" else value,
                             inheritedSpan,
+                            inLink,
                         )
                         appendInlineContent(id, value)
                         return@forEach
@@ -308,21 +310,21 @@ private fun InlineParagraphContent(
                             else -> SpanStyle()
                         }
                     val channel =
-                        if (token.kind == "hashtag")
+                        if (token.kind == "hashtag" && !inLink)
                             channels.find {
                                 it.text("channel_name") == value.removePrefix("#") &&
                                     !it.present("deleted_at")
                             }
                         else null
                     val remote =
-                        if (token.kind == "mention" && value.count { it == '@' } == 2)
+                        if (!inLink && token.kind == "mention" && value.count { it == '@' } == 2)
                             value.drop(1).split('@').takeIf { it.size == 2 && it[1].contains('.') }
                         else null
-                    val link =
+                    val link = if (inLink) null else
                         token.url
                             ?: channel?.let { "/channels/${it.text("id")}" }
                             ?: remote?.let { "https://${it[1]}/@${it[0]}" }
-                    if (token.kind == "mention" && link == null) {
+                    if (token.kind == "mention" && link == null && !inLink) {
                         val id = "mention-${mentions.size}"
                         mentions[id] = value
                         appendInlineContent(id, value)
@@ -337,7 +339,9 @@ private fun InlineParagraphContent(
                             )
                         ) {
                             withStyle(style) {
-                                append(
+                                if (token.kind == "link" && token.value != token.url && level + depth < 20)
+                                    write(value, level + 1, inlineWeight, inheritedSpan.merge(style), true)
+                                else append(
                                     fontText(
                                         if (token.kind == "link" && token.value == token.url)
                                             value.replace(
@@ -353,8 +357,9 @@ private fun InlineParagraphContent(
                         }
                     else
                         withStyle(style) {
-                            if (token.kind in setOf("bold", "italic", "strike", "small") && level + depth < 20)
-                                write(value, level + 1, inlineWeight, inheritedSpan.merge(style))
+                            if ((token.kind in setOf("bold", "italic", "strike", "small") ||
+                                    (token.kind == "link" && token.value != token.url)) && level + depth < 20)
+                                write(value, level + 1, inlineWeight, inheritedSpan.merge(style), inLink)
                             else if (token.kind == "code") append(value)
                             else append(fontText(value, fonts, inlineWeight))
                         }
@@ -393,6 +398,7 @@ private fun InlineParagraphContent(
                     CompositionLocalProvider(
                         LocalMfmStyle provides inheritedStyle.merge(embedded.style),
                         LocalMfmInline provides true,
+                        LocalMfmInLink provides embedded.inLink,
                     ) {
                         if (source.startsWith("$["))
                             MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
