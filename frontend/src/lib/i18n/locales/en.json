@@ -278,7 +278,10 @@
     "leave": "Leave thread",
     "reopen": "Reopen",
     "reopenOnSend": "Sending a reply will reopen this thread and join it.",
-    "membershipError": "Could not update thread participation."
+    "membershipError": "Could not update thread participation.",
+    "participants": "{{count}} participants",
+    "participantsMore": "and {{count}} more",
+    "participantsEmpty": "No participants"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

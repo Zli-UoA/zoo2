@@ -128,6 +128,17 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
         ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["membership"],
         "left"
     );
+    // The participant list reflects only people who are currently in the thread.
+    let detail = ok(&app, &users[2], "GET", &path, Value::Null).await?;
+    let listed: Vec<&str> = detail["data"]["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(listed.contains(&users[2].as_str()));
+    assert!(!listed.contains(&users[1].as_str()));
+    assert_eq!(detail["data"]["participant_count"], listed.len());
     toasty::sql::statement(
         "UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1",
     )

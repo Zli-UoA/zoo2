@@ -3,12 +3,21 @@ import { createConfiguredApiClient, type ApiEnvelope } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { THREADS_CHANGED } from "../lib/electric/threads";
 
+export interface ThreadParticipant {
+  id: string;
+  user_name: string;
+  display_name: string | null;
+  avatar_url: string | null;
+}
 export interface ThreadMembership {
   id: string;
   channel_id: string;
   membership: "none" | "joined" | "left";
   thread_archive_at: string | null;
   can_participate: boolean;
+  /** 現在参加中の人数と、先頭から最大50人。 */
+  participant_count?: number;
+  participants?: ThreadParticipant[];
 }
 type Snapshot = { data: ThreadMembership | null; pending: boolean; error: boolean };
 const empty: Snapshot = { data: null, pending: false, error: false };

@@ -278,7 +278,10 @@
     "leave": "스레드 나가기",
     "reopen": "다시 열기",
     "reopenOnSend": "답장을 보내면 스레드를 다시 열고 참여합니다.",
-    "membershipError": "스레드 참여 상태를 변경하지 못했습니다."
+    "membershipError": "스레드 참여 상태를 변경하지 못했습니다.",
+    "participants": "참여자 {{count}}명",
+    "participantsMore": "외 {{count}}명",
+    "participantsEmpty": "참여자가 없습니다"
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",

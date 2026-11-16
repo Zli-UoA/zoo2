@@ -222,6 +222,15 @@ async fn thread_operation(
         "SELECT json_build_object('id',m.id,'channel_id',m.channel_id,'thread_archive_at',m.thread_archive_at,'membership',CASE WHEN p.user_id IS NULL THEN 'none' WHEN p.left_at IS NULL THEN 'joined' ELSE 'left' END)::text FROM messages m LEFT JOIN thread_participants p ON p.thread_id=m.id AND p.user_id=$2 WHERE m.id=$1",
         &[root_id,&auth.id]).await?;
     row["can_participate"] = json!(channel["member"] == true);
+    // Who is in the thread. Reading is already authorized by the channel check above.
+    let participants = crate::apps::one(&mut tx,
+        "SELECT json_build_object('count',count(*),'items',COALESCE(json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FILTER (WHERE rn<=50),'[]'::json))::text FROM ( \
+           SELECT u.id,u.user_name,u.display_name,u.avatar_url,p.joined_at,row_number() OVER (ORDER BY p.joined_at,u.id) AS rn \
+           FROM thread_participants p JOIN users u ON u.id=p.user_id \
+           WHERE p.thread_id=$1 AND p.left_at IS NULL AND NOT u.is_deactivated) joined",
+        &[root_id]).await?;
+    row["participant_count"] = participants["count"].clone();
+    row["participants"] = participants["items"].clone();
     let txid = if changed.is_empty() {
         None
     } else {

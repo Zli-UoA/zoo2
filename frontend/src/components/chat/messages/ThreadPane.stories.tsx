@@ -264,6 +264,30 @@ export const Participating: Story = {
     await expect(args.onLeaveThread).toHaveBeenCalledOnce();
   }),
 };
+export const WithParticipants: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    onLeaveThread: fn(),
+    participantCount: 53,
+    participants: [
+      { id: "u1", user_name: "alice", display_name: "Alice", avatar_url: null },
+      { id: "u2", user_name: "bob", display_name: null, avatar_url: null },
+    ],
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: "参加者 53人" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const list = within(canvas.getByRole("list", { name: "参加者 53人" }));
+    await expect(list.getByText("Alice")).toBeVisible();
+    await expect(list.getByText("@bob")).toBeVisible();
+    await expect(list.getByText("ほか 51人")).toBeVisible();
+  }),
+};
 export const LeftThread: Story = {
   ...NotParticipating,
   args: { ...NotParticipating.args, membership: "left" },

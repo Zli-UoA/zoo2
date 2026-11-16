@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, XIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -8,6 +8,7 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
+import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
 
 import type { TypingUser } from "../../../hooks/useTyping";
@@ -36,6 +37,9 @@ export interface ThreadPaneProps {
   membership?: "none" | "joined" | "left";
   membershipPending?: boolean;
   membershipError?: boolean;
+  /** 参加中の人数と一覧（先頭から最大50人）。 */
+  participantCount?: number;
+  participants?: ThreadParticipant[];
   onMembershipRetry?: () => void;
   onJoinThread?: () => void;
   onLeaveThread?: () => void;
@@ -103,6 +107,8 @@ export function ThreadPane({
   membership,
   membershipPending = false,
   membershipError = false,
+  participantCount,
+  participants,
   onMembershipRetry,
   onJoinThread,
   onLeaveThread,
@@ -233,6 +239,9 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
+      {participantCount !== undefined ? (
+        <ThreadParticipants count={participantCount} participants={participants ?? []} />
+      ) : null}
       {!readOnly && isMember ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
           {isArchived && onReopenThread ? (
@@ -416,5 +425,53 @@ export function ThreadPane({
         </>
       ) : null}
     </aside>
+  );
+}
+
+function ThreadParticipants({
+  count,
+  participants,
+}: {
+  count: number;
+  participants: ThreadParticipant[];
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border-b px-3 py-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-expanded={open}
+        id="thread-participants-toggle"
+        aria-controls="thread-participants"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {t("threads.participants", { count })}
+      </Button>
+      {open ? (
+        <ul
+          id="thread-participants"
+          aria-labelledby="thread-participants-toggle"
+          className="mt-1 max-h-40 overflow-y-auto text-xs"
+        >
+          {participants.length === 0 ? (
+            <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
+          ) : (
+            participants.map((participant) => (
+              <li key={participant.id} className="truncate py-0.5">
+                {participant.display_name || participant.user_name}
+                <span className="text-muted-foreground"> @{participant.user_name}</span>
+              </li>
+            ))
+          )}
+          {count > participants.length ? (
+            <li className="text-muted-foreground">
+              {t("threads.participantsMore", { count: count - participants.length })}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+    </div>
   );
 }

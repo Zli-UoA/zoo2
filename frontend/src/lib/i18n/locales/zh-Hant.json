@@ -278,7 +278,10 @@
     "leave": "退出討論串",
     "reopen": "重新開啟",
     "reopenOnSend": "傳送回覆將重新開啟並加入此討論串。",
-    "membershipError": "無法更新討論串參與狀態。"
+    "membershipError": "無法更新討論串參與狀態。",
+    "participants": "參與者 {{count}} 人",
+    "participantsMore": "另有 {{count}} 人",
+    "participantsEmpty": "沒有參與者"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",

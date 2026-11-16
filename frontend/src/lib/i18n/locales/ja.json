@@ -278,7 +278,10 @@
     "leave": "退出する",
     "reopen": "再Open",
     "reopenOnSend": "送信すると再Openして参加します。",
-    "membershipError": "スレッドの参加状態を更新できませんでした。"
+    "membershipError": "スレッドの参加状態を更新できませんでした。",
+    "participants": "参加者 {{count}}人",
+    "participantsMore": "ほか {{count}}人",
+    "participantsEmpty": "参加者はいません"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
