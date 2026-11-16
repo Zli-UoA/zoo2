@@ -294,7 +294,7 @@ pub async fn run_once_for_team(s: &AppState, team: &str) -> Result<bool, AppErro
 /// 期限の来たほかのチャンネルを止めないため。続きは、これまでどおり期限の順)。
 /// SQL variants are exposed for the bounded-work integration tests.
 #[doc(hidden)]
-pub fn claim_sql(wake: bool, team: &str) -> String {
+pub fn claim_sql(wake: bool) -> String {
     let (from, readiness) = if wake {
         (
             "slack_channel_wakes w JOIN slack_channel_syncs t ON t.team_id=w.team_id AND t.slack_channel_id=w.slack_channel_id",
@@ -307,14 +307,6 @@ pub fn claim_sql(wake: bool, team: &str) -> String {
     };
     include_str!("claim.sql")
         .replace("/* candidate_from */", from)
-        .replace(
-            "/* team_filter */",
-            if team.is_empty() {
-                ""
-            } else {
-                "t.team_id=$2 AND"
-            },
-        )
         .replace("/* readiness */", &readiness)
         .replace("{LEASE_SQL}", LEASE_SQL)
 }
@@ -327,7 +319,7 @@ async fn claim(s: &AppState, team: &str) -> Result<Option<Task>, AppError> {
     // 取り込みが一度も終わっていないチャンネル (カーソルがない) は、全履歴を取らないよう同期しない
     let mut rows = Vec::new();
     for wake in [true, false] {
-        rows = query(&mut tx, &claim_sql(wake, team), &[&token, team]).await?;
+        rows = query(&mut tx, &claim_sql(wake), &[&token, team]).await?;
         if !rows.is_empty() {
             break;
         }

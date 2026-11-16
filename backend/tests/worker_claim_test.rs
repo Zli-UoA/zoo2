@@ -3,8 +3,10 @@ use serde_json::Value;
 use tokio_postgres::{NoTls, Transaction};
 
 async fn selected(tx: &Transaction<'_>, wake: bool) -> anyhow::Result<Option<Value>> {
+    let token = uuid::Uuid::new_v4().to_string();
+    let no_team = String::new();
     Ok(tx
-        .query(&claim_sql(wake, ""), &[&uuid::Uuid::new_v4().to_string()])
+        .query(&claim_sql(wake), &[&token, &no_team])
         .await?
         .first()
         .map(|r| serde_json::from_str(&r.get::<_, String>(0)).unwrap()))

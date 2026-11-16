@@ -211,14 +211,14 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         ),
         (
             "slack_wake_empty",
-            claim_sql(true, ""),
-            vec![uuid::Uuid::new_v4().to_string()],
+            claim_sql(true),
+            vec![uuid::Uuid::new_v4().to_string(), String::new()],
             true,
         ),
         (
             "slack_due_empty",
-            claim_sql(false, ""),
-            vec![uuid::Uuid::new_v4().to_string()],
+            claim_sql(false),
+            vec![uuid::Uuid::new_v4().to_string(), String::new()],
             true,
         ),
         ("display_row_empty", reservation_sql(false), vec![], true),
@@ -238,8 +238,8 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         .await?;
     client.batch_execute("ANALYZE slack_channel_wakes; ANALYZE slack_channel_syncs; ANALYZE display_refresh_queue").await?;
     let queries=vec![
-        ("slack_wake_ready",claim_sql(true, ""),vec![uuid::Uuid::new_v4().to_string()]),
-        ("slack_due_ready",claim_sql(false, ""),vec![uuid::Uuid::new_v4().to_string()]),
+        ("slack_wake_ready",claim_sql(true),vec![uuid::Uuid::new_v4().to_string(),String::new()]),
+        ("slack_due_ready",claim_sql(false),vec![uuid::Uuid::new_v4().to_string(),String::new()]),
         ("display_row_ready",reservation_sql(false),vec![]),
         ("display_scope_ready",reservation_sql(true),vec![]),
         ("message_insert", "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'probe','2100-01-01') RETURNING id".into(),vec![format!("{user}-probe"),user.clone(),channels[0].clone()]),
