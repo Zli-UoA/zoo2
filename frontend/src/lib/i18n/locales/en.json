@@ -702,7 +702,10 @@
       "uploading": "Uploading…",
       "page": "Page {{page}} of {{pages}}",
       "spoiler": "Contains a spoiler (open it in the web app)",
-      "webOnly": "Use the web app for this control"
+      "webOnly": "Use the web app for this control",
+      "date": "Date",
+      "time": "Time",
+      "datetime": "Date and time"
     }
   },
   "search": {

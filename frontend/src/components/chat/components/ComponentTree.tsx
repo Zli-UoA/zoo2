@@ -982,6 +982,19 @@ function InteractiveControl({
         <Input
           type={type}
           className="w-auto"
+          // Label の中では見出しの label 要素が名前になる。外にあるときも、何の欄かがわかる名前を付ける
+          aria-label={
+            labelled
+              ? undefined
+              : (c.placeholder ??
+                t(
+                  c.type === T.DatePicker
+                    ? "apps.components.date"
+                    : c.type === T.TimePicker
+                      ? "apps.components.time"
+                      : "apps.components.datetime",
+                ))
+          }
           value={shown}
           required={c.required === true}
           disabled={(!!c.disabled || !ctx.appId) && !deferred}

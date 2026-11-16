@@ -31,6 +31,9 @@ describe("ComponentTree", () => {
     );
     // アプリがない（Webhook と同じ）ので押せない
     expect(await screen.findByRole("button", { name: "Approve" })).toBeDisabled();
+    // Label の外のピッカーにも名前がある（axe の label ルール）
+    for (const name of ["日付", "時刻", "日時"])
+      expect(screen.getByLabelText(name)).toBeInTheDocument();
   });
 
   it("asks for confirmation before sending and sends picker values only on submit", async () => {
