@@ -187,8 +187,8 @@ External Select（1001、Slack の `external_select`）は、利用者の入力�
 
 旧形式の `messages.card`（Webhook と Slack 取り込みのカード）と `messages.app_blocks`（旧 Block）は、`messages.components` に移しました。
 
-- 新しい書き込みは `components` だけに入ります。旧列は、古いクライアントのために残しています。後のマイグレーションで消します。
-- 既存の行は、クライアントの対応（Zli-UoA/zoo2#600）を出したあとに `zoo_components_backfill` で移します。`app_ui` の文書（ホーム・モーダル・一時メッセージ）は旧形式を残さず書き換えるので、先に流すと、旧版の Web にはそれらが表示されません。旧形式の select で、選択肢が 25 件を超えるものや 100 文字を超えるものは、変換すると欠けるので移さず、旧形式のまま残します（件数を出力します）（既定は dry-run。`--apply` で書き込み、変更前後を JSON Lines で標準出力に出します。`--restore <file>` で戻せます）。暗号化チャンネルの行は移しません。
+- 新しい書き込みは `components` に入ります。旧形式の入力（旧 Block 一覧、`card` の展開）は、移行前のクライアントのために旧列（`app_blocks`、`app_link_unfurls.card`、`app_ui.document.blocks`）にも同じ内容を書きます。旧列は後のマイグレーションで消します。
+- 既存の行は `zoo_components_backfill` で移します。旧列と `app_ui` の文書の `blocks` は残すので、移行前のクライアントでも今までどおり表示・操作できます。旧形式の select で、選択肢が 25 件を超えるものや 100 文字を超えるものは、変換すると欠けるので移さず、旧形式のまま残します（件数を出力します）（既定は dry-run。`--apply` で書き込み、変更前後を JSON Lines で標準出力に出します。`--restore <file>` で戻せます）。暗号化チャンネルの行は移しません。
 - 移す前の行は、クライアントが旧列を読んで同じ形に変換して表示します。
 
 ## 既存Webhookと移行

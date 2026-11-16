@@ -224,8 +224,8 @@ pub async fn run(
         db,
         "",
         "SELECT json_build_object('id',id,'old',document::jsonb,'kind',kind)::text FROM app_ui \
-         WHERE id>$1 AND kind IN('home','modal','ephemeral') AND document IS JSON OBJECT AND document::jsonb ? 'blocks' ORDER BY id LIMIT 500 FOR UPDATE",
-        "UPDATE app_ui SET document=$2 WHERE id=$1 AND document::jsonb ? 'blocks' RETURNING json_build_object('ok',true)::text",
+         WHERE id>$1 AND kind IN('home','modal','ephemeral') AND document IS JSON OBJECT AND document::jsonb ? 'blocks' AND NOT document::jsonb ? 'components' ORDER BY id LIMIT 500 FOR UPDATE",
+        "UPDATE app_ui SET document=$2 WHERE id=$1 AND NOT document::jsonb ? 'components' RETURNING json_build_object('ok',true)::text",
         "app_ui",
         apply,
         &mut report,
@@ -234,7 +234,12 @@ pub async fn run(
             if let Err(reason) = legacy::lossless_blocks(blocks) {
                 return Converted::Lossy(reason);
             }
-            Converted::New(legacy::blocks(blocks, row["kind"] == "modal").to_json())
+            // 旧形式の blocks は残し、移行前の Web でも表示できるようにする（新しいクライアントは components を読む）
+            let doc = legacy::blocks(blocks, row["kind"] == "modal");
+            let mut v = row["old"].clone();
+            v["flags"] = Value::from(doc.flags);
+            v["components"] = serde_json::to_value(&doc.components).expect("components serialize");
+            Converted::New(v.to_string())
         },
         &mut on_change,
     )

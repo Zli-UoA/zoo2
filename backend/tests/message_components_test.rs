@@ -223,6 +223,13 @@ async fn app_messages_accept_discord_slack_and_legacy_components() -> anyhow::Re
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(h.get("deprecation").unwrap(), "true");
+    // 旧形式の入力は、移行前のクライアントのために app_blocks にも残す
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx, "SELECT json_build_object('blocks',app_blocks,'components',components)::text FROM messages WHERE id=$1", &[mid.as_str()]).await?;
+    drop(tx);
+    assert!(row["blocks"].as_str().unwrap().contains("\"old\""));
+    assert!(row["components"].as_str().unwrap().contains("\"old\""));
     // 知らない部品・配置の誤り・危ない URL は 400
     for bad in [
         json!({"components":[{"type":99}]}),

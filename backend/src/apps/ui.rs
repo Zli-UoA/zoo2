@@ -157,6 +157,24 @@ fn deprecation(format: crate::components::Format) -> axum::http::HeaderMap {
     h
 }
 
+/// 旧形式の入力の Block 一覧（`[..]` か `{"blocks":[..]}`）。旧形式でなければ None。
+fn legacy_input(value: &Value, format: crate::components::Format) -> Option<Value> {
+    (format == crate::components::Format::Legacy).then(|| match value {
+        Value::Array(_) => value.clone(),
+        _ => value.get("blocks").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// `app_ui.document` に保存する形。旧形式の入力なら `blocks` も残し、移行前の Web（`document.blocks` を
+/// 描画する）でも表示・操作できるようにする。新しいクライアントは `components` を読む。
+fn surface_document(doc: &crate::components::Document, legacy: Option<Value>) -> String {
+    let mut v = serde_json::to_value(doc).expect("document serializes");
+    if let (Some(blocks), Value::Object(map)) = (legacy, &mut v) {
+        map.insert("blocks".into(), blocks);
+    }
+    v.to_string()
+}
+
 /// 保存した文書（app_ui.document か messages.components、旧形式の app_blocks）を部品の木として読む。
 pub fn load_document(stored: &Value, modal: bool) -> crate::components::Document {
     if stored.get("components").is_some() {
@@ -208,7 +226,7 @@ async fn publish(
     } else {
         "INSERT INTO app_ui(id,installation_id,user_id,kind,document,channel_id,expires_at) VALUES($1,$2,$3,$4,$5,NULLIF($6,''),now()+interval '15 minutes') RETURNING json_build_object('id',id)::text"
     };
-    let document = doc.to_json();
+    let document = surface_document(&doc, legacy_input(&b.document_input(), format));
     let params = if b.kind == "home" {
         vec![
             id.as_str(),
@@ -463,8 +481,21 @@ fn chosen_or_bad(value: &Value) -> Result<Vec<&str>, AppError> {
     chosen(value).ok_or_else(|| bad("Invalid selection"))
 }
 
-fn count_ok(n: usize, min: Option<u8>, max: Option<u8>, default_min: u8) -> bool {
-    n >= min.unwrap_or(default_min) as usize && n <= max.unwrap_or(1).max(1) as usize
+/// 選んだ値の一覧を、部品の下限・上限で確かめる。空は「選ばなかった」として、required の確認に任せる。
+/// 重複した値も拒否する。
+fn check_count(
+    v: &[&str],
+    min: Option<u8>,
+    max: Option<u8>,
+    default_max: usize,
+) -> Result<(), AppError> {
+    let max = max.map_or(default_max, usize::from).max(1);
+    let min = min.map_or(1, usize::from);
+    let unique = v.iter().collect::<std::collections::HashSet<_>>().len() == v.len();
+    if !unique || v.len() > max || (!v.is_empty() && v.len() < min) {
+        return Err(bad("Invalid number of selections"));
+    }
+    Ok(())
 }
 
 /// 部品 1 つ分の値を検証する（ボタンを押したとき・送信したとき）。値がなければ何もしない。
@@ -479,11 +510,10 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
     match c {
         C::StringSelect(s) => {
             let v = chosen_or_bad(value)?;
-            if !in_options(&s.options, &v)
-                || !count_ok(v.len(), s.min_values.or(Some(1)), s.max_values, 1)
-            {
+            if !in_options(&s.options, &v) {
                 return Err(bad("Invalid selection"));
             }
+            check_count(&v, s.min_values, s.max_values, 1)?;
         }
         C::Overflow(g) | C::RadioGroup(g) => {
             let v = chosen_or_bad(value)?;
@@ -493,33 +523,24 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
         }
         C::CheckboxGroup(g) => {
             let v = chosen_or_bad(value)?;
-            let max = g.max_values.map_or(g.options.len(), usize::from);
-            let min = g.min_values.map_or(1, usize::from);
-            let unique = v.iter().collect::<std::collections::HashSet<_>>().len() == v.len();
-            // 空は「選ばなかった」として、required の確認に任せる
-            if !in_options(&g.options, &v)
-                || !unique
-                || v.len() > max
-                || (!v.is_empty() && v.len() < min)
-            {
+            if !in_options(&g.options, &v) {
                 return Err(bad("Invalid selection"));
             }
+            check_count(&v, g.min_values, g.max_values, g.options.len())?;
         }
         C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => {
             let v = chosen_or_bad(value)?;
-            if v.iter().any(|id| id.is_empty() || id.len() > 100)
-                || v.len() > s.max_values.unwrap_or(1).max(1) as usize
-            {
+            if v.iter().any(|id| id.is_empty() || id.len() > 100) {
                 return Err(bad("Invalid selection"));
             }
+            check_count(&v, s.min_values, s.max_values, 1)?;
         }
         C::ExternalSelect(s) => {
             let v = chosen_or_bad(value)?;
-            if v.iter().any(|id| id.len() > 100)
-                || v.len() > s.max_values.unwrap_or(1).max(1) as usize
-            {
+            if v.iter().any(|id| id.is_empty() || id.len() > 100) {
                 return Err(bad("Invalid selection"));
             }
+            check_count(&v, s.min_values, s.max_values, 1)?;
         }
         C::Checkbox(_) => {
             if !value.is_boolean() {
@@ -562,9 +583,7 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
         }
         C::FileUpload(f) => {
             let v = chosen_or_bad(value)?;
-            if v.len() > f.max_values.unwrap_or(1).max(1) as usize {
-                return Err(bad("Too many files"));
-            }
+            check_count(&v, f.min_values, f.max_values, 1)?;
         }
         _ => {}
     }
@@ -679,13 +698,15 @@ async fn blocks(
     let content = current["content"].as_str().unwrap_or_default();
     let regenerate = content.is_empty() || previous.as_deref() == Some(content);
     toasty::sql::statement(
-        "UPDATE messages SET components=$2,app_blocks=NULL,app_origin_id=$3,content=CASE WHEN $5='1' THEN $4 ELSE content END,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
+        // 旧形式の入力では app_blocks にも同じ一覧を残し、移行前のクライアントでも表示・操作できるようにする
+        "UPDATE messages SET components=$2,app_blocks=NULLIF($6,''),app_origin_id=$3,content=CASE WHEN $5='1' THEN $4 ELSE content END,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
     )
     .bind(id.as_str())
     .bind(doc.to_json())
     .bind(p.app_id.as_str())
     .bind(fallback)
     .bind(if regenerate { "1" } else { "" })
+    .bind(legacy_input(&b, format).map(|v| v.to_string()).unwrap_or_default())
     .exec(&mut tx)
     .await?;
     tx.commit().await?;
@@ -814,6 +835,31 @@ mod tests {
         assert!(super::validate_blocks(&too_many).is_err());
     }
     use super::*;
+
+    fn component(v: Value) -> crate::components::Component {
+        crate::components::Component::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn values_follow_the_component_limits_and_types() {
+        let users = component(json!({"type":5,"custom_id":"u","min_values":2,"max_values":3}));
+        assert!(check_value(&users, &json!(["a"])).is_err());
+        assert!(check_value(&users, &json!(["a", "b"])).is_ok());
+        let files = component(json!({"type":19,"custom_id":"f","min_values":2,"max_values":2}));
+        assert!(check_value(&files, &json!(["x"])).is_err());
+        let boxes = component(
+            json!({"type":22,"custom_id":"c","max_values":1,"options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}),
+        );
+        assert!(check_value(&boxes, &json!(["a", "b"])).is_err());
+        assert!(check_value(&boxes, &json!(["a", "a"])).is_err());
+        let select = component(
+            json!({"type":3,"custom_id":"s","max_values":2,"options":[{"label":"A","value":"a"}]}),
+        );
+        assert!(check_value(&select, &json!(["a", 42])).is_err());
+        assert!(check_value(&select, &json!(42)).is_err());
+        assert!(check_value(&select, &json!(["a"])).is_ok());
+    }
+
     #[test]
     fn validates_actions_and_limits() {
         assert!(validate_blocks(&json!([{ "type":"button","action_id":"x","label":"OK"}])).is_ok());
@@ -950,7 +996,7 @@ async fn unfurl(
             "Link is not present in this message".into(),
         ));
     }
-    toasty::sql::statement("INSERT INTO app_link_unfurls(message_id,installation_id,url,components) VALUES($1,$2,$3,$4) ON CONFLICT(message_id,installation_id,url) DO UPDATE SET components=EXCLUDED.components,card=NULL").bind(id.as_str()).bind(p.installation_id).bind(b.url).bind(doc.to_json()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO app_link_unfurls(message_id,installation_id,url,components,card) VALUES($1,$2,$3,$4,NULLIF($5,'')) ON CONFLICT(message_id,installation_id,url) DO UPDATE SET components=EXCLUDED.components,card=EXCLUDED.card").bind(id.as_str()).bind(p.installation_id).bind(b.url).bind(doc.to_json()).bind(b.card.as_ref().map(|c| c.to_string()).unwrap_or_default()).exec(&mut tx).await?;
     toasty::sql::statement("UPDATE messages SET app_unfurls=(SELECT COALESCE(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb,'components',u.components::jsonb))),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=$1),updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id})))
@@ -989,13 +1035,14 @@ async fn respond(
 ) -> Result<(axum::http::HeaderMap, Json<Value>), AppError> {
     let (doc, format) =
         crate::components::app(&body, crate::components::Context::Ephemeral, "app_response")?;
+    let document = surface_document(&doc, legacy_input(&body, format));
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let installation=one(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_responses WHERE token_hash=$1",&[&hash(&token)]).await?;
     lock_installation(&mut tx, installation["id"].as_str().unwrap()).await?;
     let row=one(&mut tx,"UPDATE app_responses r SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE r.token_hash=$1 AND r.installation_id=i.id AND r.used_at IS NULL AND r.expires_at>now() AND i.active AND a.status='installed' AND i.scopes::jsonb ? 'ui:write' AND r.channel_id IS NOT NULL AND EXISTS(SELECT 1 FROM channel_user me JOIN channel_user bot ON bot.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.channel_id=r.channel_id AND me.user_id=r.user_id AND bot.user_id=a.bot_user_id AND c.deleted_at IS NULL AND c.archive_at IS NULL AND NOT c.encrypted) RETURNING json_build_object('installation',r.installation_id,'user',r.user_id,'channel',r.channel_id)::text",&[&hash(&token)]).await?;
     let id = uuid::Uuid::new_v4().to_string();
-    toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,document,expires_at) VALUES($1,$2,$3,$4,'ephemeral',$5,now()+interval '15 minutes')").bind(id.as_str()).bind(row["installation"].as_str().unwrap()).bind(row["user"].as_str().unwrap()).bind(row["channel"].as_str().unwrap()).bind(doc.to_json()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,document,expires_at) VALUES($1,$2,$3,$4,'ephemeral',$5,now()+interval '15 minutes')").bind(id.as_str()).bind(row["installation"].as_str().unwrap()).bind(row["user"].as_str().unwrap()).bind(row["channel"].as_str().unwrap()).bind(document).exec(&mut tx).await?;
     tx.commit().await?;
     Ok((deprecation(format), Json(json!({"id":id}))))
 }

@@ -35,8 +35,13 @@ fn collect(c: &Component, out: &mut Vec<String>) {
                 out.push(format!("{label}: {url}"));
             }
         }
-        C::Thumbnail(t) => out.extend(t.description.clone()),
-        C::MediaGallery(g) => out.extend(g.items.iter().filter_map(|i| i.description.clone())),
+        // 説明がなければ URL を出す（画像だけの投稿でも、代わりの文字が空にならないように）
+        C::Thumbnail(t) => out.push(t.description.clone().unwrap_or_else(|| t.media.url.clone())),
+        C::MediaGallery(g) => out.extend(
+            g.items
+                .iter()
+                .map(|i| i.description.clone().unwrap_or_else(|| i.media.url.clone())),
+        ),
         C::File(f) => out.push(f.name.clone().unwrap_or_else(|| f.file.url.clone())),
         C::Container(c) => out.extend([&c.title, &c.subtitle].into_iter().flatten().cloned()),
         C::Video(v) => out.push(format!(
