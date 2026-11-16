@@ -717,21 +717,19 @@ async fn reopening_encrypted_dm_serializes_with_encrypted_note_rejection() -> an
     let (observer, observer_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observer_driver);
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let note_pid: i32 = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let waiting: bool = observer
-                .query_one(
-                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%channels%' AND query LIKE '%FOR SHARE%' AND $1 = ANY(pg_blocking_pids(pid)))",
+            if let Some(row) = observer
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%channels%' AND query LIKE '%FOR SHARE%' AND $1 = ANY(pg_blocking_pids(pid)) LIMIT 1",
                     &[&blocker_pid],
                 )
                 .await?
-                .get(0);
-            if waiting {
-                break;
+            {
+                return Ok::<i32, anyhow::Error>(row.get(0));
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        Ok::<(), anyhow::Error>(())
     })
     .await
     .map_err(|_| anyhow::anyhow!("encrypted note request did not wait for the channel lock"))??;
@@ -753,16 +751,16 @@ async fn reopening_encrypted_dm_serializes_with_encrypted_note_rejection() -> an
         loop {
             let waiters = observer
                 .query(
-                    "SELECT query FROM pg_stat_activity WHERE wait_event_type = 'Lock'",
-                    &[],
+                    "SELECT query, $1 = ANY(pg_blocking_pids(pid)) FROM pg_stat_activity WHERE wait_event_type = 'Lock'",
+                    &[&note_pid],
                 )
                 .await?
                 .into_iter()
-                .map(|row| row.get::<_, String>(0))
+                .map(|row| (row.get::<_, String>(0), row.get::<_, bool>(1)))
                 .collect::<Vec<_>>();
             if waiters
                 .iter()
-                .any(|query| query.contains("users") && query.contains("NO KEY UPDATE"))
+                .any(|(query, blocked_by_note)| *blocked_by_note && query.contains("users") && query.contains("NO KEY UPDATE"))
             {
                 break;
             }

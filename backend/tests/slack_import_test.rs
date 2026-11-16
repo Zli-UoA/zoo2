@@ -231,7 +231,9 @@ async fn upload_with_cleanup_failure(
             .to_string();
         job_id = Some(id.clone());
         let put =
-            reqwest::Client::new()
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?
                 .put(created["upload_url"].as_str().ok_or_else(|| {
                     anyhow::anyhow!("upload response has no upload URL: {created}")
                 })?)
@@ -2603,7 +2605,9 @@ async fn run_failed_upload_cleanup_fixture(inject_body_panic: bool) -> anyhow::R
         .await?;
         anyhow::ensure!(status == StatusCode::OK, "stranded fixture job creation failed: {created}");
         let stranded_id = created["import"]["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing stranded job id: {created}"))?;
-        let response = reqwest::Client::new()
+        let response = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?
             .put(created["upload_url"].as_str().ok_or_else(|| anyhow::anyhow!("missing stranded upload URL: {created}"))?)
             .header("content-type", "application/zip")
             .body(stranded_zip)

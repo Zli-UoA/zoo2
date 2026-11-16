@@ -13,6 +13,8 @@ const E2EE_NOTES_MIGRATION: &str =
 
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
+static CLEANUP_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn request(
     app: &Router,
     method: &str,
@@ -1334,6 +1336,7 @@ async fn e2ee_migration_preflight_reports_sqlstate_55000_and_preserves_legacy_no
 #[tokio::test]
 async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
 -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
@@ -1377,6 +1380,12 @@ async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
     connection.execute("UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours' WHERE id = ANY($1)", &[&&ids[2..]]).await?;
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
+            &[],
+        )
+        .await?;
     let locked = connection.transaction().await?;
     locked
         .query_one(
@@ -1408,12 +1417,42 @@ async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
             .is_none()
     );
     backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_notes WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_user WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_channels()
 -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
@@ -1520,6 +1559,12 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
     blocker.commit().await?;
     legacy.await??;
 
+    blocker_connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
+            &[],
+        )
+        .await?;
     let blocker = blocker_connection.transaction().await?;
     blocker
         .query_one(
@@ -1621,6 +1666,7 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
 #[tokio::test]
 #[ignore = "requires an explicitly configured disposable NOTES_CLEANUP_TEST_DATABASE_URL"]
 async fn expired_note_cleanup_reuses_unused_batch_capacity() -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
     let mut config = Config::from_env();
     config.database_url = std::env::var("NOTES_CLEANUP_TEST_DATABASE_URL")?;
     let db = init_db(&config.database_url).await?;
@@ -1686,6 +1732,7 @@ async fn expired_note_cleanup_reuses_unused_batch_capacity() -> anyhow::Result<(
 
 #[tokio::test]
 async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
@@ -1721,6 +1768,12 @@ async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::
             .await?;
     }
 
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
+            &[],
+        )
+        .await?;
     let blocker = connection.transaction().await?;
     for channel in &channels[..100] {
         blocker
@@ -1768,6 +1821,7 @@ async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::
 
 #[tokio::test]
 async fn expired_note_cleanup_rotates_across_a_persistent_backlog() -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
@@ -2437,6 +2491,7 @@ async fn channel_creation_rechecks_guest_kind_after_waiting_for_user_lock() -> a
 
 #[tokio::test]
 async fn channel_note_deleted_at_is_utc_in_non_utc_sessions() -> anyhow::Result<()> {
+    let _cleanup_guard = CLEANUP_TEST_LOCK.lock().await;
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let separator = if config.database_url.contains('?') {
@@ -2481,7 +2536,7 @@ async fn channel_note_deleted_at_is_utc_in_non_utc_sessions() -> anyhow::Result<
         StatusCode::OK
     );
 
-    let (connection, driver) =
+    let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
     let rows = connection.query(
@@ -2631,6 +2686,12 @@ async fn channel_note_deleted_at_is_utc_in_non_utc_sessions() -> anyhow::Result<
         StatusCode::NOT_FOUND,
         "an expired tombstone must not restore before cleanup"
     );
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
+            &[],
+        )
+        .await?;
     backend::routes::channel_notes::purge_expired_notes(&db).await?;
     assert!(
         connection
@@ -2639,6 +2700,35 @@ async fn channel_note_deleted_at_is_utc_in_non_utc_sessions() -> anyhow::Result<
             .is_none(),
         "expired tombstones must be physically purged"
     );
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_notes WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_user WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 

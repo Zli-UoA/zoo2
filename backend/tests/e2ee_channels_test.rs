@@ -1077,6 +1077,51 @@ async fn wait_for_lock(env: &Env, pattern: &str) {
     panic!("no statement waited on a lock: {pattern}");
 }
 
+async fn wait_for_lock_blocked_by(env: &Env, blocker_pid: i32, pattern: &str) -> i32 {
+    let blocker = blocker_pid.to_string();
+    for _ in 0..100 {
+        let waiting = env
+            .query(
+                "SELECT json_build_object('pid', pid)::text FROM pg_stat_activity
+                 WHERE wait_event_type = 'Lock'
+                   AND query LIKE '%' || $1 || '%'
+                   AND query NOT LIKE '%pg_stat_activity%'
+                   AND $2::int = ANY(pg_blocking_pids(pid))
+                 LIMIT 1",
+                &[pattern, &blocker],
+            )
+            .await;
+        if let Some(pid) = waiting.first().and_then(|row| row["pid"].as_i64()) {
+            return pid as i32;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no statement waited on blocker {blocker_pid} with lock: {pattern}");
+}
+
+async fn wait_for_pid_blocked_by(env: &Env, waiter_pid: i32, blocker_pid: i32) {
+    let waiter = waiter_pid.to_string();
+    let blocker = blocker_pid.to_string();
+    for _ in 0..100 {
+        let waiting = env
+            .query(
+                "SELECT json_build_object('waiting', EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE pid = $1::int
+                       AND wait_event_type = 'Lock'
+                       AND $2::int = ANY(pg_blocking_pids(pid))
+                 ))::text",
+                &[&waiter, &blocker],
+            )
+            .await;
+        if waiting[0]["waiting"].as_bool().unwrap_or(false) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("pid {waiter_pid} did not wait on blocker {blocker_pid}");
+}
+
 #[tokio::test]
 async fn sends_and_edits_recheck_membership_after_the_channel_lock() {
     let env = env().await;
@@ -1234,6 +1279,10 @@ async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> an
     let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
+    let blocker_pid: i32 = connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
     let blocker = connection.transaction().await?;
     // Hold off the DM's channel INSERT after it has taken the per-user E2EE
     // the member advisory lock. The channel add must wait for the user row
@@ -1257,7 +1306,7 @@ async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> an
             .await
         })
     };
-    wait_for_lock(&env, "INSERT INTO").await;
+    let dm_pid = wait_for_lock_blocked_by(&env, blocker_pid, "INSERT INTO").await;
 
     let add = {
         let app = env.app.clone();
@@ -1266,7 +1315,7 @@ async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> an
         let body = json!({"user_id": bob});
         tokio::spawn(async move { request(&app, "POST", &path, &actor, body).await })
     };
-    wait_for_lock(&env, "WHERE id = $1 FOR NO KEY UPDATE").await;
+    wait_for_lock_blocked_by(&env, dm_pid, "WHERE id = $1 FOR NO KEY UPDATE").await;
     blocker.commit().await?;
 
     let (dm_status, dm_body) = dm.await?;
@@ -1359,6 +1408,15 @@ async fn guest_additions_lock_the_user_row_before_the_member_lock() {
     // 無効化と同じく、users の行を更新してから（一括の増加で）メンバー単位のロックを取ったまま止める。
     let mut db = env.db.clone();
     let mut tx = db.transaction().await.unwrap();
+    let blocker_pid = backend::apps::query(
+        &mut tx,
+        "SELECT json_build_object('pid', pg_backend_pid())::text",
+        &[],
+    )
+    .await
+    .unwrap()[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
     toasty::sql::statement("UPDATE users SET guest_kind = 'deactivated' WHERE id = $1")
         .bind(guest.as_str())
         .exec(&mut tx)
@@ -1371,7 +1429,7 @@ async fn guest_additions_lock_the_user_row_before_the_member_lock() {
         let body = json!({"user_id": guest});
         tokio::spawn(async move { request(&app, "POST", &path, &alice, body).await })
     };
-    wait_for_lock(&env, "WHERE id = $1 FOR NO KEY UPDATE").await;
+    wait_for_lock_blocked_by(&env, blocker_pid, "WHERE id = $1 FOR NO KEY UPDATE").await;
     assert!(!add.is_finished());
     tx.rollback().await.unwrap();
 
@@ -1409,6 +1467,14 @@ async fn direct_join_rechecks_guest_status_after_waiting_for_user_lock() -> anyh
     // before checking guest status and reject after this update commits.
     let mut blocker_db = env.db.clone();
     let mut blocker = blocker_db.transaction().await?;
+    let blocker_pid = backend::apps::query(
+        &mut blocker,
+        "SELECT json_build_object('pid', pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
     toasty::sql::statement("UPDATE users SET guest_kind = 'multi' WHERE id = $1")
         .bind(guest.as_str())
         .exec(&mut blocker)
@@ -1420,7 +1486,7 @@ async fn direct_join_rechecks_guest_status_after_waiting_for_user_lock() -> anyh
         let actor = guest.clone();
         tokio::spawn(async move { request(&app, "POST", &path, &actor, Value::Null).await })
     };
-    wait_for_lock(&env, "users WHERE id = $1 FOR NO KEY UPDATE").await;
+    wait_for_lock_blocked_by(&env, blocker_pid, "users WHERE id = $1 FOR NO KEY UPDATE").await;
     assert!(
         !join.is_finished(),
         "join must wait for the guest transition"
@@ -1491,6 +1557,14 @@ async fn encrypted_dm_pins_guest_status_before_waiting_for_member_lock() -> anyh
     let bob = env.user().await;
     let mut blocker_db = env.db.clone();
     let mut blocker = blocker_db.transaction().await?;
+    let blocker_pid = backend::apps::query(
+        &mut blocker,
+        "SELECT json_build_object('pid', pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
     toasty::sql::statement("SELECT pg_advisory_xact_lock(3, hashtext($1))")
         .bind(bob.as_str())
         .exec(&mut blocker)
@@ -1511,11 +1585,15 @@ async fn encrypted_dm_pins_guest_status_before_waiting_for_member_lock() -> anyh
             .await
         })
     };
-    wait_for_lock(&env, "pg_advisory_xact_lock(3").await;
+    let dm_pid = wait_for_lock_blocked_by(&env, blocker_pid, "pg_advisory_xact_lock(3").await;
 
     let (update_connection, update_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(update_driver);
+    let update_pid: i32 = update_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
     let update_bob = bob.clone();
     let update = tokio::spawn(async move {
         update_connection
@@ -1525,17 +1603,16 @@ async fn encrypted_dm_pins_guest_status_before_waiting_for_member_lock() -> anyh
             )
             .await
     });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    let guest_transition_waited = !update.is_finished();
+    wait_for_pid_blocked_by(&env, update_pid, dm_pid).await;
+    assert!(
+        !update.is_finished(),
+        "encrypted DM must hold the target users row before waiting on the member advisory lock"
+    );
 
     blocker.commit().await?;
     let (status, body) = tokio::time::timeout(Duration::from_secs(10), dm).await??;
     assert_eq!(status, StatusCode::OK, "{body}");
     update.await??;
-    assert!(
-        guest_transition_waited,
-        "encrypted DM must hold the target users row before waiting on the member advisory lock"
-    );
     Ok(())
 }
 

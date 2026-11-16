@@ -192,7 +192,7 @@ POSTGRES_PASSWORD=staging-test-password \
 
      ```bash
      docker compose --project-directory . -f infra/compose.stack.yaml \
-       exec postgres psql -U "${POSTGRES_USER:-zoo}" -d "${POSTGRES_DB:-zoo}" -v ON_ERROR_STOP=1
+       exec postgres sh -c 'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1'
      ```
 
      ```sql
@@ -216,7 +216,7 @@ POSTGRES_PASSWORD=staging-test-password \
 
      ```bash
      docker compose --project-directory . -f infra/compose.stack.yaml \
-       up -d --force-recreate --wait migrate
+       up --force-recreate --exit-code-from migrate migrate
      docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
      ```
 
