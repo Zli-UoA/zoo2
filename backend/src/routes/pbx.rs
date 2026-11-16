@@ -53,7 +53,8 @@ fn encoded(row: &[(&str, String)]) -> String {
         form.append_pair(key, value);
     }
     drop(form);
-    url.query().unwrap_or("").to_owned()
+    // res_config_curl uses ast_uri_http, which does not decode + as a space.
+    url.query().unwrap_or("").replace('+', "%20")
 }
 fn endpoint_id(id: &str) -> Option<(&str, &str)> {
     let (kind, id) = id.split_once('-')?;
@@ -225,8 +226,8 @@ mod tests {
         assert!(endpoint_id("line-550e8400-e29b-41d4-a716-446655440000").is_some());
         assert!(endpoint_id("line-../auths").is_none());
         assert_eq!(
-            encoded(&[("password", "a&b=c\n".into())]),
-            "password=a%26b%3Dc%0A"
+            encoded(&[("password", "a&b=c\n alpha+beta".into())]),
+            "password=a%26b%3Dc%0A%20alpha%2Bbeta"
         );
     }
 }
