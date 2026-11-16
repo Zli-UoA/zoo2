@@ -59,3 +59,15 @@ CI Frontend の `check` と `build` は、`crypto-wasm` の成果物を受け取
 `build` を含む全チェックの成功は、引き続き `automerge-gate/all-passed` が判定します。マージキューでは `merge-queue.yaml` の `all-passed` が、呼び出したworkflow全体の結果を判定します。Checkやビルドの失敗を許容する設定は入れません。
 
 PRをまたいで検証を先行させる場合は、リポジトリのmain向けRulesetでMerge Queueを有効にし、Build concurrencyをまず2〜3に設定します。キューは先行PRがマージされる想定で後続の組み合わせを検証し、先行PRが失敗した場合は影響を受ける後続を再検証します。`merge_group` を処理するworkflowは既存の `merge-queue.yaml` を使います。Rulesetはこのリポジトリのコードでは管理していないため、このworkflowの変更だけではMerge Queueは有効になりません。
+
+## Test Selection
+
+CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR内の変更が通常の `frontend/src/**/*.ts`・`tsx` の追加・編集だけなら、`vp test related <変更したファイル>` で依存するテストを選びます。PRのbase SHAとチェックアウトしたコミットを比較し、直前のコミットだけでなくPRの差分全体を対象にします。浅いcheckoutでも選別できるよう、Gitの履歴をたどる `--changed` ではなく、差分のファイル一覧を明示します。Vitestがimportの依存関係をたどるため、共通モジュールを変更すると、それを間接的に使うテストも対象になります。関連テストがない場合だけ、テスト0件を成功として扱います。
+
+設定・依存・CSS・JSONなどの資源、型宣言、共通テスト設定、ルート、Service Worker、i18n・PWA・E2EE・OIDCなどの実行時資源に関わる変更は全件実行します。削除・名前変更、差分取得失敗、base SHA不明、空の差分でも全件に戻します。mainへのpush、マージキュー、手動実行は常に全件実行です。選択モードと理由はジョブログへ出し、テストそのものの失敗は再試行で隠さず、そのまま失敗にします。
+
+スイートの選択は共有workflow `select-tests.yaml` が行います。PRの変更が独立したテストファイルだけなら、単体・browser・VRT、Playwrightのi18n・レイアウト・frontend選択・CSP・OIDC・E2EE、PWA・avatar-cache・offline-CSPの該当スイートの和集合だけを選びます。無関係なコンテナ・proxy検証、Storybookのテストとカタログ生成、認証・E2EEのWasm生成も省きます。i18nを単独選択した場合は、先行するoffline-CSP検証のビルドを使えないため、専用のビルドを行います。アプリ本体・Story・共通ヘルパー・設定・未登録のテストの変更は全スイートを選びます。
+
+バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。
+
+判定workflowは自身の回帰テストが成功してから結果を返します。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
