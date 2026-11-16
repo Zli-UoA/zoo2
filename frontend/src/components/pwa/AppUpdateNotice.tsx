@@ -75,8 +75,12 @@ export function AppUpdateNotice() {
       window.location.reload();
     };
 
-    const first = setTimeout(() => void check(), UPDATE_CHECK_FIRST_DELAY_MS);
-    const timer = setInterval(() => void check(), UPDATE_CHECK_INTERVAL_MS);
+    // 裏に回ったタブでは取得しない。表示に戻ったときに `visibilitychange` で確かめる。
+    const checkIfVisible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    const first = setTimeout(checkIfVisible, UPDATE_CHECK_FIRST_DELAY_MS);
+    const timer = setInterval(checkIfVisible, UPDATE_CHECK_INTERVAL_MS);
     document.addEventListener("visibilitychange", checkIfDue);
     window.addEventListener("focus", checkIfDue);
     window.addEventListener("online", checkIfDue);

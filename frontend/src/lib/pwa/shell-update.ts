@@ -1,3 +1,6 @@
+/** サーバーの画面を取得するときの時間の上限。 */
+export const SHELL_FETCH_TIMEOUT_MS = 15_000;
+
 /** 本文に書かれた入口のスクリプト (`/assets/index-<hash>.js`)。`sw.js` の `SHELL_ENTRY` と同じ見方。 */
 const ENTRY = /\/assets\/index-[^"'?#]+\.js/;
 
@@ -23,10 +26,22 @@ export function parseShellEntry(html: string): string | null {
  */
 export async function fetchDeployedShellEntry(
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = SHELL_FETCH_TIMEOUT_MS,
 ): Promise<string | null> {
-  const response = await fetchImpl("/", { cache: "no-store", credentials: "same-origin" });
-  if (!response.ok) return null;
-  return parseShellEntry(await response.text());
+  // 本文の受信が止まっても確認が終わるように、本文を読み終えるまでを時間で区切る。
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl("/", {
+      cache: "no-store",
+      credentials: "same-origin",
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return parseShellEntry(await response.text());
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** 新しい版がデプロイされているか。分からないとき (開発用のサーバー、取得の失敗) は false。 */

@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { currentShellEntry, isShellOutdated, parseShellEntry } from "./shell-update";
+import {
+  currentShellEntry,
+  fetchDeployedShellEntry,
+  isShellOutdated,
+  parseShellEntry,
+} from "./shell-update";
 
 const html = (entry: string) =>
   `<!doctype html><html><head><script type="module" crossorigin src="${entry}"></script></head></html>`;
@@ -38,7 +43,10 @@ describe("isShellOutdated", () => {
   it("サーバーの入口が違えば true", async () => {
     const fetchImpl = respond(html("/assets/index-new.js"));
     expect(await isShellOutdated("/assets/index-old.js", fetchImpl)).toBe(true);
-    expect(fetchImpl).toHaveBeenCalledWith("/", { cache: "no-store", credentials: "same-origin" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/",
+      expect.objectContaining({ cache: "no-store", credentials: "same-origin" }),
+    );
   });
 
   it("同じなら false", async () => {
@@ -55,5 +63,19 @@ describe("isShellOutdated", () => {
       throw new TypeError("offline");
     }) as unknown as typeof fetch;
     expect(await isShellOutdated("/assets/index-old.js", failing)).toBe(false);
+  });
+
+  it("本文の受信が止まったら、時間で打ち切る", async () => {
+    const stalled = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        ({
+          ok: true,
+          text: () =>
+            new Promise<string>((_resolve, reject) =>
+              init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+            ),
+        }) as Response,
+    ) as unknown as typeof fetch;
+    await expect(fetchDeployedShellEntry(stalled, 10)).rejects.toThrow("aborted");
   });
 });
