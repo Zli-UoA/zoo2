@@ -320,9 +320,13 @@ async fn invoke(
         "home" => "home.opened",
         "action" | "submit" | "options" => {
             let modal_surface;
+            // メッセージ (一時メッセージを含む) の送信は Label の中の入力だけをまとめて送る。Label の外の select などは
+            // 選んだときに送るので、送信では必須かどうかを確かめない
+            let labels_only;
             let stored = if let Some(surface) = &b.surface_id {
                 let row = one(&mut tx,"SELECT json_build_object('document',document::jsonb,'kind',kind)::text FROM app_ui WHERE id=$1 AND installation_id=$2 AND user_id=$3 AND (expires_at IS NULL OR expires_at>now()) AND kind IN('home','modal','ephemeral') AND channel_id IS NOT DISTINCT FROM NULLIF($4,'') FOR UPDATE",&[surface,app["installation"].as_str().unwrap(),&actor.id,b.channel_id.as_deref().unwrap_or("")]).await?;
                 modal_surface = row["kind"] == "modal";
+                labels_only = row["kind"] == "ephemeral";
                 row["document"].clone()
             } else if let Some(message) = &b.message_id {
                 let channel = b
@@ -330,6 +334,7 @@ async fn invoke(
                     .as_deref()
                     .ok_or_else(|| AppError::BadRequest("channel_id required".into()))?;
                 modal_surface = false;
+                labels_only = true;
                 let row = one(&mut tx,"SELECT json_build_object('components',components::jsonb,'blocks',app_blocks::jsonb)::text FROM messages WHERE id=$1 AND channel_id=$2 AND app_origin_id=$3 AND deleted_at IS NULL AND (components IS NOT NULL OR app_blocks IS NOT NULL)",&[message,channel,&id]).await?;
                 if row["components"].is_object() {
                     row["components"].clone()
@@ -375,7 +380,7 @@ async fn invoke(
                     "options.requested"
                 }
                 _ => {
-                    check_submission(&doc, &b.values)?;
+                    check_submission(&doc, &b.values, labels_only)?;
                     // file_upload の値は、利用者がこのチャンネルに上げた、まだ投稿に付けていない添付の ID。
                     // 送信先のアプリだけが 1 日のあいだ取得できるようにする
                     let ids: Vec<String> = doc
@@ -591,12 +596,27 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
 }
 
 /// 送信（モーダル・ホーム）の値を検証する。required の入力が空なら 400。木にないキーはログに残すだけにする。
-fn check_submission(doc: &crate::components::Document, values: &Value) -> Result<(), AppError> {
+fn check_submission(
+    doc: &crate::components::Document,
+    values: &Value,
+    labels_only: bool,
+) -> Result<(), AppError> {
     use crate::components::Component as C;
+    let labelled: std::collections::HashSet<&str> = doc
+        .walk()
+        .into_iter()
+        .filter_map(|c| match c {
+            C::Label(l) => l.component.custom_id(),
+            _ => None,
+        })
+        .collect();
     for c in doc.walk() {
         let Some(id) = c.custom_id() else { continue };
         let value = &values[id];
         check_value(c, value)?;
+        if labels_only && !labelled.contains(id) {
+            continue;
+        }
         let required = match c {
             C::TextInput(t) => t.required.unwrap_or(true),
             C::StringSelect(s) => s.required.unwrap_or(false),

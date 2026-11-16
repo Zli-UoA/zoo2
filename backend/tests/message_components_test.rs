@@ -344,6 +344,47 @@ async fn modal_submissions_check_required_and_formatted_inputs() -> anyhow::Resu
 }
 
 #[tokio::test]
+async fn message_submissions_require_only_the_labelled_inputs() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    let mid = app_message(&f).await;
+    // Label の外の radio group (required の既定は true) は、選んだときに送る部品なので送信では必須にしない
+    ok(&f.app, "POST", &format!("/api/apps/v1/messages/{mid}/components"), &f.token, json!({"components":[
+        {"type":1,"components":[{"type":21,"custom_id":"vote","options":[{"label":"A","value":"a"}]}]},
+        {"type":18,"label":"Name","component":{"type":4,"custom_id":"name","style":1}}
+    ]})).await;
+    let invoke = format!("/api/apps/{}/invoke", f.id);
+    let submit = |values: Value| json!({"kind":"submit","channel_id":f.channel,"message_id":mid,"values":values});
+    let (s, v) = request(&f.app, "POST", &invoke, &f.owner, submit(json!({}))).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "the labelled input is still required: {v}"
+    );
+    // 値があれば Label の外でも選択肢の中にあるかは確かめる
+    let (s, v) = request(
+        &f.app,
+        "POST",
+        &invoke,
+        &f.owner,
+        submit(json!({"name":"n","vote":"z"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let v = ok(
+        &f.app,
+        "POST",
+        &invoke,
+        &f.owner,
+        submit(json!({"name":"n"})),
+    )
+    .await;
+    let event = delivery(&f, v["event_id"].as_str().unwrap()).await?;
+    assert_eq!(event["type"], "view.submitted");
+    assert_eq!(event["data"]["message_id"], json!(mid));
+    Ok(())
+}
+
+#[tokio::test]
 async fn external_selects_ask_the_app_for_options() -> anyhow::Result<()> {
     let f = fixture().await?;
     let mid = app_message(&f).await;
