@@ -66,9 +66,10 @@ internal class AndroidPhoneHost(
     override fun end(id: String) { if (valid(id)) controller.hangup() }
     override fun tone(id: String, tone: String) { if (valid(id)) controller.dtmf(tone) }
     override fun incomingUi(id: String) = showIncoming(id)
-    override fun audio(id: String, speaker: Boolean, muted: Boolean) {
+    override fun audio(id: String, speaker: Boolean, muted: Boolean?) {
         if (!valid(id)) return
         controller.audioRoute(speaker)
+        if (muted == null) return
         if (controller.call?.status == "active" && !controller.busy) controller.mute(muted) else pendingMute = muted
     }
     fun matches(session: String?, id: String?) = current === this && session == token && id != null && controller.call?.id == id

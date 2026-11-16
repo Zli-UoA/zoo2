@@ -33,10 +33,11 @@ internal interface ConnectionActions {
     fun end(id: String)
     fun tone(id: String, tone: String)
     fun incomingUi(id: String)
-    fun audio(id: String, speaker: Boolean, muted: Boolean)
+    fun audio(id: String, speaker: Boolean, muted: Boolean?)
 }
 
 internal class ZooConnection(private val actions: ConnectionActions, val id: String, incoming: Boolean) : Connection() {
+    private var nativeMuted = false
     init {
         connectionProperties = PROPERTY_SELF_MANAGED
         connectionCapabilities = CAPABILITY_MUTE
@@ -52,6 +53,10 @@ internal class ZooConnection(private val actions: ConnectionActions, val id: Str
     override fun onShowIncomingCallUi() { if (actions.valid(id)) actions.incomingUi(id) }
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onCallAudioStateChanged(state: CallAudioState) {
-        if (actions.valid(id)) actions.audio(id, state.route == CallAudioState.ROUTE_SPEAKER, state.isMuted)
+        if (actions.valid(id)) {
+            val changed = state.isMuted.takeIf { it != nativeMuted }
+            nativeMuted = state.isMuted
+            actions.audio(id, state.route == CallAudioState.ROUTE_SPEAKER, changed)
+        }
     }
 }
