@@ -43,6 +43,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
+          shared-key: backend-check
       - uses: ariga/setup-atlas@28f0b75814c08b1a265b75713c120cfad46433ae
       - name: Build benchmark before measuring
         run: cargo test --manifest-path backend/Cargo.toml --test home_scale_test --no-run

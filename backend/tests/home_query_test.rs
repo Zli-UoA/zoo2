@@ -3,8 +3,13 @@ use backend::config::Config;
 use serde_json::Value;
 use tokio_postgres::{NoTls, SimpleQueryMessage};
 
+// Bulk fixtures hold hundreds of advisory-lock stripes until rollback. Keep
+// independent fixtures apart; concurrency scenarios still use multiple sessions.
+static FIXTURE_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn single_post_query_scopes_work_to_the_conversation() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (mut client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -94,6 +99,7 @@ async fn single_post_query_scopes_work_to_the_conversation() -> anyhow::Result<(
 
 #[tokio::test]
 async fn notification_previews_are_built_only_for_the_selected_page() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (mut client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -154,6 +160,7 @@ async fn notification_previews_are_built_only_for_the_selected_page() -> anyhow:
 
 #[tokio::test]
 async fn timeline_seek_metadata_tracks_legacy_writers_and_late_parents() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (mut client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -246,6 +253,7 @@ async fn timeline_seek_metadata_tracks_legacy_writers_and_late_parents() -> anyh
 
 #[tokio::test]
 async fn concurrent_parent_and_receipt_insertion_keeps_reply_seek_eligible() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let url = Config::from_env().database_url;
     let (mut a, connection) = tokio_postgres::connect(&url, NoTls).await?;
     tokio::spawn(connection);
@@ -309,6 +317,7 @@ async fn concurrent_parent_and_receipt_insertion_keeps_reply_seek_eligible() -> 
 
 #[tokio::test]
 async fn seek_skips_private_history_and_preserves_repost_ties() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (mut client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -409,6 +418,7 @@ async fn seek_skips_private_history_and_preserves_repost_ties() -> anyhow::Resul
 #[tokio::test]
 async fn selected_reposts_use_primary_keys_and_reactions_are_aggregated_once() -> anyhow::Result<()>
 {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (mut client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -540,6 +550,7 @@ async fn selected_reposts_use_primary_keys_and_reactions_are_aggregated_once() -
 
 #[tokio::test]
 async fn activitypub_foreign_keys_have_full_leading_indexes() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -560,6 +571,7 @@ async fn activitypub_foreign_keys_have_full_leading_indexes() -> anyhow::Result<
 
 #[tokio::test]
 async fn reply_counters_follow_moves_deletes_and_user_cascades() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let (mut client, connection) =
         tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
     tokio::spawn(connection);
@@ -652,6 +664,7 @@ async fn reply_counters_follow_moves_deletes_and_user_cascades() -> anyhow::Resu
 
 #[tokio::test]
 async fn counter_backfill_serializes_with_concurrent_receipt_delta() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
     let url = Config::from_env().database_url;
     let (mut a, c) = tokio_postgres::connect(&url, NoTls).await?;
     tokio::spawn(c);
