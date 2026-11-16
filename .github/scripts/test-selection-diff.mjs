@@ -18,4 +18,3 @@ export function readChanges(base, git = execFileSync) {
   for (let i = 0; i < fields.length; i += 2) changes.push({ status: fields[i], path: fields[i + 1] });
   return changes;
 }
-
