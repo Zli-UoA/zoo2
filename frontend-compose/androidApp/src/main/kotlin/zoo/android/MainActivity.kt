@@ -613,7 +613,7 @@ private class RunningSession(
     fun close() {
         e2ee.stop()
         push.close()
-        notifications.close()
+        notifications.close(preserveNotifications = true)
         auth.close()
         session.close()
         scope.cancel()

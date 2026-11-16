@@ -60,6 +60,15 @@ internal class PushBinding(private val context: Context) {
         check(prefs.edit().clear().commit())
         true
     }
+    fun openIntent(user: String, id: String, path: String): Intent? = synchronized(lock) {
+        val binding = prefs.getString("binding", null)
+        if (!matches(binding, user) || pushDestination(path) == null) return@synchronized null
+        Intent(context, MainActivity::class.java).setAction(AndroidPushRegistration.OPEN_ACTION)
+            .setData(Uri.parse("zoo-push://$binding/$id"))
+            .putExtra("binding", binding).putExtra("path", path).putExtra("tag", notificationTag(user, id))
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    }
+
     fun forgetAll() = synchronized(lock) {
         prefs.getString("user", null)?.let { clearNotifications(context, it) }
         check(prefs.edit().clear().commit())
@@ -209,10 +218,7 @@ private fun showBoundPushNotification(context: Context, data: Map<String, String
         manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
             if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
     }
-    val intent = Intent(context, MainActivity::class.java).setAction(AndroidPushRegistration.OPEN_ACTION)
-        .setData(Uri.parse("zoo-push://$binding/$id"))
-        .putExtra("binding", binding).putExtra("path", path).putExtra("tag", tag)
-        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    val intent = PushBinding(context).openIntent(user, id, path) ?: return
     val body = data["body"].orEmpty().take(2000)
     val notification = Notification.Builder(context, "zoo.$channel")
         .setSmallIcon(works.zli.zoo.R.drawable.ic_notification)

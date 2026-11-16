@@ -131,8 +131,9 @@ export type BackupUploadResult =
   /** 今の版を使えない（署名がない、SSSS の鍵と違う、巻き戻りなど）。送っていない。 */
   | { kind: "rejected"; code: string }
   /**
-   * サーバーが拒んだ（409 `E2EE_WRONG_BACKUP_VERSION` か `E2EE_SSSS_CONFLICT`）。版が変わったか、
-   * 失効で秘密が書き換わったので、解錠し直すまで送らない。
+   * サーバーが拒んだ（409 `E2EE_WRONG_BACKUP_VERSION` か `E2EE_SSSS_CONFLICT`、403
+   * `E2EE_BACKUP_PROOF_INVALID`）。版が変わったか、失効で秘密が書き換わったか、証明が今の版と合わない
+   * ので、今の版を取り直して検証できるまで送らない。
    */
   | { kind: "conflict"; code: string };
 
@@ -170,11 +171,21 @@ async function uploadKeyBackupNow(deps: E2eeSetupDeps): Promise<BackupUploadResu
     if (request.kind === "none") return { kind: "done", uploaded };
     if (request.kind === "rejected") return request;
     try {
-      await uploadBackupKeys(deps.client, request.version, request.secretsRevision, request.body);
+      await uploadBackupKeys(
+        deps.client,
+        request.version,
+        request.secretsRevision,
+        request.body,
+        request.proof,
+      );
     } catch (error) {
       await deps.worker.request({ op: "backupUploadFailed", uploadId: request.uploadId });
       const code = errorCode(error);
-      if (code === "E2EE_WRONG_BACKUP_VERSION" || code === "E2EE_SSSS_CONFLICT") {
+      if (
+        code === "E2EE_WRONG_BACKUP_VERSION" ||
+        code === "E2EE_SSSS_CONFLICT" ||
+        code === "E2EE_BACKUP_PROOF_INVALID"
+      ) {
         return { kind: "conflict", code };
       }
       throw error;

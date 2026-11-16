@@ -13,6 +13,9 @@ use crate::http::{ApiError, error_for_status_coded};
 
 /// 直前の再認証の ID トークンを入れるヘッダー。
 pub const REAUTH_HEADER: &str = "X-Zoo-Reauth";
+/// 鍵バックアップのアップロードの証明を入れるヘッダー（docs/e2ee.md の「アップロードの証明」。
+/// zoo-crypto の `BACKUP_PROOF_HEADER`）。
+pub const BACKUP_PROOF_HEADER: &str = "X-Zoo-Backup-Proof";
 
 impl ApiClient {
     /// E2EE の要求を送る。エラーは [`ApiError`]。
@@ -23,6 +26,22 @@ impl ApiClient {
         body: Option<Value>,
         reauth: Option<&str>,
     ) -> Result<reqwest::Response> {
+        let headers: &[(&str, &str)] = match reauth {
+            Some(reauth) => &[(REAUTH_HEADER, reauth)],
+            None => &[],
+        };
+        self.send_e2ee_with_headers(method, path, body, headers)
+            .await
+    }
+
+    /// [`send_e2ee`](Self::send_e2ee) に、ヘッダーを足して送る。
+    async fn send_e2ee_with_headers(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        headers: &[(&str, &str)],
+    ) -> Result<reqwest::Response> {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
@@ -31,8 +50,8 @@ impl ApiClient {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        if let Some(reauth) = reauth {
-            request = request.header(REAUTH_HEADER, reauth);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
         }
         let request = self.credentials.apply(request).await?;
         error_for_status_coded(request.send().await?).await
@@ -171,18 +190,28 @@ impl ApiClient {
         self.e2ee_json(Method::GET, &path, None).await
     }
 
-    /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。
+    /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。`proof` はアップロードの証明
+    /// （[`BACKUP_PROOF_HEADER`]）。`None`（今の版に `upload_key` がない）ならヘッダーを送らない。
     pub async fn e2ee_upload_backup_keys(
         &self,
         version: &str,
         secrets_revision: u64,
         body: Value,
+        proof: Option<&str>,
     ) -> Result<()> {
         let path = format!(
             "/api/e2ee/key_backup/keys?version={}&secrets_revision={secrets_revision}",
             urlencode(version)
         );
-        self.e2ee_write(&path, body, None).await?;
+        let headers: &[(&str, &str)] = match proof {
+            Some(proof) => &[(BACKUP_PROOF_HEADER, proof)],
+            None => &[],
+        };
+        let _: Envelope = self
+            .send_e2ee_with_headers(Method::POST, &path, Some(body), headers)
+            .await?
+            .json()
+            .await?;
         Ok(())
     }
 }
@@ -476,7 +505,33 @@ mod tests {
             .await;
         let api = client(&server);
         assert!(api.e2ee_current_backup_version().await.unwrap().is_none());
-        api.e2ee_upload_backup_keys("3", 7, json!({"sessions": []}))
+        api.e2ee_upload_backup_keys("3", 7, json!({"sessions": []}), None)
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let upload = requests
+            .iter()
+            .find(|r| r.method.as_str() == "POST")
+            .unwrap();
+        assert!(upload.headers.get(BACKUP_PROOF_HEADER).is_none());
+    }
+
+    #[tokio::test]
+    async fn backup_upload_sends_the_proof_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/key_backup/keys"))
+            .and(query_param("version", "3"))
+            .and(header(BACKUP_PROOF_HEADER, "cHJvb2Y"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data": {"count": 0}, "txid": null})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        api.e2ee_upload_backup_keys("3", 7, json!({"sessions": []}), Some("cHJvb2Y"))
             .await
             .unwrap();
     }

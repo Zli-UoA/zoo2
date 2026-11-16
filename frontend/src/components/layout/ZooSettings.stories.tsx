@@ -21,6 +21,9 @@ const readOnlyChannelSettings = http.get("*/api/home/settings", () =>
 
 const meta = {
   title: "Pages/ZooSettings",
+  beforeEach: () => {
+    localStorage.setItem("zoo:onboarding:v1:user-alice", "done");
+  },
   component: ZooSettings,
   parameters: {
     a11y: { test: "error" },

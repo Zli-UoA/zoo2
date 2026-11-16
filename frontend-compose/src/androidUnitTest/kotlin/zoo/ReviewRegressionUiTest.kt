@@ -41,6 +41,7 @@ class ReviewRegressionUiTest {
             override fun navigate(path: String) { app.update(app.env.copy(path = path)) }
             override fun action(name: String) {}
             override fun translate(key: String, args: Map<String, String>) = key
+            override fun relativeTimestamp(timestamp: String) = "5分前"
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
         }
@@ -153,6 +154,52 @@ class ReviewRegressionUiTest {
             assertTrue(media.left >= container.left && media.right <= container.right)
             assertTrue(media.bottom <= next.top, "Tall images must remain inside their measured row")
             ui.onNodeWithTag("next").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun homeAndChannelAuthorsShareTheAvatarGutterAndTopAlignment() {
+        val fixture = Fixture()
+        val user = obj("id" to "alice", "display_name" to "Alice", "user_name" to "alice")
+        val post = obj("id" to "post", "user_id" to "alice", "display_name" to "Alice",
+            "user_name" to "alice", "content" to "Home body", "created_at" to "2026-11-15T00:00:00Z")
+        val message = obj("id" to "message", "user_id" to "alice", "content" to "Channel body",
+            "created_at" to "2026-11-15T00:00:00Z")
+        var width by mutableStateOf(320.dp)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column(Modifier.width(width)) {
+                            HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {})
+                            MessageList(fixture.app, obj("id" to "general"),
+                                listOf(message, obj("id" to "message-2", "user_id" to "alice",
+                                    "content" to "Grouped body", "created_at" to "2026-11-15T00:00:01Z")),
+                                emptyList(), listOf(user), parent = null, wide = false,
+                                modifier = Modifier.height(350.dp), readState = false)
+                        }
+                    }
+                }
+            }
+            fun checkAlignment() {
+                val names = ui.onAllNodesWithText("Alice").fetchSemanticsNodes()
+                assertEquals(2, names.size)
+                assertEquals(names[0].boundsInRoot.left, names[1].boundsInRoot.left, 1f)
+                val avatars = ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true).fetchSemanticsNodes()
+                assertEquals(2, avatars.size)
+                assertEquals(with(ui.density) { 8.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
+                assertEquals(avatars[0].boundsInRoot.left, avatars[1].boundsInRoot.left, 1f)
+                avatars.zip(names).forEach { (avatar, name) ->
+                    val frame = avatar.boundsInRoot
+                    assertEquals(with(ui.density) { 48.dp.toPx() }, frame.width, 1f)
+                    assertEquals(frame.top, name.boundsInRoot.top, 1f)
+                }
+                val grouped = ui.onNodeWithText("Grouped body").fetchSemanticsNode().boundsInRoot
+                assertEquals(names[0].boundsInRoot.left, grouped.left, 1f)
+            }
+            checkAlignment()
+            ui.runOnIdle { width = 440.dp }
+            checkAlignment()
         } finally { fixture.close() }
     }
 

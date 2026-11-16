@@ -1,8 +1,8 @@
 name: Select runner
 
-# Workload priority: kubecamp -> hosted -> zli-k8s. Docker and large jobs skip
-# kubecamp. Hosted is free for this public repository; zli-k8s is the fallback
-# only when the private-repository included minutes run out.
+# Public repositories use hosted runners without availability/billing API calls.
+# Private workload priority: kubecamp -> hosted -> zli-k8s. Docker/large jobs
+# skip kubecamp; hosted availability depends on the included minutes.
 # CI_RUNNER now only chooses the selector host, not the workload destination.
 on:
   workflow_call:
@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   select:
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || vars.CI_SELECTOR_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ (github.event.repository.private == false || github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || vars.CI_SELECTOR_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 3
     continue-on-error: true
     permissions: {}
@@ -64,11 +64,18 @@ jobs:
             if (context.eventName === 'pull_request' && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
               return use(HOSTED, HOSTED, 'fork pull request');
             }
+            if (context.eventName === 'merge_group') {
+              return use(HOSTED, HOSTED, 'merge group');
+            }
+            // An idle self-hosted runner is not a reservation. Fan-out can queue
+            // behind other workflows before dispatch, so public CI uses hosted.
+            if (context.payload.repository?.private === false) {
+              return use(HOSTED, HOSTED, 'public repository; no self-hosted queue');
+            }
             const hasToken = process.env.HAS_STATUS_TOKEN === 'true';
             // Hosted is free for public repositories. Private ones share the monthly
             // included minutes and cannot start hosted jobs once they run out.
             const checkHosted = async () => {
-              if (context.payload.repository?.private === false) return [true, 'public repository'];
               if (!hasToken) return [false, 'hosted minutes unknown'];
               // Name the failing call and the permissions GitHub accepts for it.
               let endpoint = 'GET /orgs/{org}/repos';

@@ -94,6 +94,8 @@ interface Platform {
 
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
+    fun relativeTimestamp(timestamp: String): String = fullTimestamp(timestamp)
+
     fun notificationTime(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun day(timestamp: String): String

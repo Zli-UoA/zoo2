@@ -295,6 +295,24 @@ impl Revocation {
         Ok(out.into())
     }
 
+    /// 新しい版 `version` へのアップロードの証明（`X-Zoo-Backup-Proof` の値）。新しいバックアップ鍵で作る。
+    /// `upload_key` は新しい版の `upload_key`。
+    #[wasm_bindgen(js_name = uploadProof)]
+    pub fn upload_proof(
+        &self,
+        upload_key: &str,
+        user_id: &str,
+        version: &str,
+    ) -> Result<String, JsValue> {
+        let upload_key = core::Curve25519PublicKey::from_base64(upload_key)
+            .map_err(|e| crate::convert::crypto_error(e.into()))?;
+        self.inner
+            .secrets()
+            .backup_key
+            .upload_proof(&upload_key, user_id, version)
+            .js()
+    }
+
     /// 古い版の行を、新しい版の公開鍵で暗号化し直す。`{rows, dropped}` を返す。
     #[wasm_bindgen(js_name = reencryptRows, unchecked_return_type = "{ rows: JsonObject[]; dropped: number }")]
     pub fn reencrypt_rows(

@@ -3,25 +3,44 @@
 //! global metadata lock. Durable jobs also survive backend restarts.
 use crate::{apps::query, error::AppError, state::AppState};
 
+/// The same reservation SQL is checked by the scale regression.
+#[doc(hidden)]
+pub fn reservation_sql(scope: bool) -> String {
+    let predicate = if scope { "NOT IN" } else { "IN" };
+    format!(
+        "SELECT json_build_object('attempts',attempts)::text FROM display_refresh_queue WHERE kind {predicate} ('message','notification') AND retry_at<=statement_timestamp() ORDER BY retry_at,kind,target,generation LIMIT 1 FOR UPDATE SKIP LOCKED"
+    )
+}
+
+struct IdleBackoff(std::time::Duration);
+impl IdleBackoff {
+    fn new() -> Self {
+        Self(std::time::Duration::from_millis(100))
+    }
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+    fn next(&mut self) -> std::time::Duration {
+        let delay = self.0;
+        self.0 = (delay * 2).min(std::time::Duration::from_secs(1));
+        delay
+    }
+}
+
 async fn run_one(state: &AppState, scope: bool) -> Result<bool, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     // Reserve a runnable job before choosing its timeout. Retries get a larger
     // budget so an expensive row can eventually finish without pinning the queue.
-    let (predicate, initial_ms, maximum_ms, function) = if scope {
-        ("NOT IN", 5000_u32, 30000_u32, "expand_next_display_scope")
+    let (initial_ms, maximum_ms, function) = if scope {
+        (5000_u32, 30000_u32, "expand_next_display_scope")
     } else {
-        ("IN", 200_u32, 5000_u32, "refresh_next_display")
+        (200_u32, 5000_u32, "refresh_next_display")
     };
     toasty::sql::statement(format!("SET LOCAL statement_timeout='{initial_ms}ms'"))
         .exec(&mut tx)
         .await?;
-    let jobs = query(
-        &mut tx,
-        &format!("SELECT json_build_object('attempts',attempts)::text FROM display_refresh_queue WHERE kind {predicate} ('message','notification') AND retry_at<=statement_timestamp() ORDER BY retry_at,kind,target,generation LIMIT 1 FOR UPDATE SKIP LOCKED"),
-        &[],
-    )
-    .await?;
+    let jobs = query(&mut tx, &reservation_sql(scope), &[]).await?;
     let Some(job) = jobs.first() else {
         tx.commit().await?;
         return Ok(false);
@@ -55,14 +74,33 @@ pub async fn refresh_one(state: &AppState) -> Result<bool, AppError> {
 }
 
 pub async fn worker(state: AppState) {
+    let mut idle = IdleBackoff::new();
     loop {
         match refresh_one(&state).await {
-            Ok(true) => tokio::task::yield_now().await,
-            Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            Ok(true) => {
+                idle.reset();
+                tokio::task::yield_now().await;
+            }
+            Ok(false) => tokio::time::sleep(idle.next()).await,
             Err(error) => {
                 tracing::warn!(%error, "Display refresh will be retried");
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(idle.next().max(std::time::Duration::from_millis(200))).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IdleBackoff;
+    #[test]
+    fn empty_queue_backs_off_but_work_resets_the_initial_delay() {
+        let mut idle = IdleBackoff::new();
+        assert_eq!(
+            (0..8).map(|_| idle.next().as_millis()).collect::<Vec<_>>(),
+            vec![100, 200, 400, 800, 1000, 1000, 1000, 1000]
+        );
+        idle.reset();
+        assert_eq!(idle.next().as_millis(), 100);
     }
 }

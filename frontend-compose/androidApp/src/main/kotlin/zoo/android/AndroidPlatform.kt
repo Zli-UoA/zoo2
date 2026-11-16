@@ -143,6 +143,9 @@ internal class AndroidPlatform(
 
     override fun time(timestamp: String) = format(timestamp, "HH:mm")
 
+    override fun relativeTimestamp(timestamp: String): String =
+        androidRelativeTimestamp(timestamp, System.currentTimeMillis(), env.locale) ?: fullTimestamp(timestamp)
+
     override fun day(timestamp: String) = format(timestamp, "yyyy/MM/dd")
 
     override fun previousDay(timestamp: String): String {

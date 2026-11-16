@@ -715,16 +715,17 @@ internal fun Message(
             Row(
                 Modifier.fillMaxWidth()
                     .padding(
-                        start = 12.dp,
-                        end = 12.dp,
+                        start = if (LocalTouchUi.current) 0.dp else 12.dp,
+                        end = if (LocalTouchUi.current) 0.dp else 12.dp,
                         top = if (grouped) 0.dp else 6.dp,
                         bottom = if (groupEnd) 6.dp else 0.dp,
                     ),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp),
+                verticalAlignment = Alignment.Top,
             ) {
                 if (grouped)
                     Box(
-                        Modifier.width(32.dp).height(22.75.dp).graphicsLayer {
+                        Modifier.width(postAvatarSize()).height(22.75.dp).graphicsLayer {
                             alpha = if (hovered || focused || menuOpen) 1f else 0f
                         },
                         contentAlignment = Alignment.CenterEnd,
@@ -739,13 +740,14 @@ internal fun Message(
                             )
                         }
                     }
-                else Avatar(user, Modifier.padding(top = 2.dp))
+                else Avatar(user, Modifier.postAvatar(), size = postAvatarSize())
                 Column(Modifier.weight(1f)) {
                     if (!grouped || message.flag("apub"))
-                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            itemVerticalAlignment = Alignment.CenterVertically) {
                             if (!grouped)
                                 Row(
-                                    Modifier.align(Alignment.CenterVertically),
+                                    Modifier.align(Alignment.Top),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
@@ -775,18 +777,7 @@ internal fun Message(
                                             muted = true,
                                         )
                                 }
-                            Hint(app.platform.fullTimestamp(message.text("created_at"))) {
-                                hintModifier ->
-                                Text(
-                                    app.platform.time(message.text("created_at")),
-                                    hintModifier
-                                        .align(Alignment.CenterVertically)
-                                        .then(webControlModifier("time")),
-                                    small = true,
-                                    muted = true,
-                                    size = 11.sp,
-                                )
-                            }
+                            PostTimestamp(app, message.text("created_at"), relative = LocalTouchUi.current)
                             if (message.flag("apub"))
                                 ActivityPubBadge(
                                     app,

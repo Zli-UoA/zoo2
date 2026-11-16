@@ -21,7 +21,9 @@ import {
 } from "@zoo/crypto-wasm";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
+import { OTHER_UPLOAD_KEY, TEST_UPLOAD_KEY, expectedUploadProof } from "./backupProofTestKit";
 import { runCryptoOperation, toCryptoFailure } from "./operations";
+import { BACKUP_PROOF_HEADER } from "./secretStorageApi";
 
 // Node では fetch で wasm を読めないので、ファイルを直接渡す（ブラウザーは Worker のテスト）。
 beforeAll(() => {
@@ -176,5 +178,21 @@ describe("zoo-crypto wasm", () => {
     const sessionData = new BackupEncryptionKey(key.publicKey).encrypt(data);
     expect(key.decrypt(sessionData)).toEqual(data);
     expect(BackupDecryptionKey.fromBytes(key.toBytes()).publicKey).toBe(key.publicKey);
+  });
+
+  it("鍵バックアップのアップロードの証明を、別に計算した値と同じに作る", async () => {
+    // crates/zoo-crypto の照合用の値（gen_backup_upload_proof_v1.py）と同じ入力。
+    const key = BackupDecryptionKey.fromBytes(new Uint8Array(32).fill(0x11));
+    const user = "00000000-0000-4000-8000-000000000001";
+    const proof = key.uploadProof(TEST_UPLOAD_KEY, user, "12");
+    expect(proof).toBe("Wst7kaXNOseF/BRemOR8xJJTEtm6vOlvoe6korBz8hw");
+    expect(proof).toBe(await expectedUploadProof(key.publicKey, user, "12"));
+    // 版、ユーザー、upload key が違えば別の値になる。
+    expect(key.uploadProof(TEST_UPLOAD_KEY, user, "13")).not.toBe(proof);
+    expect(key.uploadProof(TEST_UPLOAD_KEY, ALICE, "12")).not.toBe(proof);
+    expect(key.uploadProof(OTHER_UPLOAD_KEY, user, "12")).not.toBe(proof);
+    expect(thrown(() => key.uploadProof("not-a-key", user, "12")).code).toBeTruthy();
+    expect(constants().BACKUP_PROOF_HEADER).toBe(BACKUP_PROOF_HEADER);
+    key.free();
   });
 });
