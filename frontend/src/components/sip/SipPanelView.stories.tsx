@@ -14,7 +14,7 @@ const personal: SipLine = {
   username: "alice",
   phone_number: "0312345678",
   member_ids: [],
-  phones: [{ name: "自宅の電話機", extension: "101" }],
+  phones: [{ id: "550e8400-e29b-41d4-a716-446655440001", name: "自宅の電話機", extension: "101" }],
   can_manage: true,
   can_connect: true,
 };
@@ -25,7 +25,7 @@ const shared: SipLine = {
   shared: true,
   owner_user_id: null,
   member_ids: ["alice", "bob"],
-  phones: [{ name: "部室の電話機", extension: "201" }],
+  phones: [{ id: "550e8400-e29b-41d4-a716-446655440002", name: "部室の電話機", extension: "201" }],
 };
 const meta = {
   title: "Features/Calls/SipPhone",
@@ -66,6 +66,7 @@ type Story = StoryObj<typeof meta>;
 export const PersonalAndShared: Story = {
   play: playForImplementation(async ({ canvasElement, args }) => {
     const c = within(canvasElement);
+    await expect(c.getByText("phone-550e8400-e29b-41d4-a716-446655440001")).toBeVisible();
     await userEvent.selectOptions(c.getByRole("combobox", { name: "発着信に使う回線" }), "circle");
     await userEvent.click(c.getByRole("button", { name: "接続して待ち受け" }));
     await expect(args.onConnect).toHaveBeenCalledWith("circle");
@@ -80,6 +81,9 @@ export const SharedMember: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const c = within(canvasElement);
     await expect(c.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+    await expect(
+      c.queryByText("phone-550e8400-e29b-41d4-a716-446655440002"),
+    ).not.toBeInTheDocument();
     await userEvent.click(c.getByRole("button", { name: "回線を登録" }));
     await expect(c.queryByRole("option", { name: "サークル共有" })).not.toBeInTheDocument();
   }),

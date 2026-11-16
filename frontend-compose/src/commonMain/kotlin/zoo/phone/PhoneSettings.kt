@@ -79,7 +79,6 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
                 Field(draft.name, app.t("sip.name"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 100) { draft.name = it }
                 if (app.config.isAdmin || draft.shared) Check(app.t("sip.shared"), draft.shared, enabled = editingId == null && app.config.isAdmin && !controller.writing) { draft.shared = it; draft.members.clear() }
                 Field(draft.number, app.t("sip.phone_number"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 33) { draft.number = it }
-                Field(draft.path, app.t("sip.websocket_path"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 200) { draft.path = it }
                 Field(draft.domain, app.t("sip.sip_domain"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 128) { draft.domain = it }
                 Field(draft.username, app.t("sip.username"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 128) { draft.username = it }
                 Field(draft.password, app.t("sip.password"), modifier = Modifier.fillMaxWidth(), secret = true, placeholder = if (editingId != null) app.t("sip.keepPassword") else null, enabled = !controller.writing, maxLength = 1024) { draft.password = it }
@@ -92,8 +91,8 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
                 Text(app.t("sip.phones")); Text(app.t("sip.phonesHelp"), small = true, muted = true)
                 draft.phones.toList().forEachIndexed { index, phone ->
                     SettingsSection("") {
-                        Field(phone.text("name"), app.t("sip.phoneName"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 100) { draft.phones[index] = obj("name" to it, "extension" to phone.text("extension")) }
-                        Field(phone.text("extension"), app.t("sip.extension"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 33) { draft.phones[index] = obj("name" to phone.text("name"), "extension" to it) }
+                        Field(phone.text("name"), app.t("sip.phoneName"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 100) { draft.phones[index] = JsonObject(phone + obj("name" to it)) }
+                        Field(phone.text("extension"), app.t("sip.extension"), modifier = Modifier.fillMaxWidth(), enabled = !controller.writing, maxLength = 33) { draft.phones[index] = JsonObject(phone + obj("extension" to it)) }
                         Button(app.t("sip.removePhone"), variant = "outline", enabled = !controller.writing) { draft.phones.removeAt(index) }
                     }
                 }

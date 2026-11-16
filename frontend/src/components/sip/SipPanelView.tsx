@@ -207,6 +207,11 @@ export function SipPanelView(props: SipPanelViewProps) {
                     </div>
                   ) : null}
                 </div>
+                {line.can_manage ? (
+                  <p className="break-all text-xs text-muted-foreground">
+                    {t("sip.gatewayAccount")}: <code>home-{line.id}</code>
+                  </p>
+                ) : null}
                 {line.phones.length ? (
                   <ul className="space-y-1">
                     {line.phones.map((phone, index) => (
@@ -216,6 +221,11 @@ export function SipPanelView(props: SipPanelViewProps) {
                       >
                         <span className="min-w-0 break-words">
                           {phone.name} · {phone.extension}
+                          {line.can_manage && phone.id ? (
+                            <span className="block break-all text-xs text-muted-foreground">
+                              {t("sip.phoneAccount")}: <code>phone-{phone.id}</code>
+                            </span>
+                          ) : null}
                         </span>
                         <Button
                           variant="outline"
@@ -266,13 +276,13 @@ export function SipPanelView(props: SipPanelViewProps) {
                 ) : null}
               </Select>
             </label>
-            {(["phone_number", "websocket_path", "sip_domain", "username"] as const).map((key) => (
+            {(["phone_number", "sip_domain", "username"] as const).map((key) => (
               <label key={key} className="grid gap-1 text-sm">
                 {t(`sip.${key}`)}
                 <Input
                   value={editing.input[key]}
                   required={key !== "phone_number"}
-                  maxLength={key === "websocket_path" ? 200 : 128}
+                  maxLength={128}
                   onChange={(e) => patch({ [key]: e.target.value })}
                 />
               </label>
