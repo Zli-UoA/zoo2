@@ -33,6 +33,17 @@ impl Format {
     }
 }
 
+/// 部品から作る代わりの文字。部品に文字がない（線や操作部品だけなど）ときも、本文が空にならないようにする
+/// （本文が空の投稿は保存できない）。
+fn fallback_content(doc: &Document) -> String {
+    let text = doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
+    if text.trim().is_empty() {
+        "（メッセージ部品）".to_string()
+    } else {
+        text
+    }
+}
+
 /// 取り込んだ結果。`doc` が None なら部品はなく、本文だけの投稿にする。
 #[derive(Debug)]
 pub struct Ingested {
@@ -204,7 +215,7 @@ fn discord_message(v: &Value, source: &'static str) -> Result<Ingested, AppError
     doc.flags = IS_COMPONENTS_V2;
     doc.components = components;
     let doc = finish_lenient(doc, source, Format::Discord)?;
-    let content = doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
+    let content = fallback_content(&doc);
     Ok(Ingested {
         doc: Some(doc),
         content,
@@ -258,7 +269,7 @@ pub fn slack_message(
             .take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
             .collect()
     } else {
-        doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
+        fallback_content(&doc)
     };
     Ok(Ingested {
         doc: Some(doc),
@@ -464,6 +475,27 @@ mod tests {
         // Slack の card ブロック（トップレベルに title）は旧形式として扱わない
         let (_, f) = app(&json!({"blocks":[{"type":"card","title":{"type":"plain_text","text":"T"},"body":{"type":"plain_text","text":"B"}}]}), Context::AppMessage, "test").unwrap();
         assert_eq!(f, Format::Slack);
+    }
+
+    #[test]
+    fn media_only_documents_still_have_content() {
+        let i = hook(
+            json!({"components":[{"type":12,"items":[{"media":{"url":"https://example.com/photo.png"}}]}]}),
+        );
+        assert_eq!(i.content, "https://example.com/photo.png");
+        let i = hook(json!({"components":[{"type":14}]}));
+        assert!(!i.content.trim().is_empty());
+    }
+
+    #[test]
+    fn truncation_keeps_text_and_size_within_limits() {
+        let long = "a".repeat(10_000);
+        let parts: Vec<Value> = (0..11).map(|_| json!({"type":10,"content":long})).collect();
+        let doc = hook(json!({"components": parts})).doc.unwrap();
+        assert!(doc.validate(Context::Webhook).is_ok());
+        assert!(
+            matches!(doc.components.last(), Some(Component::TextDisplay(t)) if t.content.contains("省略"))
+        );
     }
 
     #[test]
