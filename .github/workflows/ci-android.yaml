@@ -23,6 +23,7 @@ on:
       - "frontend/src/lib/sip/**"
       - "frontend/src/lib/call/call-devices.ts"
       - "frontend/vite.android-phone.config.ts"
+      - "frontend/scripts/android-phone-smoke.mjs"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
@@ -55,6 +56,7 @@ on:
       - "frontend/src/lib/sip/**"
       - "frontend/src/lib/call/call-devices.ts"
       - "frontend/vite.android-phone.config.ts"
+      - "frontend/scripts/android-phone-smoke.mjs"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。

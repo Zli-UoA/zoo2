@@ -133,7 +133,7 @@ tasks.named("preBuild") { dependsOn(launcherIcon) }
 // Bundle the same SIP.js driver used by Web; no remote code is loaded by the phone WebView.
 val buildAndroidPhone by tasks.registering(Exec::class) {
     val frontend = rootDir.resolve("../frontend")
-    inputs.files(fileTree(frontend.resolve("src/android-phone")), fileTree(frontend.resolve("src/lib/sip")), frontend.resolve("src/lib/call/call-devices.ts"), frontend.resolve("vite.android-phone.config.ts"), frontend.resolve("package.json"), frontend.resolve("pnpm-lock.yaml"))
+    inputs.files(fileTree(frontend.resolve("src/android-phone")), fileTree(frontend.resolve("src/lib/sip")), frontend.resolve("src/lib/call/call-devices.ts"), frontend.resolve("vite.android-phone.config.ts"), frontend.resolve("scripts/android-phone-smoke.mjs"), frontend.resolve("package.json"), frontend.resolve("pnpm-lock.yaml"))
     outputs.dir(frontend.resolve("build/android-phone"))
     workingDir(frontend)
     commandLine("pnpm", "build:android-phone")
@@ -144,3 +144,10 @@ val androidPhoneAssets by tasks.registering(Sync::class) {
     into(layout.buildDirectory.dir("generated/assets/phone"))
 }
 tasks.named("preBuild") { dependsOn(androidPhoneAssets) }
+
+val phoneLicenses by tasks.registering(Sync::class) {
+    from(rootDir.resolve("../frontend/node_modules/sip.js/LICENSE.md")) { into("sip.js") }
+    from(rootDir.resolve("../frontend/node_modules/react/LICENSE")) { into("react") }
+    into(layout.buildDirectory.dir("generated/assets/licenses/phone"))
+}
+tasks.named("preBuild") { dependsOn(phoneLicenses) }
