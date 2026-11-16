@@ -5,6 +5,10 @@ import android.app.Activity
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Intent
+import android.graphics.Bitmap
+import android.os.Build
+import android.os.Bundle
+import java.io.ByteArrayOutputStream
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import kotlin.test.*
@@ -15,17 +19,20 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import zoo.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 35], manifest = Config.NONE)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidNotificationsTest {
-    private class Fixture(scope: CoroutineScope) {
+    private class Fixture(scope: CoroutineScope, avatarDispatcher: CoroutineDispatcher = Dispatchers.Default) {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val manager = activity.getSystemService(NotificationManager::class.java)
         val requested = mutableListOf<String>()
-        val image = CompletableDeferred<ByteArray>()
+        val translated = mutableListOf<String>()
+        var image = CompletableDeferred<ByteArray>()
         val platform = object : Platform {
             override suspend fun headers() = emptyMap<String, String>()
             override suspend fun readCache(key: String): String? = null
@@ -34,7 +41,10 @@ class AndroidNotificationsTest {
             override fun now() = "2026-11-16T00:00:00Z"
             override fun navigate(path: String) {}
             override fun action(name: String) {}
-            override fun translate(key: String, args: Map<String, String>) = key
+            override fun translate(key: String, args: Map<String, String>): String {
+                translated += key
+                return key
+            }
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
             override suspend fun image(url: String): ByteArray {
@@ -50,7 +60,7 @@ class AndroidNotificationsTest {
 
         init {
             shadowOf(activity.application).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-            notifications = AndroidNotifications(activity, app)
+            notifications = AndroidNotifications(activity, app, avatarDispatcher)
             notifications.update(emptyList())
         }
 
@@ -120,6 +130,113 @@ class AndroidNotificationsTest {
             assertTrue(f.rows().isEmpty())
             f.notifications.update(listOf(row("3")))
             assertTrue(f.rows().isEmpty(), "A closed session cannot post notifications")
+        } finally { f.close() }
+    }
+
+    private fun png(): ByteArray = ByteArrayOutputStream().use { output ->
+        val bitmap = Bitmap.createBitmap(512, 512, Bitmap.Config.ARGB_8888)
+        try {
+            assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+            output.toByteArray()
+        } finally { bitmap.recycle() }
+    }
+
+    private fun message(notification: Notification): Bundle =
+        notification.extras.getParcelableArray(Notification.EXTRA_MESSAGES)!!.single() as Bundle
+
+    @Test fun successfulAvatarUpdatesTheIconAndPreservesTheMessage() = runTest {
+        val f = Fixture(backgroundScope, StandardTestDispatcher(testScheduler))
+        try {
+            f.notifications.update(listOf(row("1", avatar = true)))
+            assertNull(f.rows().single().notification.getLargeIcon())
+            runCurrent()
+            f.image.complete(png())
+            runCurrent()
+            val notification = f.rows().single().notification
+            assertNotNull(notification.getLargeIcon())
+            assertEquals("body-1", message(notification).getCharSequence("text").toString())
+            if (Build.VERSION.SDK_INT >= 28) {
+                val sender = message(notification).getParcelable("sender_person") as android.app.Person
+                assertNotNull(sender.icon)
+            }
+            assertEquals(1, f.requested.size)
+        } finally { f.close() }
+    }
+
+    @Test fun failedAvatarsKeepTheTextAndRetryOnTheNextNotification() = runTest {
+        val f = Fixture(backgroundScope, StandardTestDispatcher(testScheduler))
+        try {
+            f.notifications.update(listOf(row("1", avatar = true)))
+            runCurrent()
+            f.image.completeExceptionally(IllegalStateException("Temporary failure"))
+            runCurrent()
+            assertNull(f.rows().single().notification.getLargeIcon())
+            assertEquals("body-1", message(f.rows().single().notification).getCharSequence("text").toString())
+            f.image = CompletableDeferred(png())
+            f.notifications.update(listOf(row("1", avatar = true), row("2", avatar = true)))
+            runCurrent()
+            assertEquals(2, f.requested.size)
+            f.rows().filter { it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0 }
+                .forEach { assertNotNull(it.notification.getLargeIcon()) }
+        } finally { f.close() }
+    }
+
+    @Test fun timedOutAvatarsKeepTheTextAndCanUseTheSharedDownloadLater() = runTest {
+        val f = Fixture(backgroundScope, StandardTestDispatcher(testScheduler))
+        try {
+            f.notifications.update(listOf(row("1", avatar = true)))
+            runCurrent()
+            advanceTimeBy(8_001)
+            runCurrent()
+            assertNull(f.rows().single().notification.getLargeIcon())
+            assertEquals("body-1", message(f.rows().single().notification).getCharSequence("text").toString())
+            f.image.complete(png())
+            runCurrent()
+            f.notifications.update(listOf(row("1", avatar = true), row("2", avatar = true)))
+            runCurrent()
+            assertEquals(1, f.requested.size, "Reuse the session's completed download")
+            f.rows().filter { it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0 }
+                .forEach { assertNotNull(it.notification.getLargeIcon()) }
+        } finally { f.close() }
+    }
+
+    @Test fun slowDownloadsDoNotOccupyTheTwoDecodeSlots() = runTest {
+        val f = Fixture(backgroundScope, StandardTestDispatcher(testScheduler))
+        try {
+            val rows = (1..6).map { id ->
+                val original = row(id.toString(), avatar = true)
+                obj(*original.map { it.key to it.value }.toTypedArray(),
+                    "display_data" to obj("actor" to obj("display_name" to "User $id",
+                        "avatar_url" to "https://media.test/$id.png"),
+                        "message" to obj("content" to "body-$id")))
+            }
+            f.notifications.update(rows)
+            runCurrent()
+            assertEquals(6, f.requested.size, "Start downloads without waiting for a decode permit")
+            advanceTimeBy(3_000)
+            f.image.complete(png())
+            runCurrent()
+            f.rows().filter { it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0 }
+                .forEach { assertNotNull(it.notification.getLargeIcon()) }
+        } finally { f.close() }
+    }
+
+    @Test fun aBatchBuildsItsOverviewOnceAndGroupDismissalDoesNotRepostIt() = runTest {
+        val f = Fixture(backgroundScope)
+        try {
+            val rows = (1..6).map { id ->
+                val original = row(id.toString())
+                obj(*original.map { it.key to it.value }.toTypedArray(),
+                    "display_data" to obj("actor" to obj("display_name" to "Alice"),
+                        "message" to obj("content" to "")))
+            }
+            f.notifications.update(rows)
+            assertEquals(11, f.translated.count { it == "notifications.mention" },
+                "Format six child notifications and the five overview lines once")
+            val before = f.translated.size
+            f.notifications.receive(shadowOf(f.summary().notification.deleteIntent).savedIntent)
+            assertTrue(f.rows().isEmpty())
+            assertEquals(before, f.translated.size, "Do not rebuild an overview while dismissing the group")
         } finally { f.close() }
     }
 

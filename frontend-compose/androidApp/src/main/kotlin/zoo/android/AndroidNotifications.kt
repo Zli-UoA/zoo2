@@ -14,14 +14,18 @@ import kotlinx.coroutines.flow.collectLatest
 import zoo.*
 
 /** Notifications use the live authenticated session; credentials are never put in intents. */
-internal class AndroidNotifications(private val activity: Activity, private val app: Session) {
+internal class AndroidNotifications(
+    private val activity: Activity,
+    private val app: Session,
+    private val avatarDispatcher: CoroutineDispatcher = Dispatchers.Default,
+) {
     private val manager = activity.getSystemService(NotificationManager::class.java)
     private val token = java.util.UUID.randomUUID().toString()
     private val inbox = NotificationInbox()
     private val shown = mutableMapOf<String, Row>()
     private val summaries = mutableSetOf<String>()
     private val errors = mutableMapOf<String, String>()
-    private val avatars = linkedMapOf<String, Bitmap?>()
+    private val avatars = linkedMapOf<String, Bitmap>()
     private val avatarJobs = mutableMapOf<String, Job>()
     private val avatarSlots = Semaphore(2)
     private var closed = false
@@ -35,7 +39,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
             errors[row.text("id")] = app.t(key)
             post(row)
         },
-        dismiss = ::dismiss,
+        dismiss = { dismiss(it) },
     )
     private val observer: Job
 
@@ -61,19 +65,20 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     internal fun update(rows: List<Row>?) {
         if (closed || rows == null) return
         val unread = rows.filterNot { it.flag("is_read") }.associateBy { it.text("id") }
-        shown.keys.toList().filter { it !in unread }.forEach(::dismiss)
+        shown.keys.toList().filter { it !in unread }.forEach { dismiss(it, refreshSummary = false) }
         unread.forEach { (id, row) ->
             if (id in shown) {
                 val previous = shown.put(id, row)
-                if (previous != row) post(row)
+                if (previous != row) post(row, refreshSummary = false)
             }
         }
         for (row in inbox.update(rows)) {
             if (!app.env.visible && allowed() && row.text("channel_id").isNotEmpty()) {
                 shown[row.text("id")] = row
-                post(row)
+                post(row, refreshSummary = false)
             }
         }
+        updateSummaries()
     }
 
     fun allowed(): Boolean = manager.areNotificationsEnabled() &&
@@ -98,7 +103,11 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     private fun replyParent(row: Row): String? =
         notificationReplyParent(row, app.repo.cachedMessages(row.text("channel_id")))
 
-    private fun post(row: Row, error: String? = errors[row.text("id")]) {
+    private fun post(
+        row: Row,
+        error: String? = errors[row.text("id")],
+        refreshSummary: Boolean = true,
+    ) {
         if (!allowed()) return
         val id = row.text("id")
         if (id !in shown) return
@@ -140,7 +149,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
         }
         try { manager.notify("zoo:$token:$id", 0, builder.build()) }
         catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
-        updateSummaries()
+        if (refreshSummary) updateSummaries()
         loadAvatar(row)
     }
 
@@ -148,12 +157,12 @@ internal class AndroidNotifications(private val activity: Activity, private val 
         val url = notificationAvatar(row)
         if (closed || url.isEmpty() || avatars.containsKey(url) || url in avatarJobs) return
         // ImageCache shares downloads with the UI. Limit decoding and keep thumbnails only.
-        avatarJobs[url] = app.scope.launch {
+        val job = app.scope.launch(start = CoroutineStart.LAZY) {
             val bitmap = try {
                 withTimeoutOrNull(8_000) {
+                    val bytes = app.image(url)
                     avatarSlots.withPermit {
-                        val bytes = app.image(url)
-                        withContext(Dispatchers.Default) {
+                        withContext(avatarDispatcher) {
                             decodeOrientedBitmap(bytes, maxEdge = 256)
                         }
                     }
@@ -161,11 +170,15 @@ internal class AndroidNotifications(private val activity: Activity, private val 
             } catch (e: CancellationException) { throw e }
             catch (_: Exception) { null }
             avatarJobs.remove(url)
-            if (closed) return@launch
+            if (closed || bitmap == null) return@launch
             avatars[url] = bitmap
             while (avatars.size > 64) avatars.remove(avatars.keys.first())
-            if (bitmap != null) shown.values.filter { notificationAvatar(it) == url }.toList().forEach { post(it) }
+            // The summary has no avatar; only update the affected child notifications.
+            shown.values.filter { notificationAvatar(it) == url }.toList()
+                .forEach { post(it, refreshSummary = false) }
         }
+        avatarJobs[url] = job
+        job.start()
     }
 
     private fun updateSummaries() {
@@ -213,18 +226,20 @@ internal class AndroidNotifications(private val activity: Activity, private val 
         dismiss(row.text("id"))
     }
 
-    private fun dismiss(id: String) {
+    private fun dismiss(id: String, refreshSummary: Boolean = true) {
         manager.cancel("zoo:$token:$id", 0)
         shown.remove(id)
         errors.remove(id)
-        updateSummaries()
+        if (refreshSummary) updateSummaries()
     }
 
     suspend fun receive(intent: Intent) {
         if (intent.getStringExtra("session") != token) return
         val id = intent.getStringExtra("notification") ?: return
         if (intent.action == "dismissGroup") {
-            shown.values.filter { notificationGroup(it) == id }.map { it.text("id") }.forEach(::dismiss)
+            shown.values.filter { notificationGroup(it) == id }.map { it.text("id") }
+                .forEach { dismiss(it, refreshSummary = false) }
+            updateSummaries()
             return
         }
         val text = if (intent.action == "reply")
@@ -238,7 +253,8 @@ internal class AndroidNotifications(private val activity: Activity, private val 
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
         avatars.clear()
-        shown.keys.toList().forEach(::dismiss)
+        shown.keys.toList().forEach { dismiss(it, refreshSummary = false) }
+        updateSummaries()
         if (active === this) active = null
     }
 
