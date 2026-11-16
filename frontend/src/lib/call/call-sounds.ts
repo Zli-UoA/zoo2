@@ -2,7 +2,7 @@
  * 通話の入退室効果音。音声ファイルは使わず Web Audio で短いチャイムを合成する。
  */
 
-export type CallSoundKind = "join" | "leave" | "mute" | "unmute" | "ring";
+export type CallSoundKind = "join" | "leave" | "mute" | "unmute" | "ring" | "ringback";
 
 export const CALL_SOUNDS_STORAGE_KEY = "zoo-call-sounds";
 const CALL_SOUNDS_CHANGE_EVENT = "zoo-call-sounds-change";
@@ -121,13 +121,31 @@ export function primeCallSounds(): void {
 }
 
 // join は上昇、leave は下降する 2 音のチャイム。mute / unmute は短く低めの 2 音で区別する
-const SOUNDS: Record<CallSoundKind, { notes: [number, number]; step: number; length: number }> = {
+type SoundSpec = {
+  notes: number[];
+  step: number;
+  length: number;
+  /** 波形。省略は sine。 */
+  wave?: OscillatorType;
+  /** 音量 (ゲインのピーク)。省略は `PEAK_GAIN`。 */
+  peak?: number;
+};
+
+const SOUNDS: Record<CallSoundKind, SoundSpec> = {
   join: { notes: [587.33, 880], step: 0.11, length: 0.18 },
   leave: { notes: [698.46, 440], step: 0.11, length: 0.18 },
   mute: { notes: [523.25, 349.23], step: 0.07, length: 0.12 },
   unmute: { notes: [349.23, 523.25], step: 0.07, length: 0.12 },
-  // 着信音。join より長く、2 音を少し離して鳴らす
-  ring: { notes: [783.99, 659.25], step: 0.24, length: 0.34 },
+  // 着信音。気づかれやすいように、高低 2 音を 2 回続けて、大きめに鳴らす
+  ring: {
+    notes: [783.99, 659.25, 783.99, 659.25],
+    step: 0.15,
+    length: 0.2,
+    wave: "triangle",
+    peak: 0.5,
+  },
+  // 発信側の呼び出し音。相手を呼んでいる間、静かな 2 音を重ねて鳴らす（着信音とは別の音）
+  ringback: { notes: [440, 480], step: 0, length: 0.9, peak: 0.14 },
 };
 
 // 音量 (ゲインのピーク)。Slack のように聞き取りやすい大きさにする
@@ -141,18 +159,18 @@ export function playCallSound(kind: CallSoundKind): void {
     if (ctx.state === "suspended") {
       void ctx.resume().catch(() => {});
       // 着信音は繰り返すので、止まっている間は積まない（再開した瞬間にまとめて鳴り、音が割れる）。
-      if (kind === "ring") return;
+      if (kind === "ring" || kind === "ringback") return;
     }
     const start = ctx.currentTime + 0.01;
-    const { notes, step, length } = SOUNDS[kind];
+    const { notes, step, length, wave = "sine", peak = PEAK_GAIN } = SOUNDS[kind];
     notes.forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       const t0 = start + i * step;
-      osc.type = "sine";
+      osc.type = wave;
       osc.frequency.setValueAtTime(freq, t0);
       gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.exponentialRampToValueAtTime(PEAK_GAIN, t0 + 0.015);
+      gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.015);
       gain.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
       osc.connect(gain);
       gain.connect(ctx.destination);
@@ -164,8 +182,11 @@ export function playCallSound(kind: CallSoundKind): void {
   }
 }
 
-/** 着信音を繰り返す間隔（ミリ秒）。 */
-export const RINGTONE_INTERVAL_MS = 2500;
+/** 着信音を繰り返す間隔（ミリ秒）。鳴っている長さ（約 0.65 秒）を除くと、約 0.55 秒の間になる。 */
+export const RINGTONE_INTERVAL_MS = 1200;
+
+/** 発信側の呼び出し音を繰り返す間隔（ミリ秒）。0.9 秒鳴らして、2 秒あける。 */
+export const RINGBACK_INTERVAL_MS = 2900;
 
 /**
  * 着信音を鳴らし始め、止める関数を返す。効果音の設定（`isCallSoundsEnabled`）に従う。
@@ -174,5 +195,15 @@ export const RINGTONE_INTERVAL_MS = 2500;
 export function startRingtone(): () => void {
   playCallSound("ring");
   const timer = setInterval(() => playCallSound("ring"), RINGTONE_INTERVAL_MS);
+  return () => clearInterval(timer);
+}
+
+/**
+ * 発信側の呼び出し音。自分が呼んでいる相手が出るまで、静かな音を繰り返し、止める関数を返す。
+ * 着信音と同じく、効果音の設定（`isCallSoundsEnabled`）に従う。
+ */
+export function startRingback(): () => void {
+  playCallSound("ringback");
+  const timer = setInterval(() => playCallSound("ringback"), RINGBACK_INTERVAL_MS);
   return () => clearInterval(timer);
 }

@@ -4,8 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   CALL_SOUNDS_STORAGE_KEY,
   isCallSoundsEnabled,
+  RINGBACK_INTERVAL_MS,
   RINGTONE_INTERVAL_MS,
   setCallSoundsEnabled,
+  startRingback,
   startRingtone,
   shouldPlayRemoteJoin,
   shouldPlayRemoteLeave,
@@ -84,6 +86,28 @@ describe("call sounds setting", () => {
   });
 });
 
+// `call-sounds.ts` は AudioContext を使い回すので、偽物はテストをまたいで同じものを使い、数だけ数え直す。
+const oscillators: unknown[] = [];
+class FakeContext {
+  state = "running";
+  currentTime = 0;
+  destination = {};
+  createOscillator() {
+    const osc = {
+      type: "",
+      frequency: { setValueAtTime() {} },
+      connect() {},
+      start() {},
+      stop() {},
+    };
+    oscillators.push(osc);
+    return osc;
+  }
+  createGain() {
+    return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
+  }
+}
+
 describe("startRingtone", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -92,35 +116,51 @@ describe("startRingtone", () => {
 
   it("すぐに鳴らし、止めるまで一定の間隔で繰り返す", () => {
     vi.useFakeTimers();
-    const oscillators: unknown[] = [];
-    class FakeContext {
-      state = "running";
-      currentTime = 0;
-      destination = {};
-      createOscillator() {
-        const osc = {
-          type: "",
-          frequency: { setValueAtTime() {} },
-          connect() {},
-          start() {},
-          stop() {},
-        };
-        oscillators.push(osc);
-        return osc;
-      }
-      createGain() {
-        return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
-      }
-    }
+    oscillators.length = 0;
     vi.stubGlobal("AudioContext", FakeContext);
     setCallSoundsEnabled(true);
 
     const stop = startRingtone();
-    expect(oscillators.length).toBe(2);
-    vi.advanceTimersByTime(RINGTONE_INTERVAL_MS);
     expect(oscillators.length).toBe(4);
+    vi.advanceTimersByTime(RINGTONE_INTERVAL_MS);
+    expect(oscillators.length).toBe(8);
     stop();
     vi.advanceTimersByTime(RINGTONE_INTERVAL_MS * 3);
+    expect(oscillators.length).toBe(8);
+  });
+
+  it("着信音は、鳴り終わる前に次が始まらない間隔で、2 秒より短く繰り返す", () => {
+    expect(RINGTONE_INTERVAL_MS).toBeLessThan(2000);
+    // 4 音（0.15 秒ずつずらして、最後は 0.2 秒）が鳴り終わる長さ
+    expect(RINGTONE_INTERVAL_MS / 1000).toBeGreaterThan(0.15 * 3 + 0.2);
+  });
+});
+
+describe("startRingback", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("すぐに鳴らし、止めるまで繰り返す。設定で切ると鳴らさない", () => {
+    vi.useFakeTimers();
+    oscillators.length = 0;
+    vi.stubGlobal("AudioContext", FakeContext);
+    setCallSoundsEnabled(true);
+
+    const stop = startRingback();
+    expect(oscillators.length).toBe(2);
+    vi.advanceTimersByTime(RINGBACK_INTERVAL_MS);
     expect(oscillators.length).toBe(4);
+    stop();
+    vi.advanceTimersByTime(RINGBACK_INTERVAL_MS * 3);
+    expect(oscillators.length).toBe(4);
+
+    setCallSoundsEnabled(false);
+    const stopOff = startRingback();
+    vi.advanceTimersByTime(RINGBACK_INTERVAL_MS);
+    stopOff();
+    expect(oscillators.length).toBe(4);
+    setCallSoundsEnabled(true);
   });
 });
