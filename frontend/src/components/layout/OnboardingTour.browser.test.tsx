@@ -1,6 +1,6 @@
 import "../../styles.css";
 import { page } from "vite-plus/test/browser/context";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../i18n/LocaleProvider";
@@ -151,3 +151,69 @@ it("reserves space for the real screen beside or above the tour", async () => {
     view.unmount();
   }
 });
+
+it.each([
+  { label: "IME composition", isComposing: true, keyCode: 27 },
+  { label: "Safari IME key code", isComposing: false, keyCode: 229 },
+])("leaves the tour open when Escape cancels $label", async ({ isComposing, keyCode }) => {
+  render(
+    <LocaleProvider>
+      <OnboardingProvider userId="alice">
+        <input aria-label="Message" />
+      </OnboardingProvider>
+    </LocaleProvider>,
+  );
+  const input = screen.getByRole("textbox", { name: "Message" });
+  await userEvent.click(input);
+  fireEvent.keyDown(input, { key: "Escape", isComposing, keyCode });
+  expect(screen.getByRole("complementary", { name: "使い方ツアー" })).toBeVisible();
+  expect(localStorage.getItem("zoo:onboarding:v1:alice")).toBeNull();
+  fireEvent.keyDown(input, { key: "Escape", isComposing: false, keyCode: 27 });
+  await waitFor(() =>
+    expect(screen.queryByRole("complementary", { name: "使い方ツアー" })).toBeNull(),
+  );
+  expect(localStorage.getItem("zoo:onboarding:v1:alice")).toBe("done");
+});
+
+it.each(["resolve", "reject"])(
+  "ignores a stale navigation %s after skipping and restarting",
+  async (outcome) => {
+    let settleOld!: () => void;
+    const oldNavigation = new Promise<void>((resolve, reject) => {
+      settleOld = outcome === "resolve" ? () => resolve() : () => reject(new Error("old failure"));
+    });
+    let settleNew!: () => void;
+    const newNavigation = new Promise<void>((resolve) => {
+      settleNew = resolve;
+    });
+    const navigate = vi.fn().mockReturnValueOnce(oldNavigation).mockReturnValueOnce(newNavigation);
+    render(
+      <LocaleProvider>
+        <OnboardingProvider userId="alice" onStepChange={navigate}>
+          <OnboardingButton />
+        </OnboardingProvider>
+      </LocaleProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "次へ" }));
+    expect(screen.getByRole("button", { name: "次へ" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "スキップ" }));
+    await userEvent.click(screen.getByRole("button", { name: "初期ツアーを開く" }));
+    expect(screen.getByRole("button", { name: "次へ" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "次へ" }));
+    expect(navigate).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      settleOld();
+      await oldNavigation.catch(() => {});
+    });
+    expect(screen.getByRole("heading", { name: "Zooへようこそ" })).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "次へ" })).toBeDisabled();
+    await act(async () => {
+      settleNew();
+      await newNavigation;
+    });
+    expect(await screen.findByRole("heading", { name: "チャンネルを探す" })).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "次へ" })).toBeEnabled();
+  },
+);

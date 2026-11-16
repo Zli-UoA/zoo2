@@ -64,9 +64,12 @@ export function OnboardingProvider({
   const panel = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const trigger = useRef<HTMLElement | null>(null);
+  const generation = useRef(0);
   const step = steps[index];
   useTourTarget(step, open);
   const close = useCallback(() => {
+    generation.current += 1;
+    setPending(false);
     setOpen(false);
     if (userId) writeStorageValue(storageKey, "done");
     if (trigger.current?.isConnected) trigger.current.focus();
@@ -96,6 +99,8 @@ export function OnboardingProvider({
     const escape = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
+        !event.isComposing &&
+        event.keyCode !== 229 &&
         !event.defaultPrevented &&
         !document.querySelector('[role="dialog"][aria-modal="true"]')
       )
@@ -107,20 +112,23 @@ export function OnboardingProvider({
 
   const move = async (next: number) => {
     if (pending) return;
+    const started = generation.current;
     setPending(true);
     setError(false);
     try {
       await onStepChange?.(steps[next]);
-      setIndex(next);
+      if (started === generation.current) setIndex(next);
     } catch {
-      setError(true);
+      if (started === generation.current) setError(true);
     } finally {
-      setPending(false);
+      if (started === generation.current) setPending(false);
     }
   };
   return (
     <TourContext.Provider
       value={() => {
+        generation.current += 1;
+        setPending(false);
         trigger.current =
           document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setIndex(0);
