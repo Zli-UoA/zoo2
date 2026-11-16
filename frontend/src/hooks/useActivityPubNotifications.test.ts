@@ -292,28 +292,31 @@ it.each([null, "old-tail"])(
   },
 );
 
-it("keeps a completed read when an in-flight refresh did not check that older row", async () => {
-  mocks.client.get
-    .mockResolvedValueOnce({ items: [item("head", 3)], next_cursor: "head", unread_count: 2 })
-    .mockResolvedValueOnce({ items: [item("older", 1)], next_cursor: null, unread_count: 2 });
-  await act(async () => root.render(createElement(Probe)));
-  await act(async () => result.loadMore());
-  let finish!: (value: unknown) => void;
-  mocks.client.get.mockImplementationOnce(
-    () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-  );
-  let task!: Promise<void>;
-  act(() => {
-    task = result.refresh();
-  });
-  await act(async () => result.markRead(["older"]));
-  await act(async () => {
-    finish({ items: [item("head", 3)], next_cursor: "head", unread_count: 2 });
-    await task;
-  });
-  expect(result.items.find((n) => n.id === "older")?.is_read).toBe(true);
-  expect(result.unread_count).toBe(1);
-});
+it.each([false, true])(
+  "keeps a completed read and counter during a stale response (append=%s)",
+  async (append) => {
+    mocks.client.get
+      .mockResolvedValueOnce({ items: [item("head", 3)], next_cursor: "head", unread_count: 2 })
+      .mockResolvedValueOnce({ items: [item("older", 1)], next_cursor: "older", unread_count: 2 });
+    await act(async () => root.render(createElement(Probe)));
+    await act(async () => result.loadMore());
+    let finish!: (value: unknown) => void;
+    mocks.client.get.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let task!: Promise<void>;
+    act(() => {
+      task = append ? result.loadMore() : result.refresh();
+    });
+    await act(async () => result.markRead(["older"]));
+    await act(async () => {
+      finish({ items: [item("head", 3)], next_cursor: "head", unread_count: 2 });
+      await task;
+    });
+    expect(result.items.find((n) => n.id === "older")?.is_read).toBe(true);
+    expect(result.unread_count).toBe(1);
+  },
+);

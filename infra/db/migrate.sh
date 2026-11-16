@@ -12,7 +12,9 @@ if [ "${1:-}" = migrate ] && [ "${2:-}" = apply ] && [ -n "${DATABASE_URL:-}" ];
     if [ -n "$total" ]; then
       recovery=$(mktemp -d)
       trap 'rm -rf "$recovery"' EXIT HUP INT TERM
-      printf '%s\n' '-- atlas:txmode none' '' > "$recovery/20261128000003_reply_counters.sql"
+      # Keep all no-op statements and revision updates in one transaction so
+      # an interrupted recovery remains at applied=0 and can be retried.
+      printf '%s\n' '-- atlas:txmode file' '' > "$recovery/20261128000003_reply_counters.sql"
       i=0
       while [ "$i" -lt "$total" ]; do
         printf '%s\n' 'SELECT 1;' >> "$recovery/20261128000003_reply_counters.sql"

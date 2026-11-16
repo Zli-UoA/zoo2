@@ -263,15 +263,16 @@ class ActivityPubNotificationsStateTest {
         }
     }
     @Test fun aCompletedReadSurvivesAnUnrelatedInFlightHeadRefresh() = runTest {
+        for (append in listOf(false,true)) {
         var delayed = false
         val gate = CompletableDeferred<Unit>()
         val app = app { request ->
             when(request.url.encodedPath) {
                 "/api/activitypub/notifications/read" -> respond("{}")
                 "/api/activitypub/notifications" -> {
-                    if(delayed && request.url.parameters["before"]==null) gate.await()
+                    if(delayed && (request.url.parameters["before"]!=null)==append) gate.await()
                     val older=request.url.parameters["before"]!=null
-                    respond(obj("items" to kotlinx.serialization.json.JsonArray(listOf(obj("id" to if(older) "older" else "head", "is_read" to false))),"next_cursor" to if(older) null else "head","unread_count" to 2).toString())
+                    respond(obj("items" to kotlinx.serialization.json.JsonArray(listOf(obj("id" to if(older) "older" else "head", "is_read" to false))),"next_cursor" to if(older) "older" else "head","unread_count" to 2).toString())
                 }
                 else -> awaitCancellation()
             }
@@ -279,11 +280,12 @@ class ActivityPubNotificationsStateTest {
         val state=ActivityPubNotificationsState(app,subscribe={ {} })
         try {
             state.ensureLoaded();runCurrent();state.loadMore();runCurrent()
-            delayed=true;state.refresh();runCurrent()
+            delayed=true;if(append) state.loadMore() else state.refresh();runCurrent()
             val read=backgroundScope.launch { state.markRead(listOf("older")) };runCurrent();read.join()
             gate.complete(Unit);runCurrent()
             assertTrue(state.items.first { it.text("id")=="older" }.flag("is_read"))
             assertEquals(1,state.unreadCount)
         } finally { state.close();app.close() }
+        }
     }
 }

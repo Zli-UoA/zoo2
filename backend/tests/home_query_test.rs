@@ -885,3 +885,83 @@ async fn reaction_counter_recount_serializes_with_a_concurrent_delta() -> anyhow
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn private_repost_totals_follow_visibility_owner_post_and_recipient_changes()
+-> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let owner = uuid::Uuid::new_v4().to_string();
+    let recipient = format!("{owner}-recipient");
+    let next = format!("{owner}-next");
+    let post = format!("{owner}-post");
+    let moved = format!("{owner}-moved");
+    let activity = format!("{owner}-announce");
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) SELECT id,id,id FROM unnest($1::text[]) id",
+        &[&vec![owner.clone(), recipient.clone(), next.clone()]],
+    )
+    .await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,'local:'||$2,$2,$3,'{}','public')", &[&post,&owner,&activity]).await?;
+    tx.execute(
+        "INSERT INTO apub_repost_recipients(activity_id,user_id) VALUES($1,$2),($1,$3)",
+        &[&activity, &owner, &recipient],
+    )
+    .await?;
+    async fn counts(
+        tx: &tokio_postgres::Transaction<'_>,
+        post: &str,
+        users: &[String],
+    ) -> anyhow::Result<Vec<i64>> {
+        let public: i64 = tx
+            .query_one(
+                "SELECT COALESCE((SELECT n FROM home_repost_totals WHERE post_id=$1),0)",
+                &[&post],
+            )
+            .await?
+            .get(0);
+        let mut result = vec![public];
+        for user in users {
+            result.push(tx.query_one("SELECT COALESCE((SELECT n FROM home_private_repost_totals WHERE post_id=$1 AND user_id=$2),0)", &[&post,&user]).await?.get(0));
+        }
+        Ok(result)
+    }
+    let users = vec![owner.clone(), recipient.clone(), next.clone()];
+    assert_eq!(counts(&tx, &post, &users).await?, vec![1, 0, 0, 0]);
+    tx.execute(
+        "UPDATE apub_reposts SET visibility='followers' WHERE activity_id=$1",
+        &[&activity],
+    )
+    .await?;
+    assert_eq!(counts(&tx, &post, &users).await?, vec![0, 0, 1, 0]);
+    tx.execute(
+        "UPDATE apub_reposts SET user_id=$2 WHERE activity_id=$1",
+        &[&activity, &recipient],
+    )
+    .await?;
+    assert_eq!(counts(&tx, &post, &users).await?, vec![0, 1, 0, 0]);
+    tx.execute(
+        "UPDATE apub_reposts SET post_id=$2 WHERE activity_id=$1",
+        &[&activity, &moved],
+    )
+    .await?;
+    assert_eq!(counts(&tx, &post, &users).await?, vec![0, 0, 0, 0]);
+    assert_eq!(counts(&tx, &moved, &users).await?, vec![0, 1, 0, 0]);
+    tx.execute(
+        "UPDATE apub_repost_recipients SET user_id=$3 WHERE activity_id=$1 AND user_id=$2",
+        &[&activity, &owner, &next],
+    )
+    .await?;
+    assert_eq!(counts(&tx, &moved, &users).await?, vec![0, 0, 0, 1]);
+    tx.execute(
+        "DELETE FROM apub_reposts WHERE activity_id=$1",
+        &[&activity],
+    )
+    .await?;
+    assert_eq!(counts(&tx, &moved, &users).await?, vec![0, 0, 0, 0]);
+    tx.rollback().await?;
+    Ok(())
+}

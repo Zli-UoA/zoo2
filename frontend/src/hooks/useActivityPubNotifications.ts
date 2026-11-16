@@ -196,6 +196,8 @@ export function useActivityPubNotifications() {
         const current = snapshot.current;
         const updated = {
           ...next,
+          // Pagination owns older rows; head refresh owns the global counter.
+          unread_count: current.unread_count,
           next_cursor: next.next_cursor,
           items: [
             ...current.items,

@@ -182,10 +182,10 @@ async fn decorate_workspace_posts(
     }
     let options = emoji::workspace_options(tx).await?;
     for post in posts.iter_mut() {
-        let content = string(&post, "content")?;
+        let content = string(post, "content")?;
         let mut emojis = vec![];
         for emoji in &options {
-            if content.contains(string(&emoji, "name")?) {
+            if content.contains(string(emoji, "name")?) {
                 emojis.push(emoji.clone());
             }
             if let Some(aliases) = emoji["aliases"].as_array() {

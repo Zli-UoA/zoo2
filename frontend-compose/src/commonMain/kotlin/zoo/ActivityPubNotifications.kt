@@ -133,7 +133,7 @@ class ActivityPubNotificationsState(
                 } }
                 .let { rows -> if (rows.any { it.text("created_at").isEmpty() }) rows else rows.sortedWith(compareByDescending<Row> { notificationTimestamp(it.text("created_at")) }.thenByDescending { it.text("id") }) }
                 .map { if (it.text("id") in pendingReads) JsonObject(it + ("is_read" to JsonPrimitive(true))) else it }
-            if (readsAtStart == readRevision) unreadCount = ((response["unread_count"]?.jsonPrimitive?.intOrNull ?: 0) - incoming.count { !it.flag("is_read") && it.text("id") in pendingReads }).coerceAtLeast(0)
+            if (!append && readsAtStart == readRevision) unreadCount = ((response["unread_count"]?.jsonPrimitive?.intOrNull ?: 0) - incoming.count { !it.flag("is_read") && it.text("id") in pendingReads }).coerceAtLeast(0)
             if (append) {
                 val missing = gap
                 if (missing != null && incoming.any { it.text("id") in missing.anchors }) {
