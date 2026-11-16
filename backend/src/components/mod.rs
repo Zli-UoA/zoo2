@@ -379,7 +379,10 @@ pub fn app(
 /// 部品の数・文字数の合計・大きさ・文字の長さの上限だけに当たるエラーか（旧形式の入力では許す）。
 fn is_limit_error(e: &ValidationError) -> bool {
     e.path.is_empty()
-        && (e.message.starts_with("too many components") || e.message.starts_with("too much text"))
+        && (e.message.starts_with("too many components")
+            || e.message.starts_with("too much text")
+            // 旧形式の入力は 32 KB までに収まっている（validate_blocks）。MFM に直すと長くなることがある
+            || e.message.starts_with("document is larger than"))
         || e.message.contains("is longer than")
 }
 
@@ -508,6 +511,13 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn legacy_text_that_grows_when_escaped_is_accepted() {
+        let text = "</plain>".repeat(500);
+        let blocks: Vec<Value> = (0..4).map(|_| json!({"type":"text","text":text})).collect();
+        assert!(app(&json!(blocks), Context::AppMessage, "test").is_ok());
     }
 
     #[test]
