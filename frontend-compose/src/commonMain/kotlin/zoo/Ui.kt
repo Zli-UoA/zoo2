@@ -885,7 +885,7 @@ fun Field(
                                 Modifier.heightIn(min = touchTargetSize(minimumHeight ?: 32.dp, LocalTouchUi.current))
                             else
                                 Modifier.heightIn(
-                                    min = minimumHeight ?: if (!chrome) 44.dp else 64.dp,
+                                    min = touchTargetSize(minimumHeight ?: if (!chrome) 44.dp else 64.dp, LocalTouchUi.current),
                                     max = maximumHeight ?: if (chrome) Dp.Infinity else 200.dp,
                                 )
                         )

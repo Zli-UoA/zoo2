@@ -135,6 +135,8 @@ class TouchUiTest {
                             verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceLarge),
                         ) {
                             Field(value, "日本語の表示名", Modifier.fillMaxWidth()) { value = it }
+                            Field("", "返信", Modifier.fillMaxWidth(), chrome = false,
+                                singleLine = false, minimumHeight = 36.dp) {}
                             Row(horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceMedium)) {
                                 Button("保存", size = "xs", icon = "check") {}
                                 IconButton("x", "キャンセル", size = 24.dp) {}
@@ -155,6 +157,7 @@ class TouchUiTest {
             ui.onNodeWithContentDescription("キャンセル").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
             ui.onNodeWithContentDescription("変更する").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
             ui.onNodeWithContentDescription("日本語の表示名").assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("返信").assertHeightIsAtLeast(48.dp)
             val container = ui.onNodeWithTag("design-primitives").fetchSemanticsNode().boundsInRoot
             val control = ui.onNodeWithContentDescription("変更する").fetchSemanticsNode().boundsInRoot
             assertTrue(control.left >= container.left && control.right <= container.right)
