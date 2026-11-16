@@ -1,7 +1,8 @@
 # Android 版
 
 Android 8.0（API 26）以降を対象にした Compose Multiplatform クライアントです。
-Compose for Web の実験は終了しましたが、Android 版の開発・検証・配布は継続します。
+このプロジェクトの Compose for Android に廃止予定はなく、開発・検証・配布を継続します。
+実験を終了したのは Compose for Web のみです。`frontend-compose/` 全体や、Android が利用する共有 Kotlin コードは廃止対象ではありません。
 共通 Kotlin の `frontend-compose/src/commonMain` にある `ZooApp`、画面・部品、
 `Session`、`Repository`、REST API、Electric4k の同期処理をそのまま使います。
 Android 用に別のチャット画面や同期クライアントは持ちません。
