@@ -6,7 +6,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
@@ -61,31 +60,37 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        Row(horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp),
+            verticalAlignment = Alignment.Top) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
             NativeLink(profile) {
                 val people by app.repo.users.rows.collectAsState()
                 if (!post.flag("remote"))
                     Avatar(
                         people.find { it.text("id") == post.text("user_id") }
-                            ?: post
+                            ?: post,
+                        modifier = Modifier.postAvatar(),
+                        size = postAvatarSize(),
                     )
                 else ActivityPubAvatar(
                     post["avatar"] as? Row,
                     post.text("display_name").ifEmpty { post.text("user_name") },
+                    modifier = Modifier.postAvatar(),
+                    size = postAvatarSize(),
                 )
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
-                    NativeLink(profile) {
+                    NativeLink(profile, Modifier.align(Alignment.Top)) {
                         ActivityPubText(
                             post.text("display_name").ifEmpty { post.text("user_name") },
                             post.homeRows("actor_emojis"),
                             textStyle =
-                                TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                                MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                         )
                     }
                     NativeLink(profile) {
@@ -97,17 +102,7 @@ fun HomePostCard(
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
-                        Text(
-                            app.platform.fullTimestamp(post.text("created_at")),
-                            Modifier.then(
-                                webControlModifier(
-                                    "time",
-                                    attributes = mapOf("datetime" to post.text("created_at")),
-                                )
-                            ),
-                            size = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        PostTimestamp(app, post.text("created_at"))
                     }
                     ActivityPubBadge(app, post.text("visibility").ifEmpty { "local" }, federated = post.flag("apub") || post.flag("remote"))
                     }
@@ -117,7 +112,7 @@ fun HomePostCard(
                         ) {
                             Text(
                                 "#${post.text("channel_name")}",
-                                size = 12.sp,
+                                size = if (LocalTouchUi.current) 14.sp else 12.sp,
                                 color = LocalLinkColor.current,
                             )
                         }
