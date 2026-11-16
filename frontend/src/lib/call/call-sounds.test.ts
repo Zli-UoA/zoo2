@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   CALL_SOUNDS_STORAGE_KEY,
   isCallSoundsEnabled,
+  playCallSound,
   RINGBACK_INTERVAL_MS,
   RINGTONE_INTERVAL_MS,
   setCallSoundsEnabled,
@@ -98,13 +99,20 @@ class FakeContext {
       frequency: { setValueAtTime() {} },
       connect() {},
       start() {},
-      stop() {},
+      stopCalls: [] as (number | undefined)[],
+      stop(when?: number) {
+        this.stopCalls.push(when);
+      },
     };
     oscillators.push(osc);
     return osc;
   }
   createGain() {
-    return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} };
+    return {
+      gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect() {},
+      disconnect() {},
+    };
   }
 }
 
@@ -162,5 +170,31 @@ describe("startRingback", () => {
     stopOff();
     expect(oscillators.length).toBe(4);
     setCallSoundsEnabled(true);
+  });
+
+  it("止めると、鳴っている途中の 2 音もすぐ止める（ほかの音は止めない）", () => {
+    vi.useFakeTimers();
+    oscillators.length = 0;
+    vi.stubGlobal("AudioContext", FakeContext);
+    setCallSoundsEnabled(true);
+
+    const stop = startRingback();
+    const ringback = oscillators.slice() as { stopCalls: (number | undefined)[] }[];
+    expect(ringback.length).toBe(2);
+    // 開始時は、鳴り終わる時刻だけを予約している
+    for (const osc of ringback) expect(osc.stopCalls.length).toBe(1);
+
+    // 別の効果音（入室）の音源は、止める対象に入らない
+    playCallSound("join");
+    const join = oscillators.slice(2) as { stopCalls: (number | undefined)[] }[];
+    expect(join.length).toBe(2);
+
+    stop();
+    // 時刻なしの stop（すぐ止める）が、呼ばれている
+    for (const osc of ringback) {
+      expect(osc.stopCalls.length).toBe(2);
+      expect(osc.stopCalls[1]).toBeUndefined();
+    }
+    for (const osc of join) expect(osc.stopCalls.length).toBe(1);
   });
 });

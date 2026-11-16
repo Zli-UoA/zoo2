@@ -151,18 +151,23 @@ const SOUNDS: Record<CallSoundKind, SoundSpec> = {
 // 音量 (ゲインのピーク)。Slack のように聞き取りやすい大きさにする
 const PEAK_GAIN = 0.28;
 
-export function playCallSound(kind: CallSoundKind): void {
-  if (!isCallSoundsEnabled()) return;
+/**
+ * 効果音を 1 回鳴らす。鳴らした音を、途中で止める関数を返す（鳴らさなかったときは undefined）。
+ * 止める対象は、この呼び出しで作った音源だけで、共有の AudioContext や、ほかの効果音には触れない。
+ */
+export function playCallSound(kind: CallSoundKind): (() => void) | undefined {
+  if (!isCallSoundsEnabled()) return undefined;
   const ctx = getContext();
-  if (!ctx) return;
+  if (!ctx) return undefined;
   try {
     if (ctx.state === "suspended") {
       void ctx.resume().catch(() => {});
       // 着信音は繰り返すので、止まっている間は積まない（再開した瞬間にまとめて鳴り、音が割れる）。
-      if (kind === "ring" || kind === "ringback") return;
+      if (kind === "ring" || kind === "ringback") return undefined;
     }
     const start = ctx.currentTime + 0.01;
     const { notes, step, length, wave = "sine", peak = PEAK_GAIN } = SOUNDS[kind];
+    const nodes: { osc: OscillatorNode; gain: GainNode }[] = [];
     notes.forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -176,9 +181,22 @@ export function playCallSound(kind: CallSoundKind): void {
       gain.connect(ctx.destination);
       osc.start(t0);
       osc.stop(t0 + length + 0.02);
+      nodes.push({ osc, gain });
     });
+    return () => {
+      for (const { osc, gain } of nodes) {
+        try {
+          // 予約済みの停止より前に、すぐ止める。すでに終わった音源は例外になるので、無視する
+          osc.stop();
+          gain.disconnect();
+        } catch {
+          // 止める失敗で通話を止めない
+        }
+      }
+    };
   } catch {
     // 効果音の失敗で通話を止めない
+    return undefined;
   }
 }
 
@@ -201,9 +219,16 @@ export function startRingtone(): () => void {
 /**
  * 発信側の呼び出し音。自分が呼んでいる相手が出るまで、静かな音を繰り返し、止める関数を返す。
  * 着信音と同じく、効果音の設定（`isCallSoundsEnabled`）に従う。
+ * 止める関数は、繰り返しだけでなく、いま鳴っている音も止める。
  */
 export function startRingback(): () => void {
-  playCallSound("ringback");
-  const timer = setInterval(() => playCallSound("ringback"), RINGBACK_INTERVAL_MS);
-  return () => clearInterval(timer);
+  let stopSound = playCallSound("ringback");
+  const timer = setInterval(() => {
+    stopSound = playCallSound("ringback");
+  }, RINGBACK_INTERVAL_MS);
+  return () => {
+    clearInterval(timer);
+    // 鳴っている途中の音も止める（応答の直後に、会話へ重ならないようにする）
+    stopSound?.();
+  };
 }
