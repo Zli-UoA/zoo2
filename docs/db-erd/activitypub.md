@@ -149,6 +149,8 @@ erDiagram
       text user_id PK,FK
       text actor_id
       timestamptz created_at
+      text post_id
+      boolean private_counted
     }
     apub_repost_recipients }o--o| apub_reposts : apub_repost_recipients_activity_id_fkey
     apub_repost_recipients }o--o| users : apub_repost_recipients_user_id_fkey

@@ -54,15 +54,17 @@ class HomeTimeline(
     private var visibleIds = emptyList<String>()
     private var atTop = true
     private var checkedAt = 0L
+    private var pendingHead = false
     var olderError by mutableStateOf(false)
         private set
     private val cacheKey get() = listOf(timeline, postId.orEmpty(), actorId.orEmpty()).joinToString("\u0000")
     fun viewport(ids: List<String>, top: Boolean): Boolean {
         val next = ids.take(100)
         val changed = visibleIds != next
+        val returnedToPendingHead = top && !atTop && pendingHead
         visibleIds = next
         atTop = top
-        return changed && next.any { it !in validatedIds }
+        return returnedToPendingHead || changed && next.any { it !in validatedIds }
     }
     internal fun restore(): HomeTimelineSnapshot? = app.homeTimelines.get(cacheKey)?.also {
         posts = it.posts; hasMore = it.hasMore; loading = false; checkedAt = it.checkedAt
@@ -118,7 +120,7 @@ class HomeTimeline(
             scope.launch {
                 error = false
                 try {
-                    val fetchHead = includeHead || posts.isEmpty() || postId != null
+                    val fetchHead = includeHead || posts.isEmpty() || postId != null || atTop && pendingHead
                     val head = if (!fetchHead) emptyList() else if (postId != null)
                         app.api.request("/api/home/${postId.encodeURLParameter()}/thread").rows()
                     else app.api.request(path(50, "")).rows()
@@ -136,13 +138,18 @@ class HomeTimeline(
                         catch (_: Exception) { checkedSuccessfully = false }
                     }
                     if (version == generation) {
+                        val headApplied = !retain || postId != null || complete || atTop || posts.any { key(it) in headIds }
                         posts = if (retain && postId == null)
                             mergeHomeWindow(posts, head, if (complete) posts.map(::key) else if (checkedSuccessfully) check else emptyList(), checked, fetchHead && atTop || complete)
                         else head
                         if (fetchHead && (!retain || complete || posts.size <= 50)) hasMore = !complete && postId == null && head.size == 50
-                        if (fetchHead) {
+                        if (fetchHead && headApplied) {
+                            pendingHead = false
                             checkedAt = kotlin.time.Clock.System.now().toEpochMilliseconds()
                             validatedIds = headIds
+                        } else if (fetchHead) {
+                            pendingHead = true
+                            checkedAt = 0L
                         }
                         if (checkedSuccessfully) validatedIds = validatedIds + check
                         viewportError = !checkedSuccessfully

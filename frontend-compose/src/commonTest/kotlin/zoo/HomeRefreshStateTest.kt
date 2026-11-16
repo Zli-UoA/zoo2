@@ -216,4 +216,25 @@ class HomeRefreshStateTest {
         } finally { feed.close(); app.close(); http.close() }
     }
 
+    @Test fun returningToTheTopFetchesAPreviouslyUnappliedHead() = runTest {
+        var fresh = false
+        fun page(from:Int) = JsonArray((from downTo from-49).map { obj("id" to "$it", "sort_key" to "$it") }).toString()
+        val http = HttpClient(MockEngine) { engine { dispatcher=StandardTestDispatcher(testScheduler); addHandler { request ->
+            if(request.url.encodedPath=="/api/home/entries") respond(JsonArray(listOf(obj("id" to "200", "sort_key" to "200"))).toString())
+            else respond(page(if(fresh) 500 else 200))
+        } } }
+        val app = Session(Repository(Config("https://zoo.test","/shapes","alice",false),TestPlatform(),http,backgroundScope,synchronize=false),backgroundScope,Environment())
+        val feed = HomeTimeline(app,backgroundScope)
+        try {
+            feed.refresh(); runCurrent()
+            feed.viewport(listOf("200"),false)
+            fresh=true
+            feed.refresh(true,true); runCurrent()
+            assertFalse(feed.posts.any { it.text("id")=="500" })
+            assertTrue(feed.needsRefresh())
+            assertTrue(feed.viewport(listOf("200"),true))
+            feed.refresh(true,false); runCurrent()
+            assertEquals("500",feed.posts.first().text("id"))
+        } finally { feed.close(); app.close(); http.close() }
+    }
 }

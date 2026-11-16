@@ -45,11 +45,6 @@ WITH RECURSIVE request_entries AS MATERIALIZED (
 ), thread_ids AS MATERIALIZED (
   -- PostgreSQL stops producing recursive rows when this consumer has enough.
   SELECT id FROM conversation_ids LIMIT CASE WHEN $8::boolean THEN $5::integer+101 ELSE $5::integer*2 END
-), shared_reactions AS NOT MATERIALIZED (
-      SELECT r.post_id,r.user_id,r.reaction,r.emoji,r.created_at FROM apub_reactions r
-      WHERE (r.user_id IS NULL OR NOT EXISTS(SELECT 1 FROM home_posts p WHERE p.id=r.post_id AND p.channel_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM apub_actors a WHERE a.id=r.actor_id AND a.blocked)
-      UNION ALL
-      SELECT p.id,r.user_id,r.emoji,NULL::jsonb,r.created_at AT TIME ZONE 'UTC' FROM message_reactions r JOIN home_posts p ON p.id=r.message_id AND p.channel_id IS NOT NULL
     ), base AS MATERIALIZED (
       SELECT b.* FROM thread_ids t CROSS JOIN LATERAL (SELECT * FROM visible WHERE id=t.id OFFSET 0) b
     ), ancestors AS (
@@ -84,25 +79,13 @@ WITH RECURSIVE request_entries AS MATERIALIZED (
         CASE WHEN b.remote THEN NULL::json WHEN b.content NOT LIKE '%:%:%' THEN '[]'::json ELSE COALESCE((SELECT json_agg(json_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM workspace_emojis e WHERE strpos(b.content,':'||e.key||':')>0),'[]'::json) END AS local_emojis,
         f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path,f.tree_depth
       FROM picked f JOIN base b ON b.id=f.id
-    ), reaction_groups AS MATERIALIZED (
-      SELECT parent.id,r.reaction,r.emoji,count(*) AS n,bool_or(r.user_id=$1) AS selected,
-        min(r.created_at) AS first_at
-      FROM (SELECT DISTINCT id FROM page) parent CROSS JOIN LATERAL (
-        SELECT * FROM shared_reactions WHERE post_id=parent.id OFFSET 0
-      ) r GROUP BY parent.id,r.reaction,r.emoji
-    ), page_reactions AS MATERIALIZED (
+    ), /* reaction_counts */, page_reactions AS MATERIALIZED (
       SELECT id,sum(n)::bigint AS likes,bool_or(selected) AS liked,
         (array_agg(reaction ORDER BY first_at) FILTER (WHERE selected))[1] AS my_reaction,
         jsonb_agg(jsonb_build_object('reaction',reaction,'emoji',emoji,'count',n,'selected',COALESCE(selected,false)) ORDER BY first_at) AS reactions
       FROM reaction_groups GROUP BY id
     ), page_reposts AS MATERIALIZED (
-      SELECT parent.id,count(*) AS n,bool_or(r.user_id=$1) AS mine
-      FROM (SELECT DISTINCT id FROM page) parent CROSS JOIN LATERAL (
-        SELECT user_id FROM apub_reposts r WHERE r.post_id=parent.id AND (
-          r.visibility IN ('public','local') OR r.user_id=$1 OR
-          EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1 OFFSET 0)
-        ) OFFSET 0
-      ) r GROUP BY parent.id
+/* repost_counts */
     ), page_parents AS MATERIALIZED (
       SELECT b.* FROM base b WHERE b.original_visible AND b.id IN (SELECT parent_id FROM page)
     ), page_parent_previews AS MATERIALIZED (

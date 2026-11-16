@@ -723,3 +723,165 @@ async fn counter_backfill_serializes_with_concurrent_receipt_delta() -> anyhow::
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn moving_a_remote_reply_waits_for_both_parent_stripes() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
+    let url = Config::from_env().database_url;
+    let (mut owner, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(connection);
+    let (mut mover, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(connection);
+    let id = uuid::Uuid::new_v4().to_string();
+    let other = format!("{id}-other");
+    let x = format!("{id}-x");
+    let mut y = format!("{id}-y");
+    let child = format!("https://{id}.test/reply");
+    let stripe: i32 = owner
+        .query_one("SELECT (hashtextextended($1,0)&1023)::integer", &[&x])
+        .await?
+        .get(0);
+    while owner
+        .query_one("SELECT (hashtextextended($1,0)&1023)::integer", &[&y])
+        .await?
+        .get::<_, i32>(0)
+        == stripe
+    {
+        y.push('y');
+    }
+    owner.execute("INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text),($2::text,$2::text,$2::text)",&[&id,&other]).await?;
+    owner.execute("INSERT INTO home_posts(id,user_id,content,visibility) VALUES($1,$3,'x','public'),($2,$3,'y','public')",&[&x,&y,&id]).await?;
+    owner.execute("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'actor','Actor',$1,'dummy')",&[&child]).await?;
+    owner.execute("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id) VALUES($1,$1,'reply','public',now(),now(),$2)",&[&child,&x]).await?;
+    owner
+        .execute(
+            "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2)",
+            &[&child, &id],
+        )
+        .await?;
+    let pid: i32 = mover
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let tx = owner.transaction().await?;
+    tx.execute("SELECT pg_advisory_xact_lock(20880,$1)", &[&stripe])
+        .await?;
+    let target = y.clone();
+    let post = child.clone();
+    let task = tokio::spawn(async move {
+        let tx = mover.transaction().await?;
+        tx.execute(
+            "UPDATE apub_remote_posts SET parent_id=$1 WHERE id=$2",
+            &[&target, &post],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    });
+    let mut advisory = false;
+    for _ in 0..100 {
+        tx.batch_execute("SELECT pg_stat_clear_snapshot()").await?;
+        let event: Option<String> = tx
+            .query_one(
+                "SELECT wait_event FROM pg_stat_activity WHERE pid=$1",
+                &[&pid],
+            )
+            .await?
+            .get(0);
+        if event.as_deref() == Some("advisory") {
+            advisory = true;
+            break;
+        }
+        if task.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        advisory,
+        "parent move must wait on the old-parent stripe, before receipt row locks"
+    );
+    tx.execute(
+        "UPDATE home_posts SET user_id=$1 WHERE id=$2",
+        &[&other, &x],
+    )
+    .await?;
+    tx.commit().await?;
+    task.await??;
+    let row=owner.query_one("SELECT parent_id,reply_to_user FROM apub_remote_recipients WHERE post_id=$1 AND user_id=$2",&[&child,&id]).await?;
+    assert_eq!(row.get::<_, String>(0), y);
+    assert!(row.get::<_, bool>(1));
+    owner
+        .execute("DELETE FROM apub_remote_posts WHERE id=$1", &[&child])
+        .await?;
+    owner
+        .execute("DELETE FROM home_posts WHERE id IN($1,$2)", &[&x, &y])
+        .await?;
+    owner
+        .execute("DELETE FROM apub_actors WHERE id=$1", &[&child])
+        .await?;
+    owner
+        .execute("DELETE FROM users WHERE id IN($1,$2)", &[&id, &other])
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn reaction_counter_recount_serializes_with_a_concurrent_delta() -> anyhow::Result<()> {
+    let _fixture = FIXTURE_SERIAL.lock().await;
+    let url = Config::from_env().database_url;
+    let (mut owner, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(connection);
+    let (writer, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(connection);
+    let post = format!("https://{}.test/counter", uuid::Uuid::new_v4());
+    owner.execute("INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json) VALUES($1,'actor-one',$1||'/one','{}')",&[&post]).await?;
+    let tx = owner.transaction().await?;
+    tx.query_one(
+        "SELECT n FROM home_reaction_totals WHERE post_id=$1 FOR UPDATE",
+        &[&post],
+    )
+    .await?;
+    let target = post.clone();
+    let task = tokio::spawn(async move {
+        writer.execute("INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json) VALUES($1,'actor-two',$1||'/two','{}')",&[&target]).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    assert!(
+        !task.is_finished(),
+        "source writer must wait for its delta counter"
+    );
+    tx.execute("UPDATE home_reaction_totals SET n=(SELECT count(*) FROM apub_reactions WHERE post_id=$1) WHERE post_id=$1",&[&post]).await?;
+    tx.commit().await?;
+    task.await??;
+    assert_eq!(
+        owner
+            .query_one(
+                "SELECT n FROM home_reaction_totals WHERE post_id=$1",
+                &[&post]
+            )
+            .await?
+            .get::<_, i64>(0),
+        2
+    );
+    owner
+        .execute("DELETE FROM apub_reactions WHERE post_id=$1", &[&post])
+        .await?;
+    assert_eq!(
+        owner
+            .query_one(
+                "SELECT n FROM home_reaction_totals WHERE post_id=$1",
+                &[&post]
+            )
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    owner
+        .execute(
+            "DELETE FROM home_reaction_totals WHERE post_id=$1",
+            &[&post],
+        )
+        .await?;
+    Ok(())
+}

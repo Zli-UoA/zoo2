@@ -590,6 +590,14 @@ pub fn timeline_query() -> String {
     fill_audience(
         include_str!("home_timeline.sql")
             .replace("/* reply_counts */", include_str!("home_reply_counts.sql"))
+            .replace(
+                "/* reaction_counts */",
+                include_str!("home_reaction_counts.sql"),
+            )
+            .replace(
+                "/* repost_counts */",
+                include_str!("home_repost_counts.sql"),
+            )
             .replace("/* visible_posts */", include_str!("home_visible.sql")),
     )
     .replace(
@@ -602,13 +610,22 @@ pub fn timeline_query() -> String {
 }
 
 pub fn timeline_page_query() -> String {
+    // activity_id is NULL only for original posts. Separate these branches so
+    // planning a local stream does not also plan the repost/recipient joins.
+    let (posts, reposts) = include_str!("home_entries.sql")
+        .split_once("      UNION ALL")
+        .expect("original/repost entry branches");
     fill_audience(
         include_str!("home_page.sql")
-            .replace("/* visible_posts */", include_str!("home_visible.sql")),
-    )
-    .replace(
-        "/* timeline_entries */",
-        &include_str!("home_entries.sql").replace("/* entry_posts */", "visible"),
+            .replace("/* visible_posts */", include_str!("home_visible.sql"))
+            .replace(
+                "/* post_entries */",
+                &posts.replace("/* entry_posts */", "visible"),
+            )
+            .replace(
+                "/* repost_entry_rows */",
+                &reposts.replace("/* entry_posts */", "visible"),
+            ),
     )
     .replace("/* repost_entries */", "apub_reposts")
     .replace("/* local_posts */", "home_posts")

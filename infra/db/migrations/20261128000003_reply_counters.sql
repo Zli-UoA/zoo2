@@ -1,5 +1,72 @@
 -- atlas:txmode none
 
+-- An earlier preview already applied the seek migration before parent_id
+-- was added to this unmerged PR. Repair that state before building the index.
+ALTER TABLE apub_remote_recipients ADD COLUMN IF NOT EXISTS parent_id text;
+CREATE OR REPLACE FUNCTION set_apub_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE p apub_remote_posts%ROWTYPE;
+BEGIN
+  -- SHARE serializes receipt insertion with changes to the post's ordering keys.
+  SELECT * INTO p FROM apub_remote_posts WHERE id=NEW.post_id FOR SHARE;
+  IF p.parent_id IS NOT NULL THEN
+    PERFORM pg_advisory_xact_lock(20880,(hashtextextended(p.parent_id,0) & 1023)::integer);
+  END IF;
+  NEW.parent_id:=p.parent_id;
+  NEW.actor_id:=p.actor_id;
+  NEW.published:=p.published;
+  NEW.post_deleted:=p.deleted_at IS NOT NULL;
+  NEW.reply_to_user:=EXISTS(SELECT 1 FROM home_posts WHERE id=p.parent_id AND user_id=NEW.user_id);
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE FUNCTION sync_apub_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE stripe integer;
+BEGIN
+  FOR stripe IN SELECT DISTINCT (hashtextextended(parent,0) & 1023)::integer
+    FROM (VALUES(OLD.parent_id),(NEW.parent_id)) parents(parent) WHERE parent IS NOT NULL ORDER BY 1
+  LOOP
+    PERFORM pg_advisory_xact_lock(20880,stripe);
+  END LOOP;
+  UPDATE apub_remote_recipients r SET parent_id=NEW.parent_id,actor_id=NEW.actor_id,published=NEW.published,post_deleted=NEW.deleted_at IS NOT NULL,
+    reply_to_user=EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id)
+  WHERE r.post_id=NEW.id AND (r.parent_id,r.actor_id,r.published,r.post_deleted,r.reply_to_user) IS DISTINCT FROM
+    (NEW.parent_id,NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
+  RETURN NULL;
+END $$;
+
+-- Repair old preview receipts with the same bounded, ordered-lock backfill.
+DO $$
+DECLARE batch jsonb; after_post text; after_user text; stripe integer;
+BEGIN
+  LOOP
+    -- Separate the initial page: an OR with a nullable PL/pgSQL parameter
+    -- prevents an index range seek once PostgreSQL chooses a generic plan.
+    IF after_post IS NULL THEN
+      SELECT jsonb_agg(jsonb_build_object('post_id',post_id,'user_id',user_id) ORDER BY post_id,user_id)
+        INTO batch FROM (SELECT post_id,user_id FROM apub_remote_recipients ORDER BY post_id,user_id LIMIT 1000) r;
+    ELSE
+      SELECT jsonb_agg(jsonb_build_object('post_id',post_id,'user_id',user_id) ORDER BY post_id,user_id)
+        INTO batch FROM (SELECT post_id,user_id FROM apub_remote_recipients
+          WHERE (post_id,user_id)>(after_post,after_user) ORDER BY post_id,user_id LIMIT 1000) r;
+    END IF;
+    EXIT WHEN batch IS NULL;
+    PERFORM p.id FROM apub_remote_posts p WHERE p.id IN (SELECT r.post_id FROM jsonb_to_recordset(batch) AS r(post_id text,user_id text)) ORDER BY p.id FOR SHARE;
+    -- Order the actual lock stripe keys, not their unhashed parent IDs.
+    FOR stripe IN SELECT DISTINCT (hashtextextended(p.parent_id,0) & 1023)::integer AS lock_key
+      FROM apub_remote_posts p WHERE p.parent_id IS NOT NULL AND p.id IN
+      (SELECT r.post_id FROM jsonb_to_recordset(batch) AS r(post_id text,user_id text)) ORDER BY lock_key
+    LOOP
+      PERFORM pg_advisory_xact_lock(20880,stripe);
+    END LOOP;
+    UPDATE apub_remote_recipients r SET parent_id=p.parent_id,actor_id=p.actor_id,published=p.published,post_deleted=p.deleted_at IS NOT NULL,
+      reply_to_user=EXISTS(SELECT 1 FROM home_posts WHERE id=p.parent_id AND user_id=r.user_id)
+    FROM apub_remote_posts p,jsonb_to_recordset(batch) AS b(post_id text,user_id text)
+    WHERE r.post_id=b.post_id AND r.user_id=b.user_id AND p.id=r.post_id
+      AND (r.parent_id,r.actor_id,r.published,r.post_deleted,r.reply_to_user) IS DISTINCT FROM
+      (p.parent_id,p.actor_id,p.published,p.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=p.parent_id AND user_id=r.user_id));
+    after_post:=batch->-1->>'post_id'; after_user:=batch->-1->>'user_id';
+    COMMIT;
+  END LOOP;
+END $$;
 -- Create index "apub_recipient_parent_actor" to table: "apub_remote_recipients"
 CREATE INDEX CONCURRENTLY "apub_recipient_parent_actor" ON "apub_remote_recipients" ("user_id", "parent_id", "actor_id") WHERE ((parent_id IS NOT NULL) AND (NOT post_deleted));
 -- Create "apub_reply_counts" table

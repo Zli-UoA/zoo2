@@ -260,3 +260,60 @@ it("refreshes only the head and visible older notifications, preserving the pagi
   expect(result.items.some((n) => n.id === "deleted")).toBe(false);
   expect(result.next_cursor).toBe("tail");
 });
+
+it.each([null, "old-tail"])(
+  "fills a disjoint refreshed head before resuming the old cursor %s",
+  async (tail) => {
+    const rows = (from: number, to: number) =>
+      Array.from({ length: from - to + 1 }, (_, i) => ({
+        ...item(`id-${String(from - i).padStart(6, "0")}`, 0),
+        created_at: new Date(Date.UTC(2026, 10, 1, 0, 0, from - i)).toISOString(),
+      }));
+    let fresh = false;
+    mocks.client.get.mockImplementation(async (path: string) => {
+      if (path.includes("before=old-head"))
+        return { items: rows(200, 101), next_cursor: tail, unread_count: 200 };
+      if (path.includes("before=new-head"))
+        return { items: rows(350, 251), next_cursor: "bridge", unread_count: 350 };
+      return {
+        items: fresh ? rows(450, 351) : rows(300, 201),
+        next_cursor: fresh ? "new-head" : "old-head",
+        unread_count: 350,
+      };
+    });
+    await act(async () => root.render(createElement(Probe)));
+    await act(async () => result.loadMore());
+    fresh = true;
+    await act(async () => result.refresh());
+    expect(result.next_cursor).toBe("new-head");
+    await act(async () => result.loadMore());
+    expect(result.items.map((n) => n.id)).toEqual(rows(450, 101).map((n) => n.id));
+    expect(result.next_cursor).toBe(tail);
+  },
+);
+
+it("keeps a completed read when an in-flight refresh did not check that older row", async () => {
+  mocks.client.get
+    .mockResolvedValueOnce({ items: [item("head", 3)], next_cursor: "head", unread_count: 2 })
+    .mockResolvedValueOnce({ items: [item("older", 1)], next_cursor: null, unread_count: 2 });
+  await act(async () => root.render(createElement(Probe)));
+  await act(async () => result.loadMore());
+  let finish!: (value: unknown) => void;
+  mocks.client.get.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let task!: Promise<void>;
+  act(() => {
+    task = result.refresh();
+  });
+  await act(async () => result.markRead(["older"]));
+  await act(async () => {
+    finish({ items: [item("head", 3)], next_cursor: "head", unread_count: 2 });
+    await task;
+  });
+  expect(result.items.find((n) => n.id === "older")?.is_read).toBe(true);
+  expect(result.unread_count).toBe(1);
+});

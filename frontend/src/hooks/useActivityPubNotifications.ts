@@ -44,6 +44,8 @@ export function useActivityPubNotifications() {
   const deferred = useRef(false);
   const pendingReads = useRef(new Set<string>());
   const visibleIds = useRef(new Set<string>());
+  const gap = useRef<{ anchors: Set<string>; resume: string | null | undefined } | null>(null);
+  const readRevision = useRef(0);
   const refresh = useCallback((): Promise<void> => {
     if (lifetime.current?.signal.aborted) return Promise.resolve();
     if (olderRequest.current) {
@@ -59,7 +61,7 @@ export function useActivityPubNotifications() {
     const task = (async () => {
       do {
         deferred.current = false;
-        const retained = snapshot.current.items;
+        const readsAtStart = readRevision.current;
         try {
           const page = await client.get<NotificationPage>("/api/activitypub/notifications", {
             signal: controller.signal,
@@ -78,23 +80,41 @@ export function useActivityPubNotifications() {
             );
             checked = viewport.items;
           }
+          if (controller.signal.aborted) return;
           const updates = new Map([...page.items, ...checked].map((item) => [item.id, item]));
+          const retained = snapshot.current.items;
+          const latest = new Map(retained.map((item) => [item.id, item]));
           const authoritative = new Set(checkedIds);
           const items = [
             ...page.items,
             ...(page.next_cursor ? retained.filter((item) => !headIds.has(item.id)) : []),
           ]
             .filter((item) => !authoritative.has(item.id) || updates.has(item.id))
-            .map((item) => updates.get(item.id) ?? item)
+            .map((item) => {
+              const updated = updates.get(item.id) ?? item;
+              return latest.get(item.id)?.is_read ? { ...updated, is_read: true } : updated;
+            })
             .sort(
               (a, b) =>
                 notificationTimestamp(b.created_at) - notificationTimestamp(a.created_at) ||
                 (a.id > b.id ? -1 : a.id < b.id ? 1 : 0),
             );
-          const cursor =
-            page.next_cursor && retained.length > page.items.length
-              ? snapshot.current.next_cursor
-              : page.next_cursor;
+          let cursor = page.next_cursor;
+          if (page.next_cursor && retained.length) {
+            if (retained.some((item) => headIds.has(item.id))) {
+              if (
+                gap.current ||
+                snapshot.current.next_cursor == null ||
+                retained.some((item) => !headIds.has(item.id))
+              )
+                cursor = snapshot.current.next_cursor;
+            } else {
+              gap.current ??= {
+                anchors: new Set(retained.map((item) => item.id)),
+                resume: snapshot.current.next_cursor,
+              };
+            }
+          } else gap.current = null;
           if (!controller.signal.aborted) {
             const updated = {
               ...page,
@@ -102,11 +122,15 @@ export function useActivityPubNotifications() {
               items: items.map((item) =>
                 pendingReads.current.has(item.id) ? { ...item, is_read: true } : item,
               ),
-              unread_count: Math.max(
-                0,
-                page.unread_count -
-                  items.filter((item) => !item.is_read && pendingReads.current.has(item.id)).length,
-              ),
+              unread_count:
+                readsAtStart !== readRevision.current
+                  ? snapshot.current.unread_count
+                  : Math.max(
+                      0,
+                      page.unread_count -
+                        items.filter((item) => !item.is_read && pendingReads.current.has(item.id))
+                          .length,
+                    ),
             };
             snapshot.current = updated;
             setData(updated);
@@ -149,6 +173,7 @@ export function useActivityPubNotifications() {
       refreshTask.current = null;
       olderRequest.current = null;
       deferred.current = false;
+      gap.current = null;
     };
   }, [refresh]);
   useHomeLive(() => schedule.current());
@@ -171,11 +196,20 @@ export function useActivityPubNotifications() {
         const current = snapshot.current;
         const updated = {
           ...next,
+          next_cursor: next.next_cursor,
           items: [
             ...current.items,
             ...next.items.filter((item) => !current.items.some((old) => old.id === item.id)),
-          ],
+          ].sort(
+            (a, b) =>
+              notificationTimestamp(b.created_at) - notificationTimestamp(a.created_at) ||
+              (a.id > b.id ? -1 : a.id < b.id ? 1 : 0),
+          ),
         };
+        if (gap.current && next.items.some((item) => gap.current?.anchors.has(item.id))) {
+          updated.next_cursor = gap.current.resume;
+          gap.current = null;
+        } else if (!next.next_cursor) gap.current = null;
         snapshot.current = updated;
         setData(updated);
         setError(false);
@@ -199,6 +233,7 @@ export function useActivityPubNotifications() {
       if (ids !== undefined && !selected.length) return;
       for (const id of selected) pendingReads.current.add(id);
       const previous = snapshot.current;
+      readRevision.current++;
       const changed = previous.items
         .filter((item) => !item.is_read && selected.includes(item.id))
         .map((item) => item.id);
@@ -217,6 +252,7 @@ export function useActivityPubNotifications() {
           body: ids === undefined ? {} : { ids: selected },
         });
       } catch (error) {
+        readRevision.current++;
         selected.forEach((id) => pendingReads.current.delete(id));
         const current = snapshot.current;
         const restored = {

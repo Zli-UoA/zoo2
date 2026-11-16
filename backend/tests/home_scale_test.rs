@@ -256,7 +256,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
     }
     if std::env::var_os("SCALE_BUDGET").is_some() {
         tx.commit().await?;
-        verify_budget(&user, &root).await?;
+        verify_budget(&user, &root, count).await?;
     } else {
         tx.rollback().await?;
     }
@@ -315,14 +315,115 @@ async fn benchmark_home_requests(user: &str, count: usize) -> anyhow::Result<()>
     Ok(())
 }
 
+// Build concentrated history in bulk, then populate the same read models from
+// source rows. Timed writes below keep all real triggers enabled and roll back.
+async fn seed_engagement_fixture(
+    client: &mut tokio_postgres::Client,
+    user: &str,
+    root: &str,
+    count: usize,
+) -> anyhow::Result<String> {
+    let dense = (count / 10) as i64;
+    let prefix = format!("{root}/dense");
+    let other = format!("{user}-budget-other");
+    let tx = client.transaction().await?;
+    tx.batch_execute("SET LOCAL session_replication_role=replica")
+        .await?;
+    tx.execute("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) SELECT $1||'/actors/'||n,$1,$1,'dense','Dense',$1,'dummy' FROM generate_series(1,$2::bigint)n ON CONFLICT DO NOTHING", &[&prefix,&dense]).await?;
+    tx.execute("INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json,reaction,created_at) SELECT $1,$2||'/actors/'||n,$2||'/likes/'||n,'{}','❤️',now()-n*interval '1 millisecond' FROM generate_series(1,$3::bigint)n ON CONFLICT DO NOTHING", &[&root,&prefix,&dense]).await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,activity_id,activity_json,visibility) SELECT $1,$2||'/actors/'||n,$2||'/reposts/'||n,'{}','public' FROM generate_series(1,$3::bigint)n ON CONFLICT DO NOTHING", &[&root,&prefix,&dense]).await?;
+    tx.batch_execute("SET LOCAL session_replication_role=origin")
+        .await?;
+    tx.execute("INSERT INTO home_reaction_totals(post_id,source_kind,group_key,reaction,emoji,n) SELECT post_id,CASE WHEN user_id IS NULL THEN 0 ELSE 1 END::smallint AS source_kind,home_reaction_key(reaction,emoji) AS group_key,reaction,emoji,count(*) FROM apub_reactions WHERE post_id=$1 GROUP BY post_id,source_kind,group_key,reaction,emoji ON CONFLICT(post_id,source_kind,group_key) DO UPDATE SET n=EXCLUDED.n", &[&root]).await?;
+    tx.execute("INSERT INTO home_repost_totals(post_id,n) SELECT $1,count(*) FROM apub_reposts WHERE post_id=$1 AND visibility IN ('public','local') ON CONFLICT(post_id) DO UPDATE SET n=EXCLUDED.n", &[&root]).await?;
+    tx.execute("INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text) ON CONFLICT DO NOTHING", &[&other]).await?;
+    tx.execute(
+        "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+        &[&root, &other],
+    )
+    .await?;
+    tx.execute("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) SELECT $1,actor_id,'outgoing',$1||'/root-follow',true FROM apub_remote_posts WHERE id=$2 ON CONFLICT DO NOTHING", &[&other,&root]).await?;
+    tx.execute("INSERT INTO apub_reactions(post_id,actor_id,user_id,activity_id,activity_json,reaction) VALUES($1,'local:'||$2,$2,$1||'/own-like','{}','❤️') ON CONFLICT(post_id,actor_id) DO UPDATE SET reaction=EXCLUDED.reaction,emoji=NULL", &[&root,&user]).await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,'local:'||$2,$2,$1||'/own-repost','{}','followers') ON CONFLICT DO NOTHING", &[&root,&user]).await?;
+    tx.execute("INSERT INTO apub_repost_recipients(activity_id,user_id) VALUES($1||'/own-repost',$2),($1||'/own-repost',$3) ON CONFLICT DO NOTHING", &[&root,&user,&other]).await?;
+    tx.execute("INSERT INTO apub_reposts(post_id,actor_id,activity_id,activity_json,visibility) SELECT $1,actor_id,$1||'/private-repost','{}','followers' FROM apub_remote_posts WHERE id=$1 ON CONFLICT DO NOTHING", &[&root]).await?;
+    tx.execute("INSERT INTO apub_repost_recipients(activity_id,user_id) VALUES($1||'/private-repost',$2) ON CONFLICT DO NOTHING", &[&root,&user]).await?;
+    tx.execute(
+        "UPDATE apub_actors SET blocked=true WHERE id=$1||'/actors/'||$2::bigint::text",
+        &[&prefix, &dense],
+    )
+    .await?;
+    tx.batch_execute("ANALYZE apub_actors; ANALYZE apub_reactions; ANALYZE apub_reposts; ANALYZE apub_repost_recipients; ANALYZE home_reaction_totals; ANALYZE home_repost_totals; ANALYZE home_private_repost_totals").await?;
+    tx.commit().await?;
+    eprintln!(
+        "engagement fixture: {count} posts, {dense} reactions and public reposts on one post; blocked=1, own/private/other audiences"
+    );
+    let sql = timeline_query_for(false, false, true, false, false);
+    for (viewer, extra, selected) in [(user, 2, true), (other.as_str(), 1, false)] {
+        let query = bind(
+            sql.clone(),
+            &[
+                viewer, "", "social", "false", "500", root, "", "false", "[]",
+            ],
+        );
+        let rows = client
+            .simple_query(&format!("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) {query}"))
+            .await?;
+        let raw = rows
+            .iter()
+            .find_map(|r| match r {
+                SimpleQueryMessage::Row(r) => r.get(0),
+                _ => None,
+            })
+            .unwrap();
+        let plan: Value = serde_json::from_str(raw)?;
+        visit(&plan[0]["Plan"], &|node| {
+            if matches!(
+                node["Relation Name"].as_str(),
+                Some("apub_reactions" | "apub_reposts")
+            ) {
+                let read = (node["Actual Rows"].as_f64().unwrap_or(0.)
+                    + node["Rows Removed by Filter"].as_f64().unwrap_or(0.))
+                    * node["Actual Loops"].as_f64().unwrap_or(0.);
+                assert!(
+                    read <= 100.,
+                    "dense aggregation scans reaction/repost history: {node}"
+                );
+            }
+        });
+        let rows = client.simple_query(&query).await?;
+        let row = rows
+            .iter()
+            .find_map(|r| match r {
+                SimpleQueryMessage::Row(r) => r.get(0),
+                _ => None,
+            })
+            .unwrap();
+        let value = backend::routes::home::timeline_post(serde_json::from_str(row)?);
+        assert_eq!(
+            value["likes"], dense,
+            "blocked actor excluded, own reaction included"
+        );
+        assert_eq!(
+            value["reposts"],
+            dense + extra,
+            "public, own and received private counts do not overlap"
+        );
+        assert_eq!(value["liked"], selected);
+        assert_eq!(value["reposted"], selected);
+    }
+    Ok(other)
+}
+
 // A dedicated benchmark gate: every sample includes PostgreSQL planning and
 // execution. Keep fixtures committed for independent concurrent connections.
-async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
+async fn verify_budget(user: &str, root: &str, count: usize) -> anyhow::Result<()> {
     let url = Config::from_env().database_url;
-    let (fixture, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    let (mut fixture, connection) = tokio_postgres::connect(&url, NoTls).await?;
     tokio::spawn(connection);
     // Fixture positioning, outside the timed application queries.
     let deep:String=fixture.query_one("SELECT id FROM home_posts WHERE user_id=$1 ORDER BY created_at,id LIMIT 1 OFFSET 10000", &[&user]).await?.get(0);
+    let other = seed_engagement_fixture(&mut fixture, user, root, count).await?;
     let remote_author = format!("{}/actors/0", root.split("/posts/").next().unwrap());
     let reply = root.replace("/posts/000000001", "/posts/000000020");
     let writer = format!("{user}-budget-writer");
@@ -332,6 +433,7 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
             &[&writer],
         )
         .await?;
+    fixture.execute("INSERT INTO users(id,user_name,display_name) SELECT $1||'-'||n,$1||'-'||n,$1||'-'||n FROM generate_series(0,7)n ON CONFLICT DO NOTHING", &[&writer]).await?;
     let page = bind(
         timeline_page_query_for("home", false),
         &[user, "", "home", "false", "500", "", "", "false", "[]"],
@@ -436,6 +538,21 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
             &[user, "", "social", "false", "500", root, "", "true", "[]"],
         ),
         make(
+            "other_audience",
+            timeline_query_for(false,false,true,false,false),
+            &[&other,"","social","false","500",root,"","false","[]"],
+        ),
+        make(
+            "reaction_insert",
+            "WITH bound_params AS (SELECT $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,$9::text) INSERT INTO apub_reactions(post_id,actor_id,user_id,activity_id,activity_json,reaction) VALUES($6,'local:'||$1,$1,$1||'/budget-like','{}','❤️') RETURNING post_id".into(),
+            &[&writer,"","","","",root,"","",""],
+        ),
+        make(
+            "repost_visibility",
+            "WITH bound_params AS (SELECT $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,$9::text) UPDATE apub_reposts SET visibility='public' WHERE post_id=$6 AND actor_id='local:'||$1 RETURNING post_id".into(),
+            &[user,"","","","",root,"","",""],
+        ),
+        make(
             "receipt_insert",
             "WITH bound_params AS (SELECT $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,$9::text) INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($6,$1) RETURNING post_id".into(),
             &[&writer, "", "", "", "", &reply, "", "", ""],
@@ -525,7 +642,10 @@ async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
 }
 
 fn is_budget_write(name: &str) -> bool {
-    matches!(name, "receipt_insert" | "post_delete")
+    matches!(
+        name,
+        "receipt_insert" | "post_delete" | "reaction_insert" | "repost_visibility"
+    )
 }
 
 type BudgetConnection =
@@ -537,6 +657,10 @@ async fn budget_samples(
     sql: String,
     args: Vec<String>,
 ) -> anyhow::Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+    let mut args = args;
+    if name == "reaction_insert" {
+        args[0] = format!("{}-{worker}", args[0]);
+    }
     let execution = format!(
         "EXPLAIN (ANALYZE,TIMING OFF,FORMAT JSON) EXECUTE budget_{}({})",
         name,
@@ -555,7 +679,10 @@ async fn budget_samples(
         connection
             .0
             .batch_execute(
-                if matches!(name.as_str(), "detail" | "thread" | "page_render") {
+                if matches!(
+                    name.as_str(),
+                    "detail" | "thread" | "page_render" | "other_audience"
+                ) {
                     "SET plan_cache_mode=force_generic_plan"
                 } else {
                     "SET plan_cache_mode=force_custom_plan"
@@ -645,7 +772,9 @@ async fn persisted_query_budget() -> anyhow::Result<()> {
             &[],
         )
         .await?;
-    verify_budget(&row.get::<_, String>(0), &row.get::<_, String>(1)).await
+    let user: String = row.get(0);
+    let count:i64=client.query_one("SELECT (SELECT count(*) FROM home_posts WHERE user_id=$1::text)+(SELECT count(*) FROM apub_remote_recipients WHERE user_id=$1::text)",&[&user]).await?.get(0);
+    verify_budget(&user, &row.get::<_, String>(1), count as usize).await
 }
 
 #[tokio::test]
