@@ -1,3 +1,4 @@
+import { ShellSkeleton } from "./ShellSkeleton";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { OnboardingProvider } from "./OnboardingTour";
 import "./navigation";
@@ -314,7 +315,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (channelId) lastChannel.current = channelId;
   }, [channelId]);
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isLoading } = useCurrentUser();
+  if (isLoading && currentUserId === null) return <ShellSkeleton />;
   return (
     <OnboardingProvider
       key={currentUserId ?? "anonymous"}

@@ -1,5 +1,5 @@
 import "../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createRootRoute,
@@ -21,14 +21,25 @@ vi.mock("../preferences/SearchPreferences", () => ({
 vi.mock("../pwa/PwaControls", () => ({
   PwaProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));
-vi.mock("../../hooks/useCurrentUser", () => ({
-  useCurrentUser: () => ({
-    currentUserId: "user-1",
+const auth = vi.hoisted(() => ({
+  state: {
+    currentUserId: "user-1" as string | null,
     isLoading: false,
     isAdmin: false,
     error: null,
-  }),
+  },
+  listeners: new Set<() => void>(),
 }));
+vi.mock("../../hooks/useCurrentUser", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    auth.listeners.add(listener);
+    return () => {
+      auth.listeners.delete(listener);
+    };
+  };
+  return { useCurrentUser: () => useSyncExternalStore(subscribe, () => auth.state) };
+});
 
 vi.mock("../../hooks/usePresence", () => ({
   usePresence: () => {},
@@ -128,6 +139,7 @@ function setup(entries: string[]) {
 }
 
 beforeEach(() => {
+  auth.state = { currentUserId: "user-1", isLoading: false, isAdmin: false, error: null };
   localStorage.setItem("zoo:onboarding:v1:user-1", "done");
 });
 
@@ -244,4 +256,29 @@ it("closes a directly opened members screen without leaving its channel or threa
   expect(router.state.location.search).toMatchObject({ thread: "root" });
   expect(router.state.location.search).not.toHaveProperty("members", true);
   expect(router.history.canGoBack()).toBe(false);
+});
+
+it("waits for the initial account before mounting inputs and preserves them during refresh", async () => {
+  auth.state = { ...auth.state, currentUserId: null, isLoading: true };
+  setup(["/channels/123e4567-e89b-12d3-a456-426614174000"]);
+  await waitFor(() => expect(document.querySelector("[data-app-shell]")).not.toBeNull());
+  expect(screen.queryByRole("textbox", { name: "Draft" })).toBeNull();
+  await act(async () => {
+    auth.state = { ...auth.state, currentUserId: "user-1", isLoading: false };
+    auth.listeners.forEach((listener) => listener());
+  });
+  const draft = await screen.findByRole("textbox", { name: "Draft" });
+  await userEvent.type(draft, "Keep this draft");
+  await act(async () => {
+    auth.state = { ...auth.state, isLoading: true };
+    auth.listeners.forEach((listener) => listener());
+  });
+  expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
+  expect(draft).toHaveValue("Keep this draft");
+  await act(async () => {
+    auth.state = { ...auth.state, isLoading: false };
+    auth.listeners.forEach((listener) => listener());
+  });
+  expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
+  expect(draft).toHaveValue("Keep this draft");
 });
