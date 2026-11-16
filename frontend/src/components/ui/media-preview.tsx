@@ -22,6 +22,7 @@ export function MediaPreview({
   onOpen,
   footer,
   initialOpen = false,
+  embedded = false,
   depth = 0,
   ...metadata
 }: ImageMetadata & {
@@ -35,6 +36,8 @@ export function MediaPreview({
   onOpen?: () => void;
   footer?: ReactNode;
   initialOpen?: boolean;
+  /** The native host already provides the preview window and close control. */
+  embedded?: boolean;
   depth?: number;
 }) {
   const { t } = useTranslation();
@@ -84,7 +87,9 @@ export function MediaPreview({
           {...metadata}
           src={src}
           alt={name}
-          className={expanded ? "h-[75dvh] w-full" : "w-full max-h-96"}
+          className={
+            expanded ? (embedded ? "h-full w-full" : "h-[75dvh] w-full") : "w-full max-h-96"
+          }
           style={expanded ? undefined : { aspectRatio: imageAspectRatio(metadata) }}
           onError={errorHandler}
         />
@@ -98,7 +103,13 @@ export function MediaPreview({
           playsInline
           preload="none"
           aria-label={name}
-          className={expanded ? "h-[75dvh] w-full" : "aspect-video max-h-96 w-full"}
+          className={
+            expanded
+              ? embedded
+                ? "max-h-full w-full"
+                : "h-[75dvh] w-full"
+              : "aspect-video max-h-96 w-full"
+          }
           onError={errorHandler}
         />
       );
@@ -138,6 +149,12 @@ export function MediaPreview({
       );
     return null;
   }
+  if (embedded)
+    return (
+      <div className="h-dvh min-w-0 overflow-auto bg-background text-foreground">
+        {renderMedia(true)}
+      </div>
+    );
   return (
     <div className="min-w-0 w-full overflow-hidden rounded-lg border bg-muted/30">
       <div

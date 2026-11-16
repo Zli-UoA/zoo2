@@ -847,7 +847,8 @@
         "Archive",
         "Text",
         "JapanesePDF",
-        "JPEG2000PDF"
+        "JPEG2000PDF",
+        "EmbeddedEmail"
       ]
     }
   ],

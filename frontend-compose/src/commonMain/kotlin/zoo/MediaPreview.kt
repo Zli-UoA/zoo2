@@ -1,9 +1,10 @@
 package zoo
 
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 
-/** Android packages the React MediaPreview bundle, including mail and document parsers. */
+/** Android uses native media renderers and a bundled document/mail reader. */
 @Composable
 internal expect fun MediaPreviewSurface(
     app: Session,
@@ -21,3 +22,7 @@ internal fun hasMediaPreview(contentType: String, name: String = ""): Boolean {
     if (mime in setOf("application/javascript", "application/json", "application/xml", "application/yaml", "application/toml", "message/rfc822", "application/vnd.ms-outlook", "application/zip", "application/x-zip-compressed")) return true
     return mime in setOf("", "application/octet-stream", "binary/octet-stream") && Regex("\\.(eml|msg|docx|xlsx|pptx|odt|ods|odp|zip|txt|md|csv|json|xml|html?|log|ya?ml|toml|ini|ics|vcf|sql|js|ts|py|rs|kt|css)$", RegexOption.IGNORE_CASE).containsMatchIn(name)
 }
+
+/** Native preview window: one bounded surface, without a second web modal. */
+@Composable
+internal expect fun MediaPreviewPanel(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit)

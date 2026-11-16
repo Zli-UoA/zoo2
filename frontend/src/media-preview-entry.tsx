@@ -23,7 +23,7 @@ window.openMediaPreview = (name, contentType, locale, dark = false) => {
         name={name}
         contentType={contentType}
         footer={<NativeDownload name={name} />}
-        initialOpen
+        embedded
       />
     </LocaleProvider>,
   );

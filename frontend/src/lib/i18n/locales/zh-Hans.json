@@ -227,6 +227,8 @@
     "edited": "已编辑"
   },
   "attachments": {
+    "play": "播放",
+    "pause": "暂停",
     "add": "添加文件",
     "selected": "要附加的文件",
     "remove": "删除{{name}}",

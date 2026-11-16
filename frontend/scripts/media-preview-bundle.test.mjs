@@ -100,11 +100,26 @@ try {
     await page.waitForFunction(() => !!window.openMediaPreview);
     await page.evaluate(([name, type]) => window.openMediaPreview(name, type, "ja"), [name, type]);
     await page.getByText(expected, { exact: false }).first().waitFor();
+    assert.equal(
+      await page.getByRole("dialog").count(),
+      0,
+      "native host must not contain a second modal",
+    );
+    assert.equal(
+      await page.locator('[data-slot="dialog-overlay"]').count(),
+      0,
+      "no blurred backdrop over the native viewer",
+    );
+    const bounds = await page.locator("#root > div").first().boundingBox();
+    assert.ok(bounds.width <= 390 && bounds.height <= 844, "viewer must fit the native viewport");
     if (name === "sample.zip") {
       await page.getByRole("button", { name: "readme.txtをプレビュー" }).click();
       await page.getByText("Archive text").waitFor();
       await page.getByRole("dialog").getByRole("link", { name: "ダウンロード" }).click();
       await page.waitForFunction(() => window.savedPreviews.length === 1);
+      await page.getByRole("button", { name: "閉じる", exact: true }).click();
+      await page.getByRole("dialog").waitFor({ state: "detached" });
+      await page.getByText("readme.txt", { exact: true }).first().waitFor();
       const saved = await page.evaluate(() => window.savedPreviews[0]);
       assert.equal(saved[0], "readme.txt");
       assert.equal(Buffer.from(saved[2], "base64").toString(), "Archive text");
