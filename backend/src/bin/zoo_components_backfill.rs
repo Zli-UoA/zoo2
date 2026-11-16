@@ -11,6 +11,9 @@
 //!
 //! 出力には投稿の内容が入るので、リポジトリや PR には置かない。Electric の shape への更新が増えるので、
 //! 利用の少ない時間に流す。
+//!
+//! クライアントが部品を描画できるようになってから（Zli-UoA/zoo2#600 を出したあと）流す。`app_ui` の文書は
+//! 旧形式を残さず書き換えるので、先に流すと、旧版の Web にはホーム・モーダル・一時メッセージが表示されない。
 use backend::components::backfill;
 use std::io::Write;
 
@@ -55,11 +58,12 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
     eprintln!(
-        "{}: scanned={} changed={} applied={}",
+        "{}: scanned={} changed={} applied={} skipped={}",
         if apply { "applied" } else { "dry-run" },
         report.scanned,
         report.changed,
-        report.applied
+        report.applied,
+        report.skipped
     );
     Ok(())
 }

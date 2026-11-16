@@ -146,3 +146,11 @@ test("link previews use the canonical name from GitHub metadata", async (t) => {
   const response = f.zoo.calls.findLast((c) => c.path === "/surfaces")!;
   assert.match(unplain(response.body.components[0].content), /^Acme\/Project:/);
 });
+
+test("link previews keep the author and state in components", async () => {
+  const { cardComponents } = await import("../src/cards.ts");
+  const parts = cardComponents(undefined, { title: "Acme/Project #7", url: "https://github.com/Acme/Project/issues/7", author: "alice", badge: "closed", source: "GitHub" });
+  const text = JSON.stringify(parts);
+  assert.match(text, /alice/);
+  assert.match(text, /`closed`/);
+});

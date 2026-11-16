@@ -290,7 +290,7 @@ export function cardModel(document: Json): Json[] {
   const heading = parts.find((c) => c.id === 1);
   const box = parts.find((c) => c.type === 17);
   const text = (id: number) => box?.components.find((c: Json) => c.id === id)?.content as string | undefined;
-  const title = text(2) ?? "";
+  const title = (text(2) ?? "").replace(/ `[^`]*`$/, "");
   const link = /^\*\*\[(.*)\]\((.*)\)\*\*$/s.exec(title);
   const fields = (text(4) ?? "")
     .split("\n")

@@ -46,6 +46,8 @@ pub fn card(v: &Value) -> Vec<Component> {
         && s(v, "color").is_empty()
         && s(v, "source").is_empty()
         && s(v, "author").is_empty()
+        && s(v, "context").is_empty()
+        && s(v, "badge").is_empty()
     {
         // Slack の取り込みの本文はもともと MFM（mrkdwn から変換済み）。webhook の本文は文字のまま。
         let content = if title == SLACK_TEXT_TITLE {
@@ -145,6 +147,40 @@ pub fn cards(stored: &Value) -> Document {
     Document::new(IS_COMPONENTS_V2, list.iter().flat_map(card).collect())
 }
 
+/// 旧 Block の一覧を、内容を欠かさずに部品へ変換できるか。旧形式の select は選択肢を 100 件、
+/// 各 200 文字まで許していたが、部品の select は 25 件、各 100 文字まで。超えるものは変換すると欠けるので、
+/// 呼び出し側は旧形式のまま残す（バックフィル）か、400 で知らせる（App API）。
+pub fn lossless_blocks(list: &Value) -> Result<(), String> {
+    for b in list.as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        if s(b, "type") != "select" {
+            continue;
+        }
+        let options = b
+            .get("options")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if options.len() > 25 {
+            return Err(format!(
+                "select {:?} has {} options (max 25)",
+                s(b, "action_id"),
+                options.len()
+            ));
+        }
+        if options
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|o| o.chars().count() > 100)
+        {
+            return Err(format!(
+                "select {:?} has an option longer than 100 characters",
+                s(b, "action_id")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// `messages.app_blocks`（旧 Block の配列）を文書にする。`modal` なら select を label に入れる。
 pub fn blocks(list: &Value, modal: bool) -> Document {
     let empty = Vec::new();
@@ -200,10 +236,9 @@ pub fn blocks(list: &Value, modal: bool) -> Document {
                     .map(|o| {
                         o.iter()
                             .filter_map(Value::as_str)
-                            .take(25)
                             .map(|o| SelectOption {
-                                label: o.chars().take(100).collect(),
-                                value: o.chars().take(100).collect(),
+                                label: o.to_string(),
+                                value: o.to_string(),
                                 ..Default::default()
                             })
                             .collect()

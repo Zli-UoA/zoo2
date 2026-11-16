@@ -286,7 +286,12 @@ impl SlackMessage {
             && (!self.text.trim().is_empty()
                 || self.files.iter().any(SlackFile::is_importable)
                 || !self.files_text(|_| true).is_empty()
-                || !self.attachments_text().is_empty())
+                || !self.attachments_text().is_empty()
+                // 本文が blocks にしかない bot 投稿（rich_text 以外のブロック）も取り込む。部品にする条件と同じ
+                || self
+                    .blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(|t| t.as_str()) != Some("rich_text")))
     }
 
     /// `include` が真の添付ファイルの名前 (1 行に 1 つ)。本文のない投稿が空にならないよう、代わりの本文に使う

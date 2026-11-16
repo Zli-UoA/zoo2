@@ -37,7 +37,8 @@ fn collect(c: &Component, out: &mut Vec<String>) {
         }
         C::Thumbnail(t) => out.extend(t.description.clone()),
         C::MediaGallery(g) => out.extend(g.items.iter().filter_map(|i| i.description.clone())),
-        C::File(f) => out.extend(f.name.clone()),
+        C::File(f) => out.push(f.name.clone().unwrap_or_else(|| f.file.url.clone())),
+        C::Container(c) => out.extend([&c.title, &c.subtitle].into_iter().flatten().cloned()),
         C::Video(v) => out.push(format!(
             "{} {}",
             v.title,

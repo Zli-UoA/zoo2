@@ -115,11 +115,20 @@ fn truncate(doc: &mut Document) {
     while doc.components.len() > 1 && over(doc) {
         doc.components.pop();
     }
-    let omitted = total - doc.components.len();
-    if omitted > 0 {
-        doc.components.push(Component::text(format!(
-            "<small>（ほかに {omitted} 件の部品を省略しました）</small>"
-        )));
+    if doc.components.len() < total {
+        // 省いたことを知らせる部品を足し、それで上限を超えるなら、その前の部品をもう 1 つ省く
+        let notice = |omitted: usize| {
+            Component::text(format!(
+                "<small>（ほかに {omitted} 件の部品を省略しました）</small>"
+            ))
+        };
+        doc.components.push(notice(total - doc.components.len()));
+        while doc.components.len() > 2 && over(doc) {
+            let at = doc.components.len() - 2;
+            doc.components.remove(at);
+            let omitted = total - (doc.components.len() - 1);
+            *doc.components.last_mut().unwrap() = notice(omitted);
+        }
     }
 }
 
@@ -264,7 +273,9 @@ fn is_legacy_blocks(list: &[Value]) -> bool {
         && list
             .iter()
             .all(|b| match b.get("type").and_then(Value::as_str) {
-                Some("card" | "text" | "button" | "select") => true,
+                // 旧形式の card は中身を `card` キーに持つ（Slack の card ブロックはトップレベルに title などを持つ）
+                Some("card") => b.get("card").is_some_and(Value::is_object),
+                Some("text" | "button" | "select") => true,
                 Some("input") => b.get("label").is_some_and(Value::is_string),
                 _ => false,
             })
@@ -308,6 +319,15 @@ pub fn app(
         _ => return Err(bad("Invalid component document")),
     };
     if format == Format::Legacy {
+        let blocks = match value {
+            Value::Array(_) => value,
+            _ => value.get("blocks").unwrap_or(&Value::Null),
+        };
+        legacy::lossless_blocks(blocks).map_err(|e| {
+            bad(format!(
+                "Legacy blocks cannot be converted without losing data: {e}"
+            ))
+        })?;
         // 旧形式の検証（action_id の長さなど）も通す。旧形式の文書は新しい検証にも通る
         crate::apps::ui::validate_blocks(match value {
             Value::Array(_) => value,
@@ -417,6 +437,33 @@ mod tests {
         );
         let doc = i.doc.unwrap();
         assert!(matches!(&doc.components[0], Component::Unsupported(u) if u.text == "inner"));
+    }
+
+    #[test]
+    fn truncation_leaves_room_for_the_notice() {
+        let many: Vec<Value> = (0..501)
+            .map(|i| json!({"type":10,"content":format!("t{i}")}))
+            .collect();
+        let i = hook(json!({"components": many}));
+        let doc = i.doc.unwrap();
+        assert!(doc.validate(Context::Webhook).is_ok());
+        assert!(
+            matches!(doc.components.last(), Some(Component::TextDisplay(t)) if t.content.contains("件の部品を省略しました"))
+        );
+    }
+
+    #[test]
+    fn legacy_blocks_that_would_lose_options_are_rejected() {
+        let options: Vec<String> = (0..26).map(|i| format!("o{i}")).collect();
+        let err = app(
+            &json!([{"type":"select","action_id":"s","label":"S","options":options}]),
+            Context::AppMessage,
+            "test",
+        );
+        assert!(err.is_err());
+        // Slack の card ブロック（トップレベルに title）は旧形式として扱わない
+        let (_, f) = app(&json!({"blocks":[{"type":"card","title":{"type":"plain_text","text":"T"},"body":{"type":"plain_text","text":"B"}}]}), Context::AppMessage, "test").unwrap();
+        assert_eq!(f, Format::Slack);
     }
 
     #[test]

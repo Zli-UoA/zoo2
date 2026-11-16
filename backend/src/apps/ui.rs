@@ -367,6 +367,7 @@ async fn invoke(
                         .filter_map(|c| c.custom_id())
                         .flat_map(|id| {
                             chosen(&b.values[id])
+                                .unwrap_or_default()
                                 .into_iter()
                                 .map(str::to_string)
                                 .collect::<Vec<_>>()
@@ -448,13 +449,18 @@ fn bad(msg: &str) -> AppError {
     AppError::BadRequest(msg.into())
 }
 
-/// 選んだ値の一覧（1 つなら文字列、複数なら配列）。
-fn chosen(value: &Value) -> Vec<&str> {
+/// 選んだ値の一覧（1 つなら文字列、複数なら配列）。文字列でない要素があれば None（不正な値）。
+fn chosen(value: &Value) -> Option<Vec<&str>> {
     match value {
-        Value::String(s) => vec![s.as_str()],
-        Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
-        _ => Vec::new(),
+        Value::Null => Some(Vec::new()),
+        Value::String(s) => Some(vec![s.as_str()]),
+        Value::Array(a) => a.iter().map(Value::as_str).collect(),
+        _ => None,
     }
+}
+
+fn chosen_or_bad(value: &Value) -> Result<Vec<&str>, AppError> {
+    chosen(value).ok_or_else(|| bad("Invalid selection"))
 }
 
 fn count_ok(n: usize, min: Option<u8>, max: Option<u8>, default_min: u8) -> bool {
@@ -472,7 +478,7 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
     };
     match c {
         C::StringSelect(s) => {
-            let v = chosen(value);
+            let v = chosen_or_bad(value)?;
             if !in_options(&s.options, &v)
                 || !count_ok(v.len(), s.min_values.or(Some(1)), s.max_values, 1)
             {
@@ -480,19 +486,27 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
             }
         }
         C::Overflow(g) | C::RadioGroup(g) => {
-            let v = chosen(value);
+            let v = chosen_or_bad(value)?;
             if v.len() != 1 || !in_options(&g.options, &v) {
                 return Err(bad("Invalid selection"));
             }
         }
         C::CheckboxGroup(g) => {
-            let v = chosen(value);
-            if !in_options(&g.options, &v) || v.len() > g.options.len() {
+            let v = chosen_or_bad(value)?;
+            let max = g.max_values.map_or(g.options.len(), usize::from);
+            let min = g.min_values.map_or(1, usize::from);
+            let unique = v.iter().collect::<std::collections::HashSet<_>>().len() == v.len();
+            // 空は「選ばなかった」として、required の確認に任せる
+            if !in_options(&g.options, &v)
+                || !unique
+                || v.len() > max
+                || (!v.is_empty() && v.len() < min)
+            {
                 return Err(bad("Invalid selection"));
             }
         }
         C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => {
-            let v = chosen(value);
+            let v = chosen_or_bad(value)?;
             if v.iter().any(|id| id.is_empty() || id.len() > 100)
                 || v.len() > s.max_values.unwrap_or(1).max(1) as usize
             {
@@ -500,7 +514,7 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
             }
         }
         C::ExternalSelect(s) => {
-            let v = chosen(value);
+            let v = chosen_or_bad(value)?;
             if v.iter().any(|id| id.len() > 100)
                 || v.len() > s.max_values.unwrap_or(1).max(1) as usize
             {
@@ -547,7 +561,7 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
             }
         }
         C::FileUpload(f) => {
-            let v = chosen(value);
+            let v = chosen_or_bad(value)?;
             if v.len() > f.max_values.unwrap_or(1).max(1) as usize {
                 return Err(bad("Too many files"));
             }
@@ -655,13 +669,23 @@ async fn blocks(
         }
     }
     let fallback = doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
+    // 本文が空か、前の部品から作った代わりの文字のままなら、新しい部品の代わりの文字にする。
+    // アプリが自分で書いた本文は変えない
+    let current = one(&mut tx, "SELECT json_build_object('content',content,'components',components)::text FROM messages WHERE id=$1 FOR UPDATE", &[id.as_str()]).await?;
+    let previous = current["components"]
+        .as_str()
+        .and_then(crate::components::stored)
+        .map(|d| d.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH));
+    let content = current["content"].as_str().unwrap_or_default();
+    let regenerate = content.is_empty() || previous.as_deref() == Some(content);
     toasty::sql::statement(
-        "UPDATE messages SET components=$2,app_blocks=NULL,app_origin_id=$3,content=CASE WHEN content='' THEN $4 ELSE content END,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
+        "UPDATE messages SET components=$2,app_blocks=NULL,app_origin_id=$3,content=CASE WHEN $5='1' THEN $4 ELSE content END,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
     )
     .bind(id.as_str())
     .bind(doc.to_json())
     .bind(p.app_id.as_str())
     .bind(fallback)
+    .bind(if regenerate { "1" } else { "" })
     .exec(&mut tx)
     .await?;
     tx.commit().await?;
