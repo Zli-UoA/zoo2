@@ -507,6 +507,10 @@
       "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
+      "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
+      "states": ["Available", "Mobile"]
+    },
+    {
       "file": "src/components/pwa/PwaControls.stories.tsx",
       "states": [
         "Default",
@@ -1180,6 +1184,10 @@
       "file": "src/components/offline/OfflineProvider.tsx",
       "reason": "永続化・接続状態を供給する制御層。表示はOfflineBanner、OPFS初期化と再試行はブラウザテストで確認する。",
       "checks": ["src/components/offline/OfflineProvider.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/pwa/AppUpdateNotice.tsx",
+      "story": "src/components/pwa/AppUpdateNotice.stories.tsx"
     },
     {
       "file": "src/components/pwa/PwaControls.tsx",

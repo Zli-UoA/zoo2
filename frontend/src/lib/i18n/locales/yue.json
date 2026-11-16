@@ -396,6 +396,11 @@
   "mentions": {
     "suggestions": "提及建議"
   },
+  "appUpdate": {
+    "title": "有新版本嘅畫面",
+    "description": "重新載入就會用新版本。如果有緊打嘅內容，請先送出。",
+    "reload": "重新載入"
+  },
   "offline": {
     "bannerTitle": "你而家離線",
     "bannerDescription": "顯示緊儲存咗嘅內容。連返線之前唔可以send訊息。",

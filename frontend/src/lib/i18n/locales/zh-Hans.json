@@ -396,6 +396,11 @@
   "mentions": {
     "suggestions": "提及建议"
   },
+  "appUpdate": {
+    "title": "有新版本的界面",
+    "description": "重新加载即可使用新版本。如有正在输入的内容，请先发送。",
+    "reload": "重新加载"
+  },
   "offline": {
     "bannerTitle": "你已离线",
     "bannerDescription": "正在显示已保存的内容。重新连接前无法发送消息。",
