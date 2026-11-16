@@ -1732,7 +1732,7 @@
     "extension": "Destination number",
     "removePhone": "Remove contact",
     "addPhone": "Add phone",
-    "pbxHelp": "Use a WebRTC extension issued by the PBX. Choose an administrator-provided path under /sip/. Restrict outbound trunks and numbers on the PBX too.",
+    "pbxHelp": "Register the PBX domain and account provided by your administrator. The server handles SIP connections. Restrict outbound trunks and numbers on the PBX too.",
     "writeError": "Could not save. Check the values and permissions and try again.",
     "save": "Save",
     "saving": "Saving…",

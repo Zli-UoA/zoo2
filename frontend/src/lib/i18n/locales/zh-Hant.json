@@ -1732,7 +1732,7 @@
     "extension": "目標號碼",
     "removePhone": "移除聯絡人",
     "addPhone": "新增電話機",
-    "pbxHelp": "使用PBX提供的WebRTC分機。連線路徑須為管理員提供的 /sip/ 下的路徑。PBX也須限制可用的外線和號碼。",
+    "pbxHelp": "請登記管理員提供的PBX網域及帳戶。SIP連線由伺服器處理。PBX也須限制可用的外線及號碼。",
     "writeError": "無法儲存，請檢查輸入和權限後重試。",
     "save": "儲存",
     "saving": "儲存中…",
