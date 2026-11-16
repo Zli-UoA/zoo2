@@ -147,19 +147,9 @@ jobs:
               ".buildkit-cache/target": "/app/target"
             }
 
-      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
-      - name: Expose the Actions cache runtime to docker
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Build production backend image
         run: |
-          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
-          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
-          docker compose --project-directory . "${files[@]}" \
+          docker compose --project-directory . -f infra/compose.stack.yaml \
             build --builder "${{ steps.buildx.outputs.name }}" backend
 
       # compose の backend サービスは ENVIRONMENT=production なので、

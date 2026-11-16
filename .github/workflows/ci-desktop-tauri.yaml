@@ -29,6 +29,9 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      # clippy と test の dev プロファイルのデバッグ情報を行番号だけにして、target のキャッシュ（約 1.1GB）を小さくする。
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
