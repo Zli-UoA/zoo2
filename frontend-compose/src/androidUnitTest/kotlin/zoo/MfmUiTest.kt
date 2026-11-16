@@ -66,7 +66,9 @@ class MfmUiTest {
     private fun Shell(fixture: Fixture, dark: Boolean = false, content: @Composable () -> Unit) {
         CompositionLocalProvider(LocalApp provides fixture.app, LocalJoinedEmojis provides emptyList()) {
             MaterialTheme(colorScheme = zooColorScheme(dark)) {
-                androidx.compose.material3.Surface { content() }
+                androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxSize()) { content() }
+                }
             }
         }
     }
@@ -123,8 +125,17 @@ class MfmUiTest {
                 ui.runOnIdle { width = nextWidth; scale = nextScale; dark = nextDark }
                 val text = ui.onNodeWithText(body, useUnmergedTree = true)
                 ui.mainClock.advanceTimeByFrame()
-                ui.waitUntil(timeoutMillis = 5_000) {
-                    ui.onNodeWithTag("wrapped").fetchSemanticsNode().boundsInRoot.height >= layout(text).size.height
+                try {
+                    ui.waitUntil(timeoutMillis = 5_000) {
+                        ui.onNodeWithTag("wrapped").fetchSemanticsNode().boundsInRoot.height >= layout(text).size.height
+                    }
+                } catch (failure: Throwable) {
+                    val parent = ui.onNodeWithText("先頭", substring = true, useUnmergedTree = true)
+                    val result = layout(parent)
+                    println("MFM wrap $nextWidth/$nextScale: outer=${ui.onNodeWithTag("wrapped").fetchSemanticsNode().boundsInRoot}, " +
+                        "paragraph=${result.size}, placeholders=${result.layoutInput.placeholders}, body=${layout(text).size}")
+                    screenshot("wrapped", "wrap-failed")
+                    throw failure
                 }
                 text.assertIsDisplayed()
                 val textLayout = layout(text)
