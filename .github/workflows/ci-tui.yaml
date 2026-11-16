@@ -15,6 +15,8 @@ on:
       # TUI は E2EE の暗号コアを path で依存する（#359）。
       - "crates/zoo-crypto/**"
       - "rust-toolchain.toml"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/*test-selection*.mjs"
       - ".github/workflows/ci-tui.yaml"
       - ".github/workflows/select-runner.yaml"
   push:
@@ -30,6 +32,8 @@ on:
       # TUI は E2EE の暗号コアを path で依存する（#359）。
       - "crates/zoo-crypto/**"
       - "rust-toolchain.toml"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/*test-selection*.mjs"
       - ".github/workflows/ci-tui.yaml"
       - ".github/workflows/select-runner.yaml"
 permissions:
@@ -41,13 +45,19 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 # TUI は DB や Electric を使わないので、Docker 不要の実行先で fmt・clippy・テストをまとめて行います。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-tui
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   check:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.clients).tui
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 20
     defaults:
@@ -107,7 +117,9 @@ jobs:
         run: cargo build --locked --release
 
   desktop:
+    if: fromJSON(needs.test-selection.outputs.clients).desktop
     # GPUI のビルドには Wayland / X11 / xkbcommon などの apt パッケージが要るため、GitHub ホストの実行先を使う。
+    needs: test-selection
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

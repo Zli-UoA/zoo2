@@ -48,7 +48,7 @@ frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶�
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
 
-固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、Storybook deploy、DB ER 図の deploy、配備バッジ（test・publish）、automerge gate。backendの `check` とfrontendの `check`・`build`・`browser-test` は大容量用を使い、frontend単体テストと、それ以外のRust build/lint/単体テストは共有selectorを使う（publicはHosted優先、privateは空き状況と無料枠で選択）。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージpromote/publish、Terraform Validate/Plan、Storybook deploy、DB ER 図の deploy、配備バッジ（test・publish）。backendの `check` とfrontendの `check`・`build`・`browser-test` は大容量用を使い、frontend単体テストと、それ以外のRust build/lint/単体テストは共有selectorを使う（publicはHosted優先、privateは空き状況と無料枠で選択）。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
 
 状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。
 
@@ -71,3 +71,33 @@ CI Frontendの単体テスト・Vitestのbrowser・VRTプロジェクトは、PR
 バックエンドは `backend/tests/*_test.rs` だけの追加・編集なら、その結合テストを `cargo test --test <名前>` で選び、必要なslack/core区分のジョブだけを起動します。他の結合テストのリンクと実行、未変更の本体のClippy・単体テスト・デプロイイメージ検証を省きます。フォーマット検査は維持し、emoji_service_testの変更では専用のignoredテストも選びます。ソース・共有support・SQL fixture・マイグレーション・Cargo設定・未登録の変更があれば全件へ戻します。全件実行ではActivityPubのignored単体テストも維持します。
 
 判定workflowは自身の回帰テストが成功してから結果を返します。判定ジョブの失敗はworkflowを失敗にし、差分だけが取得できない場合は全件を選びます。import以外の依存を持つ資源は、全件へ戻す対象として `.github/scripts/frontend-test-selection.mjs` に追加します。`node --test .github/scripts/frontend-test-selection.test.mjs .github/scripts/test-selection.test.mjs` で選別と全件への切り替えを検証します。
+
+## Wasm パッケージの再利用
+
+`.github/actions/crypto-wasm` をフロント・OIDC・E2EE・SDKで共有します。生成済みのJS・型定義・Wasmを、暗号コアとバインディングのソース、Cargo manifest／lock、build script、Cargo設定、Rust toolchain、action本体のハッシュで保存します。同じ入力のキャッシュがあればRustのセットアップ、Cargoキャッシュの展開、wasm-bindgenのインストール、コンパイルをすべて省きます。別入力への部分一致では復元せず、キャッシュがない場合だけビルドします。復元したパッケージも必要な3ファイルが空でないことを検証します。小さい生成物はPRでも保存でき、GitHubのキャッシュスコープによりmainへは持ち込みません。Rustの検証自体はCI Cryptoで維持します。
+
+## ケースとパッケージ依存による選別
+
+Vitestのbrowser・VRTは、ファイル単位の`related`に加え、ケース内で使うimport・ローカルhelper・共有hookから依存をたどります。アプリ変更がモジュール初期化やimport構成を変えない純粋な宣言の変更なら、影響するケースのタイトルだけを実行します。動的タイトルのtemplateも静的部分からパターンを作ります。serialスイート、解析できないケース宣言、初期化の副作用やimport構成の変更はファイル単位の実行へ戻します。Storybookも`related`で影響するStoryファイルを選びます。
+
+テスト本体だけの編集では、旧版と新版のASTと差分を比較し、編集行がすべて個別ケース内にある場合だけケースを限定します。Vitestはタイトル、Playwrightは宣言位置で指定し、同じ宣言から生成するブラウザー別・パラメーター別ケースは維持します。import・共有helper・hook・describe設定・削除・曖昧な差分は全ファイル／全スイートに戻します。画面遷移でアプリを読むPlaywrightのE2Eは、アプリ本体が変わった場合には全ケースを維持します。
+
+GitHub BotとSDKのNodeテストは、import・再export・静的なdynamic import・`new URL(..., import.meta.url)`の資源を解析し、変更ファイルへ依存するテストファイルを実行します。computed importや未解決の依存を持つテストは必ず含め、設定・データ資源・削除では全件へ戻します。PWAとavatar-cacheのスクリプトも、この依存解析で変更に無関係なら実行しません。Botのテストだけの変更ではイメージ生成とコンテナsmokeも省きます。Botだけの変更でSDK暗号テストは起動せず、SDK暗号部分だけの変更でBotのイメージ検証を起動しません。
+
+バックエンドの共有テストfixtureだけの変更はバックエンドを全件検証し、アプリ本体が変わらないフロントE2Eは省きます。proxyの検証はNodeのモックサーバーを使うため、proxyだけの変更ではWasm・フロントの型検査／ビルド・アプリのテストを省きます。nginx／entrypointだけの変更はコンテナ検証を選びます。独立したテストの変更ではアプリ本体のビルドも省きます。RustクライアントはCargoのpath依存で区分し、Reactだけの変更でTUI本体を検証しません。desktopは実際にincludeするCSS・翻訳と、既存スキャナーで抽出したlucide importの変化で選びます。バックエンドだけの変更ではStorybookプレビューを生成しません。
+
+## 待機しないマージゲート
+
+`automerge-gate` は一度だけAPIを読み、未完了なら`automerge-gate/all-passed`をpendingにして終了します。CIの開始・完了、外部チェックの更新、PR更新、承認・承認取消で再判定し、Runner内のポーリングとsleepをなくします。イベント処理はHostedで動き、上限は5分です。API失敗時も成功扱いにせずpendingのまま終了します。必要ならworkflow_dispatchの`pull_number`で再判定できます。
+
+forkのレビューイベントは書き込み権限のない `PR review relay` を経由し、その完了を信頼済みの `workflow_run` で再評価します。手動実行もイベント実行も先にPR番号を解決し、PR単位の同じ排他グループでstatusを書き込みます。期待workflowの定義はPRのマージ結果からデータとして読み、既定ブランチの古い定義で削除済みworkflowを要求しません。ゲートコードは特権イベントでは信頼済みの既定ブランチに固定します。
+
+auto-mergeかwrite権限のあるユーザーの有効な承認を必要とする条件、外部チェックの評価、任意の画像／preview／Storybook配布の除外を維持します。承認はマージする意思として扱い、GitHubで取り消されるまで有効です。開始直後にチェックがまだ登録されていなくても、PRのパスに対応するworkflowが見えるまで成功にしません。古いheadのCI結果や置き換え済みのcancel結果で新しいheadの成功を誤判定せず、スキップしたジョブで以前の失敗を消しません。ゲート自身のworkflow完了を購読しないため再帰起動しません。マージキューの`all-passed`は従来どおりworkflow全体を集約します。
+
+## CI設定だけの変更
+
+設定ファイル自身を`paths`に含めることは維持し、設定変更を未検証で通さないようにします。その上で、PR・main・マージキューの差分がCI workflowとComposeのCIキャッシュ設定だけなら、変更行をジョブの範囲に対応付けます。変更したproducerの利用先を選び、そのジョブの`needs`を前提として追加します。前提を追加しただけで、その前提を共有するほかのconsumerまで選ばないようにします。グローバルなenv・権限・trigger、ジョブ構造の変更、未知の差分は従来の全体検証へ戻します。アプリの変更を含む場合もこの省略は使いません。
+
+ComposeのCIキャッシュ設定はservice単位で差分を見て、対応するbackendイメージ検証・frontendコンテナ・proxyだけを選びます。例えばbackend/proxyのキャッシュ削除とTauriのLinux checkの環境変数変更なら、backendのdeploy-image・frontendのproxy・Tauriのcheckだけを実行します。macOS・Wasm・ブラウザー検証は選びません。軽量な選別と前提のRunner選択は必要です。
+
+配布イメージの軽量planはPRとmainへのpushで起動します。GitHubのpathsの評価上限による大きな差分の見落としを避けるため、workflowの起動自体はパスで絞りません。ビルドとRunner選択は計画が`enabled=true`の場合だけ行います。PRは変更されたDocker build入力を調べ、mainは最後に昇格したコミットからの累積差分を調べます。これにより、先行するアプリ変更が未昇格のまま後続のdocs／CI変更がmainに入っても、アプリ変更を配布します。比較結果が不完全なら全イメージを選びます。未反映の変更がないdocs／CIだけならplanで終了します。plan自体はHostedで短時間に実行します。暗号コアはfrontendとbackendの両イメージのCOPY入力なので両方を選び、WasmバインディングとRust toolchainはfrontendを選びます。

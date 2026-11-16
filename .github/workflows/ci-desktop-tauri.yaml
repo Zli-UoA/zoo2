@@ -9,6 +9,8 @@ on:
       - "client-types/**"
       - "desktop-tauri/**"
       - "rust-toolchain.toml"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-desktop-tauri.yaml"
   push:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - "client-types/**"
       - "desktop-tauri/**"
       - "rust-toolchain.toml"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-desktop-tauri.yaml"
 permissions:
   contents: read
@@ -28,7 +32,14 @@ concurrency:
 # WebKitGTK などの apt パッケージが要るため、GitHub ホストの実行先を使う。
 # AppImage は NixOS では作れないので、ここで deb と一緒に作って成果物にする。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-desktop-tauri
+
   check:
+    if: fromJSON(needs.test-selection.outputs.desktopTauri).check
+    needs: test-selection
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -125,6 +136,8 @@ jobs:
   # macOS でもビルドできることを確かめる。リリース (cd-desktop-tauri-release.yaml) と同じ universal の
   # .app を作る。Developer ID の署名と公証はまだしない (ad-hoc 署名だけ)。
   macos:
+    if: fromJSON(needs.test-selection.outputs.desktopTauri).macos
+    needs: test-selection
     runs-on: macos-15
     timeout-minutes: 60
     steps:
