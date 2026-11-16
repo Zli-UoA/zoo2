@@ -54,16 +54,13 @@ PGAPPNAME="$writer_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
 writer_pid=$!
 wait_for_activity "$writer_app" "wait_event = 'PgSleep'"
 
-set +e
 PGAPPNAME="$converter_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v VERBOSITY=verbose \
   -c "BEGIN; SELECT 1 FROM channels WHERE id = '$channel_id' FOR UPDATE; UPDATE channels SET encrypted = true WHERE id = '$channel_id'; COMMIT" \
   >"$tmp_dir/converter-first.out" 2>&1 &
 converter_pid=$!
 wait_for_activity "$converter_app" "wait_event_type = 'Lock'"
 wait "$writer_pid"
-wait "$converter_pid"
-converter_status=$?
-set -e
+if wait "$converter_pid"; then converter_status=0; else converter_status=$?; fi
 expect_check_violation "$tmp_dir/converter-first.out" "$converter_status"
 
 # When conversion owns FOR UPDATE first, later note and message writers wait,
@@ -76,7 +73,6 @@ PGAPPNAME="$converter_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1
 converter_pid=$!
 wait_for_activity "$converter_app" "wait_event = 'PgSleep'"
 
-set +e
 PGAPPNAME="${writer_app}_note" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -v VERBOSITY=verbose \
   -c "INSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('${note_id}_after', '$channel_id', 'race', 'plaintext', '$user_id')" \
   >"$tmp_dir/note-after.out" 2>&1 &
@@ -90,7 +86,6 @@ wait_for_activity "${writer_app}_message" "wait_event_type = 'Lock'"
 wait "$converter_pid"
 if wait "$note_pid"; then note_status=0; else note_status=$?; fi
 if wait "$message_pid"; then message_status=0; else message_status=$?; fi
-set -e
 
 expect_check_violation "$tmp_dir/note-after.out" "$note_status"
 expect_check_violation "$tmp_dir/message-after.out" "$message_status"

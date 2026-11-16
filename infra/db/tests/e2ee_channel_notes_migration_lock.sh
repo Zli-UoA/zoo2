@@ -15,8 +15,21 @@ note_id="notes_migration_note_${suffix}"
 writer_app="notes_migration_writer_${suffix}"
 migration_app="notes_migration_apply_${suffix}"
 tmp_dir="$(mktemp -d)"
+writer_fifo="$tmp_dir/writer.fifo"
+mkfifo "$writer_fifo"
+writer_pid=""
+migration_pid=""
 
 cleanup() {
+  exec 3>&- 2>/dev/null || true
+  if [[ -n "${migration_pid:-}" ]] && kill -0 "$migration_pid" 2>/dev/null; then
+    kill "$migration_pid" 2>/dev/null || true
+    wait "$migration_pid" 2>/dev/null || true
+  fi
+  if [[ -n "${writer_pid:-}" ]] && kill -0 "$writer_pid" 2>/dev/null; then
+    kill "$writer_pid" 2>/dev/null || true
+    wait "$writer_pid" 2>/dev/null || true
+  fi
   psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
     "DELETE FROM channels WHERE id = '$channel_id'; DELETE FROM users WHERE id = '$user_id';" >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -28,38 +41,65 @@ psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
    INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ('$channel_id', '$channel_id', '$user_id', true);"
 
 # Simulate a pre-migration notes writer holding ROW EXCLUSIVE on channel_notes.
-# The migration must not wait while retaining its earlier channels lock.
+# Synchronize explicitly via a FIFO instead of a fixed pg_sleep timeout so slow
+# Atlas startup cannot race ahead of or outlast the lock window.
 PGAPPNAME="$writer_app" psql "$NOTES_TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-  -c "BEGIN; INSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('$note_id', '$channel_id', 'plain', 'note', '$user_id'); SELECT pg_sleep(5); COMMIT" \
-  >"$tmp_dir/writer.out" 2>&1 &
+  -f - <"$writer_fifo" >"$tmp_dir/writer.out" 2>&1 &
 writer_pid=$!
+exec 3>"$writer_fifo"
 
-writer_sleeping=false
+printf "BEGIN;\nINSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ('%s', '%s', 'plain', 'note', '%s');\n" \
+  "$note_id" "$channel_id" "$user_id" >&3
+
+writer_holding_lock=false
 for _ in $(seq 1 100); do
   if psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
-    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = '$writer_app' AND wait_event = 'PgSleep')" | rg -q '^t$'; then
-    writer_sleeping=true
+    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid = a.pid WHERE a.application_name = '$writer_app' AND a.state = 'idle in transaction' AND l.relation = 'channel_notes'::regclass AND l.granted)" | rg -q '^t$'; then
+    writer_holding_lock=true
     break
   fi
   sleep 0.1
 done
-if [[ "$writer_sleeping" != true ]]; then
+if [[ "$writer_holding_lock" != true ]]; then
   cat "$tmp_dir/writer.out" >&2
-  echo "timed out waiting for the legacy notes writer to hold its transaction" >&2
+  echo "timed out waiting for the legacy notes writer to hold its lock" >&2
   exit 1
 fi
 
-set +e
-PGAPPNAME="$migration_app" atlas migrate apply --dir "$atlas_dir" --url "$NOTES_TEST_DATABASE_URL" \
-  --to-version "$target_version" >"$tmp_dir/migration.out" 2>&1 &
+(
+  status=0
+  PGAPPNAME="$migration_app" atlas migrate apply --dir "$atlas_dir" --url "$NOTES_TEST_DATABASE_URL" \
+    --to-version "$target_version" >"$tmp_dir/migration.out" 2>&1 || status=$?
+  printf '%s\n' "$status" >"$tmp_dir/migration.status.tmp"
+  mv "$tmp_dir/migration.status.tmp" "$tmp_dir/migration.status"
+) &
 migration_pid=$!
-# Waiting for the migration before the writer proves it does not remain stuck:
-# the legacy writer has a bounded sleep and will release its lock either way.
-wait "$migration_pid"
-migration_status=$?
-wait "$writer_pid"
-writer_status=$?
-set -e
+
+# Enforce an independent hang-detection timeout while the writer keeps holding
+# its lock deterministically until Atlas exits.
+migration_finished=false
+for _ in $(seq 1 300); do
+  if [[ -f "$tmp_dir/migration.status" ]]; then
+    migration_finished=true
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$migration_finished" != true ]]; then
+  psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
+    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '$migration_app';" >/dev/null 2>&1 || true
+  cat "$tmp_dir/migration.out" >&2 || true
+  echo "timed out waiting for migration to fail fast with SQLSTATE 55P03" >&2
+  exit 1
+fi
+wait "$migration_pid" 2>/dev/null || true
+migration_pid=""
+migration_status="$(<"$tmp_dir/migration.status")"
+
+printf "COMMIT;\n" >&3
+exec 3>&-
+if wait "$writer_pid"; then writer_status=0; else writer_status=$?; fi
+writer_pid=""
 
 if [[ "$writer_status" -ne 0 ]]; then
   cat "$tmp_dir/writer.out" >&2

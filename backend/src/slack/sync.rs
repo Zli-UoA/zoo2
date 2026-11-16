@@ -1582,15 +1582,24 @@ mod tests {
                 &mut store_db,
             )
             .await;
-            let _ = store_tx.send(result.is_err());
+            let mapped = match result {
+                Ok(()) => Ok(()),
+                Err(SyncError::Failed(message)) => Err(message),
+                Err(SyncError::RateLimited(secs)) => Err(format!("RateLimited({secs})")),
+                Err(SyncError::NoAccess(message)) => Err(format!("NoAccess({message})")),
+                Err(SyncError::InvalidCursor) => Err("InvalidCursor".into()),
+                Err(SyncError::LeaseLost) => Err("LeaseLost".into()),
+            };
+            let _ = store_tx.send(mapped);
             Ok::<(), anyhow::Error>(())
         });
         store_started_rx.await?;
         tokio::task::yield_now().await;
         let _ = finish_convert_tx.send(());
+        let store_result = tokio::time::timeout(Duration::from_secs(5), store_rx).await??;
         anyhow::ensure!(
-            tokio::time::timeout(Duration::from_secs(5), store_rx).await??,
-            "sync should reject the channel after encryption"
+            matches!(store_result, Err(ref message) if message.contains("E2EE_PLAINTEXT_FORBIDDEN")),
+            "sync should reject the channel after encryption with E2EE_PLAINTEXT_FORBIDDEN, got {store_result:?}"
         );
         tokio::time::timeout(Duration::from_secs(5), convert).await???;
         tokio::time::timeout(Duration::from_secs(5), store).await???;

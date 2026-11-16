@@ -1033,29 +1033,39 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
         &[&fallback_user, &bot_user, &other_user],
     )
     .await?;
+    let mut cleanup_errors = Vec::new();
     if let Some(run) = run_id.as_deref() {
         exec(&mut tx, "DELETE FROM slack_import_jobs WHERE id=$1", &[run]).await?;
     }
+    let mut export_removed_or_absent = true;
     if let Some(export) = export_id.as_deref() {
         let key = format!("slack-imports/{export}/export.zip");
-        let _ = state
-            .s3_client
-            .delete_object()
-            .bucket(&state.config.s3.bucket)
-            .key(key)
-            .send()
-            .await;
-        exec(
-            &mut tx,
-            "DELETE FROM slack_import_jobs WHERE id=$1",
-            &[export],
-        )
-        .await?;
+        match delete_s3_object_and_confirm(&state, &state.config.s3.bucket, &key).await {
+            Ok(()) => {
+                exec(
+                    &mut tx,
+                    "DELETE FROM slack_import_jobs WHERE id=$1",
+                    &[export],
+                )
+                .await?;
+            }
+            Err(error) => {
+                export_removed_or_absent = false;
+                cleanup_errors.push(format!(
+                    "retain export job row after unconfirmed ZIP deletion: {error:#}, recovery resources: job_id={export}, bucket={}, key={key}",
+                    state.config.s3.bucket
+                ));
+            }
+        }
     }
-    exec(&mut tx, "DELETE FROM user_role WHERE user_id=$1", &[&admin]).await?;
-    exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
-    tx.commit().await?;
-    test_result
+    if export_removed_or_absent {
+        exec(&mut tx, "DELETE FROM user_role WHERE user_id=$1", &[&admin]).await?;
+        exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
+    }
+    if let Err(error) = tx.commit().await {
+        cleanup_errors.push(format!("commit cleanup transaction: {error:#}"));
+    }
+    finish_test_result(test_result, cleanup_errors)
 }
 
 #[derive(Clone, Copy)]
@@ -1974,9 +1984,29 @@ async fn run_s3_pagination_fixture(
     {
         cleanup_errors.push(format!("stop independent writer: {error:#}"));
     }
-    for key in keys.iter().chain(std::iter::once(&foreign_key)) {
+    let delete_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut delete_keys = keys.iter().chain(std::iter::once(&foreign_key));
+    while let Some(key) = delete_keys.next() {
+        let Some(remaining_budget) =
+            delete_deadline.checked_duration_since(tokio::time::Instant::now())
+        else {
+            let remaining_count = 1 + delete_keys.count();
+            cleanup_errors.push(format!(
+                "delete objects in disposable bucket {} exceeded 30s budget with {remaining_count} key(s) remaining (starting at {key})",
+                config.s3.bucket
+            ));
+            break;
+        };
+        if remaining_budget.is_zero() {
+            let remaining_count = 1 + delete_keys.count();
+            cleanup_errors.push(format!(
+                "delete objects in disposable bucket {} exceeded 30s budget with {remaining_count} key(s) remaining (starting at {key})",
+                config.s3.bucket
+            ));
+            break;
+        }
         match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            remaining_budget.min(std::time::Duration::from_secs(5)),
             client
                 .delete_object()
                 .bucket(&config.s3.bucket)
@@ -1986,8 +2016,20 @@ async fn run_s3_pagination_fixture(
         .await
         {
             Ok(Ok(_)) => {}
-            Ok(Err(error)) => cleanup_errors.push(format!("delete {key}: {error}")),
-            Err(_) => cleanup_errors.push(format!("delete {key}: timed out")),
+            Ok(Err(error)) => {
+                cleanup_errors.push(format!("delete {key} in {}: {error}", config.s3.bucket))
+            }
+            Err(_) => {
+                if tokio::time::Instant::now() >= delete_deadline {
+                    let remaining_count = 1 + delete_keys.count();
+                    cleanup_errors.push(format!(
+                        "delete objects in disposable bucket {} timed out after 30s budget with {remaining_count} key(s) remaining (starting at {key})",
+                        config.s3.bucket
+                    ));
+                    break;
+                }
+                cleanup_errors.push(format!("delete {key} in {}: timed out", config.s3.bucket));
+            }
         }
     }
     if bucket_may_exist {

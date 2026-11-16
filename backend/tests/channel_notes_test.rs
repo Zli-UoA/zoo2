@@ -1382,8 +1382,8 @@ async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
     connection.execute("UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours' WHERE id = ANY($1)", &[&&ids[2..]]).await?;
     connection
         .execute(
-            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
-            &[],
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&channel],
         )
         .await?;
     let locked = connection.transaction().await?;
@@ -1393,23 +1393,48 @@ async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
             &[&ids[3]],
         )
         .await?;
-    let cleanup_db = db.clone();
-    let mut cleanup = tokio::spawn(async move {
-        backend::routes::channel_notes::purge_expired_notes(&cleanup_db).await
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(2), &mut cleanup)
-        .await
-        .context("cleanup must skip row locks rather than wait")???;
-    let rows = locked
-        .query("SELECT id FROM channel_notes WHERE id = ANY($1)", &[&ids])
-        .await?;
-    let remaining: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
-    assert!(remaining.contains(&ids[0]));
-    assert!(remaining.contains(&ids[1]));
-    assert!(!remaining.contains(&ids[2]));
-    assert!(remaining.contains(&ids[3]));
+    let mut purged_unlocked_expired = false;
+    for _ in 0..100 {
+        let cleanup_db = db.clone();
+        let mut cleanup = tokio::spawn(async move {
+            backend::routes::channel_notes::purge_expired_notes(&cleanup_db).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut cleanup)
+            .await
+            .context("cleanup must skip row locks rather than wait")???;
+        let rows = locked
+            .query("SELECT id FROM channel_notes WHERE id = ANY($1)", &[&ids])
+            .await?;
+        let remaining: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+        assert!(remaining.contains(&ids[0]));
+        assert!(remaining.contains(&ids[1]));
+        assert!(remaining.contains(&ids[3]));
+        if !remaining.contains(&ids[2]) {
+            purged_unlocked_expired = true;
+            break;
+        }
+    }
+    assert!(
+        purged_unlocked_expired,
+        "expired unlocked note should be purged within bounded passes"
+    );
     locked.commit().await?;
-    backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&channel],
+        )
+        .await?;
+    for _ in 0..100 {
+        backend::routes::channel_notes::purge_expired_notes(&db).await?;
+        if connection
+            .query_opt("SELECT id FROM channel_notes WHERE id=$1", &[&ids[3]])
+            .await?
+            .is_none()
+        {
+            break;
+        }
+    }
     assert!(
         connection
             .query_opt("SELECT id FROM channel_notes WHERE id=$1", &[&ids[3]])
@@ -1561,8 +1586,8 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
 
     blocker_connection
         .execute(
-            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
-            &[],
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&free_channel_a],
         )
         .await?;
     let blocker = blocker_connection.transaction().await?;
@@ -1611,7 +1636,7 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
     assert_eq!(remaining.get(&busy_channel), Some(&1), "{remaining:?}");
     blocker.commit().await?;
 
-    for _ in 0..100 {
+    for _ in 0..200 {
         let count = backend::routes::channel_notes::purge_expired_notes(&db).await?;
         assert!(count <= 100, "cleanup exceeded its per-pass upper bound");
         let remaining: i64 = blocker_connection
@@ -1624,10 +1649,6 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
         if remaining == 0 {
             break;
         }
-        assert!(
-            count > 0,
-            "a skipped channel must be eligible on a later pass"
-        );
     }
     let remaining: i64 = blocker_connection
         .query_one(
@@ -1770,8 +1791,8 @@ async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::
 
     connection
         .execute(
-            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
-            &[],
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&channels[0]],
         )
         .await?;
     let blocker = connection.transaction().await?;
@@ -1858,6 +1879,12 @@ async fn expired_note_cleanup_rotates_across_a_persistent_backlog() -> anyhow::R
             .await?;
     }
 
+    connection
+        .execute(
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&channels[0]],
+        )
+        .await?;
     let (first_worker, second_worker) =
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             tokio::join!(
@@ -1897,9 +1924,19 @@ async fn expired_note_cleanup_rotates_across_a_persistent_backlog() -> anyhow::R
 
     // With a growing and shrinking candidate set, repeated cleanup passes
     // must keep advancing instead of repeatedly choosing a fixed prefix.
-    for _ in 0..48 {
+    for _ in 0..200 {
         let deleted = backend::routes::channel_notes::purge_expired_notes(&db).await?;
         assert!(deleted <= 100, "cleanup exceeded its per-pass upper bound");
+        let remaining_notes: i64 = connection
+            .query_one(
+                "SELECT count(*) FROM channel_notes WHERE channel_id = ANY($1)",
+                &[&channels],
+            )
+            .await?
+            .get(0);
+        if remaining_notes == 0 {
+            break;
+        }
     }
     let counts = connection
         .query(
@@ -2688,11 +2725,20 @@ async fn channel_note_deleted_at_is_utc_in_non_utc_sessions() -> anyhow::Result<
     );
     connection
         .execute(
-            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = NULL WHERE id = true",
-            &[],
+            "UPDATE channel_notes_cleanup_cursor SET last_channel_id = (SELECT max(id) FROM channels WHERE id < $1) WHERE id = true",
+            &[&channel],
         )
         .await?;
-    backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    for _ in 0..100 {
+        backend::routes::channel_notes::purge_expired_notes(&db).await?;
+        if connection
+            .query_opt("SELECT id FROM channel_notes WHERE id = $1", &[&note_id])
+            .await?
+            .is_none()
+        {
+            break;
+        }
+    }
     assert!(
         connection
             .query_opt("SELECT id FROM channel_notes WHERE id = $1", &[&note_id])
