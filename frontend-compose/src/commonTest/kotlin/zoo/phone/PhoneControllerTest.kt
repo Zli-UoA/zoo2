@@ -57,6 +57,18 @@ class PhoneControllerTest {
         f.controller.hangup(); runCurrent(); assertNull(f.controller.call); assertEquals("ready", f.controller.registration.status)
         f.controller.close()
     }
+    @Test fun sipIncomingWaitsForExplicitAnswerAndChecksAuthorizationAgain() = runTest {
+        for (allowed in listOf(true, false)) {
+            val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
+            f.events.getValue("sip")("incoming", obj()); runCurrent()
+            assertEquals("incoming:sip", f.native.last()); assertEquals("incoming", f.controller.call?.status)
+            assertFalse("sip.answer" in f.commands)
+            f.authorize = allowed; f.controller.answer(); runCurrent()
+            if (allowed) { assertTrue("sip.answer" in f.commands); assertEquals("connecting", f.controller.call?.status) }
+            else { assertFalse("sip.answer" in f.commands); assertNull(f.controller.call); assertTrue(f.controller.error) }
+            f.controller.close()
+        }
+    }
     @Test fun rejectedAuthorizationOrChangedSettingsNeverReachTelecom() = runTest {
         for (changed in listOf(false, true)) {
             val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()

@@ -56,9 +56,13 @@ class PhoneService : Service() {
         } else builder.addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notification), app.t("sip.disconnect"), end()).build())
         try {
             if (Build.VERSION.SDK_INT >= 34) {
-                val type = if (call != null && current.callAdmitted) ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                val type = when {
+                    current.callAdmitted && call?.status != "incoming" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    current.callAdmitted -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                }
                 startForeground(600, builder.build(), type)
-            } else if (Build.VERSION.SDK_INT >= 30 && call != null && current.callAdmitted) startForeground(600, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else if (Build.VERSION.SDK_INT >= 30 && call != null && call.status != "incoming" && current.callAdmitted) startForeground(600, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
             else if (Build.VERSION.SDK_INT >= 29 && call != null && current.callAdmitted) startForeground(600, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
             else startForeground(600, builder.build())
         } catch (_: Exception) { current.controller.stop(); stopSelf(); return }

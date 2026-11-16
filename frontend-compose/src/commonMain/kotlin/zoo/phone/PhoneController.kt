@@ -195,7 +195,7 @@ class PhoneController(
         val epoch = callEpoch
         operation(epoch) {
             prepare()
-            if (next.kind == "sip") { authorizeSip(); if (epoch == callEpoch) sip?.command("sip.answer") }
+            if (next.kind == "sip") { authorizeSip(); if (epoch == callEpoch) { call = next.copy(status = "connecting"); sip?.command("sip.answer") } }
             else {
                 val pending = invite ?: error("Invite ended")
                 val accepted = data(api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/accept", "POST"))
