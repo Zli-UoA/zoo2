@@ -25,7 +25,7 @@ jobs:
           POSTGRES_DB: zoo
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U root" --health-interval 5s
+          --health-cmd "pg_isready -U root -d zoo" --health-interval 5s
           --health-timeout 5s --health-retries 20
     env:
       DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable

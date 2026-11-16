@@ -145,7 +145,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
     let p = plan(
         &tx,
         &bind(
-            timeline_page_query_for("home", false),
+            timeline_page_query_for_request("home", false, true, false),
             &[&user, "", "home", "false", "50", "", &actor, "false", "[]"],
         ),
     )
@@ -541,4 +541,26 @@ async fn persisted_query_budget() -> anyhow::Result<()> {
         )
         .await?;
     verify_budget(&row.get::<_, String>(0), &row.get::<_, String>(1)).await
+}
+
+#[tokio::test]
+#[ignore = "measure the complete handler on a committed scale fixture"]
+async fn persisted_home_handler_budget() -> anyhow::Result<()> {
+    let (client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    client
+        .execute(
+            "INSERT INTO role(id,role_name) VALUES('role_admin','admin') ON CONFLICT DO NOTHING",
+            &[],
+        )
+        .await?;
+    let user: String = client
+        .query_one(
+            "SELECT user_id FROM apub_reply_counts WHERE n>0 LIMIT 1",
+            &[],
+        )
+        .await?
+        .get(0);
+    benchmark_home_requests(&user, 1000000).await
 }
