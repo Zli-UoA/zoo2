@@ -3599,8 +3599,13 @@ BEGIN
   IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NEW; END IF;
   IF (SELECT phase FROM thread_rollout WHERE id)='collecting' THEN RETURN NEW; END IF;
   root_id:=thread_root(NEW.parent_id);
+  -- Slack の履歴の取り込みは、削除済みの親への返信も書く (zoo.slack_import)。
   IF root_id IS NULL OR root_id=NEW.id OR NOT EXISTS (
-    SELECT 1 FROM messages WHERE id=root_id AND channel_id=NEW.channel_id AND (deleted_at IS NULL OR current_setting('zoo.thread_migration',true)='on')
+    SELECT 1 FROM messages WHERE id=root_id AND channel_id=NEW.channel_id AND (
+      deleted_at IS NULL
+      OR current_setting('zoo.thread_migration',true)='on'
+      OR current_setting('zoo.slack_import',true)='on'
+    )
   ) THEN RAISE EXCEPTION 'Invalid thread parent' USING ERRCODE='23514'; END IF;
   -- The encrypted payload authenticates parent_id; never silently rewrite it.
   IF NEW.ciphertext IS NOT NULL AND (root_id IS DISTINCT FROM NEW.parent_id OR

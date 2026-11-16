@@ -4656,6 +4656,13 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
         &[&admin],
     )
     .await?;
+    // スレッド化のロールアウト後 (phase='ready') も、削除された親への返信は取り込みで残る (再取り込みも同じ)
+    sql(
+        &state,
+        "UPDATE thread_rollout SET phase='ready' RETURNING json_build_object('ok',true)::text",
+        &[],
+    )
+    .await?;
     let team = format!("T{}", uuid::Uuid::new_v4().simple());
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let (name, other) = (format!("same-{suffix}"), format!("other-{suffix}"));

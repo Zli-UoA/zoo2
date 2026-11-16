@@ -1985,6 +1985,14 @@ pub(super) async fn insert_message(
         card,
         filled,
     } = render_message(tx, ctx, message).await?;
+    // Slack の履歴には、削除済みの親への返信も含まれる。スレッド化のトリガーは通常、削除済みの親への返信を
+    // 拒否するので、取り込みの間だけ許可する (再取り込みや、後から見つかった返信も削除された親のスレッドに残る)。
+    one(
+        tx,
+        "SELECT json_build_object('ok',set_config('zoo.slack_import','on',true))::text",
+        &[],
+    )
+    .await?;
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
         tx,
