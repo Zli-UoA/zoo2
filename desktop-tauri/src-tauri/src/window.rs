@@ -7,8 +7,9 @@ use tauri::{
     ipc::CapabilityBuilder,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    webview::{PermissionKind, PermissionResponse},
+    webview::{NewWindowResponse, PermissionKind, PermissionResponse},
 };
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use zoo2_client_types::ipc::{OpenTarget, SessionState, UiMode, command, event};
 
@@ -68,6 +69,67 @@ pub fn remote_url(core: &Core) -> Option<Url> {
     }
     let base = Url::parse(core.api_base_url()?).ok()?;
     base.join("/").ok()
+}
+
+/// 確かめずに既定のブラウザーで開くオリジン。Web 版 (`api_base_url`、`zli.chat` など) と、
+/// ログインの発行者 (`account.zli.works` など)。
+fn trusted_origins(core: &Core) -> Vec<String> {
+    let mut origins = remote_origins(core);
+    if let Some(issuer) = core
+        .oidc_issuer()
+        .and_then(|issuer| Url::parse(issuer).ok())
+    {
+        origins.push(issuer.origin().ascii_serialization());
+    }
+    origins
+}
+
+/// 確かめるダイアログに出す URL の長さの上限 (長いクエリで、ダイアログが画面からはみ出ないように)。
+const DIALOG_URL_MAX_CHARS: usize = 300;
+
+/// アプリの中で開かないリンク (メッセージ中のリンクなど) を、既定のブラウザーで開く。
+/// Web 版とログインの発行者のほかのサイトは、開く前にダイアログで確かめる。
+pub fn open_external(app: &AppHandle, core: &Core, url: &Url) {
+    match url.scheme() {
+        "mailto" => {
+            let _ = app.opener().open_url(url.as_str(), None::<&str>);
+            return;
+        }
+        "http" | "https" => {}
+        _ => return,
+    }
+    if trusted_origins(core).contains(&url.origin().ascii_serialization()) {
+        let _ = app.opener().open_url(url.as_str(), None::<&str>);
+        return;
+    }
+    let shown: String = url.as_str().chars().take(DIALOG_URL_MAX_CHARS).collect();
+    let ellipsis = if shown.len() < url.as_str().len() {
+        "…"
+    } else {
+        ""
+    };
+    let host = url.host_str().unwrap_or_default();
+    let mut dialog = app
+        .dialog()
+        .message(format!(
+            "zoo2 の外のサイト ({host}) を、既定のブラウザーで開きます。\n\n{shown}{ellipsis}"
+        ))
+        .title("外部のサイトを開きます")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "開く".into(),
+            "キャンセル".into(),
+        ));
+    if let Some(window) = app.get_webview_window(MAIN) {
+        dialog = dialog.parent(&window);
+    }
+    let app = app.clone();
+    let url = url.clone();
+    dialog.show(move |ok| {
+        if ok {
+            let _ = app.opener().open_url(url.as_str(), None::<&str>);
+        }
+    });
 }
 
 /// 同梱の画面の URL。release では tauri://localhost、開発中は trunk の dev サーバー。
@@ -143,6 +205,8 @@ pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
 pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let handle = app.handle().clone();
     let nav_core = core.clone();
+    let popup_handle = app.handle().clone();
+    let popup_core = core.clone();
     let perm_core = core.clone();
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     let window = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
@@ -154,10 +218,13 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
                 return true;
             }
             // 許したオリジン以外 (メッセージ中のリンクなど) は、既定のブラウザーで開く。
-            if matches!(url.scheme(), "http" | "https" | "mailto") {
-                let _ = handle.opener().open_url(url.as_str(), None::<&str>);
-            }
+            open_external(&handle, &nav_core, url);
             false
+        })
+        // `target="_blank"` や `window.open` も、新しいウィンドウは作らず、既定のブラウザーで開く。
+        .on_new_window(move |url, _features| {
+            open_external(&popup_handle, &popup_core, &url);
+            NewWindowResponse::Deny
         })
         // 通話 (getUserMedia) のマイクとカメラは、(b) の Web の画面にだけ許す。
         // macOS では、このあと OS がマイクの使用を尋ねる (Info.plist の説明文を出す)。
@@ -190,8 +257,25 @@ fn enable_webrtc(window: &tauri::WebviewWindow) {
     });
 }
 
+/// メニューバー (macOS) の「再読み込み」の ID。
+#[cfg(target_os = "macos")]
+const RELOAD_MENU_ID: &str = "reload";
+/// トレイの「再読み込み」の ID。メニューのイベントは、アプリのメニューとトレイの両方の
+/// ハンドラーに届くので、メニューバーとは別の ID にする (同じだと 2 回読み込み直す)。
+const TRAY_RELOAD_MENU_ID: &str = "tray_reload";
+
+/// 画面を読み込み直す。リモートの画面 (`zli.chat` など) が新しくなったときに、アプリを
+/// 再起動せずに取り込むため。明示的な読み込み直しなので、Service Worker は保存済みの画面ではなく
+/// サーバーの画面を返す。
+pub fn reload_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let _ = window.reload();
+    }
+}
+
 /// macOS のメニューバー。Tauri の既定のメニュー (アプリ、編集、表示、ウィンドウなど) の、
-/// アプリのメニューの「zoo2 について」の下に「アップデートを確認…」を足す。
+/// アプリのメニューの「zoo2 について」の下に「アップデートを確認…」を足し、「表示」の先頭に
+/// 「再読み込み」(⌘R) を足す。
 #[cfg(target_os = "macos")]
 pub fn create_app_menu(app: &App) -> tauri::Result<()> {
     use tauri::menu::{MenuItemKind, PredefinedMenuItem};
@@ -205,15 +289,32 @@ pub fn create_app_menu(app: &App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     // 既定のアプリのメニューは「について、区切り、サービス、…」。区切りの後ろに、項目と区切りを入れる。
-    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+    let items = menu.items()?;
+    if let Some(MenuItemKind::Submenu(app_menu)) = items.first() {
         app_menu.insert(&item, 2)?;
         app_menu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
     }
-    app.set_menu(menu)?;
-    app.on_menu_event(|app, event| {
-        if event.id.as_ref() == crate::update::CHECK_MENU_ID {
-            crate::update::check_now(app);
+    let reload = MenuItem::with_id(app, RELOAD_MENU_ID, "再読み込み", true, Some("CmdOrCtrl+R"))?;
+    // 既定のメニューの「表示」(View)。見つからなければ、アプリのメニューに入れる。
+    let view = items.iter().find_map(|item| match item {
+        MenuItemKind::Submenu(submenu) if submenu.text().is_ok_and(|text| text == "View") => {
+            Some(submenu.clone())
         }
+        _ => None,
+    });
+    match (view, items.first()) {
+        (Some(view), _) => {
+            view.insert(&reload, 0)?;
+            view.insert(&PredefinedMenuItem::separator(app)?, 1)?;
+        }
+        (None, Some(MenuItemKind::Submenu(app_menu))) => app_menu.insert(&reload, 3)?,
+        _ => {}
+    }
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| match event.id.as_ref() {
+        crate::update::CHECK_MENU_ID => crate::update::check_now(app),
+        RELOAD_MENU_ID => reload_main(app),
+        _ => {}
     });
     app.manage(crate::update::CheckMenuItem(item));
     Ok(())
@@ -221,13 +322,18 @@ pub fn create_app_menu(app: &App) -> tauri::Result<()> {
 
 pub fn create_tray(app: &App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "開く", true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, TRAY_RELOAD_MENU_ID, "再読み込み", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &reload, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("zoo2")
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
+            TRAY_RELOAD_MENU_ID => {
+                show_main(app);
+                reload_main(app);
+            }
             "quit" => app.exit(0),
             crate::update::MENU_ID => crate::update::install_and_restart(app),
             _ => {}
