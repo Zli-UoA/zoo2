@@ -257,8 +257,12 @@ fn enable_webrtc(window: &tauri::WebviewWindow) {
     });
 }
 
-/// メニューの「再読み込み」の ID。
-pub const RELOAD_MENU_ID: &str = "reload";
+/// メニューバー (macOS) の「再読み込み」の ID。
+#[cfg(target_os = "macos")]
+const RELOAD_MENU_ID: &str = "reload";
+/// トレイの「再読み込み」の ID。メニューのイベントは、アプリのメニューとトレイの両方の
+/// ハンドラーに届くので、メニューバーとは別の ID にする (同じだと 2 回読み込み直す)。
+const TRAY_RELOAD_MENU_ID: &str = "tray_reload";
 
 /// 画面を読み込み直す。リモートの画面 (`zli.chat` など) が新しくなったときに、アプリを
 /// 再起動せずに取り込むため。明示的な読み込み直しなので、Service Worker は保存済みの画面ではなく
@@ -318,7 +322,7 @@ pub fn create_app_menu(app: &App) -> tauri::Result<()> {
 
 pub fn create_tray(app: &App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "開く", true, None::<&str>)?;
-    let reload = MenuItem::with_id(app, RELOAD_MENU_ID, "再読み込み", true, None::<&str>)?;
+    let reload = MenuItem::with_id(app, TRAY_RELOAD_MENU_ID, "再読み込み", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &reload, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
@@ -326,7 +330,7 @@ pub fn create_tray(app: &App) -> tauri::Result<()> {
         .menu(&menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
-            RELOAD_MENU_ID => {
+            TRAY_RELOAD_MENU_ID => {
                 show_main(app);
                 reload_main(app);
             }
