@@ -375,13 +375,15 @@ async fn list(
     toasty::sql::statement("SET LOCAL jit = off")
         .exec(&mut tx)
         .await?;
-    toasty::sql::statement("SET LOCAL plan_cache_mode = force_generic_plan")
-        .exec(&mut tx)
-        .await?;
     // Seek eligible keys first; render/decorate only this page and its parents.
     // This stays within the existing request and transaction on every client.
     let seek_page = entries.is_none() && page.post_id.as_deref().is_none_or(|id| id.is_empty());
     if seek_page {
+        // User/author selectivity is highly skewed. A generic plan can scan
+        // another user's whole history for an empty account.
+        toasty::sql::statement("SET LOCAL plan_cache_mode = force_custom_plan")
+            .exec(&mut tx)
+            .await?;
         let keys = query(
             &mut tx,
             &timeline_page_query_for_request(
@@ -412,6 +414,10 @@ async fn list(
         }
         entries = Some(selected);
     }
+    // Rendering is bounded by selected keys; its generic plan is reusable.
+    toasty::sql::statement("SET LOCAL plan_cache_mode = force_generic_plan")
+        .exec(&mut tx)
+        .await?;
     let sql = timeline_query_for(
         page.thread,
         guest,

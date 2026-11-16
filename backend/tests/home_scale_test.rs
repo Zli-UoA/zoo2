@@ -480,6 +480,14 @@ async fn budget_samples(
         let waiting = std::time::Instant::now();
         let mut connection = pool[worker % pool.len()].lock().await;
         waits.push(waiting.elapsed().as_secs_f64() * 1000.);
+        connection
+            .0
+            .batch_execute(if matches!(name.as_str(), "detail" | "thread") {
+                "SET plan_cache_mode=force_generic_plan"
+            } else {
+                "SET plan_cache_mode=force_custom_plan"
+            })
+            .await?;
         let mut prepare_ms = 0.;
         if !connection.1.contains(&name) {
             let prepare = format!(
