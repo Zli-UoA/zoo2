@@ -27,6 +27,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
     const abort = new AbortController();
     let closed = false;
     let generation = 0;
+    let submittedGeneration: number | null = null;
     let media: AudioCallMedia | null = null;
     let incoming: Record<string, unknown> | null = null;
     let accepted = false;
@@ -80,6 +81,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
     const send = (body: Record<string, unknown>, mine?: number) => {
       const request = queue.then(async () => {
         if (closed || (mine !== undefined && mine !== generation)) return;
+        if (body.action === "call" || body.action === "accept") submittedGeneration = mine ?? null;
         await api.post(`${path}/command`, body, { signal: abort.signal });
       });
       queue = request.catch(() => {});
@@ -115,7 +117,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
           })
           .catch(() => {
             done?.reject(new Error("Phone operation failed"));
-            fail();
+            if (mine === generation) fail();
           });
       }
     };
@@ -171,7 +173,12 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
           clearTimeout(timeout);
         }
       } catch (error) {
-        if (mine === generation) stopMedia();
+        if (mine === generation) {
+          // A submitted offer may still create a SIP call after a client timeout.
+          // Revoke the whole session so server cleanup also terminates that call.
+          if (submittedGeneration === mine) fail();
+          else stopMedia();
+        }
         throw error;
       }
     };

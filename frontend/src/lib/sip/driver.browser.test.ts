@@ -137,3 +137,22 @@ it("supports direct WebRTC within the backend LAN without TURN", async () => {
   expect(f.peers[0].getConfiguration().iceTransportPolicy).toBe("all");
   expect(f.peers[0].getConfiguration().iceServers).toEqual([]);
 });
+
+it("revokes the gateway session when a submitted call outlives signaling timeout", async () => {
+  const f = await fixture();
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => { finish = resolve; });
+  const original = f.post.getMockImplementation()!;
+  f.post.mockImplementation(async (path, body) => {
+    if ((body as { action: string }).action === "call") await pending;
+    return original(path, body);
+  });
+  const call = f.driver.call("101");
+  const failure = expect(call).rejects.toThrow("Phone signaling timed out");
+  await vi.waitFor(() => expect(f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "call")).toBe(true));
+  await failure;
+  expect(f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "disconnect")).toBe(true);
+  expect(f.events.disconnected).toHaveBeenCalledOnce();
+  finish();
+  await expect(f.driver.call("102")).rejects.toThrow("Phone call unavailable");
+}, 20000);
