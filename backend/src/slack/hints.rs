@@ -520,6 +520,21 @@ pub(super) async fn edit(
         && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
     let same = (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
         && stored["components"].as_str().unwrap_or_default() == rendered.components;
+    // 部品の導入前に `card` で取り込んだ行 (バックフィル後も `card` は残る) は、保存した部品が旧カードから作られて
+    // いて、attachments から作り直した部品とは形式が違う。形式の違いだけで「編集済み」にしないよう、
+    // 当時の変換で作り直した本文と `card` を、保存したものとバイト単位で比べる
+    let same = same || {
+        let card = stored["card"].as_str().unwrap_or_default();
+        !card.is_empty() && {
+            let (content, legacy) = super::legacy_card::render(message, &*ctx);
+            let content = if content.trim().is_empty() {
+                rendered.content.as_str()
+            } else {
+                content.as_str()
+            };
+            legacy == card && stored["content"].as_str() == Some(content)
+        }
+    };
     if same {
         return Ok(());
     }
