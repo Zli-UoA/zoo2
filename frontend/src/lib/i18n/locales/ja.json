@@ -227,6 +227,8 @@
     "edited": "編集済み"
   },
   "attachments": {
+    "play": "再生",
+    "pause": "一時停止",
     "add": "ファイルを添付",
     "selected": "添付するファイル",
     "remove": "{{name}}を削除",

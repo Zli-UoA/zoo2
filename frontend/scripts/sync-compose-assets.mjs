@@ -32,6 +32,8 @@ const names = [
   "cloud-off",
   "bot",
   "download",
+  "play",
+  "pause",
   "log-out",
   "sun",
   "palette",

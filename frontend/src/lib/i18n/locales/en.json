@@ -227,6 +227,8 @@
     "edited": "Edited"
   },
   "attachments": {
+    "play": "Play",
+    "pause": "Pause",
     "add": "Attach files",
     "selected": "Files to attach",
     "remove": "Remove {{name}}",

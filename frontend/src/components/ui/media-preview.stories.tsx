@@ -139,3 +139,17 @@ async function assertPdfPainted(canvasElement: HTMLElement) {
     { timeout: 10_000 },
   );
 }
+
+export const EmbeddedEmail: Story = {
+  args: { src: emailUrl, name: "sample.eml", contentType: "message/rfc822", embedded: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(
+      async () => {
+        await expect(canvas.getByText("Hello from email.", { exact: false })).toBeVisible();
+      },
+      { timeout: 10_000 },
+    );
+    await expect(within(canvasElement.ownerDocument.body).queryByRole("dialog")).toBeNull();
+  },
+};

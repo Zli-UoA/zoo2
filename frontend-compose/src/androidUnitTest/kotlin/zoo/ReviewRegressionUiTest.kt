@@ -57,6 +57,43 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun mediaPreviewClosesAndReopensWithWebViewDetachedBeforeDestruction() {
+        val fixture = Fixture()
+        var open by mutableStateOf(true)
+        val destroyed = mutableListOf<android.webkit.WebView>()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        if (open) MediaPreviewPanel("preview", { open = false }) {
+                            androidx.compose.ui.viewinterop.AndroidView(
+                                factory = { context ->
+                                    object : android.webkit.WebView(context) {
+                                        override fun destroy() {
+                                            assertNull(parent, "WebView must be detached before destroy")
+                                            destroyed.add(this)
+                                            super.destroy()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                onRelease = ::releasePreviewWebView,
+                            )
+                        }
+                    }
+                }
+            }
+            repeat(3) { index ->
+                ui.onNodeWithContentDescription("common.close").assertIsDisplayed().performClick()
+                ui.waitForIdle()
+                assertEquals(index + 1, destroyed.size)
+                assertTrue(fixture.app.overlays.isEmpty(), "Native preview must not blur the main scene")
+                if (index < 2) ui.runOnIdle { open = true }
+            }
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun messageMenuUsesInsetHostCoordinatesAndFlipsAboveBottomTrigger() {
         val fixture = Fixture()
         try {

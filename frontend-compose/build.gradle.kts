@@ -43,6 +43,11 @@ kotlin {
             implementation("androidx.compose.ui:ui-test-junit4:1.9.0")
             implementation("org.robolectric:robolectric:4.16.1")
         } }
+        if (androidEnabled) named("androidInstrumentedTest") { dependencies {
+            implementation(kotlin("test"))
+            implementation("androidx.test.ext:junit:1.3.0")
+            implementation("androidx.test:runner:1.7.0")
+        } }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("io.ktor:ktor-client-mock:3.1.3")
@@ -131,7 +136,7 @@ compose.resources {
 if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtension> {
     namespace = "works.zli.zoo.shared"
     compileSdk = 35
-    defaultConfig { minSdk = 26 }
+    defaultConfig { minSdk = 26; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions.unitTests.isIncludeAndroidResources = true
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }

@@ -2,12 +2,19 @@ package zoo
 
 import android.annotation.SuppressLint
 import android.net.Uri
+import android.os.Build
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -16,11 +23,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import java.io.ByteArrayInputStream
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Call
-import okhttp3.Dns
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -32,29 +37,35 @@ private const val PREVIEW_ORIGIN = "https://zoo-preview.invalid"
 @Composable
 internal actual fun MediaPreviewSurface(app: Session, src: String, name: String, contentType: String, modifier: Modifier) {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    key(src, name, contentType, app.env.locale, dark) { NativeMediaPreview(app, src, name, contentType, dark, modifier) }
+    key(src, name, contentType, app.env.locale, dark) {
+        val mime = contentType.substringBefore(';').trim().lowercase()
+        when {
+            mime.startsWith("image/") && !nativeImagePreviewSupported(mime) -> Box(modifier) {
+                Button(app.t("attachments.downloadShort")) {
+                    app.run { app.platform.invoke("attachmentDownload", obj("url" to src, "name" to name).toString()) }
+                }
+            }
+            mime.startsWith("image/") -> NativeImagePreview(app, src, name, modifier)
+            mime == "application/pdf" || mime.startsWith("video/") || mime.startsWith("audio/") ->
+                NativeFilePreview(app, src, name, mime, modifier)
+            else -> BundledDocumentPreview(app, src, name, contentType, dark, modifier)
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun NativeMediaPreview(app: Session, src: String, name: String, contentType: String, dark: Boolean, modifier: Modifier) {
+private fun BundledDocumentPreview(app: Session, src: String, name: String, contentType: String, dark: Boolean, modifier: Modifier) {
     val context = LocalContext.current
     val locale = app.env.locale
     val disposed = remember(src) { AtomicBoolean(false) }
     val calls = remember(src) { ConcurrentHashMap.newKeySet<Call>() }
-    val trustedHost = Uri.parse(app.config.apiBaseUrl).host
-    val client = remember(src) {
-        OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-            .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
-            .dns(object : Dns {
-                override fun lookup(hostname: String): List<InetAddress> =
-                    Dns.SYSTEM.lookup(hostname).also { addresses ->
-                        require(hostname == trustedHost || addresses.all(::publicPreviewAddress))
-                    }
-            }).build()
-    }
+    val trustedHost = app.config.apiBaseUrl.toHttpUrlOrNull()?.host
+    val client = remember(src) { previewFileClient(trustedHost) }
     val view = remember(src, name, contentType, locale) {
         WebView(context).apply {
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
@@ -125,11 +136,14 @@ private fun NativeMediaPreview(app: Session, src: String, name: String, contentT
         onDispose {
             disposed.set(true)
             calls.forEach { it.cancel() }; calls.clear()
-            view.stopLoading(); view.removeJavascriptInterface("NativePreview"); view.destroy()
-            client.dispatcher.executorService.shutdown(); client.connectionPool.evictAll()
+            client.connectionPool.evictAll()
         }
     }
-    AndroidView(factory = { view }, modifier = modifier)
+    AndroidView(factory = { view }, modifier = modifier, onRelease = {
+        disposed.set(true)
+        calls.forEach { call -> call.cancel() }; calls.clear()
+        releasePreviewWebView(it)
+    })
 }
 
 internal fun publicPreviewAddress(address: InetAddress): Boolean {
@@ -151,3 +165,33 @@ internal fun registerPreviewCall(call: Call, calls: MutableSet<Call>, disposed: 
     }
     return true
 }
+
+/** AndroidView releases the native view after Compose removes it from the hierarchy. */
+internal fun releasePreviewWebView(view: WebView) {
+    (view.parent as? android.view.ViewGroup)?.removeView(view)
+    view.stopLoading()
+    view.removeJavascriptInterface("NativePreview")
+    view.webViewClient = WebViewClient()
+    view.removeAllViews()
+    view.destroy()
+}
+
+@Composable
+internal actual fun MediaPreviewPanel(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    val app = LocalApp.current
+    // A separate native window keeps the WebView out of NativeWindow's background blur.
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize().safeDrawingPadding(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.fillMaxSize().padding(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, modifier = Modifier.weight(1f), maxLines = 1)
+                    IconButton("x", app.t("common.close")) { close() }
+                }
+                content()
+            }
+        }
+    }
+}
+
+internal fun nativeImagePreviewSupported(mime: String, sdk: Int = Build.VERSION.SDK_INT): Boolean =
+    mime.substringBefore(';').trim().lowercase() != "image/avif" || sdk >= 31

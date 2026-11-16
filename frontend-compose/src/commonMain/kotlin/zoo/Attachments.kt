@@ -675,7 +675,7 @@ private fun AttachmentPreview(app: Session, file: Row, close: () -> Unit) {
         catch (error: CancellationException) { throw error }
         catch (_: Exception) { failed = true }
     }
-    Panel(file.text("file_name"), close, 1280.dp) {
+    MediaPreviewPanel(file.text("file_name"), close) {
         if (failed) {
             Text(app.t("attachments.loadError"))
             Button(app.t("attachments.retry")) { attempt++ }

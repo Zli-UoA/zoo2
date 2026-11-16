@@ -227,6 +227,8 @@
     "edited": "편집됨"
   },
   "attachments": {
+    "play": "재생",
+    "pause": "일시 정지",
     "add": "파일 첨부",
     "selected": "첨부할 파일",
     "remove": "{{name}} 삭제",

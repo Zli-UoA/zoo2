@@ -265,7 +265,7 @@ private fun HomeDocumentMedia(item: Row) {
 }
 @Composable
 private fun HomeMediaPanel(app: Session, url: String, name: String, type: String, close: () -> Unit) {
-    Panel(name, close, 1280.dp) {
+    MediaPreviewPanel(name, close) {
         MediaPreviewSurface(app, url, name, type, Modifier.fillMaxWidth().weight(1f))
         Button(app.t("attachments.downloadShort")) { app.platform.action("open:$url") }
     }
