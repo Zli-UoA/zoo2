@@ -210,8 +210,15 @@ function Image({
   className: string;
 }) {
   const { media } = useCtx();
-  const src = proxyImageUrl(media, safeUrl(url));
-  if (!src) return null;
+  const safe = safeUrl(url);
+  const src = proxyImageUrl(media, safe);
+  // 画像のプロキシが使えないときは、置き場所へ直接取りに行かず、説明とリンクだけを出す
+  if (!src)
+    return safe ? (
+      <ExternalLink href={safe} className="text-xs">
+        {alt || safe}
+      </ExternalLink>
+    ) : null;
   return (
     <SensitiveMedia sensitive={spoiler}>
       <img
@@ -454,17 +461,19 @@ function FileLink({ c }: { c: Component }) {
 }
 
 function Video({ c }: { c: Component }) {
+  const { media } = useCtx();
   const href = safeUrl(c.title_url) ?? safeUrl(c.video_url);
+  const thumbnail = proxyImageUrl(media, safeUrl(c.thumbnail_url));
   return (
     <div className="flex max-w-sm flex-col gap-1 rounded-lg border p-2">
-      {c.thumbnail_url ? (
+      {thumbnail ? (
         <a
           href={href ?? undefined}
           target="_blank"
           rel="noopener noreferrer"
           className="relative block"
         >
-          <Image url={c.thumbnail_url} alt={c.alt_text} className="aspect-video w-full" />
+          <Image url={c.thumbnail_url ?? ""} alt={c.alt_text} className="aspect-video w-full" />
           <PlayIcon
             className="absolute inset-0 m-auto size-10 rounded-full bg-black/60 p-2 text-white"
             aria-hidden
@@ -821,6 +830,8 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
     case T.Overflow:
     case T.RadioGroup: {
       const many = c.type === T.StringSelect && (c.max_values ?? 1) > 1;
+      if (many)
+        return <CheckList c={c} disabled={disabled && !deferred} choose={choose} value={value} />;
       if (c.type === T.RadioGroup)
         return (
           <fieldset className="flex flex-col gap-1" disabled={disabled && !deferred}>
@@ -879,28 +890,7 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
       );
     }
     case T.CheckboxGroup:
-      return (
-        <fieldset className="flex flex-col gap-1">
-          {c.options?.map((o) => {
-            const list = (value as string[]) ?? [];
-            return (
-              <label key={o.value} className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  disabled={disabled && !deferred}
-                  checked={list.includes(o.value)}
-                  onChange={(e) =>
-                    choose(
-                      e.target.checked ? [...list, o.value] : list.filter((v) => v !== o.value),
-                    )
-                  }
-                />
-                <OptionText o={o} />
-              </label>
-            );
-          })}
-        </fieldset>
-      );
+      return <CheckList c={c} disabled={disabled && !deferred} choose={choose} value={value} />;
     case T.Checkbox:
       return (
         <input
@@ -981,6 +971,38 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
     default:
       return null;
   }
+}
+
+/** 複数を選ぶ select と checkbox group。選んだ値は配列で送る。 */
+function CheckList({
+  c,
+  disabled,
+  choose,
+  value,
+}: {
+  c: Component;
+  disabled: boolean;
+  choose: (v: Value) => void;
+  value: Value | undefined;
+}) {
+  const list = Array.isArray(value) ? value : [];
+  return (
+    <fieldset className="flex flex-col gap-1" aria-label={c.placeholder ?? c.label}>
+      {c.options?.map((o) => (
+        <label key={o.value} className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            disabled={disabled}
+            checked={list.includes(o.value)}
+            onChange={(e) =>
+              choose(e.target.checked ? [...list, o.value] : list.filter((v) => v !== o.value))
+            }
+          />
+          <OptionText o={o} />
+        </label>
+      ))}
+    </fieldset>
+  );
 }
 
 function OptionText({ o }: { o: SelectOption }) {

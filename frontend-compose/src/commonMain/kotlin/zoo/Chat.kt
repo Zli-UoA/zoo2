@@ -891,9 +891,12 @@ internal fun Message(
                             }
                         }
                     } else {
-                        val cards = messageCards(message["card"])
+                        // メッセージ部品があれば、カードとブロックの旧形式は使わない。本文を隠すフラグがあれば本文を出さない
+                        val components = parseComponents(message["components"])
+                        val cards = if (components != null) null else messageCards(message["card"])
                         val blockCards =
-                            parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
+                            if (components != null) components.hidesContent
+                            else parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
                         if (!blockCards) {
                             if (cards != null) cards.forEach { MessageCard(it) }
                             else {
