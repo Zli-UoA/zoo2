@@ -57,7 +57,7 @@
 - 初回／再実行・単独／同時実行の計画＋実行、SQL所要時間、p50・p95・最大値、合否。
 - クエリ数と合計DB時間、API全体の応答時間、権限・整合性の回帰検証。
 
-既存のHome検証の記録と未達箇所は [home-performance.md](home-performance.md) を参照する。
+Home検証の条件・結果・再実行方法は [home-performance.md](home-performance.md) を参照する。
 
 ## SupabaseのPostgreSQLベストプラクティスとの照合
 
