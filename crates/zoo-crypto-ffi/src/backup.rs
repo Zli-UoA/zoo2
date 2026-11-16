@@ -44,6 +44,19 @@ impl BackupDecryptionKey {
         self.inner.public_key().to_base64()
     }
 
+    /// `user_id` の版 `version` へのアップロードの証明（`POST /api/e2ee/key_backup/keys` の
+    /// [`backup_proof_header`] の値）。`upload_key` は版の `upload_key`（サーバーの公開鍵、base64）。
+    pub fn upload_proof(
+        &self,
+        upload_key: String,
+        user_id: String,
+        version: String,
+    ) -> Result<String> {
+        let upload_key =
+            core::Curve25519PublicKey::from_base64(&upload_key).map_err(core::CryptoError::from)?;
+        Ok(self.inner.upload_proof(&upload_key, &user_id, &version)?)
+    }
+
     /// 版 `version` の `auth_data`（JSON）を作る。方式と版の番号を入れ、マスター鍵で署名する。
     pub fn auth_data(&self, master: &CrossSigningKeyPair, version: u64) -> Result<String> {
         Ok(self.inner.auth_data(&master.inner, version)?.to_string())
@@ -78,6 +91,12 @@ impl BackupDecryptionKey {
             .collect::<Result<Vec<_>>>()?;
         Ok(self.inner.import_rows(&mut lock(&store.inner), &rows) as u64)
     }
+}
+
+/// アップロードの証明を入れるヘッダーの名前（`X-Zoo-Backup-Proof`）。
+#[uniffi::export]
+pub fn backup_proof_header() -> String {
+    core::BACKUP_PROOF_HEADER.to_owned()
 }
 
 /// 検証を通った今の版（[`core::VerifiedBackupVersion`]）。

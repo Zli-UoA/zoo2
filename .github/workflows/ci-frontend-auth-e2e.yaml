@@ -12,6 +12,9 @@ on:
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
       - "infra/db/**"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
   pull_request:
@@ -23,6 +26,9 @@ on:
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
       - "infra/db/**"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
@@ -33,6 +39,9 @@ concurrency:
   cancel-in-progress: true
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
     secrets:
@@ -40,7 +49,8 @@ jobs:
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）。アプリが lib/e2ee を読むので、dev サーバーの起動に要る（#359）。
   crypto-wasm:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.frontend).auth
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30
     steps:

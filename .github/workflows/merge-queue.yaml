@@ -23,6 +23,7 @@ jobs:
     outputs:
       ci-backend: ${{ steps.match.outputs.ci-backend }}
       ci-home-query-budget: ${{ steps.match.outputs.ci-home-query-budget }}
+      ci-read-state-worker-budget: ${{ steps.match.outputs.ci-read-state-worker-budget }}
       ci-frontend: ${{ steps.match.outputs.ci-frontend }}
       ci-frontend-auth-e2e: ${{ steps.match.outputs.ci-frontend-auth-e2e }}
       ci-frontend-e2ee-e2e: ${{ steps.match.outputs.ci-frontend-e2ee-e2e }}
@@ -53,6 +54,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ci-home-query-budget == 'true'
     uses: ./.github/workflows/ci-home-query-budget.yaml
+
+  ci-read-state-worker-budget:
+    needs: changes
+    if: needs.changes.outputs.ci-read-state-worker-budget == 'true'
+    uses: ./.github/workflows/ci-read-state-worker-budget.yaml
 
   ci-frontend:
     needs: changes
@@ -131,6 +137,7 @@ jobs:
       - changes
       - ci-backend
       - ci-home-query-budget
+      - ci-read-state-worker-budget
       - ci-frontend
       - ci-frontend-auth-e2e
       - ci-frontend-e2ee-e2e
