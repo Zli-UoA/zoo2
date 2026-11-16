@@ -130,17 +130,20 @@ android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/launc
 
 tasks.named("preBuild") { dependsOn(launcherIcon) }
 
-// Bundle the same SIP.js driver used by Web; no remote code is loaded by the phone WebView.
+// Bundle the shared WebRTC engine; SIP and credentials stay on the backend.
+// frontend/build contains media-viewer build tools and is an input of buildMediaPreview.
+// Keep generated phone assets in this module so neither bundler consumes the other output.
+val phoneEngine = layout.buildDirectory.dir("generated/phone-engine")
 val buildAndroidPhone by tasks.registering(Exec::class) {
     val frontend = rootDir.resolve("../frontend")
     inputs.files(fileTree(frontend.resolve("src/android-phone")), fileTree(frontend.resolve("src/lib/sip")), fileTree(frontend.resolve("src/lib/call")), frontend.resolve("vite.android-phone.config.ts"), frontend.resolve("scripts/android-phone-smoke.mjs"), frontend.resolve("package.json"), frontend.resolve("pnpm-lock.yaml"))
-    outputs.dir(frontend.resolve("build/android-phone"))
+    outputs.dir(phoneEngine)
     workingDir(frontend)
     commandLine("pnpm", "build:android-phone")
 }
 val androidPhoneAssets by tasks.registering(Sync::class) {
     dependsOn(buildAndroidPhone)
-    from(rootDir.resolve("../frontend/build/android-phone")) { include("engine.js") }
+    from(phoneEngine) { include("engine.js") }
     into(layout.buildDirectory.dir("generated/assets/phone"))
 }
 tasks.named("preBuild") { dependsOn(androidPhoneAssets) }

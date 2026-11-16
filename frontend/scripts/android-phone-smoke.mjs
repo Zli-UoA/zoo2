@@ -5,7 +5,13 @@ import vm from "node:vm";
 const messages = [];
 const window = { ZooNativePhone: { postMessage: (message) => messages.push(JSON.parse(message)) } };
 vm.runInNewContext(
-  await readFile(new URL("../build/android-phone/engine.js", import.meta.url), "utf8"),
+  await readFile(
+    new URL(
+      "../../frontend-compose/androidApp/build/generated/phone-engine/engine.js",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
   { window },
   { timeout: 1000 },
 );

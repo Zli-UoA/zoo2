@@ -2,7 +2,7 @@ import { defineConfig } from "vite-plus";
 export default defineConfig({
   define: { "process.env.NODE_ENV": JSON.stringify("production") },
   build: {
-    outDir: "build/android-phone",
+    outDir: "../frontend-compose/androidApp/build/generated/phone-engine",
     emptyOutDir: true,
     sourcemap: false,
     lib: {
