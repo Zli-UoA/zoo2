@@ -35,7 +35,8 @@ fun HomePostCard(
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
             .then(if (!editing) Modifier.nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null) else Modifier)
-            .padding(16.dp),
+            .padding(horizontal = if (LocalTouchUi.current) 12.dp else 16.dp,
+                vertical = if (LocalTouchUi.current) 10.dp else 16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
