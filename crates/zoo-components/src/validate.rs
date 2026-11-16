@@ -791,7 +791,10 @@ impl Document {
             );
         }
         if self.to_json().len() > cx.max_bytes() {
-            w.err("", format!("document is larger than {} KB", cx.max_bytes() / 1024));
+            w.err(
+                "",
+                format!("document is larger than {} KB", cx.max_bytes() / 1024),
+            );
         }
         if w.errors.is_empty() {
             Ok(())
@@ -964,5 +967,42 @@ mod tests {
         // date_picker は action row か label の中にしか置けない
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(errors[0].path.starts_with("components[6]"));
+    }
+}
+
+#[cfg(test)]
+mod fixtures {
+    use super::*;
+
+    /// fixtures/valid の文書が、名前の context で検証に通り、往復で変わらないこと。
+    #[test]
+    fn valid_fixtures_validate_and_round_trip() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/valid");
+        let mut n = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let cx = match name.split('-').next().unwrap() {
+                "message" => Context::AppMessage,
+                "modal" => Context::Modal,
+                "home" => Context::Home,
+                "webhook" => Context::Webhook,
+                other => panic!("unknown context {other} in {name}"),
+            };
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let doc: Document = serde_json::from_value(v["document"].clone()).unwrap();
+            assert!(doc.validate(cx).is_ok(), "{name}: {:?}", doc.validate(cx));
+            assert_eq!(
+                Document::parse(&doc.to_json()).as_ref(),
+                Some(&doc),
+                "{name}"
+            );
+            if let Some(expected) = v["fallback"].as_str() {
+                assert_eq!(doc.fallback_text(40_000), expected, "{name}");
+            }
+            n += 1;
+        }
+        assert!(n >= 3);
     }
 }

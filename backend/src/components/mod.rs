@@ -460,3 +460,40 @@ mod tests {
         assert!(app(&json!({"components":[{"type":1,"components":[{"type":2,"label":"A","custom_id":"a"}]}]}), Context::Unfurl, "test").is_err());
     }
 }
+
+#[cfg(test)]
+mod manual_examples {
+    //! docs/webhooks.md の記法の表と、実際の変換が合っていることを確かめる。
+    use super::blockkit::NoResolver;
+    use crate::slack::convert::mrkdwn_to_mfm;
+
+    #[test]
+    fn slack_mrkdwn_table() {
+        let c = |s: &str| mrkdwn_to_mfm(s, &NoResolver);
+        assert_eq!(c("*b* _i_ ~s~"), "**b** <i>i</i> ~~s~~");
+        assert_eq!(c("<https://e.x|label>"), "[label](https://e.x)");
+        assert_eq!(c("&lt;tag&gt; &amp;"), "<tag> &");
+        assert_eq!(
+            [
+                c("<@U123>"),
+                c("<@U123|name>"),
+                c("<#C1|general>"),
+                c("<!here>"),
+                c("<!subteam^S1|@team>"),
+                c("<!date^1700000000^{date_short}|fallback>"),
+                c("<mailto:a@e.x|mail>"),
+                c("$[x2 big]"),
+            ],
+            [
+                "@U123",
+                "@name",
+                "#general",
+                "@here",
+                "@team",
+                "fallback",
+                "mail",
+                "$\u{200b}[x2 big]"
+            ]
+        );
+    }
+}

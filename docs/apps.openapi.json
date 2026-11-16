@@ -2992,11 +2992,11 @@
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Blocks"
+                "$ref": "#/components/schemas/ComponentsInput"
               }
             }
           }
@@ -3138,11 +3138,11 @@
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object"
+                "$ref": "#/components/schemas/UnfurlInput"
               }
             }
           }
@@ -3337,15 +3337,16 @@
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Blocks"
+                "$ref": "#/components/schemas/ComponentsInput"
               }
             }
           }
-        }
+        },
+        "deprecated": true
       }
     },
     "/api/apps/events": {
@@ -7206,6 +7207,223 @@
           }
         ]
       }
+    },
+    "/api/apps/v1/messages/{id}/components": {
+      "post": {
+        "operationId": "post_api_apps_v1_messages_id_components",
+        "summary": "POST /api/apps/v1/messages/{id}/components",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComponentsInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/options/{id}": {
+      "post": {
+        "operationId": "post_api_apps_v1_options_id",
+        "summary": "POST /api/apps/v1/options/{id}",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OptionsResponse"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}/options/{request}": {
+      "get": {
+        "operationId": "get_api_apps_id_options_request",
+        "summary": "GET /api/apps/{id}/options/{request}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "request",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -7670,11 +7888,120 @@
           }
         }
       },
-      "Blocks": {
+      "SurfaceInput": {
+        "type": "object",
+        "required": [
+          "kind",
+          "user_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "home",
+              "modal",
+              "ephemeral"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocks": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              },
+              {
+                "$ref": "#/components/schemas/LegacyBlocks"
+              }
+            ],
+            "description": "Slack Block Kit か旧形式"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Component"
+            }
+          },
+          "flags": {
+            "type": "integer"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "discord",
+              "slack",
+              "legacy"
+            ]
+          }
+        }
+      },
+      "FileInput": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "name",
+          "content_type",
+          "size_bytes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 26214400
+          }
+        }
+      },
+      "LegacyBlocks": {
         "type": "array",
         "maxItems": 50,
         "items": {
           "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "card"
+              ],
+              "properties": {
+                "type": {
+                  "const": "card"
+                },
+                "card": {
+                  "type": "object",
+                  "description": "旧形式の MessageCard"
+                }
+              }
+            },
             {
               "type": "object",
               "required": [
@@ -7781,71 +8108,193 @@
               }
             }
           ]
-        }
+        },
+        "deprecated": true,
+        "description": "旧形式の Block 一覧（廃止予定）。受け付けるが、応答に Deprecation ヘッダーを付ける。"
       },
-      "SurfaceInput": {
+      "Component": {
         "type": "object",
         "required": [
-          "kind",
-          "user_id",
-          "blocks"
+          "type"
         ],
-        "additionalProperties": false,
+        "description": "メッセージ部品（Discord Components V2 と同じフィールド）。type は数値（Discord の番号、zoo 独自は 1000 番台）か Discord の名前。docs/apps.md「メッセージ部品」を参照。",
         "properties": {
-          "kind": {
+          "type": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10,
+                  11,
+                  12,
+                  13,
+                  14,
+                  17,
+                  18,
+                  19,
+                  21,
+                  22,
+                  23,
+                  1000,
+                  1001,
+                  1002,
+                  1003,
+                  1004,
+                  1005,
+                  1008,
+                  1009,
+                  1010,
+                  1011,
+                  1012,
+                  1013,
+                  1014,
+                  1015,
+                  1016
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          },
+          "custom_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Component"
+            }
+          },
+          "accessory": {
+            "$ref": "#/components/schemas/Component"
+          },
+          "component": {
+            "$ref": "#/components/schemas/Component"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ComponentDocument": {
+        "type": "object",
+        "properties": {
+          "flags": {
+            "type": "integer",
+            "description": "32768（IS_COMPONENTS_V2）で本文を隠して部品だけを表示する"
+          },
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Component"
+            }
+          },
+          "format": {
             "type": "string",
             "enum": [
-              "home",
-              "modal",
-              "ephemeral"
+              "discord",
+              "slack",
+              "legacy"
             ]
-          },
-          "user_id": {
-            "type": "string"
-          },
-          "channel_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "trigger_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "blocks": {
-            "$ref": "#/components/schemas/Blocks"
           }
         }
       },
-      "FileInput": {
+      "SlackBlocks": {
         "type": "object",
         "required": [
-          "channel_id",
-          "name",
-          "content_type",
-          "size_bytes"
+          "blocks"
         ],
-        "additionalProperties": false,
         "properties": {
-          "channel_id": {
-            "type": "string"
+          "blocks": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "additionalProperties": true,
+              "description": "Slack Block Kit のブロック"
+            }
           },
-          "name": {
+          "format": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 255
+            "enum": [
+              "slack",
+              "legacy"
+            ]
+          }
+        }
+      },
+      "ComponentsInput": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ComponentDocument"
           },
-          "content_type": {
+          {
+            "$ref": "#/components/schemas/SlackBlocks"
+          },
+          {
+            "$ref": "#/components/schemas/LegacyBlocks"
+          }
+        ]
+      },
+      "OptionsResponse": {
+        "type": "object",
+        "properties": {
+          "options": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object"
+            }
+          },
+          "option_groups": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "UnfurlInput": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
             "type": "string",
-            "maxLength": 128
+            "format": "uri"
           },
-          "size_bytes": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 26214400
+          "components": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Component"
+            }
+          },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "card": {
+            "type": "object",
+            "deprecated": true
           }
         }
       }
