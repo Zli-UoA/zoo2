@@ -114,6 +114,9 @@ pub struct SlackMessage {
     /// bot 投稿のカード (旧形式の attachments)。本文がここにしかない投稿もある
     #[serde(default)]
     pub attachments: Vec<serde_json::Value>,
+    /// Block Kit のブロック。人の投稿は本文と同じ rich_text だけなので、それ以外を含むときだけ部品にする
+    #[serde(default)]
+    pub blocks: Vec<serde_json::Value>,
     /// スレッドの親なら、返信の ts の一覧 (エクスポートに含まれる場合)
     #[serde(default)]
     pub replies: Vec<SlackReplyRef>,
@@ -325,20 +328,30 @@ impl SlackMessage {
             .join("\n")
     }
 
-    /// attachments を zoo のカードにする。リンクの展開 (unfurl) は zoo 側で表示するので除き、
-    /// 読み取れないものは 1 件ずつ捨てる。
-    pub fn cards(&self) -> Vec<crate::cards::MessageCard> {
-        self.attachments
+    /// blocks と attachments を部品の木にする。リンクの展開 (unfurl) は zoo 側で表示するので除く。
+    /// blocks が本文と同じ rich_text だけなら、blocks は使わない (本文をそのまま表示する)。
+    /// 部品にするものがなければ None。操作部品は押せない状態になる。
+    pub fn components(
+        &self,
+        resolver: &impl super::convert::Resolver,
+    ) -> Option<crate::components::Document> {
+        let blocks: Vec<&serde_json::Value> = if self
+            .blocks
             .iter()
-            .filter(|a| a.get("from_url").is_none() && a.get("is_app_unfurl").is_none())
-            .map(sanitize_attachment)
-            .filter_map(|a| {
-                let body = serde_json::json!({ "attachments": [a] }).to_string();
-                crate::cards::parse_webhook_cards(body.as_bytes()).ok()
-            })
-            .flatten()
-            .take(100)
-            .collect()
+            .all(|b| b.get("type").and_then(|t| t.as_str()) == Some("rich_text"))
+        {
+            Vec::new()
+        } else {
+            self.blocks.iter().take(100).collect()
+        };
+        let attachments: Vec<&serde_json::Value> = self.attachments.iter().take(100).collect();
+        if blocks.is_empty() && attachments.is_empty() {
+            return None;
+        }
+        let body = serde_json::json!({ "text": self.text, "blocks": blocks, "attachments": attachments });
+        crate::components::slack_message(&body, resolver, "slack_import")
+            .ok()
+            .and_then(|i| i.doc)
     }
 
     /// スレッドの返信なら親の ts
@@ -349,74 +362,6 @@ impl SlackMessage {
     }
 }
 
-fn clip(value: &str, limit: usize) -> String {
-    value.chars().take(limit).collect()
-}
-
-/// Webhook と同じカードの検証 (`MessageCard::encode`) に通る形へ直す。
-/// 取り込みでは元のデータを直せないので、拒否せずにリンクを外したり切り詰めたりする。
-fn sanitize_attachment(attachment: &serde_json::Value) -> serde_json::Value {
-    let mut value = attachment.clone();
-    let Some(object) = value.as_object_mut() else {
-        return value;
-    };
-    let text = |object: &serde_json::Map<String, serde_json::Value>, key: &str| {
-        object
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
-    };
-    if !text(object, "title_link").starts_with("https://") {
-        object.remove("title_link");
-    }
-    if !text(object, "color").is_empty()
-        && crate::cards::normalize_color(&text(object, "color")).is_none()
-    {
-        object.remove("color");
-    }
-    for (key, limit) in [
-        ("title", 500),
-        ("footer", 2000),
-        ("author_name", 2000),
-        ("fallback", 3000),
-    ] {
-        let clipped = clip(&text(object, key), limit);
-        if object.contains_key(key) {
-            object.insert(key.into(), clipped.into());
-        }
-    }
-    // pretext・text・fields を連結した本文が 4000 文字に収まるよう、fields → pretext → text の順に枠を取る
-    let fields: Vec<serde_json::Value> = object
-        .get("fields")
-        .and_then(|v| v.as_array())
-        .map(|fields| {
-            fields
-                .iter()
-                .take(10)
-                .map(|f| {
-                    let get = |k: &str| f.get(k).and_then(|v| v.as_str()).unwrap_or("");
-                    serde_json::json!({ "title": clip(get("title"), 50), "value": clip(get("value"), 200) })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let used: usize = fields
-        .iter()
-        .map(|f| {
-            f["title"].as_str().unwrap_or("").chars().count()
-                + f["value"].as_str().unwrap_or("").chars().count()
-                + 3
-        })
-        .sum();
-    let pretext = clip(&text(object, "pretext"), 500);
-    let budget = 3900usize.saturating_sub(used + pretext.chars().count());
-    let body = clip(&text(object, "text"), budget);
-    object.insert("fields".into(), fields.into());
-    object.insert("pretext".into(), pretext.into());
-    object.insert("text".into(), body.into());
-    value
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSummary {

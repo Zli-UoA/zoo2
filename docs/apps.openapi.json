@@ -6924,6 +6924,288 @@
           }
         ]
       }
+    },
+    "/api/emoji-service": {
+      "get": {
+        "operationId": "get_api_emoji_service",
+        "summary": "GET /api/emoji-service",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/emoji-shortcodes": {
+      "get": {
+        "operationId": "get_api_emoji_shortcodes",
+        "summary": "GET /api/emoji-shortcodes",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/emoji-accounts": {
+      "get": {
+        "operationId": "get_api_emoji_accounts",
+        "summary": "GET /api/emoji-accounts",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/emojis/upload": {
+      "get": {
+        "operationId": "get_api_emojis_upload",
+        "summary": "GET /api/emojis/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_emojis_upload",
+        "summary": "POST /api/emojis/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_emojis_upload",
+        "summary": "DELETE /api/emojis/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/emoji-images/{id}": {
+      "get": {
+        "operationId": "get_api_emoji_images_id",
+        "summary": "GET /api/emoji-images/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/emojis/upload": {
+      "get": {
+        "operationId": "get_api_apps_v1_emojis_upload",
+        "summary": "GET /api/apps/v1/emojis/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_emojis_upload",
+        "summary": "POST /api/apps/v1/emojis/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_emojis_upload",
+        "summary": "DELETE /api/apps/v1/emojis/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -7081,6 +7363,7 @@
                 "command.invoked",
                 "action.invoked",
                 "view.submitted",
+                "options.requested",
                 "shortcut.invoked",
                 "link.shared",
                 "home.opened",

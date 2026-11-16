@@ -146,6 +146,7 @@ pub const EVENTS: &[&str] = &[
     "command.invoked",
     "action.invoked",
     "view.submitted",
+    "options.requested",
     "shortcut.invoked",
     "link.shared",
     "home.opened",

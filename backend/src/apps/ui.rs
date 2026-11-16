@@ -16,6 +16,9 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/{id}/surfaces", get(surfaces))
         .route("/api/apps/v1/surfaces", post(publish))
         .route("/api/apps/v1/messages/{id}/blocks", post(blocks))
+        .route("/api/apps/v1/messages/{id}/components", post(blocks))
+        .route("/api/apps/v1/options/{id}", post(provide_options))
+        .route("/api/apps/{id}/options/{request}", get(requested_options))
         .layer(axum::middleware::map_response(super::no_store))
 }
 
@@ -106,18 +109,68 @@ struct Publish {
     channel_id: Option<String>,
     #[serde(default)]
     trigger_id: Option<String>,
-    blocks: Value,
+    /// Slack Block Kit か、旧形式の Block 一覧
+    #[serde(default)]
+    blocks: Option<Value>,
+    /// Discord Components V2 の部品
+    #[serde(default)]
+    components: Option<Value>,
+    #[serde(default)]
+    flags: Option<Value>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+impl Publish {
+    /// 部品の入力を 1 つの JSON にまとめる（[`crate::components::app`] が形式を見分ける）。
+    fn document_input(&self) -> Value {
+        let mut v = serde_json::Map::new();
+        for (k, value) in [("blocks", &self.blocks), ("components", &self.components), ("flags", &self.flags)] {
+            if let Some(value) = value {
+                v.insert(k.into(), value.clone());
+            }
+        }
+        if let Some(f) = &self.format {
+            v.insert("format".into(), Value::from(f.as_str()));
+        }
+        Value::Object(v)
+    }
+}
+
+/// 旧形式の入力には、廃止予定であることをヘッダーで知らせる。
+fn deprecation(format: crate::components::Format) -> axum::http::HeaderMap {
+    let mut h = axum::http::HeaderMap::new();
+    if format == crate::components::Format::Legacy {
+        h.insert("deprecation", axum::http::HeaderValue::from_static("true"));
+        h.insert(
+            "link",
+            axum::http::HeaderValue::from_static("</docs/apps.md#メッセージ部品>; rel=\"deprecation\""),
+        );
+    }
+    h
+}
+
+/// 保存した文書（app_ui.document か messages.components、旧形式の app_blocks）を部品の木として読む。
+pub fn load_document(stored: &Value, modal: bool) -> crate::components::Document {
+    if stored.get("components").is_some() {
+        serde_json::from_value(stored.clone()).unwrap_or_default()
+    } else {
+        zoo_components::legacy::blocks(stored.get("blocks").unwrap_or(&Value::Null), modal)
+    }
 }
 async fn publish(
     State(s): State<AppState>,
     p: Principal,
     Json(b): Json<Publish>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(axum::http::HeaderMap, Json<Value>), AppError> {
     p.require("ui:write")?;
-    validate_blocks(&b.blocks)?;
-    if !["home", "modal", "ephemeral"].contains(&b.kind.as_str()) {
-        return Err(AppError::BadRequest("Invalid surface kind".into()));
-    }
+    let cx = match b.kind.as_str() {
+        "home" => crate::components::Context::Home,
+        "modal" => crate::components::Context::Modal,
+        "ephemeral" => crate::components::Context::Ephemeral,
+        _ => return Err(AppError::BadRequest("Invalid surface kind".into())),
+    };
+    let (doc, format) = crate::components::app(&b.document_input(), cx, "app_surface")?;
     if p.delegated && b.user_id != p.user_id {
         return Err(AppError::Forbidden(
             "Cannot publish private UI for another user".into(),
@@ -148,7 +201,7 @@ async fn publish(
     } else {
         "INSERT INTO app_ui(id,installation_id,user_id,kind,document,channel_id,expires_at) VALUES($1,$2,$3,$4,$5,NULLIF($6,''),now()+interval '15 minutes') RETURNING json_build_object('id',id)::text"
     };
-    let document = json!({"blocks":b.blocks}).to_string();
+    let document = doc.to_json();
     let params = if b.kind == "home" {
         vec![
             id.as_str(),
@@ -169,7 +222,7 @@ async fn publish(
     };
     let v = one(&mut tx, sql, &params).await?;
     tx.commit().await?;
-    Ok(Json(v))
+    Ok((deprecation(format), Json(v)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,6 +255,8 @@ async fn invoke(
     }
     let manifest: Manifest = serde_json::from_value(app["manifest"].clone())
         .map_err(|e| AppError::Internal(e.into()))?;
+    // action_id（custom_id）ごとの部品の番号（イベントの component_type）
+    let mut component_kind: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
     let event_type = match b.kind.as_str() {
         "command" => {
             if b.channel_id.is_none()
@@ -237,66 +292,56 @@ async fn invoke(
             "shortcut.invoked"
         }
         "home" => "home.opened",
-        "action" | "submit" => {
-            let document = if let Some(surface) = &b.surface_id {
-                one(&mut tx,"SELECT json_build_object('blocks',document::jsonb->'blocks')::text FROM app_ui WHERE id=$1 AND installation_id=$2 AND user_id=$3 AND (expires_at IS NULL OR expires_at>now()) AND kind IN('home','modal','ephemeral') AND channel_id IS NOT DISTINCT FROM NULLIF($4,'') FOR UPDATE",&[surface,app["installation"].as_str().unwrap(),&actor.id,b.channel_id.as_deref().unwrap_or("")]).await?
+        "action" | "submit" | "options" => {
+            let modal_surface;
+            let stored = if let Some(surface) = &b.surface_id {
+                let row = one(&mut tx,"SELECT json_build_object('document',document::jsonb,'kind',kind)::text FROM app_ui WHERE id=$1 AND installation_id=$2 AND user_id=$3 AND (expires_at IS NULL OR expires_at>now()) AND kind IN('home','modal','ephemeral') AND channel_id IS NOT DISTINCT FROM NULLIF($4,'') FOR UPDATE",&[surface,app["installation"].as_str().unwrap(),&actor.id,b.channel_id.as_deref().unwrap_or("")]).await?;
+                modal_surface = row["kind"] == "modal";
+                row["document"].clone()
             } else if let Some(message) = &b.message_id {
                 let channel = b
                     .channel_id
                     .as_deref()
                     .ok_or_else(|| AppError::BadRequest("channel_id required".into()))?;
-                one(&mut tx,"SELECT json_build_object('blocks',app_blocks::jsonb)::text FROM messages WHERE id=$1 AND channel_id=$2 AND app_origin_id=$3 AND deleted_at IS NULL AND app_blocks IS NOT NULL",&[message,channel,&id]).await?
+                modal_surface = false;
+                let row = one(&mut tx,"SELECT json_build_object('components',components::jsonb,'blocks',app_blocks::jsonb)::text FROM messages WHERE id=$1 AND channel_id=$2 AND app_origin_id=$3 AND deleted_at IS NULL AND (components IS NOT NULL OR app_blocks IS NOT NULL)",&[message,channel,&id]).await?;
+                if row["components"].is_object() { row["components"].clone() } else { json!({"blocks":row["blocks"]}) }
             } else {
                 return Err(AppError::BadRequest(
                     "A surface or message is required".into(),
                 ));
             };
-            let parsed: Vec<Block> = serde_json::from_value(document["blocks"].clone())
-                .map_err(|e| AppError::Internal(e.into()))?;
-            if b.kind == "action"
-                && !parsed.iter().any(|block| match block {
-                    Block::Button { action_id, .. } | Block::Select { action_id, .. } => {
-                        Some(action_id) == b.action_id.as_ref()
-                    }
-                    _ => false,
-                })
-            {
-                return Err(AppError::BadRequest("Unknown action".into()));
-            }
-            if b.kind == "submit" {
-                for block in &parsed {
-                    match block {
-                        Block::Input {
-                            action_id,
-                            required: true,
-                            ..
-                        } => {
-                            if b.values[action_id]
-                                .as_str()
-                                .is_none_or(|s| s.trim().is_empty())
-                            {
-                                return Err(AppError::BadRequest(
-                                    "Required input is missing".into(),
-                                ));
-                            }
-                        }
-                        Block::Select {
-                            action_id, options, ..
-                        } => {
-                            if let Some(value) = b.values[action_id].as_str()
-                                && !options.iter().any(|s| s == value)
-                            {
-                                return Err(AppError::BadRequest("Invalid selection".into()));
-                            }
-                        }
-                        _ => {}
-                    }
+            let doc = load_document(&stored, modal_surface);
+            for c in doc.walk() {
+                if let Some(id) = c.custom_id() {
+                    component_kind.insert(id.to_string(), c.kind());
                 }
             }
-            if b.kind == "submit" {
-                "view.submitted"
-            } else {
-                "action.invoked"
+            match b.kind.as_str() {
+                "action" => {
+                    let action = b.action_id.as_deref().unwrap_or_default();
+                    let component = doc
+                        .find(action)
+                        .filter(|c| !c.is_disabled())
+                        .ok_or_else(|| AppError::BadRequest("Unknown action".into()))?;
+                    check_value(component, &b.values[action])?;
+                    "action.invoked"
+                }
+                "options" => {
+                    let action = b.action_id.as_deref().unwrap_or_default();
+                    let Some(crate::components::Component::ExternalSelect(select)) = doc.find(action) else {
+                        return Err(AppError::BadRequest("Unknown external select".into()));
+                    };
+                    let query = b.values["query"].as_str().unwrap_or_default();
+                    if query.chars().count() < select.min_query_length.unwrap_or(3) as usize || query.chars().count() > 100 {
+                        return Err(AppError::BadRequest("Query is too short or too long".into()));
+                    }
+                    "options.requested"
+                }
+                _ => {
+                    check_submission(&doc, &b.values)?;
+                    "view.submitted"
+                }
             }
         }
         _ => return Err(AppError::BadRequest("Unknown invocation".into())),
@@ -318,7 +363,7 @@ async fn invoke(
             "App does not subscribe to this interaction".into(),
         ));
     }
-    if matches!(b.kind.as_str(), "home" | "action" | "submit")
+    if matches!(b.kind.as_str(), "home" | "action" | "submit" | "options")
         && !manifest.scopes.iter().any(|s| s == "ui:write")
     {
         return Err(AppError::Forbidden("App has no ui:write capability".into()));
@@ -329,7 +374,16 @@ async fn invoke(
     let response_token = secret("zoo_response_");
     toasty::sql::statement("INSERT INTO app_responses(token_hash,installation_id,user_id,channel_id,expires_at) VALUES($1,$2,$3,NULLIF($4,''),now()+interval '15 minutes')").bind(hash(&response_token)).bind(installation).bind(actor.id.as_str()).bind(b.channel_id.as_deref().unwrap_or("")).exec(&mut tx).await?;
     let event_id = uuid::Uuid::new_v4().to_string();
-    let payload = json!({"id":event_id,"version":1,"type":event_type,"actor_id":actor.id,"channel_id":b.channel_id,"occurred_at":jiff::Timestamp::now().to_string(),"data":{"name":b.name,"surface_id":b.surface_id,"message_id":b.message_id,"action_id":b.action_id,"values":b.values,"trigger_id":trigger,"response_path":format!("/api/app-responses/{response_token}")}});
+    // external_select の選択肢の問い合わせ。アプリは /api/apps/v1/options/{request_id} に選択肢を返す。
+    let request_id = if b.kind == "options" {
+        let request = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,expires_at) VALUES($1,$2,$3,NULLIF($4,''),'options',now()+interval '1 minute')").bind(request.as_str()).bind(installation).bind(actor.id.as_str()).bind(b.channel_id.as_deref().unwrap_or("")).exec(&mut tx).await?;
+        Some(request)
+    } else {
+        None
+    };
+    let component_type = b.action_id.as_deref().and_then(|a| component_kind.get(a).copied());
+    let payload = json!({"id":event_id,"version":1,"type":event_type,"actor_id":actor.id,"channel_id":b.channel_id,"occurred_at":jiff::Timestamp::now().to_string(),"data":{"name":b.name,"surface_id":b.surface_id,"message_id":b.message_id,"action_id":b.action_id,"custom_id":b.action_id,"component_type":component_type,"values":b.values,"request_id":request_id,"trigger_id":trigger,"response_path":format!("/api/app-responses/{response_token}")}});
     toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,channel_id,event_type,payload) VALUES($1,$2,$3,NULLIF($4,''),$5,$6)").bind(uuid::Uuid::new_v4().to_string()).bind(event_id.as_str()).bind(installation).bind(b.channel_id.as_deref().unwrap_or("")).bind(event_type).bind(payload.to_string()).exec(&mut tx).await?;
     if b.kind == "submit"
         && let Some(surface) = &b.surface_id
@@ -341,8 +395,150 @@ async fn invoke(
             .await?;
     }
     tx.commit().await?;
-    Ok(Json(json!({"event_id":event_id})))
+    Ok(Json(json!({"event_id":event_id,"request_id":request_id})))
 }
+fn bad(msg: &str) -> AppError {
+    AppError::BadRequest(msg.into())
+}
+
+/// 選んだ値の一覧（1 つなら文字列、複数なら配列）。
+fn chosen(value: &Value) -> Vec<&str> {
+    match value {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn count_ok(n: usize, min: Option<u8>, max: Option<u8>, default_min: u8) -> bool {
+    n >= min.unwrap_or(default_min) as usize && n <= max.unwrap_or(1).max(1) as usize
+}
+
+/// 部品 1 つ分の値を検証する（ボタンを押したとき・送信したとき）。値がなければ何もしない。
+fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), AppError> {
+    use crate::components::{Component as C, TextFormat};
+    if value.is_null() {
+        return Ok(());
+    }
+    let in_options = |options: &[crate::components::SelectOption], values: &[&str]| {
+        values.iter().all(|v| options.iter().any(|o| o.value == *v))
+    };
+    match c {
+        C::StringSelect(s) => {
+            let v = chosen(value);
+            if !in_options(&s.options, &v) || !count_ok(v.len(), s.min_values.or(Some(1)), s.max_values, 1) {
+                return Err(bad("Invalid selection"));
+            }
+        }
+        C::Overflow(g) | C::RadioGroup(g) => {
+            let v = chosen(value);
+            if v.len() != 1 || !in_options(&g.options, &v) {
+                return Err(bad("Invalid selection"));
+            }
+        }
+        C::CheckboxGroup(g) => {
+            let v = chosen(value);
+            if !in_options(&g.options, &v) || v.len() > g.options.len() {
+                return Err(bad("Invalid selection"));
+            }
+        }
+        C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => {
+            let v = chosen(value);
+            if v.iter().any(|id| id.is_empty() || id.len() > 100) || v.len() > s.max_values.unwrap_or(1).max(1) as usize {
+                return Err(bad("Invalid selection"));
+            }
+        }
+        C::ExternalSelect(s) => {
+            let v = chosen(value);
+            if v.iter().any(|id| id.len() > 100) || v.len() > s.max_values.unwrap_or(1).max(1) as usize {
+                return Err(bad("Invalid selection"));
+            }
+        }
+        C::Checkbox(_) => {
+            if !value.is_boolean() {
+                return Err(bad("Invalid checkbox value"));
+            }
+        }
+        C::DatePicker(_) | C::TimePicker(_) | C::DateTimePicker(_) => {
+            let ok = value.as_str().is_some_and(|v| v.len() <= 40) || value.is_i64();
+            if !ok {
+                return Err(bad("Invalid date or time"));
+            }
+        }
+        C::TextInput(t) => {
+            let v = value.as_str().ok_or_else(|| bad("Invalid input"))?;
+            let n = v.chars().count();
+            if n > t.max_length.unwrap_or(4000) as usize || (n > 0 && n < t.min_length.unwrap_or(0) as usize) {
+                return Err(bad("Input length is out of range"));
+            }
+            if !v.is_empty() {
+                let ok = match t.format {
+                    TextFormat::Number => v.trim().parse::<f64>().is_ok_and(|x| {
+                        x.is_finite()
+                            && (t.decimal || x.fract() == 0.0)
+                            && t.min_value.is_none_or(|m| x >= m)
+                            && t.max_value.is_none_or(|m| x <= m)
+                    }),
+                    TextFormat::Email => {
+                        let mut parts = v.split('@');
+                        matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if !a.is_empty() && b.contains('.'))
+                    }
+                    TextFormat::Url => v.starts_with("https://") || v.starts_with("http://"),
+                    _ => true,
+                };
+                if !ok {
+                    return Err(bad("Input format is invalid"));
+                }
+            }
+        }
+        C::FileUpload(f) => {
+            let v = chosen(value);
+            if v.len() > f.max_values.unwrap_or(1).max(1) as usize {
+                return Err(bad("Too many files"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 送信（モーダル・ホーム）の値を検証する。required の入力が空なら 400。木にないキーはログに残すだけにする。
+fn check_submission(doc: &crate::components::Document, values: &Value) -> Result<(), AppError> {
+    use crate::components::Component as C;
+    for c in doc.walk() {
+        let Some(id) = c.custom_id() else { continue };
+        let value = &values[id];
+        check_value(c, value)?;
+        let required = match c {
+            C::TextInput(t) => t.required.unwrap_or(true),
+            C::StringSelect(s) => s.required.unwrap_or(false),
+            C::UserSelect(s) | C::RoleSelect(s) | C::MentionableSelect(s) | C::ChannelSelect(s) => s.required.unwrap_or(false),
+            C::ExternalSelect(s) => s.required.unwrap_or(false),
+            C::RadioGroup(g) | C::CheckboxGroup(g) => g.required.unwrap_or(true) && !matches!(c, C::CheckboxGroup(g) if g.min_values == Some(0)),
+            C::DatePicker(p) | C::TimePicker(p) | C::DateTimePicker(p) => p.required.unwrap_or(false),
+            C::FileUpload(f) => f.required.unwrap_or(true),
+            _ => false,
+        };
+        let empty = match value {
+            Value::Null => true,
+            Value::String(s) => s.trim().is_empty(),
+            Value::Array(a) => a.is_empty(),
+            _ => false,
+        };
+        // 旧形式の入力は required を明示する（Some(false) なら任意）
+        if required && empty && !matches!(c, C::Button(_) | C::Overflow(_) | C::Checkbox(_)) {
+            return Err(bad("Required input is missing"));
+        }
+    }
+    if let Value::Object(map) = values {
+        let unknown: Vec<&String> = map.keys().filter(|k| doc.find(k).is_none()).collect();
+        if !unknown.is_empty() {
+            tracing::info!(?unknown, "submission has values for unknown components");
+        }
+    }
+    Ok(())
+}
+
 async fn surfaces(
     State(s): State<AppState>,
     actor: AuthUser,
@@ -350,17 +546,19 @@ async fn surfaces(
 ) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT json_build_object('id',u.id,'kind',kind,'channel_id',u.channel_id,'document',document::jsonb,'updated_at',u.updated_at)::text FROM app_ui u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE a.id=$1 AND a.status='installed' AND i.active AND i.scopes::jsonb ? 'ui:write' AND u.user_id=$2 AND kind<>'trigger' AND (expires_at IS NULL OR expires_at>now()) AND (u.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=u.channel_id AND cu.user_id=$2 AND c.deleted_at IS NULL)) ORDER BY u.updated_at",&[&id,&actor.id]).await?;
+    let rows=query(&mut tx,"SELECT json_build_object('id',u.id,'kind',kind,'channel_id',u.channel_id,'document',document::jsonb,'updated_at',u.updated_at)::text FROM app_ui u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE a.id=$1 AND a.status='installed' AND i.active AND i.scopes::jsonb ? 'ui:write' AND u.user_id=$2 AND kind NOT IN('trigger','options') AND (expires_at IS NULL OR expires_at>now()) AND (u.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=u.channel_id AND cu.user_id=$2 AND c.deleted_at IS NULL)) ORDER BY u.updated_at",&[&id,&actor.id]).await?;
     Ok(Json(json!(rows)))
 }
+/// アプリが自分のメッセージに部品を付ける。Discord・Slack・旧形式のどれでも受け付ける。
+/// 本文が空なら、部品の代わりの文字を本文にする。
 async fn blocks(
     State(s): State<AppState>,
     p: Principal,
     Path(id): Path<String>,
     Json(b): Json<Value>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(axum::http::HeaderMap, Json<Value>), AppError> {
     p.require("messages:write")?;
-    validate_blocks(&b)?;
+    let (doc, format) = crate::components::app(&b, crate::components::Context::AppMessage, "app_message")?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let m = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
@@ -368,16 +566,99 @@ async fn blocks(
     if m.user_id != p.user_id || m.deleted_at.is_some() {
         return Err(AppError::Forbidden("Only the author may set blocks".into()));
     }
+    // attachment:// のファイルは、このメッセージに添付したアプリのファイルだけを指せる
+    let names: Vec<String> = doc
+        .walk()
+        .into_iter()
+        .filter_map(|c| match c {
+            crate::components::Component::File(f) => f.file.url.strip_prefix("attachment://").map(str::to_string),
+            _ => None,
+        })
+        .collect();
+    if !names.is_empty() {
+        let row = one(&mut tx, "SELECT json_build_object('a',COALESCE(app_attachments,'[]')::jsonb)::text FROM messages WHERE id=$1", &[id.as_str()]).await?;
+        let attached: Vec<&str> = row["a"].as_array().into_iter().flatten().filter_map(|a| a["name"].as_str()).collect();
+        if names.iter().any(|n| !attached.contains(&n.as_str())) {
+            return Err(AppError::BadRequest("attachment:// must name a file attached to this message".into()));
+        }
+    }
+    let fallback = doc.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH);
     toasty::sql::statement(
-        "UPDATE messages SET app_blocks=$2,app_origin_id=$3,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
+        "UPDATE messages SET components=$2,app_blocks=NULL,app_origin_id=$3,content=CASE WHEN content='' THEN $4 ELSE content END,updated_at=CURRENT_TIMESTAMP WHERE id=$1",
     )
     .bind(id.as_str())
-    .bind(b.to_string())
+    .bind(doc.to_json())
     .bind(p.app_id.as_str())
+    .bind(fallback)
     .exec(&mut tx)
     .await?;
     tx.commit().await?;
-    Ok(Json(json!({"id":id})))
+    Ok((deprecation(format), Json(json!({"id":id,"components":doc}))))
+}
+
+#[derive(Deserialize)]
+struct ProvidedOptions {
+    #[serde(default)]
+    options: Vec<Value>,
+    #[serde(default)]
+    option_groups: Vec<Value>,
+}
+
+/// external_select の選択肢をアプリが返す（`options.requested` の `request_id` に対して）。
+/// Discord 形式（`{label,value}`）と Slack 形式（`{text:{..},value}`）の両方を受け付ける。
+async fn provide_options(
+    State(s): State<AppState>,
+    p: Principal,
+    Path(request): Path<String>,
+    Json(b): Json<ProvidedOptions>,
+) -> Result<Json<Value>, AppError> {
+    p.require("ui:write")?;
+    let conv = crate::components::blockkit::Converter::new(crate::components::blockkit::Mode::Strict, &crate::components::blockkit::NoResolver);
+    let options: Vec<crate::components::SelectOption> = b
+        .options
+        .iter()
+        .chain(b.option_groups.iter().flat_map(|g| g["options"].as_array().into_iter().flatten()))
+        .take(100)
+        .map(|o| {
+            if o["text"].is_object() {
+                conv.option_value(o)
+            } else {
+                serde_json::from_value(o.clone()).map_err(|_| bad("Invalid option"))
+            }
+        })
+        .collect::<Result<_, _>>()?;
+
+    if options.iter().any(|o| o.label.is_empty() || o.value.is_empty() || o.label.chars().count() > 100 || o.value.chars().count() > 100) {
+        return Err(bad("Invalid option"));
+    }
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    p.authorize_locked(&mut tx, "ui:write").await?;
+    one(&mut tx, "UPDATE app_ui SET document=$3,updated_at=now() WHERE id=$1 AND installation_id=$2 AND kind='options' AND expires_at>now() RETURNING '{}'::text", &[request.as_str(), p.installation_id.as_str(), &json!({"options":options}).to_string()]).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"ok":true})))
+}
+
+/// 利用者が external_select の選択肢を受け取る。アプリの応答を最大 3 秒待つ（150ms ごとに 20 回まで確かめて止める）。
+/// 応答がなければ `{"options":null}` を返し、クライアントは入力が変わったときにだけ問い合わせ直す。
+async fn requested_options(
+    State(s): State<AppState>,
+    actor: AuthUser,
+    Path((_app, request)): Path<(String, String)>,
+) -> Result<Json<Value>, AppError> {
+    for attempt in 0..20 {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        let row = one(&mut tx, "SELECT json_build_object('document',document::jsonb)::text FROM app_ui WHERE id=$1 AND user_id=$2 AND kind='options' AND expires_at>now()", &[request.as_str(), actor.id.as_str()]).await?;
+        drop(tx);
+        if row["document"]["options"].is_array() {
+            return Ok(Json(json!({"options":row["document"]["options"]})));
+        }
+        if attempt < 19 {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    }
+    Ok(Json(json!({"options":null})))
 }
 #[cfg(test)]
 mod tests {
@@ -470,7 +751,13 @@ async fn command(
 #[derive(Deserialize)]
 struct Unfurl {
     url: String,
-    card: crate::cards::MessageCard,
+    /// 旧形式（MessageCard）
+    #[serde(default)]
+    card: Option<Value>,
+    #[serde(default)]
+    components: Option<Value>,
+    #[serde(default)]
+    blocks: Option<Value>,
 }
 async fn unfurl(
     State(s): State<AppState>,
@@ -490,7 +777,19 @@ async fn unfurl(
     {
         return Err(AppError::Forbidden("Link domain is not registered".into()));
     }
-    let card = b.card.encode()?;
+    let doc = match (&b.card, &b.components, &b.blocks) {
+        (Some(card), None, None) => {
+            let parsed: crate::cards::MessageCard = serde_json::from_value(card.clone()).map_err(|_| bad("Invalid card"))?;
+            parsed.encode()?;
+            let mut doc = zoo_components::legacy::cards(card);
+            doc.flags = 0;
+            doc.validate(crate::components::Context::Unfurl).map_err(|_| bad("Invalid card"))?;
+            doc
+        }
+        (None, Some(c), None) => crate::components::app(&json!({"components":c}), crate::components::Context::Unfurl, "app_unfurl")?.0,
+        (None, None, Some(bl)) => crate::components::app(&json!({"blocks":bl}), crate::components::Context::Unfurl, "app_unfurl")?.0,
+        _ => return Err(bad("Give one of card, components or blocks")),
+    };
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let message = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
@@ -501,8 +800,8 @@ async fn unfurl(
             "Link is not present in this message".into(),
         ));
     }
-    toasty::sql::statement("INSERT INTO app_link_unfurls(message_id,installation_id,url,card) VALUES($1,$2,$3,$4) ON CONFLICT(message_id,installation_id,url) DO UPDATE SET card=EXCLUDED.card").bind(id.as_str()).bind(p.installation_id).bind(b.url).bind(card).exec(&mut tx).await?;
-    toasty::sql::statement("UPDATE messages SET app_unfurls=(SELECT COALESCE(jsonb_agg(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb)),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=$1),updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO app_link_unfurls(message_id,installation_id,url,components) VALUES($1,$2,$3,$4) ON CONFLICT(message_id,installation_id,url) DO UPDATE SET components=EXCLUDED.components,card=NULL").bind(id.as_str()).bind(p.installation_id).bind(b.url).bind(doc.to_json()).exec(&mut tx).await?;
+    toasty::sql::statement("UPDATE messages SET app_unfurls=(SELECT COALESCE(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb,'components',u.components::jsonb))),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=$1),updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id})))
 }
@@ -536,16 +835,16 @@ async fn dismiss(
 async fn respond(
     State(s): State<AppState>,
     Path(token): Path<String>,
-    Json(blocks): Json<Value>,
-) -> Result<Json<Value>, AppError> {
-    validate_blocks(&blocks)?;
+    Json(body): Json<Value>,
+) -> Result<(axum::http::HeaderMap, Json<Value>), AppError> {
+    let (doc, format) = crate::components::app(&body, crate::components::Context::Ephemeral, "app_response")?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let installation=one(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_responses WHERE token_hash=$1",&[&hash(&token)]).await?;
     lock_installation(&mut tx, installation["id"].as_str().unwrap()).await?;
     let row=one(&mut tx,"UPDATE app_responses r SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE r.token_hash=$1 AND r.installation_id=i.id AND r.used_at IS NULL AND r.expires_at>now() AND i.active AND a.status='installed' AND i.scopes::jsonb ? 'ui:write' AND r.channel_id IS NOT NULL AND EXISTS(SELECT 1 FROM channel_user me JOIN channel_user bot ON bot.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.channel_id=r.channel_id AND me.user_id=r.user_id AND bot.user_id=a.bot_user_id AND c.deleted_at IS NULL AND c.archive_at IS NULL AND NOT c.encrypted) RETURNING json_build_object('installation',r.installation_id,'user',r.user_id,'channel',r.channel_id)::text",&[&hash(&token)]).await?;
     let id = uuid::Uuid::new_v4().to_string();
-    toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,document,expires_at) VALUES($1,$2,$3,$4,'ephemeral',$5,now()+interval '15 minutes')").bind(id.as_str()).bind(row["installation"].as_str().unwrap()).bind(row["user"].as_str().unwrap()).bind(row["channel"].as_str().unwrap()).bind(json!({"blocks":blocks}).to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,document,expires_at) VALUES($1,$2,$3,$4,'ephemeral',$5,now()+interval '15 minutes')").bind(id.as_str()).bind(row["installation"].as_str().unwrap()).bind(row["user"].as_str().unwrap()).bind(row["channel"].as_str().unwrap()).bind(doc.to_json()).exec(&mut tx).await?;
     tx.commit().await?;
-    Ok(Json(json!({"id":id})))
+    Ok((deprecation(format), Json(json!({"id":id}))))
 }

@@ -723,7 +723,7 @@ async fn rewrite_mentions(
     // 読み直して外れる
     let rows = query(
         tx,
-        "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card)::text FROM messages m \
+        "SELECT json_build_object('id',m.id,'content',m.content,'components',m.components)::text FROM messages m \
          JOIN channels c ON c.id=m.channel_id \
          WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) \
          AND NOT c.encrypted \
@@ -745,43 +745,33 @@ async fn rewrite_mentions(
         if rewritten.chars().count() > crate::validation::MAX_MESSAGE_CONTENT_LENGTH {
             continue;
         }
-        let card = row["card"]
+        let components = row["components"]
             .as_str()
-            .and_then(|card| rewrite_text_card(card, &names))
+            .and_then(|c| rewrite_text_components(c, content, &rewritten))
             .unwrap_or_default();
         exec(
             tx,
-            "UPDATE messages SET content=$2,card=COALESCE(NULLIF($3,''),card) WHERE id=$1",
-            &[id, &rewritten, &card],
+            "UPDATE messages SET content=$2,components=COALESCE(NULLIF($3,''),components) WHERE id=$1",
+            &[id, &rewritten, &components],
         )
         .await?;
     }
     Ok(())
 }
 
-/// カードの説明文の上限 (`MessageCard::encode` と同じ)
-const MAX_CARD_DESCRIPTION: usize = 4000;
-
-/// 本文とカードの両方がある投稿は、取り込みで本文を見出し「Slack」のカードとして先頭にも保存している
-/// (説明は MFM でなく、リンクを「ラベル (URL)」にした文字列)。カードのある投稿は本文を表示しないので、
-/// そのカードの説明のメンションも書き換える。書き換えたときだけ JSON を返す (添付から作ったカードには触れない)。
-/// 書き換えると説明の上限を超えるときは、取り込みと同じく上限で切る (本文と同じ書き換えをカードにも反映する)。
-fn rewrite_text_card(card: &str, names: &MentionNames) -> Option<String> {
-    let mut value: serde_json::Value = serde_json::from_str(card).ok()?;
-    let first = match value.get_mut("cards") {
-        Some(cards) => cards.get_mut(0)?,
-        None => &mut value,
+/// 本文と attachments の両方がある投稿は、取り込みで本文を部品の先頭の text_display にも入れている。
+/// 部品のある投稿は本文を表示しないので、その text_display が本文と同じなら、本文と同じく書き換える。
+/// 書き換えたときだけ JSON を返す (attachments から作った部品には触れない)。
+fn rewrite_text_components(stored: &str, content: &str, rewritten: &str) -> Option<String> {
+    let mut doc = crate::components::Document::parse(stored)?;
+    let Some(crate::components::Component::TextDisplay(first)) = doc.components.first_mut() else {
+        return None;
     };
-    if first["title"] != super::worker::IMPORTED_TEXT_CARD_TITLE {
+    if first.content != content {
         return None;
     }
-    let rewritten = replace_mentions(first["description"].as_str()?, names)?;
-    first["description"] = rewritten
-        .chars()
-        .take(MAX_CARD_DESCRIPTION)
-        .collect::<String>()
-        .into();
-    Some(value.to_string())
+    first.content = rewritten.to_string();
+    Some(doc.to_json())
 }
 
 /// 書き換えるプレースホルダの名前 → 本人の名前の対応表

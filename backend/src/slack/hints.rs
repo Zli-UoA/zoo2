@@ -519,20 +519,20 @@ pub(super) async fn edit(
     let formatting_only = edited.is_none()
         && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
     let same = (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
-        && stored["card"].as_str().unwrap_or_default() == rendered.card;
+        && stored["components"].as_str().unwrap_or_default() == rendered.components;
     if same {
         return Ok(());
     }
     let updated = query(
         tx,
-        "UPDATE messages SET content=$2,card=NULLIF($3,''),\
+        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,\
          updated_at=CASE WHEN $4='' THEN (now() AT TIME ZONE 'UTC')::timestamp(3) \
            ELSE (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          revision=revision+1 \
          WHERE id=$1 AND deleted_at IS NULL \
          AND ($4='' OR updated_at IS NULL OR updated_at<(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
          RETURNING json_build_object('ok',true)::text",
-        &[id, &rendered.content, &rendered.card, edited.unwrap_or_default()],
+        &[id, &rendered.content, &rendered.components, edited.unwrap_or_default()],
     )
     .await?;
     if updated.is_empty() {

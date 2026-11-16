@@ -41,8 +41,6 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 /// 手放すときに、データベースを待つ最長の時間 (超えたら、リースが切れるのを待つ)
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDOFF_DELAY_SQL: &str = "interval '30 seconds'";
-/// カードの説明文の上限 (`MessageCard::encode` と同じ)
-const MAX_CARD_DESCRIPTION: usize = 4000;
 /// 添付 1 件あたりの取得失敗の上限
 const MAX_FILE_ATTEMPTS: i64 = 3;
 /// 429 の `Retry-After` の上限 (秒)
@@ -485,8 +483,6 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| AppError::Internal(e.into()))?
 }
 
-/// 取り込んだ投稿の本文を入れるカード (先頭) の見出し
-pub const IMPORTED_TEXT_CARD_TITLE: &str = "Slack";
 
 const TEMP_ZIP_PREFIX: &str = "zoo-slack-import-";
 const TEMP_ZIP_SUFFIX: &str = ".zip";
@@ -1399,8 +1395,8 @@ pub(super) async fn insert_reactions(
 /// 投稿の表示用の内容。取り込み (`insert_message`) と、編集の反映 (`sync` のヒント) で共有する
 pub(super) struct Rendered {
     pub(super) content: String,
-    /// エンコード済みのカード (なければ空)
-    pub(super) card: String,
+    /// 部品の木の JSON (`messages.components`。なければ空)
+    pub(super) components: String,
     /// 本文が、取得しない添付のファイル名で補ったものか
     pub(super) filled: bool,
 }
@@ -1415,27 +1411,18 @@ pub(super) async fn render_message(
     for mentioned in super::convert::mentioned_users(&message.text) {
         ctx.user(tx, &mentioned, None).await?;
     }
-    let mut cards = message.cards();
-    let mut content = mrkdwn_to_mfm(&message.text, &*ctx);
-    // カードのある投稿は、チャットでは本文 (content) を表示せずカードだけを表示する。
-    // トップレベルの本文もカードの先頭に置いて、本文とカードの両方を読めるようにする。
-    // カードの説明は MFM として描画しないので、リンクは `label (URL)` の形にする。
-    if !cards.is_empty() && !content.trim().is_empty() {
-        let mut card = crate::cards::text_card(
-            super::convert::mrkdwn_to_text(&message.text, &*ctx)
-                .chars()
-                .take(MAX_CARD_DESCRIPTION)
-                .collect(),
-        );
-        card.title = IMPORTED_TEXT_CARD_TITLE.into();
-        cards.insert(0, card);
-    }
-    let card = crate::cards::encode_cards(&cards)?.unwrap_or_default();
-    // 本文がカードにしかない bot 投稿は、カードの内容を本文にも入れる (通知・一覧・旧クライアント用)。
-    // カードにできなかったときも、fallback などの文字列を残して投稿が欠けないようにする。
-    if content.trim().is_empty() {
-        content = crate::cards::cards_content(&cards);
-    }
+    let content = mrkdwn_to_mfm(&message.text, &*ctx);
+    let doc = message.components(&*ctx);
+    let components = doc.as_ref().map(|d| d.to_json()).unwrap_or_default();
+    // 本文が部品にしかない bot 投稿は、部品の文字を本文にも入れる (通知・一覧・旧クライアント用)。
+    // 部品にできなかったときも、fallback などの文字列を残して投稿が欠けないようにする。
+    let mut content = if content.trim().is_empty() {
+        doc.as_ref()
+            .map(|d| d.fallback_text(crate::validation::MAX_MESSAGE_CONTENT_LENGTH))
+            .unwrap_or_default()
+    } else {
+        content
+    };
     if content.trim().is_empty() {
         content = super::convert::truncate_content(message.attachments_text());
     }
@@ -1452,7 +1439,7 @@ pub(super) async fn render_message(
     }
     Ok(Rendered {
         content,
-        card,
+        components,
         filled,
     })
 }
@@ -1557,7 +1544,7 @@ pub(super) async fn insert_message(
         .unwrap_or("");
     let Rendered {
         content,
-        card,
+        components,
         filled,
     } = render_message(tx, ctx, message).await?;
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
@@ -1565,7 +1552,7 @@ pub(super) async fn insert_message(
     // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
     exec(
         tx,
-        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,card) \
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
          SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
@@ -1584,7 +1571,7 @@ pub(super) async fn insert_message(
             &message.ts,
             edited,
             &parent,
-            &card,
+            &components,
             parent_ts,
             // 決定的な ID の行は、作成日時が同じ行だけを更新する (Zoo の投稿との対応 `slack_message_map` がある行は除く)
             if derived { "1" } else { "" },
