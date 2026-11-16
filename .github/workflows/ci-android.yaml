@@ -19,6 +19,11 @@ on:
       - "frontend/package.json"
       - "frontend/pnpm-lock.yaml"
       - "frontend/tsconfig.json"
+      - "frontend/src/android-phone/**"
+      - "frontend/src/lib/sip/**"
+      - "frontend/src/lib/call/call-devices.ts"
+      - "frontend/vite.android-phone.config.ts"
+      - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
       - "crates/zoo-crypto/**"
@@ -46,6 +51,11 @@ on:
       - "frontend/package.json"
       - "frontend/pnpm-lock.yaml"
       - "frontend/tsconfig.json"
+      - "frontend/src/android-phone/**"
+      - "frontend/src/lib/sip/**"
+      - "frontend/src/lib/call/call-devices.ts"
+      - "frontend/vite.android-phone.config.ts"
+      - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
       - "crates/zoo-crypto/**"
@@ -82,6 +92,17 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install phone engine dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: 13114758
@@ -186,6 +207,17 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install phone engine dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           cmdline-tools-version: 13114758
