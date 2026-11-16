@@ -49,16 +49,16 @@ WITH visible AS NOT MATERIALIZED (
   ) e WHERE membership.user_id=$1 AND $4::boolean
   UNION
   SELECT e.id,e.entry_id,e.sort_at FROM followed f CROSS JOIN LATERAL (
-    SELECT eligible.id,eligible.entry_id,eligible.sort_at FROM apub_remote_recipients r CROSS JOIN LATERAL (
-      SELECT id,entry_id,sort_at FROM all_entries WHERE id=r.post_id AND activity_id IS NULL OFFSET 0
-    ) eligible WHERE $3 IN ('home','social') AND r.user_id=$1 AND r.actor_id=f.actor_id AND NOT r.post_deleted
+    SELECT r.post_id AS id,r.post_id AS entry_id,r.published AS sort_at
+    FROM apub_remote_recipients r
+    WHERE $3 IN ('home','social') AND r.user_id=$1 AND r.actor_id=f.actor_id AND NOT r.post_deleted
       AND ($2='' OR (r.published,r.post_id)<(SELECT sort_at,entry_id FROM cursor))
     ORDER BY r.published DESC,r.post_id DESC LIMIT $5::integer
   ) e
   UNION
-  (SELECT e.id,e.entry_id,e.sort_at FROM apub_remote_recipients r CROSS JOIN LATERAL (
-     SELECT id,entry_id,sort_at FROM all_entries WHERE id=r.post_id AND activity_id IS NULL OFFSET 0
-   ) e WHERE $3 IN ('home','social') AND r.user_id=$1 AND r.reply_to_user AND NOT r.post_deleted AND ($7='' OR r.actor_id=$7)
+  (SELECT r.post_id AS id,r.post_id AS entry_id,r.published AS sort_at
+   FROM apub_remote_recipients r JOIN apub_actors a ON a.id=r.actor_id AND NOT a.blocked
+   WHERE $3 IN ('home','social') AND r.user_id=$1 AND r.reply_to_user AND NOT r.post_deleted AND ($7='' OR r.actor_id=$7)
      AND ($2='' OR (r.published,r.post_id)<(SELECT sort_at,entry_id FROM cursor))
    ORDER BY r.published DESC,r.post_id DESC LIMIT $5::integer)
   UNION

@@ -1,7 +1,7 @@
 -- atlas:txmode none
 
 -- Additive columns and triggers keep old writers compatible before application rollout.
-ALTER TABLE "apub_remote_recipients" ADD COLUMN "actor_id" text NOT NULL DEFAULT '', ADD COLUMN "published" timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00', ADD COLUMN "reply_to_user" boolean NOT NULL DEFAULT false, ADD COLUMN "post_deleted" boolean NOT NULL DEFAULT false;
+ALTER TABLE "apub_remote_recipients" ADD COLUMN parent_id text, ADD COLUMN "actor_id" text NOT NULL DEFAULT '', ADD COLUMN "published" timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00', ADD COLUMN "reply_to_user" boolean NOT NULL DEFAULT false, ADD COLUMN "post_deleted" boolean NOT NULL DEFAULT false;
 ALTER TABLE "apub_repost_recipients" ADD COLUMN "actor_id" text NOT NULL DEFAULT '', ADD COLUMN "created_at" timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00';
 
 CREATE FUNCTION set_apub_recipient_order() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -12,6 +12,7 @@ BEGIN
   IF p.parent_id IS NOT NULL THEN
     PERFORM pg_advisory_xact_lock(20880,(hashtextextended(p.parent_id,0) & 1023)::integer);
   END IF;
+  NEW.parent_id:=p.parent_id;
   NEW.actor_id:=p.actor_id;
   NEW.published:=p.published;
   NEW.post_deleted:=p.deleted_at IS NOT NULL;
@@ -24,10 +25,10 @@ BEGIN
   IF NEW.parent_id IS NOT NULL THEN
     PERFORM pg_advisory_xact_lock(20880,(hashtextextended(NEW.parent_id,0) & 1023)::integer);
   END IF;
-  UPDATE apub_remote_recipients r SET actor_id=NEW.actor_id,published=NEW.published,post_deleted=NEW.deleted_at IS NOT NULL,
+  UPDATE apub_remote_recipients r SET parent_id=NEW.parent_id,actor_id=NEW.actor_id,published=NEW.published,post_deleted=NEW.deleted_at IS NOT NULL,
     reply_to_user=EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id)
-  WHERE r.post_id=NEW.id AND (r.actor_id,r.published,r.post_deleted,r.reply_to_user) IS DISTINCT FROM
-    (NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
+  WHERE r.post_id=NEW.id AND (r.parent_id,r.actor_id,r.published,r.post_deleted,r.reply_to_user) IS DISTINCT FROM
+    (NEW.parent_id,NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
   RETURN NULL;
 END $$;
 CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW EXECUTE FUNCTION sync_apub_recipient_order();
@@ -83,7 +84,7 @@ BEGIN
     LOOP
       PERFORM pg_advisory_xact_lock(20880,stripe);
     END LOOP;
-    UPDATE apub_remote_recipients r SET actor_id=p.actor_id,published=p.published,post_deleted=p.deleted_at IS NOT NULL,
+    UPDATE apub_remote_recipients r SET parent_id=p.parent_id,actor_id=p.actor_id,published=p.published,post_deleted=p.deleted_at IS NOT NULL,
       reply_to_user=EXISTS(SELECT 1 FROM home_posts WHERE id=p.parent_id AND user_id=r.user_id)
     FROM apub_remote_posts p,jsonb_to_recordset(batch) AS b(post_id text,user_id text)
     WHERE r.post_id=b.post_id AND r.user_id=b.user_id AND p.id=r.post_id;

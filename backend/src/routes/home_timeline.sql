@@ -70,7 +70,9 @@ WITH RECURSIVE visible AS NOT MATERIALIZED (
       ORDER BY CASE WHEN $8::boolean AND f.id=$6 THEN 0 WHEN $8::boolean AND a.id IS NOT NULL THEN 1 ELSE 2 END,
         tree_order,tree_path,f.sort_at DESC,f.entry_id DESC LIMIT $5::integer
     ), page AS MATERIALIZED (
-      SELECT row_to_json(b)::jsonb || CASE WHEN b.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(b.content)) e),'[]'::jsonb)) END || f.extra AS post,f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path,f.tree_depth
+      SELECT row_to_json(b) AS post,f.extra,b.channel_id,b.parent_id,
+        CASE WHEN b.remote THEN NULL::json ELSE COALESCE((SELECT json_agg(json_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(b.content)) e),'[]'::json) END AS local_emojis,
+        f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path,f.tree_depth
       FROM picked f JOIN base b ON b.id=f.id
     ), reaction_groups AS MATERIALIZED (
       SELECT parent.id,r.reaction,r.emoji,count(*) AS n,bool_or(r.user_id=$1) AS selected,
@@ -92,22 +94,22 @@ WITH RECURSIVE visible AS NOT MATERIALIZED (
         ) OFFSET 0
       ) r GROUP BY parent.id
     ), page_parents AS MATERIALIZED (
-      SELECT b.* FROM base b WHERE b.original_visible AND b.id IN (SELECT post->>'parent_id' FROM page)
+      SELECT b.* FROM base b WHERE b.original_visible AND b.id IN (SELECT parent_id FROM page)
     ), page_parent_previews AS MATERIALIZED (
-      SELECT parent.id,(row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(parent.content)) e),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)) AS post FROM page_parents parent
+      SELECT parent.id,((row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(parent.content)) e),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)))::json AS post FROM page_parents parent
     ), page_replies AS MATERIALIZED (
 /* reply_counts */
-    ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
+    ) SELECT json_build_object('post',f.post,'display',json_build_object(
       'entry_id',f.entry_id,
-      'attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=f.id AND a.channel_id=f.post->>'channel_id' AND attachment_message.channel_id=f.post->>'channel_id' AND attachment_message.deleted_at IS NULL),
-      'parent',(SELECT post FROM page_parent_previews parent WHERE parent.id=f.post->>'parent_id'),
+      'attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=f.id AND a.channel_id=f.channel_id AND attachment_message.channel_id=f.channel_id AND attachment_message.deleted_at IS NULL),
+      'parent',parent.post,
       'tree_depth',f.tree_depth,
       'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
       'likes',COALESCE(reactions.likes,0),
       'liked',COALESCE(reactions.liked,false),
       'my_reaction',reactions.my_reaction,
       'reactions',COALESCE(reactions.reactions,'[]'::jsonb),
-      'replies',COALESCE((SELECT n FROM page_replies WHERE parent_id=f.id),0),
+      'replies',COALESCE(reply_stats.n,0),
       'reposts',COALESCE(reposts.n,0),
       'reposted',COALESCE(reposts.mine,false)
-    ))::text FROM page f LEFT JOIN page_reactions reactions ON reactions.id=f.id LEFT JOIN page_reposts reposts ON reposts.id=f.id ORDER BY f.tree_order,f.tree_path,f.sort_at DESC,f.entry_id DESC
+    ),'extra',f.extra,'local_emojis',f.local_emojis)::text FROM page f LEFT JOIN page_reactions reactions ON reactions.id=f.id LEFT JOIN page_reposts reposts ON reposts.id=f.id LEFT JOIN page_replies reply_stats ON reply_stats.parent_id=f.id LEFT JOIN page_parent_previews parent ON parent.id=f.parent_id ORDER BY f.tree_order,f.tree_path,f.sort_at DESC,f.entry_id DESC

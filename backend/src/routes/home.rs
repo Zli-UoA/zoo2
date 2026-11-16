@@ -362,6 +362,10 @@ async fn list(
     if let Some(ref ids) = entries {
         validate_entries(ids)?;
     }
+    let _read_slot = HOME_READS
+        .acquire()
+        .await
+        .expect("Home read limiter remains open");
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
@@ -371,13 +375,21 @@ async fn list(
     toasty::sql::statement("SET LOCAL jit = off")
         .exec(&mut tx)
         .await?;
+    toasty::sql::statement("SET LOCAL plan_cache_mode = force_generic_plan")
+        .exec(&mut tx)
+        .await?;
     // Seek eligible keys first; render/decorate only this page and its parents.
     // This stays within the existing request and transaction on every client.
     let seek_page = entries.is_none() && page.post_id.as_deref().is_none_or(|id| id.is_empty());
     if seek_page {
         let keys = query(
             &mut tx,
-            &timeline_page_query(),
+            &timeline_page_query_for_request(
+                timeline,
+                guest,
+                page.author.as_deref().is_some_and(|a| !a.is_empty()),
+                page.before.as_deref().is_some_and(|b| !b.is_empty()),
+            ),
             &[
                 &user.id,
                 page.before.as_deref().unwrap_or(""),
@@ -400,7 +412,13 @@ async fn list(
         }
         entries = Some(selected);
     }
-    let sql = timeline_query();
+    let sql = timeline_query_for(
+        page.thread,
+        guest,
+        page.post_id.as_deref().is_some_and(|p| !p.is_empty()),
+        page.author.as_deref().is_some_and(|a| !a.is_empty()),
+        !seek_page && page.before.as_deref().is_some_and(|b| !b.is_empty()),
+    );
     let mut rows = query(
         &mut tx,
         &sql,
@@ -422,6 +440,7 @@ async fn list(
     )
     .await?;
 
+    rows = rows.into_iter().map(timeline_post).collect();
     activitypub::quotes::decorate(&mut tx, &mut rows).await?;
     super::home_images::decorate(&mut tx, &mut rows).await?;
     activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
@@ -601,3 +620,108 @@ fn fill_audience(sql: String) -> String {
         include_str!("home_remote_original_audience.sql").trim(),
     )
 }
+
+/// Only plan streams used by this surface. Retain their audience predicates;
+/// user values remain bound parameters, never interpolated SQL.
+pub fn timeline_page_query_for(timeline: &str, guest: bool) -> String {
+    timeline_page_query_for_author(timeline, guest, false)
+}
+
+pub fn timeline_page_query_for_author(timeline: &str, guest: bool, author: bool) -> String {
+    timeline_page_query_for_request(timeline, guest, author, false)
+}
+
+pub fn timeline_page_query_for_request(
+    timeline: &str,
+    guest: bool,
+    author: bool,
+    before: bool,
+) -> String {
+    let sql = timeline_page_query();
+    let marker = "), candidates AS (\n";
+    let start = sql.find(marker).expect("candidate CTE") + marker.len();
+    let end = sql
+        .rfind("\n)\nSELECT json_build_object")
+        .expect("candidate CTE end");
+    let streams: Vec<_> = sql[start..end].split("\n  UNION\n").collect();
+    assert_eq!(
+        streams.len(),
+        9,
+        "update surface stream selection with the template"
+    );
+    let selected: &[usize] = match (timeline, guest) {
+        ("home", _) => &[1, 2, 4, 5, 7, 8],
+        ("local", false) => &[0, 6],
+        ("local", true) => &[1, 2, 3, 6],
+        ("social", false) => &[0, 1, 2, 4, 5, 6, 7, 8],
+        ("social", true) => &[1, 2, 3, 4, 5, 6, 7, 8],
+        _ => return sql,
+    };
+    let specialized = format!(
+        "{}{}{}",
+        &sql[..start],
+        selected
+            .iter()
+            .map(|i| streams[*i])
+            .collect::<Vec<_>>()
+            .join("\n  UNION\n"),
+        &sql[end..]
+    );
+    specialized
+        .replace("$3", &format!("'{timeline}'"))
+        .replace("$4", if guest { "true" } else { "false" })
+        .replace("$7=''", if author { "false" } else { "true" })
+        .replace("$2=''", if before { "false" } else { "true" })
+        .replacen(
+            "WITH ",
+            "WITH bound_params AS (SELECT $2::text,$3::text,$4::text,$7::text), ",
+            1,
+        )
+}
+
+/// Assemble display metadata outside PostgreSQL to avoid repeatedly copying a
+/// large jsonb object for every field of every thread row.
+pub fn timeline_post(mut row: Value) -> Value {
+    let mut post = row["post"].take();
+    let object = post.as_object_mut().expect("timeline post object");
+    object.remove("own");
+    object.remove("original_visible");
+    if let Some(extra) = row["extra"].as_object() {
+        object.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    if !row["local_emojis"].is_null() {
+        object.insert("emojis".into(), row["local_emojis"].take());
+    }
+
+    let display = row["display"].take();
+    object.extend(
+        display
+            .as_object()
+            .expect("timeline display object")
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
+    post
+}
+
+pub fn timeline_query_for(
+    thread: bool,
+    guest: bool,
+    post: bool,
+    author: bool,
+    before: bool,
+) -> String {
+    timeline_query().replace("$8",if thread {"true"}else{"false"})
+  .replace("$4",if guest {"true"}else{"false"})
+  .replace("$6=''",if post {"false"}else{"true"})
+  .replace("$6<>''",if post {"true"}else{"false"})
+  .replace("$7=''",if author {"false"}else{"true"})
+  .replace("$2=''",if before {"false"}else{"true"})
+  .replacen("WITH RECURSIVE ","WITH RECURSIVE bound_params AS (SELECT $2::text,$4::text,$6::text,$7::text,$8::text), ",1)
+}
+
+/// Limit expensive Home reads before acquiring a DB connection. Other routes
+/// (including uploads holding object-lifetime locks) retain their pool capacity.
+pub const HOME_QUERY_CONCURRENCY: usize = 2;
+static HOME_READS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(HOME_QUERY_CONCURRENCY);

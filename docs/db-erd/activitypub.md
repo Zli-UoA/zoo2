@@ -123,6 +123,7 @@ erDiagram
     apub_remote_recipients {
       text post_id PK,FK
       text user_id PK,FK
+      text parent_id
       text actor_id
       timestamptz published
       boolean reply_to_user
@@ -136,6 +137,13 @@ erDiagram
       timestamptz created_at
     }
     apub_remote_tombstones }o--o| apub_actors : apub_remote_tombstones_actor_id_fkey
+    apub_reply_counts {
+      text user_id PK,FK
+      text parent_id PK
+      text actor_id PK
+      bigint n
+    }
+    apub_reply_counts }o--o| users : apub_reply_counts_user_id_fkey
     apub_repost_recipients {
       text activity_id PK,FK
       text user_id PK,FK

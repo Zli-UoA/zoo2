@@ -3752,6 +3752,7 @@ END $$;
 
 -- Seek remote timelines by recipient without sorting their entire stored history.
 ALTER TABLE apub_remote_recipients
+  ADD COLUMN parent_id text,
   ADD COLUMN actor_id text NOT NULL DEFAULT '',
   ADD COLUMN published timestamptz NOT NULL DEFAULT 'epoch',
   ADD COLUMN reply_to_user boolean NOT NULL DEFAULT false,
@@ -3777,6 +3778,7 @@ BEGIN
   IF p.parent_id IS NOT NULL THEN
     PERFORM pg_advisory_xact_lock(20880,(hashtextextended(p.parent_id,0) & 1023)::integer);
   END IF;
+  NEW.parent_id:=p.parent_id;
   NEW.actor_id:=p.actor_id;
   NEW.published:=p.published;
   NEW.post_deleted:=p.deleted_at IS NOT NULL;
@@ -3789,10 +3791,10 @@ BEGIN
   IF NEW.parent_id IS NOT NULL THEN
     PERFORM pg_advisory_xact_lock(20880,(hashtextextended(NEW.parent_id,0) & 1023)::integer);
   END IF;
-  UPDATE apub_remote_recipients r SET actor_id=NEW.actor_id,published=NEW.published,post_deleted=NEW.deleted_at IS NOT NULL,
+  UPDATE apub_remote_recipients r SET parent_id=NEW.parent_id,actor_id=NEW.actor_id,published=NEW.published,post_deleted=NEW.deleted_at IS NOT NULL,
     reply_to_user=EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id)
-  WHERE r.post_id=NEW.id AND (r.actor_id,r.published,r.post_deleted,r.reply_to_user) IS DISTINCT FROM
-    (NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
+  WHERE r.post_id=NEW.id AND (r.parent_id,r.actor_id,r.published,r.post_deleted,r.reply_to_user) IS DISTINCT FROM
+    (NEW.parent_id,NEW.actor_id,NEW.published,NEW.deleted_at IS NOT NULL,EXISTS(SELECT 1 FROM home_posts WHERE id=NEW.parent_id AND user_id=r.user_id));
   RETURN NULL;
 END $$;
 CREATE TRIGGER apub_post_recipient_order AFTER UPDATE OF actor_id,published,parent_id,deleted_at ON apub_remote_posts FOR EACH ROW EXECUTE FUNCTION sync_apub_recipient_order();
@@ -3834,3 +3836,36 @@ CREATE INDEX apub_remote_posts_actor ON apub_remote_posts(actor_id);
 CREATE INDEX apub_remote_recipients_owner ON apub_remote_recipients(user_id,post_id);
 CREATE INDEX apub_follows_actor ON apub_follows(actor_id);
 CREATE INDEX apub_deliveries_actor ON apub_deliveries(actor_id);
+
+CREATE TABLE apub_reply_counts (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  parent_id text NOT NULL,
+  actor_id text NOT NULL,
+  n bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY(user_id,parent_id,actor_id)
+);
+CREATE INDEX apub_recipient_parent_actor ON apub_remote_recipients(user_id,parent_id,actor_id) WHERE parent_id IS NOT NULL AND NOT post_deleted;
+CREATE FUNCTION maintain_apub_reply_counts() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE old_user text; old_parent text; old_actor text; new_user text; new_parent text; new_actor text; item record;
+BEGIN
+  IF TG_OP<>'INSERT' AND OLD.parent_id IS NOT NULL AND NOT OLD.post_deleted THEN
+    old_user:=OLD.user_id;old_parent:=OLD.parent_id;old_actor:=OLD.actor_id;
+  END IF;
+  IF TG_OP<>'DELETE' AND NEW.parent_id IS NOT NULL AND NOT NEW.post_deleted THEN
+    new_user:=NEW.user_id;new_parent:=NEW.parent_id;new_actor:=NEW.actor_id;
+  END IF;
+  IF (old_user,old_parent,old_actor) IS NOT DISTINCT FROM (new_user,new_parent,new_actor) THEN RETURN NULL; END IF;
+  -- Order actual counter keys, including moves between parents/actors/owners.
+  FOR item IN SELECT u,p,a,sum(delta)::bigint AS delta FROM
+    (VALUES(old_user,old_parent,old_actor,-1),(new_user,new_parent,new_actor,1)) changes(u,p,a,delta)
+    WHERE u IS NOT NULL GROUP BY u,p,a ORDER BY u,p,a
+  LOOP
+    -- A cascading user deletion removes counters itself; do not recreate them.
+    IF EXISTS(SELECT 1 FROM users WHERE id=item.u) THEN
+      INSERT INTO apub_reply_counts(user_id,parent_id,actor_id,n) VALUES(item.u,item.p,item.a,item.delta)
+      ON CONFLICT(user_id,parent_id,actor_id) DO UPDATE SET n=apub_reply_counts.n+EXCLUDED.n;
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER apub_reply_counts_change AFTER INSERT OR DELETE OR UPDATE OF user_id,parent_id,actor_id,post_deleted ON apub_remote_recipients FOR EACH ROW EXECUTE FUNCTION maintain_apub_reply_counts();

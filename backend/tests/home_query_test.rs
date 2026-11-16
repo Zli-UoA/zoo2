@@ -508,7 +508,7 @@ async fn selected_reposts_use_primary_keys_and_reactions_are_aggregated_once() -
                 SimpleQueryMessage::Row(r) => r.get(0),
                 _ => None,
             })
-            .map(|s| serde_json::from_str(s).unwrap())
+            .map(|s| backend::routes::home::timeline_post(serde_json::from_str(s).unwrap()))
             .collect();
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
@@ -555,5 +555,158 @@ async fn activitypub_foreign_keys_have_full_leading_indexes() -> anyhow::Result<
             "foreign-key checks on {table}.{column} need a leading full index"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn reply_counters_follow_moves_deletes_and_user_cascades() -> anyhow::Result<()> {
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let user = uuid::Uuid::new_v4().to_string();
+    let actor = format!("https://{user}.test/actor");
+    let post = format!("{actor}/post");
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+        &[&user],
+    )
+    .await?;
+    tx.execute("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'remote','Remote',$1,'dummy')", &[&actor]).await?;
+    tx.execute("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id) VALUES($1,$2,'reply','public',now(),now(),'parent-one')", &[&post,&actor]).await?;
+    tx.execute(
+        "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+        &[&post, &user],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+        &[&post, &user],
+    )
+    .await?;
+    assert_eq!(
+        tx.query_one(
+            "SELECT n FROM apub_reply_counts WHERE user_id=$1 AND parent_id='parent-one'",
+            &[&user]
+        )
+        .await?
+        .get::<_, i64>(0),
+        1
+    );
+    tx.execute(
+        "UPDATE apub_remote_posts SET parent_id='parent-two' WHERE id=$1",
+        &[&post],
+    )
+    .await?;
+    assert_eq!(
+        tx.query_one(
+            "SELECT n FROM apub_reply_counts WHERE user_id=$1 AND parent_id='parent-one'",
+            &[&user]
+        )
+        .await?
+        .get::<_, i64>(0),
+        0
+    );
+    tx.execute(
+        "UPDATE apub_remote_posts SET deleted_at=now() WHERE id=$1",
+        &[&post],
+    )
+    .await?;
+    assert_eq!(
+        tx.query_one(
+            "SELECT n FROM apub_reply_counts WHERE user_id=$1 AND parent_id='parent-two'",
+            &[&user]
+        )
+        .await?
+        .get::<_, i64>(0),
+        0
+    );
+    tx.execute(
+        "UPDATE apub_remote_posts SET deleted_at=NULL WHERE id=$1",
+        &[&post],
+    )
+    .await?;
+    assert_eq!(
+        tx.query_one(
+            "SELECT n FROM apub_reply_counts WHERE user_id=$1 AND parent_id='parent-two'",
+            &[&user]
+        )
+        .await?
+        .get::<_, i64>(0),
+        1
+    );
+    tx.execute("DELETE FROM users WHERE id=$1", &[&user])
+        .await?;
+    assert_eq!(
+        tx.query_one(
+            "SELECT count(*) FROM apub_reply_counts WHERE user_id=$1",
+            &[&user]
+        )
+        .await?
+        .get::<_, i64>(0),
+        0
+    );
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn counter_backfill_serializes_with_concurrent_receipt_delta() -> anyhow::Result<()> {
+    let url = Config::from_env().database_url;
+    let (mut a, c) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(c);
+    let (b, c) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(c);
+    let user = uuid::Uuid::new_v4().to_string();
+    let actor = format!("https://{user}.test/actor");
+    let post = format!("{actor}/post");
+    a.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+        &[&user],
+    )
+    .await?;
+    a.execute("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'actor','Actor',$1,'dummy')", &[&actor]).await?;
+    a.execute("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id) VALUES($1,$2,'reply','public',now(),now(),'backfill-parent')", &[&post,&actor]).await?;
+    a.execute(
+        "INSERT INTO apub_reply_counts(user_id,parent_id,actor_id) VALUES($1,'backfill-parent',$2)",
+        &[&user, &actor],
+    )
+    .await?;
+    let tx = a.transaction().await?;
+    tx.query_one(
+        "SELECT n FROM apub_reply_counts WHERE user_id=$1 FOR UPDATE",
+        &[&user],
+    )
+    .await?;
+    let u = user.clone();
+    let p = post.clone();
+    let mut writer = tokio::spawn(async move {
+        b.execute(
+            "INSERT INTO apub_remote_recipients(post_id,user_id) VALUES($1,$2)",
+            &[&p, &u],
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut writer)
+            .await
+            .is_err()
+    );
+    tx.execute("UPDATE apub_reply_counts c SET n=(SELECT count(*) FROM apub_remote_recipients r WHERE r.user_id=c.user_id AND r.parent_id=c.parent_id AND r.actor_id=c.actor_id AND NOT r.post_deleted) WHERE c.user_id=$1", &[&user]).await?;
+    tx.commit().await?;
+    writer.await??;
+    let n = a
+        .query_one("SELECT n FROM apub_reply_counts WHERE user_id=$1", &[&user])
+        .await?
+        .get::<_, i64>(0);
+    a.execute("DELETE FROM users WHERE id=$1", &[&user]).await?;
+    a.execute("DELETE FROM apub_remote_posts WHERE id=$1", &[&post])
+        .await?;
+    a.execute("DELETE FROM apub_actors WHERE id=$1", &[&actor])
+        .await?;
+    assert_eq!(
+        n, 1,
+        "backfill must not lose or double count the waiting delta"
+    );
     Ok(())
 }

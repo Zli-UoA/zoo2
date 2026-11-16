@@ -13,7 +13,9 @@ CROSS JOIN LATERAL (
   WHERE /* local_audience */
 ) local_replies
 CROSS JOIN LATERAL (
-  SELECT count(*) AS n FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
-  WHERE p.parent_id=parent.id AND p.deleted_at IS NULL AND NOT a.blocked
-    AND (/* remote_original_audience */)
+  SELECT COALESCE(sum(c.n),0)::bigint AS n FROM apub_reply_counts c JOIN apub_actors a ON a.id=c.actor_id
+  WHERE c.user_id=$1 AND c.parent_id=parent.id AND NOT a.blocked AND (
+    c.actor_id IN (SELECT actor_id FROM apub_follows WHERE user_id=$1 AND direction='outgoing' AND accepted)
+    OR EXISTS(SELECT 1 FROM home_posts owner WHERE owner.id=parent.id AND owner.user_id=$1 OFFSET 0)
+  )
 ) remote_replies

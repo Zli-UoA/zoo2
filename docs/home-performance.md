@@ -92,3 +92,23 @@ SCALE_HTTP=1 cargo test --manifest-path backend/Cargo.toml --test home_scale_tes
 ```
 
 通常のスケールテストはトランザクションをrollbackする。`SCALE_HTTP=1` は別接続からハンドラーを試すためfixtureをcommitし、終了時に削除する。異常終了時はfixtureが残るため、必ず使い捨てDBを使う。CPU・メモリ・PostgreSQL設定、フォロー数、本文・返信・リアクションの分布を本番とそろえた負荷試験は別途必要になる。
+
+## 100ms達成に向けた再設計
+
+33,333件の返信を表示するたびに数える方式を廃止し、`apub_reply_counts` に受信者・親・actorごとの件数を差分で維持する。受信INSERT、削除、親・actor・受信者の変更、soft delete／復元は同じトランザクションのトリガーで更新する。閲覧時は現在のフォロー・ブロック・親の所有者を確認して合算するため、権限変更時に古い表示件数を流用しない。処理量は直接返信数Dではなく、その親のactor別集計グループ数Gに依存する。ローカル返信の閲覧判定は従来どおり維持する。
+
+既存行の補完では先に差分トリガーを有効化する。既存キーを主キー順で登録し、100キーずつカウンターをロックしてから受信者の確定済み行を数え直す。並行writerはカウンター更新が終わるまでcommitできないので、snapshotに含まれなかった変更は後から差分適用され、二重計上・欠落を防ぐ。0件のキーも同期のため保持する。移行中の暫定値は新アプリへの切替前に補完する。
+
+Homeの候補選択では、フォロー中の配信先・自分への返信フラグ・削除状態を維持した受信者インデックスからキーだけを読む。本文DTOの取得時にも正規の閲覧判定を適用する。timeline・guest・author・cursor・threadの有無はSQLの有限のバリアントとして決め、利用者ID・投稿ID・カーソルは引き続きバインドする。これによりgeneric planでも不要な分岐と深いOFFSET相当の走査を避け、prepared statementの計画を再利用する。日時・IDによるkeysetの精度・順序は維持する。
+
+500行の表示用JSONはDB内のjsonb再変換・連結を減らし、内部の行データと表示用の集計をRust側で合成する。HTTPのDTO形式は変えない。親プレビュー・返信数との突合も相関した繰り返し走査からJOINへ変更する。
+
+Homeの同時DB読み取りはプロセス当たり2件に制限し、待機中は接続・トランザクションを取得しない。通常のDBプール上限10は維持する。これにより、S3送信中の画像アップロードなど別の経路が必要とする接続を減らさずにHomeのCPU競合を抑える。総接続数は既存の `DB_MAX_POOL_SIZE` とレプリカ数でも見積もる。
+
+### 合否をCIで固定する
+
+`Home query budget` は30万件・100万件を別DBに用意し、Home・深いページ・Local・Social・ローカル／リモート投稿者・空のguest・単一投稿・500行のスレッドを検証する。各条件で単独30回、8クライアントから計240回を実行し、1件でも100msを超えたら失敗する。平均やp95で超過を隠さない。
+
+実際のHomeと同じ2接続とパラメーター付きprepared statementを使い、初回のサーバー内準備、計画、実行を合算する。`TIMING OFF` はノードごとの計時負荷だけを除き、SQL全体のExecution Timeとロック待ちは測定する。準備の往復時間と接続待ちは別に記録する。SQL時間とAPI全体の応答時間を混同しない。失敗を警告で通過させず、ログと実行環境をartifactへ保存する。
+
+再実行は使い捨ての移行済みDBで `SCALE_POSTS=1000000 SCALE_BUDGET=1 cargo test --manifest-path backend/Cargo.toml --test home_scale_test timeline_work_is_bounded -- --ignored --nocapture`。fixtureは同時接続で読むためcommitする。残したfixtureに対する再検証は `cargo test --manifest-path backend/Cargo.toml --test home_scale_test persisted_query_budget -- --ignored --nocapture`。検証環境で他のビルド・負荷試験を並行させない。

@@ -2,7 +2,7 @@
 //! SCALE_POSTS=1000000 cargo test --test home_scale_test -- --ignored --nocapture
 use backend::{
     config::Config,
-    routes::home::{timeline_page_query, timeline_query},
+    routes::home::{timeline_page_query_for, timeline_page_query_for_request, timeline_query_for},
 };
 use serde_json::Value;
 use tokio_postgres::{NoTls, SimpleQueryMessage, Transaction};
@@ -81,7 +81,12 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
         ("invalid-cursor", &user, "home", "", "missing", 0),
     ] {
         let sql = bind(
-            timeline_page_query(),
+            timeline_page_query_for_request(
+                timeline,
+                false,
+                !author.is_empty(),
+                !before.is_empty(),
+            ),
             &[
                 viewer, before, timeline, "false", "50", "", author, "false", "[]",
             ],
@@ -111,7 +116,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
     }
     for timeline in ["local", "social"] {
         let sql = bind(
-            timeline_page_query(),
+            timeline_page_query_for(timeline, true),
             &[&empty, "", timeline, "true", "50", "", "", "false", "[]"],
         );
         let p = plan(&tx, &sql).await?;
@@ -140,7 +145,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
     let p = plan(
         &tx,
         &bind(
-            timeline_page_query(),
+            timeline_page_query_for("home", false),
             &[&user, "", "home", "false", "50", "", &actor, "false", "[]"],
         ),
     )
@@ -190,7 +195,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
     .await?;
     for thread in ["false", "true"] {
         let sql = bind(
-            timeline_query(),
+            timeline_query_for(thread == "true", false, true, false, false),
             &[&user, "", "social", "false", "500", &root, "", thread, "[]"],
         );
         let p = plan(&tx, &sql).await?;
@@ -230,7 +235,7 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
                 SimpleQueryMessage::Row(row) => row.get(0),
                 _ => None,
             })
-            .map(|s| serde_json::from_str(s).unwrap())
+            .map(|s| backend::routes::home::timeline_post(serde_json::from_str(s).unwrap()))
             .collect();
         let target = values
             .iter()
@@ -250,7 +255,12 @@ async fn timeline_work_is_bounded_by_page_and_followees_not_history() -> anyhow:
             p["Planning Time"], p["Execution Time"]
         );
     }
-    tx.rollback().await?;
+    if std::env::var_os("SCALE_BUDGET").is_some() {
+        tx.commit().await?;
+        verify_budget(&user, &root).await?;
+    } else {
+        tx.rollback().await?;
+    }
     Ok(())
 }
 
@@ -304,4 +314,231 @@ async fn benchmark_home_requests(user: &str, count: usize) -> anyhow::Result<()>
         elapsed[12], elapsed[22], elapsed[23]
     );
     Ok(())
+}
+
+// A dedicated benchmark gate: every sample includes PostgreSQL planning and
+// execution. Keep fixtures committed for independent concurrent connections.
+async fn verify_budget(user: &str, root: &str) -> anyhow::Result<()> {
+    let url = Config::from_env().database_url;
+    let (fixture, connection) = tokio_postgres::connect(&url, NoTls).await?;
+    tokio::spawn(connection);
+    // Fixture positioning, outside the timed application queries.
+    let deep:String=fixture.query_one("SELECT id FROM home_posts WHERE user_id=$1 ORDER BY created_at,id LIMIT 1 OFFSET 10000", &[&user]).await?.get(0);
+    let remote_author = format!("{}/actors/0", root.split("/posts/").next().unwrap());
+    let make = |name: &str, sql: String, args: &[&str]| {
+        (
+            name.to_owned(),
+            sql,
+            args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
+    };
+    let queries = [
+        make(
+            "home",
+            timeline_page_query_for("home", false),
+            &[user, "", "home", "false", "50", "", "", "false", "[]"],
+        ),
+        make(
+            "deep",
+            timeline_page_query_for_request("home", false, false, true),
+            &[user, &deep, "home", "false", "50", "", "", "false", "[]"],
+        ),
+        make(
+            "local",
+            timeline_page_query_for("local", false),
+            &[user, "", "local", "false", "50", "", "", "false", "[]"],
+        ),
+        make(
+            "social",
+            timeline_page_query_for("social", false),
+            &[user, "", "social", "false", "50", "", "", "false", "[]"],
+        ),
+        make(
+            "author",
+            timeline_page_query_for_request("social", false, true, false),
+            &[user, "", "social", "false", "50", "", user, "false", "[]"],
+        ),
+        make(
+            "remote_author",
+            timeline_page_query_for_request("social", false, true, false),
+            &[
+                user,
+                "",
+                "social",
+                "false",
+                "50",
+                "",
+                &remote_author,
+                "false",
+                "[]",
+            ],
+        ),
+        make(
+            "guest",
+            timeline_page_query_for("social", true),
+            &[
+                "empty-budget-user",
+                "",
+                "social",
+                "true",
+                "50",
+                "",
+                "",
+                "false",
+                "[]",
+            ],
+        ),
+        make(
+            "detail",
+            timeline_query_for(false, false, true, false, false),
+            &[user, "", "social", "false", "500", root, "", "false", "[]"],
+        ),
+        make(
+            "thread",
+            timeline_query_for(true, false, true, false, false),
+            &[user, "", "social", "false", "500", root, "", "true", "[]"],
+        ),
+    ];
+    let mut connections = Vec::new();
+    for _ in 0..backend::routes::home::HOME_QUERY_CONCURRENCY {
+        let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+        tokio::spawn(connection);
+        client
+            .batch_execute("SET jit=off; SET plan_cache_mode=force_generic_plan")
+            .await?;
+        connections.push(tokio::sync::Mutex::new((
+            client,
+            std::collections::HashSet::<String>::new(),
+        )));
+    }
+    let pool = std::sync::Arc::new(connections);
+    let mut violations = Vec::new();
+    for (name, sql, args) in queries {
+        for concurrency in [1, 8] {
+            let mut tasks = tokio::task::JoinSet::new();
+            for worker in 0..concurrency {
+                let pool = pool.clone();
+                let sql = sql.clone();
+                let args = args.clone();
+                let name = name.clone();
+                tasks.spawn(budget_samples(pool, worker, name, sql, args));
+            }
+            let mut samples = Vec::new();
+            let mut waits = Vec::new();
+            while let Some(result) = tasks.join_next().await {
+                let (s, w) = result??;
+                samples.extend(s);
+                waits.extend(w);
+            }
+            samples.sort_by(f64::total_cmp);
+            waits.sort_by(f64::total_cmp);
+            eprintln!(
+                "budget {name} concurrency={concurrency} samples={} p50={:.2} p95={:.2} max={:.2}; pool-wait p95={:.2} max={:.2}",
+                samples.len(),
+                samples[samples.len() / 2],
+                samples[(samples.len() - 1) * 95 / 100],
+                samples.last().unwrap(),
+                waits[(waits.len() - 1) * 95 / 100],
+                waits.last().unwrap()
+            );
+            if *samples.last().unwrap() > 100. {
+                violations.push(format!(
+                    "{name}/{concurrency}: {:.2}ms",
+                    samples.last().unwrap()
+                ));
+            }
+        }
+    }
+    anyhow::ensure!(
+        violations.is_empty(),
+        "100ms budget failures: {}",
+        violations.join(", ")
+    );
+    Ok(())
+}
+
+type BudgetConnection =
+    tokio::sync::Mutex<(tokio_postgres::Client, std::collections::HashSet<String>)>;
+async fn budget_samples(
+    pool: std::sync::Arc<Vec<BudgetConnection>>,
+    worker: usize,
+    name: String,
+    sql: String,
+    args: Vec<String>,
+) -> anyhow::Result<(Vec<f64>, Vec<f64>)> {
+    let execution = format!(
+        "EXPLAIN (ANALYZE,TIMING OFF,FORMAT JSON) EXECUTE budget_{}({})",
+        name,
+        args.iter()
+            .map(|v| format!("'{}'", v.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let mut samples = Vec::new();
+    let mut waits = Vec::new();
+    for _ in 0..30 {
+        let waiting = std::time::Instant::now();
+        let mut connection = pool[worker % pool.len()].lock().await;
+        waits.push(waiting.elapsed().as_secs_f64() * 1000.);
+        let mut prepare_ms = 0.;
+        if !connection.1.contains(&name) {
+            let prepare = format!(
+                "PREPARE budget_{}(text,text,text,text,text,text,text,text,text) AS {sql}",
+                name
+            );
+            // Time preparation inside PostgreSQL, including dynamic SQL parsing.
+            // Client scheduler/transport delay is reported separately.
+            let command = format!(
+                "DO $budget$ DECLARE started timestamptz:=clock_timestamp(); BEGIN EXECUTE '{}'; PERFORM set_config('zoo.bench_prepare_ms',(extract(epoch FROM clock_timestamp()-started)*1000)::text,false); END $budget$; SELECT current_setting('zoo.bench_prepare_ms');",
+                prepare.replace('\'', "''")
+            );
+            let start = std::time::Instant::now();
+            let rows = connection.0.simple_query(&command).await?;
+            prepare_ms = rows
+                .iter()
+                .filter_map(|r| match r {
+                    SimpleQueryMessage::Row(row) => row.get(0),
+                    _ => None,
+                })
+                .last()
+                .unwrap()
+                .parse::<f64>()?;
+            eprintln!(
+                "prepare {name}: server={prepare_ms:.3}ms round-trip={:.3}ms",
+                start.elapsed().as_secs_f64() * 1000.
+            );
+            connection.1.insert(name.clone());
+        }
+        let rows = connection.0.simple_query(&execution).await?;
+        drop(connection);
+        let raw = rows
+            .iter()
+            .find_map(|r| match r {
+                SimpleQueryMessage::Row(row) => row.get(0),
+                _ => None,
+            })
+            .unwrap();
+        let plan: Value = serde_json::from_str(raw)?;
+        samples.push(
+            prepare_ms
+                + plan[0]["Planning Time"].as_f64().unwrap()
+                + plan[0]["Execution Time"].as_f64().unwrap(),
+        );
+    }
+    Ok((samples, waits))
+}
+
+#[tokio::test]
+#[ignore = "repeat the strict budget gate on the committed SCALE_BUDGET fixture"]
+async fn persisted_query_budget() -> anyhow::Result<()> {
+    let (client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let row = client
+        .query_one(
+            "SELECT user_id,parent_id FROM apub_reply_counts WHERE n>0 LIMIT 1",
+            &[],
+        )
+        .await?;
+    verify_budget(&row.get::<_, String>(0), &row.get::<_, String>(1)).await
 }
