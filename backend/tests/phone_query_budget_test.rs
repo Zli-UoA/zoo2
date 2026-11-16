@@ -287,6 +287,14 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
         };
         // First execution remains in the sample. Single then eight connections, 30 repeats.
         for concurrency in [1, 8] {
+            // ROLLBACK restores rows, but leaves aborted heap/index tuples from
+            // earlier INSERT/UPDATE samples. Clear that carry-over outside the
+            // measured group so autovacuum timing cannot skew the N comparison.
+            // All 30 repeats (and their own write churn) still remain measured.
+            db.batch_execute(
+                "VACUUM (ANALYZE, INDEX_CLEANUP ON) users, sip_lines, sip_line_members, sip_phones, phone_sessions;",
+            )
+            .await?;
             let mut tasks = Vec::new();
             for _ in 0..concurrency {
                 let (url, name, sql, metrics) =
