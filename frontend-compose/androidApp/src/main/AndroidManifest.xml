@@ -13,6 +13,13 @@
         android:theme="@style/Theme.Zoo"
         android:supportsRtl="true">
         <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.preview-files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/preview_file_paths" />
+        </provider>
+        <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
             android:multiprocess="false"

@@ -1,46 +1,43 @@
 import { SensitiveMedia } from "../../ui/sensitive-media";
-import { ImagePreview } from "../../ui/image-preview";
-import { imageAspectRatio } from "../../../lib/imageMetadata";
+import { MediaPreview } from "../../ui/media-preview";
 import { useTranslation } from "react-i18next";
 import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { downloadAttachment } from "../../../lib/api/attachments";
 import {
   type AttachmentMetadata,
   formatAttachmentSize,
-  isInlineImage,
+  mediaPreviewKind,
   shouldRefreshAttachmentUrl,
 } from "../../../lib/attachments";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
-import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
-import { Spinner } from "../../ui/spinner";
 
 export function MessageAttachments({ attachments }: { attachments: AttachmentMetadata[] }) {
   if (attachments.length === 0) {
     return null;
   }
-  const images = attachments.filter((attachment) => isInlineImage(attachment.content_type));
-  const files = attachments.filter((attachment) => !isInlineImage(attachment.content_type));
+  const previews = attachments.filter((attachment) =>
+    mediaPreviewKind(attachment.content_type, attachment.file_name),
+  );
+  const files = attachments.filter(
+    (attachment) => !mediaPreviewKind(attachment.content_type, attachment.file_name),
+  );
   return (
     <div className="mt-2 flex max-w-xl flex-col gap-2">
-      {images.length > 0 ? (
-        <div
-          className={
-            images.length === 1 ? "w-fit max-w-full" : "grid w-full max-w-sm grid-cols-2 gap-2"
-          }
-        >
-          {images.map((attachment) => (
+      {previews.length > 0 ? (
+        <div className="grid w-full grid-cols-1 gap-2">
+          {previews.map((attachment) => (
             <SensitiveMedia
               key={`${attachment.id}:${Boolean(attachment.is_sensitive)}`}
               sensitive={attachment.is_sensitive}
               preview={attachment}
-              className={images.length === 1 ? "w-64 max-w-full" : "w-full"}
+              className="w-full"
             >
-              <AttachmentImage attachment={attachment} multiple={images.length > 1} />
+              <AttachmentPreview attachment={attachment} />
             </SensitiveMedia>
           ))}
         </div>
@@ -58,154 +55,32 @@ export function MessageAttachments({ attachments }: { attachments: AttachmentMet
   );
 }
 
-function AttachmentImage({
-  attachment,
-  multiple,
-}: {
-  attachment: AttachmentMetadata;
-  multiple: boolean;
-}) {
-  const { t } = useTranslation();
+function AttachmentPreview({ attachment }: { attachment: AttachmentMetadata }) {
   const state = useAttachmentUrl(attachment.id);
-  const { status, url, reload } = state;
-  const [broken, setBroken] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [dialogFailed, setDialogFailed] = useState(false);
   const retried = useRef(false);
-  const dialogRetried = useRef(false);
-
-  useEffect(() => {
-    if (url) {
-      setBroken(false);
-      setDialogFailed(false);
-    }
-  }, [url]);
-
-  const thumbnail =
-    broken || status === "error" ? (
-      <AttachmentFileCard attachment={attachment} state={state} />
-    ) : status === "loading" || !url ? (
-      <div className="size-full" aria-label={t("attachments.loading")} aria-busy="true">
-        <ImagePreview {...attachment} alt={attachment.file_name} className="size-full" />
-      </div>
-    ) : (
-      <button
-        type="button"
-        aria-label={t("attachments.preview", { name: attachment.file_name })}
-        className={
-          multiple
-            ? "block aspect-square w-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            : "block size-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-        }
-        onClick={() => {
-          dialogRetried.current = false;
-          setDialogFailed(false);
-          if (shouldRefreshAttachmentUrl(state.expiresAt)) {
-            void state.getFreshUrl();
-          }
-          setOpen(true);
-        }}
-      >
-        <ImagePreview
-          {...attachment}
-          src={url}
-          alt={attachment.file_name}
-          className="size-full"
-          imageClassName={
-            multiple
-              ? "object-cover transition-opacity hover:opacity-90"
-              : "object-contain transition-opacity hover:opacity-90"
-          }
-          onLoad={() => {
-            retried.current = false;
-          }}
-          onError={() => {
-            if (!retried.current) {
-              retried.current = true;
-              reload();
-              return;
-            }
-            setBroken(true);
-          }}
-        />
-      </button>
-    );
-
   return (
-    <>
-      <div
-        className={
-          multiple
-            ? "aspect-square w-full overflow-hidden"
-            : "w-64 max-w-full overflow-hidden rounded-lg border bg-muted"
+    <MediaPreview
+      {...attachment}
+      src={state.url}
+      name={attachment.file_name}
+      contentType={attachment.content_type}
+      loading={state.status === "loading"}
+      failed={state.status === "error"}
+      onRetry={() => {
+        retried.current = false;
+        state.reload();
+      }}
+      onError={() => {
+        if (!retried.current) {
+          retried.current = true;
+          state.reload();
         }
-        style={
-          !multiple
-            ? { aspectRatio: imageAspectRatio(attachment), minHeight: 80, maxHeight: 384 }
-            : undefined
-        }
-      >
-        {thumbnail}
-      </div>
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (!next) {
-            setDialogFailed(false);
-          }
-        }}
-      >
-        <DialogContent className="w-auto max-w-[calc(100vw-2rem)] p-2 sm:max-w-[min(96vw,80rem)]">
-          <DialogTitle className="sr-only">{attachment.file_name}</DialogTitle>
-          {status === "error" || dialogFailed ? (
-            <div className="flex min-h-48 flex-col items-center justify-center gap-3 px-4">
-              <p role="alert" className="text-sm text-destructive">
-                {t("attachments.loadError")}
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  dialogRetried.current = false;
-                  setDialogFailed(false);
-                  reload();
-                }}
-              >
-                {t("attachments.retry")}
-              </Button>
-            </div>
-          ) : status === "loading" || !url ? (
-            <Spinner label={t("attachments.loading")} className="min-h-64 min-w-64" />
-          ) : (
-            <img
-              src={url}
-              alt={attachment.file_name}
-              className="mx-auto max-h-[78vh] max-w-full object-contain"
-              onLoad={() => {
-                dialogRetried.current = false;
-                setDialogFailed(false);
-              }}
-              onError={() => {
-                if (!dialogRetried.current) {
-                  dialogRetried.current = true;
-                  reload();
-                  return;
-                }
-                setDialogFailed(true);
-              }}
-            />
-          )}
-          <div className="flex items-center justify-between gap-3 px-1">
-            <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {attachment.file_name}
-            </span>
-            <AttachmentDownloadButton attachment={attachment} state={state} showLabel />
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
+      }}
+      onOpen={() => {
+        if (shouldRefreshAttachmentUrl(state.expiresAt)) void state.getFreshUrl();
+      }}
+      footer={<AttachmentDownloadButton attachment={attachment} state={state} showLabel />}
+    />
   );
 }
 

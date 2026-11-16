@@ -213,3 +213,21 @@ if (androidEnabled) {
         systemProperty("zoo.uiScreenshotDir", layout.buildDirectory.dir("reports/ui").get().asFile.absolutePath)
     }
 }
+
+// Bundle the exact React media viewer used by the Web client into the APK.
+// Install frontend dependencies with pnpm install --frozen-lockfile before Gradle.
+if (androidEnabled) {
+    val viewerAssets = layout.buildDirectory.dir("generated/media-preview-assets")
+    val buildMediaPreview by tasks.registering(Exec::class) {
+        workingDir(rootDir.resolve("../frontend"))
+        commandLine("pnpm", "build:media-preview")
+        inputs.files(fileTree(rootDir.resolve("../frontend/src")), fileTree(rootDir.resolve("../frontend/.storybook/fixtures")))
+        inputs.files(fileTree(rootDir.resolve("../frontend/build")))
+        inputs.files(rootDir.resolve("../frontend/tsconfig.json"), rootDir.resolve("../frontend/package.json"), rootDir.resolve("../frontend/pnpm-lock.yaml"), rootDir.resolve("../frontend/media-preview.html"), rootDir.resolve("../frontend/vite.media-preview.config.ts"))
+        outputs.dir(viewerAssets)
+    }
+    extensions.configure<com.android.build.gradle.LibraryExtension> {
+        sourceSets.getByName("main").assets.srcDir(viewerAssets)
+    }
+    tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(buildMediaPreview) }
+}

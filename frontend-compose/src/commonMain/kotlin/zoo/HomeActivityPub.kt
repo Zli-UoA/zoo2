@@ -200,11 +200,10 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier,
 @Composable
 fun HomeMedia(media: List<Row>) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        media.filter { homeMediaPath(it) != null }.chunked(2).forEach { pair ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                pair.forEach { item -> HomeMediaImage(item, Modifier.weight(1f)) }
-                if (pair.size == 1) Spacer(Modifier.weight(1f))
-            }
+        media.forEach { item ->
+            val path = homeMediaPath(item)
+            if (path != null) HomeMediaImage(item, Modifier.fillMaxWidth())
+            else if (item.text("url").startsWith("https://") && hasMediaPreview(item.text("media_type"), item.text("name"))) HomeDocumentMedia(item)
         }
     }
 }
@@ -237,7 +236,9 @@ private fun HomeMediaImage(item: Row, modifier: Modifier) {
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { failed = true }
             }
-            Box(frameModifier.clickable(role = Role.Button) { app.platform.action("open:$url") }) {
+            var preview by remember(url) { mutableStateOf(false) }
+            if (preview) HomeMediaPanel(app, url, label, item.text("media_type")) { preview = false }
+            Box(frameModifier.clickable(role = Role.Button) { preview = true }) {
                 val frame = bitmap
                 if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
                 else {
@@ -246,5 +247,26 @@ private fun HomeMediaImage(item: Row, modifier: Modifier) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HomeDocumentMedia(item: Row) {
+    val app = LocalApp.current
+    var revealed by remember(item) { mutableStateOf(false) }
+    var preview by remember(item) { mutableStateOf(false) }
+    val label = item.text("name").ifEmpty { item.text("media_type") }
+    if (item.flag("is_sensitive") && !revealed) {
+        SensitiveImagePlaceholder(app, item, Modifier.fillMaxWidth().height(120.dp)) { revealed = true }
+    } else {
+        Button(app.t("attachments.preview", "name" to label)) { preview = true }
+        if (preview) HomeMediaPanel(app, item.text("url"), label, item.text("media_type")) { preview = false }
+    }
+}
+@Composable
+private fun HomeMediaPanel(app: Session, url: String, name: String, type: String, close: () -> Unit) {
+    Panel(name, close, 1280.dp) {
+        MediaPreviewSurface(app, url, name, type, Modifier.fillMaxWidth().weight(1f))
+        Button(app.t("attachments.downloadShort")) { app.platform.action("open:$url") }
     }
 }

@@ -576,6 +576,9 @@ jobs:
         if: fromJSON(needs.test-selection.outputs.frontend)['browser']
         run: node ../.github/scripts/frontend-test-selection.mjs browser
 
+      - name: APK media viewer bundle smoke test
+        run: pnpm test:media-preview-bundle
+
       - name: vrt
         if: fromJSON(needs.test-selection.outputs.frontend)['vrt']
         run: node ../.github/scripts/frontend-test-selection.mjs vrt

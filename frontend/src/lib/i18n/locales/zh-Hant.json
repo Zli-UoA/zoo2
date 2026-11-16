@@ -248,7 +248,21 @@
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
-    "sensitiveShort": "敏感圖片"
+    "sensitiveShort": "敏感圖片",
+    "documentSummary": "正文與儲存格的簡易預覽，格式及版面可能與原檔不同。",
+    "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
+    "emptyPreview": "沒有內容",
+    "containedFiles": "包含的檔案",
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "pdfPage": "PDF 第{{page}}頁",
+    "mail": {
+      "subject": "主旨",
+      "from": "寄件者",
+      "to": "收件者",
+      "cc": "副本",
+      "date": "日期"
+    }
   },
   "threads": {
     "title": "子討論",

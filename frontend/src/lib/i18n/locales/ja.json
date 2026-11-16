@@ -248,7 +248,21 @@
     "markSensitive": "画像をセンシティブとして投稿",
     "showSensitive": "画像を表示",
     "hideSensitive": "画像を隠す",
-    "sensitiveShort": "センシティブ"
+    "sensitiveShort": "センシティブ",
+    "documentSummary": "本文・セルの簡易表示です。書式・レイアウトは原本と異なる場合があります。",
+    "previewLimit": "プレビューのサイズ・件数・処理時間の上限を超えました。ファイルをダウンロードして確認してください。",
+    "emptyPreview": "内容がありません",
+    "containedFiles": "含まれるファイル",
+    "previousPage": "前のページ",
+    "nextPage": "次のページ",
+    "pdfPage": "PDF {{page}}ページ",
+    "mail": {
+      "subject": "件名",
+      "from": "差出人",
+      "to": "宛先",
+      "cc": "CC",
+      "date": "日時"
+    }
   },
   "threads": {
     "title": "スレッド",

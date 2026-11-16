@@ -248,7 +248,21 @@
     "markSensitive": "이미지를 민감한 콘텐츠로 표시",
     "showSensitive": "이미지 표시",
     "hideSensitive": "이미지 숨기기",
-    "sensitiveShort": "민감한 이미지"
+    "sensitiveShort": "민감한 이미지",
+    "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
+    "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 다운로드해 확인하세요.",
+    "emptyPreview": "내용 없음",
+    "containedFiles": "포함된 파일",
+    "previousPage": "이전 페이지",
+    "nextPage": "다음 페이지",
+    "pdfPage": "PDF {{page}}페이지",
+    "mail": {
+      "subject": "제목",
+      "from": "보낸 사람",
+      "to": "받는 사람",
+      "cc": "참조",
+      "date": "날짜"
+    }
   },
   "threads": {
     "title": "스레드",
