@@ -122,14 +122,20 @@ export function SipProvider({ config, children }: { config: AppConfig; children:
       await api.post(id ? `/api/sip/lines/${encodeURIComponent(id)}` : "/api/sip/lines", input);
       if (generation !== epoch.current) return;
       if (controller.snapshot().lineId === id) controller.disconnect();
-      await refresh();
+      // A directory read begun before the mutation may still be in flight.
+      // Let it settle, then coalesce one fresh read of the committed settings.
+      if (flight.current) await flight.current;
+      if (generation === epoch.current) await refresh();
     },
     remove: async (id) => {
       const generation = epoch.current;
       await api.delete(`/api/sip/lines/${encodeURIComponent(id)}`);
       if (generation !== epoch.current) return;
       if (controller.snapshot().lineId === id) controller.disconnect();
-      await refresh();
+      // A directory read begun before the mutation may still be in flight.
+      // Let it settle, then coalesce one fresh read of the committed settings.
+      if (flight.current) await flight.current;
+      if (generation === epoch.current) await refresh();
     },
   };
   return <SipContext.Provider value={value}>{children}</SipContext.Provider>;

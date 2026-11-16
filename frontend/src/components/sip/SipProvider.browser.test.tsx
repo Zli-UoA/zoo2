@@ -29,6 +29,23 @@ function Consumer({ name }: { name: string }) {
     <div>
       <button onClick={() => void sip.refresh()}>refresh-{name}</button>
       <button onClick={() => void sip.controller.connect("home")}>connect-{name}</button>
+      <button
+        onClick={() =>
+          void sip.save(null, {
+            name: "Test",
+            shared: false,
+            websocket_path: "/sip/ws",
+            sip_domain: "pbx.example",
+            username: "alice",
+            password: "dummy",
+            phone_number: "",
+            member_ids: [],
+            phones: [],
+          })
+        }
+      >
+        save-{name}
+      </button>
       <output aria-label={`state-${name}`}>
         {sip.state.status}:{sip.directory.lines.length}
       </output>
@@ -107,4 +124,21 @@ it("clears both views when the account changes and prevents simultaneous channel
   view.rerender(<App />);
   await expect.element(screen.getByLabelText("state-panel")).toHaveTextContent("offline:0");
   expect(mocks.disconnect).toHaveBeenCalledTimes(2);
+});
+
+it("refreshes committed settings after an older directory request settles", async () => {
+  let finish!: (value: unknown) => void;
+  mocks.get.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(<App />);
+  await userEvent.click(screen.getByRole("button", { name: "refresh-panel" }));
+  await userEvent.click(screen.getByRole("button", { name: "save-panel" }));
+  mocks.get.mockResolvedValue({ enabled: true, lines: [{ id: "home" }, { id: "new" }] });
+  await act(async () => finish({ enabled: true, lines: [{ id: "home" }] }));
+  await expect.element(screen.getByLabelText("state-panel")).toHaveTextContent("offline:2");
+  expect(mocks.get).toHaveBeenCalledTimes(2);
 });
