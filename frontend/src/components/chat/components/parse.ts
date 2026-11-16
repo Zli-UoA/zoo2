@@ -197,7 +197,9 @@ function normalize(value: unknown, depth: number): Component | null {
   if (!Number.isInteger(type)) return null;
   const c = { ...raw, type } as Component;
   const list = (v: unknown) =>
-    Array.isArray(v) ? v.map((x) => normalize(x, depth + 1)).filter((x): x is Component => !!x) : undefined;
+    Array.isArray(v)
+      ? v.map((x) => normalize(x, depth + 1)).filter((x): x is Component => !!x)
+      : undefined;
   if (raw.components !== undefined) c.components = list(raw.components);
   if (raw.accessory !== undefined) c.accessory = normalize(raw.accessory, depth + 1) ?? undefined;
   if (raw.component !== undefined) c.component = normalize(raw.component, depth + 1) ?? undefined;
@@ -220,9 +222,7 @@ export function parseComponents(value: unknown): ComponentDocument | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const raw = v as Record<string, unknown>;
   if (!Array.isArray(raw.components) || raw.components.length > 500) return null;
-  const components = raw.components
-    .map((c) => normalize(c, 0))
-    .filter((c): c is Component => !!c);
+  const components = raw.components.map((c) => normalize(c, 0)).filter((c): c is Component => !!c);
   if (!components.length) return null;
   return { flags: typeof raw.flags === "number" ? raw.flags : 0, components };
 }
@@ -251,18 +251,38 @@ export function accentColor(value: unknown): string | undefined {
 }
 
 /** 入力値を持つ部品か（モーダルの送信で値を集める）。 */
+const INPUTS: readonly number[] = [
+  T.TextInput,
+  T.StringSelect,
+  T.UserSelect,
+  T.RoleSelect,
+  T.MentionableSelect,
+  T.ChannelSelect,
+  T.FileUpload,
+  T.RadioGroup,
+  T.CheckboxGroup,
+  T.Checkbox,
+  T.ExternalSelect,
+  T.DatePicker,
+  T.TimePicker,
+  T.DateTimePicker,
+];
 export function isInput(c: Component): boolean {
-  return (
-    [T.TextInput, T.StringSelect, T.UserSelect, T.RoleSelect, T.MentionableSelect, T.ChannelSelect]
-      .concat([T.FileUpload, T.RadioGroup, T.CheckboxGroup, T.Checkbox, T.ExternalSelect])
-      .concat([T.DatePicker, T.TimePicker, T.DateTimePicker] as number[])
-      .includes(c.type as never) && !!c.custom_id
-  );
+  return INPUTS.includes(c.type) && !!c.custom_id;
 }
 
 /** 選択を配列で送る部品か（select・checkbox group）。 */
 export function multiValue(c: Component): boolean {
   return (
-    [T.StringSelect, T.UserSelect, T.RoleSelect, T.MentionableSelect, T.ChannelSelect, T.ExternalSelect, T.CheckboxGroup, T.FileUpload] as number[]
+    [
+      T.StringSelect,
+      T.UserSelect,
+      T.RoleSelect,
+      T.MentionableSelect,
+      T.ChannelSelect,
+      T.ExternalSelect,
+      T.CheckboxGroup,
+      T.FileUpload,
+    ] as number[]
   ).includes(c.type);
 }

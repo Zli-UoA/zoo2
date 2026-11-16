@@ -11,6 +11,8 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import type { FeedMessage } from "./messages/messageFormat";
 import { apiPath } from "../../lib/api/path";
+import { ComponentTree } from "./components/ComponentTree";
+import { parseComponents } from "./components/parse";
 
 type Block =
   | { type: "card"; card: CardData }
@@ -43,7 +45,32 @@ export function hasCardBlocks(value?: string | null): boolean {
     return false;
   }
 }
-export function AppBlocks({
+/**
+ * App の画面（ホーム・モーダル・一時メッセージ）とメッセージの部品。
+ * `blocks` は保存した文書（`{"components":[...]}` か旧形式の `{"blocks":[...]}`）か、旧形式の配列。
+ */
+export function AppBlocks(props: Parameters<typeof LegacyBlocks>[0]) {
+  const doc = parseComponents(props.blocks);
+  if (doc)
+    return (
+      <ComponentTree
+        document={doc}
+        appId={props.appId}
+        surfaceId={props.surfaceId}
+        messageId={props.messageId}
+        channelId={props.channelId}
+        submit={props.submit}
+        onDone={props.onDone}
+      />
+    );
+  const legacy =
+    props.blocks && typeof props.blocks === "object" && !Array.isArray(props.blocks)
+      ? (props.blocks as { blocks?: unknown }).blocks
+      : props.blocks;
+  return <LegacyBlocks {...props} blocks={legacy} />;
+}
+
+function LegacyBlocks({
   blocks,
   appId,
   surfaceId,
@@ -166,7 +193,13 @@ export function AppBlocks({
   );
 }
 export function MessageAppContent({ message }: { message: FeedMessage }) {
-  if (!message.app_blocks && !message.app_attachments && !message.app_unfurls) return null;
+  if (
+    !message.app_blocks &&
+    !message.app_attachments &&
+    !message.app_unfurls &&
+    !message.components
+  )
+    return null;
   return <ConnectedMessageAppContent message={message} />;
 }
 function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
@@ -175,7 +208,13 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
   const { t } = useTranslation();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [error, setError] = useState("");
-  let unfurls: { app_id: string; name: string; url?: string; card: unknown }[] = [];
+  let unfurls: {
+    app_id: string;
+    name: string;
+    url?: string;
+    card?: unknown;
+    components?: unknown;
+  }[] = [];
   try {
     const value: unknown = JSON.parse(message.app_unfurls ?? "[]");
     if (Array.isArray(value))
@@ -206,19 +245,32 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
       setError(t("apps.actionError"));
     }
   }
+  const doc = parseComponents(message.components);
+  const appId = message.app_origin_id || message.app_id;
   return (
     <>
-      {(message.app_origin_id || message.app_id) && parseBlocks(blocks).length ? (
+      {doc ? (
+        // Webhook と Slack 取り込みの部品は app_origin_id がないので、操作部品は押せない状態で表示する
+        <ComponentTree
+          document={doc}
+          appId={message.app_origin_id}
+          messageId={message.id}
+          channelId={shell.selectedChannelId}
+          attachments={files}
+        />
+      ) : null}
+      {!doc && appId && parseBlocks(blocks).length ? (
         <AppBlocks
           blocks={blocks}
-          appId={(message.app_origin_id || message.app_id)!}
+          appId={appId!}
           messageId={message.id}
           channelId={shell.selectedChannelId}
         />
       ) : null}
       {unfurls.map((unfurl, index) => {
-        const card = parseMessageCard(JSON.stringify(unfurl.card));
-        return card ? (
+        const unfurlDoc = parseComponents(unfurl.components);
+        const card = unfurlDoc ? null : parseMessageCard(JSON.stringify(unfurl.card));
+        return card || unfurlDoc ? (
           <div key={index}>
             <button
               className="text-xs text-muted-foreground"
@@ -227,7 +279,16 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
             >
               {unfurl.name} · APP
             </button>
-            <MessageCard card={card} />
+            {unfurlDoc ? (
+              <ComponentTree
+                document={unfurlDoc}
+                appId={unfurl.app_id}
+                messageId={message.id}
+                channelId={shell.selectedChannelId}
+              />
+            ) : (
+              <MessageCard card={card!} />
+            )}
             {unfurl.url && shell.selectedChannelId ? (
               <div className="flex gap-2">
                 {(["details", "comments"] as const).map((kind) => (

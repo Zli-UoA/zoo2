@@ -1,4 +1,12 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useLiveQuery } from "@tanstack/react-db";
 import { ChevronDownIcon, ChevronRightIcon, MoreHorizontalIcon, PlayIcon } from "lucide-react";
@@ -6,7 +14,8 @@ import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { apiPath } from "../../../lib/api/path";
 import { useCollections, useOptionalCollections } from "../../../lib/electric/collections-context";
-import { Button } from "../../ui/button";
+import { useAttachmentUpload } from "../../../hooks/useAttachments";
+import { Button, buttonVariants } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { ExternalLink } from "../../ui/external-link";
 import { Input } from "../../ui/input";
@@ -66,7 +75,9 @@ function initialValues(doc: ComponentDocument): Record<string, Value> {
       else if ([T.DatePicker, T.TimePicker, T.DateTimePicker].includes(c.type as never))
         out[c.custom_id] = c.initial_value ?? "";
       else {
-        const chosen = (c.options ?? c.initial_options ?? []).filter((o) => o.default || c.initial_options).map((o) => o.value);
+        const chosen = (c.options ?? c.initial_options ?? [])
+          .filter((o) => o.default || c.initial_options)
+          .map((o) => o.value);
         const defaults = (c.default_values ?? []).map((d) => d.id);
         const all = [...chosen, ...defaults];
         out[c.custom_id] = multiValue(c) ? all : (all[0] ?? "");
@@ -81,7 +92,10 @@ function initialValues(doc: ComponentDocument): Record<string, Value> {
 }
 
 /** メッセージ部品の木を描画する。本文を隠すかどうかは呼び出し側が `hidesContent` で決める。 */
-export function ComponentTree({ document: doc, ...target }: { document: ComponentDocument } & ComponentTarget) {
+export function ComponentTree({
+  document: doc,
+  ...target
+}: { document: ComponentDocument } & ComponentTarget) {
   const { t } = useTranslation();
   const collections = useOptionalCollections();
   const config = collections?.config;
@@ -90,7 +104,10 @@ export function ComponentTree({ document: doc, ...target }: { document: Componen
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [media, setMedia] = useState("");
-  useEffect(() => (config ? subscribePreviewEndpoints(config, (s) => setMedia(s?.media ?? "")) : undefined), [config]);
+  useEffect(
+    () => (config ? subscribePreviewEndpoints(config, (s) => setMedia(s?.media ?? "")) : undefined),
+    [config],
+  );
   async function invoke(kind: string, actionId?: string, value?: Value) {
     if (busy || !client || !target.appId) return;
     setBusy(true);
@@ -104,7 +121,10 @@ export function ComponentTree({ document: doc, ...target }: { document: Componen
           message_id: target.messageId,
           channel_id: target.channelId,
           action_id: actionId,
-          values: kind === "options" ? { query: value } : { ...values, ...(actionId && value !== undefined ? { [actionId]: value } : {}) },
+          values:
+            kind === "options"
+              ? { query: value }
+              : { ...values, ...(actionId && value !== undefined ? { [actionId]: value } : {}) },
         },
       });
       if (kind !== "options") refreshAppSurfaces();
@@ -119,7 +139,8 @@ export function ComponentTree({ document: doc, ...target }: { document: Componen
   async function download(id: string) {
     try {
       const result = await client!.get<{ url: string }>(apiPath`/api/app-files/${id}/download`);
-      if (result.url.startsWith("https://")) window.open(result.url, "_blank", "noopener,noreferrer");
+      if (result.url.startsWith("https://"))
+        window.open(result.url, "_blank", "noopener,noreferrer");
     } catch {
       setError(t("apps.actionError"));
     }
@@ -169,19 +190,36 @@ export function ComponentTree({ document: doc, ...target }: { document: Componen
 
 function Text({ content, small = false }: { content: string; small?: boolean }) {
   return (
-    <div className={`mfm-body min-w-0 whitespace-pre-wrap break-words leading-relaxed ${small ? "text-xs text-muted-foreground" : ""}`}>
+    <div
+      className={`mfm-body min-w-0 whitespace-pre-wrap break-words leading-relaxed ${small ? "text-xs text-muted-foreground" : ""}`}
+    >
       <MfmContent content={content} />
     </div>
   );
 }
 
-function Image({ url, alt, spoiler, className }: { url: string; alt?: string; spoiler?: boolean; className: string }) {
+function Image({
+  url,
+  alt,
+  spoiler,
+  className,
+}: {
+  url: string;
+  alt?: string;
+  spoiler?: boolean;
+  className: string;
+}) {
   const { media } = useCtx();
   const src = proxyImageUrl(media, safeUrl(url));
   if (!src) return null;
   return (
     <SensitiveMedia sensitive={spoiler}>
-      <img src={src} alt={alt ?? ""} loading="lazy" className={`rounded-md bg-muted object-cover ${className}`} />
+      <img
+        src={src}
+        alt={alt ?? ""}
+        loading="lazy"
+        className={`rounded-md bg-muted object-cover ${className}`}
+      />
     </SensitiveMedia>
   );
 }
@@ -197,12 +235,19 @@ function Node({ c }: { c: Component }): ReactNode {
       return (
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            {c.components?.map((x, i) => <Node key={i} c={x} />)}
+            {c.components?.map((x, i) => (
+              <Node key={i} c={x} />
+            ))}
           </div>
           {c.accessory ? (
             <div className="shrink-0">
               {c.accessory.type === T.Thumbnail ? (
-                <Image url={c.accessory.media?.url ?? ""} alt={c.accessory.description} spoiler={c.accessory.spoiler} className="size-16" />
+                <Image
+                  url={c.accessory.media?.url ?? ""}
+                  alt={c.accessory.description}
+                  spoiler={c.accessory.spoiler}
+                  className="size-16"
+                />
               ) : (
                 <Interactive c={c.accessory} />
               )}
@@ -214,7 +259,13 @@ function Node({ c }: { c: Component }): ReactNode {
       return (
         <div className="grid max-w-md grid-cols-2 gap-1 [&:has(>:only-child)]:grid-cols-1">
           {c.items?.slice(0, 10).map((item, i) => (
-            <Image key={i} url={item.media?.url} alt={item.description} spoiler={item.spoiler} className="aspect-video w-full" />
+            <Image
+              key={i}
+              url={item.media?.url}
+              alt={item.description}
+              spoiler={item.spoiler}
+              className="aspect-video w-full"
+            />
           ))}
         </div>
       );
@@ -229,14 +280,18 @@ function Node({ c }: { c: Component }): ReactNode {
     case T.ActionRow:
       return (
         <div className="flex flex-wrap items-center gap-2">
-          {c.components?.map((x, i) => <Interactive key={i} c={x} />)}
+          {c.components?.map((x, i) => (
+            <Interactive key={i} c={x} />
+          ))}
         </div>
       );
     case T.Label:
       return (
         <label className="flex flex-col gap-1">
           <span className="font-medium">{c.label}</span>
-          {c.description ? <span className="text-xs text-muted-foreground">{c.description}</span> : null}
+          {c.description ? (
+            <span className="text-xs text-muted-foreground">{c.description}</span>
+          ) : null}
           {c.component ? <Interactive c={c.component} labelled /> : null}
         </label>
       );
@@ -249,7 +304,13 @@ function Node({ c }: { c: Component }): ReactNode {
         <div
           role="note"
           className={`rounded-md border px-3 py-2 ${
-            c.level === "error" ? "border-destructive/50 bg-destructive/10" : c.level === "warning" ? "border-amber-500/50 bg-amber-500/10" : c.level === "success" ? "border-emerald-500/50 bg-emerald-500/10" : "bg-muted/50"
+            c.level === "error"
+              ? "border-destructive/50 bg-destructive/10"
+              : c.level === "warning"
+                ? "border-amber-500/50 bg-amber-500/10"
+                : c.level === "success"
+                  ? "border-emerald-500/50 bg-emerald-500/10"
+                  : "bg-muted/50"
           }`}
         >
           <Text content={c.content ?? ""} />
@@ -273,8 +334,13 @@ function Node({ c }: { c: Component }): ReactNode {
       return (
         <div className="@container flex flex-col gap-2">
           {c.label ? <div className="font-medium">{c.label}</div> : null}
-          {(c.rows as { width?: number; align?: string; component: Component }[][] | undefined)?.map((row, r) => (
-            <div key={r} className={`flex flex-col gap-2 @md:flex-row ${c.grid_lines === "rows" ? "border-b pb-2" : ""}`}>
+          {(
+            c.rows as { width?: number; align?: string; component: Component }[][] | undefined
+          )?.map((row, r) => (
+            <div
+              key={r}
+              className={`flex flex-col gap-2 @md:flex-row ${c.grid_lines === "rows" ? "border-b pb-2" : ""}`}
+            >
               {row.map((item, i) => (
                 <div
                   key={i}
@@ -292,21 +358,35 @@ function Node({ c }: { c: Component }): ReactNode {
       return (
         <div className="flex flex-col gap-1 rounded-md border p-2">
           <div className="font-medium">{c.title}</div>
-          {c.tasks?.map((task) => <TaskRow key={task.task_id} task={task} />)}
+          {c.tasks?.map((task) => (
+            <TaskRow key={task.task_id} task={task} />
+          ))}
         </div>
       );
     case T.TaskCard:
       return <TaskRow task={c as unknown as Task} />;
     case T.Thumbnail:
-      return <Image url={c.media?.url ?? ""} alt={c.description} spoiler={c.spoiler} className="size-16" />;
+      return (
+        <Image
+          url={c.media?.url ?? ""}
+          alt={c.description}
+          spoiler={c.spoiler}
+          className="size-16"
+        />
+      );
     case T.Unsupported:
       return c.text ? (
-        <div className="rounded-md border border-dashed px-2 py-1" title={t("apps.components.unsupported")}>
+        <div
+          className="rounded-md border border-dashed px-2 py-1"
+          title={t("apps.components.unsupported")}
+        >
           <Text content={c.text} small />
         </div>
       ) : null;
     default:
-      return isInput(c) || c.type === T.Button || c.type === T.Overflow ? <Interactive c={c} /> : null;
+      return isInput(c) || c.type === T.Button || c.type === T.Overflow ? (
+        <Interactive c={c} />
+      ) : null;
   }
 }
 
@@ -315,7 +395,9 @@ function Container({ c }: { c: Component }) {
   const color = accentColor(c.accent_color);
   const children = (
     <div className="flex min-w-0 flex-col gap-2">
-      {c.components?.map((x, i) => <Node key={i} c={x} />)}
+      {c.components?.map((x, i) => (
+        <Node key={i} c={x} />
+      ))}
     </div>
   );
   return (
@@ -325,8 +407,17 @@ function Container({ c }: { c: Component }) {
     >
       {c.title ? (
         c.collapsible ? (
-          <button type="button" className="mb-1 flex items-center gap-1 text-left font-medium" aria-expanded={open} onClick={() => setOpen(!open)}>
-            {open ? <ChevronDownIcon className="size-4" /> : <ChevronRightIcon className="size-4" />}
+          <button
+            type="button"
+            className="mb-1 flex items-center gap-1 text-left font-medium"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            {open ? (
+              <ChevronDownIcon className="size-4" />
+            ) : (
+              <ChevronRightIcon className="size-4" />
+            )}
             <MfmContent content={c.title} />
           </button>
         ) : (
@@ -348,7 +439,12 @@ function FileLink({ c }: { c: Component }) {
   if (url.startsWith("attachment://")) {
     const file = attachments?.find((a) => a.name === url.slice("attachment://".length));
     return file ? (
-      <Button type="button" variant="link" className="h-auto justify-start p-0" onClick={() => download(file.id)}>
+      <Button
+        type="button"
+        variant="link"
+        className="h-auto justify-start p-0"
+        onClick={() => download(file.id)}
+      >
         {file.name}
       </Button>
     ) : null;
@@ -362,15 +458,27 @@ function Video({ c }: { c: Component }) {
   return (
     <div className="flex max-w-sm flex-col gap-1 rounded-lg border p-2">
       {c.thumbnail_url ? (
-        <a href={href ?? undefined} target="_blank" rel="noopener noreferrer" className="relative block">
+        <a
+          href={href ?? undefined}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="relative block"
+        >
           <Image url={c.thumbnail_url} alt={c.alt_text} className="aspect-video w-full" />
-          <PlayIcon className="absolute inset-0 m-auto size-10 rounded-full bg-black/60 p-2 text-white" aria-hidden />
+          <PlayIcon
+            className="absolute inset-0 m-auto size-10 rounded-full bg-black/60 p-2 text-white"
+            aria-hidden
+          />
         </a>
       ) : null}
       {href ? <ExternalLink href={href}>{c.title}</ExternalLink> : <span>{c.title}</span>}
-      {c.description ? <span className="text-xs text-muted-foreground">{c.description}</span> : null}
+      {c.description ? (
+        <span className="text-xs text-muted-foreground">{c.description}</span>
+      ) : null}
       {c.author_name || c.provider_name ? (
-        <span className="text-xs text-muted-foreground">{[c.author_name, c.provider_name].filter(Boolean).join(" · ")}</span>
+        <span className="text-xs text-muted-foreground">
+          {[c.author_name, c.provider_name].filter(Boolean).join(" · ")}
+        </span>
       ) : null}
     </div>
   );
@@ -385,8 +493,12 @@ function Table({ c }: { c: Component }) {
   let body = c.header ? rows.slice(1) : rows;
   if (sort)
     body = [...body].sort((a, b) => {
-      const x = a[sort.col], y = b[sort.col];
-      const r = x?.number !== undefined && y?.number !== undefined ? x.number - y.number : (x?.text ?? "").localeCompare(y?.text ?? "");
+      const x = a[sort.col],
+        y = b[sort.col];
+      const r =
+        x?.number !== undefined && y?.number !== undefined
+          ? x.number - y.number
+          : (x?.text ?? "").localeCompare(y?.text ?? "");
       return sort.asc ? r : -r;
     });
   const size = c.page_size ?? body.length;
@@ -396,17 +508,23 @@ function Table({ c }: { c: Component }) {
     const a = c.column_settings?.[i]?.align;
     return a === "center" ? "text-center" : a === "right" ? "text-right" : "text-left";
   };
-  const cell = (x: TableCell | undefined) => (x?.button ? <Interactive c={x.button} /> : <MfmContent content={x?.text ?? ""} />);
+  const cell = (x: TableCell | undefined) =>
+    x?.button ? <Interactive c={x.button} /> : <MfmContent content={x?.text ?? ""} />;
   return (
     <div className="max-w-full overflow-x-auto">
       <table className="min-w-max border-collapse text-sm">
-        {c.caption ? <caption className="text-left text-xs text-muted-foreground">{c.caption}</caption> : null}
+        {c.caption ? (
+          <caption className="text-left text-xs text-muted-foreground">{c.caption}</caption>
+        ) : null}
         {head ? (
           <thead>
             <tr>
               {head.map((h, i) => (
                 <th key={i} className={`border-b px-2 py-1 font-medium ${align(i)}`}>
-                  <button type="button" onClick={() => setSort({ col: i, asc: sort?.col === i ? !sort.asc : true })}>
+                  <button
+                    type="button"
+                    onClick={() => setSort({ col: i, asc: sort?.col === i ? !sort.asc : true })}
+                  >
                     <MfmContent content={h.text} />
                   </button>
                 </th>
@@ -418,7 +536,10 @@ function Table({ c }: { c: Component }) {
           {shown.map((r, i) => (
             <tr key={i} className="border-b last:border-0">
               {r.map((x, j) => (
-                <td key={j} className={`px-2 py-1 align-top ${align(j)} ${c.column_settings?.[j]?.is_wrapped ? "whitespace-normal" : "whitespace-nowrap"}`}>
+                <td
+                  key={j}
+                  className={`px-2 py-1 align-top ${align(j)} ${c.column_settings?.[j]?.is_wrapped ? "whitespace-normal" : "whitespace-nowrap"}`}
+                >
                   {cell(x)}
                 </td>
               ))}
@@ -428,11 +549,23 @@ function Table({ c }: { c: Component }) {
       </table>
       {pages > 1 ? (
         <div className="flex items-center gap-2 text-xs">
-          <Button type="button" size="sm" variant="ghost" disabled={page === 0} onClick={() => setPage(page - 1)}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={page === 0}
+            onClick={() => setPage(page - 1)}
+          >
             ‹
           </Button>
           {t("apps.components.page", { page: page + 1, pages })}
-          <Button type="button" size="sm" variant="ghost" disabled={page + 1 >= pages} onClick={() => setPage(page + 1)}>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={page + 1 >= pages}
+            onClick={() => setPage(page + 1)}
+          >
             ›
           </Button>
         </div>
@@ -444,7 +577,9 @@ function Table({ c }: { c: Component }) {
 function Card({ c }: { c: Component }) {
   return (
     <div className="flex min-w-0 max-w-sm flex-col gap-1 overflow-hidden rounded-lg border bg-card">
-      {c.hero_image ? <Image url={c.hero_image.url} className="aspect-video w-full rounded-none" /> : null}
+      {c.hero_image ? (
+        <Image url={c.hero_image.url} className="aspect-video w-full rounded-none" />
+      ) : null}
       <div className="flex flex-col gap-1 p-2">
         <div className="flex items-center gap-2">
           {c.icon ? <Image url={c.icon.url} className="size-6" /> : null}
@@ -459,7 +594,9 @@ function Card({ c }: { c: Component }) {
         {c.subtext ? <Text content={c.subtext} small /> : null}
         {c.actions?.length ? (
           <div className="flex flex-wrap justify-end gap-2">
-            {c.actions.map((a, i) => <Interactive key={i} c={a} />)}
+            {c.actions.map((a, i) => (
+              <Interactive key={i} c={a} />
+            ))}
           </div>
         ) : null}
       </div>
@@ -467,7 +604,13 @@ function Card({ c }: { c: Component }) {
   );
 }
 
-const CHART_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+const CHART_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
 
 /** 依存を増やさない簡単なグラフ（棒・折れ線・面は SVG、円は割合の帯）。数値は表でも読める。 */
 function Chart({ c }: { c: Component }) {
@@ -479,7 +622,11 @@ function Chart({ c }: { c: Component }) {
         <figcaption className="font-medium">{c.title}</figcaption>
         <div className="flex h-4 overflow-hidden rounded">
           {c.segments?.map((s, i) => (
-            <span key={i} style={{ width: `${(Math.max(0, s.value) / total) * 100}%`, background: color(i) }} title={`${s.label}: ${s.value}`} />
+            <span
+              key={i}
+              style={{ width: `${(Math.max(0, s.value) / total) * 100}%`, background: color(i) }}
+              title={`${s.label}: ${s.value}`}
+            />
           ))}
         </div>
         <ul className="flex flex-wrap gap-x-3 text-xs">
@@ -493,11 +640,16 @@ function Chart({ c }: { c: Component }) {
       </figure>
     );
   }
-  const categories = c.categories?.length ? c.categories : [...new Set((c.series ?? []).flatMap((s) => s.data.map((p) => p.label)))];
+  const categories = c.categories?.length
+    ? c.categories
+    : [...new Set((c.series ?? []).flatMap((s) => s.data.map((p) => p.label)))];
   const all = (c.series ?? []).flatMap((s) => s.data.map((p) => p.value));
-  const max = Math.max(0, ...all), min = Math.min(0, ...all);
+  const max = Math.max(0, ...all),
+    min = Math.min(0, ...all);
   const span = max - min || 1;
-  const W = 320, H = 140, pad = 4;
+  const W = 320,
+    H = 140,
+    pad = 4;
   const x = (i: number) => pad + ((W - 2 * pad) * (i + 0.5)) / Math.max(1, categories.length);
   const y = (v: number) => H - pad - ((H - 2 * pad) * (v - min)) / span;
   return (
@@ -510,14 +662,28 @@ function Chart({ c }: { c: Component }) {
             return [x(i), y(v)] as const;
           });
           if (c.chart_type === "bar") {
-            const w = (W - 2 * pad) / Math.max(1, categories.length) / Math.max(1, c.series!.length) * 0.8;
+            const w =
+              ((W - 2 * pad) / Math.max(1, categories.length) / Math.max(1, c.series!.length)) *
+              0.8;
             return pts.map(([px, py], i) => (
-              <rect key={`${si}-${i}`} x={px - (w * c.series!.length) / 2 + si * w} y={Math.min(py, y(0))} width={w} height={Math.abs(y(0) - py)} fill={color(si)} />
+              <rect
+                key={`${si}-${i}`}
+                x={px - (w * c.series!.length) / 2 + si * w}
+                y={Math.min(py, y(0))}
+                width={w}
+                height={Math.abs(y(0) - py)}
+                fill={color(si)}
+              />
             ));
           }
           const d = pts.map(([px, py], i) => `${i ? "L" : "M"}${px},${py}`).join(" ");
           return c.chart_type === "area" ? (
-            <path key={si} d={`${d} L${pts.at(-1)?.[0]},${y(min)} L${pts[0]?.[0]},${y(min)} Z`} fill={color(si)} opacity={0.4} />
+            <path
+              key={si}
+              d={`${d} L${pts.at(-1)?.[0]},${y(min)} L${pts[0]?.[0]},${y(min)} Z`}
+              fill={color(si)}
+              opacity={0.4}
+            />
           ) : (
             <path key={si} d={d} fill="none" stroke={color(si)} strokeWidth={2} />
           );
@@ -536,13 +702,24 @@ function Chart({ c }: { c: Component }) {
           </li>
         ))}
       </ul>
-      {c.x_label || c.y_label ? <span className="text-xs text-muted-foreground">{[c.y_label, c.x_label].filter(Boolean).join(" / ")}</span> : null}
+      {c.x_label || c.y_label ? (
+        <span className="text-xs text-muted-foreground">
+          {[c.y_label, c.x_label].filter(Boolean).join(" / ")}
+        </span>
+      ) : null}
     </figure>
   );
 }
 
 function TaskRow({ task }: { task: Task }) {
-  const mark = task.status === "complete" ? "✓" : task.status === "error" ? "✕" : task.status === "in_progress" ? "…" : "○";
+  const mark =
+    task.status === "complete"
+      ? "✓"
+      : task.status === "error"
+        ? "✕"
+        : task.status === "in_progress"
+          ? "…"
+          : "○";
   return (
     <div className="flex flex-col gap-0.5">
       <div className="flex items-center gap-2">
@@ -614,11 +791,14 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
       if (c.style === 5) {
         const href = safeUrl(c.url);
         return href ? (
-          <Button asChild size="sm" variant="outline">
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {label}
-            </a>
-          </Button>
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={buttonVariants({ size: "sm", variant: "outline" })}
+          >
+            {label}
+          </a>
         ) : null;
       }
       return (
@@ -646,7 +826,13 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
           <fieldset className="flex flex-col gap-1" disabled={disabled && !deferred}>
             {c.options?.map((o) => (
               <label key={o.value} className="flex items-center gap-2">
-                <input type="radio" name={id} checked={value === o.value} required={c.required !== false} onChange={() => choose(o.value)} />
+                <input
+                  type="radio"
+                  name={id}
+                  checked={value === o.value}
+                  required={c.required !== false}
+                  onChange={() => choose(o.value)}
+                />
                 <OptionText o={o} />
               </label>
             ))}
@@ -656,19 +842,31 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
       return (
         <>
           <Select
-            aria-label={c.placeholder ?? c.label ?? (c.type === T.Overflow ? t("apps.components.more") : undefined)}
+            aria-label={
+              c.placeholder ??
+              c.label ??
+              (c.type === T.Overflow ? t("apps.components.more") : undefined)
+            }
             className={c.type === T.Overflow ? "w-auto" : "w-full max-w-xs"}
             multiple={many}
             required={labelled && c.required === true}
             disabled={disabled && !deferred}
-            value={many ? (value as string[]) ?? [] : c.type === T.Overflow ? "" : ((value as string) ?? "")}
+            value={
+              many
+                ? ((value as string[]) ?? [])
+                : c.type === T.Overflow
+                  ? ""
+                  : ((value as string) ?? "")
+            }
             onChange={(e) => {
               const v = many ? [...e.target.selectedOptions].map((o) => o.value) : e.target.value;
               if (c.type === T.Overflow) choose(v);
               else choose(many ? v : [v as string].filter(Boolean));
             }}
           >
-            {!many ? <option value="">{c.type === T.Overflow ? "…" : (c.placeholder ?? "")}</option> : null}
+            {!many ? (
+              <option value="">{c.type === T.Overflow ? "…" : (c.placeholder ?? "")}</option>
+            ) : null}
             {c.options?.map((o) => (
               <option key={o.value} value={o.value} title={o.description}>
                 {[o.emoji?.name, o.label].filter(Boolean).join(" ")}
@@ -691,7 +889,11 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
                   type="checkbox"
                   disabled={disabled && !deferred}
                   checked={list.includes(o.value)}
-                  onChange={(e) => choose(e.target.checked ? [...list, o.value] : list.filter((v) => v !== o.value))}
+                  onChange={(e) =>
+                    choose(
+                      e.target.checked ? [...list, o.value] : list.filter((v) => v !== o.value),
+                    )
+                  }
                 />
                 <OptionText o={o} />
               </label>
@@ -700,7 +902,14 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
         </fieldset>
       );
     case T.Checkbox:
-      return <input type="checkbox" disabled={disabled && !deferred} checked={!!value} onChange={(e) => choose(e.target.checked)} />;
+      return (
+        <input
+          type="checkbox"
+          disabled={disabled && !deferred}
+          checked={!!value}
+          onChange={(e) => choose(e.target.checked)}
+        />
+      );
     case T.TextInput: {
       const common = {
         value: (value as string) ?? "",
@@ -715,7 +924,15 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
       return (
         <Input
           {...common}
-          type={c.format === "number" ? "number" : c.format === "email" ? "email" : c.format === "url" ? "url" : "text"}
+          type={
+            c.format === "number"
+              ? "number"
+              : c.format === "email"
+                ? "email"
+                : c.format === "url"
+                  ? "url"
+                  : "text"
+          }
           min={c.min_value}
           max={c.max_value}
           step={c.format === "number" && !c.decimal ? 1 : undefined}
@@ -725,11 +942,14 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
     case T.DatePicker:
     case T.TimePicker:
     case T.DateTimePicker: {
-      const type = c.type === T.DatePicker ? "date" : c.type === T.TimePicker ? "time" : "datetime-local";
+      const type =
+        c.type === T.DatePicker ? "date" : c.type === T.TimePicker ? "time" : "datetime-local";
       // datetime は UNIX 秒でやりとりし、入力欄では端末のタイムゾーンで表示する
       const shown =
         c.type === T.DateTimePicker && value
-          ? new Date(Number(value) * 1000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+          ? new Date(Number(value) * 1000 - new Date().getTimezoneOffset() * 60000)
+              .toISOString()
+              .slice(0, 16)
           : ((value as string) ?? "");
       return (
         <Input
@@ -740,7 +960,11 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
           disabled={disabled && !deferred}
           onChange={(e) => {
             const v = e.target.value;
-            choose(c.type === T.DateTimePicker && v ? String(Math.floor(new Date(v).getTime() / 1000)) : v);
+            choose(
+              c.type === T.DateTimePicker && v
+                ? String(Math.floor(new Date(v).getTime() / 1000))
+                : v,
+            );
           }}
         />
       );
@@ -763,13 +987,23 @@ function OptionText({ o }: { o: SelectOption }) {
   return (
     <span className="flex flex-col">
       <span>{[o.emoji?.name, o.label].filter(Boolean).join(" ")}</span>
-      {o.description ? <span className="text-xs text-muted-foreground">{o.description}</span> : null}
+      {o.description ? (
+        <span className="text-xs text-muted-foreground">{o.description}</span>
+      ) : null}
     </span>
   );
 }
 
 /** user / channel select。zoo のユーザーとチャンネルから選ぶ（共有の collection を使い、別に取り直さない）。 */
-function EntitySelect({ c, choose, disabled }: { c: Component; choose: (v: Value) => void; disabled: boolean }) {
+function EntitySelect({
+  c,
+  choose,
+  disabled,
+}: {
+  c: Component;
+  choose: (v: Value) => void;
+  disabled: boolean;
+}) {
   const { t } = useTranslation();
   const collections = useCollections();
   const ctx = useCtx();
@@ -780,7 +1014,11 @@ function EntitySelect({ c, choose, disabled }: { c: Component; choose: (v: Value
   if (c.type !== T.ChannelSelect && c.type !== T.RoleSelect)
     options.push(...users.map((u) => ({ id: u.id, label: `@${u.user_name}` })));
   if (c.type === T.ChannelSelect || c.type === T.RoleSelect)
-    options.push(...channels.filter((ch) => !ch.deleted_at).map((ch) => ({ id: ch.id, label: `#${ch.channel_name}` })));
+    options.push(
+      ...channels
+        .filter((ch) => !ch.deleted_at)
+        .map((ch) => ({ id: ch.id, label: `#${ch.channel_name}` })),
+    );
   const value = ctx.values[c.custom_id ?? ""];
   return (
     <Select
@@ -805,11 +1043,22 @@ function EntitySelect({ c, choose, disabled }: { c: Component; choose: (v: Value
  * 入力に合わせてアプリに選択肢を問い合わせる select。入力が止まって 400ms 後に 1 回だけ問い合わせる
  * （入力が変わらなければ問い合わせない。応答は最大 3 秒待つ）。
  */
-function ExternalSelect({ c, choose, disabled }: { c: Component; choose: (v: Value) => void; disabled: boolean }) {
+function ExternalSelect({
+  c,
+  choose,
+  disabled,
+}: {
+  c: Component;
+  choose: (v: Value) => void;
+  disabled: boolean;
+}) {
   const { t } = useTranslation();
   const ctx = useCtx();
   const collections = useOptionalCollections();
-  const client = useMemo(() => (collections?.config ? createConfiguredApiClient(collections.config) : null), [collections?.config]);
+  const client = useMemo(
+    () => (collections?.config ? createConfiguredApiClient(collections.config) : null),
+    [collections?.config],
+  );
   const [query, setQuery] = useState("");
   const [options, setOptions] = useState<SelectOption[]>(c.initial_options ?? []);
   const latest = useRef("");
@@ -817,10 +1066,14 @@ function ExternalSelect({ c, choose, disabled }: { c: Component; choose: (v: Val
     if (query.length < (c.min_query_length ?? 3) || !client || !ctx.appId) return;
     latest.current = query;
     const timer = setTimeout(async () => {
-      const asked = (await ctx.invoke("options", c.custom_id, query)) as { request_id?: string } | undefined;
+      const asked = (await ctx.invoke("options", c.custom_id, query)) as
+        | { request_id?: string }
+        | undefined;
       if (!asked?.request_id || latest.current !== query) return;
       const got = await client
-        .get<{ options: SelectOption[] | null }>(apiPath`/api/apps/${ctx.appId!}/options/${asked.request_id}`)
+        .get<{ options: SelectOption[] | null }>(
+          apiPath`/api/apps/${ctx.appId!}/options/${asked.request_id}`,
+        )
         .catch(() => ({ options: null }));
       if (latest.current === query && got.options) setOptions(got.options);
     }, 400);
@@ -829,11 +1082,16 @@ function ExternalSelect({ c, choose, disabled }: { c: Component; choose: (v: Val
   }, [query]);
   return (
     <div className="flex max-w-xs flex-col gap-1">
-      <Input value={query} disabled={disabled} placeholder={c.placeholder ?? t("apps.components.search")} onChange={(e) => setQuery(e.target.value)} />
+      <Input
+        value={query}
+        disabled={disabled}
+        placeholder={c.placeholder ?? t("apps.components.search")}
+        onChange={(e) => setQuery(e.target.value)}
+      />
       <Select
         aria-label={c.placeholder ?? t("apps.components.choose")}
         disabled={disabled || !options.length}
-        value={(((ctx.values[c.custom_id ?? ""] as string[]) ?? [])[0]) ?? ""}
+        value={((ctx.values[c.custom_id ?? ""] as string[]) ?? [])[0] ?? ""}
         onChange={(e) => choose([e.target.value].filter(Boolean))}
       >
         <option value="">{options.length ? "" : t("apps.components.noOptions")}</option>
@@ -847,19 +1105,46 @@ function ExternalSelect({ c, choose, disabled }: { c: Component; choose: (v: Val
   );
 }
 
-/** モーダルの中でファイルを上げる。既存のアプリのファイルの仕組みは使わず、ファイル名だけを送る値にする。 */
+/** モーダルの中でファイルを上げる。チャンネルの添付として上げ、送信の値は添付の ID にする（アプリは送信後に取得できる）。 */
 function FileUpload({ c, disabled }: { c: Component; disabled: boolean }) {
+  const { t } = useTranslation();
   const ctx = useCtx();
+  const upload = useAttachmentUpload(ctx.channelId ?? "");
+  const [state, setState] = useState<"idle" | "uploading" | "error">("idle");
   const accept = (c.file_types ?? [])
     .map((x) => (x === "image" || x === "video" || x === "audio" ? `${x}/*` : x))
     .join(",");
   return (
-    <input
-      type="file"
-      multiple={(c.max_values ?? 1) > 1}
-      accept={accept || undefined}
-      disabled={disabled && !ctx.submit}
-      onChange={(e) => ctx.set(c.custom_id ?? "", [...(e.target.files ?? [])].slice(0, c.max_values ?? 1).map((f) => f.name))}
-    />
+    <div className="flex flex-col gap-1">
+      <input
+        type="file"
+        multiple={(c.max_values ?? 1) > 1}
+        accept={accept || undefined}
+        required={c.required !== false}
+        disabled={(disabled && !ctx.submit) || !ctx.channelId || state === "uploading"}
+        onChange={async (e) => {
+          const files = [...(e.target.files ?? [])].slice(0, c.max_values ?? 1);
+          setState("uploading");
+          try {
+            const uploaded = await Promise.all(files.map((file) => upload(file)));
+            ctx.set(
+              c.custom_id ?? "",
+              uploaded.map((a) => a.id),
+            );
+            setState("idle");
+          } catch {
+            setState("error");
+          }
+        }}
+      />
+      {state === "uploading" ? (
+        <span className="text-xs text-muted-foreground">{t("apps.components.uploading")}</span>
+      ) : null}
+      {state === "error" ? (
+        <span role="alert" className="text-xs text-destructive">
+          {t("apps.actionError")}
+        </span>
+      ) : null}
+    </div>
   );
 }

@@ -692,6 +692,15 @@
       "addEncrypted": "Add to the encrypted channel",
       "notReady": "This app has not set up encryption (registered its device) yet. Start the app and try again.",
       "encryptedHint": "Adding an app to an encrypted channel needs a member's permission."
+    },
+    "components": {
+      "unsupported": "This component is not supported yet",
+      "more": "More actions",
+      "choose": "Choose",
+      "search": "Search",
+      "noOptions": "No options",
+      "uploading": "Uploading…",
+      "page": "Page {{page}} of {{pages}}"
     }
   },
   "search": {
