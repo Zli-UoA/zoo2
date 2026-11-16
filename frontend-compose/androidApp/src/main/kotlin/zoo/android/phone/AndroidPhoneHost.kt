@@ -38,6 +38,7 @@ internal class AndroidPhoneHost(
         app.scope,
         request = { path, method, body -> app.api.request(path, method, body) },
         stream = app.api::streamCall,
+        phoneStream = app.api::streamPhone,
         media = { kind, events -> PhoneWebView(context, app.config.apiBaseUrl, { mayCapture(kind) }, events) },
         telecom = this,
         prepare = { check(available); prepare() },

@@ -75,8 +75,7 @@ internal class PhoneWebView(
                 val name = phoneAsset(origin, request.url.toString())
                 val bytes = when {
                     name == "index.html" && request.isForMainFrame -> {
-                        val ws = origin.replaceFirst("https:", "wss:")
-                        "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; connect-src $ws; media-src blob:; base-uri 'none'; form-action 'none'\"></head><body><script src=\"/__zoo_phone__/engine.js\"></script></body></html>".toByteArray()
+                        "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'self'; connect-src 'none'; media-src blob:; base-uri 'none'; form-action 'none'\"></head><body><script src=\"/__zoo_phone__/engine.js\"></script></body></html>".toByteArray()
                     }
                     name == "engine.js" && !request.isForMainFrame -> runCatching { context.assets.open("phone/engine.js").use { it.readBytes() } }.getOrNull()
                     else -> null
@@ -104,7 +103,7 @@ internal class PhoneWebView(
         } else event(value.text("event"), payload)
     }
     override suspend fun command(method: String, payload: Row) = withContext(Dispatchers.Main.immediate) {
-        check(method in setOf("sip.register", "sip.call", "sip.answer", "sip.end", "sip.dtmf", "dm.start", "dm.event", "mute"))
+        check(method in setOf("rtc.start", "rtc.event", "mute"))
         withTimeout(15_000) {
             loaded.await(); check(!closed)
             val id = ++serial; val done = CompletableDeferred<Unit>(); commands[id] = done

@@ -55,10 +55,15 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
     }
 
     /** Audio-call signaling is a call-owned stream, independent of screen visibility. */
-    suspend fun streamCall(channelId: String, sessionId: String, event: suspend (String, Row) -> Unit) {
+    suspend fun streamCall(channelId: String, sessionId: String, event: suspend (String, Row) -> Unit) =
+        streamEvents("/api/channels/${channelId.encodeURLPathPart()}/call/stream", HttpMethod.Get, mapOf("session_id" to sessionId), event)
+    suspend fun streamPhone(sessionId: String, event: suspend (String, Row) -> Unit) =
+        streamEvents("/api/phone/sessions/${sessionId.encodeURLPathPart()}/stream", HttpMethod.Post, emptyMap(), event)
+    private suspend fun streamEvents(path: String, method: HttpMethod, parameters: Map<String, String>, event: suspend (String, Row) -> Unit) {
         val auth = platform.headers()
-        http.prepareGet(endpoint(config.apiBaseUrl, "/api/channels/${channelId.encodeURLPathPart()}/call/stream")) {
-            parameter("session_id", sessionId)
+        http.prepareRequest(endpoint(config.apiBaseUrl, path)) {
+            this.method = method
+            parameters.forEach { (key, value) -> parameter(key, value) }
             headers { auth.forEach { (key, value) -> append(key, value) } }
             timeout {
                 requestTimeoutMillis = io.ktor.client.plugins.HttpTimeoutConfig.INFINITE_TIMEOUT_MS

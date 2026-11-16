@@ -21,22 +21,33 @@ class PhoneControllerTest {
         var pendingAccept: CompletableDeferred<JsonElement>? = null
         var beforeRead: CompletableDeferred<Unit>? = null
         var streamEvent: (suspend (String, Row) -> Unit)? = null
+        var phoneEvent: (suspend (String, Row) -> Unit)? = null
+        var pendingPhoneCall: CompletableDeferred<Unit>? = null
+        val phoneActions = mutableListOf<String>()
         val line = obj("id" to "home", "name" to "Home", "can_connect" to true, "can_manage" to true)
-        val controller = PhoneController(scope, request = { path, method, _ ->
+        val controller = PhoneController(scope, request = { path, method, body ->
             requests.add("$method $path")
             when {
                 path == "/api/sip/lines" -> { beforeRead?.await(); obj("enabled" to true, "lines" to JsonArray(listOf(line))) }
-                path.endsWith("/connect") -> obj("data" to obj("revision" to revision, "password" to "dummy"))
+                path.endsWith("/connect") -> obj("data" to obj("revision" to revision, "session_id" to "phone-session", "peer_id" to "gateway-peer", "ice_servers" to JsonArray(emptyList())))
                 path.endsWith("/authorize") -> { check(authorize); obj("data" to obj("revision" to revision)) }
                 path.endsWith("/accept") -> pendingAccept?.await() ?: obj("data" to obj("channel_id" to "dm"))
+                path.endsWith("/command") -> {
+                    val action = body?.text("action").orEmpty(); phoneActions.add(action)
+                    if (action == "call") pendingPhoneCall?.await()
+                    if (action in listOf("call", "accept")) phoneEvent?.invoke("accepted", obj())
+                    if (action in listOf("hangup", "decline")) phoneEvent?.invoke("ended", obj())
+                    obj("data" to obj())
+                }
                 else -> obj("data" to obj())
             }
-        }, stream = { _, _, callback -> streamEvent = callback; awaitCancellation() }, media = { kind, callback ->
+        }, stream = { _, _, callback -> streamEvent = callback; awaitCancellation() }, phoneStream = { _, callback -> phoneEvent = callback; callback("registered", obj()); awaitCancellation() }, media = { kind, callback ->
             events[kind] = callback
             object : PhoneMedia {
                 override suspend fun command(method: String, payload: Row) {
                     commands.add(method)
-                    if (method == "sip.register") callback("registered", obj())
+                    if (kind == "sip" && method == "rtc.start" && payload["room_state"]?.jsonObject?.text("offerer_session_id") == payload.text("session_id")) callback("signal", obj("signal" to obj("type" to "offer", "sdp" to "v=0")))
+                    if (kind == "sip" && method == "rtc.event" && payload["data"]?.jsonObject?.get("signal")?.jsonObject?.text("type") == "offer") callback("signal", obj("signal" to obj("type" to "answer", "sdp" to "v=0")))
                 }
                 override fun close() { closed.add(kind) }
             }
@@ -51,8 +62,8 @@ class PhoneControllerTest {
     @Test fun registrationDoesNotPlaceANativeCallAndExplicitDialRechecksMembership() = runTest {
         val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
         assertEquals("ready", f.controller.registration.status); assertFalse(f.controller.lines.toString().contains("dummy"))
-        assertTrue(f.native.isEmpty()); f.controller.dialSip("101"); runCurrent()
-        assertEquals(listOf("outgoing:sip"), f.native); assertTrue(f.requests.any { it.endsWith("/authorize") }); assertEquals("sip.call", f.commands.last())
+        assertTrue(f.native.isEmpty()); assertTrue(f.events.isEmpty()); f.controller.dialSip("101"); runCurrent()
+        assertEquals(listOf("outgoing:sip"), f.native); assertTrue(f.requests.any { it.endsWith("/authorize") }); assertEquals("rtc.start", f.commands.last())
         f.events.getValue("sip")("connected", obj()); assertEquals("active", f.controller.call?.status)
         f.controller.hangup(); runCurrent(); assertNull(f.controller.call); assertEquals("ready", f.controller.registration.status)
         f.controller.close()
@@ -60,12 +71,12 @@ class PhoneControllerTest {
     @Test fun sipIncomingWaitsForExplicitAnswerAndChecksAuthorizationAgain() = runTest {
         for (allowed in listOf(true, false)) {
             val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
-            f.events.getValue("sip")("incoming", obj()); runCurrent()
+            f.phoneEvent!!("incoming", obj("signal" to obj("type" to "offer", "sdp" to "v=0"))); runCurrent()
             assertEquals("incoming:sip", f.native.last()); assertEquals("incoming", f.controller.call?.status)
-            assertFalse("sip.answer" in f.commands)
+            assertFalse("accept" in f.phoneActions)
             f.authorize = allowed; f.controller.answer(); runCurrent()
-            if (allowed) { assertTrue("sip.answer" in f.commands); assertEquals("connecting", f.controller.call?.status) }
-            else { assertFalse("sip.answer" in f.commands); assertNull(f.controller.call); assertTrue(f.controller.error) }
+            if (allowed) { assertTrue("accept" in f.phoneActions); assertEquals("connecting", f.controller.call?.status) }
+            else { assertFalse("accept" in f.phoneActions); assertNull(f.controller.call); assertTrue(f.controller.error) }
             f.controller.close()
         }
     }
@@ -74,7 +85,7 @@ class PhoneControllerTest {
             val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
             if (changed) f.revision = "v2" else f.authorize = false
             f.controller.dialSip("101"); runCurrent()
-            assertFalse("outgoing:sip" in f.native); assertFalse("sip.call" in f.commands); assertTrue(f.controller.error); assertNull(f.controller.call)
+            assertFalse("outgoing:sip" in f.native); assertFalse("call" in f.phoneActions); assertTrue(f.controller.error); assertNull(f.controller.call)
             f.controller.close()
         }
     }
@@ -93,7 +104,7 @@ class PhoneControllerTest {
         f.pendingAccept!!.complete(obj("data" to obj("channel_id" to "dm"))); runCurrent()
         assertEquals("dialing", f.controller.call?.status); assertNotNull(f.streamEvent)
         f.streamEvent!!("room_state", obj("ice_servers" to JsonArray(emptyList()))); runCurrent()
-        assertTrue("dm.start" in f.commands)
+        assertTrue("rtc.start" in f.commands)
         f.events.getValue("dm")("connected", obj()); assertEquals("active", f.controller.call?.status)
         f.controller.close(); runCurrent(); assertNull(f.controller.call); assertTrue("dm" in f.closed)
     }
@@ -123,7 +134,7 @@ class PhoneControllerTest {
         f.streamEvent!!("signal", obj("from_session_id" to "remote", "signal" to obj("type" to "offer"))); runCurrent()
         assertTrue(f.commands.isEmpty())
         f.streamEvent!!("room_state", obj("participants" to JsonArray(emptyList()))); runCurrent()
-        assertEquals(listOf("dm.start", "dm.event", "dm.event"), f.commands)
+        assertEquals(listOf("rtc.start", "rtc.event", "rtc.event"), f.commands)
         f.controller.close()
     }
     @Test fun directoryTimeoutIsVisibleAndCanBeRetried() = runTest {
@@ -132,10 +143,27 @@ class PhoneControllerTest {
         f.beforeRead = null; f.controller.refresh(); runCurrent()
         assertFalse(f.controller.loadError); assertTrue(f.controller.loaded); f.controller.close()
     }
+    @Test fun oldQueuedHangupCompletesBeforeAnotherTelephoneCallCanStart() = runTest {
+        val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
+        f.pendingPhoneCall = CompletableDeferred(); f.controller.dialSip("101"); runCurrent()
+        f.controller.hangup(); runCurrent(); assertEquals("connecting", f.controller.registration.status)
+        f.controller.dialSip("102"); runCurrent(); assertEquals(1, f.native.count { it == "outgoing:sip" })
+        f.pendingPhoneCall!!.complete(Unit); runCurrent(); assertEquals("ready", f.controller.registration.status)
+        f.controller.dialSip("102"); runCurrent(); assertEquals(listOf("call", "hangup", "call"), f.phoneActions)
+        f.controller.close()
+    }
+    @Test fun telephoneCandidatesReceivedBeforeAnswerAreRetainedWithoutCapture() = runTest {
+        val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
+        f.phoneEvent!!("incoming", obj("signal" to obj("type" to "offer", "sdp" to "v=0")))
+        f.phoneEvent!!("signal", obj("from_session_id" to "gateway-peer", "signal" to obj("type" to "candidate", "candidate" to obj("candidate" to "dummy"))))
+        assertTrue(f.commands.isEmpty()); f.controller.answer(); runCurrent()
+        assertEquals(listOf("rtc.start", "rtc.event", "rtc.event"), f.commands)
+        f.controller.close()
+    }
     @Test fun simultaneousSipAndDmCallsAreNotCreated() = runTest {
         val f = Fixture(backgroundScope); f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
         f.controller.callDm("dm", "Bob"); runCurrent(); f.controller.dialSip("101"); runCurrent()
-        assertEquals(1, f.native.count { it.startsWith("outgoing:") }); assertFalse("sip.call" in f.commands)
+        assertEquals(1, f.native.count { it.startsWith("outgoing:") }); assertFalse("call" in f.phoneActions)
         f.controller.close()
     }
 }
