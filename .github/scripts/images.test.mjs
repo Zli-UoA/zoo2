@@ -13,7 +13,11 @@ test('component filters and common inputs', () => {
   assert.deepEqual(changedComponents(['backend/Cargo.lock']), ['backend']);
   assert.deepEqual(changedComponents(['docs/slack-event-coverage.json']), ['backend']);
   // backend は E2EE の署名の検証に crates/zoo-crypto を path で依存する。
-  assert.deepEqual(changedComponents(['crates/zoo-crypto/src/lib.rs']), ['backend']);
+  assert.deepEqual(changedComponents(['crates/zoo-crypto/src/lib.rs']), ['frontend', 'backend']);
+  assert.deepEqual(changedComponents(['crates/zoo-crypto-wasm/src/lib.rs']), ['frontend']);
+  assert.deepEqual(changedComponents(['rust-toolchain.toml']), ['frontend']);
+  assert.deepEqual(changedComponents(['.github/scripts/test-selection.mjs', '.github/actions/crypto-wasm/action.yaml']), []);
+  assert.deepEqual(changedComponents(['.github/workflows/ci-backend.yaml', '.github/workflows/ci-frontend.yaml', '.github/workflows/ci-desktop-tauri.yaml', 'infra/compose.ci-cache.yaml', 'infra/compose.ci-cache-write.yaml']), []);
   assert.deepEqual(changedComponents(['infra/db/migrations/a.sql']), ['migrate']);
   assert.equal(changedComponents(['.github/scripts/image-plan.mjs']).length, 3);
   assert.deepEqual(changedComponents(['README.md']), []);

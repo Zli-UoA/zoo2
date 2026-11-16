@@ -15,6 +15,7 @@ on:
       - ".github/scripts/*test-selection*.mjs"
       - ".github/scripts/backend-e2e-selection.mjs"
       - ".github/workflows/select-tests.yaml"
+      - ".github/actions/crypto-wasm/**"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
   pull_request:
@@ -29,6 +30,7 @@ on:
       - ".github/scripts/*test-selection*.mjs"
       - ".github/scripts/backend-e2e-selection.mjs"
       - ".github/workflows/select-tests.yaml"
+      - ".github/actions/crypto-wasm/**"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
@@ -41,6 +43,8 @@ concurrency:
 jobs:
   test-selection:
     uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-frontend-auth-e2e
 
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -59,30 +63,9 @@ jobs:
         with:
           # この後のビルドで動く依存のコードから、GitHub のトークンを読めないようにする。
           persist-credentials: false
-      - name: Read Rust toolchain and wasm-bindgen version
-        id: versions
-        run: |
-          echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-          echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ steps.versions.outputs.channel }}
-          targets: wasm32-unknown-unknown
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: crates/zoo-crypto-wasm
-      - name: Install wasm-bindgen-cli
-        # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
-        run: |
-          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen ${{ steps.versions.outputs.wasm-bindgen }}" ]; then
-            cargo install --locked wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
-          fi
-      - name: Build wasm package
-        run: crates/zoo-crypto-wasm/build.sh
+          fetch-depth: 2
+      - name: Restore or build Wasm package
+        uses: ./.github/actions/crypto-wasm
       - name: Upload wasm package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -121,6 +104,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       # Pull and boot the databases while the frontend and Rust are set up.
       # "Wait for PostgreSQL and Electric" below waits until they are healthy.
@@ -221,7 +205,7 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:8000/health > /dev/null
-          pnpm test:e2e:oidc
+          node ../.github/scripts/playwright-test-selection.mjs oidc
 
       - name: Backend logs
         if: failure()

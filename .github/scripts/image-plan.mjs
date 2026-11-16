@@ -27,10 +27,10 @@ export function promotionAliases(selected, sha, release) {
 }
 
 // 変更されたファイルの一覧から、ビルドが必要なコンポーネントを返す。
-// ビルド用のスクリプト・アクション・ワークフロー、.dockerignore が変わった場合は、すべてのコンポーネントをビルドし直す。
+// イメージ計画・配布workflow・.dockerignore が変わった場合は、全コンポーネントを検証する。
 // それ以外は、各コンポーネントのソースと Dockerfile の変更を見る（migrate のソースは infra/db/、frontend は nginx 設定・CSP ハッシュ生成・entrypoint も含む）。
 export function changedComponents(files) {
-  const shared = files.some(f => f.startsWith('.github/scripts/') || f.startsWith('.github/actions/') || f === '.github/workflows/cd-images.yaml' || f === '.dockerignore');
+  const shared = files.some(f => ['.github/scripts/image-plan.mjs', '.github/workflows/cd-images.yaml', '.dockerignore'].includes(f));
   return components.filter(c => shared || files.some(f => componentFile(c, f)));
 }
 
@@ -42,6 +42,7 @@ function componentFile(c, f) {
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
+    (c === 'frontend' && (f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-crypto-wasm/') || f === 'rust-toolchain.toml')) ||
     (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/')));
 }
 

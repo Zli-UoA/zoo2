@@ -43,6 +43,8 @@ concurrency:
 jobs:
   test-selection:
     uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-backend
 
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -54,6 +56,7 @@ jobs:
   # The binary itself is built and linked by e2e (integration tests) and deploy-image (release),
   # so a separate `cargo build` here would only recompile what clippy already checked.
   check:
+    if: fromJSON(needs.test-selection.outputs.backend).check
     needs: [runner, test-selection]
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
@@ -94,7 +97,7 @@ jobs:
         run: cargo test --lib
 
   deploy-image:
-    if: fromJSON(needs.test-selection.outputs.backend).full
+    if: fromJSON(needs.test-selection.outputs.backend).deploy
     needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.

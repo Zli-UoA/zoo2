@@ -1,8 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { escapePattern, readChangedCases } from './browser-test-selection.mjs';
+import { readChanges } from './test-selection-diff.mjs';
+import { selectSourceCases } from './vitest-test-selection.mjs';
+export { readChanges } from './test-selection-diff.mjs';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const frontend = fileURLToPath(new URL('../../frontend/', import.meta.url));
 const shaPattern = /^[a-f0-9]{40}$/;
 
@@ -27,34 +30,42 @@ export function selectTests(eventName, event, changes) {
   return { mode: 'related', files: changes.map(({ path }) => path.slice('frontend/'.length)), reason: 'select tests through Vitest import dependencies' };
 }
 
-export function readChanges(base, git = execFileSync) {
-  if (!shaPattern.test(base ?? '')) throw new Error('Invalid base SHA');
-  const options = { cwd: root, encoding: 'utf8', timeout: 30000 };
-  try {
-    git('git', ['cat-file', '-e', `${base}^{commit}`], { ...options, stdio: 'pipe' });
-  } catch {
-    git('git', ['fetch', '--no-tags', '--depth=1', 'origin', base], { ...options, stdio: 'pipe' });
-  }
-  // Disable rename detection so a rename includes a deletion and triggers a full run.
-  const fields = git('git', ['diff', '--no-renames', '--name-status', '-z', base, 'HEAD'], options).split('\0');
-  if (fields.pop() !== '' || fields.length % 2) throw new Error('Invalid git diff');
-  const changes = [];
-  for (let i = 0; i < fields.length; i += 2) changes.push({ status: fields[i], path: fields[i + 1] });
-  return changes;
-}
-
 export function testArguments(project, selection) {
-  if (!['unit', 'browser', 'vrt'].includes(project)) throw new Error('Unsupported test project');
+  if (!['unit', 'browser', 'vrt', 'storybook'].includes(project)) throw new Error('Unsupported test project');
   const args = ['exec', 'vp', 'test'];
   // Pass explicit paths instead of --changed: Actions uses shallow checkouts,
   // while Vitest's --changed needs a merge base from the commit history.
   if (selection.mode === 'related') args.push('related', ...selection.files);
   args.push('--project', project, '--run');
   if (selection.mode === 'related') args.push('--passWithNoTests');
+  if (selection.patterns) args.push('--testNamePattern', selection.patterns.join('|') || '(?!)');
+  else if (selection.titles?.length) args.push('--testNamePattern', selection.titles.map(title => `(?:^| )${escapePattern(title)}$`).join('|'));
+  if (project === 'storybook') args.push('--maxWorkers=1', '--fileParallelism=false');
   return args;
 }
 
-export function runTests({ project, eventName, event, git = execFileSync, run = spawnSync, log = console.log }) {
+export function selectCaseTitles(project, selection, changes, base, { git = execFileSync, compiler } = {}) {
+  if (selection.mode !== 'related' || project === 'storybook') return selection;
+  const belongs = path => {
+    if (project === 'vrt') return /\.vrt\.test\.tsx$/.test(path);
+    if (project === 'browser') return /\.browser\.test\.tsx?$/.test(path);
+    return /\.test\.ts$/.test(path) && !/\.browser\.test\.ts$/.test(path);
+  };
+  if (!changes.every(c => c.status === 'M' && belongs(c.path))) return selection;
+  try {
+    const titles = [];
+    for (const { path } of changes) {
+      const cases = readChangedCases(base, path, { git, compiler });
+      if (!cases) return selection;
+      titles.push(...cases.map(c => c.title));
+    }
+    return { ...selection, titles: [...new Set(titles)] };
+  } catch {
+    return selection;
+  }
+}
+
+export function runTests({ project, eventName, event, git = execFileSync, run = spawnSync, compiler, log = console.log }) {
   let changes;
   if (eventName === 'pull_request') {
     try {
@@ -63,8 +74,9 @@ export function runTests({ project, eventName, event, git = execFileSync, run = 
       log('Test Selection: cannot read diff; running the full suite');
     }
   }
-  const selection = selectTests(eventName, event, changes);
-  log(`Test Selection (${project}): ${selection.mode}; ${selection.reason}`);
+  const base = event?.pull_request?.base?.sha;
+  const selection = selectSourceCases(project, selectCaseTitles(project, selectTests(eventName, event, changes), changes, base, { git, compiler }), changes, base, { git, compiler, log });
+  log(`Test Selection (${project}): ${selection.mode}; ${selection.reason}${selection.titles ? `; ${selection.titles.length} case titles` : ''}${selection.patterns ? `; ${selection.patterns.length} cases affected by source dependencies` : ''}`);
   // A real test failure is propagated; it is never retried as a full run.
   const result = run('pnpm', testArguments(project, selection), { cwd: frontend, stdio: 'inherit' });
   return result.status ?? 1;

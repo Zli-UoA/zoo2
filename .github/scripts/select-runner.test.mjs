@@ -95,10 +95,10 @@ for (const [name, input, expected, hostedExpected] of cases) {
   });
 }
 
-const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "cd-db-erd.yaml": ["deploy"], "deployment-badges.yaml": ["test", "publish"], "terraform-r2.yaml": ["apply", "plan", "validate"], "automerge-gate.yaml": ["gate"]};
+const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["promote", "publish"], "cd-storybook.yaml": ["deploy"], "cd-db-erd.yaml": ["deploy"], "deployment-badges.yaml": ["test", "publish"], "terraform-r2.yaml": ["apply", "plan", "validate"]};
 const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
-const hostedJobs = {"select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
+const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["gate"], "select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
   "ci-desktop-tauri.yaml": ["check"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};

@@ -2,9 +2,51 @@ name: Publish images
 on:
   push:
     branches: [main]
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-wasm/**"
+      - "rust-toolchain.toml"
+      - "docs/slack-event-coverage.json"
+      - "infra/db/**"
+      - "infra/Dockerfile-frontend-deploy*"
+      - "infra/Dockerfile-backend-deploy*"
+      - "infra/Dockerfile-migrate-deploy*"
+      - "infra/frontend-nginx.conf"
+      - "infra/frontend-entrypoint.sh"
+      - "infra/csp-hashes.mjs"
+      - ".dockerignore"
+      - ".github/scripts/image-plan.mjs"
+      - ".github/scripts/image-cleanup.mjs"
+      - ".github/scripts/images.test.mjs"
+      - ".github/scripts/select-runner.test.mjs"
+      - ".github/workflows/select-runner.yaml"
+      - ".github/workflows/cd-images.yaml"
   pull_request:
     # labeled publishes the tags a PR opened before the preview existed may lack.
     types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-wasm/**"
+      - "rust-toolchain.toml"
+      - "docs/slack-event-coverage.json"
+      - "infra/db/**"
+      - "infra/Dockerfile-frontend-deploy*"
+      - "infra/Dockerfile-backend-deploy*"
+      - "infra/Dockerfile-migrate-deploy*"
+      - "infra/frontend-nginx.conf"
+      - "infra/frontend-entrypoint.sh"
+      - "infra/csp-hashes.mjs"
+      - ".dockerignore"
+      - ".github/scripts/image-plan.mjs"
+      - ".github/scripts/image-cleanup.mjs"
+      - ".github/scripts/images.test.mjs"
+      - ".github/scripts/select-runner.test.mjs"
+      - ".github/workflows/select-runner.yaml"
+      - ".github/workflows/cd-images.yaml"
   workflow_dispatch:
 permissions:
   contents: read
@@ -15,6 +57,8 @@ concurrency:
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   runner:
+    needs: plan
+    if: needs.plan.outputs.enabled == 'true' && needs.plan.outputs.has_images == 'true'
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
@@ -23,7 +67,7 @@ jobs:
     if: >-
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
       (github.event.action != 'labeled' || github.event.label.name == 'preview')
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
