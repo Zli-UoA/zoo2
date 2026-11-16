@@ -1432,7 +1432,7 @@ internal fun Composer(
                 )
             }
             .padding(top = 1.dp)
-            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .padding(horizontal = 12.dp, vertical = if (LocalTouchUi.current) 8.dp else 12.dp)
     ) {
         sendError?.let { error ->
             Row(

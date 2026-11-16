@@ -21,7 +21,7 @@ fun PaneHeader(
     val platform = LocalWebPlatform.current
     val tag = remember { "pane-header:${platform?.uuid().orEmpty()}" }
     Row(
-        modifier.fillMaxWidth().heightIn(min = if (LocalTouchUi.current) 64.dp else 60.dp)
+        modifier.fillMaxWidth().heightIn(min = if (LocalTouchUi.current) 56.dp else 60.dp)
             .padding(horizontal = horizontalPadding, vertical = if (LocalTouchUi.current) 4.dp else 0.dp).semantics {
             testTag = tag
         },
