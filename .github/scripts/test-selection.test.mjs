@@ -6,6 +6,15 @@ import { cargoCommands, slackTests } from './backend-e2e-selection.mjs';
 
 const change = path => ({ status: 'M', path });
 
+test('VRT selection matches the tsx-only include; vrt.test.ts belongs to unit', () => {
+  for (const status of ['A', 'M']) {
+    for (const [extension, expected] of [['ts', 'unit'], ['tsx', 'vrt']]) {
+      const plan = selectSuites('pull_request', [{ status, path: `frontend/src/lib/palette.vrt.test.${extension}` }]);
+      assert.deepEqual(Object.keys(plan.frontend).filter(k => plan.frontend[k]), [expected]);
+    }
+  }
+});
+
 test('independent frontend tests only select the owning suite', () => {
   for (const [path, expected] of [
     ['frontend/src/lib/time.test.ts', 'unit'],

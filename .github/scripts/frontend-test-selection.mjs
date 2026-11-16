@@ -18,7 +18,7 @@ export function selectTests(eventName, event, changes) {
     if (!/^frontend\/src\/.+\.(ts|tsx)$/.test(path) || path.endsWith('.d.ts')) {
       return full('configuration, dependencies or non-module resources changed');
     }
-    if ((/^frontend\/src\/(test|routes|sw)\//.test(path) && !/\.vrt\.test\.tsx?$/.test(path)) ||
+    if ((/^frontend\/src\/(test|routes|sw)\//.test(path) && !/\.vrt\.test\.tsx$/.test(path)) ||
         /^frontend\/src\/lib\/(i18n|pwa|e2ee|oidc)\//.test(path) ||
         /(?:^|\/)(?:routeTree\.gen|router|main)\.[^/]+$/.test(path)) {
       return full('shared setup, workers, routes or runtime resources changed');

@@ -7,7 +7,7 @@ const event = { pull_request: { base: { sha: base } } };
 const changes = [{ status: 'M', path: 'frontend/src/lib/time.ts' }];
 
 test('source and test additions or edits select tests through imports', () => {
-  for (const path of ['frontend/src/lib/time.ts', 'frontend/src/lib/time.test.ts', 'frontend/src/components/Button.tsx']) {
+  for (const path of ['frontend/src/lib/time.ts', 'frontend/src/lib/time.test.ts', 'frontend/src/components/Button.tsx', 'frontend/src/test/vrt/catalog.vrt.test.tsx']) {
     for (const status of ['A', 'M']) {
       assert.equal(selectTests('pull_request', event, [{ status, path }]).mode, 'related');
     }
@@ -25,6 +25,7 @@ test('configuration, shared setup and resources fall back to full', () => {
     'frontend/package.json', 'frontend/pnpm-lock.yaml', 'frontend/vite.config.ts',
     'frontend/tsconfig.json', 'frontend/.storybook/preview.ts',
     'frontend/src/test/browser-setup.ts', 'frontend/src/routes/index.tsx',
+    'frontend/src/test/palette.vrt.test.ts',
     'frontend/src/sw/push.ts', 'frontend/src/lib/i18n/locale.ts',
     'frontend/src/lib/pwa/push.ts', 'frontend/src/lib/e2ee/worker.ts',
     'frontend/src/lib/oidc/auth-worker.ts', 'frontend/src/routeTree.gen.ts',

@@ -29,7 +29,7 @@ export function selectSuites(eventName, changes) {
     const backend = /^backend\/tests\/([a-zA-Z0-9_]+_test)\.rs$/.exec(path);
     if (backend) { targets.push(backend[1]); continue; }
     if (specs[path]) { frontend[specs[path]] = true; continue; }
-    if (/^frontend\/src\/.+\.vrt\.test\.tsx?$/.test(path)) { frontend.vrt = true; continue; }
+    if (/^frontend\/src\/.+\.vrt\.test\.tsx$/.test(path)) { frontend.vrt = true; continue; }
     if (/^frontend\/src\/.+\.browser\.test\.tsx?$/.test(path)) { frontend.browser = true; continue; }
     if (/^frontend\/src\/.+\.test\.ts$/.test(path)) { frontend.unit = true; continue; }
     // Source, fixtures, shared test helpers and configuration can affect any suite.
