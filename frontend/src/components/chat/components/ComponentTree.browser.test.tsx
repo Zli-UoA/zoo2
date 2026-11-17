@@ -351,6 +351,14 @@ describe("ComponentTree", () => {
       </LocaleProvider>,
     );
     await waitFor(() => expect(screen.queryByRole("button", { name: "Yes" })).toBeNull());
+    // 元の文書に戻っても、閉じた確認はひとりでに開かない
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree document={doc("v1")} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await screen.findByRole("button", { name: "v1" });
+    expect(screen.queryByRole("button", { name: "Yes" })).toBeNull();
     expect(api.request).not.toHaveBeenCalled();
   });
 });

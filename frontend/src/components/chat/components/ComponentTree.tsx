@@ -811,6 +811,8 @@ function useConfirm(confirm: Confirm | undefined, id: string | undefined) {
     docKey: string;
     action: () => void;
   } | null>(null);
+  // 文書の更新や部品の入れ替わりで無効になった確認は捨てる（元の文書に戻っても、ひとりでに再び開かない）
+  if (pending && (pending.docKey !== docKey || pending.id !== id)) setPending(null);
   const open = !!pending && pending.id === id && pending.docKey === docKey;
   const dialog = pending ? (
     <ConfirmActionDialog
