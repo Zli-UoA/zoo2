@@ -733,7 +733,6 @@
       "page": "Page {{page}} of {{pages}}",
       "spoiler": "Contains a spoiler (open it in the web app)",
       "webOnly": "Use the web app for this control",
-      "moreRows": "{{count}} more rows are shown in the web version",
       "date": "Date",
       "time": "Time",
       "datetime": "Date and time"

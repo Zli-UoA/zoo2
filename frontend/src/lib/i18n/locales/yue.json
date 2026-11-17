@@ -733,7 +733,6 @@
       "page": "第 {{page}} / {{pages}} 頁",
       "spoiler": "有劇透內容（可以喺網頁版睇）",
       "webOnly": "請喺網頁版做呢個操作",
-      "moreRows": "其餘 {{count}} 行可以喺網頁版睇",
       "date": "日期",
       "time": "時間",
       "datetime": "日期同時間"

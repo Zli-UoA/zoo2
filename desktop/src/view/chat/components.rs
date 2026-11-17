@@ -597,7 +597,8 @@ fn table(
         }
     };
     let mut rows = Vec::new();
-    for (r, row) in x.rows.iter().take(50).enumerate() {
+    // 行数は検証で上限がある（見出しなし 100 行・見出しあり 201 行）ので、すべて描画する
+    for (r, row) in x.rows.iter().enumerate() {
         let cells = row
             .iter()
             .map(|c| div().w(px(120.0)).px_2().child(cell(c, n, cx)))
@@ -612,17 +613,9 @@ fn table(
         }
         rows.push(line);
     }
-    // 51 行目からは描画しない（行が多いと重い）。残りがあることと、Web 版で見られることを示す
-    let rest = x.rows.len().saturating_sub(50);
     v_flex()
         .children(x.caption.clone().map(|c| small(c, cx)))
         .children(rows)
-        .children((rest > 0).then(|| {
-            small(
-                i18n.t_with("apps.components.moreRows", &[("count", &rest.to_string())]),
-                cx,
-            )
-        }))
         .into_any_element()
 }
 
