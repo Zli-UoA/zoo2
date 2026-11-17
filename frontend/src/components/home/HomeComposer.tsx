@@ -7,7 +7,6 @@ import {
 import { ActivityPubText, ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
-import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import {
   ImagePlusIcon,
@@ -204,7 +203,7 @@ export function HomeComposer({
     setChannelId("");
   }, [channelId, visibility, selectedChannelId, channelSelectionPending, settingsKey]);
   const [sending, setSending] = useState(false);
-  const [failed, setFailed] = useState<false | "send" | "join">(false);
+  const [failed, setFailed] = useState<false | "send" | "forbidden">(false);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const federated = federationEnabled && replyTo?.apub !== false && federatePreference;
@@ -261,10 +260,8 @@ export function HomeComposer({
       setImageError(false);
       setOpen(false);
     } catch (error) {
-      // 参加行があるチャンネルのスレッドは、参加していないと返信できない（403）。
-      setFailed(
-        error instanceof ApiError && error.status === 403 && replyTo?.channel_id ? "join" : "send",
-      );
+      // 403 はチャンネルの投稿権限による（返信は参加を要求せず、返信と同時に参加する）。
+      setFailed(error instanceof ApiError && error.status === 403 ? "forbidden" : "send");
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -278,6 +275,7 @@ export function HomeComposer({
         if (inFlight.current) return;
         const show = () => {
           setReplyTo(post);
+          setFailed(false);
           setChannelId("");
           setVisibility((current) => replyVisibility(current, post.visibility, !!post.channel_id));
           setOpen(true);
@@ -489,7 +487,10 @@ export function HomeComposer({
                     size="icon-sm"
                     disabled={sending}
                     aria-label={t("home.cancelReply")}
-                    onClick={() => setReplyTo(null)}
+                    onClick={() => {
+                      setReplyTo(null);
+                      setFailed(false);
+                    }}
                   >
                     <XIcon />
                   </Button>
@@ -617,21 +618,7 @@ export function HomeComposer({
               </div>
               {failed ? (
                 <p role="alert" className="text-sm text-destructive">
-                  {failed === "join" && replyTo?.channel_id ? (
-                    <>
-                      {t("home.joinThreadRequired")}{" "}
-                      <Link
-                        className="text-link underline"
-                        to="/channels/$channelId"
-                        params={{ channelId: replyTo.channel_id }}
-                        search={{ message: replyTo.id }}
-                      >
-                        {t("home.openChannelThread")}
-                      </Link>
-                    </>
-                  ) : (
-                    t("home.sendError")
-                  )}
+                  {failed === "forbidden" ? t("home.postForbidden") : t("home.sendError")}
                 </p>
               ) : null}
             </div>

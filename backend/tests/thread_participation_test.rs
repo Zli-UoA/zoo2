@@ -187,7 +187,7 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
             .0,
         StatusCode::FORBIDDEN
     );
-    // Home replies into a channel thread are gated the same way and never rejoin silently.
+    // A Home reply is the exception: it joins the thread as it posts, even after a leave.
     let home_root = ok(
         &app,
         &users[0],
@@ -210,15 +210,10 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
         json!({}),
     )
     .await?;
-    assert_eq!(
-        call(&app, &users[1], "POST", "/api/home", home_reply)
-            .await?
-            .0,
-        StatusCode::FORBIDDEN
-    );
+    ok(&app, &users[1], "POST", "/api/home", home_reply).await?;
     assert_eq!(
         ok(&app, &users[1], "GET", &home_path, Value::Null).await?["data"]["membership"],
-        "left"
+        "joined"
     );
     assert_eq!(
         ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["tracked"],
