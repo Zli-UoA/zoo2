@@ -76,6 +76,9 @@ pub struct WorkspaceView {
     /// 確認（confirm）を表示中のメッセージ部品の操作のキー。
     /// 描画中に、文書の更新で無効になった確認を捨てるので RefCell にする
     pub component_confirm: std::cell::RefCell<Option<String>>,
+    /// 最後に描いたチャンネルとスレッド。変わったら開いていた確認を捨てる（離れている間に文書が
+    /// A → B → A と戻っても、戻ったときに古い確認を出さない）
+    pub confirm_view: std::cell::RefCell<Option<String>>,
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     pub attachment_focus_handles:
         std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
@@ -592,6 +595,7 @@ impl WorkspaceView {
             search_close_focus: cx.focus_handle().tab_stop(true),
             expanded_cards: std::collections::HashSet::new(),
             component_confirm: Default::default(),
+            confirm_view: Default::default(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             toolbar_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -702,6 +706,23 @@ impl Render for WorkspaceView {
                 .as_deref()
                 .is_some_and(|id| state.is_encrypted_channel(id))
         });
+        // チャンネルやスレッドを移ったら、開いていた確認を捨てる
+        {
+            let view = format!(
+                "{}:{}",
+                self.state
+                    .read(cx)
+                    .current_channel
+                    .as_deref()
+                    .unwrap_or_default(),
+                thread_root.as_deref().unwrap_or_default()
+            );
+            let mut last = self.confirm_view.borrow_mut();
+            if last.as_deref() != Some(view.as_str()) {
+                *self.component_confirm.borrow_mut() = None;
+                *last = Some(view);
+            }
+        }
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
             let (div, target) = self.render_thread_view(
                 root_id,
