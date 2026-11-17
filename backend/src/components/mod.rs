@@ -166,13 +166,13 @@ fn finish_lenient(
     Ok(doc)
 }
 
+/// Slack 形式の `text`・`blocks` がなく、Discord 形式の項目があれば Discord 形式。
+/// `attachments` は両方にある（Discord では添付ファイルの情報）ので、それだけでは Slack 形式としない
 fn is_discord(v: &Value) -> bool {
     ["components", "flags", "embeds", "content"]
         .iter()
         .any(|k| v.get(*k).is_some())
-        && ["blocks", "attachments", "text"]
-            .iter()
-            .all(|k| v.get(*k).is_none())
+        && ["blocks", "text"].iter().all(|k| v.get(*k).is_none())
 }
 
 /// 受信 Webhook の本文を読む。Slack 形式と Discord 形式の両方を受け付ける。
@@ -474,6 +474,28 @@ mod tests {
         assert!(matches!(doc.find("x"), Some(Component::Button(b)) if b.disabled));
         let e = hook(json!({"content":"Build","embeds":[{"title":"ok","color":65280}]}));
         assert_eq!(e.doc.unwrap().components.len(), 2);
+    }
+
+    #[test]
+    fn discord_attachments_do_not_make_it_slack() {
+        // Discord の attachments（添付ファイルの情報）があっても Discord 形式として読む
+        let i = hook(json!({"content":"デプロイ完了","attachments":[]}));
+        assert_eq!(i.format, Format::Discord);
+        assert_eq!(i.content, "デプロイ完了");
+        let e = hook(
+            json!({"content":"Build","embeds":[{"title":"ok"}],"attachments":[{"id":"0","filename":"a.txt"}]}),
+        );
+        assert_eq!(e.format, Format::Discord);
+        assert!(e.doc.is_some());
+        // text や blocks があれば Slack 形式。attachments だけでも Slack 形式
+        assert_eq!(
+            hook(json!({"text":"hi","content":"x"})).format,
+            Format::Slack
+        );
+        assert_eq!(
+            hook(json!({"attachments":[{"text":"a"}]})).format,
+            Format::Slack
+        );
     }
 
     #[test]
