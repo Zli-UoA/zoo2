@@ -187,18 +187,38 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
             .0,
         StatusCode::FORBIDDEN
     );
-    // Home replies into the same channel thread are gated the same way and never rejoin silently.
+    // Home replies into a channel thread are gated the same way and never rejoin silently.
+    let home_root = ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/home",
+        json!({"content":"home root","channel_id":channel,"visibility":"public"}),
+    )
+    .await?["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let home_reply = json!({"content":"via home","in_reply_to":home_root,"channel_id":channel,"visibility":"public"});
+    ok(&app, &users[1], "POST", "/api/home", home_reply.clone()).await?;
+    let home_path = format!("/api/threads/{home_root}");
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("{home_path}/leave"),
+        json!({}),
+    )
+    .await?;
     assert_eq!(
-        call(
-            &app,
-            &users[1],
-            "POST",
-            "/api/home",
-            json!({"content":"via home","in_reply_to":reply,"visibility":"public"})
-        )
-        .await?
-        .0,
+        call(&app, &users[1], "POST", "/api/home", home_reply)
+            .await?
+            .0,
         StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ok(&app, &users[1], "GET", &home_path, Value::Null).await?["data"]["membership"],
+        "left"
     );
     assert_eq!(
         ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["tracked"],
