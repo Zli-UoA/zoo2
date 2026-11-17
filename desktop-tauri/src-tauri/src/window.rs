@@ -183,10 +183,10 @@ pub fn add_remote_capability(app: &App, core: &Core) -> tauri::Result<()> {
 pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
     // ログアウトや期限切れでは、画面が破棄されて React の後始末が走らないことがある。
     // バッジは OS 側に残るので、ここで消す。
-    if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. }) {
-        if let Some(window) = app.get_webview_window(MAIN) {
-            let _ = window.set_badge_count(None);
-        }
+    if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. })
+        && let Some(window) = app.get_webview_window(MAIN)
+    {
+        let _ = window.set_badge_count(None);
     }
     if core.ui() != UiMode::Remote {
         return;
