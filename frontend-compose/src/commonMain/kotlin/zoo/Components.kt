@@ -571,7 +571,8 @@ private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
     val rows = (c["rows"] as? JsonArray)?.mapNotNull { row -> (row as? JsonArray)?.mapNotNull { it as? JsonObject } }.orEmpty()
     val header = c.cFlag("header")
     // page_size が 0 でも割り算で落ちないよう、1 以上にする
-    val pageSize = (c.cInt("page_size") ?: rows.size).coerceAtLeast(1)
+    // page_size が 0 以下や未指定のときは全行を 1 ページにする（Web と同じ）
+    val pageSize = (c.cInt("page_size")?.takeIf { it > 0 } ?: rows.size).coerceAtLeast(1)
     var pageIndex by remember { mutableStateOf(0) }
     val body = if (header) rows.drop(1) else rows
     val pages = ((body.size + pageSize - 1) / pageSize).coerceAtLeast(1)
