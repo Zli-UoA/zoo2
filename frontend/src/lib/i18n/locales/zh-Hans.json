@@ -729,6 +729,8 @@
     "post": "发布",
     "sending": "发布中…",
     "sendError": "发布失败，草稿已保留，请重试。",
+    "joinThreadRequired": "你尚未加入该频道的讨论串，因此无法回复。",
+    "openChannelThread": "到频道中打开讨论串并加入",
     "loadError": "无法加载时间线。",
     "loading": "加载中…",
     "empty": "还没有帖子",

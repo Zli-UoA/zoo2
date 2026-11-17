@@ -7,6 +7,7 @@ import {
 import { ActivityPubText, ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import {
   ImagePlusIcon,
@@ -39,7 +40,7 @@ import {
 
 import { attachmentFilesFromClipboard, resolveAttachmentContentType } from "../../lib/attachments";
 import { useCollections } from "../../lib/electric/collections-context";
-import { createConfiguredApiClient } from "../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 
 export interface HomePostInput {
   image_ids?: string[];
@@ -203,7 +204,7 @@ export function HomeComposer({
     setChannelId("");
   }, [channelId, visibility, selectedChannelId, channelSelectionPending, settingsKey]);
   const [sending, setSending] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<false | "send" | "join">(false);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const federated = federationEnabled && replyTo?.apub !== false && federatePreference;
@@ -259,8 +260,11 @@ export function HomeComposer({
       imagesRef.current = [];
       setImageError(false);
       setOpen(false);
-    } catch {
-      setFailed(true);
+    } catch (error) {
+      // 参加行があるチャンネルのスレッドは、参加していないと返信できない（403）。
+      setFailed(
+        error instanceof ApiError && error.status === 403 && replyTo?.channel_id ? "join" : "send",
+      );
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -613,7 +617,21 @@ export function HomeComposer({
               </div>
               {failed ? (
                 <p role="alert" className="text-sm text-destructive">
-                  {t("home.sendError")}
+                  {failed === "join" && replyTo?.channel_id ? (
+                    <>
+                      {t("home.joinThreadRequired")}{" "}
+                      <Link
+                        className="text-link underline"
+                        to="/channels/$channelId"
+                        params={{ channelId: replyTo.channel_id }}
+                        search={{ message: replyTo.id }}
+                      >
+                        {t("home.openChannelThread")}
+                      </Link>
+                    </>
+                  ) : (
+                    t("home.sendError")
+                  )}
                 </p>
               ) : null}
             </div>

@@ -196,12 +196,24 @@ async fn create(
         && let Some(channel) = &body.channel_id
         && let Some(parent_id) = parent.as_ref().and_then(|p| p["id"].as_str())
     {
+        // Same target as POST /api/messages and join/leave: the requested thread until a staged
+        // migration has moved it, else the canonical root. Canonical root is locked first.
         query(&mut tx,
             "SELECT '{}'::text FROM messages WHERE id=thread_root($1) AND channel_id=$2 FOR NO KEY UPDATE",
             &[parent_id, channel]).await?;
+        let gate = one(&mut tx,
+            "SELECT json_build_object('id',CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root($1))) THEN $1 ELSE thread_root($1) END)::text",
+            &[parent_id]).await?;
+        let gate_root = gate["id"].as_str().unwrap_or(parent_id).to_owned();
+        query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=$1 AND channel_id=$2 FOR NO KEY UPDATE",
+            &[gate_root.as_str(), channel],
+        )
+        .await?;
         let state = query(&mut tx,
-            "SELECT json_build_object('blocked',EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=thread_root($1)) AND NOT EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=thread_root($1) AND t.user_id=$2 AND t.left_at IS NULL))::text FROM messages m WHERE m.id=$1 AND m.channel_id=$3",
-            &[parent_id, &user.id, channel]).await?;
+            "SELECT json_build_object('blocked',EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=$1) AND NOT EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=$1 AND t.user_id=$2 AND t.left_at IS NULL))::text FROM messages m WHERE m.id=$1 AND m.channel_id=$3",
+            &[gate_root.as_str(), &user.id, channel]).await?;
         if state.first().is_some_and(|r| r["blocked"] == true) {
             return Err(AppError::Forbidden(
                 "Join the thread before replying".into(),

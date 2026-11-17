@@ -729,6 +729,8 @@
     "post": "Post",
     "sending": "Posting…",
     "sendError": "Could not post. Your draft is still here; try again.",
+    "joinThreadRequired": "You haven't joined this channel thread, so you can't reply yet.",
+    "openChannelThread": "Open the thread in the channel to join",
     "loadError": "Could not load the timeline.",
     "loading": "Loading…",
     "empty": "No posts yet",

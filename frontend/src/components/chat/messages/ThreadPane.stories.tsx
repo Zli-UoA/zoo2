@@ -323,6 +323,21 @@ export const LeftWithNoParticipants: Story = {
     await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
   }),
 };
+export const NotJoinedEveryoneLeft: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies: [],
+    membership: "none",
+    participantCount: 0,
+    threadTracked: true,
+    onJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+  }),
+};
 export const FirstReplyWithoutJoining: Story = {
   parameters: { a11y: { test: "error" } },
   args: { replies: [], membership: "none", participantCount: 0, onJoinThread: fn() },
