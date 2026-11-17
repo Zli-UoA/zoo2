@@ -152,6 +152,8 @@ GitHub の Environment `desktop-tauri-release` に、次の Secrets をすべて
 
 5. Secrets の登録後に `desktop-tauri/src-tauri/Cargo.toml` と対応する `Cargo.lock` の版を上げ、通常のレビューを経て main に入れる。同じ版の既存リリースは作り直さないため、初回も新しい版が必要になる。最初の公証は時間がかかる場合がある。失敗したときは公証結果を確認してから再実行し、署名や公証の検証を省略しない。
 
+複数の配布変更を並行して進める場合は、PR ごとの版と main へ入れる順を確認する。同じ版を使うと後から入れた変更はビルドされないため、直前に公開する版より大きい未使用の版を `Cargo.toml` と `Cargo.lock` にそろえて指定する。マージ順を変える場合は版の割り当ても見直す。
+
 PR の作業ブランチで実ビルドの署名・公証を確認するときは、push 後に検証専用モードを手動実行する。
 
 ```bash
@@ -168,7 +170,7 @@ cd desktop-tauri/src-tauri
 cargo tauri build --bundles app,dmg -- --locked
 ```
 
-PR の検証用 CI（`ci-desktop-tauri.yaml`）は、署名用 Secrets を渡さず、引き続き ad-hoc 署名でビルドを確認する。v0.2.8 以前の公開済みリリースにも Developer ID 署名・公証はない。
+PR の検証用 CI（`ci-desktop-tauri.yaml`）は、署名用 Secrets を渡さず、引き続き ad-hoc 署名でビルドを確認する。v0.2.10 以前の公開済みリリースにも Developer ID 署名・公証はない。
 
 設定の根拠は [Tauri の macOS 署名手順](https://v2.tauri.app/distribute/sign/macos/) と [環境変数の一覧](https://v2.tauri.app/reference/environment-variables/) を参照する。
 
