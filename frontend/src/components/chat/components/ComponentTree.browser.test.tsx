@@ -266,4 +266,24 @@ describe("ComponentTree", () => {
     );
     expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("zoo");
   });
+  it("keeps the table page in range when the page size changes", async () => {
+    const table = (page_size: number) =>
+      parseComponents({
+        components: [{ type: 1009, page_size, rows: [[{ text: "row-a" }], [{ text: "row-b" }]] }],
+      })!;
+    const view = render(
+      <LocaleProvider>
+        <ComponentTree document={table(1)} />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "›" }));
+    expect(await screen.findByText("row-b")).toBeInTheDocument();
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree document={table(0)} />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByText("row-a")).toBeInTheDocument();
+    expect(screen.getByText("row-b")).toBeInTheDocument();
+  });
 });

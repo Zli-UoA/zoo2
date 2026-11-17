@@ -169,7 +169,11 @@ export function ComponentTree({
     ...target,
     busy,
     values,
-    set: (id, value) => setState((s) => ({ key: s.key, values: { ...s.values, [id]: value } })),
+    // 古い文書の非同期処理（アップロードの完了など）からの書き込みは、新しい文書には入れない
+    set: (id, value) =>
+      setState((s) =>
+        s.key === docKey ? { key: s.key, values: { ...s.values, [id]: value } } : s,
+      ),
     invoke,
     media,
     download: (id) => void download(id),
@@ -532,7 +536,7 @@ function Table({ c }: { c: Component }) {
   const { t } = useTranslation();
   const rows = (c.rows as TableCell[][] | undefined) ?? [];
   const [sort, setSort] = useState<{ col: number; asc: boolean } | null>(null);
-  const [page, setPage] = useState(0);
+  const [pageIndex, setPage] = useState(0);
   const head = c.header ? rows[0] : null;
   let body = c.header ? rows.slice(1) : rows;
   if (sort)
@@ -548,6 +552,8 @@ function Table({ c }: { c: Component }) {
   // page_size が 0 や未指定のときは、全行を 1 ページにする
   const size = Math.max(1, c.page_size || body.length);
   const pages = Math.max(1, Math.ceil(body.length / size));
+  // 文書の更新でページ数が減っても、範囲内のページを出す
+  const page = Math.min(pageIndex, pages - 1);
   const shown = body.slice(page * size, page * size + size);
   const align = (i: number) => {
     const a = c.column_settings?.[i]?.align;

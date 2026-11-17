@@ -33,6 +33,14 @@ pub struct Target<'a> {
     pub focus: &'a std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
 }
 
+/// 確認（confirm）を表示中の操作のキー。描画の順番によらず、操作そのもの（custom_id と選んだ値）で決める
+fn confirm_key(target: &Target, custom_id: &str, value: Option<&str>) -> String {
+    match value {
+        Some(v) => format!("{}-cid-{custom_id}-v{v}", target.key),
+        None => format!("{}-cid-{custom_id}", target.key),
+    }
+}
+
 fn focus(target: &Target, key: &str, cx: &mut Context<WorkspaceView>) -> FocusHandle {
     target
         .focus
@@ -254,16 +262,19 @@ fn node(
                 b.custom_id.clone(),
                 serde_json::json!(b.value.clone().unwrap_or_default()),
             );
+            // 確認のキーは操作（メッセージと custom_id。文書の中で重複しない）で作る。描画の順番で作ると、
+            // 確認の表示中に前の部品が増減したとき、別のボタンの確認になる
+            let confirm_key = confirm_key(target, b.custom_id.as_deref().unwrap_or_default(), None);
             // 確認の表示中に押せない状態へ変わったときは、確認を出さない（「はい」で送らない）
             if let (Some(confirm), Some(key)) = (&b.confirm, target.confirming)
-                && key == id
+                && key == confirm_key
                 && !b.disabled
                 && action.is_some()
             {
-                return confirm_bar(&id, confirm, action, target, cx);
+                return confirm_bar(&confirm_key, confirm, action, target, cx);
             }
             let has_confirm = b.confirm.is_some();
-            let key = id.clone();
+            let key = confirm_key;
             let handle = focus(target, &id, cx);
             Button::new(SharedString::from(id))
                 .variant(variant)
@@ -281,7 +292,6 @@ fn node(
             small(i18n.t("apps.components.webOnly"), cx).into_any_element()
         }
         Component::StringSelect(s) => choices(
-            &id,
             target,
             &s.custom_id,
             &s.options,
@@ -292,7 +302,6 @@ fn node(
             cx,
         ),
         Component::Overflow(g) | Component::RadioGroup(g) => choices(
-            &id,
             target,
             &g.custom_id,
             &g.options,
@@ -505,7 +514,6 @@ fn action(target: &Target, custom_id: Option<String>, value: serde_json::Value) 
 /// 選択肢を小さなボタンで並べる。押すとその値をアプリへ送る（select は配列、overflow と radio は文字列）。
 #[allow(clippy::too_many_arguments)]
 fn choices(
-    id: &str,
     target: &Target,
     custom_id: &str,
     options: &[zoo2_client_core::components::SelectOption],
@@ -516,7 +524,9 @@ fn choices(
     cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
     // 確認のキーは選択肢の値で作る（確認の表示中に選択肢の順序が変わっても、確認した値を送る）
-    let key_of = |o: &zoo2_client_core::components::SelectOption| format!("{id}-v{}", o.value);
+    let key_of = |o: &zoo2_client_core::components::SelectOption| {
+        confirm_key(target, custom_id, Some(&o.value))
+    };
     // 確認を表示中の選択肢があれば、その確認だけを出す（押せない状態に変わっていれば出さない）
     for o in options {
         let key = key_of(o);
