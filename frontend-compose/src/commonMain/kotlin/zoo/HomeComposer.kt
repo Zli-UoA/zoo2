@@ -148,6 +148,14 @@ fun HomeComposer(
             (state.federationPreference ?: true)
     val length = homePostLength(state.content)
     val inputFocus = remember { FocusRequester() }
+    val editorState = remember(state) { FieldEditingState(state.content) }
+    var emojiPicker by remember { mutableStateOf(false) }
+    var pickerSelection by remember { mutableStateOf(androidx.compose.ui.text.TextRange.Zero) }
+    var composing by remember { mutableStateOf(false) }
+    var focusReturn by remember { mutableStateOf(0) }
+    LaunchedEffect(focusReturn) {
+        if (focusReturn > 0 && state.opened) inputFocus.requestFocus()
+    }
     DisposableEffect(state, inputFocus) {
         state.focusOnOpen = { inputFocus.requestFocus() }
         onDispose { state.focusOnOpen = null }
@@ -410,6 +418,8 @@ fun HomeComposer(
                         placeholder = app.t("home.placeholder"),
                         enabled = !state.sending,
                         invalid = length > 1000,
+                        editingState = editorState,
+                        onComposition = { composing = it },
                         fileOwner = images.owner,
                         inputAttributes = mapOf("aria-describedby" to "home-post-count"),
                         focusRequester = inputFocus,
@@ -422,7 +432,13 @@ fun HomeComposer(
                         state.content = it
                     }
                     DraftAttachments(app, images, errorMessage = images.error?.let { app.t("home.imageError") })
-                    IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) { images.pick() }
+                    Row(horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall)) {
+                        IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) { images.pick() }
+                        IconButton("smile", app.t("reactions.tabEmoji"), !state.sending && !composing) {
+                            pickerSelection = editorState.editing.value.selection
+                            emojiPicker = true
+                        }
+                    }
                     HomeComposerFooter(app, state, available, length)
 
                     if (state.failed)
@@ -435,6 +451,19 @@ fun HomeComposer(
             }
         }
     }
+    if (emojiPicker && state.opened) EmojiPicker(app, {
+        emojiPicker = false
+        focusReturn++
+    }, forMessage = true) { emoji ->
+        if (!state.sending && !composing) {
+            val edit = insertComposerText(state.content, pickerSelection, emoji)
+            state.content = edit.text
+            val edited = androidx.compose.ui.text.input.TextFieldValue(edit.text, edit.selection)
+            editorState.editing.value = edited
+            editorState.committed.value = edited
+        }
+    }
+
 }
 
 @Composable

@@ -14,6 +14,8 @@ import hljs from "highlight.js/lib/common";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { DisplayEmoji } from "../../../lib/electric/types";
 import { emojiImageStyle } from "../../../lib/emoji/dimensions";
+import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
+import { kitchenFromShortcode, kitchenImageUrl, kitchenLabel } from "../../../lib/emoji/kitchen";
 import { useShortcodes } from "../../../lib/emoji/shortcodes";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { MfmSearch } from "./MfmSearch";
@@ -83,6 +85,27 @@ function loadRegistry() {
     .catch(() => ({}));
   return registryRequest;
 }
+function KitchenCode({ value }: { value: string }) {
+  const { catalog } = useKitchenCatalog(true);
+  const url = catalog ? kitchenImageUrl(catalog, value) : null;
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const label = kitchenLabel(value);
+  return url && failedUrl !== url ? (
+    <img
+      src={url}
+      alt={label}
+      title={label}
+      className="mfm-custom-emoji"
+      style={{ width: "1.5em", height: "1.5em" }}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailedUrl(url)}
+    />
+  ) : (
+    label
+  );
+}
+
 function EmojiCode({
   name,
   emojiUrls,
@@ -179,6 +202,8 @@ function renderNode(
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
+      if (kitchenFromShortcode(node.props.name))
+        return <KitchenCode value={kitchenFromShortcode(node.props.name)!} />;
       if (node.props.name.startsWith("@")) return <AccountGlyph name={node.props.name.slice(1)} />;
       return (
         options.renderEmoji?.(node.props.name) ?? (

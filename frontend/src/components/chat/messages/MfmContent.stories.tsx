@@ -139,3 +139,12 @@ export const SharedShortcodes: Story = {
     await expect(canvasElement).toHaveTextContent(":unknown_service_emoji:");
   }),
 };
+
+export const KitchenBody: Story = {
+  args: { content: "本文 **:kitchen_1f431_1f600:** と `:kitchen_1f431_1f600:`" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("img", { name: "🐱 + 😀" })).toBeVisible();
+    await expect(canvasElement.querySelector("code")).toHaveTextContent(":kitchen_1f431_1f600:");
+  },
+};

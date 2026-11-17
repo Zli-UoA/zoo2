@@ -12,7 +12,17 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.unit.*
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.sync.withLock
 import zoo_compose.generated.resources.Res
+
+private val bundledKitchenMutex = kotlinx.coroutines.sync.Mutex()
+private var bundledKitchenCatalog: Row? = null
+
+private suspend fun loadBundledKitchenCatalog(): Row = bundledKitchenMutex.withLock {
+    bundledKitchenCatalog ?: json.parseToJsonElement(
+        Res.readBytes("files/emoji-kitchen.json").decodeToString()
+    ).jsonObject.also { bundledKitchenCatalog = it }
+}
 
 fun codePoints(value: String): List<Int> {
     val out = mutableListOf<Int>()
@@ -45,6 +55,18 @@ fun reactionKey(value: String): String {
     val components = parts.map { kitchenComponent(it) ?: return value }
     return "kitchen:${components.sorted().joinToString("_")}"
 }
+
+fun kitchenShortcode(value: String): String =
+    if (value.startsWith("kitchen:")) ":${reactionKey(value).replace("kitchen:", "kitchen_")}:" else value
+
+fun kitchenFromShortcode(value: String): String? {
+    val match = Regex("^:kitchen_([a-f0-9]+(?:-[a-f0-9]+)*)_([a-f0-9]+(?:-[a-f0-9]+)*):$").matchEntire(value) ?: return null
+    if (match.groupValues.drop(1).any { kitchenComponent(it) == null }) return null
+    return reactionKey("kitchen:${match.groupValues[1]}_${match.groupValues[2]}")
+}
+
+/** Fit non-overlapping 48dp emoji targets into the actual dialog width. */
+fun emojiPickerColumns(width: Float): Int = (width / AndroidDesign.touchTarget.value).toInt().coerceIn(1, 8)
 
 fun kitchenLabel(value: String): String {
     if (Regex("^apub:[a-f0-9]{64}:").containsMatchIn(value)) return value.drop(70)
@@ -127,11 +149,7 @@ fun ReactionEmoji(
             try {
                 url =
                     kitchenImage(
-                        json
-                            .parseToJsonElement(
-                                Res.readBytes("files/emoji-kitchen.json").decodeToString()
-                            )
-                            .jsonObject,
+                        loadBundledKitchenCatalog(),
                         value,
                     )
             } catch (_: Exception) {}
@@ -167,11 +185,7 @@ fun KitchenPicker(app: Session, select: (String) -> Unit, catalogUrl: String? = 
             catalog =
                 if (catalogUrl != null) app.asset(catalogUrl).jsonObject
                 else
-                    json
-                        .parseToJsonElement(
-                            Res.readBytes("files/emoji-kitchen.json").decodeToString()
-                        )
-                        .jsonObject
+                    loadBundledKitchenCatalog()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -326,8 +340,9 @@ private fun KitchenEmojiField(
                                     selected = entry[0].jsonPrimitive.content == value,
                                 )
                             )
+                            .heightIn(min = AndroidDesign.touchTarget)
                             .clickable { choose(entry) }
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .padding(horizontal = AndroidDesign.spaceMedium, vertical = AndroidDesign.spaceSmall)
                     ) {
                         Text(name(entry))
                     }

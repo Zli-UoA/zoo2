@@ -1,7 +1,7 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import type { UserRow } from "../../../lib/electric/types";
 import { MfmChannelsProvider } from "./MfmChannels";
@@ -244,4 +244,20 @@ export const MixedSensitivity: Story = {
     ).not.toBeChecked();
     await expect(canvas.getByRole("checkbox", { name: "second.png: センシティブ" })).toBeChecked();
   }),
+};
+
+export const KitchenBody: Story = {
+  parameters: { a11y: { test: "error" } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    await userEvent.type(input, "本文 ");
+    await userEvent.click(canvas.getByRole("button", { name: /^絵文字$/ }));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("tab", { name: "Emoji Kitchen" }));
+    const add = await within(dialog).findByRole("button", { name: "この組み合わせを追加" });
+    await waitFor(() => expect(add).toBeEnabled());
+    await userEvent.click(add);
+    await expect(input).toHaveValue("本文 :kitchen_1f431_1f600:");
+  },
 };

@@ -241,7 +241,8 @@
         "WithFileAttachment",
         "AttachmentUploadError",
         "SendError",
-        "MixedSensitivity"
+        "MixedSensitivity",
+        "KitchenBody"
       ]
     },
     {
@@ -335,7 +336,8 @@
         "CodeAndMathDark",
         "Headings",
         "SharedShortcodes",
-        "AuthZAccounts"
+        "AuthZAccounts",
+        "KitchenBody"
       ]
     },
     {
@@ -1104,6 +1106,11 @@
     {
       "file": "src/components/chat/WelcomePanel.tsx",
       "story": "src/components/chat/WelcomePanel.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/ComposerEmojiButton.tsx",
+      "story": "src/components/chat/messages/Composer.stories.tsx",
+      "reason": "本文への挿入は KitchenBody、選択範囲とIMEは ComposerEmojiButton.browser.test.tsx で検証する"
     },
     {
       "file": "src/components/chat/messages/Composer.tsx",

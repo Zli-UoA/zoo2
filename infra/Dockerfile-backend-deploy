@@ -14,6 +14,9 @@ COPY crates/zoo-components/ /crates/zoo-components
 # events.rs embeds this public contract at compile time.
 COPY docs/slack-event-coverage.json /docs/slack-event-coverage.json
 
+# Kitchen tags use the same catalog as the Web picker.
+COPY frontend/src/lib/emoji/emoji-kitchen.json /frontend/src/lib/emoji/emoji-kitchen.json
+
 # Rebuild the application even if restored artifacts have newer timestamps.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

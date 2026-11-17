@@ -19,6 +19,12 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   );
 
 describe("MfmContent", () => {
+  it("renders Kitchen body shortcodes with a readable fallback while preserving literal contexts", () => {
+    expect(render("**:kitchen_1f431_1f600:**")).toBe("<strong>🐱 + 😀</strong>");
+    expect(render("`:kitchen_1f431_1f600:`")).toContain(":kitchen_1f431_1f600:</code>");
+    expect(render("<plain>:kitchen_1f431_1f600:</plain>")).toBe(":kitchen_1f431_1f600:");
+    expect(render(":kitchen_110000_1f431:")).toBe(":kitchen_110000_1f431:");
+  });
   it("resolves account icons and mention labels only from the AuthZ directory", () => {
     const html = renderToStaticMarkup(
       createElement(LocaleProvider, {

@@ -150,8 +150,8 @@ async fn like(
     let mut tx = db.transaction().await?;
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended($1||':'||$2,0))) locked",&[&user.id,&body.post_id]).await?;
     let requested = body.reaction.as_deref().unwrap_or("❤️");
-    let mut selected = None;
-    if requested.starts_with(':') {
+    let mut selected = super::kitchen::emoji(requested);
+    if selected.is_none() && requested.starts_with(':') {
         selected = emoji::workspace_options(&mut tx)
             .await?
             .into_iter()

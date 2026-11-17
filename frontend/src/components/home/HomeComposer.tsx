@@ -1,3 +1,4 @@
+import { ComposerEmojiButton } from "../chat/messages/ComposerEmojiButton";
 import {
   loadHomePostSettings,
   saveHomePostSettings,
@@ -205,6 +206,7 @@ export function HomeComposer({
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);
+  const composingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const federated = federationEnabled && replyTo?.apub !== false && federatePreference;
   const length = Array.from(content).length;
@@ -493,6 +495,12 @@ export function HomeComposer({
               ) : null}
               <Textarea
                 ref={inputRef}
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  composingRef.current = false;
+                }}
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 onPaste={(event) => {
@@ -511,27 +519,36 @@ export function HomeComposer({
                 placeholder={t("home.placeholder")}
                 className="min-h-40 flex-1 resize-none border-0 p-0 shadow-none focus-visible:ring-0 md:min-h-48"
               />
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/png,image/jpeg,image/gif,image/webp"
-                multiple
-                hidden
-                onChange={(event) => {
-                  void addImages(Array.from(event.target.files ?? []));
-                  event.target.value = "";
-                }}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={sending || uploading || images.length >= 10}
-                onClick={() => fileInput.current?.click()}
-                aria-label={t("attachments.add")}
-              >
-                <ImagePlusIcon aria-hidden="true" />
-                {t("attachments.add")}
-              </Button>
+              <div className="flex items-center gap-1">
+                <ComposerEmojiButton
+                  textareaRef={inputRef}
+                  value={content}
+                  onChange={setContent}
+                  disabled={sending}
+                  isComposing={() => composingRef.current}
+                />
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  hidden
+                  onChange={(event) => {
+                    void addImages(Array.from(event.target.files ?? []));
+                    event.target.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={sending || uploading || images.length >= 10}
+                  onClick={() => fileInput.current?.click()}
+                  aria-label={t("attachments.add")}
+                >
+                  <ImagePlusIcon aria-hidden="true" />
+                  {t("attachments.add")}
+                </Button>
+              </div>
               {images.length ? (
                 <ul aria-label={t("attachments.selected")} className="flex flex-wrap gap-2">
                   {images.map((image) => (
