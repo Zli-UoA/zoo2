@@ -276,6 +276,11 @@ function usePinnedChannelsState(): {
   const pendingRef = useRef<ReadonlySet<string>>(new Set());
   const serverReady = useRef(false);
   const lastLiveSignature = useRef<string | null>(null);
+  // GET の開始順。先発の失敗が、後発の成功を上書きしないようにする。
+  const fetchSequence = useRef(0);
+  const lastSuccessfulFetch = useRef(0);
+  // 権威状態を採用した回数。並び替え中の採用をロールバックで取り消さない。
+  const adoptCount = useRef(0);
   // ピン留めの書き込みは 1 本ずつ順番に送る。前の書き込みの結果を採用してから
   // 次の版を読むので、同時操作で版が食い違わない。
   const writeQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -310,6 +315,7 @@ function usePinnedChannelsState(): {
       versionRef.current = nextVersion;
       serverReady.current = true;
       lastLiveSignature.current = pinsSignature(sorted);
+      adoptCount.current += 1;
       setVersion(nextVersion);
       setPins(sorted);
     },
@@ -332,16 +338,29 @@ function usePinnedChannelsState(): {
 
   const fetchAuthoritative = useCallback(async (): Promise<ChannelPinsResponse | null> => {
     const requestGeneration = generation.current;
+    const requestId = ++fetchSequence.current;
     try {
       const data = await api.getChannelPins();
       if (requestGeneration !== generation.current) return null;
-      setLoadError(null);
-      // 書き込みが先に採用した版より古い応答は、`adopt` が無視する。
-      adopt(data.pins, data.version);
+      // 現在の世代の応答が返った時点で読み込みは終わる。古い版でも、
+      // 書き込みなどで新しい状態を採用済みなら待機を続ける必要はない。
       setLoading(false);
+      // 書き込みが先に採用した版より古い応答は採用しない。採用しなかった
+      // 応答で成功順を進めないよう、ここで先に判定する。
+      if (data.version < versionRef.current) return null;
+      // 同一版では、後から始めた取得の結果を優先する。先発の成功が後から
+      // 届いても、新しい archived や並びを巻き戻さない。より新しい版は採用する。
+      if (data.version === versionRef.current && requestId < lastSuccessfulFetch.current) {
+        return null;
+      }
+      lastSuccessfulFetch.current = Math.max(lastSuccessfulFetch.current, requestId);
+      // エラーの解除も、実際に採用したときだけ `adopt` に任せる。
+      adopt(data.pins, data.version);
       return data;
     } catch (cause) {
       if (requestGeneration !== generation.current) return null;
+      // 新しい取得がすでに成功していれば、それより前に始まった取得の失敗は捨てる。
+      if (requestId < lastSuccessfulFetch.current) return null;
       setLoading(false);
       setLoadError(localizeApiError(cause, t));
       return null;
@@ -359,6 +378,9 @@ function usePinnedChannelsState(): {
     versionRef.current = 0;
     serverReady.current = false;
     lastLiveSignature.current = null;
+    fetchSequence.current = 0;
+    lastSuccessfulFetch.current = 0;
+    adoptCount.current = 0;
     pendingRef.current = new Set();
     setPending(new Set());
     setPins([]);
@@ -561,6 +583,9 @@ function usePinnedChannelsState(): {
           currentUserIdRef.current,
         );
       const previousPins = sortPins(pinsRef.current);
+      const versionBeforeOptimistic = versionRef.current;
+      const signatureBeforeOptimistic = lastLiveSignature.current;
+      const adoptionsBeforeOptimistic = adoptCount.current;
       const optimisticPins = reorderPinsLocally(previousPins, nextOrder);
       setPins(optimisticPins);
       let order = [...nextOrder];
@@ -603,9 +628,18 @@ function usePinnedChannelsState(): {
         });
       } catch (cause) {
         if (stale()) return;
-        setPins((current) =>
-          pinsSignature(current) === pinsSignature(optimisticPins) ? previousPins : current,
-        );
+        // 409 の本文や GET で権威状態を採用した後は、楽観更新前の一覧へ戻さない。
+        // 同じ版で archived だけが変わる応答は版も署名も変えないため、
+        // `adopt` の採用回数も合わせて確認する。
+        const adoptedAuthoritative =
+          adoptCount.current !== adoptionsBeforeOptimistic ||
+          versionRef.current !== versionBeforeOptimistic ||
+          lastLiveSignature.current !== signatureBeforeOptimistic;
+        if (!adoptedAuthoritative) {
+          setPins((current) =>
+            pinsSignature(current) === pinsSignature(optimisticPins) ? previousPins : current,
+          );
+        }
         fail(cause, "channelPins.errors.reorderConflict");
         if (channelPinsConflict(cause)) await fetchAuthoritative();
       } finally {

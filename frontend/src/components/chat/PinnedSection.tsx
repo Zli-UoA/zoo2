@@ -87,19 +87,33 @@ export function PinnedSection({
   // 同時に複数のピンが消えたとき、直前にメニューを開いていた行を選ぶための記録。
   const lastFocusedPinId = useRef<string | null>(null);
   const previousIds = useRef<string[]>([]);
+  // 依存値の更新で cleanup が走っても、予約したフォーカス復旧を失わない。
+  const focusFrame = useRef<number | null>(null);
+  const pendingFocusTarget = useRef<string | null>(null);
+  const pinnedChannelsRef = useRef(pinnedChannels);
+  pinnedChannelsRef.current = pinnedChannels;
+
   useEffect(() => {
     const previous = previousIds.current;
     const current = pinnedChannels.map((channel) => channel.id);
     previousIds.current = current;
     const currentSet = new Set(current);
     const removed = previous.filter((id) => !currentSet.has(id));
-    if (removed.length === 0) {
+    if (removed.length > 0 && pendingFocusTarget.current === null) {
+      const focusedPinId = lastFocusedPinId.current;
+      pendingFocusTarget.current =
+        focusedPinId !== null && removed.includes(focusedPinId) ? focusedPinId : removed[0]!;
+    }
+    if (pendingFocusTarget.current === null || focusFrame.current !== null) {
       return;
     }
-    const focusedPinId = lastFocusedPinId.current;
-    const target =
-      focusedPinId !== null && removed.includes(focusedPinId) ? focusedPinId : removed[0]!;
-    const frame = requestAnimationFrame(() => {
+    focusFrame.current = requestAnimationFrame(() => {
+      focusFrame.current = null;
+      const target = pendingFocusTarget.current;
+      pendingFocusTarget.current = null;
+      if (!target) {
+        return;
+      }
       const active = document.activeElement;
       // ほかの操作（ヘッダーや通常一覧の行メニュー）がフォーカスを持っているときは奪わない。
       if (active && active !== document.body && active.isConnected) {
@@ -125,13 +139,23 @@ export function PinnedSection({
       // 一覧に同じ項目が無いとき（未参加の公開チャンネルなど）は、ピンが残っていれば
       // ピン留めの節の見出しへ、全部消えたらサイドバー先頭の節の見出しへ移す。
       const fallback =
-        current.length > 0
+        pinnedChannelsRef.current.length > 0
           ? pinnedSectionRef.current?.querySelector<HTMLElement>("h2 button")
           : document.querySelector<HTMLElement>("aside h2 button");
       fallback?.focus();
     });
-    return () => cancelAnimationFrame(frame);
   }, [pinnedChannels]);
+
+  // アンマウント時だけ予約を取り消す。依存値の更新では取り消さない。
+  useEffect(
+    () => () => {
+      if (focusFrame.current !== null) {
+        cancelAnimationFrame(focusFrame.current);
+        focusFrame.current = null;
+      }
+    },
+    [],
+  );
 
   function reorderTo(channelId: string, targetIndex: number) {
     if (busy) {

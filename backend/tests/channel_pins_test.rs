@@ -528,6 +528,44 @@ async fn leaving_kicking_and_deleting_remove_pins() {
     assert!(pinned_ids(&env.pins(&bob).await).is_empty());
 }
 
+#[tokio::test]
+async fn stale_reorder_with_a_left_channel_returns_conflict() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    let channel = env.channel(&alice, true, &[&bob]).await;
+
+    let (status, body) = env.pin(&bob, &channel, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stale_version = body["data"]["version"].as_i64().unwrap();
+
+    // 退出すると本人のピンが消え、版が進む。
+    let (status, _) = env
+        .call(
+            "POST",
+            &format!("/api/channels/{channel}/leave"),
+            Some(&bob),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let latest = env.pins(&bob).await;
+    let latest_version = latest["version"].as_i64().unwrap();
+    assert!(latest_version > stale_version);
+
+    // 古い版で退出済みチャンネルを並べ替えると、404 ではなく 409 で
+    // 最新の一覧と版を返し、クライアントが再取得・再試行できる。
+    let (status, body) = env.reorder(&bob, &[&channel], stale_version).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "CHANNEL_PINS_CONFLICT");
+    assert_eq!(body["version"], latest_version);
+    assert!(pinned_ids(&body).is_empty());
+
+    // 版が一致している場合は、従来どおり閲覧できないチャンネルとして 404。
+    let (status, body) = env.reorder(&bob, &[&channel], latest_version).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
 /// 退出とピン留めが同時に走っても、退出後にピンが残らない。
 ///
 /// 退出側がチャンネル行を `FOR UPDATE` でロックしてメンバー行を消し、同じトランザクションで

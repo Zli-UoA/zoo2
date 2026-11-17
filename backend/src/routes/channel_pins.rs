@@ -756,7 +756,19 @@ async fn reorder_channel_pins(
     // ピン留めされている有効なチャンネルでなければならない。
     for id in &requested {
         // アーカイブ中かどうかは集合の比較で判定する。ここでは閲覧できることだけ確かめる。
-        let _ = visible_channel(&mut tx, &auth_user.id, id, guest).await?;
+        if let Err(error) = visible_channel(&mut tx, &auth_user.id, id, guest).await {
+            // 退出・削除で見えなくなったチャンネルを含む古い並びは、404 ではなく
+            // 版の競合として返す。クライアントは最新の一覧を採用して再試行できる。
+            // ロック順を state -> channel に変えないよう、閲覧確認の後で状態行を取る。
+            let version = lock_pin_state(&mut tx, &auth_user.id).await?;
+            if payload.expected_version != version {
+                let pins = fetch_pins(&mut tx, &auth_user.id, guest).await?;
+                let _ = tx.rollback().await;
+                return Err(pins_conflict(version, pins));
+            }
+            let _ = tx.rollback().await;
+            return Err(error);
+        }
     }
 
     let version = lock_pin_state(&mut tx, &auth_user.id).await?;

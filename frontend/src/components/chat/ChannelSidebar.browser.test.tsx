@@ -405,6 +405,36 @@ it("keeps focus in the regular list when a pin is removed while other pins remai
   });
 });
 
+it("keeps focus when the sidebar rerenders before the focus frame runs", async () => {
+  fixture.memberships = [
+    { user_id: "me", channel_id: "general" },
+    { user_id: "me", channel_id: "design" },
+  ];
+  fixture.pins = [pinRow("general", 0), pinRow("design", 1)];
+  const view = () => (
+    <LocaleProvider>
+      <ChannelSidebar channels={[generalChannel, designChannel]} loading={false} error={false} />
+    </LocaleProvider>
+  );
+  const { rerender } = render(view());
+  const menus = await screen.findAllByRole("button", { name: "general のチャンネル操作" });
+  await userEvent.click(menus[0]!);
+  await userEvent.click(await screen.findByRole("menuitem", { name: "ピン留めを解除" }));
+  expect(fixture.unpinChannel).toHaveBeenCalledWith("general");
+
+  // rAF が実行される前に依存値が続けて変わっても、予約した復旧を取り消さない。
+  fixture.pins = [pinRow("design", 0)];
+  rerender(view());
+  fixture.pins = [pinRow("design", 0)];
+  rerender(view());
+
+  await waitFor(() => {
+    const focused = document.activeElement;
+    expect(focused?.tagName).toBe("A");
+    expect(focused?.getAttribute("href")).toBe("/channels/general");
+  });
+});
+
 it.each([
   { remainingPins: "none", pins: [] },
   { remainingPins: "other", pins: [pinRow("design", 0)] },

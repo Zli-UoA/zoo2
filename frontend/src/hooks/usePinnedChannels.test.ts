@@ -507,6 +507,212 @@ describe("usePinnedChannels", () => {
     expect(result.current.isPinned("a")).toBe(true);
   });
 
+  it("ignores an older GET success that arrives after a newer same-version success", async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    fixture.api.getChannelPins
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        pins: [{ ...pin("a", 0), archived: true }, pin("b", 1)],
+        version: 2,
+      });
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.pins.find((item) => item.channel_id === "a")?.archived).toBe(true);
+
+    // 先発の成功が後から届いても、後発が採用した archived を巻き戻さない。
+    await act(async () => {
+      resolveFirst?.({ pins: [pin("a", 0), pin("b", 1)], version: 2 });
+      await Promise.resolve();
+    });
+
+    expect(result.current.version).toBe(2);
+    expect(result.current.pins.find((item) => item.channel_id === "a")?.archived).toBe(true);
+  });
+
+  it("accepts an older-started GET when it returns a newer version", async () => {
+    let resolveFirst: ((value: unknown) => void) | undefined;
+    fixture.api.getChannelPins
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        pins: [{ ...pin("a", 0), archived: true }, pin("b", 1)],
+        version: 5,
+      });
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.version).toBe(5);
+
+    // 先発でもより新しい版なら採用し、後発の古い版で表示を固定しない。
+    await act(async () => {
+      resolveFirst?.({ pins: [pin("a", 0), pin("b", 1)], version: 6 });
+      await Promise.resolve();
+    });
+
+    expect(result.current.version).toBe(6);
+    expect(result.current.pins.find((item) => item.channel_id === "a")?.archived).toBeUndefined();
+  });
+
+  it("ignores a superseded GET failure that arrives after a newer success", async () => {
+    let rejectFirst: ((reason?: unknown) => void) | undefined;
+    fixture.api.getChannelPins
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockResolvedValueOnce({ pins: [pin("a", 0)], version: 1 });
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(fixture.api.getChannelPins).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.version).toBe(1);
+    expect(result.current.error).toBeNull();
+
+    // 先発の GET が後から失敗しても、後発の成功をエラー表示で上書きしない。
+    await act(async () => {
+      rejectFirst?.(new Error("offline"));
+      await Promise.resolve();
+    });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.version).toBe(1);
+  });
+
+  it("does not roll back a reorder after adopting a conflict's authoritative order", async () => {
+    fixture.api.getChannelPins.mockResolvedValue({
+      pins: [pin("a", 0), pin("b", 1)],
+      version: 1,
+    });
+    fixture.api.reorderChannelPins
+      .mockRejectedValueOnce(conflict(2, [pin("b", 0), pin("a", 1)]))
+      .mockRejectedValueOnce(new Error("offline"));
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(result.current.version).toBe(1));
+
+    await act(async () => {
+      await result.current.reorderPins(["b", "a"], "b");
+    });
+
+    // 409 で版 2 の並びを採用済みなので、再試行の通信エラーで版 1 へ戻さない。
+    expect(result.current.version).toBe(2);
+    expect(result.current.pins.map((item) => item.channel_id)).toEqual(["b", "a"]);
+    expect(result.current.error).not.toBeNull();
+  });
+
+  it("does not roll back an archived flag adopted from a same-version conflict", async () => {
+    fixture.api.getChannelPins.mockResolvedValue({
+      pins: [pin("a", 0), pin("b", 1)],
+      version: 2,
+    });
+    // 並びは同じで archived だけが変わる 409。版も署名も変わらないため、
+    // `adoptCount` の採用回数が増えていなければ再試行失敗時に archived を失う。
+    fixture.api.reorderChannelPins
+      .mockRejectedValueOnce(conflict(2, [{ ...pin("a", 0), archived: true }, pin("b", 1)]))
+      .mockRejectedValueOnce(new Error("offline"));
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(result.current.version).toBe(2));
+
+    await act(async () => {
+      await result.current.reorderPins(["a", "b"], "b");
+    });
+
+    // 同じ版でも 409 の archived を採用済みなら、再試行の通信エラーで巻き戻さない。
+    expect(result.current.version).toBe(2);
+    expect(result.current.pins.map((item) => item.channel_id)).toEqual(["a", "b"]);
+    expect(result.current.pins.find((item) => item.channel_id === "a")?.archived).toBe(true);
+    expect(result.current.error).not.toBeNull();
+  });
+
+  it("does not roll back when a concurrent GET adopts a same-version archived change", async () => {
+    fixture.api.getChannelPins
+      .mockResolvedValueOnce({ pins: [pin("a", 0), pin("b", 1)], version: 2 })
+      .mockResolvedValueOnce({
+        pins: [{ ...pin("a", 0), archived: true }, pin("b", 1)],
+        version: 2,
+      });
+    let rejectReorder: ((reason?: unknown) => void) | undefined;
+    fixture.api.reorderChannelPins.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectReorder = reject;
+        }),
+    );
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(result.current.version).toBe(2));
+
+    let reorderPromise: Promise<void> | undefined;
+    await act(async () => {
+      reorderPromise = result.current.reorderPins(["a", "b"], "b");
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(fixture.api.reorderChannelPins).toHaveBeenCalledTimes(1));
+
+    // 並び替え中に GET が同じ版で archived だけを変えて採用する。
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.pins.find((item) => item.channel_id === "a")?.archived).toBe(true);
+
+    await act(async () => {
+      rejectReorder?.(new Error("offline"));
+      await reorderPromise;
+    });
+
+    // GET で採用した archived を、並び替えの失敗で巻き戻さない。
+    expect(result.current.version).toBe(2);
+    expect(result.current.pins.map((item) => item.channel_id)).toEqual(["a", "b"]);
+    expect(result.current.pins.find((item) => item.channel_id === "a")?.archived).toBe(true);
+    expect(result.current.error).not.toBeNull();
+  });
+
+  it("rolls back when a conflict from an older version is ignored", async () => {
+    fixture.api.getChannelPins.mockResolvedValue({
+      pins: [pin("a", 0), pin("b", 1)],
+      version: 3,
+    });
+    fixture.api.reorderChannelPins
+      .mockRejectedValueOnce(conflict(2, [pin("b", 0), pin("a", 1)]))
+      .mockRejectedValueOnce(new Error("offline"));
+
+    const { result } = renderHook(() => usePinnedChannels(), { wrapper });
+    await waitFor(() => expect(result.current.version).toBe(3));
+
+    await act(async () => {
+      await result.current.reorderPins(["b", "a"], "b");
+    });
+
+    // 古い版の 409 は採用しないので、通信エラー時は楽観更新前へ戻す。
+    expect(result.current.version).toBe(3);
+    expect(result.current.pins.map((item) => item.channel_id)).toEqual(["a", "b"]);
+    expect(result.current.error).not.toBeNull();
+  });
+
   it("announces every operation, including repeats, in an always mounted live region", async () => {
     fixture.api.getChannelPins.mockResolvedValue({ pins: [], version: 0 });
     fixture.api.pinChannel.mockResolvedValue({
