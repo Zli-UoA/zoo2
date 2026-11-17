@@ -196,7 +196,10 @@ fun HomePostCard(
                         post.homeRows("reactions").forEach { item ->
                             val label = "${item.text("reaction")} ${item.text("count")}"
                             Row(
-                                Modifier.sizeIn(minWidth = if (LocalTouchUi.current) 48.dp else 0.dp, minHeight = if (LocalTouchUi.current) 48.dp else 0.dp).then(
+                                Modifier.sizeIn(
+                                        minWidth = if (LocalTouchUi.current) AndroidDesign.controlVisualSize else 0.dp,
+                                        minHeight = if (LocalTouchUi.current) AndroidDesign.controlVisualSize else 0.dp,
+                                    ).then(
                                         webControlModifier(
                                             "button",
                                             enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),
