@@ -4197,7 +4197,8 @@ CREATE TABLE app_submitted_files (
   expires_at timestamptz NOT NULL,
   PRIMARY KEY (attachment_id, installation_id)
 );
-CREATE INDEX app_submitted_files_installation ON app_submitted_files(installation_id);
+-- アプリの削除（外部キー）と、付与の確認の両方に使う。attachment_id も入れるので、主キーの代わりに選ばれても 1 行だけを読む
+CREATE INDEX app_submitted_files_installation ON app_submitted_files(installation_id, attachment_id);
 CREATE INDEX app_submitted_files_expiry ON app_submitted_files(expires_at);
 -- 期限切れの画面の掃除（delivery.rs）。問い合わせ（options）の行は 1 分で切れて増えるので、全件を読まずに
 -- 期限切れの行だけを、どの接続でも同じ順に消す（全件読みでは開始位置が接続ごとに違い、同時の掃除がデッドロックする）
