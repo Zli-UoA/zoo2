@@ -11,6 +11,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -1657,11 +1658,32 @@ async fn membership_insert_racing_single_guest_transition_preserves_single_chann
     let (deferred_db, deferred_driver) =
         tokio_postgres::connect(&Config::from_env().database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(deferred_driver);
+    // Capture the canonical definition so the shared test database is restored
+    // even when the race body returns early or panics. The deferred function
+    // must not leak into tests that run after this one.
+    let canonical = deferred_db
+        .query_one(
+            "SELECT pg_get_functiondef('app_guest_membership_rules()'::regprocedure)",
+            &[],
+        )
+        .await?
+        .get::<_, String>(0);
     deferred_db
         .batch_execute(include_str!(
             "../../infra/db/deferred-migrations/20261129000009_guest_membership_lock_order.sql"
         ))
         .await?;
+    let result = std::panic::AssertUnwindSafe(run_membership_race(&env))
+        .catch_unwind()
+        .await;
+    deferred_db.batch_execute(&canonical).await?;
+    match result {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
     let guest = env.user().await;
     let owner = env.user().await;
     let first_channel = Uuid::new_v4().to_string();

@@ -97,7 +97,9 @@ migration_pid=$!
     sleep 0.1
   done
   printf 'timeout\n' >"$tmp_dir/migration.timeout"
-  psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
+  # Bound the connect and query phases: when the database is unresponsive,
+  # this psql must not keep the watchdog from terminating Atlas.
+  PGCONNECT_TIMEOUT=2 PGOPTIONS='-c statement_timeout=2000' psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '$migration_app';" >/dev/null 2>&1 || true
   # Terminate Atlas itself too, so the main flow's wait cannot hang forever on
   # a migration that is not waiting on a database lock.
