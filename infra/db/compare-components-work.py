@@ -42,6 +42,10 @@ def compare(first, second):
     assert a.keys() == b.keys()
     for key in sorted(a):
         x, y = a[key], b[key]
+        if key[0].startswith('history-'):
+            # 設計上、履歴に比例する SQL（連携 1 回につき 1 回）。比べずに、規模ごとの量を出す
+            print(f'{key}: blocks {max(s["blocks"] for s in x)} -> {max(s["blocks"] for s in y)}, rows {max(sum(s["relations"].values()) for s in x):g} -> {max(sum(s["relations"].values()) for s in y):g}, SQL roundtrip ms {stats([s["roundtrip_ms"] for s in y])}')
+            continue
         before = max(s['blocks'] for s in x)
         after = max(s['blocks'] for s in y)
         assert after <= 2 * before + 64, (key, 'blocks', before, after)

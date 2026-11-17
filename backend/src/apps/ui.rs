@@ -997,8 +997,13 @@ async fn unfurl(
             parsed.encode()?;
             let mut doc = zoo_components::legacy::cards(card);
             doc.flags = 0;
-            doc.validate(crate::components::Context::Unfurl)
-                .map_err(|_| bad("Invalid card"))?;
+            // 旧形式のカードは encode() の上限（title 500・description 4,000・fields 10 件）で受け付ける。
+            // 部品の上限（文字数の合計など）だけに当たるものは、旧形式の blocks と同じく 400 にしない
+            if let Err(errors) = doc.validate(crate::components::Context::Unfurl)
+                && errors.iter().any(|e| !crate::components::is_limit_error(e))
+            {
+                return Err(bad("Invalid card"));
+            }
             doc
         }
         (None, Some(c), None) => {
