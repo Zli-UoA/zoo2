@@ -397,6 +397,7 @@ fun Button(
     inlineStartIcon: Boolean = false,
     iconSize: Dp? = null,
     contentGap: Dp? = null,
+    contentInset: Dp? = null,
     textStyle: TextStyle? = null,
     title: String? = null,
     accessibleLabel: String? = null,
@@ -431,7 +432,7 @@ fun Button(
         else if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
         else 10.dp
     val horizontalPadding =
-        if (LocalTouchUi.current) {
+        contentInset ?: if (LocalTouchUi.current) {
             if (iconOnly) 0.dp else AndroidDesign.controlInset
         } else if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
     val startPadding =
