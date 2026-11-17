@@ -371,6 +371,37 @@ async fn visible_channel(
     Ok(!row["archive_at"].is_null())
 }
 
+/// 並び替えの要求に含まれるチャンネルをまとめて閲覧確認する。
+/// 1 件ずつ問い合わせると、上限 50 件で 50 往復になるためまとめる。
+/// `FOR SHARE` で削除・退出との直列化を保つ。
+async fn visible_channels(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    channel_ids: &[String],
+    guest: bool,
+) -> Result<HashSet<String>, AppError> {
+    if channel_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let guest = if guest { "true" } else { "false" };
+    let visibility = channel_visibility_sql("c", "$3", "$1");
+    let array = format!("{{{}}}", channel_ids.join(","));
+    let sql = format!(
+        "SELECT json_build_object('channel_id', c.id)::text \
+         FROM channels c \
+         WHERE c.id = ANY($2::text[]) AND c.deleted_at IS NULL AND {visibility} \
+         FOR SHARE OF c"
+    );
+    let rows = crate::apps::query(tx, &sql, &[user_id, &array, guest]).await?;
+    let mut visible = HashSet::with_capacity(rows.len());
+    for row in rows {
+        if let Some(id) = row["channel_id"].as_str() {
+            visible.insert(id.to_owned());
+        }
+    }
+    Ok(visible)
+}
+
 /// ピン状態の行をロックしたあとに、閲覧権限とアーカイブ状態を新しいスナップショットで
 /// 読み直す。`visible_channel` の `FOR SHARE` でチャンネル行は保持しているが、退出・
 /// キックはメンバー行の削除とピンの片付けを同じトランザクションで行う。ロック待ちの
@@ -467,24 +498,6 @@ async fn pinned_refs(
             })
         })
         .collect()
-}
-
-async fn set_position(
-    tx: &mut toasty::Transaction<'_>,
-    user_id: &str,
-    channel_id: &str,
-    position: i64,
-) -> Result<(), AppError> {
-    toasty::sql::statement(
-        "UPDATE user_pinned_channels SET position = $3::integer, updated_at = CURRENT_TIMESTAMP \
-         WHERE user_id = $1 AND channel_id = $2",
-    )
-    .bind(user_id)
-    .bind(channel_id)
-    .bind(position.to_string())
-    .exec(tx)
-    .await?;
-    Ok(())
 }
 
 /// チャンネルから抜ける・キックされる・チャンネルが削除されたときに、その
@@ -754,21 +767,19 @@ async fn reorder_channel_pins(
 
     // 追加・削除を並び替えで黙って行わない。要求されたチャンネルは、いま
     // ピン留めされている有効なチャンネルでなければならない。
-    for id in &requested {
-        // アーカイブ中かどうかは集合の比較で判定する。ここでは閲覧できることだけ確かめる。
-        if let Err(error) = visible_channel(&mut tx, &auth_user.id, id, guest).await {
-            // 退出・削除で見えなくなったチャンネルを含む古い並びは、404 ではなく
-            // 版の競合として返す。クライアントは最新の一覧を採用して再試行できる。
-            // ロック順を state -> channel に変えないよう、閲覧確認の後で状態行を取る。
-            let version = lock_pin_state(&mut tx, &auth_user.id).await?;
-            if payload.expected_version != version {
-                let pins = fetch_pins(&mut tx, &auth_user.id, guest).await?;
-                let _ = tx.rollback().await;
-                return Err(pins_conflict(version, pins));
-            }
+    let visible = visible_channels(&mut tx, &auth_user.id, &requested, guest).await?;
+    if let Some(missing) = requested.iter().find(|id| !visible.contains(id.as_str())) {
+        // 退出・削除で見えなくなったチャンネルを含む古い並びは、404 ではなく
+        // 版の競合として返す。クライアントは最新の一覧を採用して再試行できる。
+        // ロック順を state -> channel に変えないよう、閲覧確認の後で状態行を取る。
+        let version = lock_pin_state(&mut tx, &auth_user.id).await?;
+        if payload.expected_version != version {
+            let pins = fetch_pins(&mut tx, &auth_user.id, guest).await?;
             let _ = tx.rollback().await;
-            return Err(error);
+            return Err(pins_conflict(version, pins));
         }
+        let _ = tx.rollback().await;
+        return Err(not_found(missing));
     }
 
     let version = lock_pin_state(&mut tx, &auth_user.id).await?;
@@ -787,8 +798,30 @@ async fn reorder_channel_pins(
         return Err(pins_conflict(version, pins));
     }
 
-    for (channel_id, position) in build_pin_order(&refs, &requested) {
-        set_position(&mut tx, &auth_user.id, &channel_id, position).await?;
+    // スロットごとの UPDATE を避け、位置を 1 文で反映する。
+    let order = build_pin_order(&refs, &requested);
+    if !order.is_empty() {
+        let channels = order
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let positions = order
+            .iter()
+            .map(|(_, position)| position.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        toasty::sql::statement(
+            "UPDATE user_pinned_channels p \
+             SET position = data.position, updated_at = CURRENT_TIMESTAMP \
+             FROM unnest($2::text[], $3::integer[]) AS data(channel_id, position) \
+             WHERE p.user_id = $1 AND p.channel_id = data.channel_id",
+        )
+        .bind(&auth_user.id)
+        .bind(format!("{{{channels}}}"))
+        .bind(format!("{{{positions}}}"))
+        .exec(&mut tx)
+        .await?;
     }
     let version = bump_version(&mut tx, &auth_user.id).await?;
     let pins = fetch_pins(&mut tx, &auth_user.id, guest).await?;

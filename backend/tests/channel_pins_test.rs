@@ -715,6 +715,15 @@ async fn pin_limit_is_enforced() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(pinned_ids(&env.pins(&alice).await).len(), 50);
     assert_eq!(created.len(), 50);
+
+    // 上限の 50 件をまとめて並び替え、可視性確認と位置更新が一括経路でも動くことを確かめる。
+    let before = env.pins(&alice).await;
+    let version = before["version"].as_i64().unwrap();
+    let reversed: Vec<&str> = created.iter().rev().map(String::as_str).collect();
+    let (status, body) = env.reorder(&alice, &reversed, version).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let expected: Vec<String> = reversed.iter().map(|id| id.to_string()).collect();
+    assert_eq!(pinned_ids(&env.pins(&alice).await), expected);
 }
 
 #[tokio::test]
