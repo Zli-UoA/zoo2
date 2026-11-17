@@ -398,6 +398,7 @@ fun Button(
     iconSize: Dp? = null,
     contentGap: Dp? = null,
     contentInset: Dp? = null,
+    minimumTouchTarget: Dp? = null,
     textStyle: TextStyle? = null,
     title: String? = null,
     accessibleLabel: String? = null,
@@ -415,7 +416,8 @@ fun Button(
     val isHovered = enabled && hovered
     val density = LocalDensity.current
     var labelAdvance by remember(label, size, textStyle) { mutableStateOf(Float.NaN) }
-    val controlHeight = touchTargetSize(
+    val minimumTarget = minimumTouchTarget ?: if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp
+    val controlHeight = maxOf(
         if (variant == "tab") 36.dp
         else
             when (size.removePrefix("icon-")) {
@@ -424,7 +426,7 @@ fun Button(
                 "lg" -> 36.dp
                 else -> 32.dp
             },
-        LocalTouchUi.current,
+        minimumTarget,
     )
     val iconOnly = size.startsWith("icon")
     val radius =
@@ -457,7 +459,7 @@ fun Button(
                     endPadding.toPx() +
                     if (icon != null) resolvedIconSize.toPx() + gap.toPx() else 0f
         }
-    val preferredWidth = if (LocalTouchUi.current) maxOf(contentWidth, with(density) { AndroidDesign.touchTarget.toPx() }) else contentWidth
+    val preferredWidth = if (LocalTouchUi.current) maxOf(contentWidth, with(density) { minimumTarget.toPx() }) else contentWidth
     val compactChrome = LocalTouchUi.current
     val minimumChromeHeight = with(density) {
         maxOf(AndroidDesign.controlVisualSize.toPx(),
@@ -529,7 +531,7 @@ fun Button(
                     attributes = if (title == null) emptyMap() else mapOf("title" to title),
                 )
             )
-            .widthIn(min = if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp)
+            .widthIn(min = minimumTarget)
             .heightIn(min = controlHeight)
             .then(if (iconOnly) Modifier.width(controlHeight) else Modifier)
             .then(
@@ -710,11 +712,12 @@ fun IconButton(
     size: Dp = 32.dp,
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    minimumTouchTarget: Dp? = null,
     click: () -> Unit,
 ) {
     Box(
         modifier
-            .size(touchTargetSize(size, LocalTouchUi.current))
+            .size(maxOf(size, minimumTouchTarget ?: if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp))
             .then(webControlModifier("button", enabled))
             .clickable(enabled, role = Role.Button, onClick = { if (enabled) click() })
             .semantics {
@@ -1136,6 +1139,7 @@ fun Menu(
     icon: String = "ellipsis",
     size: Dp = 28.dp,
     controlledOpen: Boolean? = null,
+    minimumTouchTarget: Dp? = null,
     onOpenChange: (Boolean) -> Unit = {},
 ) {
     var internalOpen by remember { mutableStateOf(false) }
@@ -1165,7 +1169,7 @@ fun Menu(
                 } else false
             }
     ) {
-        IconButton(icon, label, size = size) { setOpen(true) }
+        IconButton(icon, label, size = size, minimumTouchTarget = minimumTouchTarget) { setOpen(true) }
     }
     if (open)
         OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor, role = "menu", alignEnd = LocalTouchUi.current) {

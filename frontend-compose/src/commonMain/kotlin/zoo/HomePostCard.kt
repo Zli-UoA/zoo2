@@ -245,6 +245,7 @@ fun HomePostCard(
                             "${app.t("home.reply")} ${post.text("replies").ifEmpty{"0"}}",
                         variant = "ghost",
                         size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
                         contentInset = AndroidDesign.spaceSmall,
                         contentGap = AndroidDesign.spaceSmall,
                         click = reply,
@@ -258,6 +259,7 @@ fun HomePostCard(
                         enabled = !pending && post.text("visibility") != "followers",
                         variant = "ghost",
                         size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
                         contentInset = AndroidDesign.spaceSmall,
                         contentGap = AndroidDesign.spaceSmall,
                         click = repost,
@@ -270,6 +272,7 @@ fun HomePostCard(
                         enabled = !pending,
                         variant = "ghost",
                         size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
                         contentInset = AndroidDesign.spaceSmall,
                         contentGap = AndroidDesign.spaceSmall,
                         click = react,
@@ -298,6 +301,8 @@ fun HomePostCard(
                                 }
                             )
                         },
+                        size = AndroidDesign.controlVisualSize,
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
                     )
                 }
                 if (error)
