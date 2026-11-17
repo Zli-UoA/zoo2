@@ -629,7 +629,10 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
     val confirm = c.cObj("confirm")
     // 文書が更新されたら（同じ custom_id・同じ文言でも）、開いていた確認を捨てる。古い入力値で送らず、
     // 元の部品に戻っても古い確認を出さない
-    var confirming by remember(scope.doc, id, confirm) { mutableStateOf<PendingConfirm?>(null) }
+    // 送り先（アプリ・画面・メッセージ）が変わったときも捨てる（同じ位置に別の画面が来ても、前の送り先へ送らない）
+    var confirming by remember(scope.doc, id, confirm, scope.appId, scope.surface, scope.message) {
+        mutableStateOf<PendingConfirm?>(null)
+    }
     fun run(action: () -> Unit) {
         if (confirm != null) confirming = PendingConfirm(confirm, id, action) else action()
     }
