@@ -116,7 +116,11 @@ export function ComponentTree({
   const collections = useCollections();
   const config = collections?.config;
   const client = useMemo(() => (config ? createConfiguredApiClient(config) : null), [config]);
-  const [values, setValues] = useState(() => initialValues(doc));
+  // アプリが文書を更新したら（操作の後の再取得など）、入力値を新しい文書の初期値から作り直す
+  const docKey = useMemo(() => JSON.stringify(doc), [doc]);
+  const [state, setState] = useState(() => ({ key: docKey, values: initialValues(doc) }));
+  if (state.key !== docKey) setState({ key: docKey, values: initialValues(doc) });
+  const values = state.key === docKey ? state.values : initialValues(doc);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [media, setMedia] = useState("");
@@ -165,7 +169,7 @@ export function ComponentTree({
     ...target,
     busy,
     values,
-    set: (id, value) => setValues((v) => ({ ...v, [id]: value })),
+    set: (id, value) => setState((s) => ({ key: s.key, values: { ...s.values, [id]: value } })),
     invoke,
     media,
     download: (id) => void download(id),
@@ -541,8 +545,9 @@ function Table({ c }: { c: Component }) {
           : (x?.text ?? "").localeCompare(y?.text ?? "");
       return sort.asc ? r : -r;
     });
-  const size = c.page_size ?? body.length;
-  const pages = Math.max(1, Math.ceil(body.length / Math.max(1, size)));
+  // page_size が 0 や未指定のときは、全行を 1 ページにする
+  const size = Math.max(1, c.page_size || body.length);
+  const pages = Math.max(1, Math.ceil(body.length / size));
   const shown = body.slice(page * size, page * size + size);
   const align = (i: number) => {
     const a = c.column_settings?.[i]?.align;
@@ -842,9 +847,13 @@ function InteractiveControl({
   // 送信でまとめて送る欄は、送信中も入力を続けられるようにする (busy では無効にしない)。
   // アプリが指定した disabled と、送り先のアプリがないことは、どこでも無効にする
   const disabled = !!c.disabled || !ctx.appId || (!deferred && ctx.busy);
+  // 確認（confirm）で「いいえ」を選んだときは、選んだ値を残さない（送っていない値を表示・送信しない）
   const choose = (value: Value) => {
-    ctx.set(id, value);
-    if (!deferred) confirm.run(() => void ctx.invoke("action", id, value));
+    if (deferred) return ctx.set(id, value);
+    confirm.run(() => {
+      ctx.set(id, value);
+      void ctx.invoke("action", id, value);
+    });
   };
   const value = ctx.values[id];
   switch (c.type) {
@@ -984,11 +993,14 @@ function InteractiveControl({
       const type =
         c.type === T.DatePicker ? "date" : c.type === T.TimePicker ? "time" : "datetime-local";
       // datetime は UNIX 秒でやりとりし、入力欄では端末のタイムゾーンで表示する
+      // その日時の時差を使う（夏時間をまたいでも、表示と送る UNIX 秒がずれない）
+      const local = (d: Date) => {
+        const pad = (n: number) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      };
       const shown =
         c.type === T.DateTimePicker && value
-          ? new Date(Number(value) * 1000 - new Date().getTimezoneOffset() * 60000)
-              .toISOString()
-              .slice(0, 16)
+          ? local(new Date(Number(value) * 1000))
           : ((value as string) ?? "");
       const toValue = (v: string) =>
         c.type === T.DateTimePicker && v ? String(Math.floor(new Date(v).getTime() / 1000)) : v;

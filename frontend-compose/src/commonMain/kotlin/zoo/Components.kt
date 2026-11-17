@@ -155,7 +155,11 @@ fun parseComponents(value: JsonElement?): ComponentDocument? {
 
 /** https の URL だけを通す。 */
 fun safeHttps(url: String): String? =
-    url.takeIf { it.startsWith("https://") && publicUrl(it) != null && '@' !in it.substringBefore('/', it.removePrefix("https://")) }
+    url.takeIf {
+        // 利用者情報（user@host）付きの URL は、見た目と違う宛先に飛ばせるので使わない（ホスト部分だけを見る）
+        val authority = it.removePrefix("https://").substringBefore('/').substringBefore('?').substringBefore('#')
+        it.startsWith("https://") && publicUrl(it) != null && '@' !in authority
+    }
 
 private fun JsonObject.cObj(key: String): JsonObject? = this[key] as? JsonObject
 
@@ -568,7 +572,7 @@ private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
     val pages = ((body.size + pageSize - 1) / pageSize).coerceAtLeast(1)
     Column(Modifier.horizontalScroll(rememberScrollState())) {
         if (c.cStr("caption").isNotEmpty()) Small(c.cStr("caption"))
-        (if (header) listOf(rows.first()) else emptyList()).plus(body.drop(page * pageSize).take(pageSize)).forEachIndexed { i, row ->
+        (if (header) rows.take(1) else emptyList()).plus(body.drop(page * pageSize).take(pageSize)).forEachIndexed { i, row ->
             Row(Modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 row.forEach { cell ->
                     Box(Modifier.width(120.dp).padding(horizontal = 4.dp)) {

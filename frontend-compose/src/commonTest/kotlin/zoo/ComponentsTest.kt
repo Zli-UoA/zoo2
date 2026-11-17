@@ -47,6 +47,9 @@ class ComponentsTest {
         assertEquals("https://example.com/a.png", safeHttps("https://example.com/a.png"))
         assertNull(safeHttps("http://example.com"))
         assertNull(safeHttps("javascript:alert(1)"))
+        // 利用者情報付きの URL は使わない。パスの中の @ は使ってよい
+        assertNull(safeHttps("https://user@evil.example/"))
+        assertEquals("https://example.com/a@b", safeHttps("https://example.com/a@b"))
         assertNull(safeHttps("https://user@example.com/"))
     }
 

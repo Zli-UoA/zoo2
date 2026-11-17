@@ -5,7 +5,9 @@
 //! - ボタンと選択肢（string select・overflow・radio）は押すとアプリへ送る。入力欄・ピッカー・
 //!   ユーザーやチャンネルの選択は、デスクトップでは操作できない旨を出す（モーダルとホームは Web で操作する）。
 
-use gpui::{AnyElement, Context, Div, ParentElement, SharedString, Styled, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, Div, FocusHandle, ParentElement, SharedString, Styled, div, prelude::*, px,
+};
 use zoo2_client_core::components::{Component, Document, TableCell, button_style};
 
 use crate::fonts;
@@ -27,6 +29,17 @@ pub struct Target<'a> {
     pub me: Option<&'a str>,
     /// 確認を表示中の操作のキー（WorkspaceView::component_confirm）
     pub confirming: Option<&'a str>,
+    /// ボタン・リンクのフォーカス（描画をまたいで保つ。Tab で移り、Enter・Space で押せる）
+    pub focus: &'a std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+}
+
+fn focus(target: &Target, key: &str, cx: &mut Context<WorkspaceView>) -> FocusHandle {
+    target
+        .focus
+        .borrow_mut()
+        .entry(key.to_string())
+        .or_insert_with(|| cx.focus_handle().tab_stop(true))
+        .clone()
 }
 
 pub fn render_components(
@@ -70,20 +83,25 @@ fn small(s: impl Into<SharedString>, cx: &mut Context<WorkspaceView>) -> Div {
         .child(s.into())
 }
 
-/// https の URL だけを開くリンク。
-fn link(id: String, label: String, url: &str, cx: &mut Context<WorkspaceView>) -> AnyElement {
-    let t = palette(cx).t;
+/// https の URL だけを開くリンク。キーボードでも開ける
+fn link(
+    id: String,
+    label: String,
+    url: &str,
+    target: &Target,
+    cx: &mut Context<WorkspaceView>,
+) -> AnyElement {
     if !zoo2_client_core::components::validate::is_https_url(url) {
         return div().child(label).into_any_element();
     }
     let url = url.to_string();
-    div()
-        .id(SharedString::from(id))
-        .cursor_pointer()
-        .text_color(t.link)
-        .hover(|s| s.underline())
+    let handle = focus(target, &id, cx);
+    Button::new(SharedString::from(id))
+        .variant(ButtonVariant::Link)
+        .size(ButtonSize::Sm)
+        .label(label)
+        .focus_handle(&handle)
         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
-        .child(label)
         .into_any_element()
 }
 
@@ -143,6 +161,7 @@ fn node(
             id,
             format!("🖼 {}", x.description.clone().unwrap_or_default()),
             &x.media.url,
+            target,
             cx,
         ),
         Component::MediaGallery(x) => v_flex()
@@ -157,7 +176,7 @@ fn node(
                                 .clone()
                                 .unwrap_or_else(|| format!("{}", i + 1))
                         );
-                        link(format!("{id}-{i}"), label, &item.media.url, cx)
+                        link(format!("{id}-{i}"), label, &item.media.url, target, cx)
                     })
                     .collect::<Vec<_>>(),
             )
@@ -175,6 +194,7 @@ fn node(
                     .to_string())
             ),
             &x.file.url,
+            target,
             cx,
         ),
         Component::Separator(x) => {
@@ -211,11 +231,15 @@ fn node(
             .join(" ");
             if b.style == button_style::LINK {
                 let url = b.url.clone().unwrap_or_default();
+                let handle = focus(target, &id, cx);
                 return Button::new(SharedString::from(id))
                     .variant(ButtonVariant::Outline)
                     .size(ButtonSize::Sm)
                     .label(label)
-                    .disabled(!zoo2_client_core::components::validate::is_https_url(&url))
+                    .disabled(
+                        b.disabled || !zoo2_client_core::components::validate::is_https_url(&url),
+                    )
+                    .focus_handle(&handle)
                     .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
                     .into_any_element();
             }
@@ -230,22 +254,31 @@ fn node(
                 b.custom_id.clone(),
                 serde_json::json!(b.value.clone().unwrap_or_default()),
             );
+            // 確認の表示中に押せない状態へ変わったときは、確認を出さない（「はい」で送らない）
             if let (Some(confirm), Some(key)) = (&b.confirm, target.confirming)
                 && key == id
+                && !b.disabled
+                && action.is_some()
             {
-                return confirm_bar(&id, confirm, action, cx);
+                return confirm_bar(&id, confirm, action, target, cx);
             }
             let has_confirm = b.confirm.is_some();
             let key = id.clone();
+            let handle = focus(target, &id, cx);
             Button::new(SharedString::from(id))
                 .variant(variant)
                 .size(ButtonSize::Sm)
                 .label(label)
+                .focus_handle(&handle)
                 .disabled(b.disabled || action.is_none())
                 .on_click(
                     cx.listener(move |this, _, _, cx| press(this, &key, has_confirm, &action, cx)),
                 )
                 .into_any_element()
+        }
+        // 複数を選ぶ select は、選んだ値をまとめて送る必要があるので Web 版で操作する
+        Component::StringSelect(s) if s.max_values.unwrap_or(1) > 1 => {
+            small(i18n.t("apps.components.webOnly"), cx).into_any_element()
         }
         Component::StringSelect(s) => choices(
             &id,
@@ -294,6 +327,7 @@ fn node(
                 id,
                 format!("▶ {}", v.title),
                 v.title_url.as_deref().unwrap_or(&v.video_url),
+                target,
                 cx,
             ))
             .children(v.description.clone().map(|d| small(d, cx)))
@@ -404,8 +438,11 @@ fn confirm_bar(
     id: &str,
     confirm: &zoo2_client_core::components::Confirm,
     action: Action,
+    target: &Target,
     cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
+    let yes = focus(target, &format!("{id}-yes"), cx);
+    let no = focus(target, &format!("{id}-no"), cx);
     v_flex()
         .gap_1()
         .child(div().font(fonts::sans(600.0)).child(confirm.title.clone()))
@@ -422,6 +459,7 @@ fn confirm_bar(
                         })
                         .size(ButtonSize::Sm)
                         .label(confirm.confirm.clone())
+                        .focus_handle(&yes)
                         .on_click(cx.listener(move |this, _, _, cx| send(this, &action, cx))),
                 )
                 .child(
@@ -429,6 +467,7 @@ fn confirm_bar(
                         .variant(ButtonVariant::Ghost)
                         .size(ButtonSize::Sm)
                         .label(confirm.deny.clone())
+                        .focus_handle(&no)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.component_confirm = None;
                             cx.notify();
@@ -476,37 +515,38 @@ fn choices(
     confirm: Option<&zoo2_client_core::components::Confirm>,
     cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
-    // 確認を表示中の選択肢があれば、その確認だけを出す
-    for (i, o) in options.iter().enumerate() {
-        let key = format!("{id}-o{i}");
+    // 確認のキーは選択肢の値で作る（確認の表示中に選択肢の順序が変わっても、確認した値を送る）
+    let key_of = |o: &zoo2_client_core::components::SelectOption| format!("{id}-v{}", o.value);
+    // 確認を表示中の選択肢があれば、その確認だけを出す（押せない状態に変わっていれば出さない）
+    for o in options {
+        let key = key_of(o);
         if let (Some(c), Some(k)) = (confirm, target.confirming)
             && k == key
+            && !disabled
         {
             let value = if array {
                 serde_json::json!([o.value])
             } else {
                 serde_json::json!(o.value)
             };
-            return confirm_bar(
-                &key,
-                c,
-                action(target, Some(custom_id.to_string()), value),
-                cx,
-            );
+            let act = action(target, Some(custom_id.to_string()), value);
+            if act.is_some() {
+                return confirm_bar(&key, c, act, target, cx);
+            }
         }
     }
     let has_confirm = confirm.is_some();
     let buttons = options
         .iter()
-        .enumerate()
-        .map(|(i, o)| {
+        .map(|o| {
             let value = if array {
                 serde_json::json!([o.value])
             } else {
                 serde_json::json!(o.value)
             };
             let act = action(target, Some(custom_id.to_string()), value);
-            let key = format!("{id}-o{i}");
+            let key = key_of(o);
+            let handle = focus(target, &key, cx);
             Button::new(SharedString::from(key.clone()))
                 .variant(if o.default {
                     ButtonVariant::Secondary
@@ -515,6 +555,7 @@ fn choices(
                 })
                 .size(ButtonSize::Xs)
                 .label(o.label.clone())
+                .focus_handle(&handle)
                 .disabled(disabled || act.is_none())
                 .on_click(
                     cx.listener(move |this, _, _, cx| press(this, &key, has_confirm, &act, cx)),
@@ -558,9 +599,17 @@ fn table(
         }
         rows.push(line);
     }
+    // 51 行目からは描画しない（行が多いと重い）。残りがあることと、Web 版で見られることを示す
+    let rest = x.rows.len().saturating_sub(50);
     v_flex()
         .children(x.caption.clone().map(|c| small(c, cx)))
         .children(rows)
+        .children((rest > 0).then(|| {
+            small(
+                i18n.t_with("apps.components.moreRows", &[("count", &rest.to_string())]),
+                cx,
+            )
+        }))
         .into_any_element()
 }
 
@@ -580,6 +629,21 @@ fn card_view(
         .border_1()
         .border_color(t.border)
         .bg(t.card);
+    // 画像は取得せず、リンクで出す（ほかの画像の部品と同じ）
+    for (i, media) in [&card.hero_image, &card.icon]
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        *n += 1;
+        body = body.child(link(
+            format!("{}-card{}-{i}", target.key, *n),
+            "🖼".to_string(),
+            &media.url,
+            target,
+            cx,
+        ));
+    }
     if let Some(title) = &card.title {
         body = body.child(div().font(fonts::sans(600.0)).child(text(title, target, n)));
     }

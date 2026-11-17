@@ -1646,7 +1646,7 @@ fun Webhooks(app: Session, channel: Row, close: () -> Unit = { app.dialog = null
 @Composable
 fun MessageAppContent(app: Session, message: Row) {
     val appId = message.text("app_origin_id").ifEmpty { message.text("app_id") }
-    val doc = parseComponents(message["components"])
+    val doc = remember(message["components"]) { parseComponents(message["components"]) }
     if (doc != null)
         // Webhook と Slack 取り込みの部品は app_origin_id がないので、操作部品は押せない状態で出す
         ComponentTree(

@@ -158,4 +158,55 @@ describe("ComponentTree", () => {
     await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
     expect(JSON.stringify(api.request.mock.calls[0])).toContain('"kind":"submit"');
   });
+  it("keeps the old choice when the confirmation is declined", async () => {
+    api.request.mockClear();
+    const doc = parseComponents({
+      components: [
+        {
+          type: 1,
+          components: [
+            {
+              type: 21,
+              custom_id: "plan",
+              options: [
+                { label: "Free", value: "free", default: true },
+                { label: "Paid", value: "paid" },
+              ],
+              confirm: { title: "Change?", text: "Sure?", confirm: "Yes", deny: "No" },
+            },
+          ],
+        },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={doc} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("radio", { name: "Paid" }));
+    await userEvent.click(await screen.findByRole("button", { name: "No" }));
+    expect(api.request).not.toHaveBeenCalled();
+    expect(screen.getByRole("radio", { name: "Free" })).toBeChecked();
+  });
+
+  it("resets the inputs when the app updates the document", async () => {
+    const make = (value: string) =>
+      parseComponents({
+        components: [
+          { type: 18, label: "Name", component: { type: 4, custom_id: "name", style: 1, value } },
+        ],
+      })!;
+    const view = render(
+      <LocaleProvider>
+        <ComponentTree document={make("first")} appId="app" surfaceId="s1" submit />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByRole("textbox", { name: "Name" })).toHaveValue("first");
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree document={make("second")} appId="app" surfaceId="s1" submit />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByRole("textbox", { name: "Name" })).toHaveValue("second");
+  });
 });

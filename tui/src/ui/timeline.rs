@@ -177,7 +177,14 @@ fn message_lines(
                 &text,
                 Some(ctx.me_name),
                 &ctx.store.account_profiles,
-            ))
+            ));
+            // ボタン・select・入力欄は文字にならない（ボタンだけの部品では何も出ない）ので、Web 版で操作できることを示す
+            if doc
+                .as_ref()
+                .is_some_and(|d| d.walk().iter().any(|c| c.custom_id().is_some()))
+            {
+                lines.push(Line::from(Span::styled("[操作は Web 版で行えます]", DIM)));
+            }
         }
         Shown::Decrypted {
             message: d,
@@ -413,6 +420,49 @@ mod tests {
         assert!(timeline.lines[8].to_string().contains("返信 3 件"));
         assert!(timeline.lines[5].to_string().starts_with("▌ "));
         assert!(timeline.lines[1].to_string().starts_with("  "));
+    }
+
+    #[test]
+    fn interactive_components_point_to_the_web_version() {
+        let mut store = Store::default();
+        let doc = json!({"flags":32768,"components":[{"type":1,"components":[
+            {"type":2,"style":1,"label":"","custom_id":"go"}]}]})
+        .to_string();
+        store.apply(
+            &ShapeId::Messages("c1".into()),
+            Batch {
+                changes: vec![Change::Upsert {
+                    key: "m1".into(),
+                    row: json!({ "id": "m1", "user_id": "u1", "channel_id": "c1", "content": "",
+                                 "components": doc, "created_at": "2026-11-01 00:00:00" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                }],
+                ..Default::default()
+            },
+        );
+        let messages = store.root_messages("c1");
+        let decryptions = Decryptions::default();
+        let ctx = Context {
+            store: &store,
+            me_name: "alice",
+            me_id: "u1",
+            decryptions: &decryptions,
+            encrypted: false,
+            encrypted_since: None,
+            selected: None,
+            reply_counts: None,
+            reactions: &HashMap::new(),
+        };
+        let timeline = build(&messages, &ctx, 60);
+        // ボタンだけの部品は文字にならないので、Web 版で操作できることを示す
+        assert!(
+            timeline
+                .lines
+                .iter()
+                .any(|l| l.to_string().contains("操作は Web 版で行えます"))
+        );
     }
 
     #[test]

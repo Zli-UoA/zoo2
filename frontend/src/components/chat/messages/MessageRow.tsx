@@ -166,9 +166,11 @@ export function MessageBody({
   mentions?: MentionAllowlist;
 }) {
   // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
-  if (hidesContent(parseComponents(components))) return null;
-  if (!components && hasCardBlocks(appBlocks)) return null;
-  const cards = components ? null : parseMessageCards(data);
+  // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
+  const doc = parseComponents(components);
+  if (hidesContent(doc)) return null;
+  if (!doc && hasCardBlocks(appBlocks)) return null;
+  const cards = doc ? null : parseMessageCards(data);
   if (cards)
     return (
       <>
@@ -575,7 +577,7 @@ export function MessageRow({
               {!resolvedDecryption &&
               message.updated_at &&
               (hidesContent(parseComponents(message.components)) ||
-                (!message.components && hasCardBlocks(message.app_blocks))) ? (
+                (!parseComponents(message.components) && hasCardBlocks(message.app_blocks))) ? (
                 <EditedIndicator at={message.updated_at} />
               ) : null}
             </>

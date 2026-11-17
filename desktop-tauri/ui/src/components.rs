@@ -194,6 +194,10 @@ fn node(c: Component, target: &Target) -> AnyView {
         Component::Button(b) => {
             let label = [b.emoji.and_then(|e| e.name), b.label].into_iter().flatten().collect::<Vec<_>>().join(" ");
             if b.style == button_style::LINK {
+                // 押せない状態のリンクボタンは、リンクにしない
+                if b.disabled {
+                    return view! { <button class="button" disabled=true>{label}</button> }.into_any();
+                }
                 return link(label, b.url.as_deref().unwrap_or_default());
             }
             let class = match b.style {
@@ -206,6 +210,8 @@ fn node(c: Component, target: &Target) -> AnyView {
             let value = serde_json::json!(b.value.unwrap_or_default());
             action_button(class, label, off, b.confirm, target.clone(), b.custom_id.unwrap_or_default(), value)
         }
+        // 複数を選ぶ select は、選んだ値をまとめて送る必要があるので Web 版で操作する
+        Component::StringSelect(s) if s.max_values.unwrap_or(1) > 1 => web_only(),
         Component::StringSelect(s) => choices(target, s.custom_id, s.options, s.disabled, true, s.confirm),
         Component::Overflow(g) | Component::RadioGroup(g) => choices(target, g.custom_id, g.options, g.disabled, false, g.confirm),
         Component::Label(l) => {
@@ -250,13 +256,19 @@ fn node(c: Component, target: &Target) -> AnyView {
         }
         Component::Alert(a) => view! { <div class=format!("alert {}", a.level.unwrap_or_default())>{mfm_view(a.content)}</div> }.into_any(),
         Component::Card(card) => {
+            // 画像は取得せず、リンクで出す（ほかの画像の部品と同じ）
+            let images = [card.hero_image, card.icon]
+                .into_iter()
+                .flatten()
+                .map(|m| link("🖼".into(), &m.url))
+                .collect_view();
             let texts = [card.title, card.subtitle, card.body, card.subtext]
                 .into_iter()
                 .flatten()
                 .map(mfm_view)
                 .collect_view();
             let actions = card.actions.into_iter().map(|a| node(a, target)).collect_view();
-            view! { <div class="card">{texts}<div class="row">{actions}</div></div> }.into_any()
+            view! { <div class="card">{images}{texts}<div class="row">{actions}</div></div> }.into_any()
         }
         Component::Carousel(c) => {
             let cards = c.cards.into_iter().map(|c| node(c, target)).collect_view();
