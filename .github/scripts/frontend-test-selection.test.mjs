@@ -69,7 +69,8 @@ test('only selected runs may succeed when no related tests exist', () => {
     assert.deepEqual(testArguments(project, selection), ['exec', 'vp', 'test', 'related', 'src/lib/time.ts', '--project', project, '--run', '--passWithNoTests']);
     assert.deepEqual(testArguments(project, { mode: 'full' }), ['exec', 'vp', 'test', '--project', project, '--run']);
   }
-  assert.throws(() => testArguments('storybook', selection));
+  assert.deepEqual(testArguments('storybook', selection), ['exec', 'vp', 'test', 'related', 'src/lib/time.ts', '--project', 'storybook', '--run', '--passWithNoTests', '--maxWorkers=1', '--fileParallelism=false']);
+  assert.throws(() => testArguments('unknown', selection));
 });
 
 test('fetch failure runs all tests, and test failures or signals remain failures', () => {

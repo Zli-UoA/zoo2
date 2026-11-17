@@ -954,11 +954,9 @@ export const ActionBar: Story = {
       within(group)
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["返信 0", "リポスト 0", "リアクション 0"]);
+    ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
     await expect(group.querySelector("time")).toBeNull();
-    await userEvent.click(
-      within(group.closest("article")!).getByRole("button", { name: "投稿の操作" }),
-    );
+    await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
   }),
 };
@@ -2499,5 +2497,27 @@ export const OlderPageError: Story = {
     await fireEvent.scroll(root);
     await expect(canvas.getByRole("alert")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "過去の投稿を読む" })).toBeEnabled();
+  }),
+};
+
+export const PostWhileThreadLoading: Story = {
+  render: () => <NavigableHome />,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home/home-post/thread", async () => {
+          await delay("infinite");
+          return HttpResponse.json([]);
+        }),
+        ...homeHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText(/Homeから最初の公開投稿です/));
+    await canvas.findByRole("button", { name: "戻る" });
+    await expect(canvas.getByText(/Homeから最初の公開投稿です/)).toBeVisible();
+    await expect(canvas.queryByText("読み込み中…")).not.toBeInTheDocument();
   }),
 };

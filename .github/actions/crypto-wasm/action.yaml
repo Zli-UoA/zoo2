@@ -1,0 +1,65 @@
+name: Reuse crypto Wasm package
+description: Reuse the generated Wasm package when all build inputs match; compile only on an exact cache miss.
+outputs:
+  cache-hit:
+    description: Whether the generated package was reused without setting up Rust
+    value: ${{ steps.package.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    # No restore-keys: a package built from different source must never be used.
+    - name: Restore generated Wasm package
+      id: package
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: crates/zoo-crypto-wasm/pkg
+        key: crypto-wasm-pkg-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/zoo-crypto/src/**', 'crates/zoo-crypto/Cargo.toml', 'crates/zoo-crypto/Cargo.lock', 'crates/zoo-crypto/build.rs', 'crates/zoo-crypto/.cargo/**', 'crates/zoo-crypto-wasm/src/**', 'crates/zoo-crypto-wasm/Cargo.toml', 'crates/zoo-crypto-wasm/Cargo.lock', 'crates/zoo-crypto-wasm/build.rs', 'crates/zoo-crypto-wasm/build.sh', 'crates/zoo-crypto-wasm/.cargo/**', 'rust-toolchain.toml', '.cargo/**', '.github/actions/crypto-wasm/**') }}
+    - name: Read pinned versions
+      if: steps.package.outputs.cache-hit != 'true'
+      id: versions
+      shell: bash
+      run: |
+        echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+        echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
+    - name: Setup Rust on cache miss
+      if: steps.package.outputs.cache-hit != 'true'
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      with:
+        toolchain: ${{ steps.versions.outputs.channel }}
+        targets: wasm32-unknown-unknown
+    - name: Restore Rust compilation cache
+      if: steps.package.outputs.cache-hit != 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      with:
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        workspaces: crates/zoo-crypto-wasm
+    - name: Restore wasm-bindgen-cli
+      if: steps.package.outputs.cache-hit != 'true'
+      id: cli
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cargo-tools
+        key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-${{ steps.versions.outputs.wasm-bindgen }}
+    - name: Install wasm-bindgen-cli
+      if: steps.package.outputs.cache-hit != 'true' && steps.cli.outputs.cache-hit != 'true'
+      shell: bash
+      run: cargo install --locked --root "$HOME/.cargo-tools" wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
+    - name: Build Wasm package on cache miss
+      if: steps.package.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        export PATH="$HOME/.cargo-tools/bin:$PATH"
+        crates/zoo-crypto-wasm/build.sh
+    - name: Verify generated package
+      shell: bash
+      run: |
+        test -s crates/zoo-crypto-wasm/pkg/zoo_crypto_wasm.js
+        test -s crates/zoo-crypto-wasm/pkg/zoo_crypto_wasm.d.ts
+        test -s crates/zoo-crypto-wasm/pkg/zoo_crypto_wasm_bg.wasm
+    # Save the small completed package immediately, before consumers can modify it.
+    - name: Save generated Wasm package
+      if: steps.package.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: crates/zoo-crypto-wasm/pkg
+        key: ${{ steps.package.outputs.cache-primary-key }}

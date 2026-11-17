@@ -11,6 +11,7 @@ import {
   formatAttachmentSize,
   groupAttachmentsByMessage,
   isInlineImage,
+  mediaPreviewKind,
   resolveAttachmentContentType,
   shouldRefreshAttachmentUrl,
 } from "./attachments";
@@ -135,5 +136,27 @@ describe("attachment presentation", () => {
     expect(grouped.get("message-1")?.map((row) => row.id)).toEqual(["earlier", "later"]);
     expect(grouped.get("message-2")?.map((row) => row.id)).toEqual(["other"]);
     expect(groupAttachmentsByMessage([attachment({ message_id: null })])).toEqual(new Map());
+  });
+});
+
+describe("mediaPreviewKind", () => {
+  it("normalizes passive formats and rejects active documents", () => {
+    expect(mediaPreviewKind("Application/PDF; charset=binary")).toBe("pdf");
+    expect(mediaPreviewKind("video/mp4")).toBe("video");
+    expect(mediaPreviewKind("audio/flac")).toBe("audio");
+    expect(mediaPreviewKind("image/avif")).toBe("image");
+    for (const mime of [
+      "text/html",
+      "application/javascript",
+      "application/zip",
+      "message/rfc822",
+      "application/vnd.ms-outlook",
+      "text/csv",
+    ])
+      expect(mediaPreviewKind(mime)).toBe("document");
+    expect(mediaPreviewKind("application/octet-stream", "mail.eml")).toBe("document");
+    for (const mime of ["image/svg+xml", "application/x-msdownload"]) {
+      expect(mediaPreviewKind(mime)).toBeNull();
+    }
   });
 });

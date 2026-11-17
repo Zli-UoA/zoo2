@@ -19,6 +19,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import zoo.crypto.ffi.*
 import zoo.crypto.ffi.AddOutcome
 import zoo.crypto.ffi.BackupUpload
 import zoo.crypto.ffi.BackupUploadState
@@ -177,6 +178,8 @@ class CryptoStore private constructor(
     private val state: StoreState,
     private val deleteWrappingKey: () -> Unit,
 ) : AutoCloseable {
+    val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+    private val outboundOlm = mutableMapOf<String, String>()
     private val loadedInbound = mutableSetOf<String>()
     private var closed = false
 
@@ -255,15 +258,15 @@ class CryptoStore private constructor(
      * メッセージを 2 回復号しない。`deviceKeys` は送信ユーザーの `keys/query` の応答の `device_keys`、
      * `signatures` は同じ応答の `signatures`（`e2ee_key_signatures` の行）。
      *
-     * 送信端末の検証（受信時の検証の手順 4）は、今は自分の別の端末だけを行う（解錠済みなら、暗号ストアの自分の
-     * 自己署名鍵と、その鍵による端末鍵への署名で確かめる）。他のユーザーの端末は、配布先の判定の記録で信頼した
-     * マスター鍵が要るので、送受信（#361）で入れる。それまでは検証しない（`trust` を渡さない）。
+     * `keysQuery` があれば、自分と送信者のクロス署名と保存済みの信頼記録で送信端末を検証する。
+     * 旧呼び出し元の互換経路では、自分の別の端末だけを検証する。
      */
     @Synchronized
     fun processToDevice(
         rows: List<ToDeviceRow>,
         deviceKeys: JsonObject,
         signatures: JsonArray = JsonArray(emptyList()),
+        keysQuery: JsonObject? = null,
     ): ToDeviceResult {
         val processed = mutableListOf<String>()
         var roomKeys = 0
@@ -282,7 +285,12 @@ class CryptoStore private constructor(
         }
         val trustFor = { sender: String?, device: String? ->
             val selfSigning = if (sender == state.userId && device != null) ownSelfSigning else null
-            selfSigning?.let { key ->
+            if (keysQuery != null && sender != null && device != null && state.secretsRevision != null) {
+                val result = trust.senderTrust(keysQuery.toString(), sender, device, ownSelfSigning)
+                // Olm の更新・受信用鍵・処理済み ID と同じ行単位の保存に含める。
+                state.trustStore = trust.pickle(account, storageKey)
+                result
+            } else selfSigning?.let { key ->
                 val signature =
                     signatures.firstNotNullOfOrNull { element ->
                         val row = element as? JsonObject ?: return@firstNotNullOfOrNull null
@@ -387,6 +395,77 @@ class CryptoStore private constructor(
                 return Encrypted.Decrypted(created, roomKey = true, rejected = false, verified = verified)
             }
         }
+    }
+
+    /** 解錠済みの鍵で配布先を判定し、TOFU の変更を保存する。 */
+    @Synchronized
+    fun recipients(pages: List<JsonObject>): Distribution {
+        check(!closed && state.secretsRevision != null) { "e2ee.sendNeedsUnlock" }
+        return OwnKeys.fromPickle(checkNotNull(state.ownKeys), account, storageKey).use { own ->
+            // 起動時の確認と送信が重なっても、失効前の自己署名鍵で送信を始めない。
+            val serverOwn = pages.firstNotNullOfOrNull { page ->
+                ((page["self_signing_keys"] as? JsonObject)?.get(userId) as? JsonObject)
+            }
+            val signingKeys = serverOwn?.get("keys") as? JsonObject
+            check(signingKeys?.values?.any { (it as? JsonPrimitive)?.content == own.selfSigningPublicKey() } == true) {
+                "e2ee.sendNeedsUnlock"
+            }
+            own.userSigning().use { signing ->
+                trust.evaluate(pages.map { it.toString() }, deviceId, signing).also { saveTrustStore() }
+            }
+        }
+    }
+
+    @Synchronized
+    fun confirmPin(pin: NewTofuPin, accepted: Boolean) {
+        if (accepted) trust.confirmTofuPin(pin) else trust.discardTofuPin(pin)
+        saveTrustStore()
+    }
+
+    @Synchronized
+    fun needsOlm(device: VerifiedDeviceKeys): Boolean = device.curve25519Key() !in outboundOlm
+
+    /** Olm の状態を進めたら、ネットワークへ送る前に永続化する。 */
+    @Synchronized
+    fun shareKey(device: VerifiedDeviceKeys, outbound: OutboundSession, claimed: String?): JsonElement? {
+        check(!closed && state.secretsRevision != null) { "e2ee.sendNeedsUnlock" }
+        val curve = device.curve25519Key()
+        val session = outboundOlm[curve] ?: claimed?.let {
+            account.createOutboundOlmSession(olmSessions, device, it).also { id -> outboundOlm[curve] = id }
+        } ?: return null
+        val encrypted = account.encryptRoomKey(olmSessions, session, device, outbound)
+        val changed = olmSessions.pickleSessions(account, storageKey, curve)
+        state.olmSessions = state.olmSessions.filterNot { it.theirIdentityKey == curve } +
+            changed.map { StoredOlmSession(it.theirIdentityKey, it.sessionId, it.pickle) }
+        state.account = account.pickle(storageKey)
+        save()
+        return json.parseToJsonElement(encrypted)
+    }
+
+    @Synchronized
+    fun encrypt(outbound: OutboundSession, message: OutgoingMessage): JsonElement {
+        check(!closed && state.secretsRevision != null) { "e2ee.sendNeedsUnlock" }
+        // 自分が送った本文も、再起動後に復号・バックアップできるよう受信用の鍵を先に保存する。
+        val ref = SessionRef(outbound.channelId(), account.curve25519Key(), outbound.sessionId())
+        val key = inboundKey(ref)
+        if (key !in state.inboundSessions) {
+            loadInbound(key)
+            inbound.addOutbound(account, outbound)
+            state.inboundSessions = state.inboundSessions +
+                (key to StoredInboundSession(checkNotNull(inbound.pickleSession(account, ref, storageKey))))
+            save()
+        }
+        return json.parseToJsonElement(outbound.encrypt(account, message))
+    }
+
+    /** channel/id/parent/sender/epoch/revision とリプレイの照合は共通の暗号基盤で行う。 */
+    @Synchronized
+    fun decrypt(message: EncryptedMessage): DecryptedMessage {
+        check(!closed)
+        val envelope = json.parseToJsonElement(message.ciphertext) as JsonObject
+        fun text(name: String) = (envelope[name] as JsonPrimitive).content
+        loadInbound(inboundKey(SessionRef(message.channelId, text("sender_key"), text("session_id"))))
+        return inbound.decrypt(message)
     }
 
     /** ack を送れた ID を、処理済みの印から外す。 */
@@ -825,6 +904,7 @@ class CryptoStore private constructor(
     private fun save() {
         check(!closed) { "暗号ストアは閉じています" }
         writeAtomically(File(directory, STATE_FILE), json.encodeToString(StoreState.serializer(), state).encodeToByteArray())
+        changes.value++
     }
 
     companion object {

@@ -57,7 +57,14 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             window::show_main(app);
         }))
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        // opener の既定は、`target="_blank"` のリンクのクリックを横取りして、確かめずに開くスクリプトを
+        // 入れる。リンクは `on_navigation` と `on_new_window` に任せ、外部のサイトは確かめてから開く。
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::zoo_session,
@@ -75,6 +82,7 @@ pub fn run() {
             commands::zoo_access_token,
             commands::zoo_notifications_observed,
             commands::zoo_take_call_accept,
+            commands::zoo_reauthenticate,
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -131,6 +139,7 @@ mod tests {
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
+            command::REAUTHENTICATE,
         ];
         assert_eq!(super::commands_list::COMMANDS, ipc);
     }

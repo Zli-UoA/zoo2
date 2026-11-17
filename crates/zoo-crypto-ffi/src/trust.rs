@@ -259,6 +259,26 @@ impl TrustStore {
         Ok(())
     }
 
+    /// 受信鍵の送信者をクロス署名と保存済みの信頼記録で判定する。
+    pub fn sender_trust(
+        &self,
+        keys_query: String,
+        sender: String,
+        sender_device: String,
+        own_self_signing: Option<String>,
+    ) -> Result<Option<crate::SenderTrust>> {
+        let snapshot = core::KeySnapshot::from_json(&parse_json("keys_query", &keys_query)?)?;
+        let own = own_self_signing
+            .map(|key| crate::ed25519_from_base64(&key))
+            .transpose()?;
+        Ok(lock(&self.inner)
+            .sender_trust(&snapshot, &sender, &sender_device, own.as_ref())
+            .map(|trust| crate::SenderTrust {
+                self_signing_key: trust.self_signing_key.to_base64(),
+                signature: trust.signature,
+            }))
+    }
+
     /// 配布先を判定する。`snapshot_pages` は同じ `membership_epoch` のスナップショット（JSON）のページ。
     /// 記録が変わるので、呼んだあとは保存し直す。
     pub fn evaluate(

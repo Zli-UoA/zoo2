@@ -77,6 +77,74 @@ class AndroidNotificationsTest {
             "channel" to obj("channel_name" to channel), "message" to obj("content" to "body-$id")),
     )
 
+    @Test fun visibleSessionUsesADurableAccountBoundNotificationDestination() = runTest {
+        val f = Fixture(backgroundScope)
+        val store = PushBinding(f.activity)
+        val binding = store.bind("https://zoo.test", "me")
+        try {
+            f.app.update(f.app.env.copy(visible = true))
+            val id = java.util.UUID.randomUUID().toString()
+            val channel = java.util.UUID.randomUUID().toString()
+            val message = java.util.UUID.randomUUID().toString()
+            f.notifications.update(listOf(obj(*(row(id, channel).map { it.key to it.value }.toTypedArray()),
+                "message_id" to message)))
+            val intent = shadowOf(f.rows().single().notification.contentIntent).savedIntent
+            assertEquals(AndroidPushRegistration.OPEN_ACTION, intent.action)
+            assertEquals(binding, intent.getStringExtra("binding"))
+            assertEquals("/channels/$channel?message=$message", intent.getStringExtra("path"))
+        } finally {
+            store.clear(binding)
+            f.close()
+        }
+    }
+
+    @Test fun activityDisposalPreservesOnlyDurableNotificationTaps() = runTest {
+        val f = Fixture(backgroundScope)
+        val store = PushBinding(f.activity)
+        val binding = store.bind("https://zoo.test", "me")
+        try {
+            val channel = java.util.UUID.randomUUID().toString()
+            val rows = (1..2).map {
+                obj(*(row(java.util.UUID.randomUUID().toString(), channel).map { it.key to it.value }.toTypedArray()),
+                    "message_id" to java.util.UUID.randomUUID().toString())
+            }
+            f.notifications.update(rows)
+            assertEquals(3, f.rows().size)
+            assertTrue(f.rows().any { !it.notification.actions.isNullOrEmpty() })
+            f.notifications.close(preserveNotifications = true)
+            assertEquals(2, f.rows().size)
+            for (notice in f.rows()) {
+                assertTrue(notice.notification.actions.isNullOrEmpty(), "Expired session actions must not remain")
+                assertNull(notice.notification.deleteIntent)
+                val open = shadowOf(notice.notification.contentIntent).savedIntent
+                assertEquals(AndroidPushRegistration.OPEN_ACTION, open.action)
+                assertEquals(binding, open.getStringExtra("binding"))
+            }
+            clearNotifications(f.activity, "me")
+            assertTrue(f.rows().isEmpty())
+        } finally { store.clear(binding); f.close() }
+    }
+
+    @Test fun tappedDurableNotificationCannotReturnWhenItsAvatarFinishes() = runTest {
+        val f = Fixture(backgroundScope)
+        val push = AndroidPushRegistration(f.activity, f.app, f.app.api)
+        try {
+            val channel = java.util.UUID.randomUUID().toString()
+            val rows = (1..2).map {
+                obj(*(row(java.util.UUID.randomUUID().toString(), channel, avatar = true).map { it.key to it.value }.toTypedArray()),
+                    "message_id" to java.util.UUID.randomUUID().toString())
+            }
+            f.notifications.update(rows)
+            runCurrent()
+            val child = f.rows().first { it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0 }
+            assertTrue(push.open(shadowOf(child.notification.contentIntent).savedIntent, f.notifications::dismissTag))
+            assertEquals(1, f.rows().size, "Dismiss the tapped child and recompute its summary")
+            f.image.complete(png())
+            runCurrent()
+            assertTrue(f.rows().none { it.tag == child.tag }, "Avatar completion cannot repost the tapped notification")
+        } finally { push.forget(); f.close() }
+    }
+
     @Test fun summariesAppearForTwoNotificationsAndDisappearWhenOneIsRead() = runTest {
         val f = Fixture(backgroundScope)
         try {

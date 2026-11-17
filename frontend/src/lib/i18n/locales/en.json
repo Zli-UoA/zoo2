@@ -227,6 +227,8 @@
     "edited": "Edited"
   },
   "attachments": {
+    "play": "Play",
+    "pause": "Pause",
     "add": "Attach files",
     "selected": "Files to attach",
     "remove": "Remove {{name}}",
@@ -248,7 +250,21 @@
     "markSensitive": "Mark images as sensitive",
     "showSensitive": "Show image",
     "hideSensitive": "Hide image",
-    "sensitiveShort": "Sensitive"
+    "sensitiveShort": "Sensitive",
+    "documentSummary": "Simplified text and cell preview. Formatting and layout may differ from the original.",
+    "previewLimit": "This preview exceeds the size, file count or processing time limit. Download the file to view it.",
+    "emptyPreview": "No content",
+    "containedFiles": "Contained files",
+    "previousPage": "Previous page",
+    "nextPage": "Next page",
+    "pdfPage": "PDF page {{page}}",
+    "mail": {
+      "subject": "Subject",
+      "from": "From",
+      "to": "To",
+      "cc": "Cc",
+      "date": "Date"
+    }
   },
   "threads": {
     "title": "Thread",
@@ -333,6 +349,15 @@
     "yesterday": "Yesterday"
   },
   "composer": {
+    "editorTitle": "Edit message",
+    "expand": "Expand editor",
+    "collapse": "Collapse editor",
+    "dragHandle": "Swipe the editor handle up or down",
+    "formatting": "Formatting",
+    "bold": "Bold",
+    "italic": "Italic",
+    "strike": "Strikethrough",
+    "code": "Code block",
     "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
     "ctrl": "Ctrl+Enter to send / Enter for a new line",
     "other": "Cmd / Ctrl+Enter to send / Enter for a new line",
@@ -395,6 +420,11 @@
   },
   "mentions": {
     "suggestions": "Mention suggestions"
+  },
+  "appUpdate": {
+    "title": "A new version is available",
+    "description": "Reload to use the new version. If you are typing something, send it first.",
+    "reload": "Reload"
   },
   "offline": {
     "bannerTitle": "You're offline",
@@ -1222,6 +1252,7 @@
       "popupBlocked": "Couldn't open the sign-in window. Allow pop-ups and try again.",
       "reauthFailed": "Couldn't sign in again. Please try again; your keys are kept.",
       "reauthTimeout": "Sign-in didn't finish in time. Please try again.",
+      "desktopOutdated": "This version of the desktop app can't sign you in again. Update the app and try again.",
       "setupConflict": "Another device started setting up encryption first. The recovery key shown here won't work. Unlock with the recovery key or passkey from that device.",
       "mismatch": "A key revocation may be unfinished, or the keys on the server may have been tampered with. This device wasn't signed. Redo the revocation or reset encryption.",
       "invalidRecoveryKey": "That recovery key isn't valid. Check for typos.",
@@ -1677,5 +1708,78 @@
     "title": "Getting started",
     "chooseChannel": "Choose a channel to continue. If needed, use Browse channels to join one.",
     "navigationError": "Could not open the screen. Please try again."
+  },
+  "sip": {
+    "title": "Phone (SIP)",
+    "description": "Manage personal and circle-shared lines and phones. Connect one selected line to make and receive calls. Incoming calls require this browser to remain open and connected.",
+    "refresh": "Refresh",
+    "addLine": "Add line",
+    "loading": "Loading…",
+    "loadError": "Could not load lines. Refresh to try again.",
+    "disabled": "Phone service is not enabled yet. An administrator must configure the infrastructure.",
+    "channelBusy": "SIP is unavailable during a channel call.",
+    "line": "Line for calls",
+    "selectLine": "Select a line",
+    "personal": "Personal",
+    "shared": "Circle shared",
+    "connect": "Connect and receive calls",
+    "disconnect": "Disconnect",
+    "number": "Phone or extension number",
+    "dial": "Call",
+    "empty": "No lines are available yet.",
+    "edit": "Edit",
+    "delete": "Delete",
+    "lineForm": "Add or edit line",
+    "name": "Line name",
+    "ownership": "Ownership",
+    "phone_number": "External number (optional)",
+    "websocket_path": "SIP connection path",
+    "sip_domain": "SIP domain",
+    "username": "SIP username",
+    "password": "SIP password",
+    "keepPassword": "Leave blank to keep the current password",
+    "members": "Allowed members",
+    "membersHelp": "Only selected members may connect. Select yourself too if needed. Members share SIP credentials; rotate the password on the PBX when removing a member.",
+    "phones": "Phone and site contacts",
+    "phonesHelp": "Register a name and extension, then configure the displayed SIP account on the phone.",
+    "gatewayAccount": "Site gateway SIP account",
+    "phoneAccount": "Phone SIP account",
+    "phoneName": "Phone or site name",
+    "extension": "Destination number",
+    "removePhone": "Remove contact",
+    "addPhone": "Add phone",
+    "pbxHelp": "Register the PBX domain and account provided by your administrator. The server handles SIP connections. Restrict outbound trunks and numbers on the PBX too.",
+    "writeError": "Could not save. Check the values and permissions and try again.",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "deleteTitle": "Delete this line?",
+    "deleteHelp": "Removes the line and contacts from zoo2. Disable the extension and credentials on the PBX separately.",
+    "answer": "Answer",
+    "hangup": "End or decline call",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "dtmf": "Touch tone (0–9, *, #)",
+    "sendTone": "Send",
+    "callError": "Connection or operation failed. Check line permissions, PBX and media relay configuration.",
+    "status": {
+      "offline": "Disconnected",
+      "connecting": "Connecting…",
+      "ready": "Ready for calls",
+      "dialing": "Calling…",
+      "incoming": "Incoming call",
+      "active": "In call"
+    },
+    "unavailableMember": "Unavailable member"
+  },
+  "androidPhone": {
+    "description": "Use personal or shared SIP lines and DM voice calls with your device’s calling features.",
+    "nativeCalls": "Device call integration",
+    "nativeHelp": "Enabling incoming calls keeps a connection with an ongoing notification. Answer, end calls and route audio using device call controls. Microphone permission is required.",
+    "receiveDm": "Receive DM calls",
+    "callError": "Could not prepare or control the call. Check microphone permission, device calling support, network and line configuration.",
+    "speaker": "Speaker",
+    "waiting": "Waiting for incoming calls",
+    "dmCall": "Call"
   }
 }

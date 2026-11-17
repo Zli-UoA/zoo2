@@ -238,6 +238,9 @@
           name = "zoo2-android";
           nativeBuildInputs = with pkgs; [
             androidToolchain
+            # APKに同梱するWebRTC/SIPエンジン。CI Androidと同じNode.jsを使う。
+            nodejs_24
+            pnpm
             # nixpkgs の版（4.1.2）は CI Android の `cargo install cargo-ndk@4.1.2` と同じ。nixpkgs を上げたら合わせる。
             cargo-ndk
             gnumake

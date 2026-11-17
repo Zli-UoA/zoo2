@@ -677,7 +677,10 @@ export const EncryptedWithAttachments: Story = {
   ],
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("img", { name: "architecture.png" })).toBeVisible();
+    const image = await canvas.findByRole("img", { name: "architecture.png" });
+    await waitFor(async () => {
+      await expect(image).toBeVisible();
+    });
     await expect(canvas.getByText("議事録.pdf")).toBeVisible();
     await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
   }),

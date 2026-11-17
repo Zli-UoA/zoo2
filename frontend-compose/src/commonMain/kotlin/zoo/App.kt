@@ -694,6 +694,12 @@ internal fun Header(
             )
         }
         Spacer(Modifier.width(12.dp))
+        zoo.phone.LocalPhoneController.current?.let { phone ->
+            if (channel.flag("is_dm") && !channel.present("archive_at") && isMember(memberships, id, app.config.userId))
+                Button(app.t("androidPhone.dmCall"), enabled = phone.call == null && !phone.busy, variant = "outline") {
+                    phone.callDm(id, dmTitle(app, channel, users, memberships))
+                }
+        }
         if (!channel.flag("is_dm"))
             Row(
                 Modifier.heightIn(min = touchTargetSize(28.dp, LocalTouchUi.current))

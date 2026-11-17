@@ -1,6 +1,7 @@
 export const SETTINGS_TABS = [
   "general",
   "call",
+  "sip",
   "encryption",
   "apps",
   "members",

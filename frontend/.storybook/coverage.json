@@ -507,6 +507,10 @@
       "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
+      "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
+      "states": ["Available", "Mobile"]
+    },
+    {
       "file": "src/components/pwa/PwaControls.stories.tsx",
       "states": [
         "Default",
@@ -617,6 +621,7 @@
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
       "states": [
+        "PostWhileThreadLoading",
         "QuotedRenote",
         "ReplyToMediaOnly",
         "WithImages",
@@ -826,6 +831,52 @@
     {
       "file": "src/components/chat/components/ComponentTree.stories.tsx",
       "states": ["AllDisplay", "InteractiveWithoutApp", "Interactive", "ModalInputs", "Narrow"]
+    },
+    {
+      "file": "src/components/ui/media-preview.stories.tsx",
+      "states": [
+        "Loading",
+        "Image",
+        "PDF",
+        "Video",
+        "Audio",
+        "Failed",
+        "Narrow",
+        "Email",
+        "Outlook",
+        "Word",
+        "Spreadsheet",
+        "Slides",
+        "OpenDocument",
+        "Archive",
+        "Text",
+        "JapanesePDF",
+        "JPEG2000PDF",
+        "EmbeddedEmail"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.stories.tsx",
+      "states": [
+        "PersonalAndShared",
+        "Empty",
+        "Disabled",
+        "Loading",
+        "LoadError",
+        "SharedMember",
+        "Incoming",
+        "Active",
+        "Failed",
+        "ChannelBusy",
+        "EditKeepsPassword",
+        "SaveError",
+        "Mobile",
+        "RegisterSharedLine",
+        "Saving",
+        "DeleteConfirmation",
+        "RemoveUnavailableMember",
+        "NarrowPhoneForm"
+      ]
     }
   ],
   "modules": [
@@ -1186,6 +1237,10 @@
       "checks": ["src/components/offline/OfflineProvider.browser.test.tsx"]
     },
     {
+      "file": "src/components/pwa/AppUpdateNotice.tsx",
+      "story": "src/components/pwa/AppUpdateNotice.stories.tsx"
+    },
+    {
       "file": "src/components/pwa/PwaControls.tsx",
       "story": "src/components/pwa/PwaControls.stories.tsx"
     },
@@ -1312,7 +1367,7 @@
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
-      "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。"
+      "reason": "Default/Mobileで投稿下のアクションの従来のボタンサイズ・均等配置・下側の余白・三点メニューの配置を確認する。タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",
@@ -1494,6 +1549,54 @@
         "src/components/chat/components/parse.test.ts",
         "src/components/chat/components/ComponentTree.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/ui/document-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "composed": true,
+      "reason": "Email、Outlook、Word、Spreadsheet、Slides、OpenDocument、Archive、Textで実際のWorkerと取得・解析・表示を確認する。",
+      "checks": ["src/components/ui/document-preview.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/ui/pdf-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "composed": true,
+      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
+      "checks": [
+        "src/components/ui/media-preview.browser.test.tsx",
+        "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/ui/media-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "checks": [
+        "src/components/ui/media-preview.browser.test.tsx",
+        "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx"
+    },
+    {
+      "file": "src/components/sip/SipControls.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx",
+      "composed": true,
+      "reason": "通話操作はIncoming・Activeで実コンポーネントを描画し確認する。"
+    },
+    {
+      "file": "src/components/sip/SipPanel.tsx",
+      "reason": "シェル共通Providerと回線一覧・常設通話操作を接続する制御層。画面状態はSipPanelViewのStory、共有接続と認証終了はブラウザー統合テストで確認する。",
+      "checks": [
+        "src/components/sip/SipProvider.browser.test.tsx",
+        "src/lib/sip/controller.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipProvider.tsx",
+      "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
+      "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
     }
   ]
 }

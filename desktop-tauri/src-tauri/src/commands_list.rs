@@ -16,4 +16,5 @@ pub const COMMANDS: &[&str] = &[
     "zoo_access_token",
     "zoo_notifications_observed",
     "zoo_take_call_accept",
+    "zoo_reauthenticate",
 ];

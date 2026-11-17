@@ -79,7 +79,7 @@ private fun HomeQuoteCard(app: Session, quote: Row) {
             // Match Web: one quote level, no Summaly inside a quote.
             HomePostContent(app, kotlinx.serialization.json.JsonObject(post - "quote"), previewLinks = false)
             val time: @Composable () -> Unit = {
-                Text(app.platform.fullTimestamp(post.text("created_at")), small = true, color = LocalLinkColor.current)
+                PostTimestamp(app, post.text("created_at"))
             }
             if (destination != null) NativeLink(destination) { time() } else time()
         }

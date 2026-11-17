@@ -116,6 +116,57 @@ class TouchUiTest {
         screenshot("editor", "editor-320-font180")
     }
 
+    @Test
+    fun designPrimitivesKeepTargetsAndSettingsUsableAcrossWidthsAndFontScales() {
+        var width by mutableStateOf(320.dp)
+        var dark by mutableStateOf(false)
+        var scale by mutableStateOf(1f)
+        var value by mutableStateOf("")
+        ui.setContent {
+            CompositionLocalProvider(
+                LocalTouchUi provides true,
+                LocalDensity provides Density(LocalDensity.current.density, fontScale = scale),
+            ) {
+                ZooTheme(dark) {
+                    Column(Modifier.width(width).testTag("design-primitives")) {
+                        ScreenHeader("settings", "表示と通知")
+                        Column(
+                            Modifier.fillMaxWidth().padding(AndroidDesign.screenInset),
+                            verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceLarge),
+                        ) {
+                            Field(value, "日本語の表示名", Modifier.fillMaxWidth()) { value = it }
+                            Field("", "返信", Modifier.fillMaxWidth(), chrome = false,
+                                singleLine = false, minimumHeight = 36.dp) {}
+                            Row(horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceMedium)) {
+                                Button("保存", size = "xs", icon = "check") {}
+                                IconButton("x", "キャンセル", size = 24.dp) {}
+                            }
+                            SettingRow("長い日本語の設定名", "通知の表示方法を変更します") {
+                                Button("変更する", variant = "outline") {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for ((nextWidth, nextScale, nextDark) in listOf(
+            Triple(320.dp, 1f, false), Triple(320.dp, 1.8f, true), Triple(600.dp, 1f, true),
+        )) {
+            ui.runOnIdle { width = nextWidth; scale = nextScale; dark = nextDark }
+            ui.onNodeWithContentDescription("保存").assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("キャンセル").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("変更する").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+            ui.onNodeWithContentDescription("日本語の表示名").assertTouchHeightIsEqualTo(48.dp)
+            ui.onNodeWithContentDescription("返信").assertTouchHeightIsEqualTo(48.dp)
+            val container = ui.onNodeWithTag("design-primitives").fetchSemanticsNode().boundsInRoot
+            val control = ui.onNodeWithContentDescription("変更する").fetchSemanticsNode().boundsInRoot
+            assertTrue(control.left >= container.left && control.right <= container.right)
+            screenshot("design-primitives", "design-${nextWidth.value}-${nextScale}-${nextDark}")
+        }
+        ui.onNodeWithContentDescription("日本語の表示名").performTextInput("日本語の名前")
+        ui.runOnIdle { assertEquals("日本語の名前", value) }
+    }
+
     private fun screenshot(tag: String, name: String) {
         val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/ui").apply { mkdirs() }
         val bounds = ui.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
@@ -157,7 +208,16 @@ class TouchUiTest {
             override fun now() = "2026-11-15T00:00:00Z"
             override fun navigate(path: String) {}
             override fun action(name: String) {}
-            override fun translate(key: String, args: Map<String, String>) = key
+            override fun translate(key: String, args: Map<String, String>) = mapOf(
+                    "messages.compose" to "メッセージを送信",
+                    "messages.send" to "送信",
+                    "attachments.add" to "ファイルを添付",
+                    "composer.editorTitle" to "メッセージの編集",
+                    "composer.collapse" to "入力欄を小さく戻す",
+                    "composer.formatting" to "書式設定",
+                    "composer.expand" to "入力欄を全画面に広げる",
+                    "composer.dragHandle" to "入力欄を上下にスワイプ"
+                )[key] ?: key
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
             override suspend fun invoke(name: String, payload: String) = ""
@@ -169,19 +229,33 @@ class TouchUiTest {
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides app) {
-                    MaterialTheme {
-                        Box(Modifier.width(320.dp)) {
-                            Composer(app, "general", null, emptyList(), enabled = editAllowed, showTyping = false,
-                                sendMessage = { _, _, _ -> sends++; true })
+                    ZooTheme(dark = true) {
+                        Box(Modifier.width(320.dp).height(800.dp).testTag("channel-editor")) {
+                            NativeWindow(app) {
+                                Column(Modifier.fillMaxSize()) {
+                                    Spacer(Modifier.weight(1f))
+                                    Composer(app, "general", null, emptyList(), enabled = editAllowed, showTyping = false,
+                                        sendMessage = { _, _, _ -> sends++; true })
+                                }
+                            }
                         }
                     }
                 }
             }
-            ui.onNodeWithContentDescription("messages.compose").performTextInput("通信が戻るまで下書き")
-            ui.onNodeWithContentDescription("messages.send").assertIsNotEnabled()
-            ui.onNodeWithContentDescription("attachments.add").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("メッセージを送信").performTextInput("通信が戻るまで下書き")
+            ui.onNodeWithContentDescription("送信").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("ファイルを添付").assertIsNotEnabled()
+            val host = ui.onNodeWithTag("channel-editor").fetchSemanticsNode().boundsInRoot
+            val dock = ui.onNodeWithTag("channel-composer-dock").fetchSemanticsNode().boundsInRoot
+            assertEquals(host.left, dock.left, 1f)
+            assertEquals(host.right, dock.right, 1f)
+            assertEquals(host.bottom, dock.bottom, 1f)
+            screenshot("channel-composer-dock", "channel-editor-compact")
+            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.onNodeWithContentDescription("書式設定").performClick()
+            screenshot("channel-editor", "channel-editor-expanded-formatting")
             ui.runOnIdle { editAllowed = false }
-            ui.onNodeWithContentDescription("messages.compose").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("メッセージを送信").assertIsNotEnabled()
             ui.runOnIdle { assertEquals(0, requests); assertEquals(0, sends) }
         } finally { app.close(); scope.cancel() }
     }

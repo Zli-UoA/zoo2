@@ -44,6 +44,7 @@ export function toEncryptionError(
   if (error instanceof ReauthError) {
     if (error.code === "popupBlocked") return "popupBlocked";
     if (error.code === "timeout") return "reauthTimeout";
+    if (error.code === "desktopOutdated") return "desktopOutdated";
     return "reauthFailed";
   }
   if (error instanceof ReauthRequiredError) return "reauthFailed";
