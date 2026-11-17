@@ -365,7 +365,9 @@ fn node(
             .gap_1()
             .child(div().font(fonts::sans(500.0)).child(l.label.clone()))
             .children(l.description.clone().map(|d| small(d, cx)))
-            .child(node(&l.component, target, n, i18n, cx))
+            // Label の中の入力は、Web と Android では「送信」でまとめて送る（選んだときには送らない）。
+            // デスクトップには送信ボタンがないので、中の部品は操作させず Web 版を案内する
+            .child(small(i18n.t("apps.components.webOnly"), cx))
             .into_any_element(),
         Component::TextInput(_)
         | Component::UserSelect(_)

@@ -215,7 +215,9 @@ fn node(c: Component, target: &Target) -> AnyView {
         Component::StringSelect(s) => choices(target, s.custom_id, s.options, s.disabled, true, s.confirm),
         Component::Overflow(g) | Component::RadioGroup(g) => choices(target, g.custom_id, g.options, g.disabled, false, g.confirm),
         Component::Label(l) => {
-            let inner = node(*l.component, target);
+            // Label の中の入力は、Web と Android では「送信」でまとめて送る（選んだときには送らない）。
+            // デスクトップには送信ボタンがないので、中の部品は操作させず Web 版を案内する
+            let inner = web_only();
             view! { <div class="label"><div class="b">{l.label}</div>{l.description.map(small)}{inner}</div> }.into_any()
         }
         Component::TextInput(_)
