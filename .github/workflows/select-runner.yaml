@@ -47,6 +47,11 @@ jobs:
             const SCALE_SET = 'zli-k8s';
             const HOSTED = 'ubuntu-latest';
             const LARGE_RUNNER = 'zli-k8s-heavy';
+            // zoo2-infra の zli-k8s-zoo2-heavy の maxRunners と同じ値にする。
+            const HEAVY_RUNNERS = 2;
+            // 重いジョブ（large-runs-on）を持つ workflow。merge group は Hosted 固定なので、数えない。
+            const LARGE_WORKFLOWS = ['ci-backend.yaml', 'ci-frontend.yaml'];
+            const MAX_HEAVY_API_CALLS = 30;
             // Included minutes of GitHub Free for private repositories; the margin
             // covers billing lag and jobs started after the check. Every OS draws on
             // the same allowance by price, so usage is counted in Linux minutes.
@@ -60,6 +65,25 @@ jobs:
               core.setOutput('docker-runs-on', JSON.stringify(hostedRunsOn));
               core.setOutput('large-runs-on', JSON.stringify(largeRunsOn));
               core.info(`Docker-free: ${runsOn}; Docker/large: ${hostedRunsOn}: ${reason}`);
+            };
+            // heavy の runner が使っている台数（実行中と待ちの、zli-k8s-heavy のジョブ）。Runner の一覧は読まず、
+            // 公開リポジトリの Actions のジョブから数える（Runner の一覧には、リポジトリの管理権限が要るため）。
+            const heavyJobs = async () => {
+              const {owner, repo} = context.repo;
+              let busy = 0;
+              let calls = 0;
+              for (const workflow_id of LARGE_WORKFLOWS) {
+                for (const status of ['in_progress', 'queued']) {
+                  const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {owner, repo, workflow_id, status, per_page: 100, request});
+                  for (const run of runs) {
+                    if (run.id === context.runId) continue;
+                    if (++calls > MAX_HEAVY_API_CALLS) return busy;
+                    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {owner, repo, run_id: run.id, filter: 'latest', per_page: 100, request});
+                    busy += jobs.filter(j => ['queued', 'in_progress'].includes(j.status) && (j.labels || []).includes(LARGE_RUNNER)).length;
+                  }
+                }
+              }
+              return busy;
             };
             const pr = context.payload.pull_request;
             // Fork code uses hosted runners; pull_request_target never checks out PR code.
@@ -76,7 +100,23 @@ jobs:
               // 空なら Hosted。fork の PR と merge group は、上で Hosted に固定している。
               const large = (process.env.LARGE_RUNNER || '').trim();
               if (large && large !== LARGE_RUNNER) core.warning(`CI_LARGE_RUNNER must be empty or ${LARGE_RUNNER}; using hosted`);
-              return use(HOSTED, HOSTED, 'public repository; no self-hosted queue', large === LARGE_RUNNER ? LARGE_RUNNER : HOSTED);
+              let largeRunsOn = large === LARGE_RUNNER ? LARGE_RUNNER : HOSTED;
+              let reason = 'public repository; no self-hosted queue';
+              if (largeRunsOn === LARGE_RUNNER) {
+                // heavy は埋まっている（実行中と待ちの重いジョブが HEAVY_RUNNERS 件以上）なら Hosted に逃がす。
+                // 選択は workflow の開始時に一度だけなので、予約ではない。同時に始まる workflow は同じ結果を見て、
+                // どちらも heavy を選びうる。API を読めないときは heavy のままにする（変数で heavy を指定した意図に従う）。
+                try {
+                  const busy = await heavyJobs();
+                  if (busy >= HEAVY_RUNNERS) {
+                    largeRunsOn = HOSTED;
+                    reason += `; ${LARGE_RUNNER} busy (${busy}/${HEAVY_RUNNERS})`;
+                  }
+                } catch (error) {
+                  core.warning(`Heavy runner usage unavailable (${error.status || 'network error'}); using ${LARGE_RUNNER}`);
+                }
+              }
+              return use(HOSTED, HOSTED, reason, largeRunsOn);
             }
             const hasToken = process.env.HAS_STATUS_TOKEN === 'true';
             // Hosted is free for public repositories. Private ones share the monthly
