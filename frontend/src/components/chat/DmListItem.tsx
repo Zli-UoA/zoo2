@@ -85,7 +85,7 @@ export function DmListItem({
           aria-hidden="true"
           data-drop-indicator={dropIndicator}
           className={cn(
-            "pointer-events-none absolute inset-x-0 z-20 h-0.5 rounded-full bg-brand",
+            "pointer-events-none absolute inset-x-0 z-20 h-[2px] rounded-full bg-foreground",
             dropIndicator === "before" ? "-top-px" : "-bottom-px",
           )}
         />
