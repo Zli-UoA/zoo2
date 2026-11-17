@@ -115,6 +115,9 @@ fn squash(s: &str) -> String {
 const UI: &str = include_str!("../src/apps/ui.rs");
 const DELIVERY: &str = include_str!("../src/apps/delivery.rs");
 const BACKFILL: &str = include_str!("../src/components/backfill.rs");
+const LINK: &str = include_str!("../src/slack/link.rs");
+/// この PR より前の SQL（比べるためだけに測る。ソースにはない）
+const BEFORE: &str = "";
 
 #[tokio::test]
 #[ignore = "requires an empty migrated disposable database and COMPONENTS_SCALE_ROWS"]
@@ -141,6 +144,9 @@ SELECT 'm-'||lpad(i::text,8,'0'),'cb-noise',CASE WHEN i%2=0 THEN 'cb-ch' ELSE 'c
   CASE WHEN i%{DENSITY}=2 THEN '[{{"app_id":"cb-app-2","name":"Noise","url":"https://e.example/'||i||'","card":{{"title":"T"}}}}]' END
 FROM generate_series(1,{n}) i;
 -- 対象のメッセージ（アプリが部品を付けたもの）
+-- Webhook や Slack の取り込みで部品を持つ行（1/DENSITY。対象のチャンネルの履歴の中）。圧縮の効かない約 3.2 KB の文字で、行の外（TOAST）に置かれる
+UPDATE messages SET components='{{"flags":32768,"components":[{{"type":10,"content":"'||(SELECT string_agg(md5(id||j::text),'') FROM generate_series(1,100) j)||'"}}]}}' WHERE id IN (SELECT 'm-'||lpad(i::text,8,'0') FROM generate_series(4,{n},{DENSITY}) i);
+INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES('T1','C1','cb-ch');
 UPDATE messages SET user_id='cb-bot',channel_id='cb-ch',app_origin_id='cb-app',card=NULL,app_blocks=NULL,app_unfurls=NULL,
   components='{{"flags":32768,"components":[{{"type":1,"components":[{{"type":2,"style":1,"label":"Go","custom_id":"go"}}]}}]}}'
   WHERE id='{mid}';
@@ -440,6 +446,22 @@ ANALYZE;
             &["ui-00000010", doc, "{}"],
             &[],
         ),
+        // Slack 連携時のメンションの書き換え（連携 1 回につき 1 回）。連携した team のチャンネルの履歴を読む設計で、
+        // この PR より前から履歴に比例する。部品の文字も調べるようになった分を、前の SQL と比べて測る
+        q(
+            "history-slack-mentions",
+            LINK,
+            "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card,'components',m.components)::text FROM messages m JOIN channels c ON c.id=m.channel_id WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND NOT c.encrypted AND (strpos(m.content,$2)>0 OR strpos(COALESCE(m.components,''),$2)>0) AND EXISTS(SELECT 1 FROM json_array_elements_text($3::json) AS n(name) WHERE strpos(m.content,'@'||n.name)>0 OR strpos(COALESCE(m.components,''),'@'||n.name)>0) FOR UPDATE OF m FOR KEY SHARE OF c",
+            &["T1", "@slack-", r#"["slack-bob.x"]"#],
+            &[("messages", 1.2 * n as f64), ("channels", 1.2 * n as f64)],
+        ),
+        q(
+            "history-slack-mentions-before",
+            BEFORE,
+            "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card)::text FROM messages m JOIN channels c ON c.id=m.channel_id WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND NOT c.encrypted AND strpos(m.content,$2)>0 AND EXISTS(SELECT 1 FROM json_array_elements_text($3::json) AS n(name) WHERE strpos(m.content,'@'||n.name)>0) FOR UPDATE OF m FOR KEY SHARE OF c",
+            &["T1", "@slack-", r#"["slack-bob.x"]"#],
+            &[("messages", 1.2 * n as f64), ("channels", 1.2 * n as f64)],
+        ),
     ];
     // 追加の条件: 同じ SQL を、ほかの引数・準備で測る
     let variant = |queries: &Vec<Query>,
@@ -602,7 +624,7 @@ ANALYZE;
         // バックフィルの app_unfurls の SELECT は、ソースでは UNFURLS_OF を format! で埋める
         let source_sql = query.sql.replace(unfurls_of, "{UNFURLS_OF}");
         assert!(
-            squash(query.source).contains(&squash(&source_sql)),
+            query.source.is_empty() || squash(query.source).contains(&squash(&source_sql)),
             "{}: the measured SQL is not in the source",
             query.name
         );
