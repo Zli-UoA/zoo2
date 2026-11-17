@@ -224,22 +224,23 @@ POSTGRES_PASSWORD=staging-test-password \
 
 ### Slack ゲスト所属トリガーの適用順序
 
-`20261128030011_guest_membership_lock_order.sql` は `channel_user` の INSERT 時に `users` 行を `FOR NO KEY UPDATE` でロックする関数へ置き換えます。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず advisory lock を取る経路があるため、ローリングデプロイ中に「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行すると PostgreSQL のデッドロック (SQLSTATE 40P01) で一方が失敗し得ます。
+`20261128030004_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
+`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261128030011_guest_membership_lock_order.sql`
+に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
+advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
+「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック
+(SQLSTATE 40P01) になり得ます。
 
-そのため、通常の migration は `20261128030010` まで適用して新バックエンドへ切り替え、旧バックエンドの書き込みが止まった後に `20261128030011` を適用してください。`030011` だけを遅らせる例:
+通常の `migrate-deploy` / `compose.stack` は `infra/db/migrations` だけをコピー・適用するため、
+この関数は適用されません。先に新バックエンド（`lock_membership_users` で users を先にロックする）へ
+切り替え、旧インスタンスの終了を確認してから、deferred migration を適用してください。
 
-```bash
-phase1="$(mktemp -d)"
-cp infra/db/migrations/*.sql "$phase1/"
-rm "$phase1/20261128030011_guest_membership_lock_order.sql"
-atlas migrate hash --dir "file://$phase1"
-atlas migrate apply --dir "file://$phase1" --url "$DATABASE_URL"
-# 新バックエンドへ切り替え、旧インスタンスの終了を確認
-atlas migrate apply --dir file://infra/db/migrations --url "$DATABASE_URL"
-rm -rf "$phase1"
+```sh
+atlas migrate apply --dir file://infra/db/deferred-migrations --url "$DATABASE_URL"
 ```
 
-停止できない場合は、40P01 を一時的な競合として再試行してください。
+この適用後、canonical migrations へ戻す follow-up で deferred migration を
+`infra/db/migrations` の最新版より後へ移動し、`atlas.sum` を再生成します。
 
   `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 

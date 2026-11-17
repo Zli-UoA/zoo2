@@ -1,4 +1,5 @@
--- Deferred to 20261128030011_guest_membership_lock_order.sql.
--- Replacing app_guest_membership_rules during a rolling deploy can deadlock with
--- the old backend's lock_members order. Apply 030011 only after the new backend
--- has replaced old instances; see infra/README.md.
+-- The always-lock version of app_guest_membership_rules is deferred to
+-- infra/db/deferred-migrations/20261128030011_guest_membership_lock_order.sql.
+-- Applying it before the new backend replaces old instances can deadlock with
+-- the old lock_members order. The standard deploy applies only this canonical
+-- directory; the follow-up migration is applied after the rollout.
