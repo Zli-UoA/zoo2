@@ -9,6 +9,7 @@ on:
     # Explicit list excludes this gate itself and prevents event recursion.
     workflows:
       - "PR review relay"
+      - "PR assign"
       - "CI"
       - "CI Android"
       - "CI Crypto"
