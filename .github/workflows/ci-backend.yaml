@@ -7,6 +7,7 @@ on:
     paths:
       - "backend/**"
       - "crates/zoo-crypto/**"
+      - "crates/zoo-components/**"
       - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
@@ -22,6 +23,7 @@ on:
     paths:
       - "backend/**"
       - "crates/zoo-crypto/**"
+      - "crates/zoo-components/**"
       - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"

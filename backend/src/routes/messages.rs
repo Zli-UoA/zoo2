@@ -91,6 +91,8 @@ pub struct MessageResponse {
     pub content: String,
     pub card: Option<String>,
     #[serde(default)]
+    pub components: Option<String>,
+    #[serde(default)]
     pub apub: bool,
     pub apub_visibility: Option<String>,
     pub created_at: String,
@@ -114,6 +116,7 @@ impl From<Message> for MessageResponse {
             channel_id: m.channel_id,
             content: m.content,
             card: m.card,
+            components: m.components,
             apub: m.apub,
             apub_visibility: m.apub_visibility,
             created_at: m.created_at.to_string(),
@@ -408,7 +411,7 @@ pub(crate) async fn create_message_impl(
     auth_user: AuthUser,
     payload: CreateMessageRequest,
     notify: bool,
-    card: Option<String>,
+    components: Option<String>,
     test_delay_ms: Option<u64>,
     test_gate_wait: Option<String>,
     test_gate_notify: Option<String>,
@@ -841,13 +844,13 @@ pub(crate) async fn create_message_impl(
             .map(|v| v.to_string())
             .unwrap_or_default();
         let inserted = toasty::sql::statement(
-            "INSERT INTO messages (id, user_id, channel_id, content, card, created_at, parent_id, ciphertext, epoch, revision)
+            "INSERT INTO messages (id, user_id, channel_id, content, components, created_at, parent_id, ciphertext, epoch, revision)
              VALUES ($1, $2, $3, '', NULLIF($4, ''), $5::timestamp, NULLIF($6, ''), $7::jsonb, $8::bigint, 0)",
         )
         .bind(id.as_str())
         .bind(auth_user.id.as_str())
         .bind(payload.channel_id.as_str())
-        .bind(card.as_deref().unwrap_or_default())
+        .bind(components.as_deref().unwrap_or_default())
         .bind(now.to_string())
         .bind(payload.parent_id.as_deref().unwrap_or_default())
         .bind(ciphertext.as_str())
@@ -864,7 +867,8 @@ pub(crate) async fn create_message_impl(
             user_id: auth_user.id.as_str(),
             channel_id: payload.channel_id.as_str(),
             content: payload.content.as_str(),
-            card,
+            card: None,
+            components,
             apub: false,
             apub_visibility: None,
             created_at: now,
@@ -1059,7 +1063,17 @@ pub(crate) async fn update_message(
         ));
     }
 
-    if message.card.is_some() {
+    // Webhook と Slack の取り込みの部品は、本文が部品の代わりの文字なので編集させない。
+    // アプリが自分のメッセージに付けた部品（app_origin_id がある）は、本文と別に持つので編集してよい。
+    let integration_components = message.components.is_some()
+        && crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('app',app_origin_id IS NOT NULL)::text FROM messages WHERE id=$1",
+            &[message.id.as_str()],
+        )
+        .await?["app"]
+            != true;
+    if message.card.is_some() || integration_components {
         return Err(AppError::Forbidden(
             "Integration cards cannot be edited through the user API".into(),
         ));

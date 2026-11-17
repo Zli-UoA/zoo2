@@ -1,0 +1,17 @@
+{
+  "document": {
+    "components": [
+      {"type": 10, "content": "Tell us"},
+      {"type": 18, "label": "Name", "component": {"type": 4, "custom_id": "name", "style": 1, "placeholder": "Your name"}},
+      {"type": 18, "label": "Bio", "description": "Optional", "component": {"type": 4, "custom_id": "bio", "style": 2, "required": false, "max_length": 500}},
+      {"type": 18, "label": "Count", "component": {"type": 4, "custom_id": "count", "format": "number", "min_value": 1, "max_value": 10}},
+      {"type": 18, "label": "Mail", "component": {"type": 4, "custom_id": "mail", "format": "email", "required": false}},
+      {"type": 18, "label": "Plan", "component": {"type": 21, "custom_id": "plan", "options": [{"label": "Free", "value": "free"}, {"label": "Pro", "value": "pro"}]}},
+      {"type": 18, "label": "Topics", "component": {"type": 22, "custom_id": "topics", "min_values": 0, "options": [{"label": "News", "value": "news"}, {"label": "Tips", "value": "tips"}]}},
+      {"type": 18, "label": "Agree", "component": {"type": 23, "custom_id": "agree"}},
+      {"type": 18, "label": "Files", "component": {"type": 19, "custom_id": "files", "max_values": 3, "file_types": ["image", ".pdf"]}},
+      {"type": 18, "label": "Pick", "component": {"type": 3, "custom_id": "pick", "options": [{"label": "A", "value": "a"}]}},
+      {"type": 18, "label": "Due", "component": {"type": 1003, "custom_id": "due"}}
+    ]
+  }
+}

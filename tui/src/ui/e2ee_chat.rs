@@ -403,6 +403,8 @@ mod tests {
             channel_id: "c1".into(),
             content: String::new(),
             card: None,
+            components: None,
+            app_origin_id: None,
             created_at: "2026-11-01T00:00:00".parse().unwrap(),
             updated_at: None,
             deleted_at: None,

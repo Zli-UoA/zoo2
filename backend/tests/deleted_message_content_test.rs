@@ -41,7 +41,7 @@ async fn delete_message(app: &Router, user: &str, id: &str) -> anyhow::Result<St
 async fn tombstone(db: &mut toasty::Db, id: &str) -> anyhow::Result<Value> {
     let rows = sql(
         db,
-        "SELECT json_build_object('content',content,'card',card,'metadata',metadata,\
+        "SELECT json_build_object('content',content,'card',card,'components',components,'metadata',metadata,\
          'app_blocks',app_blocks,'app_attachments',app_attachments,'app_unfurls',app_unfurls,\
          'display_data',display_data,'deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
         &[id],
@@ -56,6 +56,7 @@ fn assert_cleared(row: &Value) {
     assert_eq!(row["content"], "");
     for column in [
         "card",
+        "components",
         "metadata",
         "app_blocks",
         "app_attachments",
@@ -111,7 +112,7 @@ async fn deleted_messages_keep_no_body_or_projection() -> anyhow::Result<()> {
             .await?;
         sql(
             &mut db,
-            "UPDATE messages SET card='card body', app_blocks='[{\"text\":\"block\"}]', \
+            "UPDATE messages SET card='card body', components='{\"components\":[]}', app_blocks='[{\"text\":\"block\"}]', \
              app_unfurls='[]', app_attachments='[{\"title\":\"a\"}]', \
              metadata='{\"event_type\":\"x\",\"event_payload\":{}}' WHERE id=$1",
             &[&id],
@@ -125,6 +126,7 @@ async fn deleted_messages_keep_no_body_or_projection() -> anyhow::Result<()> {
         let row = tombstone(&mut db, id).await?;
         for column in [
             "card",
+            "components",
             "metadata",
             "app_blocks",
             "app_attachments",
