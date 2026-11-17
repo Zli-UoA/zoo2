@@ -47,10 +47,19 @@ fn confirm_key(target: &Target, custom_id: &str, value: Option<&str>) -> String 
 }
 
 /// 開いている確認が、このメッセージの今の文書の版のものでなければ捨てる（文書が A → B → A と戻っても、
-/// 古い確認を出さない）。確認のキーは `{key}-confirm-[版, custom_id, 値]`
-pub fn drop_stale_confirm(confirm: &std::cell::RefCell<Option<String>>, key: &str, version: u64) {
+/// 古い確認を出さない）。確認のキーは `{key}-confirm-[版, custom_id, 値]`。
+/// `version` が None（部品がなくなった）なら、このメッセージの確認をすべて捨てる
+pub fn drop_stale_confirm(
+    confirm: &std::cell::RefCell<Option<String>>,
+    key: &str,
+    version: Option<u64>,
+) {
     let prefix = format!("{key}-confirm-[");
-    let current = format!("{prefix}{version},");
+    let current = match version {
+        Some(v) => format!("{prefix}{v},"),
+        // どの確認のキーとも一致しない
+        None => format!("{prefix}\0"),
+    };
     let mut slot = confirm.borrow_mut();
     if slot
         .as_deref()
@@ -753,13 +762,17 @@ mod confirm_key_tests {
     fn an_update_drops_the_open_confirmation_for_good() {
         let confirm = std::cell::RefCell::new(Some(r#"m-confirm-[1,"go",null]"#.to_string()));
         // 同じ版のあいだは残る。ほかのメッセージの描画では触らない
-        drop_stale_confirm(&confirm, "m", 1);
-        drop_stale_confirm(&confirm, "other", 2);
+        drop_stale_confirm(&confirm, "m", Some(1));
+        drop_stale_confirm(&confirm, "other", Some(2));
         assert!(confirm.borrow().is_some());
         // 文書が更新されたら捨てる。元の版に戻っても、もう出ない（A → B → A）
-        drop_stale_confirm(&confirm, "m", 2);
+        drop_stale_confirm(&confirm, "m", Some(2));
         assert!(confirm.borrow().is_none());
-        drop_stale_confirm(&confirm, "m", 1);
+        drop_stale_confirm(&confirm, "m", Some(1));
+        assert!(confirm.borrow().is_none());
+        // 部品がなくなったときも捨てる（文書あり → なし → 同じ文書あり）
+        *confirm.borrow_mut() = Some(r#"m-confirm-[1,"go",null]"#.to_string());
+        drop_stale_confirm(&confirm, "m", None);
         assert!(confirm.borrow().is_none());
     }
 

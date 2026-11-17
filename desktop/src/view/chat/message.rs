@@ -304,10 +304,15 @@ impl WorkspaceView {
         let hides_body = doc.as_ref().is_some_and(|d| d.hides_content());
         // 部品の描画は cx を借りるので、ストアの値は先に写しておく（メンションの名前に使う、小さな表）
         let accounts = state.store.account_profiles.clone();
+        // 部品がなくなった（None）ときも、このメッセージの開いていた確認を捨てる
+        super::components::drop_stale_confirm(
+            &self.component_confirm,
+            &format!("{pane_prefix}-{msg_id}"),
+            doc.as_ref().map(super::components::document_version),
+        );
         let components_view = doc.as_ref().map(|d| {
             let key = format!("{pane_prefix}-{msg_id}");
             let version = super::components::document_version(d);
-            super::components::drop_stale_confirm(&self.component_confirm, &key, version);
             let confirming = self.component_confirm.borrow().clone();
             super::components::render_components(
                 d,
