@@ -149,6 +149,7 @@ const REMOTE_COMMANDS: &[&str] = &[
     command::CANCEL_LOGIN,
     command::LOGOUT,
     command::SET_FOCUS,
+    command::SET_BADGE,
     command::NOTIFICATION_SETTINGS,
     command::SET_NOTIFICATIONS,
     command::ACCESS_TOKEN,
@@ -180,6 +181,13 @@ pub fn add_remote_capability(app: &App, core: &Core) -> tauri::Result<()> {
 
 /// (b) では、ログインしたらリモートの画面へ、ログアウトしたら同梱のログイン画面へ移す。
 pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
+    // ログアウトや期限切れでは、画面が破棄されて React の後始末が走らないことがある。
+    // バッジは OS 側に残るので、ここで消す。
+    if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. })
+        && let Some(window) = app.get_webview_window(MAIN)
+    {
+        let _ = window.set_badge_count(None);
+    }
     if core.ui() != UiMode::Remote {
         return;
     }

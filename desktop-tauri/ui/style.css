@@ -56,3 +56,25 @@ time { color: var(--muted); font-size: 12px; }
 .quote { color: var(--muted); }
 .composer { border-top: 1px solid var(--line); padding: 10px 16px; }
 .composer textarea { width: 100%; resize: none; font: inherit; padding: 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+/* メッセージ部品 (components.rs) */
+.components { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.components .container { border: 1px solid var(--border, #ddd); border-left: 4px solid var(--brand, #4a7); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
+.components .section { display: flex; gap: 12px; align-items: flex-start; }
+.components .section .texts { flex: 1; min-width: 0; }
+.components .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.components .button, .components .choice { padding: 2px 10px; border-radius: 6px; border: 1px solid var(--border, #ccc); background: transparent; }
+.components .button.primary { background: #3b6; color: #fff; }
+.components .button.success { background: #2a8; color: #fff; }
+.components .button.danger { background: #c33; color: #fff; }
+.components .small { font-size: 12px; opacity: 0.7; }
+.components .b { font-weight: 600; }
+.components .gap { height: 6px; }
+.components .table { border-collapse: collapse; }
+.components .table td, .components .table th { padding: 2px 8px; border-bottom: 1px solid var(--border, #ddd); }
+.components .alert { border-radius: 6px; padding: 6px 10px; background: rgba(127,127,127,0.12); }
+.components .alert.error { border: 1px solid #c33; }
+.components .alert.warning { border: 1px solid #c90; }
+.components .card { border: 1px solid var(--border, #ddd); border-radius: 6px; padding: 6px 8px; width: 240px; }
+.components .carousel { display: flex; gap: 8px; overflow-x: auto; }
+.components .grid-row { display: flex; gap: 12px; }
+.components .confirm { display: inline-flex; gap: 6px; align-items: center; margin-left: 6px; flex-wrap: wrap; }

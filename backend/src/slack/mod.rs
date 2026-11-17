@@ -6,6 +6,7 @@ pub mod events;
 pub mod export;
 pub mod hints;
 pub mod import;
+pub mod legacy_card;
 pub mod link;
 pub mod migration_notice;
 pub mod recheck;

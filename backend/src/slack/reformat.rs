@@ -57,7 +57,7 @@ const CANDIDATES: &str = "\
 WITH msgs AS (\
   SELECT m.id, m.content, round(extract(epoch FROM m.created_at)*1000)::bigint AS ms \
   FROM messages m \
-  WHERE m.channel_id=$1 AND m.deleted_at IS NULL AND m.card IS NULL AND m.revision=0 \
+  WHERE m.channel_id=$1 AND m.deleted_at IS NULL AND m.card IS NULL AND m.components IS NULL AND m.revision=0 \
     AND m.content ~ '[*~_<\\[\\\\$]' AND position(chr(8203) in m.content)=0\
 ), \
 stable AS (\
@@ -145,7 +145,7 @@ pub async fn run(
                 let updated = query(
                     &mut tx,
                     "UPDATE messages SET content=$2 \
-                     WHERE id=$1 AND content=$3 AND revision=0 AND card IS NULL AND deleted_at IS NULL \
+                     WHERE id=$1 AND content=$3 AND revision=0 AND card IS NULL AND components IS NULL AND deleted_at IS NULL \
                      RETURNING json_build_object('ok',true)::text",
                     &[&change.id, &change.new, &change.old],
                 )

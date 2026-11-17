@@ -3,7 +3,7 @@ import type { ZooApp, AppEvent } from "../../../sdk/src/index.ts";
 export type Json = Record<string, any>;
 export type Zoo = Pick<
   ZooApp,
-  "request" | "postMessage" | "updateMessage" | "deleteMessage" | "setBlocks"
+  "request" | "postMessage" | "updateMessage" | "deleteMessage" | "setComponents"
 >;
 export type Kind =
   | "issue"

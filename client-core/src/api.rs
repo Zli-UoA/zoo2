@@ -690,6 +690,30 @@ impl ApiClient {
         self.write(Method::DELETE, &path, None).await
     }
 
+    /// メッセージ部品のボタン・選択肢を押したことをアプリへ送る（`/api/apps/{id}/invoke` の `action`）。
+    pub async fn invoke_app_action(
+        &self,
+        app_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        custom_id: &str,
+        value: Value,
+    ) -> Result<Value> {
+        let path = format!("/api/apps/{}/invoke", segment(app_id));
+        let body = json!({
+            "kind": "action",
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "action_id": custom_id,
+            "values": { custom_id: value },
+        });
+        Ok(self
+            .send(Method::POST, &path, Some(body))
+            .await?
+            .json()
+            .await?)
+    }
+
     pub async fn add_reaction(
         &self,
         reaction_id: &str,

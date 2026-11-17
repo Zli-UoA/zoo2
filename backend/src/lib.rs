@@ -3,6 +3,7 @@ pub mod apps;
 pub mod auth;
 pub mod call_invites;
 pub mod cards;
+pub mod components;
 pub mod config;
 pub mod db;
 pub mod display_refresh;

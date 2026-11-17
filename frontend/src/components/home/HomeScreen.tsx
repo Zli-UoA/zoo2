@@ -758,7 +758,7 @@ function HomeScreenContent({
                     ref={virtualizer.measureElement}
                     aria-posinset={virtualRow.index + 1}
                     aria-setsize={hasMore ? -1 : posts.length}
-                    className="border-b p-4"
+                    className="border-b px-4 pt-4 pb-2"
                     style={{
                       position: "absolute",
                       top: 0,
@@ -839,7 +839,7 @@ function HomeScreenContent({
                         />
                       </Link>
                       <div className="min-w-0 flex-1">
-                        <div className="relative flex min-h-8 flex-wrap items-baseline gap-x-2 gap-y-1 pr-10 text-xs text-muted-foreground">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground">
                           <Link
                             to="/home/users/$actorId"
                             params={{ actorId: post.user_id }}
@@ -888,76 +888,6 @@ function HomeScreenContent({
                               </Link>
                             ) : null}
                           </span>
-                          <DropdownMenu>
-                            <DropdownMenuTrigger
-                              render={
-                                <Button
-                                  className="absolute right-0 top-0"
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={t("home.postActions")}
-                                />
-                              }
-                            >
-                              <MoreHorizontalIcon />
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent
-                              align="end"
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              {post.user_id === currentUserId && !post.remote ? (
-                                <>
-                                  <DropdownMenuItem
-                                    onClick={() => {
-                                      setEditingId(post.entry_id ?? post.id);
-                                      setEditText(post.content);
-                                      setEditError(false);
-                                    }}
-                                  >
-                                    <PencilIcon />
-                                    {t("home.edit")}
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem
-                                    variant="destructive"
-                                    onClick={() => {
-                                      setDeleteError(false);
-                                      setDeleteId(post.id);
-                                    }}
-                                  >
-                                    <Trash2Icon />
-                                    {t("home.delete")}
-                                  </DropdownMenuItem>
-                                </>
-                              ) : null}
-                              {post.remote && post.url?.startsWith("https://") ? (
-                                <DropdownMenuItem
-                                  render={
-                                    <ExternalLink
-                                      href={post.url}
-                                      className="text-popover-foreground"
-                                    />
-                                  }
-                                >
-                                  <ExternalLinkIcon />
-                                  {t("home.original")}
-                                </DropdownMenuItem>
-                              ) : null}
-                              <DropdownMenuItem
-                                onClick={() => {
-                                  if (!navigator.clipboard) {
-                                    toast.error(t("messages.copyFailed"));
-                                    return;
-                                  }
-                                  void navigator.clipboard
-                                    .writeText(post.content)
-                                    .then(() => toast.success(t("messages.copied")))
-                                    .catch(() => toast.error(t("messages.copyFailed")));
-                                }}
-                              >
-                                {t("home.copyContent")}
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>{" "}
                         </div>
                         {editingId === (post.entry_id ?? post.id) ? (
                           <form
@@ -1055,7 +985,7 @@ function HomeScreenContent({
                         <div
                           role="group"
                           aria-label={t("home.actions")}
-                          className="mt-2 flex items-center justify-between gap-2 text-muted-foreground"
+                          className="mt-1 flex items-center justify-between gap-2 text-muted-foreground"
                         >
                           <Button
                             variant="ghost"
@@ -1101,6 +1031,75 @@ function HomeScreenContent({
                             <SmilePlusIcon />
                             <span>{post.likes ?? 0}</span>
                           </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={t("home.postActions")}
+                                />
+                              }
+                            >
+                              <MoreHorizontalIcon />
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                              align="end"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              {post.user_id === currentUserId && !post.remote ? (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={() => {
+                                      setEditingId(post.entry_id ?? post.id);
+                                      setEditText(post.content);
+                                      setEditError(false);
+                                    }}
+                                  >
+                                    <PencilIcon />
+                                    {t("home.edit")}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    onClick={() => {
+                                      setDeleteError(false);
+                                      setDeleteId(post.id);
+                                    }}
+                                  >
+                                    <Trash2Icon />
+                                    {t("home.delete")}
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
+                              {post.remote && post.url?.startsWith("https://") ? (
+                                <DropdownMenuItem
+                                  render={
+                                    <ExternalLink
+                                      href={post.url}
+                                      className="text-popover-foreground"
+                                    />
+                                  }
+                                >
+                                  <ExternalLinkIcon />
+                                  {t("home.original")}
+                                </DropdownMenuItem>
+                              ) : null}
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  if (!navigator.clipboard) {
+                                    toast.error(t("messages.copyFailed"));
+                                    return;
+                                  }
+                                  void navigator.clipboard
+                                    .writeText(post.content)
+                                    .then(() => toast.success(t("messages.copied")))
+                                    .catch(() => toast.error(t("messages.copyFailed")));
+                                }}
+                              >
+                                {t("home.copyContent")}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                         {reactionError === post.id ? (
                           <p role="alert" className="text-xs text-destructive">

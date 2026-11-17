@@ -43,7 +43,7 @@ function componentFile(c, f) {
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
     (c === 'frontend' && (f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-crypto-wasm/') || f === 'rust-toolchain.toml')) ||
-    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/')));
+    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
 }
 
 const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
