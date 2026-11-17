@@ -2,7 +2,7 @@
 
 mod attachments;
 pub(super) mod channel_header;
-mod components;
+pub(in crate::view) mod components;
 mod message;
 mod message_format;
 mod ogp_card;

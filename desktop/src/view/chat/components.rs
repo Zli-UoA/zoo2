@@ -60,6 +60,20 @@ pub fn drop_stale_confirm(confirm: &std::cell::RefCell<Option<String>>, key: &st
     }
 }
 
+/// 表示中のチャンネルとスレッド（`view`）が前回の描画から変わったら、開いていた確認を捨てる。
+/// 離れている間に文書が A → B → A と戻っても、戻ったときに古い確認を出さない
+pub fn drop_confirm_on_view_change(
+    confirm: &std::cell::RefCell<Option<String>>,
+    last: &std::cell::RefCell<Option<String>>,
+    view: String,
+) {
+    let mut last = last.borrow_mut();
+    if last.as_deref() != Some(view.as_str()) {
+        *confirm.borrow_mut() = None;
+        *last = Some(view);
+    }
+}
+
 /// 文書の版。内容（JSON）のハッシュで、文書が更新されると変わる
 pub fn document_version(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -709,7 +723,22 @@ fn task_line(
 
 #[cfg(test)]
 mod confirm_key_tests {
-    use super::drop_stale_confirm;
+    use super::{drop_confirm_on_view_change, drop_stale_confirm};
+
+    #[test]
+    fn leaving_the_channel_drops_the_open_confirmation() {
+        let confirm = std::cell::RefCell::new(None);
+        let last = std::cell::RefCell::new(None);
+        drop_confirm_on_view_change(&confirm, &last, "c1:".into());
+        *confirm.borrow_mut() = Some("open".to_string());
+        // 同じチャンネルの再描画では残る
+        drop_confirm_on_view_change(&confirm, &last, "c1:".into());
+        assert!(confirm.borrow().is_some());
+        // 別のチャンネルへ移ったら捨て、戻っても出ない
+        drop_confirm_on_view_change(&confirm, &last, "c2:".into());
+        drop_confirm_on_view_change(&confirm, &last, "c1:".into());
+        assert!(confirm.borrow().is_none());
+    }
 
     #[test]
     fn an_update_drops_the_open_confirmation_for_good() {

@@ -717,11 +717,11 @@ impl Render for WorkspaceView {
                     .unwrap_or_default(),
                 thread_root.as_deref().unwrap_or_default()
             );
-            let mut last = self.confirm_view.borrow_mut();
-            if last.as_deref() != Some(view.as_str()) {
-                *self.component_confirm.borrow_mut() = None;
-                *last = Some(view);
-            }
+            chat::components::drop_confirm_on_view_change(
+                &self.component_confirm,
+                &self.confirm_view,
+                view,
+            );
         }
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
             let (div, target) = self.render_thread_view(
