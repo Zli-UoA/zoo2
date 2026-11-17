@@ -120,7 +120,57 @@ ShapeEvent ─▶ 1 本のループ
 - **鍵の作り方と保管**: 管理者が手元で作る。秘密鍵とパスワードは、zoo2-infra の `github/zoo2-desktop-tauri/updater-signing-key.sops.yaml` に sops で暗号化して置き、これを正本にする（GitHub Secrets の値は後から読み出せないため）。GitHub Secrets へは、そこから `sops decrypt --extract` の出力を `gh secret set` に渡して登録する。手順は zoo2-infra の `github/README.md` にある。秘密鍵をなくすと、配った版はそれ以降の更新を受け付けない。
 - **後続の項目**:
   - `requireSignedVersion`（署名に版を含め、古い版への差し戻しを防ぐ）は入れていない。いまの tauri-cli（2.11.4）は署名に版を書かないため。CLI を上げたら有効にする。
-  - macOS は、いまは ad-hoc 署名（`signingIdentity: "-"`）だけで、Developer ID の署名と公証をしていない。利用者は初回に quarantine を外すか「このまま開く」を押す。Apple Developer Program に入ったら、証明書と公証の Secrets を足して有効にする。
+
+### macOS の署名と公証
+
+新規リリースの macOS 版は、Developer ID Application 証明書で署名し、Apple の公証と公証チケットの添付を行う。Tauri CLI が証明書を一時キーチェーンへ取り込み、署名・公証を処理する。`bundle.macOS.hardenedRuntime` は有効にし、マイクとカメラの権限は既存の `Entitlements.plist` を使う。
+
+GitHub の Environment `desktop-tauri-release` に、次の Secrets をすべて登録する。これらは Apple への署名・公証に使うもので、自動更新用の `TAURI_SIGNING_PRIVATE_KEY` とは別に必要になる。
+
+| Secret | 値 |
+| --- | --- |
+| `APPLE_CERTIFICATE` | 証明書と秘密鍵を含む `.p12` を Base64 にした文字列 |
+| `APPLE_CERTIFICATE_PASSWORD` | `.p12` の書き出し時に設定した空でないパスワード |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: 氏名または組織名 (TEAMID)` という証明書の完全な名前 |
+| `APPLE_ID` | 公証に使う Apple Account のメールアドレス |
+| `APPLE_PASSWORD` | そのアカウントの App 用パスワード。通常のログインパスワードは使わない |
+| `APPLE_TEAM_ID` | 証明書を発行した Apple Developer チームの Team ID |
+
+新規リリースで 1 つでも未設定なら、ビルド前にエラーで止める。ad-hoc 署名には切り替えない。署名・公証後に `codesign --verify`、`xcrun stapler validate`、`spctl --assess` を実行し、失敗した配布物はアップロードしない。この確認が済んだ `.app` が DMG と自動更新用の `.app.tar.gz` に含まれる。既存リリースの `latest.json` だけを修復する場合は、Apple の Secrets を必要としない。
+
+初回の準備は次の順で行う。
+
+1. Apple Developer Program に加入し、Account Holder が [Developer ID Application 証明書を発行する](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)。Mac のキーチェーンアクセスで CSR を作り、Apple Developer に送る。発行された `.cer` を、CSR を作った Mac のキーチェーンに登録する。
+2. キーチェーンアクセスの「自分の証明書」から、証明書と秘密鍵をパスワード付き `.p12` として書き出す。`Apple Development` や `Apple Distribution` は使わない。
+3. `security find-identity -v -p codesigning` で証明書の名前を確認する。[Apple Account](https://account.apple.com/) で公証用の App 用パスワードを発行する。
+4. 上表の Secrets を Environment に登録する。`.p12` とパスワードはリポジトリに置かず、値をログやチャットへ出さない。証明書の登録は次のように、Base64 の出力を直接渡せる。
+
+   ```bash
+   openssl base64 -A -in /path/to/developer-id.p12 | \
+     gh secret set APPLE_CERTIFICATE --repo Zli-UoA/zoo2 --env desktop-tauri-release
+   ```
+
+5. Secrets の登録後に `desktop-tauri/src-tauri/Cargo.toml` と対応する `Cargo.lock` の版を上げ、通常のレビューを経て main に入れる。同じ版の既存リリースは作り直さないため、初回も新しい版が必要になる。最初の公証は時間がかかる場合がある。失敗したときは公証結果を確認してから再実行し、署名や公証の検証を省略しない。
+
+PR の作業ブランチで実ビルドの署名・公証を確認するときは、push 後に検証専用モードを手動実行する。
+
+```bash
+gh workflow run cd-desktop-tauri-release.yaml --repo Zli-UoA/zoo2 \
+  --ref "$(git branch --show-current)" -f verify_only=true
+```
+
+検証専用モードでは、同じ版のリリースが存在していても macOS universal 版を作る。本番と同じ証明書・公証・自動更新用署名を使い、成果物を Actions の artifact に保存する。GitHub Release と `latest.json` は更新しない。main 以外での通常の公開実行は引き続き拒否する。署名用 Secrets にアクセスできるため、実行前に対象ブランチの変更を確認する。
+
+ローカルで署名する場合は、証明書と秘密鍵がキーチェーンにあれば `.p12` の環境変数は不要。`APPLE_SIGNING_IDENTITY` と公証用の `APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID` を環境変数に設定してから、Mac の開発環境でビルドする。
+
+```bash
+cd desktop-tauri/src-tauri
+cargo tauri build --bundles app,dmg -- --locked
+```
+
+PR の検証用 CI（`ci-desktop-tauri.yaml`）は、署名用 Secrets を渡さず、引き続き ad-hoc 署名でビルドを確認する。v0.2.8 以前の公開済みリリースにも Developer ID 署名・公証はない。
+
+設定の根拠は [Tauri の macOS 署名手順](https://v2.tauri.app/distribute/sign/macos/) と [環境変数の一覧](https://v2.tauri.app/reference/environment-variables/) を参照する。
 
 ## 未確定・確認が要るもの
 
