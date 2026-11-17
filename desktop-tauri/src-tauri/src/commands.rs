@@ -78,6 +78,17 @@ pub async fn zoo_set_focus(
     Ok(())
 }
 
+/// Dock やランチャーのアイコンの未読数。`count <= 0` で消す。
+/// 数は React が計算済みのもの（ActivityPub を含む）を、そのまま使う。
+#[tauri::command]
+pub async fn zoo_set_badge(webview: Webview, core: Core_<'_>, count: i64) -> Result<(), IpcError> {
+    require(&webview, &core, ANY)?;
+    let badge = (count > 0).then_some(count);
+    // Windows など、未対応の環境ではエラーになるが、表示が出ないだけなので無視する。
+    let _ = webview.window().set_badge_count(badge);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn zoo_notification_settings(
     webview: Webview,

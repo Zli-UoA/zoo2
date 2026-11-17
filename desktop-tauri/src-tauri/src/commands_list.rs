@@ -6,6 +6,7 @@ pub const COMMANDS: &[&str] = &[
     "zoo_cancel_login",
     "zoo_logout",
     "zoo_set_focus",
+    "zoo_set_badge",
     "zoo_notification_settings",
     "zoo_set_notifications",
     "zoo_open_channel",

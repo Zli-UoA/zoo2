@@ -598,6 +598,16 @@ self.addEventListener("push", (event) => {
       }
       const isCallInvite =
         payload.notificationType === "call_invite" && typeof payload.inviteId === "string";
+      // サーバーが未読数を送ってきたときだけ、アプリが閉じていてもアイコンのバッジを合わせる。
+      if (Number.isFinite(payload.unreadCount) && payload.unreadCount >= 0) {
+        try {
+          await (payload.unreadCount > 0
+            ? self.navigator.setAppBadge?.(payload.unreadCount)
+            : self.navigator.clearAppBadge?.());
+        } catch {
+          /* バッジは補助なので、失敗しても通知は出す。 */
+        }
+      }
       await self.registration.showNotification(title, {
         body,
         icon: "/icons/icon-192.png",

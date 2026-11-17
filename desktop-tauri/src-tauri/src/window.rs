@@ -149,6 +149,7 @@ const REMOTE_COMMANDS: &[&str] = &[
     command::CANCEL_LOGIN,
     command::LOGOUT,
     command::SET_FOCUS,
+    command::SET_BADGE,
     command::NOTIFICATION_SETTINGS,
     command::SET_NOTIFICATIONS,
     command::ACCESS_TOKEN,
