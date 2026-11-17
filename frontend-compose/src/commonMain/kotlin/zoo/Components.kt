@@ -195,7 +195,7 @@ fun initialComponentValues(doc: ComponentDocument): Map<String, JsonElement> {
         val type = componentType(c)
         val id = c.cStr("custom_id")
         if (id.isNotEmpty() && type != CT.BUTTON && type != CT.OVERFLOW) {
-            out[id] =
+            val value: JsonElement? =
                 when (type) {
                     CT.TEXT_INPUT -> JsonPrimitive(c.cStr("value"))
                     CT.CHECKBOX -> JsonPrimitive(c.cFlag("default"))
@@ -207,10 +207,12 @@ fun initialComponentValues(doc: ComponentDocument): Map<String, JsonElement> {
                             c.cList("options").filter { it.cFlag("default") }.map { it.cStr("value") } +
                                 c.cList("initial_options").map { it.cStr("value") } +
                                 c.cList("default_values").map { it.cStr("id") }
+                        // 何も選んでいない単一選択（radio など）は値を入れない（空文字を「選んだ値」として送らない）
                         if (multiValueComponent(type)) JsonArray(chosen.map(::JsonPrimitive))
-                        else JsonPrimitive(chosen.firstOrNull().orEmpty())
+                        else chosen.firstOrNull()?.let(::JsonPrimitive)
                     }
                 }
+            if (value != null) out[id] = value
         }
         c.cList("components").forEach(::walk)
         walk(c.cObj("accessory"))
@@ -239,6 +241,8 @@ private class ComponentScope(
     val set: (String, JsonElement) -> Unit,
     val invoke: (kind: String, action: String?, value: JsonElement?) -> Unit,
     val busy: Boolean,
+    /** 表示中の文書。文書が更新されたら、部品ごとの一時的な状態（開いていた確認・検索語など）を捨てるのに使う */
+    val doc: ComponentDocument,
 )
 
 @Composable
@@ -308,6 +312,7 @@ fun ComponentTree(
             { k, v -> values = values + (k to v) },
             ::invoke,
             busy,
+            doc,
         )
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         doc.components.forEach { ComponentNode(scope, it) }
@@ -567,9 +572,11 @@ private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
     val header = c.cFlag("header")
     // page_size が 0 でも割り算で落ちないよう、1 以上にする
     val pageSize = (c.cInt("page_size") ?: rows.size).coerceAtLeast(1)
-    var page by remember { mutableStateOf(0) }
+    var pageIndex by remember { mutableStateOf(0) }
     val body = if (header) rows.drop(1) else rows
     val pages = ((body.size + pageSize - 1) / pageSize).coerceAtLeast(1)
+    // 文書の更新でページ数が減っても、範囲内のページを出す（Web と同じ）
+    val page = pageIndex.coerceAtMost(pages - 1)
     Column(Modifier.horizontalScroll(rememberScrollState())) {
         if (c.cStr("caption").isNotEmpty()) Small(c.cStr("caption"))
         (if (header) rows.take(1) else emptyList()).plus(body.drop(page * pageSize).take(pageSize)).forEachIndexed { i, row ->
@@ -586,9 +593,9 @@ private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
         }
         if (pages > 1)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Button("‹", page > 0, size = "sm") { page-- }
+                Button("‹", page > 0, size = "sm") { pageIndex = page - 1 }
                 Small(scope.app.t("apps.components.page", "page" to "${page + 1}", "pages" to "$pages"))
-                Button("›", page + 1 < pages, size = "sm") { page++ }
+                Button("›", page + 1 < pages, size = "sm") { pageIndex = page + 1 }
             }
     }
 }
@@ -619,8 +626,9 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
     // 確認は、開いた時点の確認の文言・操作（custom_id）・送る処理を組で持ち、その組で描く。
     // 文書の更新でこの位置の部品が別の操作に変わったら、確認を出さない（別の文言のまま元の操作を送らない）
     val confirm = c.cObj("confirm")
-    // 部品の操作か確認の文言が変わったら、開いていた確認を捨てる（元の部品に戻っても、古い確認を出さない）
-    var confirming by remember(id, confirm) { mutableStateOf<PendingConfirm?>(null) }
+    // 文書が更新されたら（同じ custom_id・同じ文言でも）、開いていた確認を捨てる。古い入力値で送らず、
+    // 元の部品に戻っても古い確認を出さない
+    var confirming by remember(scope.doc, id, confirm) { mutableStateOf<PendingConfirm?>(null) }
     fun run(action: () -> Unit) {
         if (confirm != null) confirming = PendingConfirm(confirm, id, action) else action()
     }
@@ -656,7 +664,8 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
             val label = listOf(c.cObj("emoji")?.cStr("name").orEmpty(), c.cStr("label")).filter { it.isNotEmpty() }.joinToString(" ")
             if (c.cInt("style") == 5) {
                 val href = safeHttps(c.cStr("url"))
-                Button(label, href != null, variant = "outline", size = "sm") { href?.let { app.platform.action("open:$it") } }
+                // 押せない状態（disabled）のリンクボタンは開けない
+                Button(label, href != null && !c.cFlag("disabled"), variant = "outline", size = "sm") { href?.let { app.platform.action("open:$it") } }
             } else
                 Button(
                     label,
@@ -827,9 +836,12 @@ private fun EntitySelect(scope: ComponentScope, c: JsonObject, enabled: Boolean,
 @Composable
 private fun ExternalSelect(scope: ComponentScope, c: JsonObject, enabled: Boolean, change: (JsonElement) -> Unit) {
     val app = scope.app
-    var query by remember { mutableStateOf("") }
-    var options by remember { mutableStateOf(c.cList("initial_options")) }
-    LaunchedEffect(query) {
+    // 文書や部品（custom_id）が変わったら、検索語と候補を新しい文書の initial_options から作り直す。
+    // 進行中の問い合わせは LaunchedEffect のキーが変わって取り消されるので、古い候補を出さない
+    val customId = c.cStr("custom_id")
+    var query by remember(scope.doc, customId) { mutableStateOf("") }
+    var options by remember(scope.doc, customId) { mutableStateOf(c.cList("initial_options")) }
+    LaunchedEffect(query, scope.doc, customId) {
         if (query.length < (c.cInt("min_query_length") ?: 3) || scope.appId == null) return@LaunchedEffect
         delay(400)
         try {

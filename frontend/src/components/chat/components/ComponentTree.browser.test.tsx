@@ -361,4 +361,46 @@ describe("ComponentTree", () => {
     expect(screen.queryByRole("button", { name: "Yes" })).toBeNull();
     expect(api.request).not.toHaveBeenCalled();
   });
+  it("does not send an unselected radio group", async () => {
+    api.request.mockClear();
+    const message = parseComponents({
+      components: [
+        {
+          type: 1,
+          components: [{ type: 21, custom_id: "vote", options: [{ label: "Yes", value: "y" }] }],
+        },
+        { type: 18, label: "Name", component: { type: 4, custom_id: "name", style: 1 } },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={message} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await userEvent.type(await screen.findByRole("textbox", { name: "Name" }), "zoo");
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
+    // 選んでいない radio は値を送らない（空文字を選んだ値として送らない）
+    expect(JSON.stringify(api.request.mock.calls[0])).not.toContain('"vote"');
+  });
+
+  it("does not open a disabled link button", async () => {
+    const doc = parseComponents({
+      components: [
+        {
+          type: 1,
+          components: [
+            { type: 2, style: 5, label: "Docs", url: "https://example.com", disabled: true },
+          ],
+        },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={doc} />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByRole("button", { name: "Docs" })).toBeDisabled();
+    expect(screen.queryByRole("link", { name: "Docs" })).toBeNull();
+  });
 });

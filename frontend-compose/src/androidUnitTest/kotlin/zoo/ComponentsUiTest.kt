@@ -129,4 +129,56 @@ class ComponentsUiTest {
             fixture.close()
         }
     }
+    @Test
+    fun confirmationClosesWhenTheDocumentUpdatesWithTheSameComponent() {
+        val fixture = Fixture()
+        fun message(value: String) =
+            doc("""{"components":[{"type":1,"components":[{"type":2,"style":1,"label":"Go","custom_id":"go","value":"$value",
+                "confirm":{"title":"Go?","text":"Go?","confirm":"Yes","deny":"No"}}]}]}""")
+        var current by mutableStateOf(message("v1"))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Box {
+                            ComponentTree(fixture.app, current, "app", message = "m1", channel = "c1")
+                            OverlayHost(fixture.app)
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithText("Go").performClick()
+            ui.onNodeWithText("Yes").assertExists()
+            // 同じ custom_id・同じ確認の文言のまま、アプリが文書を更新する。開いていた確認で古い値を送らない
+            current = message("v2")
+            ui.waitForIdle()
+            ui.onAllNodesWithText("Yes").assertCountEquals(0)
+            assertTrue(fixture.invoked.isEmpty())
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun tablePageStaysInRangeWhenThePageSizeChanges() {
+        val fixture = Fixture()
+        fun table(size: Int) =
+            doc("""{"components":[{"type":1009,"page_size":$size,"rows":[[{"text":"row-a"}],[{"text":"row-b"}]]}]}""")
+        var current by mutableStateOf(table(1))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides fixture.app) {
+                    MaterialTheme { ComponentTree(fixture.app, current, null) }
+                }
+            }
+            ui.onNodeWithText("›").performClick()
+            ui.onNodeWithText("row-b").assertExists()
+            current = table(0)
+            ui.waitForIdle()
+            ui.onNodeWithText("row-a").assertExists()
+            ui.onNodeWithText("row-b").assertExists()
+        } finally {
+            fixture.close()
+        }
+    }
 }

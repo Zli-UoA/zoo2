@@ -84,7 +84,9 @@ function initialValues(doc: ComponentDocument): Record<string, Value> {
           .map((o) => o.value);
         const defaults = (c.default_values ?? []).map((d) => d.id);
         const all = [...chosen, ...defaults];
-        out[c.custom_id] = multiValue(c) ? all : (all[0] ?? "");
+        // 何も選んでいない単一選択（radio など）は値を入れない（空文字を「選んだ値」として送らない）
+        if (multiValue(c)) out[c.custom_id] = all;
+        else if (all[0] !== undefined) out[c.custom_id] = all[0];
       }
     }
     c.components?.forEach(walk);
@@ -885,6 +887,13 @@ function InteractiveControl({
       const label = [c.emoji?.name, c.label].filter(Boolean).join(" ");
       if (c.style === 5) {
         const href = safeUrl(c.url);
+        // 押せない状態（disabled）のリンクボタンは、リンクにせず押せないボタンで出す
+        if (c.disabled)
+          return (
+            <Button type="button" size="sm" variant="outline" disabled>
+              {label}
+            </Button>
+          );
         return href ? (
           <a
             href={href}
@@ -1075,7 +1084,15 @@ function InteractiveControl({
     case T.RoleSelect:
       return <EntitySelect c={c} choose={choose} disabled={disabled} />;
     case T.ExternalSelect:
-      return <ExternalSelect c={c} choose={choose} disabled={!!c.disabled || !ctx.appId} />;
+      // 文書や部品が変わったら、検索語と候補を作り直す（古い候補を新しい部品の値として選ばせない）
+      return (
+        <ExternalSelect
+          key={`${ctx.docKey}:${c.custom_id ?? ""}`}
+          c={c}
+          choose={choose}
+          disabled={!!c.disabled || !ctx.appId}
+        />
+      );
     case T.FileUpload:
       return <FileUpload c={c} disabled={disabled} />;
     default:
