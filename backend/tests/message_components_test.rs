@@ -567,6 +567,18 @@ async fn modal_file_uploads_are_readable_only_by_the_receiving_app() -> anyhow::
             .bind(id.as_str()).bind(uploader.as_str()).bind(f.channel.as_str()).exec(&mut tx).await?;
     }
     tx.commit().await?;
+    // チャンネルのない画面 (ホーム) には file upload を置けない
+    let (s, v) = request(
+        &f.app,
+        "POST",
+        "/api/apps/v1/surfaces",
+        &f.token,
+        json!({"kind":"home","user_id":f.owner,"components":[
+            {"type":18,"label":"Files","component":{"type":19,"custom_id":"files"}}
+        ]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let submit = |ids: Value| json!({"kind":"submit","surface_id":surface["id"],"channel_id":f.channel,"values":{"files":ids}});
     // ほかの人の添付は送れない
     let (s, _) = request(&f.app, "POST", &invoke, &f.owner, submit(json!([other]))).await;

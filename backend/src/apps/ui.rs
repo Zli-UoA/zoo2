@@ -213,6 +213,18 @@ async fn publish(
             "Ephemeral messages need a channel".into(),
         ));
     }
+    // file upload は、利用者がチャンネルに上げた添付の ID を送る。ホーム (チャンネルを持たない) と、チャンネルのない
+    // モーダルでは送信できないので、保存の時点で知らせる
+    if (b.kind == "home" || b.channel_id.is_none())
+        && doc
+            .walk()
+            .iter()
+            .any(|c| matches!(c, crate::components::Component::FileUpload(_)))
+    {
+        return Err(AppError::BadRequest(
+            "File uploads need a surface with a channel".into(),
+        ));
+    }
     if b.kind == "modal" {
         let trigger = b
             .trigger_id

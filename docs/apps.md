@@ -175,6 +175,8 @@ await zoo.setComponents(id, message([
 
 モーダルの File Upload（19）では、利用者がそのチャンネルに添付としてファイルを上げ、送信の `values[custom_id]` に添付の ID の配列が入ります。サーバーは、送信した本人がそのチャンネルに上げ、まだ投稿に付けていない添付かを確かめます。アプリは送信から 1 日のあいだ、`GET /api/apps/v1/uploads/{添付の ID}/download`（`ui:write`）で、60 秒有効のダウンロード URL を受け取れます。
 
+ファイルはチャンネルに上げるので、File Upload はチャンネルのある画面（`channel_id` を付けたモーダル・一時メッセージ、メッセージ）でだけ使えます。ホームと、`channel_id` のないモーダルに置くと、`POST /api/apps/v1/surfaces` は 400 を返します。
+
 ### 選択肢の問い合わせ（external select）
 
 External Select（1001、Slack の `external_select`）は、利用者の入力に合わせて選択肢をアプリに問い合わせます。
