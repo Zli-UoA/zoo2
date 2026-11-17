@@ -403,9 +403,10 @@ fn map_sync(error: SyncError) -> AppError {
         SyncError::RateLimited(_) => AppError::RateLimited,
         // トークンが失効している・スコープが足りないなど。本人が連携し直せば直る
         SyncError::NoAccess(reason) => AppError::Forbidden(reason),
-        SyncError::InvalidCursor | SyncError::LeaseLost | SyncError::Failed(_) => {
-            AppError::BadGateway("Slack request failed".into())
-        }
+        SyncError::InvalidCursor
+        | SyncError::LeaseLost
+        | SyncError::TargetChanged
+        | SyncError::Failed(_) => AppError::BadGateway("Slack request failed".into()),
     }
 }
 

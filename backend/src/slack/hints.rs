@@ -138,6 +138,7 @@ pub(super) async fn process(
                 bump(db, team, slack_channel, &group).await?;
             }
             Err(SyncError::InvalidCursor) => bump(db, team, slack_channel, &group).await?,
+            Err(SyncError::TargetChanged) => bump(db, team, slack_channel, &group).await?,
         }
     }
     // 残りは、次の同期をすぐに起こして続ける

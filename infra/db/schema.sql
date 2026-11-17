@@ -4111,6 +4111,8 @@ CREATE TRIGGER messages_channel_author_latest AFTER INSERT OR DELETE OR UPDATE O
 -- Skip completed import history during every Slack channel claim.
 CREATE INDEX slack_import_jobs_active_team ON slack_import_jobs(team_id) WHERE status IN ('analyzing','importing');
 CREATE INDEX slack_channel_syncs_due_order ON slack_channel_syncs(available_at,team_id,slack_channel_id);
+-- Keep a team-specific claim from walking other teams' due rows.
+CREATE INDEX slack_channel_syncs_team_due_order ON slack_channel_syncs(team_id,available_at,slack_channel_id);
 CREATE INDEX slack_channel_wakes_due_order ON slack_channel_wakes(first_at,team_id,slack_channel_id);
 -- SIP credentials stay outside Electric/publication; only authenticated REST may read them.
 CREATE TABLE sip_lines (

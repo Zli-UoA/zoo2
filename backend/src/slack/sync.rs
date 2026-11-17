@@ -231,6 +231,8 @@ pub(super) enum SyncError {
     NoAccess(String),
     InvalidCursor,
     LeaseLost,
+    /// 取り込み先 (`slack_channels.channel_id`) が変わった。保存済みの途中経過は、新しい取り込み先には使えない
+    TargetChanged,
     Failed(String),
 }
 
@@ -276,7 +278,12 @@ pub async fn run_once_for_team(s: &AppState, team: &str) -> Result<bool, AppErro
         }
         Err(SyncError::InvalidCursor) => {
             // ページのカーソルが期限切れ。保存済みの位置を捨てて、カーソルの続きから取り直す (取り込みは冪等)
-            reset_run(s, &task).await?;
+            reset_run(s, &task, "invalid_cursor").await?;
+        }
+        Err(SyncError::TargetChanged) => {
+            // 対応先が変わった。古い対応先のページ位置や取り込みの途中経過は、新しい対応先には使えない
+            tracing::info!(team = %task.team_id, channel = %task.slack_channel_id, "Slack sync target changed; resetting the interrupted run");
+            reset_run(s, &task, "Slack sync target changed or no longer exists").await?;
         }
         Err(SyncError::Failed(error)) => {
             tracing::warn!(team = %task.team_id, channel = %task.slack_channel_id, %error, "Slack sync failed");
@@ -377,17 +384,17 @@ async fn release(
     Ok(())
 }
 
-async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
+async fn reset_run(s: &AppState, task: &Task, reason: &str) -> Result<(), AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     query(
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
          page_cursor=NULL,pending_threads='[]',lease_until=NULL,lease_token=NULL,available_at=now(),\
-         swept_at=NULL,run_light=false,last_error='invalid_cursor',updated_at=now() \
+         swept_at=NULL,run_light=false,last_error=$4,updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
          RETURNING json_build_object('ok',true)::text",
-        &[&task.team_id, &task.slack_channel_id, &task.token],
+        &[&task.team_id, &task.slack_channel_id, &task.token, &reason],
     )
     .await?;
     tx.commit().await?;
@@ -963,9 +970,7 @@ pub(super) async fn ensure_target_unchanged(
     )
     .await?;
     if mapping.first().is_none_or(|row| row["valid"] != true) {
-        return Err(
-            AppError::BadRequest("Slack sync target changed or no longer exists".into()).into(),
-        );
+        return Err(SyncError::TargetChanged);
     }
     Ok(())
 }
@@ -1614,6 +1619,7 @@ mod tests {
                 Err(SyncError::NoAccess(message)) => Err(format!("NoAccess({message})")),
                 Err(SyncError::InvalidCursor) => Err("InvalidCursor".into()),
                 Err(SyncError::LeaseLost) => Err("LeaseLost".into()),
+                Err(SyncError::TargetChanged) => Err("TargetChanged".into()),
             };
             let _ = store_tx.send(mapped);
             Ok::<(), anyhow::Error>(())

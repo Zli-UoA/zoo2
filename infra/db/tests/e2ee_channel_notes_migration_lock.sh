@@ -19,13 +19,25 @@ writer_fifo="$tmp_dir/writer.fifo"
 mkfifo "$writer_fifo"
 writer_pid=""
 migration_pid=""
+watchdog_pid=""
 
 cleanup() {
-  exec 3>&- 2>/dev/null || true
+  # Stop Atlas before releasing the writer's lock: an orphaned Atlas could
+  # otherwise apply the migration after this script has already failed.
+  if [[ -n "${watchdog_pid:-}" ]] && kill -0 "$watchdog_pid" 2>/dev/null; then
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  fi
   if [[ -n "${migration_pid:-}" ]] && kill -0 "$migration_pid" 2>/dev/null; then
     kill "$migration_pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$migration_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "$migration_pid" 2>/dev/null || true
     wait "$migration_pid" 2>/dev/null || true
   fi
+  exec 3>&- 2>/dev/null || true
   if [[ -n "${writer_pid:-}" ]] && kill -0 "$writer_pid" 2>/dev/null; then
     kill "$writer_pid" 2>/dev/null || true
     wait "$writer_pid" 2>/dev/null || true
@@ -66,35 +78,47 @@ if [[ "$writer_holding_lock" != true ]]; then
   exit 1
 fi
 
-(
-  status=0
-  PGAPPNAME="$migration_app" atlas migrate apply --dir "$atlas_dir" --url "$NOTES_TEST_DATABASE_URL" \
-    --to-version "$target_version" >"$tmp_dir/migration.out" 2>&1 || status=$?
-  printf '%s\n' "$status" >"$tmp_dir/migration.status.tmp"
-  mv "$tmp_dir/migration.status.tmp" "$tmp_dir/migration.status"
-) &
+# Run Atlas directly in the background (not through a helper subshell), so
+# migration_pid is Atlas itself. Killing a subshell would leave its Atlas child
+# running, and that orphan could apply the migration after this test failed.
+PGAPPNAME="$migration_app" atlas migrate apply --dir "$atlas_dir" --url "$NOTES_TEST_DATABASE_URL" \
+  --to-version "$target_version" >"$tmp_dir/migration.out" 2>&1 &
 migration_pid=$!
 
 # Enforce an independent hang-detection timeout while the writer keeps holding
-# its lock deterministically until Atlas exits.
-migration_finished=false
-for _ in $(seq 1 300); do
-  if [[ -f "$tmp_dir/migration.status" ]]; then
-    migration_finished=true
-    break
-  fi
-  sleep 0.1
-done
-if [[ "$migration_finished" != true ]]; then
+# its lock deterministically until Atlas exits. The watchdog terminates the DB
+# session (which unblocks Atlas) and leaves a marker that distinguishes a
+# timeout from the expected lock_timeout failure.
+(
+  for _ in $(seq 1 300); do
+    if [[ -f "$tmp_dir/migration.done" ]]; then
+      exit 0
+    fi
+    sleep 0.1
+  done
+  printf 'timeout\n' >"$tmp_dir/migration.timeout"
   psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '$migration_app';" >/dev/null 2>&1 || true
-  cat "$tmp_dir/migration.out" >&2 || true
-  echo "timed out waiting for migration to fail fast with SQLSTATE 55P03" >&2
-  exit 1
-fi
-wait "$migration_pid" 2>/dev/null || true
+  # Terminate Atlas itself too, so the main flow's wait cannot hang forever on
+  # a migration that is not waiting on a database lock.
+  kill "$migration_pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    kill -0 "$migration_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL "$migration_pid" 2>/dev/null || true
+) &
+watchdog_pid=$!
+
+migration_status=0
+wait "$migration_pid" || migration_status=$?
 migration_pid=""
-migration_status="$(<"$tmp_dir/migration.status")"
+: >"$tmp_dir/migration.done"
+if [[ -n "$watchdog_pid" ]]; then
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  watchdog_pid=""
+fi
 
 printf "COMMIT;\n" >&3
 exec 3>&-
@@ -107,7 +131,11 @@ if [[ "$writer_status" -ne 0 ]]; then
 fi
 if [[ "$migration_status" -eq 0 ]] || ! rg -q '55P03' "$tmp_dir/migration.out"; then
   cat "$tmp_dir/migration.out" >&2
-  echo "expected migration to fail immediately with SQLSTATE 55P03 while notes are locked" >&2
+  if [[ -f "$tmp_dir/migration.timeout" ]] && [[ "$migration_status" -ne 0 ]]; then
+    echo "timed out waiting for migration to fail fast with SQLSTATE 55P03" >&2
+  else
+    echo "expected migration to fail immediately with SQLSTATE 55P03 while notes are locked" >&2
+  fi
   exit 1
 fi
 

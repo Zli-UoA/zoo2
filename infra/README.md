@@ -225,7 +225,7 @@ POSTGRES_PASSWORD=staging-test-password \
 ### Slack ゲスト所属トリガーの適用順序
 
 `20261129000001_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
-`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261129000008_guest_membership_lock_order.sql`
+`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261129000009_guest_membership_lock_order.sql`
 に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
 advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
 「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック

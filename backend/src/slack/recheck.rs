@@ -79,6 +79,7 @@ pub(super) async fn run(
             let reason = match &error {
                 SyncError::RateLimited(secs) => format!("rate limited ({secs}s)"),
                 SyncError::NoAccess(e) | SyncError::Failed(e) => e.clone(),
+                SyncError::TargetChanged => "target changed".to_string(),
                 _ => "invalid cursor".to_string(),
             };
             tracing::warn!(team, channel = slack_channel, %reason, "Slack recheck failed; the sync goes on");

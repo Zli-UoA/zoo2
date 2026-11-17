@@ -123,10 +123,10 @@ async fn try_create_or_get_1on1_dm(
 
             if let Err(err) = res {
                 let _ = tx.rollback().await;
-                // channel_user_pkey 衝突の場合は並行追加による競合なのでリトライ
-                if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+                // ChannelUser_pkey 衝突の場合は並行追加による競合なのでリトライ
+                if AppError::is_unique_violation(&err, Some("ChannelUser_pkey")) {
                     tracing::warn!(
-                        "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                        "Concurrent channel_user insert conflict (ChannelUser_pkey), retrying: {err}"
                     );
                     return Ok(None);
                 }
@@ -203,9 +203,9 @@ async fn try_create_or_get_1on1_dm(
     .await
     {
         let _ = tx.rollback().await;
-        if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+        if AppError::is_unique_violation(&err, Some("ChannelUser_pkey")) {
             tracing::warn!(
-                "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                "Concurrent channel_user insert conflict (ChannelUser_pkey), retrying: {err}"
             );
             return Ok(None);
         }
@@ -221,9 +221,9 @@ async fn try_create_or_get_1on1_dm(
     .await
     {
         let _ = tx.rollback().await;
-        if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+        if AppError::is_unique_violation(&err, Some("ChannelUser_pkey")) {
             tracing::warn!(
-                "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                "Concurrent channel_user insert conflict (ChannelUser_pkey), retrying: {err}"
             );
             return Ok(None);
         }
@@ -313,7 +313,7 @@ pub(crate) async fn create_or_get_dm(
     }
 
     // 1対1 DM
-    // 並行作成・並行復帰による UNIQUE 制約違反 (channels_channel_name_key, channel_user_pkey) に備え、
+    // 並行作成・並行復帰による UNIQUE 制約違反 (channels_channel_name_key, ChannelUser_pkey) に備え、
     // 競合時は最大 1 回リトライして既存チャンネルの取得・復帰処理を行う。
     if payload.target_user_ids.len() == 1 {
         let target_id = &payload.target_user_ids[0];
