@@ -758,7 +758,7 @@ function HomeScreenContent({
                     ref={virtualizer.measureElement}
                     aria-posinset={virtualRow.index + 1}
                     aria-setsize={hasMore ? -1 : posts.length}
-                    className="border-b p-4"
+                    className="border-b px-4 pt-4 pb-2"
                     style={{
                       position: "absolute",
                       top: 0,
@@ -985,11 +985,11 @@ function HomeScreenContent({
                         <div
                           role="group"
                           aria-label={t("home.actions")}
-                          className="mt-1 flex items-center gap-1 text-muted-foreground"
+                          className="mt-1 flex items-center justify-between gap-2 text-muted-foreground"
                         >
                           <Button
                             variant="ghost"
-                            size="xs"
+                            size="sm"
                             aria-label={`${t("home.reply")} ${post.replies ?? 0}`}
                             onClick={() => composerRef.current?.reply(post)}
                           >
@@ -998,7 +998,7 @@ function HomeScreenContent({
                           </Button>
                           <Button
                             variant="ghost"
-                            size="xs"
+                            size="sm"
                             aria-label={`${t(post.reposted ? "home.undoRepost" : "home.repost")} ${post.reposts ?? 0}`}
                             aria-pressed={post.reposted ?? false}
                             disabled={pendingRepost !== null || post.visibility === "followers"}
@@ -1024,7 +1024,7 @@ function HomeScreenContent({
                           </Button>
                           <Button
                             variant="ghost"
-                            size="xs"
+                            size="sm"
                             aria-label={`${t("home.react")} ${post.likes ?? 0}`}
                             onClick={() => setReactionPost(post)}
                           >
@@ -1036,7 +1036,7 @@ function HomeScreenContent({
                               render={
                                 <Button
                                   variant="ghost"
-                                  size="icon-xs"
+                                  size="icon"
                                   aria-label={t("home.postActions")}
                                 />
                               }

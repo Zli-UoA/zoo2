@@ -234,7 +234,7 @@ fun HomePostCard(
                                 attributes = mapOf("aria-label" to app.t("home.actions")),
                             )
                         ),
-                    horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
                     itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
