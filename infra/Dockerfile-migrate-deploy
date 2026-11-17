@@ -6,4 +6,6 @@ COPY infra/db/atlas.hcl /db/atlas.hcl
 COPY infra/db/schema.sql /db/schema.sql
 COPY infra/db/migrations/ /db/migrations/
 COPY infra/db/migrate.sh /db/migrate.sh
+# Preview jobs call /atlas directly; keep recovery through the shared entrypoint.
+RUN ln -s /db/migrate.sh /atlas && atlas version && /atlas version
 ENTRYPOINT ["/db/migrate.sh"]

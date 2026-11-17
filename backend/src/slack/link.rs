@@ -736,13 +736,13 @@ async fn rewrite_mentions(
     // 読み直して外れる
     let rows = query(
         tx,
-        "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card)::text FROM messages m \
+        "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card,'components',m.components)::text FROM messages m \
          JOIN channels c ON c.id=m.channel_id \
          WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) \
          AND NOT c.encrypted \
-         AND strpos(m.content,$2)>0 \
+         AND (strpos(m.content,$2)>0 OR strpos(COALESCE(m.components,''),$2)>0) \
          AND EXISTS(SELECT 1 FROM json_array_elements_text($3::json) AS n(name) \
-         WHERE strpos(m.content,'@'||n.name)>0) \
+         WHERE strpos(m.content,'@'||n.name)>0 OR strpos(COALESCE(m.components,''),'@'||n.name)>0) \
          FOR UPDATE OF m FOR KEY SHARE OF c",
         &[team, needle, &targets],
     )
@@ -751,26 +751,72 @@ async fn rewrite_mentions(
         let (Some(id), Some(content)) = (row["id"].as_str(), row["content"].as_str()) else {
             continue;
         };
-        let Some(rewritten) = replace_mentions(content, &names) else {
-            continue;
-        };
+        let rewritten = replace_mentions(content, &names);
         // 書き換えると本文の上限を超える投稿は、切り詰めずにそのまま残す (Home への同期の CHECK にも掛かるため)
-        if rewritten.chars().count() > crate::validation::MAX_MESSAGE_CONTENT_LENGTH {
+        if rewritten
+            .as_ref()
+            .is_some_and(|r| r.chars().count() > crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
+        {
             continue;
         }
+        // 部品の中の文字 (blocks・attachments から作ったものも含む) のメンションも書き換える
+        let components = row["components"]
+            .as_str()
+            .and_then(|c| rewrite_components(c, &names))
+            .unwrap_or_default();
+        // 部品に移す前の行 (`card` だけがある) は、カードを書き換える (マイグレーション B まで)
         let card = row["card"]
             .as_str()
             .and_then(|card| rewrite_text_card(card, &names))
             .unwrap_or_default();
+        if rewritten.is_none() && components.is_empty() && card.is_empty() {
+            continue;
+        }
+        // 書き換えた本文は空にならないので、空文字は「変えない」の意味に使う
         exec(
             tx,
-            "UPDATE messages SET content=$2,card=COALESCE(NULLIF($3,''),card) WHERE id=$1",
-            &[id, &rewritten, &card],
+            "UPDATE messages SET content=COALESCE(NULLIF($2,''),content),components=COALESCE(NULLIF($3,''),components),card=COALESCE(NULLIF($4,''),card) WHERE id=$1",
+            &[id, rewritten.as_deref().unwrap_or_default(), &components, &card],
         )
         .await?;
     }
     Ok(())
 }
+
+/// 部品の中の文字 (text_display。container・section などの子も含む) のメンションを書き換える。
+/// 本文の複製・blocks・attachments のどれから作った部品でも、表示される文字なので書き換える
+/// (Slack の再確認は、連携後の名前で作り直した部品と比べるので、同じ結果になる)。書き換えたときだけ JSON を返す。
+fn rewrite_components(stored: &str, names: &MentionNames) -> Option<String> {
+    fn walk(v: &mut serde_json::Value, names: &MentionNames, changed: &mut bool) {
+        match v {
+            serde_json::Value::Array(items) => {
+                items.iter_mut().for_each(|i| walk(i, names, changed))
+            }
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(|t| t.as_u64()) == Some(10)
+                    && let Some(text) = map.get("content").and_then(|c| c.as_str())
+                    && let Some(rewritten) = replace_mentions(text, names)
+                {
+                    map.insert("content".into(), rewritten.into());
+                    *changed = true;
+                }
+                map.values_mut().for_each(|v| walk(v, names, changed));
+            }
+            _ => {}
+        }
+    }
+    let mut value: serde_json::Value = serde_json::from_str(stored).ok()?;
+    let mut changed = false;
+    walk(&mut value, names, &mut changed);
+    if !changed {
+        return None;
+    }
+    // 保存と同じ形 (キーの順・省略) にそろえる
+    Some(crate::components::Document::parse(&value.to_string())?.to_json())
+}
+
+/// 部品に移す前に取り込んだ投稿 (`messages.card`) の、本文を入れたカードの見出し
+const IMPORTED_TEXT_CARD_TITLE: &str = "Slack";
 
 /// カードの説明文の上限 (`MessageCard::encode` と同じ)
 const MAX_CARD_DESCRIPTION: usize = 4000;
@@ -785,7 +831,7 @@ fn rewrite_text_card(card: &str, names: &MentionNames) -> Option<String> {
         Some(cards) => cards.get_mut(0)?,
         None => &mut value,
     };
-    if first["title"] != super::worker::IMPORTED_TEXT_CARD_TITLE {
+    if first["title"] != IMPORTED_TEXT_CARD_TITLE {
         return None;
     }
     let rewritten = replace_mentions(first["description"].as_str()?, names)?;

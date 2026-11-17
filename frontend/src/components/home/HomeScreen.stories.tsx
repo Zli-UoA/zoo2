@@ -954,11 +954,9 @@ export const ActionBar: Story = {
       within(group)
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["返信 0", "リポスト 0", "リアクション 0"]);
+    ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
     await expect(group.querySelector("time")).toBeNull();
-    await userEvent.click(
-      within(group.closest("article")!).getByRole("button", { name: "投稿の操作" }),
-    );
+    await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
   }),
 };

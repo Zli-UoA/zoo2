@@ -22,6 +22,8 @@ on:
       - "DB ER diagram"
       - "Deployment badges"
       - "Home query budget"
+      - "Phone query budget"
+      - "Message components query budget"
       - "OpenTofu R2"
       - "Phone query budget"
       - "Read state and worker query budget"

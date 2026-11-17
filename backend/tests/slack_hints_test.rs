@@ -490,6 +490,56 @@ async fn test_hints_do_not_rewrite_a_bot_post_for_a_formatting_only_difference()
     Ok(())
 }
 
+#[tokio::test]
+async fn test_hints_do_not_rewrite_a_bot_post_imported_as_a_legacy_card() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let ts = f.ts_new.clone();
+    let id = backend::slack::message_id(&f.team, "C1", &ts);
+    // 部品の導入前の取り込み (本文と `card` だけ。部品は空)
+    // 当時の `encode_cards` は JSON の値を経由するので、キーは辞書順になる
+    let card = r##"{"author":"","badge":"","color":"#2eb886","context":"","description":"Healthy","source":"","title":"Ready","url":"https://example.com"}"##;
+    sql(
+        &f.state,
+        "UPDATE messages SET content='Ready\nHealthy',card=$2,components=NULL WHERE id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&id, card],
+    )
+    .await?;
+    let before = message_row(&f, &ts).await;
+    let attachment = |text: &str| {
+        json!([{"type":"message","subtype":"bot_message","bot_id":"B1","ts":&ts,"text":"",
+            "attachments":[{"title":"Ready","title_link":"https://example.com","text":text,"color":"good"}]}])
+    };
+
+    // Slack 側は同じ。部品の形式は違うが、書き換えない
+    mock_fetch(&f, &ts, attachment("Healthy")).await;
+    deliver(&f, &changed_event(&f.team, "C1", &ts)).await?;
+    let same = message_row(&f, &ts).await;
+    assert_eq!(same["revision"], before["revision"]);
+    assert_eq!(same["updated"], before["updated"]);
+
+    // attachments が実際に変わったときは、部品で書き換える
+    f.slack.reset().await;
+    mount_basics(&f).await;
+    mock_fetch(&f, &ts, attachment("Degraded")).await;
+    deliver(&f, &changed_event(&f.team, "C1", &ts)).await?;
+    let changed = message_row(&f, &ts).await;
+    assert_eq!(
+        changed["revision"].as_i64().unwrap(),
+        before["revision"].as_i64().unwrap() + 1
+    );
+    let row = sql(
+        &f.state,
+        "SELECT json_build_object('card',card,'components',components)::text FROM messages WHERE id=$1",
+        &[&id],
+    )
+    .await?;
+    assert!(row[0]["card"].is_null());
+    assert!(row[0]["components"].as_str().unwrap().contains("Degraded"));
+    Ok(())
+}
+
 /// `reset` で消えたモックのうち、同期に要るものを入れ直す
 async fn mount_basics(f: &Fixture) {
     Mock::given(method("GET"))

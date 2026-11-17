@@ -2,7 +2,8 @@ import { ZooError, type AppEvent } from "../../../sdk/src/index.ts";
 import { Store, type Job } from "./store.ts";
 import { GitHub, GitHubError } from "./github.ts";
 import { notices, summary, type Notice } from "./events.ts";
-import { messageBlocks, displayRepository } from "./cards.ts";
+import { messageBlocks, messageComponents, cardComponents, displayRepository } from "./cards.ts";
+import { plain } from "../../../sdk/src/components.ts";
 import { subscription, permits, words } from "./subscriptions.ts";
 import { preview } from "./previews.ts";
 import {
@@ -52,7 +53,7 @@ export class GitHubBot {
       kind: "ephemeral",
       user_id: actor,
       channel_id: channel,
-      blocks: [{ type: "text", text: text(message, 3900) }],
+      components: [{ type: 10, content: plain(text(message, 3900)) }],
     });
   }
   async publishMessage(
@@ -79,7 +80,7 @@ export class GitHubBot {
           }
         } else throw error;
       }
-    if (blocks) await this.zoo.setBlocks(input.id, blocks);
+    if (blocks) await this.zoo.setComponents(input.id, messageComponents(blocks));
   }
   async tick() {
     if (this.busy || this.stopping) return;
@@ -471,7 +472,7 @@ export class GitHubBot {
             await this.zoo.request(
               "POST",
               `/messages/${encodeURIComponent(event.data.id)}/unfurls`,
-              card,
+              { url: card.url, components: cardComponents(undefined, card.card) },
             );
         }
       }

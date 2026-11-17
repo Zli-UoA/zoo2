@@ -7,6 +7,8 @@ export const slackTests = [
   'app_event_sources_test', 'activitypub_test', 'slack_api_import_test',
   'slack_link_test', 'slack_sync_test', 'e2ee_channels_test', 'e2ee_keys_test',
   'e2ee_plaintext_features_test', 'e2ee_to_device_test',
+  // app_event_sources_test と同じく、全イベントを購読する App を入れるので、チャンネルを消すテストと DB を分ける。
+  'message_components_test',
 ];
 export const testLeg = name => slackTests.includes(name) ? 'slack' : 'core';
 

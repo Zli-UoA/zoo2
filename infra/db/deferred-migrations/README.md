@@ -1,6 +1,6 @@
 # Deferred migrations
 
-`20261128030011_guest_membership_lock_order.sql` replaces
+`20261129000008_guest_membership_lock_order.sql` replaces
 `app_guest_membership_rules()` with the version that always locks the `users`
 row (`FOR NO KEY UPDATE`) before checking the single-channel guest rule.
 

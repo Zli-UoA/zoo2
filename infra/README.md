@@ -185,9 +185,9 @@ POSTGRES_PASSWORD=staging-test-password \
     logs --no-color migrate
   ```
 
-  `20261128030005_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
+  `20261129000002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
 
-  1. `migrate status` とログで停止箇所が `20261128030005` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
+  1. `migrate status` とログで停止箇所が `20261129000002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
   2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`indisvalid` が `false` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。`indisvalid = true`、別スキーマ、別名、または対象 migration 以外の失敗なら削除しない。
 
      ```bash
@@ -220,12 +220,12 @@ POSTGRES_PASSWORD=staging-test-password \
      docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
      ```
 
-  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261128030006_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
+  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261129000003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
 
 ### Slack ゲスト所属トリガーの適用順序
 
-`20261128030004_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
-`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261128030011_guest_membership_lock_order.sql`
+`20261129000001_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
+`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261129000008_guest_membership_lock_order.sql`
 に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
 advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
 「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック

@@ -270,6 +270,19 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &[&carded, &bob, &channel, &format!("@{p} outage, see [status](https://status.example.com)"), &card],
     )
     .await?;
+    // blocks から作った部品の投稿: 本文 (通知用の text) にはメンションがなく、部品の container の中にだけある
+    let blocks_only = uuid::Uuid::new_v4().to_string();
+    let blocks_doc = json!({"flags": 32768, "components": [
+        {"type": 17, "components": [{"type": 10, "content": format!("deploy by @{p}")}]},
+        {"type": 9, "components": [{"type": 10, "content": format!("owner @{p}")}], "accessory": {"type": 2, "style": 5, "label": "Open", "url": "https://example.com"}},
+    ]})
+    .to_string();
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,components) VALUES($1,$2,$3,'Deploy finished','2024-01-01 00:00:01',$4)",
+        &[&blocks_only, &bob, &channel, &blocks_doc],
+    )
+    .await?;
     // カードの説明が書き換えで上限 (4,000 文字) を超える投稿も、本文とカードの両方を書き換える (説明は上限で切る)
     let long_card = uuid::Uuid::new_v4().to_string();
     let long_card_description = format!("{} @{p}", "x".repeat(4000 - p.chars().count() - 2));
@@ -520,6 +533,24 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     assert_eq!(
         stored["cards"][1]["description"],
         format!("@{p} in an attachment")
+    );
+    // 部品の中のメンションも書き換える。本文はそのまま
+    assert_eq!(content(blocks_only.clone()).await, "Deploy finished");
+    let rewritten = sql(
+        &state,
+        "SELECT json_build_object('components',components)::text FROM messages WHERE id=$1",
+        &[&blocks_only],
+    )
+    .await?;
+    let rewritten: serde_json::Value =
+        serde_json::from_str(rewritten[0]["components"].as_str().unwrap())?;
+    assert_eq!(
+        rewritten["components"][0]["components"][0]["content"],
+        format!("deploy by @{a}")
+    );
+    assert_eq!(
+        rewritten["components"][1]["components"][0]["content"],
+        format!("owner @{a}")
     );
     assert_eq!(content(long.clone()).await, long_content);
     assert_eq!(content(long_card.clone()).await, format!("@{a} short"));

@@ -1659,7 +1659,7 @@ async fn membership_insert_racing_single_guest_transition_preserves_single_chann
     tokio::spawn(deferred_driver);
     deferred_db
         .batch_execute(include_str!(
-            "../../infra/db/deferred-migrations/20261128030011_guest_membership_lock_order.sql"
+            "../../infra/db/deferred-migrations/20261129000008_guest_membership_lock_order.sql"
         ))
         .await?;
     let guest = env.user().await;
