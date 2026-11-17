@@ -27,8 +27,9 @@
 
 ### 形式の見分け方
 
-- `blocks`・`attachments`・`text` のどれかがあれば **Slack 形式** として読みます。
-- それらがなく、`content`・`embeds`・`components`・`flags` のどれかがあれば **Discord 形式** として読みます。
+- `text`・`blocks` のどちらかがあれば **Slack 形式** として読みます。
+- それらがなく、`content`・`embeds`・`components`・`flags` のどれかがあれば **Discord 形式** として読みます。`attachments`（Discord では添付ファイルの情報）があっても Discord 形式です。Discord の `attachments` は読みません。
+- どれもなく `attachments` だけがあれば、**Slack 形式**（attachments）として読みます。
 - `username`・`avatar_url`・`icon_emoji`・`channel`・`tts`・`allowed_mentions` など、投稿者やチャンネルを上書きする項目は無視します。投稿者は常に Webhook の通知専用 App です。
 
 ### 本文の代わり（`content`）
