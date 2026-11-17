@@ -16,6 +16,7 @@ import { MfmAccountsProvider } from "../chat/messages/MfmAccounts";
 import { useAuthZAccounts } from "../../lib/emoji/accounts";
 import { CallBar } from "../chat/CallBar";
 import { DesktopBridge } from "../desktop/DesktopBridge";
+import { AppBadgeBridge } from "../pwa/AppBadgeBridge";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersPanel } from "../chat/MembersPanel";
 import { SearchPreferencesProvider } from "../preferences/SearchPreferences";
@@ -244,6 +245,7 @@ function AppShellContent({ children }: { children: ReactNode }) {
   return (
     <SearchPreferencesProvider>
       <DesktopBridge channelId={selectedChannelId ?? null} />
+      <AppBadgeBridge />
       <PwaProvider>
         <ShellContext.Provider value={value}>
           <MfmChannelsProvider channels={channels}>

@@ -4,6 +4,7 @@ import {
   DESKTOP_PROTOCOL_VERSION,
   desktopAccessToken,
   desktopNotificationSettings,
+  desktopSetBadge,
   desktopSetNotifications,
   desktopTakeCallAccept,
   detectDesktop,
@@ -197,5 +198,43 @@ describe("startReauth on the desktop app", () => {
     const result = startReauth(config)();
     await expect(result).rejects.toBeInstanceOf(ReauthError);
     await expect(result).rejects.toMatchObject({ code });
+  });
+});
+
+describe("desktopSetBadge", () => {
+  it("sends one call at a time and only the latest pending value", async () => {
+    const releases: Array<() => void> = [];
+    const internals = install((cmd) =>
+      cmd === "zoo_session"
+        ? session(DESKTOP_PROTOCOL_VERSION, "remote")
+        : new Promise<void>((resolve) => {
+            releases.push(resolve);
+          }),
+    );
+    await detectDesktop();
+    internals.invoke.mockClear();
+    desktopSetBadge(5);
+    desktopSetBadge(3);
+    desktopSetBadge(0);
+    expect(internals.invoke).toHaveBeenCalledTimes(1);
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 5 });
+    releases[0]?.();
+    await vi.waitFor(() => expect(internals.invoke).toHaveBeenCalledTimes(2));
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 0 });
+    releases[1]?.();
+  });
+
+  it("clamps negative and non-finite counts to zero", async () => {
+    const internals = install((cmd) =>
+      cmd === "zoo_session" ? session(DESKTOP_PROTOCOL_VERSION, "remote") : undefined,
+    );
+    await detectDesktop();
+    internals.invoke.mockClear();
+    desktopSetBadge(Number.NaN);
+    await vi.waitFor(() => expect(internals.invoke).toHaveBeenCalledTimes(1));
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 0 });
+    desktopSetBadge(-4);
+    await vi.waitFor(() => expect(internals.invoke).toHaveBeenCalledTimes(2));
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_badge", { count: 0 });
   });
 });

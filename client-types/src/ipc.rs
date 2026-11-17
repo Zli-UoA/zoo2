@@ -41,6 +41,9 @@ pub mod command {
     pub const LOGOUT: &str = "zoo_logout";
     /// [`super::FocusState`]。通知を抑えるために、前面かどうかと表示中のチャンネルを知らせる。
     pub const SET_FOCUS: &str = "zoo_set_focus";
+    /// `{ count: i64 }`。Dock やランチャーのアイコンに出す未読数。`0` 以下で消す。
+    /// 古い版のアプリにはないので、呼べなかったら何もしない (`PROTOCOL_VERSION` は上げない)。
+    pub const SET_BADGE: &str = "zoo_set_badge";
     /// 引数なし。[`super::NotificationSettings`] を返す。アプリが OS の通知を出すかどうか。
     /// 古い版のアプリにはないので、呼べなかったら設定を出さない (`PROTOCOL_VERSION` は上げない)。
     pub const NOTIFICATION_SETTINGS: &str = "zoo_notification_settings";
@@ -333,6 +336,7 @@ mod tests {
             command::CANCEL_LOGIN,
             command::LOGOUT,
             command::SET_FOCUS,
+            command::SET_BADGE,
             command::OPEN_CHANNEL,
             command::RESYNC,
             command::SEND_MESSAGE,

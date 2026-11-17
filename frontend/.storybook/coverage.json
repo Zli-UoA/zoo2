@@ -1093,6 +1093,11 @@
       "story": "src/components/chat/messages/MessageCard.stories.tsx"
     },
     {
+      "file": "src/components/pwa/AppBadgeBridge.tsx",
+      "reason": "インストール済み PWA のアイコンの未読バッジを合わせる制御層で、画面を持たない。未読数の反映と再同期は AppBadgeBridge.browser.test.tsx、App Badging API の呼び出しは badge.test.ts で確認する。",
+      "checks": ["src/components/pwa/AppBadgeBridge.browser.test.tsx", "src/lib/pwa/badge.test.ts"]
+    },
+    {
       "file": "src/components/ui/image-preview.tsx",
       "story": "src/components/ui/image-preview.stories.tsx",
       "checks": ["src/components/ui/image-preview.browser.test.tsx"]

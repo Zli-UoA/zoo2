@@ -18,6 +18,8 @@ import { useShell } from "./shell-context";
 vi.mock("../preferences/SearchPreferences", () => ({
   SearchPreferencesProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));
+// 未読数はこのテストの対象外で、NotificationsProvider が要るので外す。
+vi.mock("../pwa/AppBadgeBridge", () => ({ AppBadgeBridge: () => null }));
 vi.mock("../pwa/PwaControls", () => ({
   PwaProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));
