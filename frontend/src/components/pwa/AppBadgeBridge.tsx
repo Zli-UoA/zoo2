@@ -24,6 +24,5 @@ function AppBadgeBridgeInner() {
     document.addEventListener("visibilitychange", resync);
     return () => document.removeEventListener("visibilitychange", resync);
   }, [unreadCount]);
-  useEffect(() => () => setAppBadge(0), []);
   return null;
 }
