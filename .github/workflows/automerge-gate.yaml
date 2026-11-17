@@ -23,6 +23,7 @@ on:
       - "Deployment badges"
       - "Home query budget"
       - "Phone query budget"
+      - "Message components query budget"
       - "OpenTofu R2"
       - "Read state and worker query budget"
       - "Validate Flux production status"
