@@ -278,7 +278,8 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
         const unfurlDoc = parseComponents(unfurl.components);
         const card = unfurlDoc ? null : parseMessageCard(JSON.stringify(unfurl.card));
         return card || unfurlDoc ? (
-          <div key={index}>
+          // 展開ごとの部品の状態（開いている確認など）が、並びが変わっても別の展開へ移らないよう、アプリと URL で区別する
+          <div key={`${unfurl.app_id}:${unfurl.url ?? index}`}>
             <button
               className="text-xs text-muted-foreground"
               type="button"
