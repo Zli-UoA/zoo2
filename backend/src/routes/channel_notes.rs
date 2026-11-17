@@ -210,8 +210,30 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
         }
         scanned += page_rows.len();
     }
+    // Drop candidates that became empty while their advisory locks were being
+    // taken. This keeps the next loop from issuing one no-op DELETE per such
+    // channel (for example, 999 empty candidates and one non-empty channel).
+    let available_rows = toasty::sql::query(
+        "SELECT DISTINCT channel_id FROM channel_notes \
+         WHERE deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+         AND channel_id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+    )
+    .bind(serde_json::json!(unlocked_channels).to_string())
+    .exec(&mut tx)
+    .await?;
+    let mut available = std::collections::HashSet::new();
+    for row in available_rows {
+        if let toasty::stmt::Value::Record(record) = row
+            && let Some(toasty::stmt::Value::String(channel_id)) = record.fields.into_iter().next()
+        {
+            available.insert(channel_id);
+        }
+    }
     let mut count = 0u64;
-    let mut active_channels = unlocked_channels;
+    let mut active_channels: Vec<String> = unlocked_channels
+        .into_iter()
+        .filter(|channel_id| available.contains(channel_id))
+        .collect();
     while count < 100 && !active_channels.is_empty() {
         let before_pass = count;
         let mut next_active = Vec::new();
