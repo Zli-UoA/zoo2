@@ -12,6 +12,7 @@ import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { CryptoOperations } from "../operations";
 import { MemoryCryptoBackend, type CryptoStoreWrite, type DeviceReplacement } from "./backend";
 import { CryptoStore, type KeysQueryResponse } from "./cryptoStore";
+import type { DeviceRecord, DeviceRecordStore, ReplacedDevice } from "./deviceRecord";
 import type { WrappingKeyStore } from "./storageKey";
 
 /** 端末鍵だけの `keys/query` の応答（クロス署名鍵がないので、送信端末は検証済みにならない）。 */
@@ -52,12 +53,43 @@ function memoryKeys(): WrappingKeyStore & { keys: Map<string, CryptoKey> } {
   };
 }
 
-async function open(backend: MemoryCryptoBackend, keys: WrappingKeyStore, userId = BOB) {
+function memoryDevices(): DeviceRecordStore & {
+  records: Map<string, DeviceRecord>;
+  failPut: boolean;
+  failGet: boolean;
+} {
+  const records = new Map<string, DeviceRecord>();
+  const store = {
+    records,
+    failPut: false,
+    failGet: false,
+    get: async (name: string) => {
+      if (store.failGet) throw new Error("idb down");
+      return records.get(name);
+    },
+    put: async (name: string, record: DeviceRecord) => {
+      if (store.failPut) throw new Error("idb down");
+      records.set(name, structuredClone(record));
+    },
+    delete: async (name: string) => {
+      records.delete(name);
+    },
+  };
+  return store;
+}
+
+async function open(
+  backend: MemoryCryptoBackend,
+  keys: WrappingKeyStore,
+  userId = BOB,
+  devices?: DeviceRecordStore,
+) {
   return CryptoStore.open({
     backend,
     name: NAME,
     userId,
     keys,
+    devices,
     reset: async () => {
       await backend.destroy();
       return backend;
@@ -77,8 +109,8 @@ describe("CryptoStore", () => {
   it("端末を作り、開き直すと同じ端末に戻る", async () => {
     const backend = new MemoryCryptoBackend();
     const keys = memoryKeys();
-    const { store, replacedDeviceId } = await open(backend, keys);
-    expect(replacedDeviceId).toBeNull();
+    const { store, replacedDevices } = await open(backend, keys);
+    expect(replacedDevices).toEqual([]);
     expect(store.isRegistered).toBe(false);
     const request = store.registrationRequest();
     expect(request.device_keys).toMatchObject({ user_id: BOB, device_id: store.deviceId });
@@ -115,9 +147,8 @@ describe("CryptoStore", () => {
     await first.store.close();
     keys.keys.clear();
     const second = await open(backend, keys);
-    expect(second.replacedDeviceId).toBe(deviceId);
     // 登録していなかった前の端末は、削除 API の 404 でもすぐには消えたものとしない。
-    expect(second.replacedRegistered).toBe(false);
+    expect(second.replacedDevices).toEqual([{ deviceId, registered: false }]);
     expect(second.store.deviceId).not.toBe(deviceId);
     await second.store.close();
   });
@@ -131,9 +162,220 @@ describe("CryptoStore", () => {
     await first.store.close();
     keys.keys.clear();
     const second = await open(backend, keys);
-    expect(second.replacedDeviceId).toBe(deviceId);
-    expect(second.replacedRegistered).toBe(true);
+    expect(second.replacedDevices).toEqual([{ deviceId, registered: true }]);
     await second.store.close();
+  });
+
+  describe("暗号ストアの外の端末の記録", () => {
+    const record = (deviceId: string, registered: boolean, replaced: ReplacedDevice[] = []) => ({
+      userId: BOB,
+      deviceId,
+      registered,
+      replaced,
+    });
+
+    it("暗号ストアのファイルだけが消えたら、記録にある前の端末を知らせる", async () => {
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const deviceId = first.store.deviceId;
+      expect(devices.records.get(NAME)).toEqual(record(deviceId, false));
+      await first.store.markRegistered();
+      expect(devices.records.get(NAME)).toEqual(record(deviceId, true));
+      await first.store.close();
+
+      // OPFS のファイルだけが消えた（包む鍵と記録は IndexedDB に残る）。
+      const second = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      expect(second.store.deviceId).not.toBe(deviceId);
+      expect(second.replacedDevices).toEqual([{ deviceId, registered: true }]);
+      // 記録は新しい端末に進むが、前の端末は削除待ちに渡すまで `replaced` に残す。
+      expect(devices.records.get(NAME)).toEqual(
+        record(second.store.deviceId, false, [{ deviceId, registered: true }]),
+      );
+      await second.store.close();
+    });
+
+    it("前の端末を削除待ちに渡す前に閉じても、次に開いたときにもう一度知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const previous = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      const second = await open(backend, keys, BOB, devices);
+      const current = second.store.deviceId;
+      expect(second.replacedDevices).toEqual([{ deviceId: previous, registered: true }]);
+      // 削除待ちに渡す前にタブを閉じた。
+      await second.store.close();
+
+      const third = await open(backend, keys, BOB, devices);
+      expect(third.store.deviceId).toBe(current);
+      expect(third.replacedDevices).toEqual([{ deviceId: previous, registered: true }]);
+      // 新しい端末の登録でも、渡していない前の端末を落とさない。
+      await third.store.markRegistered();
+      expect(devices.records.get(NAME)).toEqual(
+        record(current, true, [{ deviceId: previous, registered: true }]),
+      );
+      // 渡せたら外し、次からは知らせない。
+      await third.store.forgetReplacedDevices([previous]);
+      expect(devices.records.get(NAME)).toEqual(record(current, true));
+      await third.store.close();
+
+      const fourth = await open(backend, keys, BOB, devices);
+      expect(fourth.replacedDevices).toEqual([]);
+      await fourth.store.close();
+    });
+
+    it("前の端末は、渡すまで重ねて持つ", async () => {
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const a = first.store.deviceId;
+      await first.store.close();
+      const second = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const b = second.store.deviceId;
+      await second.store.close();
+      // A を渡さないうちに、B のファイルもなくなった。
+      const third = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      expect(third.replacedDevices).toEqual([
+        { deviceId: a, registered: false },
+        { deviceId: b, registered: false },
+      ]);
+      await third.store.close();
+    });
+
+    it("別のユーザーの記録は、前の端末として知らせず、上書きする", async () => {
+      const devices = memoryDevices();
+      const other = "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b";
+      devices.records.set(NAME, {
+        userId: ALICE,
+        deviceId: other,
+        registered: true,
+        replaced: [{ deviceId: "1f2e3d4c-5b6a-4789-8a6b-5c4d3e2f1a0b", registered: true }],
+      });
+      const opened = await open(new MemoryCryptoBackend(), memoryKeys(), BOB, devices);
+      expect(opened.replacedDevices).toEqual([]);
+      expect(devices.records.get(NAME)).toEqual(record(opened.store.deviceId, false));
+      await opened.store.close();
+    });
+
+    it("開き直しでは知らせない。記録のない暗号ストア（前の版）は、今の端末を記録する", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      // 前の版で作った（記録のない）暗号ストア。
+      const first = await open(backend, keys);
+      const deviceId = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      const devices = memoryDevices();
+      const reopened = await open(backend, keys, BOB, devices);
+      expect(reopened.store.deviceId).toBe(deviceId);
+      expect(reopened.replacedDevices).toEqual([]);
+      expect(devices.records.get(NAME)).toEqual(record(deviceId, true));
+      await reopened.store.close();
+
+      const again = await open(backend, keys, BOB, devices);
+      expect(again.replacedDevices).toEqual([]);
+      await again.store.close();
+    });
+
+    it("新しい端末の記録を書けなかったら、次に開いたときに前の端末を知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const previous = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      devices.failPut = true;
+      const second = await open(backend, keys, BOB, devices);
+      // 記録を書けなくても、暗号ストアは開く。
+      expect(second.replacedDevices).toEqual([{ deviceId: previous, registered: true }]);
+      const current = second.store.deviceId;
+      await second.store.close();
+      expect(devices.records.get(NAME)?.deviceId).toBe(previous);
+
+      devices.failPut = false;
+      const third = await open(backend, keys, BOB, devices);
+      expect(third.store.deviceId).toBe(current);
+      expect(third.replacedDevices).toEqual([{ deviceId: previous, registered: true }]);
+      expect(devices.records.get(NAME)).toEqual(
+        record(current, false, [{ deviceId: previous, registered: true }]),
+      );
+      await third.store.close();
+    });
+
+    it("記録を読めなかったら書き換えず、読めるようになってから前の端末を知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const previous = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      // ファイルが消えたうえ、IndexedDB の読み取りが一時的に失敗した。
+      devices.failGet = true;
+      const second = await open(backend, keys, BOB, devices);
+      const current = second.store.deviceId;
+      expect(second.replacedDevices).toEqual([]);
+      await second.store.markRegistered();
+      await second.store.close();
+      // 前の端末の記録を上書きしない。
+      expect(devices.records.get(NAME)).toEqual(record(previous, true));
+
+      devices.failGet = false;
+      const third = await open(backend, keys, BOB, devices);
+      expect(third.store.deviceId).toBe(current);
+      expect(third.replacedDevices).toEqual([{ deviceId: previous, registered: true }]);
+      await third.store.close();
+    });
+
+    it("保存鍵を開けず、記録に別の端末もあれば、両方を前の端末として知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(backend, keys, BOB, devices);
+      const lost = first.store.deviceId;
+      await first.store.close();
+      // 記録には、さらに前の（渡していない）端末が残っている。
+      const older = "2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d";
+      devices.records.set(NAME, record(older, true));
+      keys.keys.clear();
+      const second = await open(backend, keys, BOB, devices);
+      expect(second.replacedDevices).toEqual([
+        { deviceId: lost, registered: false },
+        { deviceId: older, registered: true },
+      ]);
+      await second.store.close();
+    });
+
+    it("別の端末から削除されて作り直した端末は、記録を進めて、前の端末を知らせない", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(backend, keys, BOB, devices);
+      await first.store.markRegistered();
+      const { deviceId } = await first.store.replaceDevice();
+      await first.store.close();
+      expect(devices.records.get(NAME)).toEqual(record(deviceId, false));
+
+      const reopened = await open(backend, keys, BOB, devices);
+      expect(reopened.store.deviceId).toBe(deviceId);
+      expect(reopened.replacedDevices).toEqual([]);
+      await reopened.store.close();
+    });
+
+    it("暗号ストアを消すと、記録も消す", async () => {
+      const devices = memoryDevices();
+      const opened = await open(new MemoryCryptoBackend(), memoryKeys(), BOB, devices);
+      await opened.store.destroy();
+      expect(devices.records.has(NAME)).toBe(false);
+    });
   });
 
   it("開き直しにも失敗したら、ストレージが戻ったあとの操作で開き直す", async () => {
@@ -246,7 +488,7 @@ describe("CryptoStore", () => {
     await first.store.close();
     backend.meta.set("wrapped_storage_key", "!");
     const second = await open(backend, keys);
-    expect(second.replacedDeviceId).toBe(deviceId);
+    expect(second.replacedDevices).toEqual([{ deviceId, registered: false }]);
     await second.store.close();
   });
 

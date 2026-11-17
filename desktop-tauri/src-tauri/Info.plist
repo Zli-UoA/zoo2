@@ -5,6 +5,6 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>通話で音声を送るためにマイクを使います。</string>
   <key>NSCameraUsageDescription</key>
-  <string>通話で映像を送るためにカメラを使います。</string>
+  <string>通話の映像と、他のユーザーの検証の QR コードの読み取りにカメラを使います。</string>
 </dict>
 </plist>

@@ -217,12 +217,32 @@ pub(crate) async fn decorate(
     tx: &mut toasty::Transaction<'_>,
     posts: &mut [Value],
 ) -> Result<(), AppError> {
-    let nsfw = query(
-        tx,
-        "SELECT json_build_object('id',id)::text FROM channels WHERE is_nsfw",
-        &[],
-    )
-    .await?;
+    fn collect_channels(post: &Value, ids: &mut std::collections::HashSet<String>) {
+        if let Some(id) = post["channel_id"].as_str() {
+            ids.insert(id.to_owned());
+        }
+        if post["parent"].is_object() {
+            collect_channels(&post["parent"], ids);
+        }
+    }
+    let mut channels = std::collections::HashSet::new();
+    for post in posts.iter() {
+        collect_channels(post, &mut channels);
+    }
+    let nsfw = if channels.is_empty() {
+        vec![]
+    } else {
+        query(
+            tx,
+            "SELECT json_build_object('id',c.id)::text
+             FROM jsonb_array_elements_text($1::jsonb) ids(id)
+             CROSS JOIN LATERAL (
+               SELECT id FROM channels WHERE id=ids.id AND is_nsfw OFFSET 0
+             ) c",
+            &[&json!(channels).to_string()],
+        )
+        .await?
+    };
     let nsfw = nsfw
         .iter()
         .filter_map(|row| row["id"].as_str())

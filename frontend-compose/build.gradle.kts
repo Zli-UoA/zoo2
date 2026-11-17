@@ -43,6 +43,11 @@ kotlin {
             implementation("androidx.compose.ui:ui-test-junit4:1.9.0")
             implementation("org.robolectric:robolectric:4.16.1")
         } }
+        if (androidEnabled) named("androidInstrumentedTest") { dependencies {
+            implementation(kotlin("test"))
+            implementation("androidx.test.ext:junit:1.3.0")
+            implementation("androidx.test:runner:1.7.0")
+        } }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("io.ktor:ktor-client-mock:3.1.3")
@@ -131,7 +136,7 @@ compose.resources {
 if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtension> {
     namespace = "works.zli.zoo.shared"
     compileSdk = 35
-    defaultConfig { minSdk = 26 }
+    defaultConfig { minSdk = 26; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions.unitTests.isIncludeAndroidResources = true
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
@@ -212,4 +217,22 @@ if (androidEnabled) {
         systemProperty("jna.library.path", hostLibraryDir.absolutePath)
         systemProperty("zoo.uiScreenshotDir", layout.buildDirectory.dir("reports/ui").get().asFile.absolutePath)
     }
+}
+
+// Bundle the exact React media viewer used by the Web client into the APK.
+// Install frontend dependencies with pnpm install --frozen-lockfile before Gradle.
+if (androidEnabled) {
+    val viewerAssets = layout.buildDirectory.dir("generated/media-preview-assets")
+    val buildMediaPreview by tasks.registering(Exec::class) {
+        workingDir(rootDir.resolve("../frontend"))
+        commandLine("pnpm", "build:media-preview")
+        inputs.files(fileTree(rootDir.resolve("../frontend/src")), fileTree(rootDir.resolve("../frontend/.storybook/fixtures")))
+        inputs.files(fileTree(rootDir.resolve("../frontend/build")))
+        inputs.files(rootDir.resolve("../frontend/tsconfig.json"), rootDir.resolve("../frontend/package.json"), rootDir.resolve("../frontend/pnpm-lock.yaml"), rootDir.resolve("../frontend/media-preview.html"), rootDir.resolve("../frontend/vite.media-preview.config.ts"))
+        outputs.dir(viewerAssets)
+    }
+    extensions.configure<com.android.build.gradle.LibraryExtension> {
+        sourceSets.getByName("main").assets.srcDir(viewerAssets)
+    }
+    tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(buildMediaPreview) }
 }

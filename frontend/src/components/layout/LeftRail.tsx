@@ -1,3 +1,4 @@
+import { OnboardingButton } from "./OnboardingTour";
 import { useShell } from "./shell-context";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
@@ -86,6 +87,7 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        <OnboardingButton />
         <Link
           to="/settings"
           search={{ channel: shell.selectedChannelId ?? undefined }}

@@ -12,7 +12,8 @@ import {
   updatePendingDeviceDeletion,
   type PendingDeviceDeletion,
 } from "./identity";
-import type { ToDeviceRow } from "./protocol";
+import { requestPersistentStorage } from "./persistentStorage";
+import type { OpenedCryptoStore, ToDeviceRow } from "./protocol";
 import { listDevices } from "./revocationApi";
 import { subscribeToDevice, type ToDeviceSubscription } from "./toDeviceShape";
 
@@ -157,15 +158,13 @@ export class E2eeDeviceManager {
     this.options.onStatus?.("starting");
     try {
       await retryPendingDeviceDeletion(client, userId, this.countedNotFound);
+      // 暗号ストアを消されないよう頼む（結果は待たず、動きも変えない）。
+      void requestPersistentStorage();
       let opened = await worker.request({ op: "open", namespace, userId });
       // 登録が途中で失敗しても、ログアウトで消せるように先に覚える。
       this.rememberOpened(opened);
-      if (opened.replacedDeviceId) {
-        // 保存鍵を失って作り直した。前の端末はもう使えないので消す。
-        await this.deleteDeviceOrRemember(
-          this.entry(opened.replacedDeviceId, !opened.replacedRegistered),
-        );
-      }
+      // 暗号ストアを作り直した（保存鍵を失った、ファイルが消えた）。前の端末はもう使えないので消す。
+      await this.handOffReplaced(this.replacedEntries(opened), true);
       let counts: KeyCounts;
       try {
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
@@ -217,6 +216,44 @@ export class E2eeDeviceManager {
     return { userId: this.options.userId, deviceId, unconfirmed };
   }
 
+  /**
+   * 開いた暗号ストアが知らせた前の端末（`replacedDevices`）の削除待ち。前の端末は、Worker が同じ
+   * ユーザーのものだけを返す。念のため、別のユーザーの暗号ストアや今の端末なら消さない。
+   */
+  private replacedEntries(opened: OpenedCryptoStore): PendingDeviceDeletion[] {
+    if (opened.userId !== this.options.userId) return [];
+    return (opened.replacedDevices ?? [])
+      .filter((device) => device.deviceId !== opened.deviceId)
+      .map((device) => this.entry(device.deviceId, !device.registered));
+  }
+
+  /**
+   * 前の端末を削除待ちに残し（`deleteNow` なら削除 API も呼ぶ）、残せた（または消し終えた）ものだけを
+   * 暗号ストアの外の記録から外させる。外す前にタブを閉じても、次に開いたときにもう一度知らせるので、
+   * 前の端末の ID を失わない。
+   */
+  private async handOffReplaced(
+    entries: PendingDeviceDeletion[],
+    deleteNow: boolean,
+  ): Promise<void> {
+    const handed: string[] = [];
+    for (const entry of entries) {
+      markDeviceDeletionPending(entry);
+      const saved = findPendingDeviceDeletion(entry) !== null;
+      const done = deleteNow
+        ? await deleteOrKeep(this.options.client, entry, this.countedNotFound)
+        : false;
+      if (saved || done) handed.push(entry.deviceId);
+      // ログアウト（`destroy`）では、暗号ストアと一緒に外の記録も消す。削除待ちにも残せず消せても
+      // いない前の端末は、ここで覚えて、ログアウトでもう一度消す。
+      if (!done) this.replacedDevices.push(entry);
+    }
+    if (handed.length === 0) return;
+    await this.options.worker
+      .request({ op: "forgetReplacedDevices", deviceIds: handed })
+      .catch(() => undefined);
+  }
+
   private subscribe(): void {
     const deviceId = this.deviceId;
     if (!deviceId || this.subscription || this.stopped || this.suspended) return;
@@ -241,13 +278,9 @@ export class E2eeDeviceManager {
     // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になる。ただし登録できたか分からないので、
     // 404 でもすぐには消えたものとしない）。
     this.rememberOpened(opened);
-    if (opened.replacedDeviceId) {
-      // 保存鍵を失って作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
-      // 残し、ログアウトで一緒に消す。
-      const replaced = this.entry(opened.replacedDeviceId, !opened.replacedRegistered);
-      markDeviceDeletionPending(replaced);
-      this.replacedDevices.push(replaced);
-    }
+    // 暗号ストアを作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに残し、
+    // ログアウトで一緒に消す。
+    await this.handOffReplaced(this.replacedEntries(opened), false);
   }
 
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {
@@ -409,6 +442,24 @@ export class E2eeDeviceManager {
     }
   }
 
+  /**
+   * 復号で「未検証の送信者」になったセッションを、送信ユーザーと自分の `keys/query` で判定し直す
+   * （docs/e2ee.md の「受信時の検証」）。検証済みに上げた数を返す。今判定する候補がない、または
+   * 未解錠のときは問い合わせない。判定するのは、問い合わせたユーザーの候補だけ。
+   */
+  async reverifySenders(): Promise<number> {
+    if (this.stopped || this.suspended) return 0;
+    const { worker, client } = this.options;
+    const request = await worker.request({ op: "reverifyCandidateUsers" });
+    const senders = request.userIds;
+    if (senders.length === 0) return 0;
+    // 他のユーザーのマスター鍵を信頼できるかを確かめるため、自分も問い合わせる（to-device と同じ）。
+    const users = [...new Set([...senders, this.options.userId])].sort();
+    const keysQuery = await queryKeys(client, users, this.processAbort.signal);
+    if (this.stopped || this.suspended) return 0;
+    return worker.request({ op: "reverifySenders", request, keysQuery });
+  }
+
   /** 終わっていない失効があるか（#362）。 */
   async revocationPending(): Promise<boolean> {
     return (await this.options.worker.request({ op: "revocationStatus" })) !== null;
@@ -508,7 +559,7 @@ export class E2eeDeviceManager {
 type DeleteOutcome = "deleted" | "notFound" | "failed";
 
 /**
- * 削除 API を呼び、消せたら削除待ちから外す。失敗したら残し、次のログインで消し直す。
+ * 削除 API を呼び、消せたら削除待ちから外す（`true` を返す）。失敗したら残し、次のログインで消し直す。
  *
  * 404 は、登録できたと分かっている端末なら、消すものがないので済んだものとする。登録できたか
  * 分からない端末（`unconfirmed`）は、あとから届いた登録で端末ができうるので残し、続けて
@@ -519,7 +570,7 @@ async function deleteOrKeep(
   client: ApiClient,
   target: PendingDeviceDeletion,
   counted?: Set<string>,
-): Promise<void> {
+): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DELETE_TIMEOUT_MS);
   let outcome: DeleteOutcome;
@@ -535,19 +586,23 @@ async function deleteOrKeep(
   if (outcome === "failed") {
     // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
     if ((current.notFound ?? 0) > 0) updatePendingDeviceDeletion({ ...current, notFound: 0 });
-    return;
+    return false;
   }
   if (outcome === "deleted" || !current.unconfirmed) {
     clearPendingDeviceDeletion(current);
-    return;
+    return true;
   }
   if (counted) {
-    if (counted.has(current.deviceId)) return;
+    if (counted.has(current.deviceId)) return false;
     counted.add(current.deviceId);
   }
   const notFound = (current.notFound ?? 0) + 1;
-  if (notFound >= MAX_NOT_FOUND) clearPendingDeviceDeletion(current);
-  else updatePendingDeviceDeletion({ ...current, notFound });
+  if (notFound >= MAX_NOT_FOUND) {
+    clearPendingDeviceDeletion(current);
+    return true;
+  }
+  updatePendingDeviceDeletion({ ...current, notFound });
+  return false;
 }
 
 function findPendingDeviceDeletion(target: PendingDeviceDeletion): PendingDeviceDeletion | null {

@@ -4,7 +4,31 @@ import {
   mergeTimelineWindow,
   reachedTimelineTail,
   timelinePosition,
+  visibleTimelineTail,
 } from "./homeTimeline";
+
+describe("timeline viewport for prefetch", () => {
+  const items = Array.from({ length: 50 }, (_, index) => ({
+    index,
+    start: 100 + index * 240,
+    end: 100 + (index + 1) * 240,
+  }));
+
+  it("does not use a tail range left over after a timeline resets its scroll position", () => {
+    expect(visibleTimelineTail(items.slice(40), 0, 900)).toBe(-1);
+  });
+
+  it("uses visible rows rather than overscan to identify the viewport tail", () => {
+    expect(visibleTimelineTail(items, 0, 900)).toBe(3);
+    expect(visibleTimelineTail(items.slice(30), 10000, 900)).toBe(44);
+  });
+
+  it("excludes rows touching a viewport boundary and hidden scroll containers", () => {
+    expect(visibleTimelineTail(items, 340, 240)).toBe(1);
+    expect(visibleTimelineTail(items, 10000, 0)).toBe(-1);
+  });
+});
+
 describe("bounded timeline refresh", () => {
   const rows = Array.from({ length: 1200 }, (_, i) => ({ id: `post-${i}`, content: `body ${i}` }));
   it("preserves unloaded-from-DOM history and updates/removes checked rows", () => {

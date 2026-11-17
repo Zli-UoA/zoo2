@@ -82,9 +82,10 @@ ShapeEvent ─▶ 1 本のループ
   - 表示中のチャンネルとフォーカスを `zoo_set_focus` で、`zoo://open` を受けたらその画面へ移る。
 - Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。Web は Tauri 版と別にデプロイされるので、一致しないことがある。一致しないときと `zoo_session` が失敗したときは、OIDC のログインへは進まず（Tauri の中では AuthZ への移動を `on_navigation` が止めて既定のブラウザーで開くため、ログインを完了できない）、アプリの更新を案内する画面と再読み込みのボタンを出す。
 - capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言すると `allow-<名前>` の許可が作られ、capabilities でウィンドウごとに許せる。app の manifest があると、Tauri（2.12）は宣言のないコマンドを ACL がないものとして、ハンドラーに渡す前に拒否する。
-  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed`、`zoo_take_call_accept` と、`zoo://session`、`zoo://open`、`zoo://call-accept` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
+  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed`、`zoo_take_call_accept`、`zoo_reauthenticate` と、`zoo://session`、`zoo://open`、`zoo://call-accept` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
   - コマンドの中でも、呼び出し元のウィンドウの `UiMode` と URL のオリジンを確かめ、合わなければ `ErrorCode::WrongMode` を返す。
   - 許可したオリジン以外への移動は `on_navigation` で止め、既定のブラウザーで開く。
+- E2EE の再認証：Web の `startReauth` は、Tauri の中では別のウィンドウを開かず、`zoo_reauthenticate` を呼ぶ。Rust 側は `client-core` の `auth/reauth.rs` で、既定のブラウザーで `max_age=0` の認可リクエストを開き、ループバックのリダイレクト（`http://127.0.0.1:<空いているポート>/callback`）で受け取った ID トークンを返す。wry は新しいウィンドウのハンドラーがないとウィンドウを作らず、アプリの WebView ではパスキー（AuthZ が再認証として認める唯一のログイン）も使えないため（`docs/e2ee.md` のクロス署名の API の【決定】）。受け取ったらメインのウィンドウを前に出す。新しく始めたら、待っている前の再認証は取り消す（`ErrorCode::Cancelled`）。時間切れは `ErrorCode::Timeout`、AuthZ の拒否と ID トークンの不一致は `ErrorCode::Rejected` で返し、Web は `ReauthError` に変える。
 - Tauri の中では Web Push を使わない（`supportsPush()` が false を返す）。使うと、Rust 側の通知と二重に出る。Service Worker はオフライン保存に使うので止めない。
 - (a) の同梱の画面からは、`zoo_access_token` と `zoo_notifications_observed` を呼べなくする。トークンを WebView に出さないため。
 
@@ -124,7 +125,7 @@ ShapeEvent ─▶ 1 本のループ
 ## 未確定・確認が要るもの
 
 - AuthZは`offline_access`に対応している。「Zoo for Desktop」で更新トークンを利用するには、登録済みclientに同scopeを許可し、デバイス認可で要求して本人が同意する。Web用の`VITE_OIDC_SCOPE`とは別に、デスクトップは共通クライアントの`ZOO_OIDC_SCOPE`（既定値は`openid profile offline_access`）を使う。発行・rotation・再起動後の復元は実機で確認する。`TokenManager`は更新トークンがない場合も動き、期限が切れたらログインし直しになる。
-- ループバックの redirect（RFC 8252）を AuthZ が受け付けるか。今回はデバイスコードを使うので依存しないが、要確認として残す。
+- ループバックの redirect（RFC 8252）：ログインはデバイスコードなので依存しないが、E2EE の再認証（`zoo_reauthenticate`）は依存する。「Zoo for Desktop」に認可コードのグラントとループバックのリダイレクト URI を AuthZ の管理画面で足し、zoo2-infra の `OIDC_REAUTH_AUDIENCES` にこのクライアント ID を足すまでは、再認証が要る保存は 403 になる。
 
 ## 開発
 
@@ -138,7 +139,7 @@ cargo tauri build --bundles deb    # NixOS では AppImage を作れないので
 
 - 画面の案は `desktop_ui`（`ZOO_DESKTOP_UI`）の `remote|leptos` で選ぶ。既定は `remote`（Web 版の画面。通話もこちらでだけ使える）。ただし `ZOO_DEV_USER` を付けたとき（dev 認証）は `leptos` にする。ローカルの backend は Web の画面を配信しないため。`desktop_ui` は `client-core` の `desktop_ui_for` で Tauri 版だけが読み、`Config` には入れない（値を誤っても TUI や GPUI 版の起動を止めないように）。知らない値は設定のエラーとして同梱の画面に出す（打ち間違いに気づけるように）。TUI と GPUI 版は読まないので影響しない。
 - macOS の署名は ad-hoc でも Hardened Runtime になるので、マイクとカメラの entitlement（`src-tauri/Entitlements.plist`、`bundle.macOS.entitlements`）が要る。CI の macOS のジョブで、署名したアプリに入っていることを `codesign` で確かめる。
-- 通話: (b) の画面にだけ、マイクとカメラの許可を与える（`on_permission_request`）。macOS は `src-tauri/Info.plist` の `NSMicrophoneUsageDescription` と `NSCameraUsageDescription` で OS が使用を尋ねる。Linux は WebKitGTK の WebRTC と media stream を既定で無効にしているので、ウィンドウを作ったあとに有効にする。
+- 通話と、他のユーザーの検証の QR コードの読み取り（`docs/e2ee.md` の「QR コードによる検証」）: (b) の画面にだけ、マイクとカメラの許可を与える（`on_permission_request`）。macOS は `src-tauri/Info.plist` の `NSMicrophoneUsageDescription` と `NSCameraUsageDescription` で OS が使用を尋ねる（カメラの説明文は、通話と QR の読み取りの両方を書く）。Linux は WebKitGTK の WebRTC と media stream を既定で無効にしているので、ウィンドウを作ったあとに有効にする。
 - 通知のオン・オフ: Web 版の設定画面の「通知」から `zoo_notification_settings` / `zoo_set_notifications` で読み書きし、Rust 側が `notifications.json` に保存する。オフのときは投稿の通知を出さない（更新の知らせは出す）。古い版のアプリにはこのコマンドがないので、Web 側は呼べなかったら説明だけを出す（`PROTOCOL_VERSION` は上げない）。デスクトップ版では Web Push を使わないので、設定画面のプッシュ通知の行は出さない。
 - macOS の通知は、notify-rust の `preview-macos-un` で UNUserNotificationCenter から出し、起動時に許可を求める（古い NSUserNotification は許可を求められず、Finder として出そうとして表示されないことがある）。
 - (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。

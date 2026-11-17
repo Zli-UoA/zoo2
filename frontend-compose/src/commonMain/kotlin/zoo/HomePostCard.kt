@@ -6,7 +6,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
@@ -34,25 +33,30 @@ fun HomePostCard(
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
-            .nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .then(
+                if (!editing) Modifier.nativeNavigation(
+                    "/home/posts/${post.text("id").encodeURLParameter()}",
+                    role = null,
+                    beforeNavigate = { app.homeTimelines.preparePost(post) },
+                ) else Modifier
+            )
+            .padding(horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 16.dp,
+                vertical = if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceSmall else 8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
             val parent = post["parent"] as? Row
             val name = parent?.text("display_name")?.ifEmpty { parent.text("user_name") }
                 ?: app.t("activitypubSettings.post")
             Column(Modifier.fillMaxWidth().padding(start = 12.dp, bottom = 8.dp)) {
-                NativeLink("/home/posts/${post.text("parent_id").encodeURLParameter()}") {
+                NativeLink(
+                    "/home/posts/${post.text("parent_id").encodeURLParameter()}",
+                    beforeNavigate = { parent?.let { app.homeTimelines.preparePost(it) } },
+                ) {
                     Text(app.t("home.replyTo", "name" to name), size = 12.sp)
                 }
                 parent?.let {
-                    if (it.text("content").isNotBlank()) ActivityPubContent(
-                        it.text("content"),
-                        it.homeRows("emojis"),
-                        textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-                    )
-                    MessageAttachments(app, it.homeRows("attachments"))
-                    if (it.homeRows("attachments").isEmpty()) HomeMedia(it.homeRows("media"))
+                    HomePostContent(app, it)
                 }
             }
         }
@@ -65,31 +69,48 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        // Reserve a 48dp profile hit target while keeping the visible 40 + 12dp keyline.
+        val authorGap = if (LocalTouchUi.current)
+            AndroidDesign.avatarGap - (AndroidDesign.touchTarget - AndroidDesign.avatar)
+        else 12.dp
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(authorGap),
+            verticalAlignment = Alignment.Top,
+        ) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
-            NativeLink(profile) {
+            NativeLink(
+                profile,
+                if (LocalTouchUi.current) Modifier.sizeIn(
+                    minWidth = AndroidDesign.touchTarget, minHeight = AndroidDesign.touchTarget,
+                ) else Modifier,
+            ) {
                 val people by app.repo.users.rows.collectAsState()
                 if (!post.flag("remote"))
                     Avatar(
                         people.find { it.text("id") == post.text("user_id") }
-                            ?: post
+                            ?: post,
+                        modifier = Modifier.postAvatar(),
+                        size = postAvatarSize(),
                     )
                 else ActivityPubAvatar(
                     post["avatar"] as? Row,
                     post.text("display_name").ifEmpty { post.text("user_name") },
+                    modifier = Modifier.postAvatar(),
+                    size = postAvatarSize(),
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceSmall else 8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
-                    NativeLink(profile) {
+                    NativeLink(profile, Modifier.align(Alignment.Top)) {
                         ActivityPubText(
                             post.text("display_name").ifEmpty { post.text("user_name") },
                             post.homeRows("actor_emojis"),
                             textStyle =
-                                TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                                MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                         )
                     }
                     NativeLink(profile) {
@@ -100,18 +121,11 @@ fun HomePostCard(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
-                        Text(
-                            app.platform.fullTimestamp(post.text("created_at")),
-                            Modifier.then(
-                                webControlModifier(
-                                    "time",
-                                    attributes = mapOf("datetime" to post.text("created_at")),
-                                )
-                            ),
-                            size = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    NativeLink(
+                        "/home/posts/${post.text("id").encodeURLParameter()}",
+                        beforeNavigate = { app.homeTimelines.preparePost(post) },
+                    ) {
+                        PostTimestamp(app, post.text("created_at"))
                     }
                     ActivityPubBadge(app, post.text("visibility").ifEmpty { "local" }, federated = post.flag("apub") || post.flag("remote"))
                     }
@@ -121,7 +135,7 @@ fun HomePostCard(
                         ) {
                             Text(
                                 "#${post.text("channel_name")}",
-                                size = 12.sp,
+                                size = if (LocalTouchUi.current) 14.sp else 12.sp,
                                 color = LocalLinkColor.current,
                             )
                         }
@@ -171,17 +185,9 @@ fun HomePostCard(
                         }
                         Button(app.t("common.cancel"), enabled = !saving) { editing = false }
                     }
-                } else if (post.text("content").isNotBlank()) {
-                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
-                        ActivityPubContent(
-                            post.text("content"),
-                            post.homeRows("emojis"),
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
+                } else {
+                    HomePostContent(app, post)
                 }
-                MessageAttachments(app, post.homeRows("attachments"))
-                if (post.homeRows("attachments").isEmpty()) HomeMedia(post.homeRows("media"))
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -274,9 +280,14 @@ fun HomePostCard(
                                 )
                                 add(MenuAction("trash-2", app.t("home.delete"), !pending, remove))
                             }
+                            if (post.flag("remote") && publicUrl(post.text("url")) != null)
+                                add(MenuAction("external-link", app.t("home.original")) { app.platform.action("open:${post.text("url")}") })
                             add(
                                 MenuAction("copy", app.t("home.copyContent")) {
-                                    app.run { app.platform.invoke("copy", post.text("content")) }
+                                    app.run {
+                                        app.platform.invoke("copy", post.text("content"))
+                                        app.showToast(app.t("messages.copied"), kind = ToastKind.Success)
+                                    }
                                 }
                             )
                         },
@@ -284,13 +295,7 @@ fun HomePostCard(
                 }
                 if (error)
                     Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
-                if (post.flag("remote") && publicUrl(post.text("url")) != null)
-                    NativeLink(
-                        post.text("url"),
-                        attributes = mapOf("target" to "_blank", "rel" to "noopener noreferrer"),
-                    ) {
-                        Text(app.t("home.original"), size = 12.sp, color = LocalLinkColor.current)
-                    }
+
             }
         }
     }

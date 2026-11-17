@@ -1,6 +1,6 @@
 # 音声通話と呼び出し
 
-チャンネルの通話は、ブラウザー同士の P2P（WebRTC のメッシュ、最大 6 人）です。シグナリングは SSE（`GET /api/channels/{id}/call/stream`）で、参加者は `call_presence` に置きます。このページは、通話の中で相手を呼び出す「招待」と、呼ばれた側の着信通知をまとめます。実装は `backend/src/routes/calls.rs` と `backend/src/call_invites.rs` です。
+チャンネルの通話は、WebRTC対応クライアント同士の P2P（WebRTC のメッシュ、最大 6 人）です。シグナリングは SSE（`GET /api/channels/{id}/call/stream`）で、参加者は `call_presence` に置きます。このページは、通話の中で相手を呼び出す「招待」と、呼ばれた側の着信通知をまとめます。実装は `backend/src/routes/calls.rs` と `backend/src/call_invites.rs` です。
 
 ## 呼び出しの流れ
 
@@ -59,12 +59,13 @@
 - Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン（下の「Web の動き」）。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
 - デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き（下の「デスクトップ版の動き」）。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
-- Compose（Android）: 通話の UI は追加しない（通話関連の変更は docs と PR 本文に記録して済ませる方針）。例外として、不在着信（`missed_call`、`message_id` が NULL）は、通知の種類を知らない一覧が「返信」と誤って表示するので、Android の通知一覧と未読数から除く（`frontend-compose/` の `androidNotificationRows`）。
+- Compose（Android）: DMヘッダーから音声通話を開始する。「設定 → 電話（SIP）」でDM着信を有効にすると、セッション全体で招待Shapeを1本購読し、Android Telecomに着信を通知する。応答後に既存のaccept APIと通話SSEへ参加する。音声はWebRTC。SIP通話との同時通話は受け付けない。バックグラウンド待ち受けの条件は [Android版](android.md#sipdm通話とandroid-telecom) を参照。不在着信は従来どおりAndroidの通知一覧・未読数から除く。
 
 ## Web の動き
 
 - **購読**: `callInvites`（`frontend/src/lib/electric/collections.ts`）が `/api/shapes/call_invites` を購読する（永続化しない）。`useCallInvites` が、自分が呼ばれている招待（`incoming`）と、自分が呼んでいる招待（`outgoing`）に分ける。サーバーが `missed` にするまでの数秒も、期限を過ぎた招待は一覧から外す。期限は、端末の時計がずれていても働くよう、行を初めて受け取った時刻 + 招待の長さ（`created_at` と `expires_at` の差）で決める。
-- **着信**: `IncomingCallDialog`（`routes/_shell.tsx` の `CallProvider` の下）が、`incoming` の先頭を `IncomingCallCard` で出し、着信音（`call-sounds.ts` の `startRingtone`。効果音の設定に従う。ページを操作する前は、ブラウザーの自動再生の制限で鳴らないことがある）を繰り返す。
+- **着信**: `IncomingCallDialog`（`routes/_shell.tsx` の `CallProvider` の下）が、`incoming` の先頭を `IncomingCallCard` で出し、着信音（`call-sounds.ts` の `startRingtone`。高低 2 音を 2 回、大きめに、1.2 秒ごとに鳴らす。効果音の設定に従う。ページを操作する前は、ブラウザーの自動再生の制限で鳴らないことがある）を繰り返す。
+- **発信側の呼び出し音**: 自分が呼んでいる招待（`outgoing`）が、いまの通話のチャンネルに 1 件でもある間、`CallBar` が `startRingback` で静かな 2 音を 0.9 秒鳴らして 2 秒あける。着信音とは別の音で、効果音の設定に従う。相手が応答・拒否するか、招待が期限切れで shape から消えると止まる。
   - 応答: `POST /api/call-invites/{id}/accept` のあとに `joinCall(channelId)`（`joinCall` は通話が終わるまで戻らないので待たない。待つと、通話中に届く次の着信を操作できない）。別の通話中なら、`joinCall` が先に抜ける。終わっていた招待（409・404）には入らず、「この着信はすでに終了しました」をトーストで出す。それ以外の失敗は、カードに「応答できませんでした」を出す。
   - 拒否: `POST /api/call-invites/{id}/decline`。
 - **招待する側**（`CallBar`）: チャンネルの通話では「メンバーを招待」で、通話に入っておらず呼び出し中でもない、チャンネルのメンバー（bot と無効化したユーザーを除く）を選んで呼ぶ（`CallInvitePicker`。空き = 定員 - 在室 - 呼び出し中 まで）。DM では出さない。呼び出し中の相手は「〇〇さんを呼び出し中…」と出し、取り消せる。
@@ -92,3 +93,7 @@ Tauri 版（`desktop-tauri/`）は、ウィンドウが前面にないときだ�
   - Leptos の画面には通話の UI がなく、マイクの許可もないので、「応答」のボタンは出さず、「拒否」だけにする。
 - **mac**: トーストを出し、招待が終わったら閉じる。クリックは受け取れない（他の通知と同じ）ので、ボタンはなく、応答は画面（ダイアログ）で行う。
 - **古い版との組み合わせ**: 古い Web と新しいアプリ: 合図は無視されるが、ウィンドウが前に出て、ダイアログで応答できる。新しい Web と古いアプリ: `zoo_take_call_accept` がなく、何もしない。`PROTOCOL_VERSION` は上げない。
+
+## SIP電話との関係
+
+個人用・サークル共有のPBX内線で発着信する機能は [SIP電話](sip.md) を参照してください。チャンネルのP2P通話とは別の接続で、チャンネル通話を始めるとSIP接続を終了します。SIP電話を既存チャンネル通話へ参加させる音声ブリッジは含みません。

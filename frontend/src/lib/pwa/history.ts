@@ -1,5 +1,7 @@
 import { createBrowserHistory } from "@tanstack/react-router";
 
+import { isStandaloneDisplay } from "./standalone";
+
 export const PWA_HISTORY_SESSION_KEY = "zoo2:pwa-history";
 
 interface PwaSession {
@@ -8,10 +10,7 @@ interface PwaSession {
 }
 
 export function createAppHistory() {
-  const standalone =
-    window.matchMedia("(display-mode: standalone)").matches ||
-    (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
-  if (!standalone) return createBrowserHistory();
+  if (!isStandaloneDisplay(window)) return createBrowserHistory();
 
   // Session storage survives same-window document navigations (push
   // notifications and OIDC callbacks). Do not insert a new boundary there.

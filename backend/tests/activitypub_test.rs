@@ -2442,6 +2442,12 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
         .0,
         StatusCode::OK
     );
+    // An expired signing-key cache must not turn a known profile read into a
+    // network request (the fixture's remote server is deliberately unavailable).
+    toasty::sql::statement("UPDATE apub_actors SET fetched_at=now()-interval '1 day' WHERE id=$1")
+        .bind(remote.as_str())
+        .exec(&mut db)
+        .await?;
     let account = request(
         &app,
         "GET",
@@ -3549,5 +3555,50 @@ async fn local_unlisted_quotes_open_by_id_without_entering_timelines() -> anyhow
         assert_eq!(quoted["quote"]["local"], true);
     }
     finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn notification_viewport_is_bounded_and_does_not_expose_another_account() -> anyhow::Result<()>
+{
+    let mut cfg = Config::from_env();
+    cfg.dev_auth_enabled = true;
+    let mut db = init_db(&cfg.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), cfg));
+    let users: Vec<_> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let ids: Vec<_> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    for (user, id) in users.iter().zip(&ids) {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+        toasty::sql::statement("INSERT INTO apub_notifications(id,user_id,actor_id,activity_id,kind) VALUES($1,$2,'peer',$1,'like')").bind(id.as_str()).bind(user.as_str()).exec(&mut db).await?;
+    }
+    let path = "/api/activitypub/notifications/entries";
+    let (status, page) = request(
+        &app,
+        "POST",
+        Some(&users[0]),
+        path,
+        Some(json!({"entries":ids})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["items"][0]["id"], ids[0]);
+    for entries in [json!([]), json!([""]), json!(vec!["id"; 101])] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                Some(&users[0]),
+                path,
+                Some(json!({"entries":entries}))
+            )
+            .await?
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
     Ok(())
 }

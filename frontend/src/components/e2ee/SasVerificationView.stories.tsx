@@ -13,10 +13,27 @@ const handlers = (): SasVerificationHandlers => ({
   onMismatch: fn(),
   onRetrySave: fn(),
   onClose: fn(),
+  onStartSas: fn(),
+  onScanQr: fn(async () => "retry" as const),
+  onQrConfirm: fn(),
 });
 
+const TXN = "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+/** 検証の QR のバイト列（Matrix の形。鍵と秘密は固定のダミー）。 */
+const qrCode: number[] = [
+  ...Array.from("MATRIX", (c) => c.charCodeAt(0)),
+  0x02,
+  0x00,
+  0x00,
+  TXN.length,
+  ...Array.from(TXN, (c) => c.charCodeAt(0)),
+  ...Array.from({ length: 64 }, (_, i) => (i * 37 + 11) & 0xff),
+  ...Array.from({ length: 16 }, (_, i) => (i * 101 + 7) & 0xff),
+];
+
 const view: SasView = {
-  transaction_id: "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+  transaction_id: TXN,
   their_user_id: "00000000-0000-4000-8000-0000000000b1",
   their_device_id: "2b8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718",
   we_requested: true,
@@ -26,6 +43,10 @@ const view: SasView = {
   emoji: [0, 23, 47, 47, 54, 12, 63],
   cancel: null,
   verified_master_key: null,
+  method: "sas",
+  qr_code: null,
+  can_scan_qr_code: false,
+  can_start_sas: false,
 };
 
 const entry = (patch: Partial<SasView>, rest: Partial<Omit<SasEntry, "view">> = {}): SasEntry => ({
@@ -66,9 +87,124 @@ export const IncomingNeedsUnlock: Story = {
   },
 };
 
-/** 要求を送り、相手が受け入れるのを待っている。 */
+/** 要求を送った。QR を先に出し、その下に「絵文字で検証する」を出す（相手の受け入れを待つあいだも）。 */
 export const Requested: Story = {
-  args: { entry: entry({ phase: "requested", their_device_id: null, emoji: null }) },
+  args: {
+    entry: entry({
+      phase: "requested",
+      their_device_id: null,
+      emoji: null,
+      method: null,
+      qr_code: qrCode,
+      can_start_sas: true,
+    }),
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args }) => {
+    await expect(await screen.findByRole("img", { name: "検証の QR コード" })).toBeInTheDocument();
+    // 相手が受け入れるまでは、相手の QR は読み取れない。
+    await expect(screen.queryByRole("button", { name: "相手の QR を読み取る" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "絵文字で検証する" }));
+    await expect(args.handlers.onStartSas).toHaveBeenCalled();
+  }),
+};
+
+/** 絵文字を選んだあと、相手が受け入れるのを待っている。 */
+export const RequestedEmoji: Story = {
+  args: {
+    entry: entry({ phase: "requested", their_device_id: null, emoji: null, method: null }),
+  },
+};
+
+/** 双方が受け入れた。QR を出し、相手の QR を読み取るか、絵文字で検証するかを選ぶ。 */
+export const ChooseMethod: Story = {
+  args: {
+    entry: entry({
+      phase: "choose_method",
+      emoji: null,
+      method: null,
+      qr_code: qrCode,
+      can_scan_qr_code: true,
+      can_start_sas: true,
+    }),
+    handlers: handlers(),
+    scannerProps: { initialState: "scanning" },
+  },
+  play: playForImplementation(async ({ args }) => {
+    await expect(await screen.findByRole("img", { name: "検証の QR コード" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "相手の QR を読み取る" }));
+    await expect(await screen.findByLabelText("カメラの映像")).toBeInTheDocument();
+    await expect(screen.queryByRole("img", { name: "検証の QR コード" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "自分の QR を出す" }));
+    await expect(await screen.findByRole("img", { name: "検証の QR コード" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "絵文字で検証する" }));
+    await expect(args.handlers.onStartSas).toHaveBeenCalled();
+  }),
+};
+
+/** カメラの使用が許可されなかった。絵文字を勧める。 */
+export const CameraDenied: Story = {
+  args: {
+    entry: entry({
+      phase: "choose_method",
+      emoji: null,
+      method: null,
+      qr_code: qrCode,
+      can_scan_qr_code: true,
+      can_start_sas: true,
+    }),
+    scannerProps: { initialState: "denied" },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "相手の QR を読み取る" }));
+    await expect(await screen.findByRole("alert")).toHaveTextContent(
+      "カメラの使用が許可されませんでした",
+    );
+    await expect(screen.getByRole("button", { name: "絵文字で検証する" })).toBeEnabled();
+  }),
+};
+
+/** 相手の QR を読み取った。相手の確認を待っている。 */
+export const QrScanned: Story = {
+  args: { entry: entry({ phase: "qr_scanned", emoji: null, method: "qr" }) },
+};
+
+/** 相手がこの端末の QR を読み取った。相手の端末で読み取ったかを聞く。 */
+export const QrConfirm: Story = {
+  args: { entry: entry({ phase: "qr_confirm", emoji: null, method: "qr" }), handlers: handlers() },
+  play: playForImplementation(async ({ args }) => {
+    await expect(
+      await screen.findByText("伊藤さくら さんが QR コードを読み取りましたか？"),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "読み取った" }));
+    await expect(args.handlers.onQrConfirm).toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "読み取っていない" }));
+    await expect(args.handlers.onCancel).toHaveBeenCalled();
+  }),
+};
+
+/** QR を読み取って確かめた。保存するには、ログインし直す（読み取りはクリックではないため）。 */
+export const QrNeedsLogin: Story = {
+  args: {
+    entry: entry({ phase: "done", emoji: null, method: "qr" }, { save: "login" }),
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args }) => {
+    await userEvent.click(await screen.findByRole("button", { name: "ログインして保存" }));
+    await expect(args.handlers.onRetrySave).toHaveBeenCalled();
+  }),
+};
+
+/** QR の鍵が、サーバーから届いた鍵と合わなかった。 */
+export const QrKeyMismatch: Story = {
+  args: {
+    entry: entry({
+      phase: "cancelled",
+      emoji: null,
+      method: "qr",
+      cancel: { code: "m.key_mismatch", by_us: true },
+    }),
+  },
 };
 
 /** 鍵を交換している。 */

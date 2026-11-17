@@ -10,6 +10,7 @@ pub mod error;
 pub mod metrics;
 pub mod models;
 pub mod notifications;
+pub mod phone_gateway;
 pub mod push;
 pub mod routes;
 pub mod slack;

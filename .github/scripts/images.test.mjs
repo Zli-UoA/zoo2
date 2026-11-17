@@ -13,7 +13,11 @@ test('component filters and common inputs', () => {
   assert.deepEqual(changedComponents(['backend/Cargo.lock']), ['backend']);
   assert.deepEqual(changedComponents(['docs/slack-event-coverage.json']), ['backend']);
   // backend は E2EE の署名の検証に crates/zoo-crypto を path で依存する。
-  assert.deepEqual(changedComponents(['crates/zoo-crypto/src/lib.rs']), ['backend']);
+  assert.deepEqual(changedComponents(['crates/zoo-crypto/src/lib.rs']), ['frontend', 'backend']);
+  assert.deepEqual(changedComponents(['crates/zoo-crypto-wasm/src/lib.rs']), ['frontend']);
+  assert.deepEqual(changedComponents(['rust-toolchain.toml']), ['frontend']);
+  assert.deepEqual(changedComponents(['.github/scripts/test-selection.mjs', '.github/actions/crypto-wasm/action.yaml']), []);
+  assert.deepEqual(changedComponents(['.github/workflows/ci-backend.yaml', '.github/workflows/ci-frontend.yaml', '.github/workflows/ci-desktop-tauri.yaml', 'infra/compose.ci-cache.yaml', 'infra/compose.ci-cache-write.yaml']), []);
   assert.deepEqual(changedComponents(['infra/db/migrations/a.sql']), ['migrate']);
   assert.equal(changedComponents(['.github/scripts/image-plan.mjs']).length, 3);
   assert.deepEqual(changedComponents(['README.md']), []);
@@ -88,7 +92,8 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan, {promotedMainSha, pullRequestComponents, wantsPreview, hadPreviewChanges} from './image-plan.mjs';
+import plan, {promotedMainSha, pullRequestComponents, wantsPreview, hadPreviewChanges, mainRequiresImages} from './image-plan.mjs';
+import {readFileSync} from 'node:fs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
@@ -98,7 +103,7 @@ function planFixture({files = [], fork = false, state = 'open', currentSha = sha
   const github = {rest: {pulls: {get: async () => ({data: {state, head: {sha: currentSha}}}), listFiles: 'listFiles'}, packages: {getAllPackageVersionsForPackageOwnedByOrg: 'versions'}}, paginate: async (method, params) => {
     assert.equal(params.per_page, 100);
     // latest は main の SHA 98 を指す。より新しいバージョンがあっても昇格済みの SHA を使う。
-    if (method === 'versions') { requestedVersions = true; return [version(2, [sha(97)]), version(1, ['latest', sha(98)])]; }
+    if (method === 'versions') { requestedVersions = true; return [version(2, [sha(97)]), version(1, ['latest', sha(98), '0.0.10'])]; }
     assert.equal(method, 'listFiles'); requestedPages = true; return files;
   }};
   return {github, context, core, outputs, paginated: () => requestedPages, readVersions: () => requestedVersions};
@@ -182,6 +187,57 @@ test('main plans all images with full SHA tags', async () => {
   assert.deepEqual(JSON.parse(fixture.outputs.aliases), []);
   assert.equal(fixture.outputs.pr, '');
   assert.equal(fixture.outputs.release, '0.0.42');
+});
+
+test('main compares against the last promotion so a later docs push retains pending application changes', async () => {
+  const fixture = planFixture(); fixture.context.payload = {}; fixture.context.eventName = 'push'; fixture.context.runNumber = 42;
+  fixture.github.rest.repos = { compareCommitsWithBasehead: async params => {
+    assert.equal(params.basehead, `${sha(98)}...${sha(99)}`);
+    return { data: { status: 'ahead', files: [{ filename: 'backend/src/main.rs' }, { filename: 'docs/later.md' }] } };
+  } };
+  await plan(fixture);
+  assert.equal(fixture.outputs.enabled, 'true');
+  assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 3);
+  fixture.github.rest.repos.compareCommitsWithBasehead = async () => ({ data: { status: 'ahead', files: [{ filename: 'docs/later.md' }] } });
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), false);
+});
+
+test('truncated main comparisons and new registries build; API permission errors fail', async () => {
+  const fixture = planFixture();
+  fixture.github.rest.repos = { compareCommitsWithBasehead: async () => ({ data: { status: 'ahead', files: Array.from({ length: 300 }, () => ({ filename: 'docs/a.md' })) } }) };
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
+  fixture.github.paginate = async () => [];
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
+  fixture.github.paginate = async () => { throw Object.assign(new Error('forbidden'), { status: 403 }); };
+  await assert.rejects(mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), /forbidden/);
+});
+
+test('an interrupted promotion cannot hide application changes on a rerun or later docs push', async () => {
+  const fixture = planFixture();
+  const tags = {
+    frontend: ['latest', sha(99), '0.0.11'],
+    // Reused backend bytes retain the old release and multiple commit tags.
+    backend: ['latest', sha(98), sha(99), '0.0.10', '0.0.11'],
+    migrate: ['latest', sha(98), sha(99), '0.0.10'],
+  };
+  fixture.github.paginate = async (_, params) => [version(1, tags[params.package_name.replace('zoo2-', '')])];
+  fixture.github.rest.repos = { compareCommitsWithBasehead: async () => { throw new Error('Unfinished release must not become a checkpoint'); } };
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), true);
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(100)), true);
+  tags.migrate.push('0.0.11');
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(99)), false);
+  fixture.github.rest.repos.compareCommitsWithBasehead = async params => {
+    assert.equal(params.basehead, `${sha(99)}...${sha(100)}`);
+    return { data: { status: 'ahead', files: [{ filename: 'docs/later.md' }] } };
+  };
+  assert.equal(await mainRequiresImages(fixture.github, fixture.context.repo, sha(100)), false);
+});
+
+test('image planning cannot be excluded by GitHub path truncation', () => {
+  const workflow = readFileSync(new URL('../workflows/cd-images.yaml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /^    paths:/m);
+  assert.match(workflow, /pull_request:\n/);
+  assert.match(workflow, /push:\n    branches: \[main\]/);
 });
 
 import cleanup from './image-cleanup.mjs';

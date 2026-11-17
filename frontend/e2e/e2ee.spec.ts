@@ -15,7 +15,8 @@ import {
  *
  *   1. 初回設定（1 台目。パスキーのスロットとリカバリーキー）
  *   2. 解錠（2 台目。リカバリーキー）
- *   3. 暗号化 DM の送受信（4 台すべてで復号できる）
+ *   3. 暗号化 DM の送受信（4 台すべてで復号できる）。タブを開き直しても、自分の別の端末のメッセージが
+ *      「未検証の送信者」にならない（受け取ったときに確かめられなかった鍵も、あとで判定し直す）
  *   4. 絵文字 SAS 検証（#368。Alice の 1 台目と Bob の 1 台目）
  *   5. 失効（Alice の 1 台目が、パスキーで SSSS を開け直して 2 台目を失効する）
  *   6. 退出（Bob が DM を退出したあとのメッセージは、Bob の端末に鍵を配らない）
@@ -416,11 +417,50 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     // 以降の SAS、失効、退出は 2 人 × 2 端末で確かめるので、3 台目は閉じる（登録した端末は残る）。
     await b3.context.close();
 
+    // 開き直し。送る側（Alice の 1 台目）を開き直すと、送信用の Megolm セッションを作り直して配る。
+    // 受ける側（2 台目）は、その鍵を受け取るときに送信端末を確かめられなかった（古い版の画面、解錠の
+    // 途中など）。ここでは keys/query から署名を抜いて、その状態を作る。開き直したあとは、判定し直して
+    // 「未検証の送信者」が消える（docs/e2ee.md の「受信時の検証」）。
+    const keysQuery = "**/api/e2ee/keys/query";
+    await a2.context.route(keysQuery, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: { ...body, signatures: [] } });
+    });
+    await a1.page.reload();
+    await hideDevtools(a1.page);
+    await expectDecrypted(a1, fromBob);
+    const afterReload = secret("afterreload");
+    await send(a1, afterReload);
+    await expectDecrypted(a2, afterReload);
+    await expect(a2.page.getByText("未検証の送信者", { exact: true })).toHaveCount(1);
+    await a2.page.screenshot({ path: testInfo.outputPath("alice-2-03-unverified.png") });
+    await a2.context.unroute(keysQuery);
+    // 受ける側を開き直す（画面を離れて、もう一度開く）。
+    await a2.page.goto("about:blank");
+    await openChannel(a2, dmId);
+    await expectDecrypted(a2, afterReload);
+    await expectDecrypted(a2, fromAlice);
+    await expect(a2.page.getByText("未検証の送信者", { exact: true })).toHaveCount(0);
+    // もう一度開き直しても、検証済みのまま（判定し直した結果を保存した）。
+    await a2.page.reload();
+    await hideDevtools(a2.page);
+    await expectDecrypted(a2, afterReload);
+    await expect(a2.page.getByText("未検証の送信者", { exact: true })).toHaveCount(0);
+    await a2.page.screenshot({ path: testInfo.outputPath("alice-2-03-reopened.png") });
+
     // 4. 絵文字 SAS 検証（Alice の 1 台目 → Bob）。Bob の端末すべてに要求が届き、1 台目で受け入れる。
+    // 「検証する」を押すと QR を先に出す。その下の「絵文字で検証する」を選ぶと、Bob が受け入れたときに
+    // 絵文字の検証を始める（QR の読み取りは QrCodeScanner.browser.test.tsx と sasController.test.ts）。
     await openSettings(a1, "devices");
     const bobRow = a1.page.getByRole("listitem").filter({ hasText: bob.name });
     await expect(bobRow).toBeVisible({ timeout: 60_000 });
-    await bobRow.getByRole("button", { name: "絵文字で検証" }).click();
+    await bobRow.getByRole("button", { name: "検証する" }).click();
+    await expect(a1.page.getByRole("img", { name: "検証の QR コード" })).toBeVisible({
+      timeout: 60_000,
+    });
+    await a1.page.screenshot({ path: testInfo.outputPath("alice-1-04-qr.png") });
+    await a1.page.getByRole("button", { name: "絵文字で検証する" }).click();
     await expect(b1.page.getByText(`${alice.name} さんが検証を求めています`)).toBeVisible({
       timeout: 60_000,
     });
@@ -478,7 +518,11 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     await a1.page.getByRole("checkbox").first().check();
     await a1.page.getByRole("radio", { name: /端末だけ/ }).check();
     await a1.page.getByLabel("AuthZ でセッションとサービス接続を停止した").check();
-    await a1.page.getByRole("button", { name: "次へ" }).click();
+    // 初期ツアーにも「次へ」があるため、実際の設定画面の操作に限定する。
+    await a1.page
+      .getByRole("region", { name: "Zoo設定", exact: true })
+      .getByRole("button", { name: "次へ", exact: true })
+      .click();
     await a1.page.getByRole("button", { name: "パスキーで解錠" }).click();
     await a1.page.getByRole("button", { name: "失効を実行" }).click();
     await expect(a1.page.getByText("失効が終わりました。")).toBeVisible({ timeout: 120_000 });
@@ -547,8 +591,8 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
       const [userId, epoch, sessionId] = row.split("|");
       return { userId: userId!, epoch: Number(epoch), sessionId: sessionId! };
     });
-    expect(rows).toHaveLength(5);
-    const [, , , beforeLeave, last] = rows;
+    expect(rows).toHaveLength(6);
+    const [beforeLeave, last] = rows.slice(-2);
     expect(beforeLeave!.userId).toBe(aliceId);
     expect(last!.userId).toBe(aliceId);
     expect(last!.epoch).toBeGreaterThan(beforeLeave!.epoch);
@@ -585,7 +629,14 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     // ダンプが空でなく、平文で保存する値（DM の ID、ユーザー名）は見つかることを先に確かめる。
     expect(dump).toContain(dmId);
     expect(dump).toContain(alice.preferredUsername);
-    for (const text of [fromAlice, fromBob, afterRevocation, replyAfterRevocation, afterLeave]) {
+    for (const text of [
+      fromAlice,
+      fromBob,
+      afterReload,
+      afterRevocation,
+      replyAfterRevocation,
+      afterLeave,
+    ]) {
       expect(dump, `DB に平文 ${text} が残っている`).not.toContain(text);
     }
   } catch (error) {
@@ -599,5 +650,58 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
   } finally {
     // 途中で落ちたときに、元の失敗を後片付けの失敗で隠さない。
     for (const device of devices) await device.context.close().catch(() => undefined);
+  }
+});
+
+test("暗号ストアのファイルだけが消えたら、再読み込みで前の端末を消し、端末は 1 台のまま", async ({
+  browser,
+}) => {
+  const carol: MockUser = {
+    sub: `e2ee-carol-${runId}`,
+    preferredUsername: `carol${runId}`,
+    name: `Carol ${runId}`,
+    email: `carol-${runId}@example.com`,
+  };
+  const device = await openDevice(browser, "carol-1", carol);
+  try {
+    await login(device);
+    // ログインのあとに、端末が自動で登録される。
+    await expect
+      .poll(() => devicesOf(userIdOf(carol)).filter((row) => !row.deleted).length, {
+        timeout: 60_000,
+      })
+      .toBe(1);
+    const carolId = userIdOf(carol);
+    const [first] = devicesOf(carolId);
+
+    // アプリを閉じて（Worker と Web Locks を手放して）から、OPFS の暗号ストアのファイルだけを消す。
+    // 保存鍵を包む鍵と、今の端末の記録（IndexedDB `zoo-crypto-keys`）は残る。Safari が OPFS だけを
+    // 失ったときと同じ状態。
+    await device.page.goto("/manifest.webmanifest");
+    const removed = await device.page.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const names: string[] = [];
+      for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
+        if (name.startsWith("zoo-crypto-")) names.push(name);
+      }
+      for (const name of names) await root.removeEntry(name);
+      return names;
+    });
+    expect(removed.some((name) => name.endsWith(".sqlite"))).toBe(true);
+
+    // 再読み込みで新しい端末を作り、記録にあった前の端末を削除する。
+    await device.page.goto("/");
+    await hideDevtools(device.page);
+    await expect
+      .poll(() => devicesOf(carolId), { timeout: 60_000 })
+      .toEqual([
+        { deviceId: first!.deviceId, deleted: true },
+        { deviceId: expect.any(String), deleted: false },
+      ]);
+    const live = devicesOf(carolId).filter((row) => !row.deleted);
+    expect(live).toHaveLength(1);
+    expect(live[0]!.deviceId).not.toBe(first!.deviceId);
+  } finally {
+    await device.context.close();
   }
 });

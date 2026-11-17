@@ -1,16 +1,23 @@
-//! 他のユーザーの絵文字 SAS 検証（#368。docs/e2ee.md の「絵文字 SAS 検証」）。
+//! 他のユーザーの絵文字 SAS 検証（#368。docs/e2ee.md の「絵文字 SAS 検証」）と、QR コードによる検証
+//! （docs/e2ee.md の「QR コードによる検証」）。
 //!
 //! Matrix の [SAS（`m.sas.v1`）](https://spec.matrix.org/latest/client-server-api/#short-authentication-string-sas-verification)
-//! を、Olm で暗号化した to-device メッセージで行う。メッセージの形と名前（`m.key.verification.*`）は
-//! Matrix と同じ。zoo では次のように絞る。
+//! と [QR コードによる検証](https://spec.matrix.org/latest/client-server-api/#qr-code-verification)
+//! （`m.qr_code.show.v1`、`m.qr_code.scan.v1`、`m.reciprocate.v1`）を、Olm で暗号化した to-device
+//! メッセージで行う。メッセージの形と名前（`m.key.verification.*`）は Matrix と同じ。zoo では次のように絞る。
 //!
-//! - 検証できるのは他のユーザーだけ（自分の端末どうしの検証は持たない）。
-//! - 要求（`request`）を送った側が `start` を送る。受けた側は `ready` を返すだけ。
+//! - 検証できるのは他のユーザーだけ（自分の端末どうしの検証は持たない。QR の方式も `0x00` だけ）。
+//! - 相手が QR に対応していなければ（#368 のクライアント）、要求（`request`）を送った側が、`ready` を
+//!   受けてすぐに SAS の `start` を送る。相手も対応していれば、利用者が絵文字を選んだ端末
+//!   （[`SasVerification::start_sas`]）か、相手の QR を読み取った端末（[`SasVerification::scan_qr_code`]）が
+//!   `start` を送る。
 //! - 方式は `curve25519-hkdf-sha256`、`sha256`、`hkdf-hmac-sha256.v2`、絵文字（`emoji`）だけ。
 //! - 相手の端末は、サーバーの今のマスター鍵から自己署名鍵を経て署名をたどれるものだけ
 //!   （[`verification_devices`]）。MAC で確かめるのは、端末の署名鍵とマスター鍵の 2 つ。
-//! - 双方が相手の MAC を確かめて `done` を送り合ったら検証済み（[`SasPhase::Done`]）。そのあと、
-//!   相手のマスター鍵にユーザー署名鍵で署名する（[`SasVerification::sign_master_key`]）。
+//! - 双方が相手の MAC を確かめて `done` を送り合ったら検証済み（[`SasPhase::Done`]）。QR では、表示した
+//!   側は利用者が「読み取った」と答えたとき（[`SasVerification::confirm_qr_scanned`]）、読み取った側は
+//!   表示した側の `done` を受けたときに検証済み。そのあと、相手のマスター鍵にユーザー署名鍵で署名する
+//!   （[`SasVerification::sign_master_key`]）。
 //!
 //! このモジュールは I/O を持たない。受け取ったメッセージ（[`VerificationMessage`]）を渡すと、
 //! 送るメッセージ（[`VerificationOutgoing`]）を返す。暗号化は
@@ -20,8 +27,9 @@
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use vodozemac::sas::{EstablishedSas, Mac, Sas, SasBytes};
-use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, base64_encode};
+use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, base64_decode, base64_encode};
 
+use crate::attachment::constant_time_eq;
 use crate::cross_signing::{SignatureCheck, check_signature};
 use crate::device::{DeviceAccount, new_uuid_v4, validate_uuid};
 use crate::megolm::check_safe_integer;
@@ -62,6 +70,19 @@ pub const VERIFICATION_TYPES: [&str; 8] = [
 
 /// 検証の方式。
 pub const SAS_METHOD: &str = "m.sas.v1";
+/// 自分の QR を相手に読み取ってもらえる。
+pub const QR_SHOW_METHOD: &str = "m.qr_code.show.v1";
+/// 相手の QR を読み取れる。
+pub const QR_SCAN_METHOD: &str = "m.qr_code.scan.v1";
+/// QR を読み取った側が送る `start` の方式（`m.qr_code.*` に対応する端末は、これにも対応する）。
+pub const RECIPROCATE_METHOD: &str = "m.reciprocate.v1";
+/// `request` と `ready` の `methods` に入れる、この端末が対応する方式。
+const OWN_METHODS: [&str; 4] = [
+    QR_SHOW_METHOD,
+    QR_SCAN_METHOD,
+    RECIPROCATE_METHOD,
+    SAS_METHOD,
+];
 const KEY_AGREEMENT_PROTOCOL: &str = "curve25519-hkdf-sha256";
 const HASH: &str = "sha256";
 const MAC_METHOD: &str = "hkdf-hmac-sha256.v2";
@@ -72,6 +93,17 @@ const SAS_EMOJI: &str = "emoji";
 pub const VERIFICATION_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// 要求の `timestamp` がこれ（ミリ秒）より先の時刻なら受け付けない（Matrix と同じ 5 分）。
 pub const VERIFICATION_MAX_CLOCK_SKEW_MS: u64 = 5 * 60 * 1000;
+
+/// QR の先頭（Matrix と同じ）。
+const QR_PREFIX: &[u8] = b"MATRIX";
+/// QR の版（Matrix と同じ `0x02`）。
+const QR_VERSION: u8 = 0x02;
+/// QR の方式：他のユーザーの検証（Matrix の `0x00`）。自分の端末どうしの `0x01`、`0x02` は持たない。
+const QR_MODE_VERIFYING_ANOTHER_USER: u8 = 0x00;
+/// QR に入れる共有の秘密の長さ（バイト）。
+const QR_SECRET_LEN: usize = 16;
+/// 受け付ける共有の秘密の最小の長さ（Matrix と同じ 8 バイト）。
+const QR_MIN_SECRET_LEN: usize = 8;
 
 /// `m.key.verification.cancel` の `code`。
 pub mod cancel_code {
@@ -93,6 +125,79 @@ pub mod cancel_code {
     pub const MISMATCHED_COMMITMENT: &str = "m.mismatched_commitment";
     /// 利用者が、絵文字が一致しないと答えた。
     pub const MISMATCHED_SAS: &str = "m.mismatched_sas";
+}
+
+/// 相手の QR から読み取ったもの（Matrix の QR の形。方式は `0x00` だけ）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QrCodeData {
+    /// `transaction_id`。
+    pub transaction_id: String,
+    /// 表示した側の、自分のマスター鍵。
+    pub their_master_key: Ed25519PublicKey,
+    /// 表示した側が見ている、読み取る側のマスター鍵。
+    pub our_master_key: Ed25519PublicKey,
+    /// 共有の秘密。
+    pub secret: Vec<u8>,
+}
+
+impl QrCodeData {
+    /// QR のバイト列を読む。形が正しくない、版か方式が違う、共有の秘密が 8 バイトより短いときは
+    /// [`CryptoError::InvalidPayload`]。
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, CryptoError> {
+        let invalid = |what: &str| CryptoError::InvalidPayload(format!("QR コード：{what}"));
+        let rest = bytes
+            .strip_prefix(QR_PREFIX)
+            .ok_or_else(|| invalid("先頭が MATRIX ではありません"))?;
+        let [version, mode, len_hi, len_lo, rest @ ..] = rest else {
+            return Err(invalid("短すぎます"));
+        };
+        if *version != QR_VERSION {
+            return Err(invalid("対応していない版です"));
+        }
+        if *mode != QR_MODE_VERIFYING_ANOTHER_USER {
+            return Err(invalid("他のユーザーの検証の QR ではありません"));
+        }
+        let len = usize::from(u16::from_be_bytes([*len_hi, *len_lo]));
+        if rest.len() < len + 64 + QR_MIN_SECRET_LEN {
+            return Err(invalid("短すぎます"));
+        }
+        let (txn, rest) = rest.split_at(len);
+        let transaction_id = std::str::from_utf8(txn)
+            .map_err(|_| invalid("transaction_id が UTF-8 ではありません"))?
+            .to_owned();
+        let (key1, rest) = rest.split_at(32);
+        let (key2, secret) = rest.split_at(32);
+        let key = |bytes: &[u8]| {
+            let bytes: [u8; 32] = bytes.try_into().expect("32 バイトに切った");
+            Ed25519PublicKey::from_slice(&bytes).map_err(|_| invalid("鍵が正しくありません"))
+        };
+        Ok(Self {
+            transaction_id,
+            their_master_key: key(key1)?,
+            our_master_key: key(key2)?,
+            secret: secret.to_vec(),
+        })
+    }
+}
+
+/// QR のバイト列（Matrix の形。方式は `0x00`）。
+fn qr_code_bytes(
+    txn_id: &str,
+    own_master: &Ed25519PublicKey,
+    their_master: &Ed25519PublicKey,
+    secret: &[u8],
+) -> Vec<u8> {
+    let len = u16::try_from(txn_id.len()).expect("transaction_id は UUID");
+    let mut bytes = Vec::with_capacity(QR_PREFIX.len() + 4 + txn_id.len() + 64 + secret.len());
+    bytes.extend_from_slice(QR_PREFIX);
+    bytes.push(QR_VERSION);
+    bytes.push(QR_MODE_VERIFYING_ANOTHER_USER);
+    bytes.extend_from_slice(&len.to_be_bytes());
+    bytes.extend_from_slice(txn_id.as_bytes());
+    bytes.extend_from_slice(own_master.as_bytes());
+    bytes.extend_from_slice(their_master.as_bytes());
+    bytes.extend_from_slice(secret);
+    bytes
 }
 
 /// 受信時の検証（手順 1〜3）を通った、SAS の検証のメッセージ
@@ -134,16 +239,32 @@ pub enum SasPhase {
     Requested,
     /// 相手から要求を受けた。受け入れるか断るかを利用者に聞く。
     Incoming,
+    /// 双方が受け入れた。QR を出し、QR を読み取るか、絵文字で検証するかを利用者に選んでもらう
+    /// （相手も QR に対応しているときだけ）。
+    ChooseMethod,
     /// 受け入れた。鍵を交換している。
     Exchanging,
     /// 絵文字を出し、一致するかを利用者に聞く。
     Compare,
     /// 一致すると答えた。相手の確認を待っている。
     Confirmed,
+    /// 相手の QR を読み取り、`start` を送った。相手の確認（`done`）を待っている。
+    QrScanned,
+    /// 相手がこの端末の QR を読み取った（共有の秘密が合った）。相手の端末で読み取ったかを利用者に聞く。
+    QrConfirm,
     /// 双方が確かめた。検証済み。
     Done,
     /// 取りやめた（[`SasVerification::cancellation`]）。
     Cancelled,
+}
+
+/// 検証に使った方式（`start` を送るか受けたあと）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationMethod {
+    /// 絵文字 SAS（`m.sas.v1`）。
+    Sas,
+    /// QR コード（`m.reciprocate.v1`）。
+    QrCode,
 }
 
 /// 取りやめた理由。
@@ -288,18 +409,34 @@ enum State {
         commitment: String,
     },
     Compare(Box<Compare>),
+    /// 相手の QR を読み取って `start`（`m.reciprocate.v1`）を送り、相手の `done` を待っている。
+    QrScanned,
+    /// 相手がこの端末の QR を読み取った。利用者の答えを待っている。
+    QrReciprocated,
     Done,
     Cancelled(SasCancellation),
     /// 状態を移す途中（外からは見えない）。
     Transition,
 }
 
-/// 1 つの SAS の検証（1 つの `transaction_id`）。
+/// 1 つの検証（1 つの `transaction_id`）。絵文字 SAS と QR のどちらでも進められる。
 pub struct SasVerification {
     txn_id: String,
     own: VerificationIdentity,
     their_user_id: String,
     we_requested: bool,
+    /// この端末が `start` を送った（SAS の `info` の順を決める）。
+    we_started: bool,
+    /// 相手が `request`（受けた側）か `ready`（要求した側）で示した方式。要求した側は `ready` まで空。
+    their_methods: Vec<String>,
+    /// この端末の QR に入れる、相手のマスター鍵（要求を送った、または受けたときの `keys/query`）。
+    qr_their_master: Ed25519PublicKey,
+    /// この端末の QR の共有の秘密。
+    qr_secret: [u8; QR_SECRET_LEN],
+    /// 要求した側の利用者が、相手の受け入れより先に絵文字を選んだ（`ready` を受けたら SAS を始める）。
+    sas_chosen: bool,
+    /// `start` を送るか受けて決まった方式。
+    method: Option<VerificationMethod>,
     /// 要求を送った相手の端末（要求した側だけ）。
     requested_devices: Vec<DeviceKeys>,
     /// 検証の相手の端末（要求した側は `ready` を受けてから決まる）。
@@ -336,7 +473,7 @@ impl SasVerification {
                 "自分自身は SAS で検証できません".into(),
             ));
         }
-        let (_, devices) = verification_devices(snapshot, their_user_id)?;
+        let (their_master, devices) = verification_devices(snapshot, their_user_id)?;
         if devices.is_empty() {
             return Err(CryptoError::Verification(format!(
                 "{their_user_id} に検証できる端末がありません"
@@ -348,7 +485,7 @@ impl SasVerification {
             event_type: VERIFICATION_REQUEST_TYPE,
             content: json!({
                 "from_device": own.device_id,
-                "methods": [SAS_METHOD],
+                "methods": OWN_METHODS,
                 "timestamp": now_ms,
                 "transaction_id": txn_id,
             }),
@@ -359,6 +496,12 @@ impl SasVerification {
                 own,
                 their_user_id: their_user_id.to_owned(),
                 we_requested: true,
+                we_started: false,
+                their_methods: Vec::new(),
+                qr_their_master: their_master,
+                qr_secret: new_qr_secret(),
+                sas_chosen: false,
+                method: None,
                 requested_devices: devices,
                 peer: None,
                 started_at_ms: now_ms,
@@ -427,6 +570,15 @@ impl SasVerification {
             own,
             their_user_id: message.sender_user_id.clone(),
             we_requested: false,
+            we_started: false,
+            their_methods: string_list(content, "methods")
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            qr_their_master: peer.master_key,
+            qr_secret: new_qr_secret(),
+            sas_chosen: false,
+            method: None,
             requested_devices: Vec::new(),
             peer: Some(peer),
             // 期限は受け取った時刻ではなく、要求の時刻から数える（Matrix と同じく、要求の
@@ -466,6 +618,7 @@ impl SasVerification {
         match &self.state {
             State::Requested => SasPhase::Requested,
             State::Incoming => SasPhase::Incoming,
+            State::Ready if self.their_supports(RECIPROCATE_METHOD) => SasPhase::ChooseMethod,
             State::Ready
             | State::Started { .. }
             | State::Accepted { .. }
@@ -473,6 +626,8 @@ impl SasVerification {
             | State::Transition => SasPhase::Exchanging,
             State::Compare(c) if c.confirmed => SasPhase::Confirmed,
             State::Compare(_) => SasPhase::Compare,
+            State::QrScanned => SasPhase::QrScanned,
+            State::QrReciprocated => SasPhase::QrConfirm,
             State::Done => SasPhase::Done,
             State::Cancelled(_) => SasPhase::Cancelled,
         }
@@ -519,9 +674,122 @@ impl SasVerification {
             VERIFICATION_READY_TYPE,
             json!({
                 "from_device": self.own.device_id,
-                "methods": [SAS_METHOD],
+                "methods": OWN_METHODS,
                 "transaction_id": self.txn_id,
             }),
+        )])
+    }
+
+    /// `start` を送るか受けて決まった方式。まだ決まっていなければ `None`。
+    pub fn method(&self) -> Option<VerificationMethod> {
+        self.method
+    }
+
+    /// 相手に読み取ってもらう QR のバイト列（Matrix の形）。相手が QR を読み取れないとき、`start` を
+    /// 送るか受けたあと、利用者が絵文字を選んだあとは `None`。
+    ///
+    /// 要求した側は、相手の `ready` が届く前から出す（相手がまだ方式を示していない）。受けた側は、
+    /// 受け入れてから出す。
+    pub fn qr_code(&self) -> Option<Vec<u8>> {
+        let shown = match self.state {
+            State::Requested => !self.sas_chosen,
+            State::Ready => self.their_supports(QR_SCAN_METHOD),
+            _ => false,
+        };
+        shown.then(|| {
+            qr_code_bytes(
+                &self.txn_id,
+                &self.own.master_key,
+                &self.qr_their_master,
+                &self.qr_secret,
+            )
+        })
+    }
+
+    /// 相手の QR を読み取れる段階か（双方が受け入れ、相手が QR を出せる）。
+    pub fn can_scan_qr_code(&self) -> bool {
+        matches!(self.state, State::Ready) && self.their_supports(QR_SHOW_METHOD)
+    }
+
+    /// 利用者が絵文字を選べる段階か。
+    pub fn can_start_sas(&self) -> bool {
+        match self.state {
+            State::Requested => !self.sas_chosen,
+            // 相手が #368 のクライアントなら、相手（要求した側）が `start` を送るので待つ。
+            State::Ready => {
+                self.their_supports(SAS_METHOD)
+                    && (self.we_requested || self.their_supports(RECIPROCATE_METHOD))
+            }
+            _ => false,
+        }
+    }
+
+    /// 利用者が絵文字で検証することを選んだ。SAS の `start` を送る。要求した側が、相手の受け入れより
+    /// 先に選んだときは、`ready` が届いてから送る。
+    pub fn start_sas(&mut self) -> Result<Vec<VerificationOutgoing>, CryptoError> {
+        if !self.can_start_sas() {
+            return Err(CryptoError::Verification(
+                "絵文字の検証を始められる段階ではありません".into(),
+            ));
+        }
+        if matches!(self.state, State::Requested) {
+            self.sas_chosen = true;
+            return Ok(Vec::new());
+        }
+        Ok(vec![self.send_sas_start()])
+    }
+
+    /// 相手の QR を読み取った。`bytes` は QR のバイト列。
+    ///
+    /// - 形が正しくない、別の検証（`transaction_id`）の QR、読み取れる段階でないときは、取りやめずに
+    ///   [`CryptoError::InvalidPayload`] か [`CryptoError::Verification`] を返す（読み直してもらう）。
+    /// - QR の鍵が、`keys/query` で見ている相手のマスター鍵か、自分のマスター鍵と違えば、
+    ///   `m.key_mismatch` で取りやめる（[`SasPhase::Cancelled`]）。
+    /// - 合えば `start`（`m.reciprocate.v1`）を送り、相手の `done` を待つ（[`SasPhase::QrScanned`]）。
+    pub fn scan_qr_code(&mut self, bytes: &[u8]) -> Result<Vec<VerificationOutgoing>, CryptoError> {
+        if !self.can_scan_qr_code() {
+            return Err(CryptoError::Verification(
+                "QR を読み取れる段階ではありません".into(),
+            ));
+        }
+        let data = QrCodeData::from_bytes(bytes)?;
+        if data.transaction_id != self.txn_id {
+            return Err(CryptoError::Verification("別の検証の QR コードです".into()));
+        }
+        let Some(peer) = &self.peer else {
+            return Err(CryptoError::Verification(
+                "相手の端末が決まっていません".into(),
+            ));
+        };
+        self.method = Some(VerificationMethod::QrCode);
+        if data.their_master_key != peer.master_key || data.our_master_key != self.own.master_key {
+            return Ok(self.cancel_with(cancel_code::KEY_MISMATCH));
+        }
+        self.we_started = true;
+        self.state = State::QrScanned;
+        Ok(vec![self.to_peer(
+            VERIFICATION_START_TYPE,
+            json!({
+                "from_device": self.own.device_id,
+                "method": RECIPROCATE_METHOD,
+                "secret": base64_encode(&data.secret),
+                "transaction_id": self.txn_id,
+            }),
+        )])
+    }
+
+    /// 相手がこの端末の QR を読み取り（[`SasPhase::QrConfirm`]）、利用者が「相手の端末で読み取った」と
+    /// 答えた。`done` を送り、検証済みにする。読み取っていないと答えたときは [`cancel`](Self::cancel)。
+    pub fn confirm_qr_scanned(&mut self) -> Result<Vec<VerificationOutgoing>, CryptoError> {
+        if !matches!(self.state, State::QrReciprocated) {
+            return Err(CryptoError::Verification(
+                "相手が QR を読み取った段階ではありません".into(),
+            ));
+        }
+        self.state = State::Done;
+        Ok(vec![self.to_peer(
+            VERIFICATION_DONE_TYPE,
+            json!({ "transaction_id": self.txn_id }),
         )])
     }
 
@@ -680,24 +948,25 @@ impl SasVerification {
             )];
         };
         self.peer = Some(peer);
-        if !string_list(content, "methods").contains(&SAS_METHOD) {
+        self.their_methods = string_list(content, "methods")
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let qr_usable = self.their_supports(RECIPROCATE_METHOD)
+            && (self.their_supports(QR_SCAN_METHOD) || self.their_supports(QR_SHOW_METHOD));
+        if !self.their_supports(SAS_METHOD) && !qr_usable {
             return self.cancel_with(cancel_code::UNKNOWN_METHOD);
         }
-        let sas = Sas::new();
-        let start = json!({
-            "from_device": self.own.device_id,
-            "method": SAS_METHOD,
-            "key_agreement_protocols": [KEY_AGREEMENT_PROTOCOL],
-            "hashes": [HASH],
-            "message_authentication_codes": [MAC_METHOD],
-            "short_authentication_string": [SAS_EMOJI],
-            "transaction_id": self.txn_id,
-        });
-        self.state = State::Started {
-            sas,
-            start: start.clone(),
-        };
-        let mut out = vec![self.to_peer(VERIFICATION_START_TYPE, start)];
+        self.state = State::Ready;
+        let mut out = Vec::new();
+        // 相手が QR に対応していない（#368 のクライアント）か、利用者がすでに絵文字を選んだなら、
+        // すぐに SAS を始める。そうでなければ、利用者が方式を選ぶか、相手が `start` を送るのを待つ。
+        if self.sas_chosen || !self.their_supports(RECIPROCATE_METHOD) {
+            if !self.their_supports(SAS_METHOD) {
+                return self.cancel_with(cancel_code::UNKNOWN_METHOD);
+            }
+            out.push(self.send_sas_start());
+        }
         // 要求を送ったほかの端末には、別の端末が受け入れたことを知らせる。
         let others: Vec<DeviceKeys> = self
             .requested_devices
@@ -712,15 +981,43 @@ impl SasVerification {
     }
 
     fn on_start(&mut self, content: &Value) -> Vec<VerificationOutgoing> {
-        if self.we_requested || !matches!(self.state, State::Ready) {
-            return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
-        }
         let peer_device = self.peer.as_ref().map(|p| p.device.device_id.as_str());
         if content.get("from_device").and_then(Value::as_str) != peer_device {
             return self.cancel_with(cancel_code::INVALID_MESSAGE);
         }
-        if content.get("method").and_then(Value::as_str) != Some(SAS_METHOD)
-            || !string_list(content, "key_agreement_protocols").contains(&KEY_AGREEMENT_PROTOCOL)
+        let method = content.get("method").and_then(Value::as_str);
+        match (&self.state, method) {
+            (State::Ready, Some(RECIPROCATE_METHOD)) => return self.on_reciprocate(content),
+            // 双方が同時に相手の QR を読み取った。Matrix の検証の枠組みの規則（同じ方式の `start` が
+            // ぶつかったら、`user_id` が大きい側の `start` を無視し、小さい側だけが送ったものとして扱う）
+            // に従う。相手の方が大きければ、相手が自分の `start` を受けて `done` を返すので、無視する。
+            // 自分の方が大きければ、自分の読み取りを捨て、相手が自分の QR を読み取ったものとして扱う。
+            (State::QrScanned, Some(RECIPROCATE_METHOD)) => {
+                if self.their_user_id.as_str() > self.own.user_id.as_str() {
+                    return Vec::new();
+                }
+                // 読み取る前は自分の QR を出していた（相手が QR を読み取れるなら、`qr_code` が返していた）。
+                if !self.their_supports(QR_SCAN_METHOD) {
+                    return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
+                }
+                return self.accept_reciprocate(content);
+            }
+            (State::Ready, Some(SAS_METHOD)) => {}
+            // 双方が同時に SAS の `start` を送った。Matrix と同じく、`user_id` が小さい側の `start` を
+            // 使う。相手の方が大きければ、相手が自分の `start` を捨てて `accept` を返すので、無視する。
+            (State::Started { .. }, Some(SAS_METHOD)) => {
+                if self.their_user_id.as_str() > self.own.user_id.as_str() {
+                    return Vec::new();
+                }
+            }
+            (State::Ready, _) => return self.cancel_with(cancel_code::UNKNOWN_METHOD),
+            _ => return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE),
+        }
+        // 相手が #368 のクライアントなら、`start` を送るのは要求した側（相手）だけ。
+        if self.we_requested && !self.their_supports(RECIPROCATE_METHOD) {
+            return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
+        }
+        if !string_list(content, "key_agreement_protocols").contains(&KEY_AGREEMENT_PROTOCOL)
             || !string_list(content, "hashes").contains(&HASH)
             || !string_list(content, "message_authentication_codes").contains(&MAC_METHOD)
             || !string_list(content, "short_authentication_string").contains(&SAS_EMOJI)
@@ -732,6 +1029,8 @@ impl SasVerification {
         };
         let sas = Sas::new();
         let commitment = commitment(&sas.public_key(), &canonical);
+        self.we_started = false;
+        self.method = Some(VerificationMethod::Sas);
         self.state = State::Accepted { sas };
         vec![self.to_peer(
             VERIFICATION_ACCEPT_TYPE,
@@ -844,6 +1143,14 @@ impl SasVerification {
     }
 
     fn on_done(&mut self) -> Vec<VerificationOutgoing> {
+        // QR を読み取った側：表示した側が確かめた。`done` を返して検証済みにする。
+        if matches!(self.state, State::QrScanned) {
+            self.state = State::Done;
+            return vec![self.to_peer(
+                VERIFICATION_DONE_TYPE,
+                json!({ "transaction_id": self.txn_id }),
+            )];
+        }
         let State::Compare(compare) = &mut self.state else {
             return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
         };
@@ -894,7 +1201,7 @@ impl SasVerification {
             .as_ref()
             .map(|p| p.device.device_id.as_str())
             .unwrap_or_default();
-        let (starter, accepter) = if self.we_requested {
+        let (starter, accepter) = if self.we_started {
             (
                 (self.own.user_id.as_str(), self.own.device_id.as_str()),
                 (self.their_user_id.as_str(), their_device),
@@ -915,6 +1222,61 @@ impl SasVerification {
             accepter_key.to_base64(),
             self.txn_id
         )
+    }
+
+    fn their_supports(&self, method: &str) -> bool {
+        self.their_methods.iter().any(|m| m == method)
+    }
+
+    /// SAS の `start` を作って送る（状態を [`State::Started`] にする）。
+    fn send_sas_start(&mut self) -> VerificationOutgoing {
+        let start = json!({
+            "from_device": self.own.device_id,
+            "method": SAS_METHOD,
+            "key_agreement_protocols": [KEY_AGREEMENT_PROTOCOL],
+            "hashes": [HASH],
+            "message_authentication_codes": [MAC_METHOD],
+            "short_authentication_string": [SAS_EMOJI],
+            "transaction_id": self.txn_id,
+        });
+        self.we_started = true;
+        self.method = Some(VerificationMethod::Sas);
+        self.state = State::Started {
+            sas: Sas::new(),
+            start: start.clone(),
+        };
+        self.to_peer(VERIFICATION_START_TYPE, start)
+    }
+
+    /// 相手がこの端末の QR を読み取った（`m.reciprocate.v1` の `start`）。共有の秘密と、相手の端末を
+    /// たどったマスター鍵が QR に入れた鍵と同じかを確かめ、利用者に聞く段階に進める。
+    fn on_reciprocate(&mut self, content: &Value) -> Vec<VerificationOutgoing> {
+        if self.qr_code().is_none() {
+            return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
+        }
+        self.accept_reciprocate(content)
+    }
+
+    /// `m.reciprocate.v1` の `start` の共有の秘密と、相手の端末をたどったマスター鍵が、この端末の QR に
+    /// 入れたものと同じかを確かめる。同じなら、利用者に聞く段階（[`State::QrReciprocated`]）に進める。
+    fn accept_reciprocate(&mut self, content: &Value) -> Vec<VerificationOutgoing> {
+        let Some(secret) = content
+            .get("secret")
+            .and_then(Value::as_str)
+            .and_then(|s| base64_decode(s.trim_end_matches('=')).ok())
+        else {
+            return self.cancel_with(cancel_code::INVALID_MESSAGE);
+        };
+        let same_master = self
+            .peer
+            .as_ref()
+            .is_some_and(|peer| peer.master_key == self.qr_their_master);
+        if !constant_time_eq(&secret, &self.qr_secret) || !same_master {
+            return self.cancel_with(cancel_code::KEY_MISMATCH);
+        }
+        self.method = Some(VerificationMethod::QrCode);
+        self.state = State::QrReciprocated;
+        Vec::new()
     }
 
     fn to_peer(&self, event_type: &'static str, content: Value) -> VerificationOutgoing {
@@ -955,6 +1317,12 @@ impl SasVerification {
         }
         vec![self.cancel_message(devices, code)]
     }
+}
+
+fn new_qr_secret() -> [u8; QR_SECRET_LEN] {
+    let mut secret = [0u8; QR_SECRET_LEN];
+    getrandom::fill(&mut secret).expect("OS かブラウザーの暗号用乱数を取れない");
+    secret
 }
 
 fn transaction_id(content: &Value) -> Result<&str, CryptoError> {

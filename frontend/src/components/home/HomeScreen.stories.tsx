@@ -302,6 +302,12 @@ export const Federated: Story = {
     const channel = canvas.getByRole("link", { name: "#general" });
     await expect(channel.parentElement?.querySelector("time")?.tagName).toBe("TIME");
     await expect(canvas.getAllByRole("link", { name: "#general" })).toHaveLength(1);
+    await expect(canvas.queryByText("元の投稿")).not.toBeInTheDocument();
+    const article = canvas.getByText("外部のフォロー先から届いた投稿です。").closest("article")!;
+    await userEvent.click(within(article).getByRole("button", { name: "投稿の操作" }));
+    const original = await screen.findByRole("menuitem", { name: /元の投稿/ });
+    await expect(original).toHaveAttribute("href", "https://social.example/notes/1");
+    await expect(original).toHaveAttribute("target", "_blank");
   }),
 };
 let crossPosted = false;
@@ -1240,7 +1246,6 @@ export const LiveWhileLoadingOlder: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
     await waitFor(() => expect(olderPageStarted).toBe(true));
     olderLive.broadcast("refresh");
-    await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2), { timeout: 10000 });
     releaseOlderPage?.();
     const root = canvasElement.querySelector<HTMLElement>("[data-home-scroll]")!;
     await waitFor(() =>
@@ -1251,6 +1256,7 @@ export const LiveWhileLoadingOlder: Story = {
     await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
     await waitFor(() => expect(retainedReloads).toBeGreaterThan(0), { timeout: 10000 });
     await expect(canvas.getByText(oldLivePost.content)).toBeInTheDocument();
+    await expect(olderControlLoads).toBe(1);
   }),
 };
 
@@ -2493,5 +2499,27 @@ export const OlderPageError: Story = {
     await fireEvent.scroll(root);
     await expect(canvas.getByRole("alert")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "過去の投稿を読む" })).toBeEnabled();
+  }),
+};
+
+export const PostWhileThreadLoading: Story = {
+  render: () => <NavigableHome />,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home/home-post/thread", async () => {
+          await delay("infinite");
+          return HttpResponse.json([]);
+        }),
+        ...homeHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText(/Homeから最初の公開投稿です/));
+    await canvas.findByRole("button", { name: "戻る" });
+    await expect(canvas.getByText(/Homeから最初の公開投稿です/)).toBeVisible();
+    await expect(canvas.queryByText("読み込み中…")).not.toBeInTheDocument();
   }),
 };

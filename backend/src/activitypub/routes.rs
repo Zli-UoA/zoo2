@@ -161,10 +161,11 @@ async fn outbox(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)) AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50",&[&id,page.before.as_deref().unwrap_or("")]).await?;
+    let mut rows=query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)) AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50",&[&id,page.before.as_deref().unwrap_or("")]).await?;
+    decorate_workspace_posts(&mut tx, &mut rows).await?;
     let mut items = vec![];
     for p in &rows {
-        let note = note_value(&with_workspace_emojis(&mut tx, p).await?)?;
+        let note = note_value(p)?;
         items.push(json!({"type":"Create","id":format!("{}#create",string(&note,"id")?),"actor":actor_id(&id)?,"published":p["created_at"],"to":note["to"],"cc":note["cc"],"object":note}));
     }
     let mut result = json!({"@context":CONTEXT,"type":"OrderedCollectionPage","id":format!("{url}?page=true{}",page.before.as_ref().map(|s|format!("&before={}",percent_encoding::utf8_percent_encode(s,percent_encoding::NON_ALPHANUMERIC))).unwrap_or_default()),"partOf":url,"orderedItems":items});

@@ -5,6 +5,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.*
@@ -25,13 +27,17 @@ fun Modifier.nativeNavigation(
     role: String? = "link",
     busy: Boolean? = null,
     attributes: Map<String, String> = emptyMap(),
+    beforeNavigate: () -> Unit = {},
 ): Modifier {
     val app = LocalApp.current
+    val prepare by rememberUpdatedState(beforeNavigate)
     if (!navigationAllowed(url)) return this
     fun navigate(newTab: Boolean): Boolean {
         if (nativeSelectedText().isNotEmpty()) return false
-        if (!newTab && url.startsWith("/")) app.navigate(url)
-        else app.platform.action("open:${nativeAbsoluteUrl(url)}")
+        if (!newTab && url.startsWith("/")) {
+            prepare()
+            app.navigate(url)
+        } else app.platform.action("open:${nativeAbsoluteUrl(url)}")
         return true
     }
     val keyboard =
@@ -65,14 +71,21 @@ fun Modifier.nativeNavigation(
                         (!currentEvent.buttons.isPrimaryPressed && !(middle && role == "link"))
                 )
                     return@awaitEachGesture
-                var dragged = false
+                // A scrolling ancestor consumes the down that stops a fling in Main.
+                // Wait until Final before deciding whether this is a fresh tap.
+                val initialFinal = awaitPointerEvent(PointerEventPass.Final)
+                var dragged = initialFinal.changes.any { it.id == down.id && it.isConsumed }
+                val origin = down.position
                 while (true) {
                     // Main dispatch runs from descendants toward ancestors. A nested link
                     // therefore consumes its release before the containing notification row.
                     val event = awaitPointerEvent(PointerEventPass.Main)
                     val pointer = event.changes.find { it.id == down.id } ?: break
                     if (
-                        (pointer.position - down.position).getDistance() >
+                        (pointer.isConsumed &&
+                            (down.type == PointerType.Touch || pointer.position != pointer.previousPosition)) ||
+                        event.changes.count { it.pressed } > 1 ||
+                        (pointer.position - origin).getDistance() >
                             viewConfiguration.touchSlop
                     )
                         dragged = true
@@ -89,6 +102,13 @@ fun Modifier.nativeNavigation(
                             pointer.consume()
                         break
                     }
+                    // Scrolling ancestors consume movement after our Main pass.
+                    val finalEvent = awaitPointerEvent(PointerEventPass.Final)
+                    if (finalEvent.changes.any {
+                        it.id == down.id && it.isConsumed &&
+                            (down.type == PointerType.Touch || it.position != it.previousPosition)
+                    })
+                        dragged = true
                 }
             }
         }
@@ -100,7 +120,8 @@ fun NativeLink(
     modifier: Modifier = Modifier,
     busy: Boolean? = null,
     attributes: Map<String, String> = emptyMap(),
+    beforeNavigate: () -> Unit = {},
     content: @Composable () -> Unit,
 ) {
-    Box(modifier.nativeNavigation(url, busy = busy, attributes = attributes)) { content() }
+    Box(modifier.nativeNavigation(url, busy = busy, attributes = attributes, beforeNavigate = beforeNavigate)) { content() }
 }

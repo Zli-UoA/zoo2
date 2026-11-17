@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     kotlin("android")
@@ -20,6 +22,31 @@ android {
         require(Regex("[a-z0-9.-]+").matches(reauthHost)) { "zoo.android.reauthHost はホスト名にしてください" }
         manifestPlaceholders["reauthHost"] = reauthHost
         buildConfigField("String", "REAUTH_HOST", "\"$reauthHost\"")
+        // Firebase's public Android identifiers; service-account credentials belong on the server.
+        val firebaseDefaults = Properties().apply {
+            val config = file("firebase-public.properties")
+            if (config.isFile) config.inputStream().use { load(it) }
+        }
+        val firebaseKeys = mapOf(
+            "google_app_id" to "APP_ID",
+            "google_api_key" to "API_KEY",
+            "gcm_defaultSenderId" to "SENDER_ID",
+            "project_id" to "PROJECT_ID",
+        )
+        val firebaseEnvironment = firebaseKeys.mapValues { (_, key) ->
+            providers.environmentVariable("ZOO_ANDROID_FIREBASE_$key").orNull.orEmpty()
+        }
+        require(firebaseEnvironment.values.all { it.isBlank() } || firebaseEnvironment.values.all { it.isNotBlank() }) {
+            "Configure all four ZOO_ANDROID_FIREBASE_* environment overrides, or leave all unset"
+        }
+        val firebase = firebaseKeys.mapValues { (name, key) ->
+            if (firebaseEnvironment.values.any { it.isNotBlank() }) firebaseEnvironment.getValue(name)
+            else firebaseDefaults.getProperty("ZOO_ANDROID_FIREBASE_$key").orEmpty()
+        }
+        require(firebase.values.all { it.isEmpty() } || firebase.values.all { it.isNotEmpty() }) {
+            "Configure all four ZOO_ANDROID_FIREBASE_* identifiers, or leave all unset"
+        }
+        firebase.forEach { (name, value) -> resValue("string", name, value) }
     }
     buildFeatures {
         aidl = true
@@ -48,11 +75,13 @@ dependencies {
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+    implementation("com.google.firebase:firebase-messaging:24.1.1")
     implementation("com.caverock:androidsvg-aar:1.4")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("org.jetbrains.compose.material3:material3:1.9.0")
     implementation("io.ktor:ktor-client-okhttp:3.1.3")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")
     // E2EE の初回設定と解錠（#360）。パスキーの PRF は Credential Manager、再認証は Custom Tabs。
@@ -74,6 +103,8 @@ tasks.named("preBuild") { dependsOn(translations) }
 dependencies {
     testImplementation(kotlin("test-junit"))
     testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     testImplementation("io.ktor:ktor-client-mock:3.1.3")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }
@@ -98,3 +129,21 @@ val launcherIcon by
 android.sourceSets["main"].res.srcDir(layout.buildDirectory.dir("generated/launcherRes"))
 
 tasks.named("preBuild") { dependsOn(launcherIcon) }
+
+// Bundle the shared WebRTC engine; SIP and credentials stay on the backend.
+// frontend/build contains media-viewer build tools and is an input of buildMediaPreview.
+// Keep generated phone assets in this module so neither bundler consumes the other output.
+val phoneEngine = layout.buildDirectory.dir("generated/phone-engine")
+val buildAndroidPhone by tasks.registering(Exec::class) {
+    val frontend = rootDir.resolve("../frontend")
+    inputs.files(fileTree(frontend.resolve("src/android-phone")), fileTree(frontend.resolve("src/lib/sip")), fileTree(frontend.resolve("src/lib/call")), frontend.resolve("vite.android-phone.config.ts"), frontend.resolve("scripts/android-phone-smoke.mjs"), frontend.resolve("package.json"), frontend.resolve("pnpm-lock.yaml"))
+    outputs.dir(phoneEngine)
+    workingDir(frontend)
+    commandLine("pnpm", "build:android-phone")
+}
+val androidPhoneAssets by tasks.registering(Sync::class) {
+    dependsOn(buildAndroidPhone)
+    from(phoneEngine) { include("engine.js") }
+    into(layout.buildDirectory.dir("generated/assets/phone"))
+}
+tasks.named("preBuild") { dependsOn(androidPhoneAssets) }

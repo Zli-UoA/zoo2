@@ -11,18 +11,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/** 36px rail logo + 12px above and below. Callers add the shared 1px divider. */
+/** Shared header keyline and minimum height; callers add the divider. */
 @Composable
 fun PaneHeader(
     modifier: Modifier = Modifier,
-    horizontalPadding: Dp = 16.dp,
+    horizontalPadding: Dp = if (LocalTouchUi.current) AndroidDesign.headerInset else 16.dp,
     content: @Composable RowScope.() -> Unit,
 ) {
     val platform = LocalWebPlatform.current
     val tag = remember { "pane-header:${platform?.uuid().orEmpty()}" }
     Row(
-        modifier.fillMaxWidth().heightIn(min = if (LocalTouchUi.current) 64.dp else 60.dp)
-            .padding(horizontal = horizontalPadding, vertical = if (LocalTouchUi.current) 4.dp else 0.dp).semantics {
+        modifier.fillMaxWidth().heightIn(min = if (LocalTouchUi.current) AndroidDesign.headerMinHeight else 60.dp)
+            .padding(horizontal = horizontalPadding, vertical = if (LocalTouchUi.current) AndroidDesign.spaceSmall else 0.dp).semantics {
             testTag = tag
         },
         verticalAlignment = Alignment.CenterVertically,
@@ -44,13 +44,13 @@ fun ScreenHeader(
                 .background(
                     if (primaryIcon) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.secondaryContainer,
-                    RoundedCornerShape(10.dp),
+                    RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp),
                 ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 icon,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(if (LocalTouchUi.current) AndroidDesign.icon else 16.dp),
                 color =
                     if (primaryIcon) MaterialTheme.colorScheme.onPrimary
                     else MaterialTheme.colorScheme.onSecondaryContainer,
@@ -65,6 +65,8 @@ fun ScreenHeader(
                     )
                     .semantics { heading() },
                 weight = FontWeight.SemiBold,
+                size = if (LocalTouchUi.current) AndroidDesign.titleSize else androidx.compose.ui.unit.TextUnit.Unspecified,
+                lineHeight = if (LocalTouchUi.current) AndroidDesign.titleLineHeight else androidx.compose.ui.unit.TextUnit.Unspecified,
                 maxLines = 1,
             )
             description?.let { Text(it, small = true, muted = true, maxLines = 1) }

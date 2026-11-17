@@ -5,6 +5,8 @@ import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.client.plugins.timeout
+import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -52,6 +54,41 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
         return if (raw.isBlank()) JsonNull else json.parseToJsonElement(raw)
     }
 
+    /** Audio-call signaling is a call-owned stream, independent of screen visibility. */
+    suspend fun streamCall(channelId: String, sessionId: String, event: suspend (String, Row) -> Unit) =
+        streamEvents("/api/channels/${channelId.encodeURLPathPart()}/call/stream", HttpMethod.Get, mapOf("session_id" to sessionId), event)
+    suspend fun streamPhone(sessionId: String, event: suspend (String, Row) -> Unit) =
+        streamEvents("/api/phone/sessions/${sessionId.encodeURLPathPart()}/stream", HttpMethod.Post, emptyMap(), event)
+    private suspend fun streamEvents(path: String, method: HttpMethod, parameters: Map<String, String>, event: suspend (String, Row) -> Unit) {
+        val auth = platform.headers()
+        http.prepareRequest(endpoint(config.apiBaseUrl, path)) {
+            this.method = method
+            parameters.forEach { (key, value) -> parameter(key, value) }
+            headers { auth.forEach { (key, value) -> append(key, value) } }
+            timeout {
+                requestTimeoutMillis = io.ktor.client.plugins.HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                socketTimeoutMillis = 45_000
+            }
+        }.execute { response ->
+            if (response.status.value !in 200..299) throw ApiException(response.status.value)
+            val source = response.bodyAsChannel()
+            var name = "message"
+            val data = StringBuilder()
+            while (true) {
+                val line = source.readUTF8Line(65_536) ?: break
+                if (line.isEmpty()) {
+                    if (data.isNotEmpty()) event(name, json.parseToJsonElement(data.toString()).jsonObject)
+                    name = "message"; data.clear()
+                } else if (line.startsWith("event:")) name = line.substringAfter(':').trim()
+                else if (line.startsWith("data:")) {
+                    if (data.isNotEmpty()) data.append('\n')
+                    data.append(line.substringAfter(':').trimStart())
+                    check(data.length <= 65_536) { "Call event too large" }
+                }
+            }
+        }
+    }
+
     /**
      * 署名付きの URL（S3 の presign）に `bytes` を PUT する。認証ヘッダーは付けない（S3 に渡さないため）。
      * 暗号化した添付（#364）の暗号文を上げるのに使う。
@@ -83,11 +120,15 @@ class SyncedTable(
     private val params: Map<String, String> = emptyMap(),
     private val streamOptions: ShapeStreamOptions = ShapeStreamOptions(liveSse = true),
     private val synchronize: Boolean = true,
+    private val persist: Boolean = true,
 ) {
     private val tableScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val serverRows = MutableStateFlow<List<Row>>(emptyList())
     val replicatedRows: StateFlow<List<Row>> = serverRows.asStateFlow()
+    private val successfulSnapshot = MutableStateFlow<List<Row>?>(null)
+    /** Only committed network snapshots; cache loads, resets and failures never publish here. */
+    val synchronizedRows: StateFlow<List<Row>?> = successfulSnapshot.asStateFlow()
     private val optimistic = MutableStateFlow<Map<String, Row?>>(emptyMap())
     val optimisticChanges = optimistic.asStateFlow()
     val rows =
@@ -121,7 +162,7 @@ class SyncedTable(
                 return@launch
             }
             try {
-                platform.readCache(cacheKey)?.let { raw ->
+                (if (persist) platform.readCache(cacheKey) else null)?.let { raw ->
                     serverRows.value = json.parseToJsonElement(raw).jsonArray.map { it.jsonObject }
                     loading.value = false
                 }
@@ -173,7 +214,7 @@ class SyncedTable(
             launch {
                 for (rows in snapshots) {
                     try {
-                        platform.writeCache(cacheKey, JsonArray(rows).toString())
+                        if (persist) platform.writeCache(cacheKey, JsonArray(rows).toString())
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -183,6 +224,8 @@ class SyncedTable(
             }
             fun acceptSnapshot(rows: List<Row>) {
                 serverRows.value = rows
+                error.value = null
+                successfulSnapshot.value = rows.toList()
                 loading.value = false
                 snapshots.trySend(rows.toList())
             }
@@ -323,6 +366,10 @@ class Repository(
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
+
+    /** Read an existing subscription without starting a channel stream for an OS notification. */
+    fun cachedMessages(channelId: String): List<Row> =
+        dynamic["messages" to channelId]?.replicatedRows?.value.orEmpty()
 
     fun table(name: String, channelId: String = ""): SyncedTable =
         when (name) {

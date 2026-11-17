@@ -11,6 +11,7 @@ import {
   timelineEntryId,
   mergeTimelineWindow,
   countNewTimelineEntries,
+  visibleTimelineTail,
 } from "../../lib/homeTimeline";
 import {
   ActivityPubText,
@@ -45,8 +46,9 @@ import {
   ReplyIcon,
   Repeat2Icon,
   SmilePlusIcon,
+  ExternalLinkIcon,
 } from "lucide-react";
-import { createConfiguredApiClient } from "../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { THREADS_CHANGED } from "../../lib/electric/threads";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -190,8 +192,9 @@ function HomeScreenContent({
   }, [client]);
   const scheduleControls = useRef<() => void>(() => {});
   useEffect(() => {
-    const scheduler = coalescedRefresh(() =>
-      document.visibilityState === "hidden" ? undefined : loadControls(),
+    const scheduler = coalescedRefresh(
+      () => (document.visibilityState === "hidden" ? undefined : loadControls()),
+      60_000,
     );
     scheduleControls.current = scheduler.request;
     scheduler.request();
@@ -215,9 +218,21 @@ function HomeScreenContent({
   };
   const cacheScope = JSON.stringify([config.apiBaseUrl, currentUserId]) + ":";
   const cacheKey = cacheScope + JSON.stringify([historyKey, timelineQuery]);
+  const detailCacheKey = (id: string) => cacheScope + JSON.stringify(["post", id]);
+  const preparePost = (post: HomePost) => {
+    // Hand off the DTO in account-scoped tab memory, without persisting it in browser history.
+    timelineCache.save(detailCacheKey(post.id), {
+      posts: [{ ...post, entry_id: post.id, tree_depth: 0, reposted_by: null }],
+      hasMore: false,
+      scrollOffset: 0,
+      listOffset: 0,
+      measurements: [],
+    });
+  };
+  const initialDetailKey = postId ? detailCacheKey(postId) : null;
   const restored = useMemo(
-    () => (!postId ? timelineCache.get(cacheKey) : undefined),
-    [cacheKey, postId],
+    () => timelineCache.get(initialDetailKey ?? cacheKey),
+    [cacheKey, initialDetailKey],
   );
   const [posts, setPosts] = useState<HomePost[]>(() => restored?.posts ?? []);
   const [newPosts, setNewPosts] = useState(0);
@@ -349,8 +364,15 @@ function HomeScreenContent({
         }
         if (fetchedHead) setError(false);
         setViewportError(!checkedSuccessfully);
-      } catch {
-        if (!controller.signal.aborted) setError(true);
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          if (postId && cause instanceof ApiError && [403, 404].includes(cause.status)) {
+            timelineCache.forget(cacheScope + JSON.stringify(["post", postId]));
+            postsRef.current = [];
+            setPosts([]);
+          }
+          setError(true);
+        }
       } finally {
         if (version === generation.current) setLoading(false);
         if (refreshRequest.current === controller) {
@@ -361,11 +383,11 @@ function HomeScreenContent({
         }
       }
     },
-    [client, timelineQuery, postId],
+    [client, timelineQuery, postId, cacheScope],
   );
 
   useEffect(() => {
-    const snapshot = !postId ? timelineCache.get(cacheKey) : undefined;
+    const snapshot = restored;
     setLoading(!snapshot);
     setPosts(snapshot?.posts ?? []);
     postsRef.current = snapshot?.posts ?? [];
@@ -400,7 +422,7 @@ function HomeScreenContent({
       refreshRequest.current = null;
       olderRequest.current = null;
     };
-  }, [refresh, cacheKey, postId]);
+  }, [refresh, cacheKey, postId, restored]);
   useHomeLive(() => {
     scheduleRefresh.current();
     scheduleControls.current();
@@ -468,9 +490,11 @@ function HomeScreenContent({
     getItemKey: (index) => timelineEntryId(posts[index]),
     overscan: 6,
     scrollMargin: listOffset,
-    // Preserve the reading anchor across prepends/deletions, except at the top
-    // where incoming posts should be shown immediately. No follow-on-append.
+    // Keep the reading key across prepends/deletions, but never pin resize
+    // measurements to the bottom as newly appended rows replace estimates.
     anchorTo: (scrollRoot.current?.scrollTop ?? 0) > 80 ? "end" : "start",
+    followOnAppend: false,
+    scrollEndThreshold: Number.NEGATIVE_INFINITY,
     useAnimationFrameWithResizeObserver: true,
   });
   const virtualizerRef = useRef(virtualizer);
@@ -522,8 +546,14 @@ function HomeScreenContent({
     if (viewportKey && !loading && visibleIds.current.some((id) => !headIds.has(id)))
       scheduleRefresh.current(false);
   }, [viewportKey, loading]);
-  const lastVirtualIndex = virtualRows.at(-1)?.index ?? -1;
   useEffect(() => {
+    const root = scrollRoot.current;
+    // Timeline changes and anchor restoration can reset the DOM scroll position
+    // before the virtualizer observes it. Read the current viewport here, after
+    // layout effects, rather than fetching from a previous timeline's range.
+    const lastVisibleIndex = root
+      ? visibleTimelineTail(virtualRows, root.scrollTop, root.clientHeight)
+      : -1;
     if (
       !loading &&
       !refreshing &&
@@ -531,13 +561,14 @@ function HomeScreenContent({
       !error &&
       !olderError &&
       hasMore &&
-      lastVirtualIndex >= posts.length - 10 &&
+      lastVisibleIndex >= 0 &&
+      lastVisibleIndex >= posts.length - 10 &&
       document.visibilityState === "visible"
     ) {
       void older();
     }
   }, [
-    lastVirtualIndex,
+    virtualRows,
     posts.length,
     hasMore,
     loading,
@@ -616,7 +647,7 @@ function HomeScreenContent({
           if ((scrollRoot.current?.scrollTop ?? 0) < 80 && newPosts > 0)
             scheduleRefresh.current(true);
         }}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24 [overflow-anchor:none]"
         onTouchStart={(event) => {
           touchStart.current =
             event.touches.length === 1 && (scrollRoot.current?.scrollTop ?? 0) <= 0
@@ -672,11 +703,7 @@ function HomeScreenContent({
                 </Button>
               ))}
             </div>
-          ) : (
-            <Link to="/home" className="inline-block p-3 text-sm text-link">
-              {t("home.title")}
-            </Link>
-          )}
+          ) : null}
           {pull > 0 || pulling ? (
             <div
               role="status"
@@ -749,6 +776,9 @@ function HomeScreenContent({
                         <Link
                           to="/home/posts/$postId"
                           params={{ postId: post.parent_id }}
+                          onClick={() => {
+                            if (post.parent) preparePost(post.parent);
+                          }}
                           className="flex items-center gap-1 hover:underline"
                         >
                           <ReplyIcon className="size-3" />
@@ -787,6 +817,7 @@ function HomeScreenContent({
                           window.getSelection()?.toString()
                         )
                           return;
+                        preparePost(post);
                         void navigate({ to: "/home/posts/$postId", params: { postId: post.id } });
                       }}
                     >
@@ -834,6 +865,7 @@ function HomeScreenContent({
                             <Link
                               to="/home/posts/$postId"
                               params={{ postId: post.id }}
+                              onClick={() => preparePost(post)}
                               className="shrink-0 hover:underline"
                             >
                               <time dateTime={post.created_at}>
@@ -896,6 +928,19 @@ function HomeScreenContent({
                                     {t("home.delete")}
                                   </DropdownMenuItem>
                                 </>
+                              ) : null}
+                              {post.remote && post.url?.startsWith("https://") ? (
+                                <DropdownMenuItem
+                                  render={
+                                    <ExternalLink
+                                      href={post.url}
+                                      className="text-popover-foreground"
+                                    />
+                                  }
+                                >
+                                  <ExternalLinkIcon />
+                                  {t("home.original")}
+                                </DropdownMenuItem>
                               ) : null}
                               <DropdownMenuItem
                                 onClick={() => {
@@ -1061,11 +1106,6 @@ function HomeScreenContent({
                           <p role="alert" className="text-xs text-destructive">
                             {t("home.controlsError")}
                           </p>
-                        ) : null}
-                        {post.remote && post.url?.startsWith("https://") ? (
-                          <ExternalLink className="text-xs" href={post.url}>
-                            {t("home.original")}
-                          </ExternalLink>
                         ) : null}
                       </div>
                     </article>

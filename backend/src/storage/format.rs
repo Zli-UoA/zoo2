@@ -17,13 +17,30 @@ const RFC5987_SPECIAL_CHARS: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'|')
     .remove(b'~');
 
-/// 画像許可リストにある MIME タイプかどうか判定する
+/// ブラウザーでプレビューする受動的な形式だけを許可する
 pub fn is_inline_allowed_mime(content_type: &str) -> bool {
     let lower = content_type.to_ascii_lowercase();
     let mime = lower.split(';').next().unwrap_or("").trim();
     matches!(
         mime,
-        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        "image/png"
+            | "image/jpeg"
+            | "image/webp"
+            | "image/gif"
+            | "image/avif"
+            | "application/pdf"
+            | "video/mp4"
+            | "video/webm"
+            | "video/ogg"
+            | "video/quicktime"
+            | "audio/mpeg"
+            | "audio/mp4"
+            | "audio/wav"
+            | "audio/x-wav"
+            | "audio/ogg"
+            | "audio/webm"
+            | "audio/flac"
+            | "audio/aac"
     )
 }
 
@@ -88,10 +105,19 @@ mod tests {
         assert!(is_inline_allowed_mime("image/webp; charset=utf-8"));
         assert!(is_inline_allowed_mime("image/gif"));
 
-        // XSS リスクのある形式やドキュメントは拒否 (false)
+        // スクリプトを実行できる形式は拒否 (false)
         assert!(!is_inline_allowed_mime("image/svg+xml"));
         assert!(!is_inline_allowed_mime("text/html"));
-        assert!(!is_inline_allowed_mime("application/pdf"));
+        for mime in [
+            "application/pdf",
+            "video/mp4",
+            "video/webm",
+            "audio/mpeg",
+            "audio/ogg",
+            "image/avif",
+        ] {
+            assert!(is_inline_allowed_mime(mime));
+        }
         assert!(!is_inline_allowed_mime("application/javascript"));
     }
 }
