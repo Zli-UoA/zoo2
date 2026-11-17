@@ -52,6 +52,8 @@ jobs:
 
   runner:
     uses: ./.github/workflows/select-runner.yaml
+    with:
+      large: true
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
@@ -63,7 +65,7 @@ jobs:
     if: fromJSON(needs.test-selection.outputs.backend).check
     needs: [runner, test-selection]
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./backend

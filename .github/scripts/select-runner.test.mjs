@@ -63,12 +63,15 @@ const cases = [
     return [
       ['heavy idle: no heavy jobs', {...base, largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
       ['heavy has a free runner: one running job', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
-      ['heavy full: two running jobs go to hosted', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['heavy full: two running jobs go to hosted', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 1, jobs: 1}}, H, H],
       ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 4, jobs: 2}}, H, H],
       ['other labels and finished jobs are not counted', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress', 'ubuntu-latest'), job('completed'), job('waiting'), job('queued', 'zli-k8s')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
       ['the current run is not counted', {...base, runId: 1, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 4, jobs: 0}}, H, H],
       ['unreadable heavy usage keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: true, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
-      ['API calls are bounded', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 50}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 1, jobs: 30}}, H, H],
+      ['a run listed as in_progress and queued is counted once', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
+      ['callers that do not use large-runs-on do not read heavy usage', {...base, largeCaller: false, largeExpected: H}, H, H],
+      ['slow heavy usage times out and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyHang: true, heavyTimeout: true, warning: 'Heavy runner usage unavailable (timeout); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
+      ['API calls are bounded and the partial count is reported', {...base, largeExpected: 'zli-k8s-heavy', warning: 'Heavy runner usage is partial: stopped after 30 job lists', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 50}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 1, jobs: 30}}, H, H],
     ];
   })(),
   ['private ignores CI_LARGE_RUNNER', {payload: privateRepo, large: 'zli-k8s-heavy', runners: [camp()], usage: [usage('repo', 1000)]}, K, H],
@@ -82,6 +85,8 @@ for (const [name, input, expected, hostedExpected] of cases) {
     const fork = input.event === 'pull_request' && payload.pull_request.head.repo.full_name !== 'Zli-UoA/repo';
     process.env.HAS_STATUS_TOKEN = String(input.token !== false);
     process.env.LARGE_RUNNER = input.large || '';
+    process.env.LARGE_CALLER = String(input.largeCaller !== false);
+    process.env.HEAVY_TIMEOUT_MS = input.heavyTimeout ? '50' : '';
     const rest = {actions: {listSelfHostedRunnersForOrg: {}, listWorkflowRuns: {}, listJobsForWorkflowRun: {}}, repos: {listForOrg: {}}};
     const heavy = {runs: 0, jobs: 0};
     await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
@@ -94,6 +99,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
           assert.equal(params.repo, 'repo');
           assert.equal(params.request.timeout, 10000);
           if (input.heavyError) throw Object.assign(new Error('response must not be logged'), {status: 403});
+          if (input.heavyHang) return new Promise(() => {});
           return (input.heavyRuns || {})[`${params.workflow_id}:${params.status}`] || [];
         }
         if (method === rest.actions.listJobsForWorkflowRun) {
@@ -263,7 +269,8 @@ test('every workload uses the right output and protects fork PRs', () => {
           assert.ok(block.includes(`docker-runs-on || '"${H}"'`), `${file}/${id}: Docker fallback must be hosted`);
         }
         if (large) {
-          assert.ok(block.includes(`large-runs-on || '"zli-k8s"'`), `${file}/${id}: large-job fallback must be ARC`);
+          // zoo2 に登録される runner は zli-k8s-heavy だけ。select が失敗しても、重いジョブが存在しないラベルで待たないように Hosted にする。
+          assert.ok(block.includes(`large-runs-on || '"${H}"'`), `${file}/${id}: large-job fallback must be hosted`);
         }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
@@ -335,4 +342,16 @@ test('ER diagram deployment only publishes main artifacts without checking out c
   assert.match(deploy, /if: github\.ref == 'refs\/heads\/main' && github\.event_name != 'pull_request'/);
   assert.match(deploy, /actions\/download-artifact/);
   assert.doesNotMatch(deploy, /actions\/checkout/);
+});
+
+test('only workflows that read large-runs-on ask the selector to scan heavy usage', () => {
+  assert.match(yaml, /inputs:\n {6}# [^\n]*\n {6}large:\n {8}type: boolean\n {8}default: false/);
+  const dir = new URL('.github/workflows/', root);
+  for (const file of readdirSync(dir).filter(x => /\.ya?ml$/.test(x) && !x.startsWith('select-runner'))) {
+    const text = readFileSync(new URL(file, dir), 'utf8');
+    const block = text.split(/^jobs:\s*$/m)[1]?.split(/^  runner:\n/m)[1]?.split(/^  \S/m)[0];
+    if (!block) continue;
+    const readsLarge = text.includes('needs.runner.outputs.large-runs-on');
+    assert.equal(/^    with:\n      large: true$/m.test(block), readsLarge, `${file}: large input matches large-runs-on use`);
+  }
 });
