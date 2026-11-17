@@ -17,6 +17,8 @@ export interface ThreadMembership {
   can_participate: boolean;
   /** 現在参加中の人数と、先頭から最大50人。 */
   participant_count?: number;
+  /** 参加行が1つでもあるか（全員退出済みでも true）。true なら返信に参加が必要。 */
+  tracked?: boolean;
   participants?: ThreadParticipant[];
 }
 type Snapshot = { data: ThreadMembership | null; pending: boolean; error: boolean };

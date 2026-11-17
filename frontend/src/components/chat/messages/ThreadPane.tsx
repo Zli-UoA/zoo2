@@ -41,6 +41,8 @@ export interface ThreadPaneProps {
   membershipLoading?: boolean;
   /** 参加中の人数と一覧（先頭から最大50人）。 */
   participantCount?: number;
+  /** 参加行が1つでもあるか。省略時は参加者数で判断する。 */
+  threadTracked?: boolean;
   participants?: ThreadParticipant[];
   onMembershipRetry?: () => void;
   onJoinThread?: () => void;
@@ -113,6 +115,7 @@ export function ThreadPane({
   membershipError = false,
   membershipLoading = false,
   participantCount,
+  threadTracked,
   participants,
   onMembershipRetry,
   onJoinThread,
@@ -151,7 +154,9 @@ export function ThreadPane({
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   // チャンネルと同様、参加してから返信する。最初の返信（参加者がまだ居ない）はスレッドを作るので参加不要。
   const needsJoin =
-    isMember && membership !== "joined" && (membership === "left" || (participantCount ?? 0) > 0);
+    isMember &&
+    membership !== "joined" &&
+    (membership === "left" || (threadTracked ?? (participantCount ?? 0) > 0));
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -244,7 +249,7 @@ export function ThreadPane({
             size="sm"
             id="thread-participants-toggle"
             aria-expanded={participantsOpen}
-            aria-controls="thread-participants"
+            aria-controls={participantsOpen ? "thread-participants" : undefined}
             aria-label={t("threads.participants", { count: participantCount })}
             onClick={() => setParticipantsOpen((value) => !value)}
           >

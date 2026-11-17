@@ -849,9 +849,10 @@ pub(crate) async fn create_message_impl(
         )
         .await?;
         let state = crate::apps::one(&mut tx,
-            "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text",
+            "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL),'bot',(SELECT is_bot FROM users WHERE id=$2))::text",
             &[gate_root.as_str(), auth_user.id.as_str()]).await?;
-        if state["tracked"] == true && state["joined"] != true {
+        // Bots (Apps API) have no way to join a thread, so they are not gated.
+        if state["tracked"] == true && state["joined"] != true && state["bot"] != true {
             return Err(AppError::Forbidden(
                 "Join the thread before replying".into(),
             ));

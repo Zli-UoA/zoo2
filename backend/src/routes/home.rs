@@ -189,6 +189,19 @@ async fn create(
             body.channel_id = None;
         }
     }
+    // A channel reply into a thread that tracks participants needs joining, as in POST /api/messages.
+    if let (Some(_), Some(channel)) = (&parent, &body.channel_id)
+        && let Some(parent_id) = parent.as_ref().and_then(|p| p["id"].as_str())
+    {
+        let state = query(&mut tx,
+            "SELECT json_build_object('blocked',EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=thread_root($1)) AND NOT EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=thread_root($1) AND t.user_id=$2 AND t.left_at IS NULL))::text FROM messages m WHERE m.id=$1 AND m.channel_id=$3",
+            &[parent_id, &user.id, channel]).await?;
+        if state.first().is_some_and(|r| r["blocked"] == true) {
+            return Err(AppError::Forbidden(
+                "Join the thread before replying".into(),
+            ));
+        }
+    }
     if body.channel_id.is_some() && body.visibility == "followers" {
         return Err(AppError::BadRequest(
             "Channel replies cannot use a followers-only audience".into(),
