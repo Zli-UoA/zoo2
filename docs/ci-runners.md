@@ -6,7 +6,7 @@ privateリポジトリと公開範囲が不明な場合は、Docker不要ジョ�
 
 `runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は、既定では同じ値です。publicのリポジトリだけ、Actions variable `CI_LARGE_RUNNER` に `zli-k8s-heavy` を設定すると、大容量用だけが [zoo2-infra の heavy runner](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/arc.md#runner-の種類待機オンデマンドheavy)（zoo07・zoo08の64コア、メモリlimit 9Gi）になります。空のとき、forkのPR、merge groupはHostedです。他の値は警告して無視します。
 
-heavyが埋まっているときは、重いジョブだけHostedに逃がします（試験的）。`large-runs-on` を使う `ci-backend.yaml` と `ci-frontend.yaml` だけが、`select-runner` に入力 `large: true` を渡し、その場合だけ、選択時点の `zli-k8s-heavy` のジョブ（実行中と待ち）の数を読みます。ジョブ一覧のAPIで数え、zoo2-infraのheavyの台数（2台）以上になった時点で止めて、Hostedを選びます。Runnerの一覧は読まないので、`RUNNER_STATUS_TOKEN` の追加の権限は要りません。選択はworkflowの開始時に一度だけで、予約ではありません。同時に始まるworkflowは同じ結果を見て、どちらもheavyを選ぶことがあります（その場合は待ちます）。`ci-frontend` は重いジョブを3つ持つので、heavyが1台空いていても、2台に3つが並びます。APIを読めないとき、20秒以内に終わらないときは、heavyの使用状況を不明として、heavyのままにし、警告を出します。ジョブ一覧の呼び出しは30回までで、超えたときは、そこまでの数で判断し、警告を出します。`select` が失敗して出力が空になったときの重いジョブの実行先は、Hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため）。
+heavyが埋まっているときは、重いジョブだけHostedに逃がします（試験的）。`large-runs-on` を使う `ci-backend.yaml` と `ci-frontend.yaml` だけが、`select-runner` に入力 `large: true` を渡し、その場合だけ、選択時点の `zli-k8s-heavy` のジョブ（実行中と待ち）の数を読みます。`ci-backend.yaml` と `ci-frontend.yaml` の実行中・待ちの実行について、ジョブ一覧のAPIで数え、zoo2-infraのheavyの台数（2台）以上になった時点で止めて、Hostedを選びます。Runnerの一覧は読みません。**この読み取りは、`RUNNER_STATUS_TOKEN` ではなく、ワークフロー自身の `GITHUB_TOKEN` で行います。** `RUNNER_STATUS_TOKEN`（fine-grained PAT）には `Actions: Read` がなく、使うと403になるためです。公開リポジトリのActionsは、権限なしのトークンでも読めます。`select` ジョブには権限を要求しません（再利用workflowは、呼び出し元の権限を増やせず、要求すると、呼び出し元が起動前に拒否されます）。選択はworkflowの開始時に一度だけで、予約ではありません。同時に始まるworkflowは同じ結果を見て、どちらもheavyを選ぶことがあります（その場合は待ちます）。`ci-frontend` は重いジョブを3つ持つので、heavyが1台空いていても、2台に3つが並びます。**一覧とジョブの取得は、ページごとに1リクエストとして数え、合計30リクエストまでです。** 超えたときと、読めないとき（403、ネットワーク）は、heavyの使用状況を不明として、heavyのままにし、警告を出します。取得全体の期限は20秒で、超えたら、以降のリクエストも出しません。`select` が失敗して出力が空になったときの重いジョブの実行先は、Hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため）。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
@@ -24,7 +24,7 @@ privateで判定ジョブが起動待ちになると後続も待ちます。`tim
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。privateリポジトリで無料枠を判定するには、さらにOrganization permissionsのAdministration: Read-only（Billing API用。発行者はorg ownerかbilling manager）と、Repository accessのAll repositories（privateリポジトリ一覧の取得用）が必要です。判定ジョブ以外には渡しません。
 
-publicでは状態確認用トークンがなくても全選択出力がGitHub-hostedになります。privateでトークン不足・API障害によりkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
+publicでは状態確認用トークンがなくても、通常用とDocker用の出力がGitHub-hostedになります。大容量用の出力だけは、Actions variable `CI_LARGE_RUNNER` が `zli-k8s-heavy` のときにheavyになります（トークンは要りません。fork の PR とmerge groupは、常にGitHub-hostedです）。privateでトークン不足・API障害によりkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 

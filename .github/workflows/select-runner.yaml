@@ -1,6 +1,7 @@
 name: Select runner
 
-# Public repositories use hosted runners without availability/billing API calls.
+# Public repositories use hosted runners without availability/billing API calls. The only exception is
+# large-runs-on when the Actions variable CI_LARGE_RUNNER is zli-k8s-heavy (see docs/ci-runners.md).
 # Private workload priority: kubecamp -> hosted -> zli-k8s. Docker/large jobs
 # skip kubecamp; hosted availability depends on the included minutes.
 # CI_RUNNER now only chooses the selector host, not the workload destination.
@@ -33,8 +34,7 @@ jobs:
     runs-on: ${{ (github.event.repository.private == false || github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || vars.CI_SELECTOR_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 3
     continue-on-error: true
-    permissions:
-      actions: read
+    permissions: {}
     outputs:
       runs-on: ${{ steps.select.outputs.runs-on }}
       docker-runs-on: ${{ steps.select.outputs.docker-runs-on }}
@@ -47,6 +47,9 @@ jobs:
           HAS_STATUS_TOKEN: ${{ secrets.runner-status-token != '' }}
           LARGE_RUNNER: ${{ vars.CI_LARGE_RUNNER }}
           LARGE_CALLER: ${{ inputs.large }}
+          # heavy の使用状況（Actions のジョブ一覧）は、ワークフロー自身のトークンで読む。RUNNER_STATUS_TOKEN（PAT）には
+          # Actions の読み取り権限がなく、公開リポジトリの Actions は、権限なしのトークンでも読める。
+          ACTIONS_READ_TOKEN: ${{ github.token }}
         with:
           github-token: ${{ secrets.runner-status-token || github.token }}
           script: |
@@ -58,7 +61,8 @@ jobs:
             const HEAVY_RUNNERS = 2;
             // 重いジョブ（large-runs-on）を持つ workflow。merge group は Hosted 固定なので、数えない。
             const LARGE_WORKFLOWS = ['ci-backend.yaml', 'ci-frontend.yaml'];
-            const MAX_HEAVY_API_CALLS = 30;
+            // 一覧とジョブの取得の、リクエストの総数（ページを含む）。超えたら、heavy の使用状況は不明として扱う。
+            const MAX_HEAVY_API_REQUESTS = 30;
             // select ジョブの timeout-minutes（3分）に収める。超えたら heavy の使用状況は不明として扱う。
             const HEAVY_TIMEOUT_MS = Number(process.env.HEAVY_TIMEOUT_MS) || 20000;
             // Included minutes of GitHub Free for private repositories; the margin
@@ -77,36 +81,53 @@ jobs:
             };
             // heavy の runner が使っている台数（実行中と待ちの、zli-k8s-heavy のジョブ）。Runner の一覧は読まず、
             // 公開リポジトリの Actions のジョブから数える（Runner の一覧には、リポジトリの管理権限が要るため）。
-            const heavyJobs = async () => {
+            // 一覧の取得もジョブの取得も、ページごとに1リクエストとして、共通の予算（MAX_HEAVY_API_REQUESTS）と期限を使う。
+            const heavyJobs = async (state) => {
+              const actions = getOctokit(process.env.ACTIONS_READ_TOKEN);
               const {owner, repo} = context.repo;
-              let busy = 0;
-              let calls = 0;
               const seen = new Set();
+              let requests = 0;
+              let busy = 0;
+              // 予算か期限が尽きたら null を返す。呼び出し側は、heavy の使用状況は不明として扱う。
+              const page = async (method, params, key) => {
+                const items = [];
+                for (let n = 1; ; n++) {
+                  if (state.stopped || requests >= MAX_HEAVY_API_REQUESTS) return null;
+                  requests++;
+                  const {data} = await method({owner, repo, ...params, per_page: 100, page: n, request});
+                  if (state.stopped) return null;
+                  items.push(...data[key]);
+                  if (data[key].length < 100) return items;
+                }
+              };
               for (const workflow_id of LARGE_WORKFLOWS) {
                 for (const status of ['in_progress', 'queued']) {
-                  const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {owner, repo, workflow_id, status, per_page: 100, request});
+                  const runs = await page(actions.rest.actions.listWorkflowRuns, {workflow_id, status}, 'workflow_runs');
+                  if (!runs) return {busy, partial: true};
                   for (const run of runs) {
                     // 2つの status の問い合わせの間に queued から in_progress へ移った run を、2回数えない。
                     if (run.id === context.runId || seen.has(run.id)) continue;
                     seen.add(run.id);
-                    if (++calls > MAX_HEAVY_API_CALLS) {
-                      core.warning(`Heavy runner usage is partial: stopped after ${MAX_HEAVY_API_CALLS} job lists`);
-                      return busy;
-                    }
-                    const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {owner, repo, run_id: run.id, filter: 'latest', per_page: 100, request});
+                    const jobs = await page(actions.rest.actions.listJobsForWorkflowRun, {run_id: run.id, filter: 'latest'}, 'jobs');
+                    if (!jobs) return {busy, partial: true};
                     busy += jobs.filter(j => ['queued', 'in_progress'].includes(j.status) && (j.labels || []).includes(LARGE_RUNNER)).length;
-                    if (busy >= HEAVY_RUNNERS) return busy;
+                    if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
                   }
                 }
               }
-              return busy;
+              return {busy, partial: false};
             };
             // API が遅いと、1回ごとの timeout（10秒）に収まったまま、全体で select ジョブの timeout を超えうる。
+            // 期限が来たら、待つのをやめるだけでなく、以降のリクエストも出さない（state.stopped）。
             const heavyJobsWithin = async () => {
+              const state = {stopped: false};
               let timer;
               try {
-                return await Promise.race([heavyJobs(), new Promise((_, reject) => {
-                  timer = setTimeout(() => reject(Object.assign(new Error('heavy usage timed out'), {status: 'timeout'})), HEAVY_TIMEOUT_MS);
+                return await Promise.race([heavyJobs(state), new Promise((_, reject) => {
+                  timer = setTimeout(() => {
+                    state.stopped = true;
+                    reject(Object.assign(new Error('heavy usage timed out'), {status: 'timeout'}));
+                  }, HEAVY_TIMEOUT_MS);
                 })]);
               } finally {
                 clearTimeout(timer);
@@ -121,7 +142,7 @@ jobs:
               return use(HOSTED, HOSTED, 'merge group');
             }
             // An idle self-hosted runner is not a reservation. Fan-out can queue
-            // behind other workflows before dispatch, so public CI uses hosted.
+            // behind other workflows before dispatch, so public CI uses hosted (large jobs may use zli-k8s-heavy below).
             if (context.payload.repository?.private === false) {
               // 重いジョブだけ、Actions variable CI_LARGE_RUNNER で、大きな runner（zoo2-infra の zli-k8s-heavy）に切り替えられる。
               // 空なら Hosted。fork の PR と merge group は、上で Hosted に固定している。
@@ -138,8 +159,10 @@ jobs:
                 // 選択は workflow の開始時に一度だけなので、予約ではない。同時に始まる workflow は同じ結果を見て、
                 // どちらも heavy を選びうる。API を読めないときは heavy のままにする（変数で heavy を指定した意図に従う）。
                 try {
-                  const busy = await heavyJobsWithin();
-                  if (busy >= HEAVY_RUNNERS) {
+                  const {busy, partial} = await heavyJobsWithin();
+                  if (partial) {
+                    core.warning(`Heavy runner usage unknown: the API request budget (${MAX_HEAVY_API_REQUESTS}) ran out; using ${LARGE_RUNNER}`);
+                  } else if (busy >= HEAVY_RUNNERS) {
                     largeRunsOn = HOSTED;
                     reason += `; ${LARGE_RUNNER} busy (${busy}/${HEAVY_RUNNERS})`;
                   }

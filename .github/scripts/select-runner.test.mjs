@@ -7,7 +7,7 @@ const root = new URL('../../', import.meta.url);
 const yaml = readFileSync(new URL('.github/workflows/select-runner.yaml', root), 'utf8');
 const script = yaml.split('          script: |\n')[1].split('\n').map(l => l.replace(/^ {12}/, '')).join('\n');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const select = new AsyncFunction('core', 'context', 'github', script);
+const select = new AsyncFunction('core', 'context', 'github', 'getOctokit', script);
 const K = 'zli-kubecamp-no-docker';
 const A = 'zli-k8s';
 const H = 'ubuntu-latest';
@@ -70,8 +70,11 @@ const cases = [
       ['unreadable heavy usage keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: true, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
       ['a run listed as in_progress and queued is counted once', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
       ['callers that do not use large-runs-on do not read heavy usage', {...base, largeCaller: false, largeExpected: H}, H, H],
-      ['slow heavy usage times out and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyHang: true, heavyTimeout: true, warning: 'Heavy runner usage unavailable (timeout); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
-      ['API calls are bounded and the partial count is reported', {...base, largeExpected: 'zli-k8s-heavy', warning: 'Heavy runner usage is partial: stopped after 30 job lists', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 50}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 1, jobs: 30}}, H, H],
+      ['slow heavy usage times out and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyHang: 200, heavyTimeout: true, warning: 'Heavy runner usage unavailable (timeout); using zli-k8s-heavy', heavyCalls: {runs: 1, jobs: 0}}, H, H],
+      // リクエストの総数（ページを含む）が予算（30）を超えると、heavy の使用状況は不明として、heavy のままにする。
+      ['API requests are bounded and an exhausted budget is reported', {...base, largeExpected: 'zli-k8s-heavy', warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 50}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 1, jobs: 29}}, H, H],
+      ['extra pages count against the same budget', {...base, largeExpected: 'zli-k8s-heavy', warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 250}, (_, i) => ({id: 100 + i}))}, heavyCalls: {runs: 3, jobs: 27}}, H, H],
+      ['paging ends at the first short page', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': Array.from({length: 100}, (_, i) => ({id: 100 + i}))}, warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 28}}, H, H],
     ];
   })(),
   ['private ignores CI_LARGE_RUNNER', {payload: privateRepo, large: 'zli-k8s-heavy', runners: [camp()], usage: [usage('repo', 1000)]}, K, H],
@@ -87,26 +90,35 @@ for (const [name, input, expected, hostedExpected] of cases) {
     process.env.LARGE_RUNNER = input.large || '';
     process.env.LARGE_CALLER = String(input.largeCaller !== false);
     process.env.HEAVY_TIMEOUT_MS = input.heavyTimeout ? '50' : '';
-    const rest = {actions: {listSelfHostedRunnersForOrg: {}, listWorkflowRuns: {}, listJobsForWorkflowRun: {}}, repos: {listForOrg: {}}};
-    const heavy = {runs: 0, jobs: 0};
+    process.env.ACTIONS_READ_TOKEN = 'workflow-token';
+    const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
+    const heavy = {runs: 0, jobs: 0, token: undefined};
+    // heavy の使用状況は、ワークフロー自身のトークンの別のクライアントで、公開リポジトリの Actions のジョブから数える。
+    // Runner の一覧は読まない。状態確認用のトークン（PAT）のクライアント（github）は使わない。
+    const page = (items, params, key) => {
+      assert.equal(params.per_page, 100);
+      assert.equal(params.request.timeout, 10000);
+      return {data: {[key]: items.slice((params.page - 1) * params.per_page, params.page * params.per_page)}};
+    };
+    const heavyClient = {rest: {actions: {
+      listWorkflowRuns: async params => {
+        heavy.runs++;
+        assert.equal(params.owner, 'Zli-UoA');
+        assert.equal(params.repo, 'repo');
+        if (input.heavyError) throw Object.assign(new Error('response must not be logged'), {status: 403});
+        if (input.heavyHang) await new Promise(resolve => setTimeout(resolve, input.heavyHang));
+        return page((input.heavyRuns || {})[`${params.workflow_id}:${params.status}`] || [], params, 'workflow_runs');
+      },
+      listJobsForWorkflowRun: async params => {
+        heavy.jobs++;
+        assert.equal(params.filter, 'latest');
+        return page((input.heavyJobs || {})[params.run_id] || [], params, 'jobs');
+      },
+    }}};
+    const getOctokit = token => { heavy.token = token; return heavyClient; };
     await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
       {eventName: input.event || 'push', payload, repo: {owner: 'Zli-UoA', repo: 'repo'}, runId: input.runId},
       {rest, paginate: async (method, params) => {
-        // heavy の使用状況は、公開リポジトリの Actions のジョブから数える（Runner の一覧は読まない）。
-        if (method === rest.actions.listWorkflowRuns) {
-          heavy.runs++;
-          assert.equal(params.owner, 'Zli-UoA');
-          assert.equal(params.repo, 'repo');
-          assert.equal(params.request.timeout, 10000);
-          if (input.heavyError) throw Object.assign(new Error('response must not be logged'), {status: 403});
-          if (input.heavyHang) return new Promise(() => {});
-          return (input.heavyRuns || {})[`${params.workflow_id}:${params.status}`] || [];
-        }
-        if (method === rest.actions.listJobsForWorkflowRun) {
-          heavy.jobs++;
-          assert.equal(params.filter, 'latest');
-          return (input.heavyJobs || {})[params.run_id] || [];
-        }
         assert.equal(params.org, 'Zli-UoA');
         assert.equal(params.per_page, 100);
         assert.equal(params.request.timeout, 10000);
@@ -126,7 +138,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
         assert.ok(params.year >= 2026 && params.month >= 1 && params.month <= 12);
         if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
         return {data: {usageItems: input.usage || []}};
-      }});
+      }}, getOctokit);
     assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': input.largeExpected ?? hostedExpected});
     const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
     const checksMinutes = !hostedOnly && input.token !== false;
@@ -135,8 +147,16 @@ for (const [name, input, expected, hostedExpected] of cases) {
       repos: checksMinutes ? 1 : 0,
       billing: checksMinutes && !input.reposError ? 1 : 0,
     });
-    if (input.heavyCalls) assert.deepEqual(heavy, input.heavyCalls);
-    else assert.deepEqual(heavy, {runs: 0, jobs: 0}, 'heavy usage is read only when CI_LARGE_RUNNER selects heavy');
+    // 期限が来たあとに、リクエストが続かないこと（遅い応答が返ったあとも、次のリクエストを出さない）。
+    if (input.heavyHang) await new Promise(resolve => setTimeout(resolve, input.heavyHang + 100));
+    const {token, ...calledHeavy} = heavy;
+    if (input.heavyCalls) {
+      assert.deepEqual(calledHeavy, input.heavyCalls);
+      assert.equal(token, 'workflow-token', 'Actions reads use the workflow token, not the status token');
+    } else {
+      assert.deepEqual(calledHeavy, {runs: 0, jobs: 0}, 'heavy usage is read only when CI_LARGE_RUNNER selects heavy');
+      assert.equal(token, undefined);
+    }
     assert.ok(warnings.every(m => !m.includes('private response') && !m.includes('response must not be logged')));
     if (input.warning) assert.deepEqual(warnings, [input.warning]);
   });
@@ -355,3 +375,14 @@ test('only workflows that read large-runs-on ask the selector to scan heavy usag
     assert.equal(/^    with:\n      large: true$/m.test(block), readsLarge, `${file}: large input matches large-runs-on use`);
   }
 });
+
+test('the selector needs no permissions, so reusable-workflow callers need no change', () => {
+  // 再利用 workflow は、呼び出し元の権限を増やせない。select に権限を要求すると、呼び出し元の9本が起動前に拒否される
+  // （startup_failure）。Actions の読み取りは、権限なしの GITHUB_TOKEN で、公開リポジトリのデータだけを読む。
+  assert.doesNotMatch(yaml, /actions: read/);
+  assert.match(yaml, /^  select:\n(?:.*\n)*?    permissions: \{\}\n/m);
+  // heavy の使用状況は、状態確認用のトークン（PAT）ではなく、ワークフロー自身のトークンで読む。
+  assert.match(yaml, /ACTIONS_READ_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(script, /getOctokit\(process\.env\.ACTIONS_READ_TOKEN\)/);
+});
+
