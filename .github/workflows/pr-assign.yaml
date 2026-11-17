@@ -30,21 +30,26 @@ jobs:
             const split = (s) => s.split(',').map((v) => v.trim()).filter(Boolean);
 
             // 既にレビューを提出した人には再依頼しない（Draft に戻して Ready にした場合も含む）。
-            const reviews = await github.paginate(github.rest.pulls.listReviews, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              per_page: 100,
-            });
-            const reviewed = new Set(
-              reviews
-                .filter((r) => r.state !== 'PENDING' && r.user)
-                .map((r) => r.user.login.toLowerCase()),
-            );
-
-            const reviewers = split(process.env.REVIEWERS)
-              .filter((r) => r.toLowerCase() !== author)
-              .filter((r) => !reviewed.has(r.toLowerCase()));
+            // レビュー一覧を取得できないときは再依頼を行わず、Assignee の設定は続ける。
+            let reviewers = [];
+            try {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                per_page: 100,
+              });
+              const reviewed = new Set(
+                reviews
+                  .filter((r) => r.state !== 'PENDING' && r.user)
+                  .map((r) => r.user.login.toLowerCase()),
+              );
+              reviewers = split(process.env.REVIEWERS)
+                .filter((r) => r.toLowerCase() !== author)
+                .filter((r) => !reviewed.has(r.toLowerCase()));
+            } catch (e) {
+              core.warning(`failed to list reviews; skipping review requests: ${e.message}`);
+            }
 
             // レビュアーは 1 人ずつ依頼する。1 人の失敗で全体を止めない。
             for (const reviewer of reviewers) {
