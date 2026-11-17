@@ -45,6 +45,10 @@ def compare(first, second):
         before = max(s['blocks'] for s in x)
         after = max(s['blocks'] for s in y)
         assert after <= 2 * before + 64, (key, 'blocks', before, after)
+        for metric in ('intermediate', 'sort_input'):
+            initial = max(s.get(metric, 0) for s in x)
+            later = max(s.get(metric, 0) for s in y)
+            assert later <= 2 * initial + 64, (key, metric, initial, later)
         for relation in set().union(*(s['relations'] for s in x + y)):
             if relation in STATIC:
                 continue  # 固定の一覧。テストが絶対の上限（256 行）で確かめる

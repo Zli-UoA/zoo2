@@ -415,8 +415,8 @@ async fn invoke(
                             .ok_or_else(|| bad("File uploads need a channel"))?;
                         let list = json!(ids).to_string();
                         // 送った ID ごとに主キーで 1 行を引く（F 件）。ほかの索引（まだ投稿していない添付・チャンネル・投稿者）を使うと、
-                        // 履歴に比例して読むので、OFFSET 0 で副問い合わせを平らにさせず、ID ごとの探索にする
-                        let found = one(&mut tx, "SELECT json_build_object('n',count(*))::text FROM (SELECT DISTINCT x FROM jsonb_array_elements_text($1::jsonb) x) ids CROSS JOIN LATERAL (SELECT 1 FROM attachments a WHERE a.id=ids.x AND a.uploader_id=$2 AND a.channel_id=$3 AND a.message_id IS NULL OFFSET 0) a", &[&list, &actor.id, channel]).await?;
+                        // 履歴に比例して読むので、副問い合わせには主キーの条件だけを置き、OFFSET 0 で残りの条件を中へ入れさせない
+                        let found = one(&mut tx, "SELECT json_build_object('n',count(*))::text FROM (SELECT DISTINCT x FROM jsonb_array_elements_text($1::jsonb) x) ids CROSS JOIN LATERAL (SELECT a.uploader_id,a.channel_id,a.message_id FROM attachments a WHERE a.id=ids.x OFFSET 0) a WHERE a.uploader_id=$2 AND a.channel_id=$3 AND a.message_id IS NULL", &[&list, &actor.id, channel]).await?;
                         if found["n"].as_u64() != Some(ids.len() as u64) {
                             return Err(bad("Unknown uploaded file"));
                         }
