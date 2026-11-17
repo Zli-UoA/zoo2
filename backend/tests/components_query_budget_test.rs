@@ -22,8 +22,24 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-fn scan(node: &Value, relations: &mut BTreeMap<String, f64>) {
+/// 中間行（各ノードの出力行×loops の最大）とソート入力（Sort の子の行×loops の合計）
+#[derive(Default)]
+struct Shape {
+    intermediate: f64,
+    sort_input: f64,
+}
+
+fn scan(node: &Value, relations: &mut BTreeMap<String, f64>, shape: &mut Shape) {
     let loops = node["Actual Loops"].as_f64().unwrap_or(0.);
+    shape.intermediate = shape
+        .intermediate
+        .max(node["Actual Rows"].as_f64().unwrap_or(0.) * loops);
+    if node["Node Type"] == "Sort" {
+        for child in node["Plans"].as_array().into_iter().flatten() {
+            shape.sort_input += child["Actual Rows"].as_f64().unwrap_or(0.)
+                * child["Actual Loops"].as_f64().unwrap_or(0.);
+        }
+    }
     let work = (node["Actual Rows"].as_f64().unwrap_or(0.)
         + node["Rows Removed by Filter"].as_f64().unwrap_or(0.)
         + node["Rows Removed by Index Recheck"].as_f64().unwrap_or(0.))
@@ -40,7 +56,7 @@ fn scan(node: &Value, relations: &mut BTreeMap<String, f64>) {
     );
     if let Some(children) = node["Plans"].as_array() {
         for child in children {
-            scan(child, relations)
+            scan(child, relations, shape)
         }
     }
 }
@@ -84,6 +100,10 @@ struct Query {
     args: Vec<String>,
     /// 関係ごとの走査の上限。書いていない関係は 8 行まで
     bounds: Vec<(&'static str, f64)>,
+    /// 計る前に同じトランザクションで流す準備（ROLLBACK で戻る）
+    setup: String,
+    /// 返す・書く行数（決まっているとき）。書き込みが本当に起きたか、空の結果かを確かめる
+    rows: Option<u64>,
 }
 
 fn squash(s: &str) -> String {
@@ -158,11 +178,13 @@ ANALYZE;
         sql: sql.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
         bounds: bounds.to_vec(),
+        setup: String::new(),
+        rows: None,
     };
     let unfurls_of = "(SELECT COALESCE(jsonb_agg(jsonb_strip_nulls(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb,'components',u.components::jsonb))),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=m.id)";
     let batch = BATCH as f64;
     let per_batch = batch * DENSITY as f64;
-    let queries = vec![
+    let mut queries = vec![
         // invoke: 操作した画面・メッセージを読む（主キー 1 行、FOR UPDATE）
         q(
             "invoke-surface",
@@ -214,7 +236,7 @@ ANALYZE;
         q(
             "upload-check",
             UI,
-            "SELECT json_build_object('n',count(*))::text FROM (SELECT DISTINCT x FROM jsonb_array_elements_text($1::jsonb) x) ids CROSS JOIN LATERAL (SELECT 1 FROM attachments a WHERE a.id=ids.x AND a.uploader_id=$2 AND a.channel_id=$3 AND a.message_id IS NULL OFFSET 0) a",
+            "SELECT json_build_object('n',count(*))::text FROM (SELECT DISTINCT x FROM jsonb_array_elements_text($1::jsonb) x) ids CROSS JOIN LATERAL (SELECT a.uploader_id,a.channel_id,a.message_id FROM attachments a WHERE a.id=ids.x OFFSET 0) a WHERE a.uploader_id=$2 AND a.channel_id=$3 AND a.message_id IS NULL",
             &[&files, "550e8400-e29b-41d4-a716-4466554400a1", "cb-ch"],
             &[("attachments", F as f64)],
         ),
@@ -419,6 +441,163 @@ ANALYZE;
             &[],
         ),
     ];
+    // 追加の条件: 同じ SQL を、ほかの引数・準備で測る
+    let variant = |queries: &Vec<Query>,
+                   base: &str,
+                   name: &'static str,
+                   args: &[&str],
+                   setup: &str,
+                   rows: u64| {
+        let b = queries.iter().find(|q| q.name == base).unwrap();
+        Query {
+            name,
+            source: b.source,
+            sql: b.sql.clone(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            bounds: b.bounds.clone(),
+            setup: setup.to_string(),
+            rows: Some(rows),
+        }
+    };
+    let set_doc = quote(doc);
+    let extra = vec![
+        // restore: 記録した値のままの行を実際に戻す（1 行を書く。トリガーも動く）
+        variant(
+            &queries,
+            "restore-messages",
+            "restore-messages-hit",
+            &[&mid, doc, ""],
+            &format!(
+                "UPDATE messages SET components={set_doc} WHERE id={};",
+                quote(&mid)
+            ),
+            1,
+        ),
+        variant(
+            &queries,
+            "restore-unfurls",
+            "restore-unfurls-hit",
+            &[&key, doc, ""],
+            &format!(
+                "UPDATE app_link_unfurls SET components={set_doc} WHERE message_id={} AND installation_id='cb-inst' AND url='https://t.example/1';",
+                quote(&mid)
+            ),
+            1,
+        ),
+        variant(
+            &queries,
+            "restore-app-unfurls",
+            "restore-app-unfurls-hit",
+            &["m-00000002", "[]", "[{\"url\":\"https://e.example/2\"}]"],
+            "UPDATE messages SET app_unfurls='[]' WHERE id='m-00000002';",
+            1,
+        ),
+        variant(
+            &queries,
+            "restore-ui",
+            "restore-ui-hit",
+            &["ui-00000010", doc, "{}"],
+            &format!("UPDATE app_ui SET document={set_doc} WHERE id='ui-00000010';"),
+            1,
+        ),
+        // 閲覧できない・見つからない: 別の利用者の画面と問い合わせ、別のアプリのメッセージ、他人の添付、付与のない取得
+        variant(
+            &queries,
+            "invoke-surface",
+            "invoke-surface-other-user",
+            &["cb-surface", "cb-inst", "cb-noise", "cb-ch"],
+            "",
+            0,
+        ),
+        variant(
+            &queries,
+            "invoke-message",
+            "invoke-message-other-app",
+            &[&mid, "cb-ch", "cb-app-2"],
+            "",
+            0,
+        ),
+        variant(
+            &queries,
+            "options-poll",
+            "options-poll-other-user",
+            &["cb-options", "cb-noise"],
+            "",
+            0,
+        ),
+        variant(
+            &queries,
+            "upload-check",
+            "upload-check-others",
+            &[
+                &json!((1..=F).map(|i| format!("a-{i}")).collect::<Vec<_>>()).to_string(),
+                "550e8400-e29b-41d4-a716-4466554400a1",
+                "cb-ch",
+            ],
+            "",
+            1,
+        ),
+        variant(
+            &queries,
+            "upload-download",
+            "upload-download-not-granted",
+            &["a-1", "cb-inst"],
+            "",
+            0,
+        ),
+        // 掃除する行がない
+        variant(
+            &queries,
+            "upload-expire",
+            "upload-expire-none",
+            &[],
+            "DELETE FROM app_submitted_files WHERE expires_at<now();",
+            0,
+        ),
+        variant(
+            &queries,
+            "ui-expire",
+            "ui-expire-none",
+            &[],
+            "DELETE FROM app_ui WHERE expires_at<now();",
+            0,
+        ),
+        // バックフィルの最後（続きがない）
+        variant(
+            &queries,
+            "backfill-messages-first",
+            "backfill-messages-end",
+            &["m-99999999"],
+            "",
+            0,
+        ),
+        variant(
+            &queries,
+            "backfill-unfurls-first",
+            "backfill-unfurls-end",
+            &[r#"["m-99999999","",""]"#],
+            "",
+            0,
+        ),
+        variant(
+            &queries,
+            "backfill-ui-first",
+            "backfill-ui-end",
+            &["ui-99999999"],
+            "",
+            0,
+        ),
+    ];
+    // 一致しない restore（前の値から変わった行は戻さない）
+    for name in [
+        "restore-messages",
+        "restore-unfurls",
+        "restore-app-unfurls",
+        "restore-ui",
+    ] {
+        queries.iter_mut().find(|q| q.name == name).unwrap().rows = Some(0);
+    }
+    queries.extend(extra);
     for query in &queries {
         // バックフィルの app_unfurls の SELECT は、ソースでは UNFURLS_OF を format! で埋める
         let source_sql = query.sql.replace(unfurls_of, "{UNFURLS_OF}");
@@ -457,22 +636,26 @@ ANALYZE;
             db.batch_execute("VACUUM (ANALYZE) messages, app_ui, app_link_unfurls, attachments, app_submitted_files;").await?;
             let mut tasks = Vec::new();
             for _ in 0..concurrency {
-                let (url, name, sql, samples, bounds, violations) = (
+                let (url, name, sql, samples, bounds, violations, setup, expected) = (
                     url.clone(),
                     query.name,
                     prepared.clone(),
                     samples.clone(),
                     bounds.clone(),
                     violations.clone(),
+                    query.setup.clone(),
+                    query.rows,
                 );
                 tasks.push(tokio::spawn(async move {
                     let (db, nested) = plan_client(&url).await.unwrap();
                     // 初回も捨てずに 30 回
                     for sample in 0..30 {
+                        // 準備は同じトランザクションで先に流し、その計画は数えない
+                        db.batch_execute(&format!("BEGIN; {setup}")).await.unwrap();
                         nested.lock().unwrap().clear();
                         let start = std::time::Instant::now();
                         let rows = db
-                            .simple_query(&format!("BEGIN; {sql} ROLLBACK; DEALLOCATE ALL;"))
+                            .simple_query(&format!("{sql} ROLLBACK; DEALLOCATE ALL;"))
                             .await
                             .unwrap();
                         let roundtrip_ms = start.elapsed().as_secs_f64() * 1000.;
@@ -489,9 +672,18 @@ ANALYZE;
                         let value: Value = serde_json::from_str(raw).unwrap();
                         let plan = &value[0];
                         let mut relations = BTreeMap::new();
-                        scan(&plan["Plan"], &mut relations);
+                        let mut shape = Shape::default();
+                        scan(&plan["Plan"], &mut relations, &mut shape);
                         for child in &inner {
-                            scan(&child["Plan"], &mut relations);
+                            scan(&child["Plan"], &mut relations, &mut shape);
+                        }
+                        if let Some(rows) = expected
+                            && plan["Plan"]["Actual Rows"].as_u64() != Some(rows)
+                        {
+                            violations.lock().unwrap().insert(format!(
+                                "{name}: {} rows, expected {rows}",
+                                plan["Plan"]["Actual Rows"]
+                            ));
                         }
                         for (relation, work) in &relations {
                             let bound = if STATIC.contains(&relation.as_str()) {
@@ -510,6 +702,7 @@ ANALYZE;
                         samples.lock().unwrap().push(json!({
                             "name": name, "concurrency": concurrency, "relations": relations,
                             "blocks": blocks(plan) + inner.iter().map(blocks).sum::<u64>(),
+                            "intermediate": shape.intermediate, "sort_input": shape.sort_input,
                             "planning_ms": plan["Planning Time"], "execution_ms": plan["Execution Time"],
                             "roundtrip_ms": roundtrip_ms,
                             "plan": if sample == 0 { plan.clone() } else { Value::Null },

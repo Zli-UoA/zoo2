@@ -38,6 +38,15 @@ class BudgetTest(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.compare(self.fixture(300000, 100, 100), self.fixture(1000000, 110, 334))
 
+    def test_linear_intermediate_rows_fail(self):
+        small, large = self.fixture(300000), self.fixture(1000000)
+        for sample in small['samples']:
+            sample['intermediate'] = 100
+        for sample in large['samples']:
+            sample['intermediate'] = 334
+        with self.assertRaises(AssertionError):
+            self.compare(small, large)
+
     def test_missing_concurrent_samples_fail(self):
         for key in ('samples', 'api_samples'):
             data = self.fixture(1000000)
