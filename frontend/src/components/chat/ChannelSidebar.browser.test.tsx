@@ -598,9 +598,20 @@ it("reorders pinned channels with Alt+ArrowDown and drag and drop", async () => 
   // 先頭のリンクがピン留めの行（ドラッグできる）、後ろが通常のチャンネル一覧。
   const secondRow = designs[0]!.closest('[draggable="true"]')!;
   const dataTransfer = new DataTransfer();
+  const secondRect = secondRow.getBoundingClientRect();
   fireEvent.dragStart(firstRow, { dataTransfer });
-  fireEvent.dragOver(secondRow, { dataTransfer });
-  fireEvent.drop(secondRow, { dataTransfer });
+  // 行の上半分では前に、下半分では後ろに挿入する線を出す。
+  fireEvent.dragOver(secondRow, {
+    dataTransfer,
+    clientY: secondRect.top + 1,
+  });
+  expect(secondRow.querySelector('[data-drop-indicator="before"]')).not.toBeNull();
+  fireEvent.dragOver(secondRow, {
+    dataTransfer,
+    clientY: secondRect.bottom - 1,
+  });
+  expect(secondRow.querySelector('[data-drop-indicator="after"]')).not.toBeNull();
+  fireEvent.drop(secondRow, { dataTransfer, clientY: secondRect.bottom - 1 });
   expect(fixture.reorderPins).toHaveBeenCalledWith(["design", "general"], "general");
 });
 

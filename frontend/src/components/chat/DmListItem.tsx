@@ -23,7 +23,9 @@ export function DmListItem({
   onDragStart,
   onDragEnd,
   onDragOver,
+  onDragLeave,
   onDrop,
+  dropIndicator = null,
   onKeyDown,
 }: {
   channel: ChannelRow;
@@ -37,10 +39,13 @@ export function DmListItem({
   actions?: ReactNode;
   draggable?: boolean;
   dragging?: boolean;
-  onDragStart?: () => void;
+  onDragStart?: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd?: () => void;
   onDragOver?: (event: DragEvent<HTMLDivElement>) => void;
-  onDrop?: () => void;
+  onDragLeave?: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop?: (event: DragEvent<HTMLDivElement>) => void;
+  /** ドラッグ中の挿入位置。行の上端・下端に線を出す。 */
+  dropIndicator?: "before" | "after" | null;
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
 }) {
   const { t } = useTranslation();
@@ -58,22 +63,33 @@ export function DmListItem({
           ? (event) => {
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData("text/plain", channel.id);
-              onDragStart?.();
+              onDragStart?.(event);
             }
           : undefined
       }
       onDragEnd={onDragEnd}
       onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
       onDrop={
         draggable || onDrop
           ? (event) => {
               event.preventDefault();
-              onDrop?.();
+              onDrop?.(event);
             }
           : undefined
       }
       onKeyDown={onKeyDown}
     >
+      {dropIndicator ? (
+        <span
+          aria-hidden="true"
+          data-drop-indicator={dropIndicator}
+          className={cn(
+            "pointer-events-none absolute inset-x-0 z-20 h-0.5 rounded-full bg-brand",
+            dropIndicator === "before" ? "-top-px" : "-bottom-px",
+          )}
+        />
+      ) : null}
       <Link
         to="/channels/$channelId"
         params={{ channelId: channel.id }}

@@ -1,5 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { expect, fn } from "storybook/test";
+
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 
 import { storyChannels } from "../../../.storybook/fixtures";
 import { CallContext } from "../../lib/call/call-context";
@@ -47,6 +49,14 @@ export const Nsfw: Story = {
 };
 
 /** 通話中のチャンネルには、ピン留めの行でもヘッドホンのアイコンを出す。 */
+/** ドラッグ中の挿入位置。行の上端に移動先の線を出す。 */
+export const DropIndicator: Story = {
+  args: { dropIndicator: "before", draggable: true },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector('[data-drop-indicator="before"]')).toBeVisible();
+  }),
+};
+
 export const ActiveCall: Story = {
   decorators: [
     (Story) => (

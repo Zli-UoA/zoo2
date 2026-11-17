@@ -44,6 +44,12 @@ export function PinnedSection({
   const { locale } = useLocale();
   const pins = usePinnedChannels();
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    channelId: string;
+    edge: "before" | "after";
+  } | null>(null);
+  // dragstart の state 更新より先に drop が来ても、ドラッグ元を見失わない。
+  const draggingIdRef = useRef<string | null>(null);
   const busy = pins.pending.size > 0;
 
   const channelById = useMemo(
@@ -134,6 +140,19 @@ export function PinnedSection({
     void pins.reorderPins(moveWithin(ids, channelId, targetIndex), channelId);
   }
 
+  function moveToTarget(draggedId: string, targetId: string, edge: "before" | "after") {
+    if (busy || draggedId === targetId) {
+      return;
+    }
+    const rest = ids.filter((id) => id !== draggedId);
+    const targetIndex = rest.indexOf(targetId);
+    if (targetIndex < 0) {
+      return;
+    }
+    rest.splice(edge === "before" ? targetIndex : targetIndex + 1, 0, draggedId);
+    void pins.reorderPins(rest, draggedId);
+  }
+
   function handleKeyDown(channelId: string, event: KeyboardEvent<HTMLDivElement>) {
     if (busy || !event.altKey) {
       return;
@@ -151,24 +170,53 @@ export function PinnedSection({
   function dragHandlers(channelId: string) {
     return {
       draggable: !busy,
-      onDragStart: () => setDraggingId(channelId),
-      onDragEnd: () => setDraggingId(null),
+      onDragStart: (event: DragEvent<HTMLDivElement>) => {
+        if (busy) {
+          return;
+        }
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", channelId);
+        draggingIdRef.current = channelId;
+        setDraggingId(channelId);
+        setDropTarget(null);
+      },
+      onDragEnd: () => {
+        draggingIdRef.current = null;
+        setDraggingId(null);
+        setDropTarget(null);
+      },
       onDragOver: (event: DragEvent<HTMLDivElement>) => {
         if (busy) {
           return;
         }
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
+        const rect = event.currentTarget.getBoundingClientRect();
+        const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+        setDropTarget((previous) =>
+          previous?.channelId === channelId && previous.edge === edge
+            ? previous
+            : { channelId, edge },
+        );
       },
-      onDrop: () => {
-        if (busy) {
+      onDragLeave: (event: DragEvent<HTMLDivElement>) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
           return;
         }
-        const target = ids.indexOf(channelId);
-        if (draggingId && draggingId !== channelId && target >= 0) {
-          reorderTo(draggingId, target);
-        }
+        setDropTarget((previous) => (previous?.channelId === channelId ? null : previous));
+      },
+      onDrop: (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        const dragged = draggingIdRef.current;
+        const rect = event.currentTarget.getBoundingClientRect();
+        const edge = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+        draggingIdRef.current = null;
         setDraggingId(null);
+        setDropTarget(null);
+        if (busy || !dragged) {
+          return;
+        }
+        moveToTarget(dragged, channelId, edge);
       },
     };
   }
@@ -267,9 +315,11 @@ export function PinnedSection({
                   onKeyDown={(event) => handleKeyDown(channel.id, event)}
                   draggable={dragProps.draggable}
                   dragging={draggingId === channel.id}
-                  onDragStart={() => setDraggingId(channel.id)}
+                  dropIndicator={dropTarget?.channelId === channel.id ? dropTarget.edge : null}
+                  onDragStart={dragProps.onDragStart}
                   onDragEnd={dragProps.onDragEnd}
                   onDragOver={dragProps.onDragOver}
+                  onDragLeave={dragProps.onDragLeave}
                   onDrop={dragProps.onDrop}
                 />
               );
@@ -285,9 +335,11 @@ export function PinnedSection({
                 onKeyDown={(event) => handleKeyDown(channel.id, event)}
                 draggable={dragProps.draggable}
                 dragging={draggingId === channel.id}
+                dropIndicator={dropTarget?.channelId === channel.id ? dropTarget.edge : null}
                 onDragStart={dragProps.onDragStart}
                 onDragEnd={dragProps.onDragEnd}
                 onDragOver={dragProps.onDragOver}
+                onDragLeave={dragProps.onDragLeave}
                 onDrop={dragProps.onDrop}
               />
             );
