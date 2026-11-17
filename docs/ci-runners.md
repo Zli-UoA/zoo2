@@ -28,7 +28,7 @@ publicでは状態確認用トークンがなくても、通常用とDocker用�
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 
-- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われます。Docker不要ジョブはkubecamp、Docker必須ジョブはGitHub-hosted、大容量ジョブはzli-k8sです。
+- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われます。Docker不要ジョブはkubecamp、Docker必須ジョブと大容量ジョブはGitHub-hostedです（zoo2に登録されるRunnerは `zli-k8s-heavy` だけで、`zli-k8s` は存在しないため、大容量ジョブの `runs-on` のfallbackもGitHub-hostedです）。
 - 呼び出し側の `runner` ジョブ自体がfailure・skipped・cancelledになった場合: 後続ジョブは `needs` の成功条件を満たさずskipされます。`runs-on` のfallbackには到達しません。Re-run all jobsで選び直してください。
 - 判定ジョブがキュー待ちの間は、後続ジョブも待ちます。
 
