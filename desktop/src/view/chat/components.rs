@@ -34,11 +34,14 @@ pub struct Target<'a> {
 }
 
 /// 確認（confirm）を表示中の操作のキー。描画の順番によらず、操作そのもの（custom_id と選んだ値）で決める
+/// custom_id と値は区切り文字を含みうるので、JSON の配列にして区切る（`menu-vdelete` のボタンと
+/// `menu` の選択肢の値 `delete` が同じキーにならない）
 fn confirm_key(target: &Target, custom_id: &str, value: Option<&str>) -> String {
-    match value {
-        Some(v) => format!("{}-cid-{custom_id}-v{v}", target.key),
-        None => format!("{}-cid-{custom_id}", target.key),
-    }
+    format!(
+        "{}-confirm-{}",
+        target.key,
+        serde_json::json!([custom_id, value])
+    )
 }
 
 fn focus(target: &Target, key: &str, cx: &mut Context<WorkspaceView>) -> FocusHandle {
@@ -685,4 +688,14 @@ fn task_line(
     v_flex()
         .child(format!("{mark} {}", task.title))
         .children(task.details.clone().map(|d| small(d, cx)))
+}
+
+#[cfg(test)]
+mod confirm_key_tests {
+    #[test]
+    fn buttons_and_choices_do_not_share_a_key() {
+        let key = |id: &str, v: Option<&str>| serde_json::json!([id, v]).to_string();
+        assert_ne!(key("menu-vdelete", None), key("menu", Some("delete")));
+        assert_ne!(key("a", Some("b")), key("a", None));
+    }
 }
