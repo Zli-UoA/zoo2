@@ -24,3 +24,19 @@ describe("setAppBadge", () => {
     expect(() => setAppBadge(2)).not.toThrow();
   });
 });
+
+describe("setAppBadge errors", () => {
+  it("clears for negative counts", () => {
+    const clear = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { setAppBadge: vi.fn(), clearAppBadge: clear });
+    setAppBadge(-1);
+    expect(clear).toHaveBeenCalled();
+  });
+
+  it("swallows rejections", async () => {
+    const setter = vi.fn().mockRejectedValue(new Error("denied"));
+    vi.stubGlobal("navigator", { setAppBadge: setter, clearAppBadge: vi.fn() });
+    expect(() => setAppBadge(1)).not.toThrow();
+    await Promise.resolve();
+  });
+});

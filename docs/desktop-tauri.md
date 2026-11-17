@@ -100,7 +100,7 @@ ShapeEvent ─▶ 1 本のループ
 - 表示は `notify-rust` で行う。`tauri-plugin-notification` はデスクトップでクリックを受け取れないため使わない。
 - Linux では通知に action を付け、専用のスレッドで `wait_for_action` を待つ。クリックされたら、ウィンドウを前に出して `zoo://open` を送る。
 - macOS では通知を出すだけで、クリックには対応しない（後続の項目）。
-- **未読バッジ**: React が `useUnifiedNotifications().unreadCount`（チャンネルと ActivityPub の未読から重複を引いた数）を `zoo_set_badge` で渡し、Rust 側が `set_badge_count` で Dock やランチャーのアイコンに出す。`0` 以下で消す。Rust 側のストアには ActivityPub の分がないので、数は React から受け取る。macOS の Dock と、Unity ランチャーの API がある Linux で表示される。API のない Linux のデスクトップ環境と Windows では出ない（Windows は `set_overlay_icon` が別に要るので範囲外）。古い版のアプリにはこのコマンドがないので、Web 側は呼べなくても何もしない（`PROTOCOL_VERSION` は上げない）。PWA では、同じ未読数を `navigator.setAppBadge` で出す（`AppBadgeBridge`）。
+- **未読バッジ**: React が `useUnifiedNotifications().unreadCount`（チャンネルと ActivityPub の未読から重複を引いた数）を `zoo_set_badge` で渡し、Rust 側が `set_badge_count` で Dock やランチャーのアイコンに出す。`0` 以下で消す。Rust 側のストアには ActivityPub の分がないので、数は React から受け取る。コマンドは同期にして、呼ばれた順に適用する。ログアウトや期限切れ（`follow_session`）では Rust 側でも消す。macOS の Dock では表示される。Linux では、libunity が入っていて `com.canonical.Unity.LauncherEntry` を実装するドックが動いているときだけ出る（素の GNOME では出ない）。デスクトップファイル名が `zoo2.desktop`（`productName`）と一致することも要る。Windows は配布対象外。古い版のアプリにはこのコマンドがないので、Web 側は呼べなくても何もしない（`PROTOCOL_VERSION` は上げない）。PWA では、同じ未読数を `navigator.setAppBadge` で出す（`AppBadgeBridge`）。アプリを閉じている間の更新はしない（サーバーの push に未読数がないため）。
 
 ## 常駐、単一インスタンス
 

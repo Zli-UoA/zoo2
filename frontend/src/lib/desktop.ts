@@ -132,7 +132,7 @@ export function desktopSetFocus(channelId: string | null): void {
 
 /** Dock やランチャーのアイコンに未読数を出す。`0` 以下で消す。古い版のアプリでは何も起きない。 */
 export function desktopSetBadge(count: number): void {
-  void invoke("zoo_set_badge", { count: Math.max(0, Math.floor(count)) }).catch(() => {});
+  void invoke("zoo_set_badge", { count: Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0 }).catch(() => {});
 }
 
 /** アプリが OS の通知を出すかどうか。 */

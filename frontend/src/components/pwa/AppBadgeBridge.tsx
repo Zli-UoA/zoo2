@@ -17,12 +17,13 @@ function AppBadgeBridgeInner() {
   const { unreadCount } = useUnifiedNotifications();
   useEffect(() => {
     setAppBadge(unreadCount);
-    // 別のタブや、閉じている間の push で変わった値を、戻ってきたときに合わせ直す。
+    // 戻ってきたときに、OS 側の値を合わせ直す。
     const resync = () => {
       if (document.visibilityState === "visible") setAppBadge(unreadCount);
     };
     document.addEventListener("visibilitychange", resync);
     return () => document.removeEventListener("visibilitychange", resync);
   }, [unreadCount]);
+  useEffect(() => () => setAppBadge(0), []);
   return null;
 }
