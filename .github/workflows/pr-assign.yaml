@@ -1,0 +1,64 @@
+name: pr-assign
+
+# PR の作成・Draft 解除時に、レビュアーと Assignee を自動で指定する。
+# レビュアーから作成者本人は除外する。1 人分でも失敗してもほかの指定は続ける。
+# reopened では再依頼しない（承認済みの人に再度依頼しないため）。
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  assign:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v8
+        env:
+          REVIEWERS: Kai-Z-JP,ressharu,Tenplant1203,kashu-02,39sho
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const author = pr.user.login.toLowerCase();
+            const split = (s) => s.split(',').map((v) => v.trim()).filter(Boolean);
+
+            const reviewers = split(process.env.REVIEWERS)
+              .filter((r) => r.toLowerCase() !== author);
+
+            // レビュアーは 1 人ずつ依頼する。1 人の失敗で全体を止めない。
+            for (const reviewer of reviewers) {
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  reviewers: [reviewer],
+                });
+                core.info(`requested review: ${reviewer}`);
+              } catch (e) {
+                core.warning(`failed to request review from ${reviewer}: ${e.message}`);
+              }
+            }
+
+            // Assignee は PR の作成者本人にする。付与されなかった場合は警告を出す。
+            try {
+              const res = await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                assignees: [pr.user.login],
+              });
+              const assigned = res.data.assignees.some((a) => a.login.toLowerCase() === author);
+              if (assigned) {
+                core.info(`assigned: ${pr.user.login}`);
+              } else {
+                core.warning(`assignee was not set: ${pr.user.login}`);
+              }
+            } catch (e) {
+              core.warning(`failed to add assignee: ${e.message}`);
+            }
