@@ -174,6 +174,30 @@ export function moveWithin(base: readonly string[], moved: string, targetIndex: 
 }
 
 /**
+ * 並び替えの応答を待たずに表示へ反映する。アーカイブ中のピンは元のスロットに
+ * 残し、有効なピンだけを `nextOrder` の順に当てはめる（サーバーの
+ * `build_pin_order` と同じ考え方）。
+ */
+export function reorderPinsLocally(
+  pins: readonly (UserPinnedChannelResponse | UserPinnedChannelRow)[],
+  nextOrder: readonly string[],
+): UserPinnedChannelResponse[] {
+  const active = sortPins(pins);
+  const byId = new Map(active.map((pin) => [pin.channel_id, pin]));
+  let nextIndex = 0;
+  const ordered = active.map((pin) => {
+    const archived = "archived" in pin && pin.archived === true;
+    if (archived) {
+      return pin;
+    }
+    const channelId = nextOrder[nextIndex] ?? pin.channel_id;
+    nextIndex += 1;
+    return byId.get(channelId) ?? pin;
+  });
+  return ordered.map((pin, position) => ({ ...pin, position }));
+}
+
+/**
  * 競合したあとに送り直す並び。他端末が追加したピンは最新のサーバ順で残し、
  * `intendedOrder` で `movedChannelId` の直後に置いた既存要素の前（末尾へ動かした
  * ときは直前の既存要素の後ろ）へ、動かした項目だけを入れ直す。
@@ -234,6 +258,8 @@ function usePinnedChannelsState(): {
   );
 
   const [pins, setPins] = useState<UserPinnedChannelResponse[]>([]);
+  const pinsRef = useRef(pins);
+  pinsRef.current = pins;
   const [version, setVersion] = useState(0);
   const [loading, setLoading] = useState(Boolean(currentUserId));
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
@@ -534,6 +560,9 @@ function usePinnedChannelsState(): {
           requestUserId,
           currentUserIdRef.current,
         );
+      const previousPins = sortPins(pinsRef.current);
+      const optimisticPins = reorderPinsLocally(previousPins, nextOrder);
+      setPins(optimisticPins);
       let order = [...nextOrder];
       try {
         await enqueueWrite(async () => {
@@ -574,6 +603,9 @@ function usePinnedChannelsState(): {
         });
       } catch (cause) {
         if (stale()) return;
+        setPins((current) =>
+          pinsSignature(current) === pinsSignature(optimisticPins) ? previousPins : current,
+        );
         fail(cause, "channelPins.errors.reorderConflict");
         if (channelPinsConflict(cause)) await fetchAuthoritative();
       } finally {

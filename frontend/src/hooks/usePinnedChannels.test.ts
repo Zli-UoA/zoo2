@@ -11,6 +11,7 @@ import {
   isStalePinWrite,
   moveWithin,
   pinsSignature,
+  reorderPinsLocally,
   sortPins,
   usePinnedChannels,
 } from "./usePinnedChannels";
@@ -113,6 +114,16 @@ describe("pure pin helpers", () => {
     // ユーザー切り替えの effect が走る前でも、別ユーザーなら送らない。
     expect(isStalePinWrite(1, 1, "alice", "bob")).toBe(true);
     expect(isStalePinWrite(1, 2, "alice", "alice")).toBe(true);
+  });
+
+  it("applies a reorder optimistically while keeping archived slots", () => {
+    const pins = [pin("a", 0), { ...pin("old", 1), archived: true }, pin("c", 2)];
+    expect(reorderPinsLocally(pins, ["c", "a"]).map((item) => item.channel_id)).toEqual([
+      "c",
+      "old",
+      "a",
+    ]);
+    expect(reorderPinsLocally(pins, ["c", "a"]).map((item) => item.position)).toEqual([0, 1, 2]);
   });
 
   it("recognizes only the documented conflict and limit bodies", () => {
