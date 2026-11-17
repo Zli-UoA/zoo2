@@ -1,11 +1,11 @@
-name: pr-assign
+name: PR assign
 
 # PR の作成・Draft 解除時に、レビュアーと Assignee を自動で指定する。
 # レビュアーから作成者本人は除外する。1 人分でも失敗してもほかの指定は続ける。
 # reopened では再依頼しない（承認済みの人に再度依頼しないため）。
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, ready_for_review]
 
 permissions:
@@ -14,7 +14,9 @@ permissions:
 
 jobs:
   assign:
-    if: github.event.pull_request.draft == false
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -27,8 +29,22 @@ jobs:
             const author = pr.user.login.toLowerCase();
             const split = (s) => s.split(',').map((v) => v.trim()).filter(Boolean);
 
+            // 既にレビューを提出した人には再依頼しない（Draft に戻して Ready にした場合も含む）。
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const reviewed = new Set(
+              reviews
+                .filter((r) => r.state !== 'PENDING' && r.user)
+                .map((r) => r.user.login.toLowerCase()),
+            );
+
             const reviewers = split(process.env.REVIEWERS)
-              .filter((r) => r.toLowerCase() !== author);
+              .filter((r) => r.toLowerCase() !== author)
+              .filter((r) => !reviewed.has(r.toLowerCase()));
 
             // レビュアーは 1 人ずつ依頼する。1 人の失敗で全体を止めない。
             for (const reviewer of reviewers) {
