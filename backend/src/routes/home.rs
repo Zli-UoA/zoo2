@@ -190,9 +190,15 @@ async fn create(
         }
     }
     // A channel reply into a thread that tracks participants needs joining, as in POST /api/messages.
-    if let (Some(_), Some(channel)) = (&parent, &body.channel_id)
+    // Lock the canonical root first, as thread_operation (leave/join) does, so a concurrent leave
+    // commits before this check and the reply cannot silently rejoin through the activity trigger.
+    if parent.is_some()
+        && let Some(channel) = &body.channel_id
         && let Some(parent_id) = parent.as_ref().and_then(|p| p["id"].as_str())
     {
+        query(&mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=thread_root($1) AND channel_id=$2 FOR NO KEY UPDATE",
+            &[parent_id, channel]).await?;
         let state = query(&mut tx,
             "SELECT json_build_object('blocked',EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=thread_root($1)) AND NOT EXISTS(SELECT 1 FROM thread_participants t WHERE t.thread_id=thread_root($1) AND t.user_id=$2 AND t.left_at IS NULL))::text FROM messages m WHERE m.id=$1 AND m.channel_id=$3",
             &[parent_id, &user.id, channel]).await?;
