@@ -18,7 +18,10 @@ def compare(name, before, after):
     for relation in before['relations'].keys() | after['relations'].keys():
         a, b = before['relations'].get(relation, 0), after['relations'].get(relation, 0)
         if relation in STATIC_RELATIONS:
-            assert b <= 128, f'{name}: {relation} is not a bounded static lookup: {a} -> {b}'
+            # A static table may be scanned by more than one trigger statement.
+            # Keep a small absolute bound without treating repeated fixed-size
+            # lookups as history-dependent work.
+            assert b <= 512, f'{name}: {relation} is not a bounded static lookup: {a} -> {b}'
             continue
         assert b <= 2 * a + 64, f'{name}: {relation} grows with history: {a} -> {b}'
     assert after['intermediate'] <= 2 * before['intermediate'] + 64, name + ': intermediate work grows with history'

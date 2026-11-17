@@ -1141,6 +1141,16 @@ pub(super) async fn lookup_profiles(
 async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, SyncError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await.map_err(AppError::from)?;
+    // store と同じ順序で、カーソル更新の間も対応先を固定する。store の commit 後に
+    // ZIP 再マッピングが起きても、古い task の max_ts で新しい対応先の cursor を進めない。
+    super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
+    ensure_target_unchanged(
+        &mut tx,
+        &task.team_id,
+        &task.slack_channel_id,
+        &task.channel_id,
+    )
+    .await?;
     // 新しい投稿があったときだけ、カーソルを進める (逆戻りはしない)。軽い同期 (監視中のスレッドの返信を取っていない)
     // は進めない。進めると、次の全部取り直しが、スレッドの返信を新しいカーソルから取るので、その前に付いた返信が
     // 範囲から外れる。履歴の取り直しは、決定的 ID で重複しない

@@ -222,6 +222,10 @@ POSTGRES_PASSWORD=staging-test-password \
 
   `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261128030006_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
 
+### Slack ゲスト所属トリガーの適用順序
+
+`20261128030004_guest_membership_no_key_update.sql` は `channel_user` の INSERT 時に `users` 行を `FOR NO KEY UPDATE` でロックします。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず advisory lock を取る経路があるため、ローリングデプロイ中に「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行すると PostgreSQL のデッドロック (SQLSTATE 40P01) で一方が失敗し得ます。この migration を適用する前に旧バックエンドの書き込みを止め、適用後に新バックエンドを起動してください。停止できない場合は、40P01 を一時的な競合として再試行してください。
+
   `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 
 フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged:1.30.6-alpine` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。あわせて `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`X-Frame-Options: DENY` と `Content-Security-Policy` を付与します。CSP は `infra/frontend-nginx.conf` をテンプレートとして起動時に envsubst し、ビルド成果物の `index.html` に含まれるインライン script の SHA-256（`infra/csp-hashes.mjs` がビルド時に生成）を `script-src` に、`connect-src` には同一オリジンと `CSP_CONNECT_SRC` を設定します（詳細は下記「CSP」）。フロント・プロキシ・マイグレーションのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE`・`MIGRATE_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
