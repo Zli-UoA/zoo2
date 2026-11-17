@@ -223,18 +223,18 @@ async fn thread_operation(
         &[root_id,&auth.id]).await?;
     row["can_participate"] = json!(channel["member"] == true);
     // Who is in the thread, and whether replies need a join. Reading is already authorized by
-    // the channel check above. P = participant rows of this one thread.
-    // - `keys`: one primary-key range scan (thread_id,*) of P rows.
-    // - `users` is read only through `u.id = ANY(ARRAY(keys))`, an index lookup per target key.
-    //   A plain join let the planner pick a Hash Join with a full `users` scan once P is large,
-    //   so the work grew with all users instead of with P.
-    // - `tracked` is an index probe on the (thread_id,*) prefix with LIMIT 1, not an EXISTS
-    //   semi-join, which the planner turned into a scan of every thread's rows.
-    // The list sorts the P live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
+    // the channel check above. P = participant rows of this one thread (left rows included).
+    // - `keys`: the single primary-key range scan (thread_id,*) of those P rows. `tracked`,
+    //   the count and the list are all derived from it; no second probe of the table. A separate
+    //   `EXISTS`/`LIMIT 1` probe let the planner choose a sequential scan that skipped every
+    //   other thread's rows before reaching the target.
+    // - `users` is read only through `u.id = ANY(ARRAY(keys))`, an index lookup per live key,
+    //   not a Hash Join that scans all users.
+    // The list sorts the live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
     let participants = crate::apps::one(&mut tx,
-        "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at FROM thread_participants p WHERE p.thread_id=$1 AND p.left_at IS NULL), \
-              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM users u JOIN keys k ON k.user_id=u.id WHERE u.id = ANY(ARRAY(SELECT user_id FROM keys)) AND NOT u.is_deactivated) \
-         SELECT json_build_object('tracked',COALESCE((SELECT true FROM thread_participants WHERE thread_id=$1 LIMIT 1),false),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text",
+        "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at,p.left_at FROM thread_participants p WHERE p.thread_id=$1), \
+              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM users u JOIN keys k ON k.user_id=u.id WHERE u.id = ANY(ARRAY(SELECT user_id FROM keys WHERE left_at IS NULL)) AND k.left_at IS NULL AND NOT u.is_deactivated) \
+         SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text",
         &[root_id]).await?;
     row["tracked"] = participants["tracked"].clone();
     row["participant_count"] = participants["count"].clone();
