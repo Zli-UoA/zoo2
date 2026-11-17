@@ -57,6 +57,30 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun kitchenFallbackConvertsTheDpSlotToSpOnceAtLargeFontScale() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(
+                    LocalApp provides fixture.app,
+                    androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(2f, 1.8f),
+                ) {
+                    MaterialTheme {
+                        ReactionEmoji("kitchen:1f431_1f600", size = 24.dp, loadCatalog = false)
+                    }
+                }
+            }
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText("🐱", useUnmergedTree = true).performSemanticsAction(
+                androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+            ) { it(layouts) }
+            assertEquals(1, layouts.size)
+            assertEquals(24f / 1.8f, layouts.single().layoutInput.style.fontSize.value, 0.01f)
+            assertEquals(layouts.single().layoutInput.style.fontSize, layouts.single().layoutInput.style.lineHeight)
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun emojiPickerRecentsRenderKitchenImagesWithPhoneSizedTargets() {
         val fixture = Fixture()
         var width by mutableStateOf(256.dp)

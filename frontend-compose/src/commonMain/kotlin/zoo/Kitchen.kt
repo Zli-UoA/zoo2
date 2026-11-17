@@ -121,6 +121,7 @@ fun ReactionEmoji(
     size: Dp = 20.dp,
 ) {
     val app = LocalApp.current
+    val glyphSize = with(androidx.compose.ui.platform.LocalDensity.current) { size.toSp() }
     var url by
         remember(value, catalog) {
             mutableStateOf<String?>(catalog?.let { kitchenImage(it, value) })
@@ -161,14 +162,14 @@ fun ReactionEmoji(
         Box(modifier.size(size), contentAlignment = Alignment.Center) {
             Text(
                 componentGlyph(value.removePrefix("kitchen:").substringBefore('_')),
-                size = size.value.sp,
-                lineHeight = size.value.sp,
+                size = glyphSize,
+                lineHeight = glyphSize,
             )
         }
     else if (value.startsWith(":")) Text(value, modifier)
     else
         Box(modifier.size(size), contentAlignment = Alignment.Center) {
-            Text(value, size = size.value.sp, lineHeight = size.value.sp, maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Visible)
+            Text(value, size = glyphSize, lineHeight = glyphSize, maxLines = 1, softWrap = false, overflow = androidx.compose.ui.text.style.TextOverflow.Visible)
         }
 }
 
