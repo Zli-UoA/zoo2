@@ -1055,11 +1055,11 @@ function HomeScreenContent({
                         <div
                           role="group"
                           aria-label={t("home.actions")}
-                          className="mt-2 flex items-center justify-between gap-2 text-muted-foreground"
+                          className="mt-1 flex items-center gap-1 text-muted-foreground"
                         >
                           <Button
                             variant="ghost"
-                            size="sm"
+                            size="xs"
                             aria-label={`${t("home.reply")} ${post.replies ?? 0}`}
                             onClick={() => composerRef.current?.reply(post)}
                           >
@@ -1068,7 +1068,7 @@ function HomeScreenContent({
                           </Button>
                           <Button
                             variant="ghost"
-                            size="sm"
+                            size="xs"
                             aria-label={`${t(post.reposted ? "home.undoRepost" : "home.repost")} ${post.reposts ?? 0}`}
                             aria-pressed={post.reposted ?? false}
                             disabled={pendingRepost !== null || post.visibility === "followers"}
@@ -1094,7 +1094,7 @@ function HomeScreenContent({
                           </Button>
                           <Button
                             variant="ghost"
-                            size="sm"
+                            size="xs"
                             aria-label={`${t("home.react")} ${post.likes ?? 0}`}
                             onClick={() => setReactionPost(post)}
                           >
