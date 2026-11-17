@@ -49,6 +49,13 @@ const cases = [
     warning: 'Hosted minutes unavailable: GET /organizations/{org}/settings/billing/usage (403; accepted permissions: administration=read)'}, A, A],
   ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
+  // 重いジョブだけ、public でも CI_LARGE_RUNNER で heavy に切り替えられる。
+  ['public with CI_LARGE_RUNNER sends only large jobs to heavy', {payload: {repository: {private: false}}, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy'}, H, H],
+  ['public with CI_LARGE_RUNNER does not need the status token', {payload: {repository: {private: false}}, token: false, large: 'zli-k8s-heavy', largeExpected: 'zli-k8s-heavy'}, H, H],
+  ['public with another CI_LARGE_RUNNER stays hosted', {payload: {repository: {private: false}}, large: 'zli-k8s', warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
+  ['fork PR ignores CI_LARGE_RUNNER', {event: 'pull_request', payload: {...pull('someone/repo'), repository: {private: false}}, large: 'zli-k8s-heavy'}, H, H],
+  ['merge group ignores CI_LARGE_RUNNER', {event: 'merge_group', payload: {repository: {private: false}}, large: 'zli-k8s-heavy'}, H, H],
+  ['private ignores CI_LARGE_RUNNER', {payload: privateRepo, large: 'zli-k8s-heavy', runners: [camp()], usage: [usage('repo', 1000)]}, K, H],
 ];
 for (const [name, input, expected, hostedExpected] of cases) {
   test(`select-runner: ${name}`, async () => {
@@ -58,6 +65,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
     const payload = input.payload || privateRepo;
     const fork = input.event === 'pull_request' && payload.pull_request.head.repo.full_name !== 'Zli-UoA/repo';
     process.env.HAS_STATUS_TOKEN = String(input.token !== false);
+    process.env.LARGE_RUNNER = input.large || '';
     const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
     await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
       {eventName: input.event || 'push', payload, repo: {owner: 'Zli-UoA', repo: 'repo'}},
@@ -82,7 +90,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
         if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
         return {data: {usageItems: input.usage || []}};
       }});
-    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
+    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': input.largeExpected ?? hostedExpected});
     const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
     const checksMinutes = !hostedOnly && input.token !== false;
     assert.deepEqual(calls, {

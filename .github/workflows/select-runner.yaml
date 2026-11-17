@@ -39,12 +39,14 @@ jobs:
         id: select
         env:
           HAS_STATUS_TOKEN: ${{ secrets.runner-status-token != '' }}
+          LARGE_RUNNER: ${{ vars.CI_LARGE_RUNNER }}
         with:
           github-token: ${{ secrets.runner-status-token || github.token }}
           script: |
             const KUBECAMP = 'zli-kubecamp-no-docker';
             const SCALE_SET = 'zli-k8s';
             const HOSTED = 'ubuntu-latest';
+            const LARGE_RUNNER = 'zli-k8s-heavy';
             // Included minutes of GitHub Free for private repositories; the margin
             // covers billing lag and jobs started after the check. Every OS draws on
             // the same allowance by price, so usage is counted in Linux minutes.
@@ -53,10 +55,10 @@ jobs:
             const LINUX_MINUTE_PRICE = 0.006;
             const org = context.repo.owner;
             const request = {timeout: 10000};
-            const use = (runsOn, hostedRunsOn, reason) => {
+            const use = (runsOn, hostedRunsOn, reason, largeRunsOn = hostedRunsOn) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
               core.setOutput('docker-runs-on', JSON.stringify(hostedRunsOn));
-              core.setOutput('large-runs-on', JSON.stringify(hostedRunsOn));
+              core.setOutput('large-runs-on', JSON.stringify(largeRunsOn));
               core.info(`Docker-free: ${runsOn}; Docker/large: ${hostedRunsOn}: ${reason}`);
             };
             const pr = context.payload.pull_request;
@@ -70,7 +72,11 @@ jobs:
             // An idle self-hosted runner is not a reservation. Fan-out can queue
             // behind other workflows before dispatch, so public CI uses hosted.
             if (context.payload.repository?.private === false) {
-              return use(HOSTED, HOSTED, 'public repository; no self-hosted queue');
+              // 重いジョブだけ、Actions variable CI_LARGE_RUNNER で、大きな runner（zoo2-infra の zli-k8s-heavy）に切り替えられる。
+              // 空なら Hosted。fork の PR と merge group は、上で Hosted に固定している。
+              const large = (process.env.LARGE_RUNNER || '').trim();
+              if (large && large !== LARGE_RUNNER) core.warning(`CI_LARGE_RUNNER must be empty or ${LARGE_RUNNER}; using hosted`);
+              return use(HOSTED, HOSTED, 'public repository; no self-hosted queue', large === LARGE_RUNNER ? LARGE_RUNNER : HOSTED);
             }
             const hasToken = process.env.HAS_STATUS_TOKEN === 'true';
             // Hosted is free for public repositories. Private ones share the monthly

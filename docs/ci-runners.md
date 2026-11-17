@@ -4,7 +4,7 @@
 
 privateリポジトリと公開範囲が不明な場合は、Docker不要ジョブを **kubecamp → GitHub-hosted → zli-k8s** の順に選びます。Docker必須ジョブと2GiBを超える大容量ジョブは **GitHub-hosted → zli-k8s** の順です。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCは `zli-k8s` です。kubecampはPodSecurityでprivilegedを許可せず、DinDを置けません。zli-k8sのDinDはクラスタのetcdと同じディスクへの書き込みでAPI停止の原因になっていたため、最後の受け皿です。
 
-`runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は同じ値です。privateではonlineかつidleのkubecampをDocker不要ジョブに使い、不在・全台busyの場合はHostedの無料枠を確認した結果に従います。
+`runner` ジョブはcheckoutせずに選択し、Docker不要用の `runs-on`、Docker用の `docker-runs-on`、大容量用の `large-runs-on` を返します。Docker用と大容量用は、既定では同じ値です。publicのリポジトリだけ、Actions variable `CI_LARGE_RUNNER` に `zli-k8s-heavy` を設定すると、大容量用だけが [zoo2-infra の heavy runner](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/arc.md#runner-の種類待機オンデマンドheavy)（zoo07・zoo08の64コア、メモリlimit 9Gi）になります。空のとき、forkのPR、merge groupはHostedです。他の値は警告して無視します。privateではonlineかつidleのkubecampをDocker不要ジョブに使い、不在・全台busyの場合はHostedの無料枠を確認した結果に従います。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
