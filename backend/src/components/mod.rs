@@ -387,7 +387,7 @@ pub fn app(
 }
 
 /// 部品の数・文字数の合計・大きさ・文字の長さの上限だけに当たるエラーか（旧形式の入力では許す）。
-fn is_limit_error(e: &ValidationError) -> bool {
+pub(crate) fn is_limit_error(e: &ValidationError) -> bool {
     e.path.is_empty()
         && (e.message.starts_with("too many components")
             || e.message.starts_with("too much text")

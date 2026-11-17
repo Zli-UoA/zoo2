@@ -385,6 +385,45 @@ async fn message_submissions_require_only_the_labelled_inputs() -> anyhow::Resul
 }
 
 #[tokio::test]
+async fn legacy_unfurl_cards_keep_the_legacy_limits() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    let post = ok(
+        &f.app,
+        "POST",
+        "/api/apps/v1/messages",
+        &f.token,
+        json!({"channel_id":f.channel,"content":"see https://example.com/big"}),
+    )
+    .await;
+    let mid = post["data"]["id"].as_str().unwrap().to_string();
+    let path = format!("/api/apps/v1/messages/{mid}/unfurls");
+    // MessageCard::encode() の上限に収まる旧カード（部品の文字数の合計 4,000 文字は超える）は、今までどおり受け付ける
+    let fields: Vec<Value> = (0..10)
+        .map(|i| json!({"title": format!("F{i}"), "value": "v".repeat(1000)}))
+        .collect();
+    let (s, v) = request(
+        &f.app,
+        "POST",
+        &path,
+        &f.token,
+        json!({"url":"https://example.com/big","card":{"title":"t".repeat(500),"description":"d".repeat(4000),"fields":fields}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // 旧形式の上限を超えるカードは 400 のまま
+    let (s, _) = request(
+        &f.app,
+        "POST",
+        &path,
+        &f.token,
+        json!({"url":"https://example.com/big","card":{"title":"t".repeat(501)}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test]
 async fn external_selects_ask_the_app_for_options() -> anyhow::Result<()> {
     let f = fixture().await?;
     let mid = app_message(&f).await;
