@@ -28,8 +28,10 @@ fun SettingRow(
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         if (LocalTouchUi.current && maxWidth < 480.dp) {
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                Modifier.fillMaxWidth().padding(
+                    horizontal = AndroidDesign.settingsRowInset, vertical = AndroidDesign.spaceLarge,
+                ),
+                verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceLarge),
             ) {
                 SettingLabel(label, description, icon)
                 Row(
@@ -41,7 +43,10 @@ fun SettingRow(
             }
         } else {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(16.dp),
+                Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(
+                    horizontal = if (LocalTouchUi.current) AndroidDesign.settingsRowInset else 16.dp,
+                    vertical = if (LocalTouchUi.current) AndroidDesign.spaceLarge else 16.dp,
+                ),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -86,10 +91,10 @@ fun SettingsSection(
             .border(
                 1.dp,
                 borderColor ?: MaterialTheme.colorScheme.outline,
-                RoundedCornerShape(10.dp),
+                RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 10.dp),
             )
-            .padding(if (LocalTouchUi.current) 12.dp else 17.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(if (LocalTouchUi.current) AndroidDesign.screenInset else 17.dp),
+        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceLarge else 12.dp),
     ) {
         if (title.isNotEmpty())
             Column {
@@ -108,10 +113,10 @@ fun ThemeToggle(app: Session) {
     val focus = remember { List(3) { FocusRequester() } }
     Row(
         Modifier.then(webControlModifier("group"))
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp))
             .background(
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f),
-                RoundedCornerShape(10.dp),
+                RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp),
             )
             .padding(3.dp)
             .semantics {

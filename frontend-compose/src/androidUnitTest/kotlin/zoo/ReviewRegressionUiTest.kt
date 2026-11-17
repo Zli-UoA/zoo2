@@ -13,6 +13,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.semantics.SemanticsProperties
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import kotlinx.coroutines.*
@@ -41,6 +43,8 @@ class ReviewRegressionUiTest {
             override fun navigate(path: String) { app.update(app.env.copy(path = path)) }
             override fun action(name: String) {}
             override fun translate(key: String, args: Map<String, String>) = key
+            override fun relativeTimestamp(timestamp: String) = "5分前"
+            override fun notificationTime(timestamp: String) = "11/15 09:00"
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
         }
@@ -50,6 +54,43 @@ class ReviewRegressionUiTest {
             scope, initial,
         )
         fun close() { app.close(); scope.cancel() }
+    }
+
+    @Test
+    fun mediaPreviewClosesAndReopensWithWebViewDetachedBeforeDestruction() {
+        val fixture = Fixture()
+        var open by mutableStateOf(true)
+        val destroyed = mutableListOf<android.webkit.WebView>()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        if (open) MediaPreviewPanel("preview", { open = false }) {
+                            androidx.compose.ui.viewinterop.AndroidView(
+                                factory = { context ->
+                                    object : android.webkit.WebView(context) {
+                                        override fun destroy() {
+                                            assertNull(parent, "WebView must be detached before destroy")
+                                            destroyed.add(this)
+                                            super.destroy()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                onRelease = ::releasePreviewWebView,
+                            )
+                        }
+                    }
+                }
+            }
+            repeat(3) { index ->
+                ui.onNodeWithContentDescription("common.close").assertIsDisplayed().performClick()
+                ui.waitForIdle()
+                assertEquals(index + 1, destroyed.size)
+                assertTrue(fixture.app.overlays.isEmpty(), "Native preview must not blur the main scene")
+                if (index < 2) ui.runOnIdle { open = true }
+            }
+        } finally { fixture.close() }
     }
 
     @Test
@@ -95,6 +136,7 @@ class ReviewRegressionUiTest {
     fun aDownConsumedByTheScrollingParentDoesNotNavigateOnRelease() {
         val fixture = Fixture(Environment(path = "/home", touch = true))
         var stoppingScroll = true
+        var prepared = 0
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalApp provides fixture.app) {
@@ -107,7 +149,7 @@ class ReviewRegressionUiTest {
                                 waitForUpOrCancellation()
                             }
                         }) {
-                            NativeLink("/home/posts/target", Modifier.size(160.dp).testTag("target")) {
+                            NativeLink("/home/posts/target", Modifier.size(160.dp).testTag("target"), beforeNavigate = { prepared++ }) {
                                 Text("target")
                             }
                         }
@@ -117,6 +159,7 @@ class ReviewRegressionUiTest {
             ui.onNodeWithTag("target").performTouchInput { click() }
             ui.runOnIdle {
                 assertEquals("/home", fixture.app.env.path)
+                assertEquals(0, prepared)
                 stoppingScroll = false
             }
             ui.onNodeWithTag("target").performTouchInput {
@@ -125,9 +168,9 @@ class ReviewRegressionUiTest {
                 moveTo(center)
                 up()
             }
-            ui.runOnIdle { assertEquals("/home", fixture.app.env.path) }
+            ui.runOnIdle { assertEquals("/home", fixture.app.env.path); assertEquals(0, prepared) }
             ui.onNodeWithTag("target").performTouchInput { click() }
-            ui.runOnIdle { assertEquals("/home/posts/target", fixture.app.env.path) }
+            ui.runOnIdle { assertEquals("/home/posts/target", fixture.app.env.path); assertEquals(1, prepared) }
         } finally { fixture.close() }
     }
 
@@ -153,6 +196,108 @@ class ReviewRegressionUiTest {
             assertTrue(media.left >= container.left && media.right <= container.right)
             assertTrue(media.bottom <= next.top, "Tall images must remain inside their measured row")
             ui.onNodeWithTag("next").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun homeAndChannelAuthorsShareTheAvatarGutterAndTopAlignment() {
+        val fixture = Fixture()
+        val user = obj("id" to "alice", "display_name" to "Alice", "user_name" to "alice")
+        val post = obj("id" to "post", "user_id" to "alice", "display_name" to "Alice",
+            "user_name" to "alice", "content" to "Home body", "created_at" to "2026-11-15T00:00:00Z")
+        val message = obj("id" to "message", "user_id" to "alice", "content" to "Channel body",
+            "created_at" to "2026-11-15T00:00:00Z")
+        var width by mutableStateOf(320.dp)
+        var notificationReference by mutableStateOf(true)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Column(Modifier.width(width)) {
+                            if (notificationReference) {
+                                NotificationCard(fixture.app, listOf(obj(
+                                    "id" to "notification", "actor_id" to "alice", "is_read" to true,
+                                    "notification_type" to "mention", "created_at" to "2026-11-15T00:00:00Z",
+                                    "display_data" to obj("actor" to user, "message" to message,
+                                        "channel" to obj("id" to "general", "channel_name" to "general")),
+                                )), listOf(user), visible = false, readEnabled = false, onLoading = {})
+                            } else {
+                                HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {})
+                                MessageList(fixture.app, obj("id" to "general"),
+                                    listOf(message, obj("id" to "message-2", "user_id" to "alice",
+                                        "content" to "Grouped body", "created_at" to "2026-11-15T00:00:01Z")),
+                                    emptyList(), listOf(user), parent = null, wide = false,
+                                    modifier = Modifier.height(350.dp), readState = false)
+                            }
+                        }
+                    }
+                }
+            }
+            for (nextWidth in listOf(320.dp, 440.dp)) {
+                ui.runOnIdle { width = nextWidth; notificationReference = true }
+                val keyline = ui.onNodeWithText("Alice").fetchSemanticsNode().boundsInRoot.left
+                assertTrue(keyline > 0f)
+                ui.runOnIdle { notificationReference = false }
+                val names = ui.onAllNodesWithText("Alice").fetchSemanticsNodes()
+                assertEquals(2, names.size)
+                names.forEach { assertEquals(keyline, it.boundsInRoot.left, 1f) }
+                val avatars = ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true).fetchSemanticsNodes()
+                assertEquals(2, avatars.size)
+                assertEquals(with(ui.density) { 12.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
+                assertEquals(avatars[0].boundsInRoot.left, avatars[1].boundsInRoot.left, 1f)
+                avatars.zip(names).forEach { (avatar, name) ->
+                    assertEquals(with(ui.density) { 40.dp.toPx() }, avatar.boundsInRoot.width, 1f)
+                    assertEquals(avatar.boundsInRoot.top, name.boundsInRoot.top, 1f)
+                }
+                val grouped = ui.onNodeWithText("Grouped body").fetchSemanticsNode().boundsInRoot
+                assertEquals(keyline, grouped.left, 1f)
+                ui.onAllNodesWithTag("post-avatar", useUnmergedTree = true)[0].onParent()
+                    .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+            }
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun channelComposerSwipesToFullScreenAndPreservesSelectedJapaneseText() {
+        val fixture = Fixture(Environment(touch = true, online = false))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        NativeWindow(fixture.app, Modifier.width(320.dp).height(900.dp)) {
+                            Column(Modifier.fillMaxSize()) {
+                                Spacer(Modifier.weight(1f))
+                                Composer(fixture.app, "general", null, emptyList(), enabled = true,
+                                    initialValue = "日本語の下書き", showTyping = false, onTyping = {})
+                            }
+                        }
+                    }
+                }
+            }
+            val input = ui.onNodeWithContentDescription("messages.compose")
+            val compact = input.fetchSemanticsNode().boundsInRoot.height
+            input.performTextInputSelection(TextRange(0, 3))
+            input.assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(0, 3)))
+            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.onNodeWithContentDescription("composer.collapse").assertIsDisplayed()
+            assertTrue(input.fetchSemanticsNode().boundsInRoot.height > compact * 2)
+            input.assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(0, 3)))
+            ui.onNodeWithContentDescription("composer.formatting").performClick()
+            ui.onNodeWithContentDescription("composer.bold").performClick()
+            input.assertTextEquals("<b>日本語</b>の下書き")
+            ui.onNodeWithContentDescription("composer.collapse").performClick()
+            input.assert(SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(3, 6)))
+            input.performTextInput("置換")
+            input.assertTextEquals("<b>置換</b>の下書き")
+            ui.onNodeWithContentDescription("messages.send").assertIsNotEnabled()
+            ui.onNodeWithContentDescription("attachments.add").assertIsNotEnabled()
+            // Back returns to the compact draft rather than navigating out of the channel.
+            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            ui.runOnIdle { fixture.app.update(fixture.app.env.copy(visualViewportHeight = 220f)) }
+            ui.onNodeWithContentDescription("messages.send").performScrollTo().assertIsDisplayed()
+            ui.runOnIdle { assertTrue(fixture.app.escape()) }
+            input.assertTextEquals("<b>置換</b>の下書き")
+            ui.onNodeWithContentDescription("composer.collapse").assertDoesNotExist()
         } finally { fixture.close() }
     }
 
@@ -286,4 +431,31 @@ class ReviewRegressionUiTest {
         } finally { fixture.close() }
     }
 
+
+    @Test
+    fun homeBodyTimestampAndParentLinksHandOffTheirOwnPost() {
+        val fixture = Fixture(Environment(path = "/home", touch = true))
+        val parent = obj("id" to "parent", "display_name" to "Parent", "content" to "Parent body")
+        val post = obj("id" to "post", "user_id" to "alice", "display_name" to "Alice",
+            "content" to "Known body", "created_at" to "2026-11-15T00:00:00Z",
+            "parent_id" to "parent", "parent" to parent)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme { HomePostCard(fixture.app, post, false, false, {}, {}, {}, {}, {}, {}) }
+                }
+            }
+            for (label in listOf("Known body", "5分前", "home.replyTo")) {
+                ui.onNodeWithText(label).performTouchInput { click() }
+                ui.runOnIdle {
+                    val id = if (label == "home.replyTo") "parent" else "post"
+                    assertEquals("/home/posts/$id", fixture.app.env.path)
+                    assertEquals(if (id == "parent") "Parent body" else "Known body",
+                        fixture.app.homeTimelines.takePost(id)?.text("content"))
+                    assertNull(fixture.app.homeTimelines.takePost(if (id == "parent") "post" else "parent"))
+                    fixture.app.update(fixture.app.env.copy(path = "/home"))
+                }
+            }
+        } finally { fixture.close() }
+    }
 }

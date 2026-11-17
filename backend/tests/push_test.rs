@@ -175,3 +175,107 @@ async fn registration_respects_server_configuration_and_endpoint_ownership() -> 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn native_devices_use_the_existing_authenticated_registration_and_owner_only_removal()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    config.dev_auth_enabled = false;
+    let secured = create_router(AppState::new(db.clone(), config));
+    let users = [Uuid::new_v4().to_string(), Uuid::new_v4().to_string()];
+    for user in &users {
+        let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/users")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"id":user,"user_name":format!("native_{user}"),"display_name":"Native Test"}).to_string()))?).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let endpoint = format!("fcm:test-device-token:{}", Uuid::new_v4());
+    let request = |user: Option<&str>, endpoint: &str| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/push/subscriptions")
+            .header("content-type", "application/json");
+        if let Some(user) = user {
+            builder = builder.header("X-Dev-User", user);
+        }
+        builder
+            .body(Body::from(
+                json!({"transport":"fcm","endpoint":endpoint}).to_string(),
+            ))
+            .unwrap()
+    };
+    assert_eq!(
+        secured.oneshot(request(None, &endpoint)).await?.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let configured = backend::push::fcm::FcmConfig::from_env()?.is_some();
+    for _ in 0..2 {
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some(&users[0]), &endpoint))
+                .await?
+                .status(),
+            if configured {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+    }
+    assert_eq!(
+        app.clone()
+            .oneshot(request(Some(&users[1]), &endpoint))
+            .await?
+            .status(),
+        if configured {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_REQUEST
+        }
+    );
+    for endpoint in ["fcm:token:invalid-binding", "https://127.0.0.1/private"] {
+        assert_eq!(
+            app.clone()
+                .oneshot(request(Some(&users[0]), endpoint))
+                .await?
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    if configured {
+        let saved =
+            PushSubscription::filter(PushSubscription::fields().endpoint().eq(endpoint.as_str()))
+                .first()
+                .exec(&mut db)
+                .await?
+                .unwrap();
+        assert!(saved.p256dh.is_none());
+        assert!(saved.auth_secret.is_none());
+        for user in [&users[1], &users[0]] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("DELETE")
+                        .uri("/api/push/subscriptions")
+                        .header("content-type", "application/json")
+                        .header("X-Dev-User", user)
+                        .body(Body::from(json!({"endpoint":endpoint}).to_string()))?,
+                )
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                PushSubscription::filter(PushSubscription::fields().id().eq(saved.id.as_str()))
+                    .first()
+                    .exec(&mut db)
+                    .await?
+                    .is_some(),
+                user != &users[0]
+            );
+        }
+    }
+    Ok(())
+}

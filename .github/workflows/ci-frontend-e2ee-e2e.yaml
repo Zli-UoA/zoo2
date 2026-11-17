@@ -47,6 +47,10 @@ on:
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
       - "infra/db/**"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/actions/crypto-wasm/**"
       - ".github/workflows/ci-frontend-e2ee-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
   pull_request:
@@ -89,14 +93,25 @@ on:
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
       - "infra/db/**"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/actions/crypto-wasm/**"
       - ".github/workflows/ci-frontend-e2ee-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: ci-frontend-e2ee-e2e-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-frontend-e2ee-e2e
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
     secrets:
@@ -104,7 +119,8 @@ jobs:
 
   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）。アプリが lib/e2ee を読むので、dev サーバーの起動に要る（#359）。
   crypto-wasm:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.frontend).e2ee
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30
     steps:
@@ -113,30 +129,9 @@ jobs:
         with:
           # この後のビルドで動く依存のコードから、GitHub のトークンを読めないようにする。
           persist-credentials: false
-      - name: Read Rust toolchain and wasm-bindgen version
-        id: versions
-        run: |
-          echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-          echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.versions.outputs.channel }}
-          targets: wasm32-unknown-unknown
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: crates/zoo-crypto-wasm
-      - name: Install wasm-bindgen-cli
-        # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
-        run: |
-          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen ${{ steps.versions.outputs.wasm-bindgen }}" ]; then
-            cargo install --locked wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
-          fi
-      - name: Build wasm package
-        run: crates/zoo-crypto-wasm/build.sh
+          fetch-depth: 2
+      - name: Restore or build Wasm package
+        uses: ./.github/actions/crypto-wasm
       - name: Upload wasm package
         uses: actions/upload-artifact@v7
         with:
@@ -279,7 +274,7 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:8000/health > /dev/null
-          pnpm test:e2e:e2ee
+          node ../.github/scripts/playwright-test-selection.mjs e2ee
 
       - name: Backend logs
         if: failure()

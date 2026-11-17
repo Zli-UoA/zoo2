@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import zoo.crypto.ffi.DeviceAccount
 import zoo.crypto.ffi.OlmSessionStore
+import zoo.crypto.ffi.*
 import zoo.crypto.ffi.OutboundSession
 import zoo.crypto.ffi.verifyDeviceKeys
 import kotlin.test.AfterTest
@@ -273,6 +274,41 @@ class CryptoStoreTest {
         }
         alice.close()
         aliceSessions.close()
+    }
+
+    @Test
+    fun aCrashAfterTheFirstSaveKeepsTheRoomKeyAndProcessedIdTogether() {
+        val store = open()!!.store
+        val own = beginSetup(BOB)
+        store.saveOwnKeys(own.session, 7L)
+        own.session.close()
+        val original = CryptoStore.directorySync
+        DeviceAccount(ALICE, ALICE_DEVICE).use { alice ->
+            OlmSessionStore().use { sessions ->
+                val request = store.registrationRequest()
+                verifyDeviceKeys(store.deviceKeys(), BOB, store.deviceId).use { recipient ->
+                    val sid = alice.createOutboundOlmSession(sessions, recipient, request["one_time_keys"]!!.jsonObject.values.first().toString())
+                    OutboundSession(CHANNEL, 1uL, 0uL).use { outbound ->
+                        val row = ToDeviceRow("atomic", ALICE, "m.room.encrypted", Json.parseToJsonElement(alice.encryptRoomKey(sessions, sid, recipient, outbound)))
+                        val devices = buildJsonObject { put(ALICE, buildJsonObject { put(ALICE_DEVICE, Json.parseToJsonElement(alice.deviceKeys())) }) }
+                        val query = buildJsonObject { put("device_keys", devices) }
+                        try {
+                            CryptoStore.directorySync = { directory -> original(directory); throw java.io.IOException("simulated crash") }
+                            assertFailsWith<java.io.IOException> { store.processToDevice(listOf(row), devices, keysQuery = query) }
+                            store.close()
+                            CryptoStore.directorySync = original
+                            open()!!.store.use { reopened ->
+                                assertEquals(1, reopened.pendingBackupCount())
+                                val again = reopened.processToDevice(listOf(row), devices, keysQuery = query)
+                                assertEquals(listOf("atomic"), again.processed)
+                                assertEquals(0, again.dropped)
+                                assertEquals(0, again.roomKeys)
+                            }
+                        } finally { CryptoStore.directorySync = original; store.close() }
+                    }
+                }
+            }
+        }
     }
 
     @Test

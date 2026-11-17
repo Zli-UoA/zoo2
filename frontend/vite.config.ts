@@ -1,3 +1,4 @@
+import { pdfAssets } from "./build/pdf-assets";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,8 +34,14 @@ const offlineAssets: Plugin = {
 };
 
 const config = defineConfig({
+  worker: { format: "es" },
   optimizeDeps: {
     include: [
+      "postal-mime",
+      "@kenjiuno/msgreader",
+      "fflate",
+      "saxes",
+      "buffer/",
       "@base-ui/react/toggle-group",
       "@base-ui/react/toggle",
       // 暗号ストアの Worker（lib/e2ee）が読む。dev サーバーがログインのあとで初めて見つけると、
@@ -50,9 +57,19 @@ const config = defineConfig({
     rules: { "vite-plus/prefer-vite-plus-imports": "error" },
     options: { typeAware: true, typeCheck: true },
   },
-  resolve: { tsconfigPaths: true },
+  resolve: { tsconfigPaths: true, alias: { buffer: "buffer/" } },
   preview: { host: "127.0.0.1" },
   server: {
+    // Local PBX development only; production uses the matching Traefik route.
+    proxy: process.env.SIP_DEV_PROXY_URL
+      ? {
+          "/sip/": {
+            target: process.env.SIP_DEV_PROXY_URL,
+            ws: true,
+            rewrite: (path: string) => path.replace(/^\/sip/, ""),
+          },
+        }
+      : undefined,
     // @zoo/crypto-wasm は link: で frontend の外（crates/zoo-crypto-wasm/pkg）を指す。
     // dev サーバーとブラウザーのテストが *_bg.wasm を返せるよう、そのディレクトリーだけ許可する。
     fs: { allow: [dirname, path.resolve(dirname, "../crates/zoo-crypto-wasm/pkg")] },
@@ -62,6 +79,7 @@ const config = defineConfig({
     assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
   },
   plugins: lazyPlugins(() => [
+    pdfAssets(),
     offlineAssets,
     devtools(),
     tailwindcss(),
@@ -156,7 +174,7 @@ const config = defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright(),
+            provider: playwright({ launchOptions: { executablePath: process.env.CHROME_BIN } }),
             instances: [{ browser: "chromium" }],
           },
         },

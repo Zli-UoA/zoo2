@@ -818,19 +818,33 @@ async fn resolve_users_in_id_order_with_additional_users(
     // generic placeholder's display name; acquire every mapped Zoo user row first, in the same
     // order as E2EE membership transitions, so that update cannot take a high-ID placeholder
     // before the lower-ID real participant.
-    let mut user_ids = Vec::with_capacity(ordered.len());
-    for (placeholder_id, slack_id) in &ordered {
-        let mapped = query(
+    let slack_ids: Vec<&str> = ordered.iter().map(|(_, slack_id)| *slack_id).collect();
+    let mut mapped_users: HashMap<String, String> = HashMap::new();
+    if !slack_ids.is_empty() {
+        let rows = query(
             tx,
-            "SELECT json_build_object('id',user_id)::text FROM slack_users WHERE team_id=$1 AND slack_user_id=$2",
-            &[&ctx.team, slack_id],
+            "SELECT json_build_object('slack_user_id',slack_user_id,'id',user_id)::text \
+             FROM slack_users WHERE team_id=$1 \
+             AND slack_user_id IN (SELECT jsonb_array_elements_text($2::jsonb))",
+            &[&ctx.team, &json!(slack_ids).to_string()],
         )
-        .await?
-        .into_iter()
-        .next()
-        .and_then(|row| row["id"].as_str().map(str::to_owned));
-        user_ids.push(mapped.unwrap_or_else(|| placeholder_id.clone()));
+        .await?;
+        for row in rows {
+            if let (Some(slack_id), Some(id)) = (row["slack_user_id"].as_str(), row["id"].as_str())
+            {
+                mapped_users.insert(slack_id.to_string(), id.to_string());
+            }
+        }
     }
+    let mut user_ids: Vec<String> = ordered
+        .iter()
+        .map(|(placeholder_id, slack_id)| {
+            mapped_users
+                .get(*slack_id)
+                .cloned()
+                .unwrap_or_else(|| placeholder_id.clone())
+        })
+        .collect();
     user_ids.extend(additional_user_ids.iter().map(|id| (*id).to_owned()));
     let user_refs: Vec<&str> = user_ids.iter().map(String::as_str).collect();
     crate::routes::e2ee_channels::lock_membership_users(tx, &user_refs).await?;
@@ -1711,12 +1725,19 @@ pub(super) async fn resolve_message_users(
     super::link::lock_links(tx).await?;
     let mut members = Vec::new();
     let mut fallbacks: HashMap<String, (u8, String)> = HashMap::new();
-    for message in messages {
-        if ctx.app_id.is_some() && message.app_id == ctx.app_id {
-            continue;
-        }
-        if mapped(tx, &ctx.team, slack_channel, &message.ts)
-            .await?
+    let candidates: Vec<&SlackMessage> = messages
+        .iter()
+        .copied()
+        .filter(|message| !(ctx.app_id.is_some() && message.app_id == ctx.app_id))
+        .collect();
+    let ts_list: Vec<&str> = candidates
+        .iter()
+        .map(|message| message.ts.as_str())
+        .collect();
+    let mapped_messages = mapped_many(tx, &ctx.team, slack_channel, &ts_list).await?;
+    for message in candidates {
+        if mapped_messages
+            .get(&message.ts)
             .is_some_and(|(_, origin)| origin == "zoo")
         {
             continue;
@@ -1880,6 +1901,38 @@ pub(super) async fn render_message(
         card,
         filled,
     })
+}
+
+/// `mapped` を投稿の `ts` 集合で一括取得する。プリ解決のたびに投稿数分の
+/// DB 往復を発行しないため、取り込みの事前解決で使う。
+async fn mapped_many(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_channel: &str,
+    ts: &[&str],
+) -> Result<HashMap<String, (String, String)>, AppError> {
+    if ts.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let rows = query(
+        tx,
+        "SELECT json_build_object('ts',ts,'id',message_id,'origin',origin)::text \
+         FROM slack_message_map WHERE team_id=$1 AND slack_channel_id=$2 \
+         AND ts IN (SELECT jsonb_array_elements_text($3::jsonb))",
+        &[team, slack_channel, &json!(ts).to_string()],
+    )
+    .await?;
+    let mut mappings = HashMap::new();
+    for row in rows {
+        if let (Some(ts), Some(id), Some(origin)) = (
+            row["ts"].as_str(),
+            row["id"].as_str(),
+            row["origin"].as_str(),
+        ) {
+            mappings.insert(ts.to_string(), (id.to_string(), origin.to_string()));
+        }
+    }
+    Ok(mappings)
 }
 
 /// Slack の `ts` に結び付いた Zoo のメッセージ (`slack_message_map`)。(メッセージ ID, 出どころ `zoo` / `slack`)

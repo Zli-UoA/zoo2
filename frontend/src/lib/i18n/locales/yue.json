@@ -227,6 +227,8 @@
     "edited": "已編輯"
   },
   "attachments": {
+    "play": "播放",
+    "pause": "暫停",
     "add": "附加檔案",
     "selected": "要附加嘅檔案",
     "remove": "移除{{name}}",
@@ -248,7 +250,21 @@
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
-    "sensitiveShort": "敏感圖片"
+    "sensitiveShort": "敏感圖片",
+    "documentSummary": "內文同儲存格嘅簡單預覽，格式同版面可能同原檔唔同。",
+    "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
+    "emptyPreview": "冇內容",
+    "containedFiles": "包含嘅檔案",
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "pdfPage": "PDF 第{{page}}頁",
+    "mail": {
+      "subject": "主旨",
+      "from": "寄件者",
+      "to": "收件者",
+      "cc": "副本",
+      "date": "日期"
+    }
   },
   "threads": {
     "title": "子討論",
@@ -333,6 +349,15 @@
     "yesterday": "尋日"
   },
   "composer": {
+    "editorTitle": "編輯訊息",
+    "expand": "全屏展開編輯器",
+    "collapse": "收起編輯器",
+    "dragHandle": "上下掃輸入框頂部嘅拖曳列",
+    "formatting": "格式",
+    "bold": "粗體",
+    "italic": "斜體",
+    "strike": "刪除線",
+    "code": "程式碼區塊",
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
     "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",
@@ -395,6 +420,11 @@
   },
   "mentions": {
     "suggestions": "提及建議"
+  },
+  "appUpdate": {
+    "title": "有新版本嘅畫面",
+    "description": "重新載入就會用新版本。如果有緊打嘅內容，請先送出。",
+    "reload": "重新載入"
   },
   "offline": {
     "bannerTitle": "你而家離線",
@@ -1208,6 +1238,7 @@
       "popupBlocked": "開唔到登入視窗。請容許彈出視窗之後再撳一次。",
       "reauthFailed": "重新登入唔到。請再撳一次，金鑰會保持唔變。",
       "reauthTimeout": "登入冇喺時限內完成，請再撳一次。",
+      "desktopOutdated": "呢個版本嘅桌面 App 冇辦法重新登入。請更新 App 之後再撳一次。",
       "setupConflict": "另一部裝置已經搶先開始設定加密。呢個畫面顯示嘅復原金鑰用唔到。請用嗰部裝置抄低嘅復原金鑰或者通行金鑰解鎖。",
       "mismatch": "金鑰撤銷可能未完成，或者伺服器上嘅金鑰可能俾人改過。呢部裝置冇簽署。請重新撤銷或者重設加密。",
       "invalidRecoveryKey": "復原金鑰格式唔啱，請檢查有冇打錯。",
@@ -1628,5 +1659,113 @@
     "mentions": "提及同回覆",
     "messages": "私訊",
     "reactions": "回應"
+  },
+  "onboarding": {
+    "replay": "開啟入門導覽",
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳過",
+    "finish": "開始用 Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "歡迎嚟到 Zoo",
+      "description": "一邊操作實際畫面，一邊認識 Zoo。撳下一步去頻道列表。可以跳過，之後用指南針掣重開。"
+    },
+    "channels": {
+      "title": "搵頻道",
+      "description": "喺框住嘅列表揀頻道。可以透過瀏覽頻道搵其他對話加入。"
+    },
+    "messages": {
+      "title": "參與對話",
+      "description": "喺你揀嘅頻道，用框住嘅輸入欄發文。可以用討論串回覆，或者加表情回應。"
+    },
+    "notifications": {
+      "title": "睇通知",
+      "description": "而家係通知頁面。喺呢度睇提及同回覆，揀通知就可以開啟相關對話。"
+    },
+    "settings": {
+      "title": "調整個人設定",
+      "description": "而家係一般設定。用框住嘅分頁調整顯示同操作。之後可以撳指南針掣重睇導覽。"
+    },
+    "slack": {
+      "title": "連結 Slack",
+      "description": "呢度係 Slack 設定。連結 Slack 帳戶可以將已匯入嘅舊貼文連到 Zoo，亦可以匯入你建立嘅私人頻道。工作區未設定嘅話，請聯絡管理員。"
+    },
+    "title": "使用導覽",
+    "chooseChannel": "揀一個頻道就可以繼續。有需要可以喺瀏覽頻道加入。",
+    "navigationError": "開唔到頁面，請再試。"
+  },
+  "sip": {
+    "title": "電話（SIP）",
+    "description": "管理個人同社團共用嘅線路及電話機。連接揀咗嘅一條線路打出或接聽電話。接聽來電需要瀏覽器保持開啟同連線。",
+    "refresh": "重新整理",
+    "addLine": "新增線路",
+    "loading": "載入中…",
+    "loadError": "載入唔到線路，請重新整理再試。",
+    "disabled": "電話功能尚未啟用，需要管理員設定基礎設施。",
+    "channelBusy": "頻道通話期間無法使用SIP連線。",
+    "line": "通話線路",
+    "selectLine": "選擇線路",
+    "personal": "個人",
+    "shared": "社團共用",
+    "connect": "連線並等候來電",
+    "disconnect": "中斷連線",
+    "number": "電話號碼或分機號碼",
+    "dial": "撥號",
+    "empty": "暫時冇可用線路。",
+    "edit": "編輯",
+    "delete": "刪除",
+    "lineForm": "新增或編輯線路",
+    "name": "線路名稱",
+    "ownership": "擁有權",
+    "phone_number": "外線號碼（選填）",
+    "websocket_path": "SIP連線路徑",
+    "sip_domain": "SIP網域",
+    "username": "SIP使用者名稱",
+    "password": "SIP密碼",
+    "keepPassword": "留空以保留目前的密碼",
+    "members": "允許使用的成員",
+    "membersHelp": "只有揀咗嘅成員先可以連線，管理員要用都要揀。成員共用SIP憑證，移除成員時亦要喺PBX更改密碼。",
+    "phones": "電話機和據點聯絡人",
+    "phonesHelp": "登記名稱同分機號碼之後，將顯示嘅 SIP 帳號設定到電話機。",
+    "gatewayAccount": "據點閘道 SIP 帳號",
+    "phoneAccount": "電話機 SIP 帳號",
+    "phoneName": "電話機或據點名稱",
+    "extension": "目標號碼",
+    "removePhone": "移除聯絡人",
+    "addPhone": "新增電話機",
+    "pbxHelp": "請登記管理員提供嘅PBX網域同帳戶。SIP連線由伺服器處理。PBX亦要限制可用嘅外線同號碼。",
+    "writeError": "儲存唔到，請檢查輸入同權限再試。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "cancel": "取消",
+    "deleteTitle": "刪除此線路？",
+    "deleteHelp": "從zoo2移除線路和聯絡人。請另外在PBX停用分機和憑證。",
+    "answer": "接聽",
+    "hangup": "掛斷或拒接",
+    "mute": "靜音",
+    "unmute": "取消靜音",
+    "dtmf": "按鍵音（0–9、*、#）",
+    "sendTone": "傳送",
+    "callError": "連線或操作失敗，請檢查線路權限、PBX和音訊中繼設定。",
+    "status": {
+      "offline": "未連線",
+      "connecting": "連線中…",
+      "ready": "等候來電",
+      "dialing": "撥號中…",
+      "incoming": "來電",
+      "active": "通話中"
+    },
+    "unavailableMember": "無法使用嘅成員"
+  },
+  "androidPhone": {
+    "description": "透過裝置嘅通話功能使用個人或共用SIP線路同私訊語音通話。",
+    "nativeCalls": "裝置通話整合",
+    "nativeHelp": "啟用來電後會顯示持續通知並保持連線。可以用裝置嘅通話控制接聽、掛斷同切換音訊輸出。需要咪高峰權限。",
+    "receiveDm": "接收私訊來電",
+    "callError": "準備或操作通話失敗，請檢查咪高峰權限、裝置通話支援、網絡同線路設定。",
+    "speaker": "揚聲器",
+    "waiting": "正在等候來電",
+    "dmCall": "通話"
   }
 }

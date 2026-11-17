@@ -24,6 +24,7 @@ export type EncryptionErrorCode =
   | "popupBlocked"
   | "reauthFailed"
   | "reauthTimeout"
+  | "desktopOutdated"
   | "setupConflict"
   | "mismatch"
   | "invalidRecoveryKey"

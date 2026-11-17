@@ -5,6 +5,25 @@ on:
   pull_request:
     paths:
       - "frontend-compose/**"
+      - "frontend/src/components/ui/**"
+      - "frontend/src/components/i18n/**"
+      - "frontend/src/lib/documents/**"
+      - "frontend/src/lib/i18n/**"
+      - "frontend/src/lib/attachments.ts"
+      - "frontend/src/lib/imageMetadata.ts"
+      - "frontend/src/styles.css"
+      - "frontend/src/media-preview-entry.tsx"
+      - "frontend/media-preview.html"
+      - "frontend/vite.media-preview.config.ts"
+      - "frontend/build/**"
+      - "frontend/package.json"
+      - "frontend/pnpm-lock.yaml"
+      - "frontend/tsconfig.json"
+      - "frontend/src/android-phone/**"
+      - "frontend/src/lib/sip/**"
+      - "frontend/src/lib/call/**"
+      - "frontend/vite.android-phone.config.ts"
+      - "frontend/scripts/android-phone-smoke.mjs"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
@@ -19,6 +38,25 @@ on:
     # pull_request の paths と同じ一覧にする。
     paths:
       - "frontend-compose/**"
+      - "frontend/src/components/ui/**"
+      - "frontend/src/components/i18n/**"
+      - "frontend/src/lib/documents/**"
+      - "frontend/src/lib/i18n/**"
+      - "frontend/src/lib/attachments.ts"
+      - "frontend/src/lib/imageMetadata.ts"
+      - "frontend/src/styles.css"
+      - "frontend/src/media-preview-entry.tsx"
+      - "frontend/media-preview.html"
+      - "frontend/vite.media-preview.config.ts"
+      - "frontend/build/**"
+      - "frontend/package.json"
+      - "frontend/pnpm-lock.yaml"
+      - "frontend/tsconfig.json"
+      - "frontend/src/android-phone/**"
+      - "frontend/src/lib/sip/**"
+      - "frontend/src/lib/call/**"
+      - "frontend/vite.android-phone.config.ts"
+      - "frontend/scripts/android-phone-smoke.mjs"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
       # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
@@ -31,8 +69,10 @@ on:
 permissions:
   contents: read
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: ci-android-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -40,6 +80,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install frontend dependencies for shared media and phone engines
+        run: pnpm --dir frontend install --frozen-lockfile
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
@@ -103,7 +153,7 @@ jobs:
         run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
       - name: Build, test and lint Android
         working-directory: frontend-compose
-        run: ./gradlew --no-daemon -Pzoo.android=true testDebugUnitTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug
+        run: ./gradlew --no-daemon -Pzoo.android=true testDebugUnitTest :assembleDebugAndroidTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zoo-android-debug
@@ -134,6 +184,16 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6
+        with:
+          version: 12.11.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install frontend dependencies for shared media and phone engines
+        run: pnpm --dir frontend install --frozen-lockfile
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
@@ -193,6 +253,10 @@ jobs:
       - name: Build with the persistent Android signing key
         working-directory: frontend-compose
         env:
+          ZOO_ANDROID_FIREBASE_APP_ID: ${{ vars.ZOO_ANDROID_FIREBASE_APP_ID }}
+          ZOO_ANDROID_FIREBASE_API_KEY: ${{ vars.ZOO_ANDROID_FIREBASE_API_KEY }}
+          ZOO_ANDROID_FIREBASE_SENDER_ID: ${{ vars.ZOO_ANDROID_FIREBASE_SENDER_ID }}
+          ZOO_ANDROID_FIREBASE_PROJECT_ID: ${{ vars.ZOO_ANDROID_FIREBASE_PROJECT_ID }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ZOO_ANDROID_KEYSTORE: ${{ runner.temp }}/zoo-release.jks
           ZOO_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
@@ -225,7 +289,7 @@ jobs:
           if [ "$latest" != "$GITHUB_SHA" ]; then
             # push の paths と同じ一覧。Android に関係しない新しいコミット (TUI など) はビルドを起動しないので、
             # それだけが後から入ったときは、このビルドが最新の Android と同じ内容として公開する。
-            paths=(frontend-compose frontend/src/lib/i18n/locales frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
+            paths=(frontend-compose frontend/src/android-phone frontend/src/lib/sip frontend/src/lib/call frontend/vite.android-phone.config.ts frontend/scripts/android-phone-smoke.mjs frontend/src/components/ui frontend/src/components/i18n frontend/src/lib/documents frontend/src/lib/i18n frontend/src/lib/attachments.ts frontend/src/lib/imageMetadata.ts frontend/src/styles.css frontend/src/media-preview-entry.tsx frontend/media-preview.html frontend/vite.media-preview.config.ts frontend/build frontend/package.json frontend/pnpm-lock.yaml frontend/tsconfig.json frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
             git fetch --quiet origin "$latest"
             if ! git diff --quiet "$GITHUB_SHA" "$latest" -- "${paths[@]}"; then
               echo "A newer main commit changes Android; skip this older build."

@@ -40,6 +40,8 @@ fun isMember(rows: List<Row>, channelId: String, userId: String) =
     rows.any { it.text("channel_id") == channelId && it.text("user_id") == userId }
 
 interface Platform {
+    val messageEncryption: MessageEncryption? get() = null
+
     fun imageFrames(
         bytes: ByteArray
     ): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> =
@@ -72,6 +74,10 @@ interface Platform {
 
     suspend fun headers(): Map<String, String>
 
+    suspend fun readEncryptionHistory(key: String): String? = readCache(key)
+
+    suspend fun writeEncryptionHistory(key: String, value: String) = writeCache(key, value)
+
     suspend fun readCache(key: String): String?
 
     suspend fun writeCache(key: String, value: String)
@@ -93,6 +99,8 @@ interface Platform {
     fun time(timestamp: String): String
 
     fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
+
+    fun relativeTimestamp(timestamp: String): String = fullTimestamp(timestamp)
 
     fun notificationTime(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 

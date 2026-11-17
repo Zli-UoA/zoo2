@@ -13,6 +13,9 @@ on:
       - "infra/Dockerfile-migrate-deploy*"
       - "infra/compose.stack*.yaml"
       - "rust-toolchain.toml"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
   pull_request:
@@ -25,16 +28,26 @@ on:
       - "infra/Dockerfile-migrate-deploy*"
       - "infra/compose.stack*.yaml"
       - "rust-toolchain.toml"
+      - ".github/scripts/*test-selection*.mjs"
+      - ".github/scripts/backend-e2e-selection.mjs"
+      - ".github/workflows/select-tests.yaml"
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: ci-backend-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-backend
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
     secrets:
@@ -45,7 +58,8 @@ jobs:
   # The binary itself is built and linked by e2e (integration tests) and deploy-image (release),
   # so a separate `cargo build` here would only recompile what clippy already checked.
   check:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.backend).check
+    needs: [runner, test-selection]
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
@@ -78,12 +92,15 @@ jobs:
       - name: format check
         run: cargo fmt --check
       - name: lint check
+        if: fromJSON(needs.test-selection.outputs.backend).full
         run: cargo clippy
       - name: unit test
+        if: fromJSON(needs.test-selection.outputs.backend).full
         run: cargo test --lib
 
   deploy-image:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.backend).deploy
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.
     timeout-minutes: 60
@@ -135,19 +152,9 @@ jobs:
               ".buildkit-cache/target": "/app/target"
             }
 
-      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
-      - name: Expose the Actions cache runtime to docker
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
-        with:
-          script: |
-            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
       - name: Build production backend image
         run: |
-          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
-          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
-          docker compose --project-directory . "${files[@]}" \
+          docker compose --project-directory . -f infra/compose.stack.yaml \
             build --builder "${{ steps.buildx.outputs.name }}" backend
 
       # compose の backend サービスは ENVIRONMENT=production なので、
@@ -239,8 +246,8 @@ jobs:
       matrix:
         # テストバイナリーは 1 つの DB を共有し、プロセス内の Mutex で共有行を守っているので、
         # バイナリー同士は並列に動かせない。そこで、DB ごと分けた 2 つの job に振り分ける。
-        # slack は leg A に書いたテストだけを、core は残りのすべてを実行する。
-        leg: [slack, core]
+        # backend-e2e-selection.mjs と同じ区分で、選ばれたテストがある側だけ実行する。
+        leg: ${{ fromJSON(needs.test-selection.outputs.backend).legs }}
     env:
       COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PORT: "0"
@@ -251,7 +258,8 @@ jobs:
       # 34 個のテストバイナリーをそれぞれリンクするので、デバッグ情報を行番号だけにしてリンクを軽くする。
       # panic のバックトレースの行番号は残る。
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.backend).run
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
@@ -261,6 +269,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
       - name: Read Rust toolchain
         id: rust-toolchain
         working-directory: .
@@ -361,37 +373,8 @@ jobs:
         env:
           DEV_AUTH_ENABLED: "true"
           LEG: ${{ matrix.leg }}
-        run: |
-          # leg slack のテスト。ここに書いたもの以外は、すべて leg core で実行する。
-          # 所要時間をそろえるため、最も長い app_event_sources_test（約 70 秒）もここに置く。
-          slack_tests=(
-            app_event_sources_test
-            activitypub_test
-            slack_api_import_test
-            slack_link_test
-            slack_sync_test
-            e2ee_channels_test
-            e2ee_keys_test
-            e2ee_plaintext_features_test
-            e2ee_to_device_test
-          )
-          args=()
-          if [ "$LEG" = slack ]; then
-            for t in "${slack_tests[@]}"; do
-              test -f "tests/$t.rs" || { echo "::error::tests/$t.rs not found"; exit 1; }
-              args+=(--test "$t")
-            done
-          else
-            for f in tests/*.rs; do
-              t=$(basename "$f" .rs)
-              case " ${slack_tests[*]} " in *" $t "*) continue ;; esac
-              args+=(--test "$t")
-            done
-          fi
-          cargo test "${args[@]}"
-          if [ "$LEG" = slack ]; then
-            cargo test --lib activitypub:: -- --include-ignored --test-threads=1
-          fi
+          TEST_SELECTION: ${{ needs.test-selection.outputs.backend }}
+        run: node ../.github/scripts/backend-e2e-selection.mjs
 
       - name: Show container logs
         if: failure()
@@ -405,7 +388,8 @@ jobs:
 
 
   shared-emoji-projection:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.backend).emoji
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 45
     services:

@@ -33,6 +33,10 @@
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
 
+# Android のデザイン
+
+- Android の画面・Compose 部品・余白・サイズを追加や変更するときは `.agents/skills/android-design/SKILL.md` と `docs/android-design.md` に従う。通知カードを基準にし、数値は `AndroidDesign.kt`、表示・操作は既存の共通部品に集約する。
+
 # Compose の開発方針
 
 - Compose for Web は、動作が重く実用に耐えないため実験を中止する。Web の開発は React で継続する。

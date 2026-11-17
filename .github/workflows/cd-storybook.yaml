@@ -8,9 +8,13 @@ permissions:
   contents: read
 
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+
   build:
     # Fork PRs cannot access the Cloudflare secrets needed by the deploy job.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.test-selection.outputs.storybookPreview == 'true'
+    needs: test-selection
     runs-on: ubuntu-latest
     timeout-minutes: 25
     defaults:

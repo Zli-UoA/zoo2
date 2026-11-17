@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { memo, type ReactNode } from "react";
 import { SensitiveMedia } from "../ui/sensitive-media";
-import { ImagePreview } from "../ui/image-preview";
-import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
+import { MediaPreview } from "../ui/media-preview";
+import { type ImageMetadata } from "../../lib/imageMetadata";
 import { LinkPreviews } from "../chat/messages/LinkPreviews";
 import { MessageAttachments } from "../chat/messages/MessageAttachments";
 import type { AttachmentMetadata } from "../../lib/attachments";
@@ -152,7 +152,7 @@ export const HomePostContent = memo(function HomePostContent({
       {quote ? <QuoteCard quote={quote} /> : null}
       <MessageAttachments attachments={attachments} />
       {media.length && !attachments.length ? (
-        <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="mt-2 grid grid-cols-1 gap-2">
           {media.map((image, index) => {
             const path =
               image.image_id && /^[a-f0-9]{64}$/.test(image.image_id)
@@ -160,23 +160,22 @@ export const HomePostContent = memo(function HomePostContent({
                 : /^\/api\/home\/images\/[a-f0-9-]+$/.test(image.url)
                   ? image.url
                   : null;
-            if (!path) return null;
-            const url = joinUrl(apiBaseUrl, path);
+            // Remote images retain the registered proxy. Other passive formats use HTTPS.
+            if (!path && (!/^https:\/\//i.test(image.url) || image.media_type.startsWith("image/")))
+              return null;
+            const url = path ? joinUrl(apiBaseUrl, path) : image.url;
             return (
               <SensitiveMedia
                 key={`${url}:${Boolean(image.is_sensitive)}:${index}`}
                 sensitive={image.is_sensitive}
                 preview={image}
               >
-                <ExternalLink href={url} className="block min-w-0">
-                  <ImagePreview
-                    {...image}
-                    src={url}
-                    alt={image.name || t("home.image")}
-                    className="max-h-80 w-full"
-                    style={{ aspectRatio: imageAspectRatio(image) }}
-                  />
-                </ExternalLink>
+                <MediaPreview
+                  {...image}
+                  src={url}
+                  name={image.name || t("home.image")}
+                  contentType={image.media_type}
+                />
               </SensitiveMedia>
             );
           })}

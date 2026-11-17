@@ -19,4 +19,25 @@ class HomeTimelineCacheTest {
         cache.clear()
         assertNull(cache.get("actor-7"))
     }
+
+    @Test fun passesKnownPostOnceWithoutRepostDecorationOrCrossingSessions() {
+        val cache = HomeTimelineCache()
+        val post = obj("id" to "remote/post", "entry_id" to "repost", "content" to "known",
+            "tree_depth" to 4, "reposted_by" to "Bob", "attachments" to kotlinx.serialization.json.JsonArray(emptyList()))
+        cache.preparePost(post)
+        assertNull(HomeTimelineCache().takePost("remote/post"))
+        val detail = assertNotNull(cache.takePost("remote/post"))
+        assertEquals("remote/post", HomeTimeline.key(detail))
+        assertEquals("known", detail.text("content"))
+        assertEquals("0", detail.text("tree_depth"))
+        assertFalse(detail.present("reposted_by"))
+        assertEquals(post["attachments"], detail["attachments"])
+        assertNull(cache.takePost("remote/post"))
+        cache.preparePost(post)
+        cache.remove("remote/post")
+        assertNull(cache.takePost("remote/post"))
+        cache.preparePost(post)
+        cache.clear()
+        assertNull(cache.takePost("remote/post"))
+    }
 }

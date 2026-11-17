@@ -14,14 +14,15 @@ class HomeTimeline(
     private val postId: String? = null,
     private val actorId: String? = null,
 ) {
+    private val initialPost = postId?.let { app.homeTimelines.takePost(it) }
     private val settingsKey = homePreferenceKey(app, "zoo-home-timeline:v1:")
     var timeline by mutableStateOf("home")
         private set
 
-    var posts by mutableStateOf<List<Row>>(emptyList())
+    var posts by mutableStateOf<List<Row>>(listOfNotNull(initialPost))
         private set
 
-    var loading by mutableStateOf(true)
+    var loading by mutableStateOf(initialPost == null)
         private set
 
     var refreshing by mutableStateOf(false)
@@ -59,6 +60,7 @@ class HomeTimeline(
         private set
     private val cacheKey get() = listOf(timeline, postId.orEmpty(), actorId.orEmpty()).joinToString("\u0000")
     fun viewport(ids: List<String>, top: Boolean): Boolean {
+        if (postId != null) return false // The thread is fetched as a whole through the existing refresh gate.
         val next = ids.take(100)
         val changed = visibleIds != next
         val returnedToPendingHead = top && !atTop && pendingHead
@@ -66,9 +68,12 @@ class HomeTimeline(
         atTop = top
         return returnedToPendingHead || changed && next.any { it !in validatedIds }
     }
-    internal fun restore(): HomeTimelineSnapshot? = app.homeTimelines.get(cacheKey)?.also {
-        posts = it.posts; hasMore = it.hasMore; loading = false; checkedAt = it.checkedAt
-        validatedIds = it.posts.take(50).map(::key).toSet()
+    internal fun restore(): HomeTimelineSnapshot? {
+        if (initialPost != null) return null
+        return app.homeTimelines.get(cacheKey)?.also {
+            posts = it.posts; hasMore = it.hasMore; loading = false; checkedAt = it.checkedAt
+            validatedIds = it.posts.take(50).map(::key).toSet()
+        }
     }
     fun needsRefresh(): Boolean = posts.isEmpty() || kotlin.time.Clock.System.now().toEpochMilliseconds() - checkedAt >= 30_000
     private fun save(index: Int = 0, offset: Int = 0) {
@@ -156,8 +161,14 @@ class HomeTimeline(
                     }
                 } catch (e: CancellationException) {
                     throw e
-                } catch (_: Exception) {
-                    if (version == generation) error = true
+                } catch (cause: Exception) {
+                    if (version == generation) {
+                        if (postId != null && (cause as? ApiException)?.status in listOf(403, 404)) {
+                            app.homeTimelines.remove(postId)
+                            posts = emptyList()
+                        }
+                        error = true
+                    }
                 } finally {
                     if (version == generation) {
                         loading = false
