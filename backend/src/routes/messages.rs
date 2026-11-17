@@ -848,11 +848,37 @@ pub(crate) async fn create_message_impl(
             &[gate_root.as_str()],
         )
         .await?;
-        let state = crate::apps::one(&mut tx,
+        let participation = crate::apps::one(&mut tx,
             "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL),'bot',(SELECT is_bot FROM users WHERE id=$2))::text",
             &[gate_root.as_str(), auth_user.id.as_str()]).await?;
         // Bots (Apps API) have no way to join a thread, so they are not gated.
-        if state["tracked"] == true && state["joined"] != true && state["bot"] != true {
+        if participation["tracked"] == true
+            && participation["joined"] != true
+            && participation["bot"] != true
+        {
+            // A concurrent request with the same ID may have committed (and its author then left)
+            // while this one waited for the root lock. That is a retry of a stored post, not a
+            // new reply, so return it instead of refusing.
+            let _ = tx.rollback().await;
+            if supplied_id.is_some() {
+                let mut retry_db = state.db.clone();
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                }
+            }
             return Err(AppError::Forbidden(
                 "Join the thread before replying".into(),
             ));
