@@ -85,3 +85,8 @@ CREATE TABLE app_submitted_files (
 );
 CREATE INDEX app_submitted_files_installation ON app_submitted_files(installation_id);
 CREATE INDEX app_submitted_files_expiry ON app_submitted_files(expires_at);
+-- 期限切れの画面の掃除（delivery.rs）。問い合わせ（options）の行は 1 分で切れて増えるので、全件を読まずに
+-- 期限切れの行だけを、どの接続でも同じ順に消す（全件読みでは開始位置が接続ごとに違い、同時の掃除がデッドロックする）
+CREATE INDEX app_ui_expiry ON app_ui(expires_at) WHERE expires_at IS NOT NULL;
+-- 利用者の画面の一覧（GET /api/apps/{id}/surfaces）。全件を読まず、その利用者の画面だけを更新順に読む
+CREATE INDEX app_ui_user ON app_ui(user_id, updated_at);

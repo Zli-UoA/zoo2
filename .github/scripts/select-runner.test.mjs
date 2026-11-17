@@ -106,7 +106,7 @@ const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve
 // macOS でビルドを確かめるジョブ。GitHub ホストの macOS を使う (公開リポジトリなので無料)。
 const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
 // Keep timing comparisons on a fixed hosted OS, independent of shared runners.
-const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-phone-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};
+const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-phone-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-components-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
   "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
@@ -141,6 +141,19 @@ test('phone query budgets are mandatory in the merge queue', () => {
   const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
   const key = 'ci-phone-query-budget';
   for (const path of ['backend/src/routes/phone_sessions.rs', 'backend/src/routes/pbx.rs', 'backend/src/routes/sip.rs', 'backend/tests/phone_query_budget_test.rs', 'infra/db/schema.sql', 'infra/db/compare-phone-work.py', `.github/workflows/${key}.yaml`]) {
+    assert.equal(selectWorkflows([path], readWorkflow)[key], true, path);
+  }
+  assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)[key], false);
+  const queue = readWorkflow('merge-queue');
+  assert.ok(queue.includes('      '+key+': ${{ steps.match.outputs.'+key+' }}'));
+  assert.ok(queue.includes(`    if: needs.changes.outputs.${key} == 'true'`));
+  assert.ok(queue.includes(`    uses: ./.github/workflows/${key}.yaml`));
+  assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${key}`));
+});
+test('message component query budgets are mandatory in the merge queue', () => {
+  const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
+  const key = 'ci-components-query-budget';
+  for (const path of ['backend/src/apps/ui.rs', 'backend/src/apps/delivery.rs', 'backend/src/components/backfill.rs', 'backend/tests/components_query_budget_test.rs', 'infra/db/schema.sql', 'infra/db/compare-components-work.py', `.github/workflows/${key}.yaml`]) {
     assert.equal(selectWorkflows([path], readWorkflow)[key], true, path);
   }
   assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)[key], false);
