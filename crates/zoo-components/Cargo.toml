@@ -1,0 +1,14 @@
+[package]
+name = "zoo-components"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "zoo2 のメッセージ部品（Discord Components V2 形式）のモデル・検証・代替テキスト。wasm32 でもビルドできる"
+repository = "https://github.com/Zli-UoA/zoo2"
+
+# backend・client-types（GPUI、Tauri の WebView、TUI）から path で使う。
+# wasm32 で動くよう、依存は serde と serde_json だけにする。
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

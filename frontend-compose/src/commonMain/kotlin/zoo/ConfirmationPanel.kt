@@ -69,6 +69,20 @@ fun ConfirmationPanel(
     error: String?,
     cancel: () -> Unit,
     confirm: () -> Unit,
+) = LabeledConfirmationPanel(title, description, action, busy, error, null, "destructive", cancel, confirm)
+
+/** 取り消しの文字と、確認ボタンの見た目を指定できる [ConfirmationPanel]（アプリのメッセージ部品の confirm）。 */
+@Composable
+fun LabeledConfirmationPanel(
+    title: String,
+    description: String,
+    action: String,
+    busy: Boolean,
+    error: String?,
+    cancelLabel: String?,
+    confirmVariant: String,
+    cancel: () -> Unit,
+    confirm: () -> Unit,
 ) {
     val app = LocalApp.current
     Panel(
@@ -79,10 +93,10 @@ fun ConfirmationPanel(
         footer = {
             DialogFooter(
                 listOf(
-                    DialogAction(app.t("common.cancel"), enabled = !busy, action = cancel),
+                    DialogAction(cancelLabel ?: app.t("common.cancel"), enabled = !busy, action = cancel),
                     DialogAction(
                         if (busy) app.t("moderation.executing") else action,
-                        "destructive",
+                        confirmVariant,
                         !busy,
                         confirm,
                     ),

@@ -829,6 +829,10 @@
       "states": ["Default", "Undeliverable", "AddedRecipients"]
     },
     {
+      "file": "src/components/chat/components/ComponentTree.stories.tsx",
+      "states": ["AllDisplay", "InteractiveWithoutApp", "Interactive", "ModalInputs", "Narrow"]
+    },
+    {
       "file": "src/components/ui/media-preview.stories.tsx",
       "states": [
         "Loading",
@@ -1542,6 +1546,14 @@
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
       "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/components/ComponentTree.tsx",
+      "story": "src/components/chat/components/ComponentTree.stories.tsx",
+      "checks": [
+        "src/components/chat/components/parse.test.ts",
+        "src/components/chat/components/ComponentTree.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/ui/document-preview.tsx",

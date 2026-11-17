@@ -722,6 +722,20 @@
       "addEncrypted": "添加到加密频道",
       "notReady": "此应用尚未完成加密准备（注册设备）。请启动应用后重试。",
       "encryptedHint": "将应用添加到加密频道需要成员许可。"
+    },
+    "components": {
+      "unsupported": "暂不支持此组件",
+      "more": "更多操作",
+      "choose": "请选择",
+      "search": "搜索",
+      "noOptions": "没有选项",
+      "uploading": "正在上传…",
+      "page": "第 {{page}} / {{pages}} 页",
+      "spoiler": "包含剧透内容（可在网页版查看）",
+      "webOnly": "请在网页版进行此操作",
+      "date": "日期",
+      "time": "时间",
+      "datetime": "日期和时间"
     }
   },
   "search": {

@@ -3,6 +3,7 @@
 //! 行は Rust 側から `zoo://shape` で届き、ここでは `Store` の写しに適用するだけ。起動や
 //! 読み込み直しの後は `zoo_resync` で全体を送り直してもらう (`reset` 付きなので何度でもよい)。
 
+mod components;
 mod tauri;
 
 use leptos::{ev, html, prelude::*, task::spawn_local};
@@ -377,11 +378,10 @@ fn AccountIcon(url: Option<String>, initial: String, label: String) -> impl Into
     }
 }
 
-#[component]
-fn MessageView(message: Message, name: String) -> impl IntoView {
+/// MFM の本文を行ごとに描画する。部品の文字 (`components.rs`) も同じ描画を使う。
+fn mfm_view(content: String) -> AnyView {
     let ctx = expect_context::<Ctx>();
     let me = ctx.me().map(|me| me.user_name);
-    let content = message.content.clone();
     let lines = move || {
         let lines = ctx.store.with(|store| {
             mfm::parse_with_accounts(&content, me.as_deref(), &store.account_profiles)
@@ -436,13 +436,24 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
         })
         .collect_view()
     };
+    view! { <div class="body">{lines}</div> }.into_any()
+}
+
+#[component]
+fn MessageView(message: Message, name: String) -> impl IntoView {
+    // メッセージ部品 (`components` 列。移行前の行は `card` 列から作る)。フラグがあれば本文を出さない
+    let doc = message.components_document();
+    let hides = doc.as_ref().is_some_and(|d| d.hides_content());
+    let body = (!hides).then(|| mfm_view(message.content.clone()));
+    let parts = doc.map(|doc| components::render(doc, &message));
     view! {
         <article class="message">
             <header>
                 <span class="author">{name}</span>
                 <time>{local_time(&message)}</time>
             </header>
-            <div class="body">{lines}</div>
+            {body}
+            {parts}
         </article>
     }
 }

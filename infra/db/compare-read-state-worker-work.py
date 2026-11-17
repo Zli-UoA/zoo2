@@ -8,9 +8,18 @@ large = json.loads((Path(sys.argv[2]) / 'work.json').read_text())
 assert small.keys() == large.keys() and len(small) == 12, 'missing query conditions'
 
 
+# Static lookup tables are seeded with a fixed number of rows and never grow
+# with message history. A plan may switch between an index lookup (one row)
+# and a sequential scan (all rows), so compare their absolute bound instead.
+STATIC_RELATIONS = {'app_event_types'}
+
+
 def compare(name, before, after):
     for relation in before['relations'].keys() | after['relations'].keys():
         a, b = before['relations'].get(relation, 0), after['relations'].get(relation, 0)
+        if relation in STATIC_RELATIONS:
+            assert b <= 128, f'{name}: {relation} is not a bounded static lookup: {a} -> {b}'
+            continue
         assert b <= 2 * a + 64, f'{name}: {relation} grows with history: {a} -> {b}'
     assert after['intermediate'] <= 2 * before['intermediate'] + 64, name + ': intermediate work grows with history'
     assert after['sort_input'] <= 2 * before['sort_input'] + 64, name + ': sort grows with history'

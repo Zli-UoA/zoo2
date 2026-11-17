@@ -9,6 +9,7 @@ on:
     # Explicit list excludes this gate itself and prevents event recursion.
     workflows:
       - "PR review relay"
+      - "PR assign"
       - "CI"
       - "CI Android"
       - "CI Crypto"
@@ -23,6 +24,7 @@ on:
       - "Deployment badges"
       - "Home query budget"
       - "Phone query budget"
+      - "Message components query budget"
       - "OpenTofu R2"
       - "Read state and worker query budget"
       - "Validate Flux production status"
