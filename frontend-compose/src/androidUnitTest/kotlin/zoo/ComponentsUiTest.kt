@@ -1,6 +1,7 @@
 package zoo
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.*
@@ -70,7 +71,13 @@ class ComponentsUiTest {
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalApp provides fixture.app) {
-                    MaterialTheme { ComponentTree(fixture.app, message, "app", message = "m1", channel = "c1") }
+                    MaterialTheme {
+                        Box {
+                            ComponentTree(fixture.app, message, "app", message = "m1", channel = "c1")
+                            // 確認は Panel（重ねて出す画面）なので、アプリの外枠と同じく重ね先を置く
+                            OverlayHost(fixture.app)
+                        }
+                    }
                 }
             }
             ui.onNodeWithText("Paid").performClick()
@@ -101,7 +108,12 @@ class ComponentsUiTest {
         try {
             ui.setContent {
                 CompositionLocalProvider(LocalApp provides fixture.app) {
-                    MaterialTheme { ComponentTree(fixture.app, current, "app", message = "m1", channel = "c1") }
+                    MaterialTheme {
+                        Box {
+                            ComponentTree(fixture.app, current, "app", message = "m1", channel = "c1")
+                            OverlayHost(fixture.app)
+                        }
+                    }
                 }
             }
             ui.onNodeWithText("action-a").performClick()

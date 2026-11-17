@@ -54,6 +54,8 @@ export interface ComponentTarget {
 }
 
 interface Ctx extends ComponentTarget {
+  /** 表示中の文書の内容（JSON）。文書が変わったら、開いていた確認を無効にするのに使う */
+  docKey: string;
   busy: boolean;
   values: Record<string, Value>;
   set: (id: string, value: Value) => void;
@@ -167,6 +169,7 @@ export function ComponentTree({
   const form = !!target.submit || (!!target.appId && hasLabel(doc.components));
   const ctx: Ctx = {
     ...target,
+    docKey,
     busy,
     values,
     // 古い文書の非同期処理（アップロードの完了など）からの書き込みは、新しい文書には入れない
@@ -796,16 +799,19 @@ function TaskRow({ task }: { task: Task }) {
 /** 押す前の確認（confirm）があれば、確認ダイアログを挟む。 */
 /**
  * 確認（confirm）。開いた時点の確認の文言と操作を組で持ち、ダイアログはその組で描く。
- * 確認の表示中に文書が更新され、この位置の部品が別の操作（custom_id）に変わったら、確認を閉じる
+ * 確認の表示中に文書が更新されたら（この位置の部品が別の操作に変わった場合も、同じ操作のままの場合も）、確認を閉じる
  * （別の操作の文言を表示したまま、元の操作を送らない）。
  */
 function useConfirm(confirm: Confirm | undefined, id: string | undefined) {
+  // 開いた時点の文書も覚える。同じ custom_id でも文書が更新されたら、古い値で送る処理は使わない
+  const { docKey } = useCtx();
   const [pending, setPending] = useState<{
     confirm: Confirm;
     id: string | undefined;
+    docKey: string;
     action: () => void;
   } | null>(null);
-  const open = !!pending && pending.id === id;
+  const open = !!pending && pending.id === id && pending.docKey === docKey;
   const dialog = pending ? (
     <ConfirmActionDialog
       open={open}
@@ -822,7 +828,7 @@ function useConfirm(confirm: Confirm | undefined, id: string | undefined) {
     />
   ) : null;
   return {
-    run: (action: () => void) => (confirm ? setPending({ confirm, id, action }) : action()),
+    run: (action: () => void) => (confirm ? setPending({ confirm, id, docKey, action }) : action()),
     dialog,
   };
 }

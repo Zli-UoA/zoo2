@@ -618,8 +618,9 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
     val editable = if (deferred) !c.cFlag("disabled") && scope.appId != null else enabled
     // 確認は、開いた時点の確認の文言・操作（custom_id）・送る処理を組で持ち、その組で描く。
     // 文書の更新でこの位置の部品が別の操作に変わったら、確認を出さない（別の文言のまま元の操作を送らない）
-    var confirming by remember { mutableStateOf<PendingConfirm?>(null) }
     val confirm = c.cObj("confirm")
+    // 部品の操作か確認の文言が変わったら、開いていた確認を捨てる（元の部品に戻っても、古い確認を出さない）
+    var confirming by remember(id, confirm) { mutableStateOf<PendingConfirm?>(null) }
     fun run(action: () -> Unit) {
         if (confirm != null) confirming = PendingConfirm(confirm, id, action) else action()
     }
@@ -732,7 +733,8 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
                 Box(Modifier.width(160.dp)) {
                     Field(text, c.cStr("placeholder").ifEmpty { hint }, readOnly = !editable, showLabel = false) {
                         text = it.take(32)
-                        scope.set(id, JsonPrimitive(text))
+                        // メッセージ上のピッカーは「送信」（確認の後）でだけ保存する。取り消した日時を後の送信に入れない
+                        if (deferred) scope.set(id, JsonPrimitive(text))
                     }
                 }
                 if (!deferred) Button(app.t("apps.submit"), enabled && text.isNotBlank(), size = "sm") { choose(JsonPrimitive(text)) }

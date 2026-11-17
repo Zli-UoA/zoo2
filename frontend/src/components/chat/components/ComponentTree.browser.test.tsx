@@ -317,4 +317,40 @@ describe("ComponentTree", () => {
     expect(screen.queryByText("B?", { selector: "h2" })).toBeNull();
     expect(api.request).not.toHaveBeenCalled();
   });
+  it("closes the confirmation when the document updates with the same component", async () => {
+    api.request.mockClear();
+    const doc = (label: string) =>
+      parseComponents({
+        components: [
+          {
+            type: 1,
+            components: [
+              {
+                type: 2,
+                style: 1,
+                label,
+                custom_id: "go",
+                value: label,
+                confirm: { title: "Go?", text: "Go?", confirm: "Yes", deny: "No" },
+              },
+            ],
+          },
+        ],
+      })!;
+    const view = render(
+      <LocaleProvider>
+        <ComponentTree document={doc("v1")} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "v1" }));
+    expect(await screen.findByRole("button", { name: "Yes" })).toBeInTheDocument();
+    // 同じ custom_id のまま、アプリが文書を更新する。開いていた確認で古い値を送らない
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree document={doc("v2")} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Yes" })).toBeNull());
+    expect(api.request).not.toHaveBeenCalled();
+  });
 });
