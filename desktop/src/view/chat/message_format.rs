@@ -240,6 +240,8 @@ mod tests {
             channel_id: "c".into(),
             content: String::new(),
             card: None,
+            components: None,
+            app_origin_id: None,
             created_at: at.parse().unwrap(),
             updated_at: None,
             deleted_at: None,

@@ -311,7 +311,7 @@ async fn proxy_shape(
         {
             // App messages never include the UI projection: its joined profiles and
             // attachments require scopes beyond messages:read (and metadata:read).
-            let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
+            let mut columns = "id,user_id,channel_id,content,card,components,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
             if metadata_allowed == "true" {
                 columns.push_str(",metadata");
             }

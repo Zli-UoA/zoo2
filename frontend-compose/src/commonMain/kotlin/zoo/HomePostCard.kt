@@ -196,7 +196,10 @@ fun HomePostCard(
                         post.homeRows("reactions").forEach { item ->
                             val label = "${item.text("reaction")} ${item.text("count")}"
                             Row(
-                                Modifier.sizeIn(minWidth = if (LocalTouchUi.current) 48.dp else 0.dp, minHeight = if (LocalTouchUi.current) 48.dp else 0.dp).then(
+                                Modifier.sizeIn(
+                                        minWidth = if (LocalTouchUi.current) AndroidDesign.controlVisualSize else 0.dp,
+                                        minHeight = if (LocalTouchUi.current) AndroidDesign.controlVisualSize else 0.dp,
+                                    ).then(
                                         webControlModifier(
                                             "button",
                                             enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),
@@ -226,7 +229,7 @@ fun HomePostCard(
                             }
                         }
                     }
-                Row(
+                FlowRow(
                     Modifier.fillMaxWidth()
                         .then(
                             webControlModifier(
@@ -235,7 +238,8 @@ fun HomePostCard(
                             )
                         ),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
                         post.text("replies").ifEmpty { "0" },
@@ -243,7 +247,10 @@ fun HomePostCard(
                         accessibleLabel =
                             "${app.t("home.reply")} ${post.text("replies").ifEmpty{"0"}}",
                         variant = "ghost",
-                        size = "sm",
+                        size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
+                        contentInset = AndroidDesign.spaceSmall,
+                        contentGap = AndroidDesign.spaceSmall,
                         click = reply,
                     )
                     Button(
@@ -254,7 +261,10 @@ fun HomePostCard(
                         selected = post.flag("reposted"),
                         enabled = !pending && post.text("visibility") != "followers",
                         variant = "ghost",
-                        size = "sm",
+                        size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
+                        contentInset = AndroidDesign.spaceSmall,
+                        contentGap = AndroidDesign.spaceSmall,
                         click = repost,
                     )
                     Button(
@@ -264,7 +274,10 @@ fun HomePostCard(
                             "${app.t("home.react")} ${post.text("likes").ifEmpty{"0"}}",
                         enabled = !pending,
                         variant = "ghost",
-                        size = "sm",
+                        size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
+                        contentInset = AndroidDesign.spaceSmall,
+                        contentGap = AndroidDesign.spaceSmall,
                         click = react,
                     )
                     Menu(
@@ -291,6 +304,8 @@ fun HomePostCard(
                                 }
                             )
                         },
+                        size = AndroidDesign.controlVisualSize,
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
                     )
                 }
                 if (error)

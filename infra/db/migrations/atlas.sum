@@ -1,4 +1,4 @@
-h1:qqo3IxMoNhf6Pcz16AcjCmJaHfmgh40zQ1c1zwZJCNE=
+h1:OnPuPtzbJPHtuwCBPfSlmUtsEtewDFdEZ4eIDj+L3UU=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -94,4 +94,5 @@ h1:qqo3IxMoNhf6Pcz16AcjCmJaHfmgh40zQ1c1zwZJCNE=
 20261128030001_sip_personal_shared.sql h1:QBxZlmLKbNSCTOibvbiRoY+FSX7TZwWon8f4WYY+kC0=
 20261128030002_phone_gateway_sessions.sql h1:MxFox5TacJLyMUXwt5Df6w070qjTR0aKm1h3Sq0q/Ws=
 20261128030003_phone_directory_lookup_indexes.sql h1:sfSadvVHUrmUlBQ/uSNmhMJ5KlqEFXxqmYCDx1Ha+e8=
-20261129000000_user_pinned_channels.sql h1:EXKBv/NOdi+mcesGmD8T1AUtyxOLf2TOjHeLf1eObhk=
+20261129000000_message_components.sql h1:sLo+fCSQyDfu4gCEKLTzwQpyc63jfNwdNiHhrDLCWWY=
+20261129010000_user_pinned_channels.sql h1:iYh8dpg19kNqdJiBJlwfhDhUanC2ceEVJ6KxEneAg0Y=

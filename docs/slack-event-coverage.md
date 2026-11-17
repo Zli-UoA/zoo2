@@ -266,6 +266,7 @@ Zoo固有のイベント名・エンベロープを使用する。Slack名の購
 | `command.invoked` | `操作元の権限で検証` | app |
 | `action.invoked` | `操作元の権限で検証` | app |
 | `view.submitted` | `操作元の権限で検証` | app |
+| `options.requested` | `操作元の権限で検証` | app |
 | `shortcut.invoked` | `操作元の権限で検証` | app |
 | `link.shared` | `links:write` | channel |
 | `home.opened` | `操作元の権限で検証` | app |

@@ -80,7 +80,7 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 
 `commands` に登録したコマンドはチャンネルで `/コマンド 引数` として実行できます。同名コマンドが複数のAppにある場合はApp詳細から選択します。`shortcuts` はApp詳細から実行します。`message_shortcuts` はメッセージのApp操作ボタンから実行でき、対象メッセージのIDをイベントへ渡します。メッセージ用ショートカットには `messages:read` が必要です。
 
-対話画面は `text`、`button`、`input`、`select` の宣言型ブロックで構成し、任意HTML・JavaScriptを実行しません。メッセージの `blocks` APIと、Appホーム・モーダル・本人だけに表示する一時メッセージの `surfaces` APIで共用します。操作はApp・本人・元の画面／メッセージ・チャンネルに紐づきます。
+対話画面は宣言型の[メッセージ部品](#メッセージ部品)で構成し、任意HTML・JavaScriptを実行しません。メッセージの `components` API（旧名 `blocks`）と、Appホーム・モーダル・本人だけに表示する一時メッセージの `surfaces` APIで共用します。操作はApp・本人・元の画面／メッセージ・チャンネルに紐づきます。
 
 モーダルの起動には対話イベントで受け取る `trigger_id` が必要です。3秒・単回使用で、対象ユーザーとチャンネルを変更できません。イベントの `response_path` は15分・単回使用の非同期応答用で、元のユーザー・チャンネルへの一時メッセージだけを作成できます。これらの値は秘密情報として扱ってください。個人向けの画面は共有Shape・オフラインキャッシュへ保存しません。
 
@@ -88,9 +88,110 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 
 Appは完了済みファイルを自分のメッセージへ添付できます。ダウンロード時に現在の閲覧権限を確認し、添付として配信します。
 
-`link_domains` に登録したドメインのリンクを `link.shared` で受け取り、`unfurls` APIで共通カードを設定できます。Zooは任意のリンク先を取得しません。カードには提供Appを表示します。
+`link_domains` に登録したドメインのリンクを `link.shared` で受け取り、`unfurls` APIでリンクの展開を設定できます。本文は `{"url":"…","components":[…]}`（メッセージ部品）か `{"url":"…","blocks":[…]}`（Slack Block Kit）です。旧形式の `{"url":"…","card":{…}}` も受け付けます。展開には操作部品（`custom_id` のある部品）を置けません。Zooは任意のリンク先を取得しません。展開には提供Appを表示します。
 
-App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card","card":{...}}` ブロックも設定できます。カードは共通の `title`、`description`、HTTPS の `url`、`source`、`context`、`author`、`badge`、`color` と、最大10件の `fields` を持ちます。各 field は `title`・`value`、任意の `short`（2列表示）、HTTPS の `url`、`code`（等幅表示）です。この投稿 API は既存の `messages:write` と投稿の所有者チェックを使い、操作イベントは発生しません。カードブロックがある投稿では本文を表示上のフォールバックとして扱い、カードとの重複表示を避けます。更新時は本文とブロックを両方更新してください。
+
+## メッセージ部品
+
+App のメッセージ・ホーム・モーダル・一時メッセージ・リンクの展開は、**メッセージ部品**で作ります。構造と JSON は [Discord Components V2](https://discord.com/developers/docs/components/reference) と同じです（数値の `type` と Discord のフィールド名）。Slack Block Kit の `blocks` も受け付け、同じ部品に変換します。受信 Webhook も同じ部品に変換します（[Webhook](webhooks.md)）。
+
+### 送り方
+
+| API | 用途 |
+| --- | --- |
+| `POST /api/apps/v1/messages/{id}/components`（旧名 `/blocks`） | 自分が投稿したメッセージに部品を付ける。`messages:write` と投稿の所有者であることが必要 |
+| `POST /api/apps/v1/surfaces` | ホーム・モーダル・一時メッセージ（`ui:write`）。`components`（と `flags`）か `blocks` を渡す |
+| `POST /api/app-responses/{token}` | イベントの `response_path` に一時メッセージを返す |
+| `POST /api/apps/v1/messages/{id}/unfurls` | リンクの展開（`links:write`） |
+| `POST /api/apps/v1/options/{request_id}` | external select の選択肢を返す（下の「選択肢の問い合わせ」） |
+| `GET /api/apps/v1/uploads/{id}/download` | モーダルで利用者が送ったファイルを取得する（下の「ファイルの送信」） |
+
+本文は次のどれかです。形式は自動で見分けます。`"format": "discord" | "slack" | "legacy"` で明示もできます。
+
+- **Discord**：`{"flags": 32768, "components": [...]}`。`type` は数値でも Discord の名前（`"container"` など）でもよく、保存と応答では数値になります。
+- **Slack**：`{"blocks": [...]}`（Block Kit）。select の選択肢は部品の上限の 25 件までです（26 件以上は 400）。対応はブロック・要素ともに [Webhook の部品の一覧](webhooks.md#部品の一覧)と同じです。App API では、知らないブロックや要素は 400 にします（Webhook では文字だけ残します）。
+- **旧形式**：`[{"type":"text"|"card"|"button"|"input"|"select", ...}]`。廃止予定です。受け付けますが、応答に `Deprecation: true` ヘッダーを付けます。旧形式の入力には旧形式の上限（50 件、text は各 4,000 文字、ラベルは 200 文字）を使い、部品の上限（部品の数・文字数の合計・ラベルの長さ）では 400 にしません。部品に変換すると欠ける select（選択肢が 25 件を超える、または 100 文字を超える）だけは 400 にします。
+
+`flags` に `32768`（IS_COMPONENTS_V2）を立てると、本文（`content`）を表示せず部品だけを表示します（クライアントの描画は Zli-UoA/zoo2#600 から。それまでは本文だけを表示します）。立てなければ、本文の下に部品を表示します。部品を付けたとき本文が空か、前の部品から作った代わりの文字のままなら、新しい部品の文字から作った代わりの文字を本文に入れます（通知・検索・TUI 用）。アプリが書いた本文は変えません。部品を付けるときは、本文も通知に適した文に更新してください。
+
+`text_display.content` などの文字は zoo の MFM（[MFM 対応表](mfm.md)）です。Discord markdown の `-#`・`||…||`・`<t:…>` は MFM に直します（[記法](webhooks.md#記法テキストの書き方)）。利用者の入力など信頼できない文字は、SDK の `plain()` で囲んでください。
+
+### 部品
+
+Discord の部品（1〜14、17〜19、21〜23）と、Slack にしかない部品（zoo 独自の 1000 番台）を使えます。
+
+| type | 部品 | 置ける場所 |
+| --- | --- | --- |
+| 1 | Action Row（ボタン 1〜5 個と overflow、または select などを 1 つ） | 直下、Container |
+| 2 | Button（style 1〜5。5 はリンク。zoo 独自の `value`・`confirm`） | Action Row、Section の横、Card、表のセル |
+| 3、5〜8 | String / User / Role / Mentionable / Channel Select | Action Row、Section の横、Label |
+| 4 | Text Input（zoo 独自の `format`：`number`・`email`・`url`・`rich`、`min_value`・`max_value`・`decimal`） | Label |
+| 9 | Section（Text Display 1〜3 個と、横に Thumbnail・Button・select など） | 直下、Container |
+| 10 | Text Display | 直下、Container、Section |
+| 11 | Thumbnail | Section の横 |
+| 12 | Media Gallery（1〜10 枚） | 直下、Container |
+| 13 | File（App のメッセージでは、そのメッセージに添付した `attachment://名前` だけ） | 直下、Container |
+| 14 | Separator | 直下、Container |
+| 17 | Container（`accent_color`、`spoiler`。zoo 独自の `title`・`subtitle`・`collapsible`・`collapsed`） | 直下 |
+| 18 | Label（入力欄の見出し） | 直下、Container |
+| 19 | File Upload | Label |
+| 21、22、23 | Radio Group、Checkbox Group、Checkbox | Label、Action Row |
+| 1000 | 未対応の部品（Webhook・Slack 取り込みで、知らない部品の文字を残したもの） | どこでも |
+| 1001 | External Select（入力に合わせて選択肢をアプリに問い合わせる） | Action Row、Section の横、Label |
+| 1002 | Overflow（「…」メニュー） | Action Row、Section の横 |
+| 1003、1004、1005 | Date / Time / DateTime Picker | Action Row、Section の横、Label |
+| 1008 | Video | 直下、Container |
+| 1009 | Table（`header` で見出し行、`page_size`、セルにボタン） | 直下、Container |
+| 1010 | Alert（`level`） | 直下、Container |
+| 1011、1012 | Card、Carousel（Card を 1〜10 枚） | 直下、Container |
+| 1013 | Chart（pie・bar・area・line） | 直下、Container |
+| 1014 | Grid（1〜5 行 × 1〜3 個。Slack の layout） | 直下、Container |
+| 1015、1016 | Plan、Task Card | 直下、Container |
+
+上限：部品の数は入れ子を含めて 40（ホームとモーダルは 100）、文字の合計は 4,000（ホームは 8,000）、JSON は 64 KB、`custom_id` は 1〜100 文字で文書の中で重複しません。画像・動画・リンクの URL は `https://` だけです。リンクの展開には操作部品を置けません。
+
+SDK（`sdk/src/components.ts`）に型とビルダー（`container()`・`textDisplay()`・`button()` など）があります。
+
+```ts
+await zoo.setComponents(id, message([
+  container([textDisplay("**Deploy** complete"), actionRow([button("Retry", "retry", { style: 1 })])], "#2da44e"),
+]));
+```
+
+### 操作とイベント
+
+利用者がボタンを押す・select で選ぶと `action.invoked`、モーダルやホームの送信で `view.submitted` が届きます。`data` は次の値を持ちます。
+
+| キー | 内容 |
+| --- | --- |
+| `custom_id`（と、旧名の `action_id`） | 操作した部品の `custom_id` |
+| `component_type` | 操作した部品の type |
+| `values` | `custom_id` ごとの値。select・checkbox group は配列（1 つでも配列）、radio group・ボタンの `value`・入力欄は文字列、checkbox は真偽値、datetime picker は UNIX 秒、user / channel select は zoo の ID の配列 |
+| `trigger_id`、`response_path` | モーダルを開く、一時メッセージを返すための値（下を参照） |
+
+サーバーは、値が選択肢の中にあるか、個数が `min_values`〜`max_values` に収まるか、送信で `required` の入力が空でないか、`format` に合うかを確かめ、合わなければ 400 にします。押せない状態（`disabled`）の部品とリンクボタンは操作できません。
+
+### ファイルの送信（file upload）
+
+モーダルの File Upload（19）では、利用者がそのチャンネルに添付としてファイルを上げ、送信の `values[custom_id]` に添付の ID の配列が入ります。サーバーは、送信した本人がそのチャンネルに上げ、まだ投稿に付けていない添付かを確かめます。アプリは送信から 1 日のあいだ、`GET /api/apps/v1/uploads/{添付の ID}/download`（`ui:write`）で、60 秒有効のダウンロード URL を受け取れます。
+
+ファイルはチャンネルに上げるので、File Upload はチャンネルのある画面（`channel_id` を付けたモーダル・一時メッセージ、メッセージ）でだけ使えます。ホームと、`channel_id` のないモーダルに置くと、`POST /api/apps/v1/surfaces` は 400 を返します。
+
+### 選択肢の問い合わせ（external select）
+
+External Select（1001、Slack の `external_select`）は、利用者の入力に合わせて選択肢をアプリに問い合わせます。
+
+1. クライアントが `invoke` の `kind: "options"`（`values.query` に入力）を送ると、アプリに `options.requested` イベントが届きます。`data.request_id` と、入力を入れた `data.values.query` を持ちます。
+2. アプリは 1 分以内に `POST /api/apps/v1/options/{request_id}` に `{"options":[{"label":"…","value":"…"}]}` を返します。Slack 形式（`{"text":{"type":"plain_text","text":"…"},"value":"…"}` と `option_groups`）も受け付けます。最大 100 件です。
+3. クライアントは `GET /api/apps/{app_id}/options/{request_id}` で選択肢を受け取ります。サーバーはアプリの応答を最大 3 秒待ち（150 ms ごとに最大 20 回確かめて止めます）、応答がなければ `{"options":null}` を返します。クライアントは入力が変わったときだけ問い合わせ直します。
+
+### 移行
+
+旧形式の `messages.card`（Webhook と Slack 取り込みのカード）と `messages.app_blocks`（旧 Block）は、`messages.components` に移しました。
+
+- 新しい書き込みは `components` に入ります。旧形式の入力（旧 Block 一覧、`card` の展開）は、移行前のクライアントのために旧列（`app_blocks`、`app_link_unfurls.card`、`app_ui.document.blocks`）にも同じ内容を書きます。旧列は後のマイグレーションで消します。
+- 既存の行は `zoo_components_backfill` で移します。旧列と `app_ui` の文書の `blocks` は残すので、移行前のクライアントでも今までどおり表示・操作できます。旧データから作った部品は、部品の上限（数・文字数）を超えることがあります。クライアントは上限を超えた文書もそのまま表示します（上限は書き込みの検証だけに使います）。旧形式の select で、選択肢が 25 件を超えるものや 100 文字を超えるものは、変換すると欠けるので移さず、旧形式のまま残します（件数を出力します）（既定は dry-run。`--apply` で書き込み、変更前後を JSON Lines で標準出力に出します。`--restore <file>` で戻せます）。暗号化チャンネルの行は移しません。
+- 移す前の行は、クライアントが旧列を読んで同じ形に変換して表示します。
 
 ## 既存Webhookと移行
 

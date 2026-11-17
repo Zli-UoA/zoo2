@@ -947,10 +947,10 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         json!(backend::slack::message_id(&team, "C1", "1704070000.000100"))
     );
 
-    // カードだけの bot 投稿も取り込まれ、カードと本文が保存される (リンクの展開は除く)
+    // attachments だけの bot 投稿も取り込まれ、部品と本文が保存される (リンクの展開は除く)
     let card = sql(
         &state,
-        "SELECT json_build_object('content',content,'card',card)::text FROM messages WHERE id=$1",
+        "SELECT json_build_object('content',content,'card',components)::text FROM messages WHERE id=$1",
         &[&backend::slack::message_id(
             &team,
             "C1",
@@ -959,15 +959,19 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     )
     .await?;
     assert_eq!(card.len(), 1, "the card-only bot message must be imported");
-    assert_eq!(card[0]["content"], "Deploy\nproduction is ready\nenv: prod");
+    assert_eq!(
+        card[0]["content"],
+        "**Deploy**\nproduction is ready\n**env**: prod"
+    );
     let stored: Value = serde_json::from_str(card[0]["card"].as_str().unwrap())?;
-    assert_eq!(stored["title"], "Deploy");
+    assert_eq!(stored["flags"], 32768);
+    assert_eq!(stored["components"][0]["type"], 17);
     assert!(!card[0]["card"].as_str().unwrap().contains("link preview"));
 
-    // 本文とカードの両方がある投稿は、本文もカードの先頭に入り、チャットで両方が読める
+    // 本文と attachments の両方がある投稿は、本文も部品の先頭に入り、チャットで両方が読める
     let both = sql(
         &state,
-        "SELECT json_build_object('content',content,'card',card)::text FROM messages WHERE id=$1",
+        "SELECT json_build_object('content',content,'card',components)::text FROM messages WHERE id=$1",
         &[&backend::slack::message_id(
             &team,
             "C1",
@@ -984,19 +988,15 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         "{content}"
     );
     let stored: Value = serde_json::from_str(both[0]["card"].as_str().unwrap())?;
-    let cards = stored["cards"]
+    let parts = stored["components"]
         .as_array()
         .expect("the text and the attachment");
-    assert_eq!(cards.len(), 2);
-    // カードの説明は MFM として描画しないので、リンクは「ラベル (URL)」で残す
-    assert_eq!(cards[0]["title"], "Slack");
-    let description = cards[0]["description"].as_str().unwrap();
-    assert!(
-        description.starts_with("Outage in #first-")
-            && description.ends_with("see status (https://status.example.com)"),
-        "{description}"
-    );
-    assert_eq!(cards[1]["title"], "Status");
+    assert_eq!(parts.len(), 2);
+    // 本文は先頭の text_display に、本文と同じ MFM で入る
+    assert_eq!(parts[0]["type"], 10);
+    assert_eq!(parts[0]["content"], content.as_str());
+    assert_eq!(parts[1]["type"], 17);
+    assert!(parts[1].to_string().contains("Status"));
     let files_only = sql(
         &state,
         "SELECT json_build_object('id',id,'content',content)::text FROM messages WHERE id IN ($1,$2)",
