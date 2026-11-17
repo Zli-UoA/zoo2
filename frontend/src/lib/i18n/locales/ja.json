@@ -227,6 +227,8 @@
     "edited": "編集済み"
   },
   "attachments": {
+    "play": "再生",
+    "pause": "一時停止",
     "add": "ファイルを添付",
     "selected": "添付するファイル",
     "remove": "{{name}}を削除",
@@ -248,7 +250,21 @@
     "markSensitive": "画像をセンシティブとして投稿",
     "showSensitive": "画像を表示",
     "hideSensitive": "画像を隠す",
-    "sensitiveShort": "センシティブ"
+    "sensitiveShort": "センシティブ",
+    "documentSummary": "本文・セルの簡易表示です。書式・レイアウトは原本と異なる場合があります。",
+    "previewLimit": "プレビューのサイズ・件数・処理時間の上限を超えました。ファイルをダウンロードして確認してください。",
+    "emptyPreview": "内容がありません",
+    "containedFiles": "含まれるファイル",
+    "previousPage": "前のページ",
+    "nextPage": "次のページ",
+    "pdfPage": "PDF {{page}}ページ",
+    "mail": {
+      "subject": "件名",
+      "from": "差出人",
+      "to": "宛先",
+      "cc": "CC",
+      "date": "日時"
+    }
   },
   "threads": {
     "title": "スレッド",
@@ -333,6 +349,15 @@
     "yesterday": "昨日"
   },
   "composer": {
+    "editorTitle": "メッセージの編集",
+    "expand": "入力欄を全画面に広げる",
+    "collapse": "入力欄を小さく戻す",
+    "dragHandle": "入力欄を上下にスワイプ",
+    "formatting": "書式設定",
+    "bold": "太字",
+    "italic": "斜体",
+    "strike": "取り消し線",
+    "code": "コードブロック",
     "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
     "ctrl": "Ctrl+Enter で送信 / Enter で改行",
     "other": "Cmd / Ctrl+Enter で送信 / Enter で改行",
@@ -395,6 +420,11 @@
   },
   "mentions": {
     "suggestions": "メンション候補"
+  },
+  "appUpdate": {
+    "title": "新しい版の画面があります",
+    "description": "再読み込みすると、新しい版になります。入力中の内容があれば、送信してから再読み込みしてください。",
+    "reload": "再読み込み"
   },
   "offline": {
     "bannerTitle": "オフラインです",
@@ -1208,6 +1238,7 @@
       "popupBlocked": "ログイン用のウィンドウを開けませんでした。ポップアップを許可して、もう一度押してください。",
       "reauthFailed": "ログインし直せませんでした。もう一度押してください。鍵はそのまま使います。",
       "reauthTimeout": "ログインが時間内に終わりませんでした。もう一度押してください。",
+      "desktopOutdated": "このバージョンのデスクトップアプリでは、ログインし直せません。アプリを更新してから、もう一度押してください。",
       "setupConflict": "別の端末が先に暗号化の設定を始めました。この画面で表示したリカバリーキーは使えません。その端末で控えたリカバリーキーかパスキーで解錠してください。",
       "mismatch": "鍵の失効が終わっていないか、サーバーの鍵が書き換えられた可能性があります。この端末には署名していません。失効をやり直すか、暗号化をリセットしてください。",
       "invalidRecoveryKey": "リカバリーキーの形式が正しくありません。打ち間違いがないか確かめてください。",
@@ -1663,5 +1694,78 @@
     "title": "使い方ツアー",
     "chooseChannel": "一覧からチャンネルを選ぶと、次へ進めます。未参加の場合は「チャンネルを探す」から参加してください。",
     "navigationError": "画面を移動できませんでした。もう一度お試しください。"
+  },
+  "sip": {
+    "title": "電話（SIP）",
+    "description": "個人用とサークル共有の回線・電話機を管理します。選択して接続した1回線で発着信します。着信にはこの画面を開いたブラウザーの接続が必要です。",
+    "refresh": "更新",
+    "addLine": "回線を登録",
+    "loading": "読み込み中…",
+    "loadError": "回線を取得できませんでした。更新して再試行してください。",
+    "disabled": "電話機能はまだ有効になっていません。管理者による基盤設定が必要です。",
+    "channelBusy": "チャンネル通話中はSIP接続を利用できません。",
+    "line": "発着信に使う回線",
+    "selectLine": "回線を選択",
+    "personal": "個人用",
+    "shared": "サークル共有",
+    "connect": "接続して待ち受け",
+    "disconnect": "切断",
+    "number": "電話番号・内線番号",
+    "dial": "発信",
+    "empty": "利用できる回線はまだありません。",
+    "edit": "編集",
+    "delete": "削除",
+    "lineForm": "回線の登録・編集",
+    "name": "回線名",
+    "ownership": "所有区分",
+    "phone_number": "外線番号（任意）",
+    "websocket_path": "SIP接続パス",
+    "sip_domain": "SIPドメイン",
+    "username": "SIPユーザー名",
+    "password": "SIPパスワード",
+    "keepPassword": "空欄で現在のパスワードを保持",
+    "members": "利用できるメンバー",
+    "membersHelp": "チェックしたメンバーだけが接続できます。管理者も利用する場合は選択してください。共有するSIP認証情報は全員が利用できるため、メンバー削除時にはPBX側でもパスワードを変更してください。",
+    "phones": "電話機・拠点の連絡先",
+    "phonesHelp": "名前と内線番号を登録します。保存後に表示されるSIPアカウントを電話機へ設定してください。",
+    "gatewayAccount": "拠点ゲートウェイのSIPアカウント",
+    "phoneAccount": "電話機のSIPアカウント",
+    "phoneName": "電話機・拠点名",
+    "extension": "発信先番号",
+    "removePhone": "連絡先を削除",
+    "addPhone": "電話機を追加",
+    "pbxHelp": "管理者が指定したPBXのドメインとアカウントを登録します。SIP接続はサーバーが処理します。発信できる外線回線・番号はPBX側でも制限してください。",
+    "writeError": "保存できませんでした。入力内容と権限を確認して再試行してください。",
+    "save": "保存",
+    "saving": "保存中…",
+    "cancel": "キャンセル",
+    "deleteTitle": "回線を削除しますか？",
+    "deleteHelp": "回線と連絡先をzoo2から削除します。PBXの内線や認証情報は残るため、PBX側でも無効化してください。",
+    "answer": "応答",
+    "hangup": "通話を終了・拒否",
+    "mute": "ミュート",
+    "unmute": "ミュート解除",
+    "dtmf": "プッシュ音（0–9・*・#）",
+    "sendTone": "送信",
+    "callError": "接続または操作に失敗しました。回線の権限・PBX・音声中継設定を確認してください。",
+    "status": {
+      "offline": "未接続",
+      "connecting": "接続中…",
+      "ready": "待ち受け中",
+      "dialing": "呼び出し中…",
+      "incoming": "着信中",
+      "active": "通話中"
+    },
+    "unavailableMember": "利用できないメンバー"
+  },
+  "androidPhone": {
+    "description": "個人用・共有回線のSIP電話とDM音声通話を、端末の通話機能と連携して利用できます。",
+    "nativeCalls": "端末の通話機能との連携",
+    "nativeHelp": "待ち受けを有効にすると、通知を表示して接続を維持します。応答・切断・音声出力は端末の通話機能とも連携します。マイクの許可が必要です。",
+    "receiveDm": "DM通話の着信を受ける",
+    "callError": "通話の準備または操作に失敗しました。マイク権限、端末の通話対応、ネットワークと回線設定を確認してください。",
+    "speaker": "スピーカー",
+    "waiting": "電話の着信を待ち受け中",
+    "dmCall": "通話"
   }
 }

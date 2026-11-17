@@ -150,6 +150,27 @@ fn setup_unlock_and_startup_check() {
         .unwrap()
         .to_owned();
     assert_eq!(own.self_signing_public_key(), self_signing);
+    assert_eq!(own.user_signing().usage(), KeyUsage::UserSigning);
+    let sender_trust = TrustStore::new(ALICE.into()).unwrap();
+    unlocked.record_own_keys(&sender_trust).unwrap();
+    let verified = sender_trust
+        .sender_trust(
+            server.keys_query(),
+            ALICE.into(),
+            DEVICE.into(),
+            Some(self_signing.clone()),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(verified.self_signing_key, self_signing);
+    assert!(verified.signature.is_some());
+    assert!(
+        sender_trust
+            .sender_trust(server.keys_query(), ALICE.into(), DEVICE.into(), None,)
+            .unwrap()
+            .is_none()
+    );
+
     assert_eq!(
         own.startup_check(
             server.keys_query(),

@@ -1,5 +1,7 @@
 package zoo
 
+import kotlinx.serialization.json.JsonObject
+
 /** Account-owned navigation cache. Bounded like the Web timeline cache; never shared across sessions. */
 internal data class HomeTimelineSnapshot(
     val posts: List<Row>, val hasMore: Boolean, val index: Int, val offset: Int, val checkedAt: Long,
@@ -13,6 +15,13 @@ internal class HomeTimelineCache {
         entries[key] = value
         while (entries.size > 8) entries.remove(entries.keys.first())
     }
+    fun preparePost(post: Row) {
+        val id = post.text("id")
+        if (id.isEmpty()) return
+        val detail = JsonObject(post + obj("entry_id" to id, "tree_depth" to 0, "reposted_by" to null))
+        save("post:$id", HomeTimelineSnapshot(listOf(detail), false, 0, 0, 0))
+    }
+    fun takePost(postId: String): Row? = entries.remove("post:$postId")?.posts?.singleOrNull()
     fun remove(postId: String) {
         entries.entries.removeAll { (_, snapshot) -> snapshot.posts.any {
             it.text("id") == postId || it.nested("parent").text("id") == postId || it.nested("quote").nested("post").text("id") == postId

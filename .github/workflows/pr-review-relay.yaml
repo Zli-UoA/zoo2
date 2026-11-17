@@ -1,0 +1,16 @@
+name: PR review relay
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+permissions: {}
+concurrency:
+  group: pr-review-relay-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      # No checkout, artifacts, secrets or write permissions. Completion wakes
+      # the trusted workflow_run gate, which re-reads reviews and permissions.
+      - run: ':'

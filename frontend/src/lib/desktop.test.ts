@@ -11,6 +11,8 @@ import {
   isDesktopSession,
   resetDesktopForTest,
 } from "./desktop";
+import type { AppConfig } from "./config";
+import { ReauthError, startReauth } from "./e2ee/reauth";
 
 type Internals = { invoke: ReturnType<typeof vi.fn>; transformCallback: ReturnType<typeof vi.fn> };
 
@@ -152,5 +154,48 @@ describe("desktopAccessToken", () => {
     });
     await detectDesktop();
     await expect(desktopAccessToken()).resolves.toBeNull();
+  });
+});
+
+describe("startReauth on the desktop app", () => {
+  const config = {} as AppConfig;
+
+  async function desktop(reauth: () => unknown) {
+    const internals = install((cmd) =>
+      cmd === "zoo_session" ? session(DESKTOP_PROTOCOL_VERSION, "remote") : reauth(),
+    );
+    await detectDesktop();
+    return internals;
+  }
+
+  it("asks the app instead of opening a window", async () => {
+    const internals = await desktop(() => "id-token");
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await expect(startReauth(config)()).resolves.toBe("id-token");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_reauthenticate", undefined);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("needs no re-authentication when the app runs in dev mode", async () => {
+    await desktop(() => {
+      throw { code: "wrong_mode", message: "dev" };
+    });
+    await expect(startReauth(config)()).resolves.toBeNull();
+  });
+
+  it.each([
+    [{ code: "timeout", message: "t" }, "timeout"],
+    [{ code: "cancelled", message: "c" }, "aborted"],
+    [{ code: "rejected", message: "r" }, "denied"],
+    // 古い版のアプリには、コマンドがない（型の付かない文字列のエラーになる）。
+    ["Command zoo_reauthenticate not found", "desktopOutdated"],
+  ])("maps %j to %s", async (failure, code) => {
+    await desktop(() => {
+      throw failure;
+    });
+    const result = startReauth(config)();
+    await expect(result).rejects.toBeInstanceOf(ReauthError);
+    await expect(result).rejects.toMatchObject({ code });
   });
 });

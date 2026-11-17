@@ -4067,6 +4067,50 @@ CREATE TRIGGER messages_channel_author_latest AFTER INSERT OR DELETE OR UPDATE O
 CREATE INDEX slack_import_jobs_active_team ON slack_import_jobs(team_id) WHERE status IN ('analyzing','importing');
 CREATE INDEX slack_channel_syncs_due_order ON slack_channel_syncs(available_at,team_id,slack_channel_id);
 CREATE INDEX slack_channel_wakes_due_order ON slack_channel_wakes(first_at,team_id,slack_channel_id);
+-- SIP credentials stay outside Electric/publication; only authenticated REST may read them.
+CREATE TABLE sip_lines (
+ id text PRIMARY KEY,
+ name text NOT NULL,
+ owner_user_id text REFERENCES users(id),
+ websocket_path text NOT NULL,
+ sip_domain text NOT NULL,
+ username text NOT NULL,
+ password_ciphertext text NOT NULL,
+ phone_number text NOT NULL DEFAULT '',
+ created_by text NOT NULL REFERENCES users(id),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE sip_line_members (
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ user_id text NOT NULL REFERENCES users(id),
+ PRIMARY KEY(line_id,user_id)
+);
+CREATE TABLE sip_phones (
+ id text PRIMARY KEY,
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ extension text NOT NULL
+);
+CREATE INDEX sip_lines_owner_idx ON sip_lines(owner_user_id);
+CREATE INDEX sip_line_members_user_idx ON sip_line_members(user_id);
+-- Ephemeral, authenticated gateway registrations. No SIP credentials or call history.
+CREATE TABLE phone_sessions (
+ id text PRIMARY KEY,
+ user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ line_revision timestamptz NOT NULL,
+ peer_id text NOT NULL,
+ gateway_session_id bigint,
+ gateway_handle_id bigint,
+ lease_owner text,
+ expires_at timestamptz NOT NULL DEFAULT (now() + interval '60 seconds'),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX phone_sessions_user_expiry ON phone_sessions(user_id, expires_at);
+CREATE INDEX phone_sessions_line_idx ON phone_sessions(line_id);
+-- PBX realtime and line quotas must not scan other users' directory entries.
+CREATE INDEX sip_phones_line_extension_idx ON sip_phones(line_id, extension);
+CREATE INDEX sip_lines_created_by_idx ON sip_lines(created_by);
 
 -- メッセージ部品（Discord Components V2 形式、docs/apps.md「メッセージ部品」）を入れる列を足す。
 -- これまでの card（MessageCard）と app_blocks（旧 Block の一覧）は、この列に移していく。

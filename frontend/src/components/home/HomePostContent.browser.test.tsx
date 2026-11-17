@@ -1,5 +1,5 @@
 import "../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -192,4 +192,30 @@ it("does not link unavailable local quotes to an ActivityPub JSON endpoint", () 
   );
   expect(screen.getByText("引用元の投稿を表示できません")).toBeInTheDocument();
   expect(screen.queryByRole("link")).toBeNull();
+});
+
+it("uses the shared media viewer for ActivityPub video, audio and PDF attachments", async () => {
+  const view = render(
+    <LocaleProvider>
+      <HomePostContent
+        content=""
+        previewLinks={false}
+        media={[
+          { url: "https://peer.example/movie.webm", name: "Movie", media_type: "video/webm" },
+          { url: "https://peer.example/music.ogg", name: "Music", media_type: "audio/ogg" },
+          { url: "https://peer.example/report.pdf", name: "Report", media_type: "application/pdf" },
+        ]}
+      />
+    </LocaleProvider>,
+  );
+  expect(view.container.querySelector("video")?.getAttribute("src")).toBe(
+    "https://peer.example/movie.webm",
+  );
+  expect(view.container.querySelector("audio")?.getAttribute("src")).toBe(
+    "https://peer.example/music.ogg",
+  );
+  expect(view.container.querySelector("iframe")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Reportをプレビュー" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog.querySelector("canvas")?.getAttribute("role")).toBe("img");
 });

@@ -233,8 +233,8 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                         },
                     state = scroll,
                     userScrollEnabled = !maskWholeList,
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    contentPadding = PaddingValues(if (LocalTouchUi.current) AndroidDesign.screenInset else 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceLarge else 12.dp),
                 ) {
                     if (apub.error) item("activitypub-error") {
                         Row {
@@ -484,13 +484,13 @@ fun NotificationCard(
                     else Modifier
                 )
                 .padding(
-                    horizontal = 12.dp,
-                    vertical = 12.dp,
+                    horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 12.dp,
+                    vertical = if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 12.dp,
                 ),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.avatarGap else 12.dp),
         ) {
             NotificationAvatar(
-                size = if (mobile) 40.dp else 36.dp,
+                size = if (LocalTouchUi.current) AndroidDesign.avatar else if (mobile) 40.dp else 36.dp,
                 avatar = { Avatar(user, size = it) },
             ) {
                 val reaction = if (type == "reaction") context?.get("reactions")?.rows()?.firstOrNull { it.text("user_id") == actors.first() }?.text("emoji")?.takeIf { it.isNotEmpty() } else null

@@ -6,7 +6,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
@@ -34,17 +33,26 @@ fun HomePostCard(
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
         Modifier.fillMaxWidth().then(webControlModifier("article"))
-            .then(if (!editing) Modifier.nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null) else Modifier)
-            .padding(horizontal = if (LocalTouchUi.current) 8.dp else 16.dp,
-                vertical = if (LocalTouchUi.current) 6.dp else 16.dp),
-        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp),
+            .then(
+                if (!editing) Modifier.nativeNavigation(
+                    "/home/posts/${post.text("id").encodeURLParameter()}",
+                    role = null,
+                    beforeNavigate = { app.homeTimelines.preparePost(post) },
+                ) else Modifier
+            )
+            .padding(horizontal = if (LocalTouchUi.current) AndroidDesign.feedInset else 16.dp,
+                vertical = if (LocalTouchUi.current) AndroidDesign.postVerticalInset else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceSmall else 8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {
             val parent = post["parent"] as? Row
             val name = parent?.text("display_name")?.ifEmpty { parent.text("user_name") }
                 ?: app.t("activitypubSettings.post")
             Column(Modifier.fillMaxWidth().padding(start = 12.dp, bottom = 8.dp)) {
-                NativeLink("/home/posts/${post.text("parent_id").encodeURLParameter()}") {
+                NativeLink(
+                    "/home/posts/${post.text("parent_id").encodeURLParameter()}",
+                    beforeNavigate = { parent?.let { app.homeTimelines.preparePost(it) } },
+                ) {
                     Text(app.t("home.replyTo", "name" to name), size = 12.sp)
                 }
                 parent?.let {
@@ -61,31 +69,48 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        Row(horizontalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 8.dp else 12.dp)) {
+        // Reserve a 48dp profile hit target while keeping the visible 40 + 12dp keyline.
+        val authorGap = if (LocalTouchUi.current)
+            AndroidDesign.avatarGap - (AndroidDesign.touchTarget - AndroidDesign.avatar)
+        else 12.dp
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(authorGap),
+            verticalAlignment = Alignment.Top,
+        ) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
-            NativeLink(profile) {
+            NativeLink(
+                profile,
+                if (LocalTouchUi.current) Modifier.sizeIn(
+                    minWidth = AndroidDesign.touchTarget, minHeight = AndroidDesign.touchTarget,
+                ) else Modifier,
+            ) {
                 val people by app.repo.users.rows.collectAsState()
                 if (!post.flag("remote"))
                     Avatar(
                         people.find { it.text("id") == post.text("user_id") }
-                            ?: post
+                            ?: post,
+                        modifier = Modifier.postAvatar(),
+                        size = postAvatarSize(),
                     )
                 else ActivityPubAvatar(
                     post["avatar"] as? Row,
                     post.text("display_name").ifEmpty { post.text("user_name") },
+                    modifier = Modifier.postAvatar(),
+                    size = postAvatarSize(),
                 )
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) 4.dp else 8.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceSmall else 8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
-                    NativeLink(profile) {
+                    NativeLink(profile, Modifier.align(Alignment.Top)) {
                         ActivityPubText(
                             post.text("display_name").ifEmpty { post.text("user_name") },
                             post.homeRows("actor_emojis"),
                             textStyle =
-                                TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                                MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                         )
                     }
                     NativeLink(profile) {
@@ -96,18 +121,11 @@ fun HomePostCard(
                         )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
-                        Text(
-                            app.platform.fullTimestamp(post.text("created_at")),
-                            Modifier.then(
-                                webControlModifier(
-                                    "time",
-                                    attributes = mapOf("datetime" to post.text("created_at")),
-                                )
-                            ),
-                            size = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    NativeLink(
+                        "/home/posts/${post.text("id").encodeURLParameter()}",
+                        beforeNavigate = { app.homeTimelines.preparePost(post) },
+                    ) {
+                        PostTimestamp(app, post.text("created_at"))
                     }
                     ActivityPubBadge(app, post.text("visibility").ifEmpty { "local" }, federated = post.flag("apub") || post.flag("remote"))
                     }
@@ -117,7 +135,7 @@ fun HomePostCard(
                         ) {
                             Text(
                                 "#${post.text("channel_name")}",
-                                size = 12.sp,
+                                size = if (LocalTouchUi.current) 14.sp else 12.sp,
                                 color = LocalLinkColor.current,
                             )
                         }
@@ -178,7 +196,10 @@ fun HomePostCard(
                         post.homeRows("reactions").forEach { item ->
                             val label = "${item.text("reaction")} ${item.text("count")}"
                             Row(
-                                Modifier.sizeIn(minWidth = if (LocalTouchUi.current) 48.dp else 0.dp, minHeight = if (LocalTouchUi.current) 48.dp else 0.dp).then(
+                                Modifier.sizeIn(
+                                        minWidth = if (LocalTouchUi.current) AndroidDesign.controlVisualSize else 0.dp,
+                                        minHeight = if (LocalTouchUi.current) AndroidDesign.controlVisualSize else 0.dp,
+                                    ).then(
                                         webControlModifier(
                                             "button",
                                             enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),
@@ -208,7 +229,7 @@ fun HomePostCard(
                             }
                         }
                     }
-                Row(
+                FlowRow(
                     Modifier.fillMaxWidth()
                         .then(
                             webControlModifier(
@@ -217,7 +238,8 @@ fun HomePostCard(
                             )
                         ),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                    itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
                         post.text("replies").ifEmpty { "0" },
@@ -225,7 +247,10 @@ fun HomePostCard(
                         accessibleLabel =
                             "${app.t("home.reply")} ${post.text("replies").ifEmpty{"0"}}",
                         variant = "ghost",
-                        size = "sm",
+                        size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
+                        contentInset = AndroidDesign.spaceSmall,
+                        contentGap = AndroidDesign.spaceSmall,
                         click = reply,
                     )
                     Button(
@@ -236,7 +261,10 @@ fun HomePostCard(
                         selected = post.flag("reposted"),
                         enabled = !pending && post.text("visibility") != "followers",
                         variant = "ghost",
-                        size = "sm",
+                        size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
+                        contentInset = AndroidDesign.spaceSmall,
+                        contentGap = AndroidDesign.spaceSmall,
                         click = repost,
                     )
                     Button(
@@ -246,7 +274,10 @@ fun HomePostCard(
                             "${app.t("home.react")} ${post.text("likes").ifEmpty{"0"}}",
                         enabled = !pending,
                         variant = "ghost",
-                        size = "sm",
+                        size = "xs",
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
+                        contentInset = AndroidDesign.spaceSmall,
+                        contentGap = AndroidDesign.spaceSmall,
                         click = react,
                     )
                     Menu(
@@ -273,6 +304,8 @@ fun HomePostCard(
                                 }
                             )
                         },
+                        size = AndroidDesign.controlVisualSize,
+                        minimumTouchTarget = AndroidDesign.controlVisualSize,
                     )
                 }
                 if (error)

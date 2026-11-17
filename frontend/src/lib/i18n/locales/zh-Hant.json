@@ -227,6 +227,8 @@
     "edited": "已編輯"
   },
   "attachments": {
+    "play": "播放",
+    "pause": "暫停",
     "add": "附加檔案",
     "selected": "要附加的檔案",
     "remove": "移除{{name}}",
@@ -248,7 +250,21 @@
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
-    "sensitiveShort": "敏感圖片"
+    "sensitiveShort": "敏感圖片",
+    "documentSummary": "正文與儲存格的簡易預覽，格式及版面可能與原檔不同。",
+    "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
+    "emptyPreview": "沒有內容",
+    "containedFiles": "包含的檔案",
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "pdfPage": "PDF 第{{page}}頁",
+    "mail": {
+      "subject": "主旨",
+      "from": "寄件者",
+      "to": "收件者",
+      "cc": "副本",
+      "date": "日期"
+    }
   },
   "threads": {
     "title": "子討論",
@@ -333,6 +349,15 @@
     "yesterday": "昨天"
   },
   "composer": {
+    "editorTitle": "編輯訊息",
+    "expand": "全螢幕展開編輯器",
+    "collapse": "收合編輯器",
+    "dragHandle": "上下滑動輸入框頂部的拖曳列",
+    "formatting": "格式",
+    "bold": "粗體",
+    "italic": "斜體",
+    "strike": "刪除線",
+    "code": "程式碼區塊",
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
     "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",
@@ -395,6 +420,11 @@
   },
   "mentions": {
     "suggestions": "提及建議"
+  },
+  "appUpdate": {
+    "title": "有新版本的畫面",
+    "description": "重新載入即可使用新版本。如有正在輸入的內容，請先送出。",
+    "reload": "重新載入"
   },
   "offline": {
     "bannerTitle": "你已離線",
@@ -1208,6 +1238,7 @@
       "popupBlocked": "無法開啟登入視窗。請允許彈出式視窗後再按一次。",
       "reauthFailed": "無法重新登入。請再按一次，金鑰會保持不變。",
       "reauthTimeout": "登入未在時限內完成，請再按一次。",
+      "desktopOutdated": "此版本的桌面應用程式無法重新登入。請更新應用程式後再按一次。",
       "setupConflict": "另一台裝置已先開始設定加密。此畫面顯示的復原金鑰無法使用。請以該裝置記下的復原金鑰或通行金鑰解鎖。",
       "mismatch": "金鑰撤銷可能尚未完成，或伺服器上的金鑰可能遭到竄改。此裝置未簽署。請重新撤銷或重設加密。",
       "invalidRecoveryKey": "復原金鑰格式不正確，請確認是否有輸入錯誤。",
@@ -1663,5 +1694,78 @@
     "title": "使用導覽",
     "chooseChannel": "選擇頻道即可繼續。需要時可從瀏覽頻道中加入。",
     "navigationError": "無法開啟頁面，請重試。"
+  },
+  "sip": {
+    "title": "電話（SIP）",
+    "description": "管理個人和社團共用的線路及電話機。連接所選的一條線路進行撥號和接聽。接聽來電需要瀏覽器保持開啟並連線。",
+    "refresh": "重新整理",
+    "addLine": "新增線路",
+    "loading": "載入中…",
+    "loadError": "無法載入線路，請重新整理後重試。",
+    "disabled": "電話功能尚未啟用，需要管理員設定基礎設施。",
+    "channelBusy": "頻道通話期間無法使用SIP連線。",
+    "line": "通話線路",
+    "selectLine": "選擇線路",
+    "personal": "個人",
+    "shared": "社團共用",
+    "connect": "連線並等候來電",
+    "disconnect": "中斷連線",
+    "number": "電話號碼或分機號碼",
+    "dial": "撥號",
+    "empty": "目前沒有可用線路。",
+    "edit": "編輯",
+    "delete": "刪除",
+    "lineForm": "新增或編輯線路",
+    "name": "線路名稱",
+    "ownership": "擁有權",
+    "phone_number": "外線號碼（選填）",
+    "websocket_path": "SIP連線路徑",
+    "sip_domain": "SIP網域",
+    "username": "SIP使用者名稱",
+    "password": "SIP密碼",
+    "keepPassword": "留空以保留目前的密碼",
+    "members": "允許使用的成員",
+    "membersHelp": "只有選取的成員可以連線。管理員如需使用也須選取。成員共用SIP憑證，移除成員時也請在PBX更換密碼。",
+    "phones": "電話機和據點聯絡人",
+    "phonesHelp": "登記名稱和分機號碼後，將顯示的 SIP 帳號設定到電話機。",
+    "gatewayAccount": "據點閘道 SIP 帳號",
+    "phoneAccount": "電話機 SIP 帳號",
+    "phoneName": "電話機或據點名稱",
+    "extension": "目標號碼",
+    "removePhone": "移除聯絡人",
+    "addPhone": "新增電話機",
+    "pbxHelp": "請登記管理員提供的PBX網域及帳戶。SIP連線由伺服器處理。PBX也須限制可用的外線及號碼。",
+    "writeError": "無法儲存，請檢查輸入和權限後重試。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "cancel": "取消",
+    "deleteTitle": "刪除此線路？",
+    "deleteHelp": "從zoo2移除線路和聯絡人。請另外在PBX停用分機和憑證。",
+    "answer": "接聽",
+    "hangup": "掛斷或拒接",
+    "mute": "靜音",
+    "unmute": "取消靜音",
+    "dtmf": "按鍵音（0–9、*、#）",
+    "sendTone": "傳送",
+    "callError": "連線或操作失敗，請檢查線路權限、PBX和音訊中繼設定。",
+    "status": {
+      "offline": "未連線",
+      "connecting": "連線中…",
+      "ready": "等候來電",
+      "dialing": "撥號中…",
+      "incoming": "來電",
+      "active": "通話中"
+    },
+    "unavailableMember": "無法使用的成員"
+  },
+  "androidPhone": {
+    "description": "透過裝置的通話功能使用個人或共用SIP線路及私訊語音通話。",
+    "nativeCalls": "裝置通話整合",
+    "nativeHelp": "啟用來電後會顯示持續通知並保持連線。可透過裝置的通話控制接聽、掛斷和切換音訊輸出。需要麥克風權限。",
+    "receiveDm": "接收私訊來電",
+    "callError": "無法準備或操作通話，請檢查麥克風權限、裝置通話支援、網路和線路設定。",
+    "speaker": "揚聲器",
+    "waiting": "正在等候來電",
+    "dmCall": "通話"
   }
 }

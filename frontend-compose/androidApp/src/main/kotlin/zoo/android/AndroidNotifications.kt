@@ -45,8 +45,10 @@ internal class AndroidNotifications(
 
     init {
         active = this
-        manager.activeNotifications.filter { it.tag?.startsWith("zoo:") == true }
-            .forEach { manager.cancel(it.tag, it.id) }
+        val prefix = "zoo:${app.config.userId}:"
+        manager.activeNotifications.filter { notice ->
+            notice.tag?.let { it.startsWith("zoo:") && (!it.startsWith(prefix) || it.startsWith("${prefix}group:")) } == true
+        }.forEach { manager.cancel(it.tag, it.id) }
         listOf(
             "mentions" to "androidNotifications.mentions",
             "messages" to "androidNotifications.messages",
@@ -65,6 +67,9 @@ internal class AndroidNotifications(
     internal fun update(rows: List<Row>?) {
         if (closed || rows == null) return
         val unread = rows.filterNot { it.flag("is_read") }.associateBy { it.text("id") }
+        val prefix = "zoo:${app.repo.config.userId}:"
+        manager.activeNotifications.filter { it.tag?.startsWith(prefix) == true && it.tag?.startsWith("${prefix}group:") != true && it.tag?.removePrefix(prefix) !in unread }
+            .forEach { manager.cancel(it.tag, it.id) }
         shown.keys.toList().filter { it !in unread }.forEach { dismiss(it, refreshSummary = false) }
         unread.forEach { (id, row) ->
             if (id in shown) {
@@ -73,7 +78,7 @@ internal class AndroidNotifications(
             }
         }
         for (row in inbox.update(rows)) {
-            if (!app.env.visible && allowed() && row.text("channel_id").isNotEmpty()) {
+            if (allowed() && row.text("channel_id").isNotEmpty() && row.text("notification_type") != "missed_call") {
                 shown[row.text("id")] = row
                 post(row, refreshSummary = false)
             }
@@ -120,7 +125,8 @@ internal class AndroidNotifications(
         val avatar = avatars[notificationAvatar(row)]
         val self = app.repo.users.rows.value.find { it.text("id") == app.config.userId }
             ?.let(::author)?.ifEmpty { null } ?: "Zoo"
-        val destination = Intent(activity, MainActivity::class.java)
+        val destination = PushBinding(activity).openIntent(app.config.userId, id,
+            "/channels/${row.text("channel_id")}?message=${row.text("message_id")}") ?: Intent(activity, MainActivity::class.java)
             .setAction("zoo.notification.OPEN")
             .setData(Uri.parse("zoo-notification://$token/$id/open"))
             .putExtra("session", token).putExtra("notification", id)
@@ -133,7 +139,7 @@ internal class AndroidNotifications(
                 else notificationStyle(row, body, self, avatar))
             .setLargeIcon(avatar)
             .setWhen(timestampMillis(row.text("created_at")) ?: System.currentTimeMillis())
-            .setGroup("zoo:$token:${notificationGroup(row)}")
+            .setGroup("zoo:${app.config.userId}:${notificationGroup(row)}")
             .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
             .setContentIntent(PendingIntent.getActivity(activity, 0, destination,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
@@ -147,7 +153,7 @@ internal class AndroidNotifications(
             builder.addAction(Notification.Action.Builder(null, app.t("home.reply"), action(id, "reply", true))
                 .addRemoteInput(input).setAllowGeneratedReplies(true).build())
         }
-        try { manager.notify("zoo:$token:$id", 0, builder.build()) }
+        try { manager.notify(notificationTag(app.repo.config.userId, id), 0, builder.build()) }
         catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
         if (refreshSummary) updateSummaries()
         loadAvatar(row)
@@ -183,7 +189,7 @@ internal class AndroidNotifications(
 
     private fun updateSummaries() {
         val groups = shown.values.groupBy(::notificationGroup).filterValues { it.size > 1 }
-        (summaries - groups.keys).forEach { manager.cancel("zoo:$token:group:$it", 0) }
+        (summaries - groups.keys).forEach { manager.cancel("zoo:${app.config.userId}:group:$it", 0) }
         summaries.retainAll(groups.keys)
         if (closed || !allowed()) return
         groups.forEach { (group, rows) ->
@@ -207,13 +213,13 @@ internal class AndroidNotifications(
                 .setContentTitle(title).setNumber(rows.size).setStyle(style)
                 .setContentIntent(PendingIntent.getActivity(activity, 0, open,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-                .setGroup("zoo:$token:$group").setGroupSummary(true)
+                .setGroup("zoo:${app.config.userId}:$group").setGroupSummary(true)
                 .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
                 .setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setDeleteIntent(action(group, "dismissGroup"))
                 .build()
             try {
-                manager.notify("zoo:$token:group:$group", 0, summary)
+                manager.notify("zoo:${app.config.userId}:group:$group", 0, summary)
                 summaries += group
             } catch (_: SecurityException) { /* Permission may have changed. */ }
         }
@@ -226,8 +232,12 @@ internal class AndroidNotifications(
         dismiss(row.text("id"))
     }
 
+    fun dismissTag(tag: String) {
+        shown.keys.firstOrNull { notificationTag(app.config.userId, it) == tag }?.let { dismiss(it) }
+    }
+
     private fun dismiss(id: String, refreshSummary: Boolean = true) {
-        manager.cancel("zoo:$token:$id", 0)
+        manager.cancel(notificationTag(app.repo.config.userId, id), 0)
         shown.remove(id)
         errors.remove(id)
         if (refreshSummary) updateSummaries()
@@ -247,13 +257,38 @@ internal class AndroidNotifications(
         actions.receive(id, intent.action.orEmpty(), text)
     }
 
-    fun close() {
+    fun close(preserveNotifications: Boolean = false) {
         closed = true
         observer.cancel()
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
         avatars.clear()
-        shown.keys.toList().forEach { dismiss(it, refreshSummary = false) }
+        if (preserveNotifications) {
+            val posted = manager.activeNotifications.associateBy { it.tag }
+            for (row in shown.values.toList()) {
+                val id = row.text("id")
+                val tag = notificationTag(app.config.userId, id)
+                val destination = PushBinding(activity).openIntent(app.config.userId, id,
+                    "/channels/${row.text("channel_id")}?message=${row.text("message_id")}")
+                val notification = posted[tag]?.notification
+                if (destination == null || notification == null) {
+                    dismiss(id, refreshSummary = false)
+                    continue
+                }
+                val detached = Notification.Builder.recoverBuilder(activity, notification)
+                    .setActions().setDeleteIntent(null).setGroup(null)
+                    .setContentIntent(PendingIntent.getActivity(activity, 0, destination,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                    .setOnlyAlertOnce(true).build().apply {
+                        // recoverBuilder can retain the original array when its action list is empty.
+                        actions = null
+                    }
+                try { manager.notify(tag, 0, detached) }
+                catch (_: SecurityException) { manager.cancel(tag, 0) }
+            }
+            shown.clear()
+        }
+        else shown.keys.toList().forEach { dismiss(it, refreshSummary = false) }
         updateSummaries()
         if (active === this) active = null
     }

@@ -6,7 +6,7 @@ import { toast } from "sonner";
 
 import { forgetAttachmentUrl, resolveAttachmentUrl } from "../../../lib/api/attachmentUrls";
 import { createConfiguredApiClient } from "../../../lib/api/client";
-import { formatAttachmentSize, isInlineImage } from "../../../lib/attachments";
+import { formatAttachmentSize, mediaPreviewKind } from "../../../lib/attachments";
 import {
   EncryptedAttachmentError,
   fetchEncryptedAttachment,
@@ -22,9 +22,8 @@ import { useCollections } from "../../../lib/electric/collections-context";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
-import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
+import { MediaPreview } from "../../ui/media-preview";
 import { SensitiveMedia } from "../../ui/sensitive-media";
-import { Spinner } from "../../ui/spinner";
 
 /** 本文の `AttachmentInfo` から、復号した中身を返す。 */
 export type EncryptedAttachmentLoader = (info: AttachmentInfo) => Promise<Blob>;
@@ -177,24 +176,24 @@ export function EncryptedMessageAttachments({
       sensitive: Boolean(attachment.sensitive) || serverSensitive.has(attachment.attachment_id),
     };
   });
-  const images = shown.filter(({ info, blocked }) => !blocked && isInlineImage(info.mimetype));
-  const files = shown.filter(({ info, blocked }) => blocked || !isInlineImage(info.mimetype));
+  const previews = shown.filter(
+    ({ info, blocked }) => !blocked && mediaPreviewKind(info.mimetype, info.name),
+  );
+  const files = shown.filter(
+    ({ info, blocked }) => blocked || !mediaPreviewKind(info.mimetype, info.name),
+  );
   return (
     <div className="mt-2 flex max-w-xl flex-col gap-2">
-      {images.length > 0 ? (
-        <div
-          className={
-            images.length === 1 ? "w-fit max-w-full" : "grid w-full max-w-sm grid-cols-2 gap-2"
-          }
-        >
-          {images.map(({ info, sensitive }) => (
+      {previews.length > 0 ? (
+        <div className="grid w-full grid-cols-1 gap-2">
+          {previews.map(({ info, sensitive }) => (
             <SensitiveMedia
               key={`${info.attachment_id}:${sensitive}`}
               sensitive={sensitive}
               preview={{ width: info.width ?? null, height: info.height ?? null }}
-              className={images.length === 1 ? "w-64 max-w-full" : "w-full"}
+              className="w-full"
             >
-              <EncryptedImage attachment={info} multiple={images.length > 1} />
+              <EncryptedPreview attachment={info} />
             </SensitiveMedia>
           ))}
         </div>
@@ -212,72 +211,26 @@ export function EncryptedMessageAttachments({
   );
 }
 
-function EncryptedImage({
-  attachment,
-  multiple,
-}: {
-  attachment: AttachmentInfo;
-  multiple: boolean;
-}) {
-  const { t } = useTranslation();
+function EncryptedPreview({ attachment }: { attachment: AttachmentInfo }) {
   const { state, url, retry } = useDecryptedAttachment(attachment);
-  const [open, setOpen] = useState(false);
-  const aspectRatio =
-    attachment.width && attachment.height ? `${attachment.width} / ${attachment.height}` : "4 / 3";
-
   if (state.status === "error") {
     return <EncryptedFileCard attachment={attachment} failed onRetry={retry} />;
   }
   return (
-    <>
-      <div
-        className={
-          multiple
-            ? "aspect-square w-full overflow-hidden rounded-lg border bg-muted"
-            : "w-64 max-w-full overflow-hidden rounded-lg border bg-muted"
-        }
-        style={!multiple ? { aspectRatio, minHeight: 80, maxHeight: 384 } : undefined}
-      >
-        {state.status === "loading" || !url ? (
-          <Spinner label={t("attachments.loading")} className="size-full" />
-        ) : (
-          <button
-            type="button"
-            aria-label={t("attachments.preview", { name: attachment.name })}
-            className="block size-full cursor-zoom-in outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            onClick={() => setOpen(true)}
-          >
-            <img
-              src={url}
-              alt={attachment.name}
-              className={
-                multiple
-                  ? "size-full object-cover transition-opacity hover:opacity-90"
-                  : "size-full object-contain transition-opacity hover:opacity-90"
-              }
-            />
-          </button>
-        )}
-      </div>
-      {state.status === "ready" && url ? (
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent className="w-auto max-w-[calc(100vw-2rem)] p-2 sm:max-w-[min(96vw,80rem)]">
-            <DialogTitle className="sr-only">{attachment.name}</DialogTitle>
-            <img
-              src={url}
-              alt={attachment.name}
-              className="mx-auto max-h-[78vh] max-w-full object-contain"
-            />
-            <div className="flex items-center justify-between gap-3 px-1">
-              <span className="min-w-0 truncate text-xs text-muted-foreground">
-                {attachment.name}
-              </span>
-              <EncryptedDownloadButton attachment={attachment} blob={state.blob} showLabel />
-            </div>
-          </DialogContent>
-        </Dialog>
-      ) : null}
-    </>
+    <MediaPreview
+      src={url}
+      name={attachment.name}
+      contentType={attachment.mimetype}
+      width={attachment.width ?? null}
+      height={attachment.height ?? null}
+      loading={state.status === "loading"}
+      onRetry={retry}
+      footer={
+        state.status === "ready" ? (
+          <EncryptedDownloadButton attachment={attachment} blob={state.blob} showLabel />
+        ) : undefined
+      }
+    />
   );
 }
 

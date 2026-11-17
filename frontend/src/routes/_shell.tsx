@@ -1,3 +1,5 @@
+import { SipProvider } from "../components/sip/SipProvider";
+import { SipCallBanner } from "../components/sip/SipPanel";
 import { HomeLiveProvider } from "../hooks/useHomeLive";
 import { Outlet, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -31,15 +33,18 @@ function ShellLayout() {
     <OfflineProvider config={config}>
       <E2eeProvider config={config}>
         <CallProvider config={config}>
-          <HomeLiveProvider>
-            <NotificationsProvider>
-              <AppShell>
-                <Outlet />
-              </AppShell>
-              <SasVerificationHost />
-              <IncomingCallDialog />
-            </NotificationsProvider>
-          </HomeLiveProvider>
+          <SipProvider config={config}>
+            <HomeLiveProvider>
+              <NotificationsProvider>
+                <AppShell>
+                  <Outlet />
+                </AppShell>
+                <SasVerificationHost />
+                <IncomingCallDialog />
+              </NotificationsProvider>
+            </HomeLiveProvider>
+            <SipCallBanner />
+          </SipProvider>
         </CallProvider>
       </E2eeProvider>
     </OfflineProvider>

@@ -54,9 +54,10 @@ jobs:
           retention-days: 7
 
   deploy:
-    needs: [runner, build]
+    needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    # Docker を使わず、checkout もしない軽量な deploy なので、selector を待たず kubecamp に固定する。
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 10
     concurrency:
       group: db-erd-production

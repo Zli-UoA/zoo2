@@ -19,17 +19,9 @@ on:
 permissions: {}
 
 jobs:
-  runner:
-    uses: ./.github/workflows/select-runner.yaml
-    permissions:
-      contents: read
-    secrets:
-      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
-
   test:
-    needs: runner
-    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     permissions:
       contents: read
     steps:
@@ -42,13 +34,12 @@ jobs:
       - run: node --test .github/scripts/deployment-badges.test.mjs
 
   publish:
-    needs: runner
     if: >-
-      !cancelled() && github.event_name != 'pull_request' &&
+      github.event_name != 'pull_request' &&
       (github.event_name != 'status' ||
        startsWith(github.event.context, 'flux/') ||
        startsWith(github.event.context, 'kustomization/'))
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 5
     concurrency:
       group: deployment-badges

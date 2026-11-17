@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config";
+import { DesktopReauthError, desktopReauthenticate, isDesktopSession } from "../desktop";
 import type { OidcClient, ReauthRequest } from "../oidc/client";
 import { getOidcClient } from "../oidc/session";
 
@@ -8,6 +9,9 @@ import { getOidcClient } from "../oidc/session";
  * 今の画面を離れずに、別のウィンドウで `max_age=0` の認可リクエストを開き、リダイレクト先の
  * `/auth/reauth-callback.html` から `postMessage`（と同じオリジンの BroadcastChannel）で認可コードを
  * 受け取る。メモリーにある鍵とリカバリーキーは消えない。
+ *
+ * デスクトップ版（Tauri）の中では別のウィンドウを開けず、アプリの WebView ではパスキーも使えないので、
+ * Rust 側が既定のブラウザーとループバックのリダイレクトで再認証する（`desktopReauthenticate`）。
  */
 
 export const REAUTH_CALLBACK_PATH = "/auth/reauth-callback.html";
@@ -21,7 +25,9 @@ export type ReauthErrorCode =
   /** AuthZ がエラーを返した、または利用者が取り消した。 */
   | "denied"
   | "timeout"
-  | "aborted";
+  | "aborted"
+  /** デスクトップ版のアプリが古く、再認証のコマンドがない。アプリを更新してもらう。 */
+  | "desktopOutdated";
 
 export class ReauthError extends Error {
   constructor(
@@ -166,8 +172,31 @@ export async function reauthenticate(options: {
  * `null` を返す。
  */
 export function startReauth(config: AppConfig): () => Promise<string | null> {
+  if (isDesktopSession()) return reauthenticateOnDesktop;
   const oidc = getOidcClient(config);
   if (!oidc) return async () => null;
   const popup = openReauthWindow();
   return () => reauthenticate({ oidc, popup });
+}
+
+/** デスクトップ版の再認証。Rust 側の失敗を、Web と同じ `ReauthError` にそろえる。 */
+export async function reauthenticateOnDesktop(): Promise<string | null> {
+  try {
+    return await desktopReauthenticate();
+  } catch (error) {
+    if (!(error instanceof DesktopReauthError)) throw error;
+    switch (error.code) {
+      case "timeout":
+        throw new ReauthError("timeout", error.message);
+      case "cancelled":
+        throw new ReauthError("aborted", error.message);
+      case "unsupported":
+        throw new ReauthError(
+          "desktopOutdated",
+          "このアプリでは再認証できません。アプリを更新してください",
+        );
+      default:
+        throw new ReauthError("denied", error.message);
+    }
+  }
 }
