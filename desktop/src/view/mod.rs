@@ -653,6 +653,25 @@ impl Render for WorkspaceView {
             .as_ref()
             .map(|t| t.root_id.clone());
 
+        // チャンネルやスレッドを移ったら、開いていた確認を捨てる。メッセージを描く前に行い、
+        // 移った後の最初の描画にも古い確認を出さない
+        {
+            let view = format!(
+                "{}:{}",
+                self.state
+                    .read(cx)
+                    .current_channel
+                    .as_deref()
+                    .unwrap_or_default(),
+                thread_root.as_deref().unwrap_or_default()
+            );
+            chat::components::drop_confirm_on_view_change(
+                &self.component_confirm,
+                &self.confirm_view,
+                view,
+            );
+        }
+
         let pending_scroll_id = self
             .state
             .update(cx, |s, _| s.pending_scroll_to_message_id.take());
@@ -706,23 +725,6 @@ impl Render for WorkspaceView {
                 .as_deref()
                 .is_some_and(|id| state.is_encrypted_channel(id))
         });
-        // チャンネルやスレッドを移ったら、開いていた確認を捨てる
-        {
-            let view = format!(
-                "{}:{}",
-                self.state
-                    .read(cx)
-                    .current_channel
-                    .as_deref()
-                    .unwrap_or_default(),
-                thread_root.as_deref().unwrap_or_default()
-            );
-            chat::components::drop_confirm_on_view_change(
-                &self.component_confirm,
-                &self.confirm_view,
-                view,
-            );
-        }
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
             let (div, target) = self.render_thread_view(
                 root_id,

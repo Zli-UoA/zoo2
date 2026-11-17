@@ -510,7 +510,16 @@ fn confirm_bar(
                         .size(ButtonSize::Sm)
                         .label(confirm.confirm.clone())
                         .focus_handle(&yes)
-                        .on_click(cx.listener(move |this, _, _, cx| send(this, &action, cx))),
+                        // 押した時点で、この確認がまだ開いているときだけ送る（描画の後に捨てられた確認から送らない）
+                        .on_click({
+                            let key = id.to_string();
+                            cx.listener(move |this, _, _, cx| {
+                                if this.component_confirm.borrow().as_deref() == Some(key.as_str())
+                                {
+                                    send(this, &action, cx)
+                                }
+                            })
+                        }),
                 )
                 .child(
                     Button::new(SharedString::from(format!("{id}-no")))
