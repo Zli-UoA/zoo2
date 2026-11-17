@@ -794,25 +794,35 @@ function TaskRow({ task }: { task: Task }) {
 }
 
 /** 押す前の確認（confirm）があれば、確認ダイアログを挟む。 */
-function useConfirm(confirm?: Confirm) {
-  const [pending, setPending] = useState<(() => void) | null>(null);
-  const dialog = confirm ? (
+/**
+ * 確認（confirm）。開いた時点の確認の文言と操作を組で持ち、ダイアログはその組で描く。
+ * 確認の表示中に文書が更新され、この位置の部品が別の操作（custom_id）に変わったら、確認を閉じる
+ * （別の操作の文言を表示したまま、元の操作を送らない）。
+ */
+function useConfirm(confirm: Confirm | undefined, id: string | undefined) {
+  const [pending, setPending] = useState<{
+    confirm: Confirm;
+    id: string | undefined;
+    action: () => void;
+  } | null>(null);
+  const open = !!pending && pending.id === id;
+  const dialog = pending ? (
     <ConfirmActionDialog
-      open={!!pending}
-      onOpenChange={(open) => !open && setPending(null)}
-      title={confirm.title}
-      description={confirm.text}
-      confirmLabel={confirm.confirm}
-      cancelLabel={confirm.deny}
-      confirmVariant={confirm.style === "danger" ? "destructive" : "default"}
+      open={open}
+      onOpenChange={(o) => !o && setPending(null)}
+      title={pending.confirm.title}
+      description={pending.confirm.text}
+      confirmLabel={pending.confirm.confirm}
+      cancelLabel={pending.confirm.deny}
+      confirmVariant={pending.confirm.style === "danger" ? "destructive" : "default"}
       onConfirm={() => {
-        pending?.();
+        if (open) pending.action();
         setPending(null);
       }}
     />
   ) : null;
   return {
-    run: (action: () => void) => (confirm ? setPending(() => action) : action()),
+    run: (action: () => void) => (confirm ? setPending({ confirm, id, action }) : action()),
     dialog,
   };
 }
@@ -826,7 +836,7 @@ const BUTTON_VARIANT: Record<number, "default" | "secondary" | "outline" | "dest
 
 /** ボタン・select・入力欄・ピッカー。`labelled` は Label の中（送信でまとめて送る）。 */
 function Interactive(props: { c: Component; labelled?: boolean }): ReactNode {
-  const confirm = useConfirm(props.c.confirm);
+  const confirm = useConfirm(props.c.confirm, props.c.custom_id);
   return (
     <>
       <InteractiveControl {...props} confirm={confirm.run} />

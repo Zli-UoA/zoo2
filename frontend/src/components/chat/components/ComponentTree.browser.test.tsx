@@ -286,4 +286,35 @@ describe("ComponentTree", () => {
     expect(await screen.findByText("row-a")).toBeInTheDocument();
     expect(screen.getByText("row-b")).toBeInTheDocument();
   });
+  it("closes the confirmation when the confirmed component moves away", async () => {
+    api.request.mockClear();
+    const button = (id: string, title: string) => ({
+      type: 2,
+      style: 1,
+      label: id,
+      custom_id: id,
+      confirm: { title, text: title, confirm: "Yes", deny: "No" },
+    });
+    const a = button("action-a", "A?");
+    const b = button("action-b", "B?");
+    const doc = (...buttons: object[]) =>
+      parseComponents({ components: [{ type: 1, components: buttons }] })!;
+    const view = render(
+      <LocaleProvider>
+        <ComponentTree document={doc(a, b)} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "action-a" }));
+    expect(await screen.findByText("A?", { selector: "h2" })).toBeInTheDocument();
+    // 確認の表示中に、アプリが部品の順序を入れ替える
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree document={doc(b, a)} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    // 別の操作（B）の文言で確認を出したまま、A を送ることはない
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Yes" })).toBeNull());
+    expect(screen.queryByText("B?", { selector: "h2" })).toBeNull();
+    expect(api.request).not.toHaveBeenCalled();
+  });
 });

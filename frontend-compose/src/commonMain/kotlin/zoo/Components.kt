@@ -602,6 +602,9 @@ internal fun hasLabel(node: JsonElement): Boolean =
         else -> false
     }
 
+/** 開いた時点の確認（文言・操作の custom_id・送る処理） */
+private class PendingConfirm(val confirm: JsonObject, val id: String, val action: () -> Unit)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean = false) {
@@ -613,28 +616,36 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
     // 送信でまとめて送る欄は、送信中も入力を続けられるようにする。アプリが指定した disabled と、
     // 送り先のアプリがないことは、どこでも無効にする（Web の ComponentTree と同じ）
     val editable = if (deferred) !c.cFlag("disabled") && scope.appId != null else enabled
-    var confirming by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // 確認は、開いた時点の確認の文言・操作（custom_id）・送る処理を組で持ち、その組で描く。
+    // 文書の更新でこの位置の部品が別の操作に変わったら、確認を出さない（別の文言のまま元の操作を送らない）
+    var confirming by remember { mutableStateOf<PendingConfirm?>(null) }
     val confirm = c.cObj("confirm")
     fun run(action: () -> Unit) {
-        if (confirm != null) confirming = action else action()
+        if (confirm != null) confirming = PendingConfirm(confirm, id, action) else action()
     }
+    // 確認で「いいえ」を選んだときは値を残さない（Web と同じく、確認の後で保存して送る）
     fun choose(value: JsonElement) {
-        scope.set(id, value)
-        if (!deferred) run { scope.invoke("action", id, value) }
+        if (deferred) scope.set(id, value)
+        else
+            run {
+                scope.set(id, value)
+                scope.invoke("action", id, value)
+            }
     }
-    confirming?.let { action ->
+    confirming?.takeIf { it.id == id }?.let { pending ->
+        val shown = pending.confirm
         LabeledConfirmationPanel(
-            confirm?.cStr("title").orEmpty(),
-            confirm?.cStr("text").orEmpty(),
-            confirm?.cStr("confirm").orEmpty(),
+            shown.cStr("title"),
+            shown.cStr("text"),
+            shown.cStr("confirm"),
             busy = false,
             error = null,
-            cancelLabel = confirm?.cStr("deny")?.ifEmpty { null },
-            confirmVariant = if (confirm?.cStr("style") == "danger") "destructive" else "default",
+            cancelLabel = shown.cStr("deny").ifEmpty { null },
+            confirmVariant = if (shown.cStr("style") == "danger") "destructive" else "default",
             cancel = { confirming = null },
             confirm = {
                 confirming = null
-                action()
+                pending.action()
             },
         )
     }
