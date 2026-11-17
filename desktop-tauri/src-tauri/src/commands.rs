@@ -79,7 +79,8 @@ pub async fn zoo_set_focus(
 }
 
 /// Dock やランチャーのアイコンの未読数。`count <= 0` で消す。
-/// 同期のコマンドにして、呼ばれた順に適用する（async だと順番が入れ替わり、古い数が残りうる）。
+/// 同期のコマンドにして、届いた順に適用する。IPC の到着順は保証されないので、WebView 側が
+/// 前の呼び出しの完了を待ってから次を送る（`desktopSetBadge`）。
 /// 数は React が計算済みのもの（ActivityPub を含む）を、そのまま使う。
 #[tauri::command]
 pub fn zoo_set_badge(webview: Webview, core: Core_<'_>, count: i64) -> Result<(), IpcError> {
