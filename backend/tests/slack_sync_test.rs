@@ -403,6 +403,8 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
             format!("DELETE FROM channel_user WHERE channel_id IN ('{old_channel}','{new_channel}','{other_channel}')"),
             format!("DELETE FROM messages WHERE channel_id IN ('{old_channel}','{new_channel}','{other_channel}')"),
             format!("DELETE FROM channels WHERE id IN ('{old_channel}','{new_channel}','{other_channel}')"),
+            format!("DELETE FROM channel_user WHERE user_id IN (SELECT user_id FROM slack_users WHERE team_id = '{team}' AND slack_user_id = 'U1' AND NOT linked)"),
+            format!("DELETE FROM channel_user WHERE user_id IN ('{user}','{other_user}')"),
             format!("DELETE FROM users WHERE id IN (SELECT user_id FROM slack_users WHERE team_id = '{team}' AND slack_user_id = 'U1' AND NOT linked)"),
             format!("DELETE FROM users WHERE id IN ('{user}','{other_user}')"),
         ];

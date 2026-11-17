@@ -917,6 +917,12 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
             &[&admin],
         )
         .await?;
+        exec(
+            &mut cleanup_tx,
+            "DELETE FROM channel_user WHERE user_id=$1",
+            &[&admin],
+        )
+        .await?;
         exec(&mut cleanup_tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
         cleanup_tx.commit().await?;
         return Err(error.into());
@@ -1031,6 +1037,12 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
         .await?;
         exec(
             &mut tx,
+            "DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)",
+            &[&fallback_user, &bot_user, &other_user],
+        )
+        .await?;
+        exec(
+            &mut tx,
             "DELETE FROM users WHERE id IN ($1,$2,$3)",
             &[&fallback_user, &bot_user, &other_user],
         )
@@ -1077,6 +1089,12 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
             let mut db = state.db.clone();
             let mut tx = db.transaction().await?;
             exec(&mut tx, "DELETE FROM user_role WHERE user_id=$1", &[&admin]).await?;
+            exec(
+                &mut tx,
+                "DELETE FROM channel_user WHERE user_id=$1",
+                &[&admin],
+            )
+            .await?;
             exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
             tx.commit().await?;
             Ok(())
@@ -1640,6 +1658,15 @@ async fn run_private_zip_visibility_race(
             vec![admin.clone()],
         ),
         (
+            "delete test user channel memberships",
+            "DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)",
+            vec![
+                admin.clone(),
+                slack_member.clone(),
+                slack_late_author.clone(),
+            ],
+        ),
+        (
             "delete test users",
             "DELETE FROM users WHERE id IN ($1,$2,$3)",
             vec![
@@ -1712,6 +1739,14 @@ async fn run_private_zip_visibility_race(
                 Ok::<(), anyhow::Error>(())
             });
         }
+        attempt_cleanup!(
+            "retry dependent test user cleanup after job DELETE recovery",
+            cleanup_statement(
+                &state,
+                "DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)",
+                &[&admin, &slack_member, &slack_late_author]
+            )
+        );
         attempt_cleanup!(
             "retry dependent test user cleanup after job DELETE recovery",
             cleanup_statement(
@@ -2777,6 +2812,10 @@ async fn run_failed_upload_cleanup_fixture(inject_body_panic: bool) -> anyhow::R
         (
             "delete admin role",
             "DELETE FROM user_role WHERE user_id=$1",
+        ),
+        (
+            "delete admin channel memberships",
+            "DELETE FROM channel_user WHERE user_id=$1",
         ),
         ("delete admin user", "DELETE FROM users WHERE id=$1"),
     ] {

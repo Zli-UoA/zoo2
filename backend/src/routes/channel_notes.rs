@@ -214,9 +214,10 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
     // taken. This keeps the next loop from issuing one no-op DELETE per such
     // channel (for example, 999 empty candidates and one non-empty channel).
     let available_rows = toasty::sql::query(
-        "SELECT DISTINCT channel_id FROM channel_notes \
-         WHERE deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-         AND channel_id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+        "SELECT c.channel_id FROM jsonb_array_elements_text($1::jsonb) AS c(channel_id) \
+         WHERE EXISTS (SELECT 1 FROM channel_notes n \
+           WHERE n.channel_id=c.channel_id \
+           AND n.deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')",
     )
     .bind(serde_json::json!(unlocked_channels).to_string())
     .exec(&mut tx)
