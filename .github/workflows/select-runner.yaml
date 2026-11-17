@@ -81,20 +81,36 @@ jobs:
             };
             // heavy の runner が使っている台数（実行中と待ちの、zli-k8s-heavy のジョブ）。Runner の一覧は読まず、
             // 公開リポジトリの Actions のジョブから数える（Runner の一覧には、リポジトリの管理権限が要るため）。
-            // 一覧の取得もジョブの取得も、ページごとに1リクエストとして、共通の予算（MAX_HEAVY_API_REQUESTS）と期限を使う。
+            // github-script が渡すクライアント（github）は、状態確認用のトークン（PAT）で動いていて、Actions の読み取り権限がない。
+            // github-script は、別のトークンのクライアントを作る手段をスクリプトに渡さない（渡すのは github、octokit、context、
+            // core、exec、glob、io、require だけ）ので、ワークフロー自身のトークンで、Node の fetch を直接使う。
+            // 一覧もジョブも、ページごとに1リクエストとして、共通の予算（MAX_HEAVY_API_REQUESTS）と期限を使う。
             const heavyJobs = async (state) => {
-              const actions = getOctokit(process.env.ACTIONS_READ_TOKEN);
               const {owner, repo} = context.repo;
+              const api = process.env.GITHUB_API_URL || 'https://api.github.com';
               const seen = new Set();
               let requests = 0;
               let busy = 0;
               // 予算か期限が尽きたら null を返す。呼び出し側は、heavy の使用状況は不明として扱う。
-              const page = async (method, params, key) => {
+              const page = async (path, params, key) => {
                 const items = [];
                 for (let n = 1; ; n++) {
                   if (state.stopped || requests >= MAX_HEAVY_API_REQUESTS) return null;
                   requests++;
-                  const {data} = await method({owner, repo, ...params, per_page: 100, page: n, request});
+                  const query = new URLSearchParams({...params, per_page: '100', page: String(n)});
+                  const response = await fetch(`${api}/repos/${owner}/${repo}/actions/${path}?${query}`, {
+                    headers: {
+                      accept: 'application/vnd.github+json',
+                      authorization: `Bearer ${process.env.ACTIONS_READ_TOKEN}`,
+                      'x-github-api-version': '2022-11-28',
+                      'user-agent': 'zoo2-select-runner',
+                    },
+                    // 1回ごとの timeout と、全体の期限（state.signal）の両方で、実行中のリクエストを止める。
+                    signal: AbortSignal.any([AbortSignal.timeout(10000), state.signal]),
+                  });
+                  // 応答の本文は、ログに出さない。
+                  if (!response.ok) throw Object.assign(new Error('heavy usage request failed'), {status: response.status});
+                  const data = await response.json();
                   if (state.stopped) return null;
                   items.push(...data[key]);
                   if (data[key].length < 100) return items;
@@ -102,13 +118,13 @@ jobs:
               };
               for (const workflow_id of LARGE_WORKFLOWS) {
                 for (const status of ['in_progress', 'queued']) {
-                  const runs = await page(actions.rest.actions.listWorkflowRuns, {workflow_id, status}, 'workflow_runs');
+                  const runs = await page(`workflows/${workflow_id}/runs`, {status}, 'workflow_runs');
                   if (!runs) return {busy, partial: true};
                   for (const run of runs) {
                     // 2つの status の問い合わせの間に queued から in_progress へ移った run を、2回数えない。
                     if (run.id === context.runId || seen.has(run.id)) continue;
                     seen.add(run.id);
-                    const jobs = await page(actions.rest.actions.listJobsForWorkflowRun, {run_id: run.id, filter: 'latest'}, 'jobs');
+                    const jobs = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
                     if (!jobs) return {busy, partial: true};
                     busy += jobs.filter(j => ['queued', 'in_progress'].includes(j.status) && (j.labels || []).includes(LARGE_RUNNER)).length;
                     if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
@@ -118,14 +134,16 @@ jobs:
               return {busy, partial: false};
             };
             // API が遅いと、1回ごとの timeout（10秒）に収まったまま、全体で select ジョブの timeout を超えうる。
-            // 期限が来たら、待つのをやめるだけでなく、以降のリクエストも出さない（state.stopped）。
+            // 期限が来たら、待つのをやめるだけでなく、実行中のリクエストを止め（abort）、以降のリクエストも出さない。
             const heavyJobsWithin = async () => {
-              const state = {stopped: false};
+              const controller = new AbortController();
+              const state = {stopped: false, signal: controller.signal};
               let timer;
               try {
                 return await Promise.race([heavyJobs(state), new Promise((_, reject) => {
                   timer = setTimeout(() => {
                     state.stopped = true;
+                    controller.abort();
                     reject(Object.assign(new Error('heavy usage timed out'), {status: 'timeout'}));
                   }, HEAVY_TIMEOUT_MS);
                 })]);

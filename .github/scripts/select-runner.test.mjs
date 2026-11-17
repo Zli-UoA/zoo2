@@ -7,7 +7,11 @@ const root = new URL('../../', import.meta.url);
 const yaml = readFileSync(new URL('.github/workflows/select-runner.yaml', root), 'utf8');
 const script = yaml.split('          script: |\n')[1].split('\n').map(l => l.replace(/^ {12}/, '')).join('\n');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const select = new AsyncFunction('core', 'context', 'github', 'getOctokit', script);
+// 固定した actions/github-script（ed597411）が、スクリプトに渡す引数と同じもの。これ以外（getOctokit など）は渡さない。
+// 本番にない関数をテストが供給すると、本番で ReferenceError になるのに、テストが通ってしまう。
+const SCRIPT_ARGS = ['context', 'core', 'github', 'octokit', 'exec', 'glob', 'io', 'require', '__original_require__'];
+const compiled = new AsyncFunction(...SCRIPT_ARGS, script);
+const select = (core, context, github) => compiled(context, core, github, github, {}, {}, {}, () => { throw new Error('require is not available'); }, () => { throw new Error('require is not available'); });
 const K = 'zli-kubecamp-no-docker';
 const A = 'zli-k8s';
 const H = 'ubuntu-latest';
@@ -92,30 +96,43 @@ for (const [name, input, expected, hostedExpected] of cases) {
     process.env.HEAVY_TIMEOUT_MS = input.heavyTimeout ? '50' : '';
     process.env.ACTIONS_READ_TOKEN = 'workflow-token';
     const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
-    const heavy = {runs: 0, jobs: 0, token: undefined};
-    // heavy の使用状況は、ワークフロー自身のトークンの別のクライアントで、公開リポジトリの Actions のジョブから数える。
+    const heavy = {runs: 0, jobs: 0, tokens: new Set(), aborted: undefined};
+    // heavy の使用状況は、ワークフロー自身のトークンで、Node の fetch から、公開リポジトリの Actions のジョブ一覧を直接読む。
     // Runner の一覧は読まない。状態確認用のトークン（PAT）のクライアント（github）は使わない。
-    const page = (items, params, key) => {
-      assert.equal(params.per_page, 100);
-      assert.equal(params.request.timeout, 10000);
-      return {data: {[key]: items.slice((params.page - 1) * params.per_page, params.page * params.per_page)}};
-    };
-    const heavyClient = {rest: {actions: {
-      listWorkflowRuns: async params => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = new URL(url);
+      const [, , owner, repo, , kind, ...rest2] = u.pathname.split('/');
+      assert.equal(u.origin, 'https://api.github.com');
+      assert.equal(`${owner}/${repo}`, 'Zli-UoA/repo');
+      assert.equal(u.searchParams.get('per_page'), '100');
+      heavy.tokens.add(init.headers.authorization);
+      assert.equal(init.headers['x-github-api-version'], '2022-11-28');
+      const hang = async () => {
+        if (!input.heavyHang) return;
+        // 期限（abort）が来たら、実行中のリクエストが止まること。
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, input.heavyHang);
+          init.signal.addEventListener('abort', () => { heavy.aborted = true; clearTimeout(timer); reject(Object.assign(new Error('aborted'), {name: 'AbortError'})); });
+        });
+      };
+      const paged = (items, key) => {
+        const n = Number(u.searchParams.get('page'));
+        return {ok: true, status: 200, json: async () => ({[key]: items.slice((n - 1) * 100, n * 100)})};
+      };
+      if (kind === 'workflows') {
         heavy.runs++;
-        assert.equal(params.owner, 'Zli-UoA');
-        assert.equal(params.repo, 'repo');
-        if (input.heavyError) throw Object.assign(new Error('response must not be logged'), {status: 403});
-        if (input.heavyHang) await new Promise(resolve => setTimeout(resolve, input.heavyHang));
-        return page((input.heavyRuns || {})[`${params.workflow_id}:${params.status}`] || [], params, 'workflow_runs');
-      },
-      listJobsForWorkflowRun: async params => {
-        heavy.jobs++;
-        assert.equal(params.filter, 'latest');
-        return page((input.heavyJobs || {})[params.run_id] || [], params, 'jobs');
-      },
-    }}};
-    const getOctokit = token => { heavy.token = token; return heavyClient; };
+        if (input.heavyError) return {ok: false, status: 403, json: async () => { throw new Error('response must not be read'); }};
+        await hang();
+        const [workflow] = rest2;
+        return paged((input.heavyRuns || {})[`${workflow}:${u.searchParams.get('status')}`] || [], 'workflow_runs');
+      }
+      assert.equal(kind, 'runs');
+      heavy.jobs++;
+      assert.equal(u.searchParams.get('filter'), 'latest');
+      return paged((input.heavyJobs || {})[rest2[0]] || [], 'jobs');
+    };
+    try {
     await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
       {eventName: input.event || 'push', payload, repo: {owner: 'Zli-UoA', repo: 'repo'}, runId: input.runId},
       {rest, paginate: async (method, params) => {
@@ -138,7 +155,10 @@ for (const [name, input, expected, hostedExpected] of cases) {
         assert.ok(params.year >= 2026 && params.month >= 1 && params.month <= 12);
         if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
         return {data: {usageItems: input.usage || []}};
-      }}, getOctokit);
+      }});
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
     assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': input.largeExpected ?? hostedExpected});
     const hostedOnly = fork || input.event === 'merge_group' || payload.repository?.private === false;
     const checksMinutes = !hostedOnly && input.token !== false;
@@ -149,14 +169,15 @@ for (const [name, input, expected, hostedExpected] of cases) {
     });
     // 期限が来たあとに、リクエストが続かないこと（遅い応答が返ったあとも、次のリクエストを出さない）。
     if (input.heavyHang) await new Promise(resolve => setTimeout(resolve, input.heavyHang + 100));
-    const {token, ...calledHeavy} = heavy;
+    const {tokens, aborted, ...calledHeavy} = heavy;
     if (input.heavyCalls) {
       assert.deepEqual(calledHeavy, input.heavyCalls);
-      assert.equal(token, 'workflow-token', 'Actions reads use the workflow token, not the status token');
+      assert.deepEqual([...tokens], ['Bearer workflow-token'], 'Actions reads use the workflow token, not the status token');
     } else {
       assert.deepEqual(calledHeavy, {runs: 0, jobs: 0}, 'heavy usage is read only when CI_LARGE_RUNNER selects heavy');
-      assert.equal(token, undefined);
+      assert.equal(tokens.size, 0);
     }
+    if (input.heavyHang) assert.equal(aborted, true, 'the deadline aborts the request in flight');
     assert.ok(warnings.every(m => !m.includes('private response') && !m.includes('response must not be logged')));
     if (input.warning) assert.deepEqual(warnings, [input.warning]);
   });
@@ -382,7 +403,9 @@ test('the selector needs no permissions, so reusable-workflow callers need no ch
   assert.doesNotMatch(yaml, /actions: read/);
   assert.match(yaml, /^  select:\n(?:.*\n)*?    permissions: \{\}\n/m);
   // heavy の使用状況は、状態確認用のトークン（PAT）ではなく、ワークフロー自身のトークンで読む。
+  // github-script は、別のトークンのクライアントを作る手段（getOctokit）をスクリプトに渡さないので、fetch を直接使う。
   assert.match(yaml, /ACTIONS_READ_TOKEN: \$\{\{ github\.token \}\}/);
-  assert.match(script, /getOctokit\(process\.env\.ACTIONS_READ_TOKEN\)/);
+  assert.match(script, /authorization: `Bearer \$\{process\.env\.ACTIONS_READ_TOKEN\}`/);
+  assert.doesNotMatch(script, /getOctokit\(/);
 });
 
