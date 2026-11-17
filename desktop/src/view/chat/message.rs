@@ -315,6 +315,8 @@ impl WorkspaceView {
                     accounts: &accounts,
                     me: Some(me_user_name),
                     confirming: self.component_confirm.as_deref(),
+                    // 確認のキーに文書の版を含め、文書が更新されたら開いていた確認を出さない
+                    version: super::components::document_version(d),
                     focus: &self.card_focus_handles,
                 },
                 &i18n,

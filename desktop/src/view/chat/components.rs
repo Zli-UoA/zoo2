@@ -29,6 +29,8 @@ pub struct Target<'a> {
     pub me: Option<&'a str>,
     /// 確認を表示中の操作のキー（WorkspaceView::component_confirm）
     pub confirming: Option<&'a str>,
+    /// 表示中の文書の版（内容のハッシュ）。文書が更新されたら、開いていた確認を無効にする
+    pub version: u64,
     /// ボタン・リンクのフォーカス（描画をまたいで保つ。Tab で移り、Enter・Space で押せる）
     pub focus: &'a std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
 }
@@ -40,8 +42,16 @@ fn confirm_key(target: &Target, custom_id: &str, value: Option<&str>) -> String 
     format!(
         "{}-confirm-{}",
         target.key,
-        serde_json::json!([custom_id, value])
+        serde_json::json!([target.version, custom_id, value])
     )
+}
+
+/// 文書の版。内容（JSON）のハッシュで、文書が更新されると変わる
+pub fn document_version(doc: &Document) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(doc).unwrap_or_default().hash(&mut h);
+    h.finish()
 }
 
 fn focus(target: &Target, key: &str, cx: &mut Context<WorkspaceView>) -> FocusHandle {
