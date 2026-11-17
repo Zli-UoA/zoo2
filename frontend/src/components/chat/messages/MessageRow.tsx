@@ -30,6 +30,7 @@ import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
 import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
+import { hidesContent, parseComponents } from "../components/parse";
 import { Button, buttonVariants } from "../../ui/button";
 import {
   DropdownMenu,
@@ -150,19 +151,26 @@ export function MessageBody({
   emojis,
   previews = "auto",
   mentions,
+  components,
 }: {
   emojis?: Record<string, DisplayEmoji>;
   editedAt?: string | null;
   content: string;
   card?: string | null;
   appBlocks?: string | null;
+  /** メッセージ部品（`messages.components`）。フラグが立っていれば本文の代わりに部品だけを表示する */
+  components?: string | null;
   /** `manual` は、押したときだけ URL カードを読み込む（暗号化チャンネル）。 */
   previews?: "auto" | "manual";
   /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
   mentions?: MentionAllowlist;
 }) {
-  if (hasCardBlocks(appBlocks)) return null;
-  const cards = parseMessageCards(data);
+  // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
+  // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
+  const doc = parseComponents(components);
+  if (hidesContent(doc)) return null;
+  if (!doc && hasCardBlocks(appBlocks)) return null;
+  const cards = doc ? null : parseMessageCards(data);
   if (cards)
     return (
       <>
@@ -546,6 +554,7 @@ export function MessageRow({
                     // 暗号化の行のカードと App の表示は暗号文で確かめられないので、本文の代わりにしない。
                     card={resolvedDecryption ? null : message.card}
                     appBlocks={resolvedDecryption ? null : message.app_blocks}
+                    components={resolvedDecryption ? null : message.components}
                     editedAt={message.updated_at}
                     previews={resolvedDecryption ? "manual" : "auto"}
                     mentions={mentionAllowlist}
@@ -565,7 +574,10 @@ export function MessageRow({
                 <MessageAttachments attachments={attachments} />
               )}
               {resolvedDecryption ? null : <MessageAppContent message={message} />}
-              {!resolvedDecryption && message.updated_at && hasCardBlocks(message.app_blocks) ? (
+              {!resolvedDecryption &&
+              message.updated_at &&
+              (hidesContent(parseComponents(message.components)) ||
+                (!parseComponents(message.components) && hasCardBlocks(message.app_blocks))) ? (
                 <EditedIndicator at={message.updated_at} />
               ) : null}
             </>

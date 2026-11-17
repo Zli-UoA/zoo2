@@ -66,6 +66,7 @@ export function messageFeedQuery(
         user_id: messages.user_id,
         content: messages.content,
         card: messages.card,
+        components: messages.components,
         app_blocks: messages.app_blocks,
         app_attachments: messages.app_attachments,
         app_unfurls: messages.app_unfurls,

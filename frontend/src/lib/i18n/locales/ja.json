@@ -722,6 +722,20 @@
       "addEncrypted": "暗号化チャンネルに追加",
       "notReady": "この App は暗号化の準備（端末の登録）がまだ済んでいません。App を起動してから、もう一度試してください。",
       "encryptedHint": "暗号化チャンネルに入れるには、メンバーの許可が要ります。"
+    },
+    "components": {
+      "unsupported": "この部品にはまだ対応していません",
+      "more": "その他の操作",
+      "choose": "選択してください",
+      "search": "検索",
+      "noOptions": "候補がありません",
+      "uploading": "アップロード中…",
+      "page": "{{page}} / {{pages}} ページ",
+      "spoiler": "ネタバレを含む部品です（Web 版で表示できます）",
+      "webOnly": "この操作は Web 版で行えます",
+      "date": "日付",
+      "time": "時刻",
+      "datetime": "日時"
     }
   },
   "search": {
