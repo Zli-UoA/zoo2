@@ -305,18 +305,22 @@ impl WorkspaceView {
         // 部品の描画は cx を借りるので、ストアの値は先に写しておく（メンションの名前に使う、小さな表）
         let accounts = state.store.account_profiles.clone();
         let components_view = doc.as_ref().map(|d| {
+            let key = format!("{pane_prefix}-{msg_id}");
+            let version = super::components::document_version(d);
+            super::components::drop_stale_confirm(&self.component_confirm, &key, version);
+            let confirming = self.component_confirm.borrow().clone();
             super::components::render_components(
                 d,
                 &super::components::Target {
-                    key: &format!("{pane_prefix}-{msg_id}"),
+                    key: &key,
                     app_id: message.app_origin_id.as_deref(),
                     message_id: &msg_id,
                     colors,
                     accounts: &accounts,
                     me: Some(me_user_name),
-                    confirming: self.component_confirm.as_deref(),
+                    confirming: confirming.as_deref(),
                     // 確認のキーに文書の版を含め、文書が更新されたら開いていた確認を出さない
-                    version: super::components::document_version(d),
+                    version,
                     focus: &self.card_focus_handles,
                 },
                 &i18n,

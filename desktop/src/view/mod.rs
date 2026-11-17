@@ -74,7 +74,8 @@ pub struct WorkspaceView {
     pub search_close_focus: FocusHandle,
     pub expanded_cards: std::collections::HashSet<String>,
     /// 確認（confirm）を表示中のメッセージ部品の操作のキー。
-    pub component_confirm: Option<String>,
+    /// 描画中に、文書の更新で無効になった確認を捨てるので RefCell にする
+    pub component_confirm: std::cell::RefCell<Option<String>>,
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     pub attachment_focus_handles:
         std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
@@ -590,7 +591,7 @@ impl WorkspaceView {
             search_next_focus: cx.focus_handle().tab_stop(true),
             search_close_focus: cx.focus_handle().tab_stop(true),
             expanded_cards: std::collections::HashSet::new(),
-            component_confirm: None,
+            component_confirm: Default::default(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             toolbar_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),

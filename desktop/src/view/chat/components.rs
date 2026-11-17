@@ -46,6 +46,20 @@ fn confirm_key(target: &Target, custom_id: &str, value: Option<&str>) -> String 
     )
 }
 
+/// 開いている確認が、このメッセージの今の文書の版のものでなければ捨てる（文書が A → B → A と戻っても、
+/// 古い確認を出さない）。確認のキーは `{key}-confirm-[版, custom_id, 値]`
+pub fn drop_stale_confirm(confirm: &std::cell::RefCell<Option<String>>, key: &str, version: u64) {
+    let prefix = format!("{key}-confirm-[");
+    let current = format!("{prefix}{version},");
+    let mut slot = confirm.borrow_mut();
+    if slot
+        .as_deref()
+        .is_some_and(|k| k.starts_with(&prefix) && !k.starts_with(&current))
+    {
+        *slot = None;
+    }
+}
+
 /// 文書の版。内容（JSON）のハッシュで、文書が更新されると変わる
 pub fn document_version(doc: &Document) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -447,7 +461,7 @@ type Action = Option<(String, String, String, serde_json::Value)>;
 /// 押したときの処理。confirm があれば、まず確認を出し（キーを覚える）、確認の「はい」で送る。
 fn send(this: &mut WorkspaceView, action: &Action, cx: &mut Context<WorkspaceView>) {
     if let Some((app, message, custom, value)) = action.clone() {
-        this.component_confirm = None;
+        *this.component_confirm.borrow_mut() = None;
         this.state.update(cx, |s, cx| {
             s.invoke_component(&app, &message, &custom, value);
             cx.notify();
@@ -491,7 +505,7 @@ fn confirm_bar(
                         .label(confirm.deny.clone())
                         .focus_handle(&no)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.component_confirm = None;
+                            *this.component_confirm.borrow_mut() = None;
                             cx.notify();
                         })),
                 ),
@@ -508,7 +522,7 @@ fn press(
     cx: &mut Context<WorkspaceView>,
 ) {
     if confirm {
-        this.component_confirm = Some(key.to_string());
+        *this.component_confirm.borrow_mut() = Some(key.to_string());
         cx.notify();
     } else {
         send(this, action, cx);
@@ -695,6 +709,22 @@ fn task_line(
 
 #[cfg(test)]
 mod confirm_key_tests {
+    use super::drop_stale_confirm;
+
+    #[test]
+    fn an_update_drops_the_open_confirmation_for_good() {
+        let confirm = std::cell::RefCell::new(Some(r#"m-confirm-[1,"go",null]"#.to_string()));
+        // 同じ版のあいだは残る。ほかのメッセージの描画では触らない
+        drop_stale_confirm(&confirm, "m", 1);
+        drop_stale_confirm(&confirm, "other", 2);
+        assert!(confirm.borrow().is_some());
+        // 文書が更新されたら捨てる。元の版に戻っても、もう出ない（A → B → A）
+        drop_stale_confirm(&confirm, "m", 2);
+        assert!(confirm.borrow().is_none());
+        drop_stale_confirm(&confirm, "m", 1);
+        assert!(confirm.borrow().is_none());
+    }
+
     #[test]
     fn buttons_and_choices_do_not_share_a_key() {
         let key = |id: &str, v: Option<&str>| serde_json::json!([id, v]).to_string();
