@@ -101,9 +101,9 @@ repeated on PostgreSQL 16.15 with Atlas `v1.3.0`; the observed results were:
 
 | History | Atlas apply result | SQL evidence | Atlas status |
 | --- | --- | --- | --- |
-| Old expiry only | 76 legacy + 27 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261128030005` was added with hash `yavi8nOW9vvOKCBzksYHK3vvacjVmV8WvYMzEuJO57M=` | OK, current `20261128030010`, 103 executed, 0 pending |
-| Old expiry + main through `20261126010000` | 84 legacy + 19 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261128030005` was added with hash `yavi8nOW9vvOKCBzksYHK3vvacjVmV8WvYMzEuJO57M=` | OK, current `20261128030010`, 103 executed, 0 pending |
-| Clean current history | 102 canonical files succeeded | no old expiry revision; canonical expiry `20261128030005` hash `yavi8nOW9vvOKCBzksYHK3vvacjVmV8WvYMzEuJO57M=` | OK, current `20261128030010`, 102 executed, 0 pending |
+| Old expiry only | 76 legacy + 28 canonical files succeeded | old `20261123000001` hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; canonical expiry `20261128030005` was added with hash `e2D4992fnZwbqpvjJD3FXnp63CHB2OdgcpT9a1v6rzo=` | OK, current `20261128030011`, 104 executed, 0 pending |
+| Old expiry + main through `20261126010000` | 84 legacy + 20 canonical files succeeded | old expiry hash stayed `1oYCJ/km4b0vq3OcL8NQX8b/ng4A8ZnnWcoIVGTIrt0=`; the stored `20261123100000` hash stayed `POd7u0AyUQe9zRF52nGhH8JaJRfulbiCx631+eUs57s=`; canonical expiry `20261128030005` was added with hash `e2D4992fnZwbqpvjJD3FXnp63CHB2OdgcpT9a1v6rzo=` | OK, current `20261128030011`, 104 executed, 0 pending |
+| Clean current history | 103 canonical files succeeded | no old expiry revision; canonical expiry `20261128030005` hash `e2D4992fnZwbqpvjJD3FXnp63CHB2OdgcpT9a1v6rzo=` | OK, current `20261128030011`, 103 executed, 0 pending |
 
 These results show the old revision remains intact where it was applied, and
 the corrective `20261128030005` migration converges both legacy histories from
@@ -153,8 +153,8 @@ atlas schema diff \
 
 On PostgreSQL 16.15 with Atlas `v1.3.9-1824371-canary`, all three commands
 reported "Schemas are synced, no changes to be made." Migration status was
-OK for all three final databases: the two legacy histories had 103 executed
-files after convergence and the clean current history had 102. No application
+OK for all three final databases: the two legacy histories had 104 executed
+files after convergence and the clean current history had 103. No application
 schema differences remained (including triggers and functions, which were also
 checked via `pg_dump --schema-only` parity). `pg_get_indexdef` returned
 `(channel_id, deleted_at, id)` for all three databases.

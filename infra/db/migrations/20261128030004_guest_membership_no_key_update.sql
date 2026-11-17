@@ -1,12 +1,4 @@
-CREATE OR REPLACE FUNCTION app_guest_membership_rules() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
- -- Always serialize membership inserts with guest_kind updates. A conditional lock misses a
- -- concurrent transition from a non-single kind while the new membership is still uncommitted.
- PERFORM 1 FROM users WHERE id=NEW.user_id FOR NO KEY UPDATE;
- IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single')
- AND EXISTS(SELECT 1 FROM channels WHERE id=NEW.channel_id AND NOT is_dm)
- AND EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.user_id=NEW.user_id AND cu.channel_id<>NEW.channel_id AND NOT c.is_dm AND c.deleted_at IS NULL) THEN
-   RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='Single-channel guests can join only one channel';
- END IF;
- RETURN NEW;
-END $$;
+-- Deferred to 20261128030011_guest_membership_lock_order.sql.
+-- Replacing app_guest_membership_rules during a rolling deploy can deadlock with
+-- the old backend's lock_members order. Apply 030011 only after the new backend
+-- has replaced old instances; see infra/README.md.
