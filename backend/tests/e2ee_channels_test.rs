@@ -1651,6 +1651,17 @@ async fn encrypted_dm_pins_guest_status_before_waiting_for_member_lock() -> anyh
 async fn membership_insert_racing_single_guest_transition_preserves_single_channel_limit()
 -> anyhow::Result<()> {
     let env = env().await;
+    // The canonical deploy keeps the old trigger function while old backend
+    // instances run. This race is protected by the deferred post-rollout
+    // migration, so apply it here to test the final lock order.
+    let (deferred_db, deferred_driver) =
+        tokio_postgres::connect(&Config::from_env().database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(deferred_driver);
+    deferred_db
+        .batch_execute(include_str!(
+            "../../infra/db/deferred-migrations/20261128030011_guest_membership_lock_order.sql"
+        ))
+        .await?;
     let guest = env.user().await;
     let owner = env.user().await;
     let first_channel = Uuid::new_v4().to_string();
