@@ -209,4 +209,61 @@ describe("ComponentTree", () => {
     );
     expect(await screen.findByRole("textbox", { name: "Name" })).toHaveValue("second");
   });
+  it("shows and sends a checkbox the app added in an update", async () => {
+    api.request.mockClear();
+    const first = { type: 18, label: "First", component: { type: 23, custom_id: "first" } };
+    const second = {
+      type: 18,
+      label: "Second",
+      component: { type: 23, custom_id: "second", default: true },
+    };
+    const view = render(
+      <LocaleProvider>
+        <ComponentTree
+          document={parseComponents({ components: [first] })!}
+          appId="app"
+          surfaceId="s1"
+          submit
+        />
+      </LocaleProvider>,
+    );
+    await screen.findByRole("checkbox", { name: "First" });
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree
+          document={parseComponents({ components: [first, second] })!}
+          appId="app"
+          surfaceId="s1"
+          submit
+        />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByRole("checkbox", { name: "Second" })).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
+    const body = JSON.stringify(api.request.mock.calls[0]);
+    expect(body).toContain('"first":false');
+    expect(body).toContain('"second":true');
+  });
+
+  it("keeps typed input when the same document renders again", async () => {
+    const doc = {
+      components: [
+        { type: 18, label: "Name", component: { type: 4, custom_id: "name", style: 1 } },
+      ],
+    };
+    const view = render(
+      <LocaleProvider>
+        <ComponentTree document={parseComponents(doc)!} appId="app" surfaceId="s1" submit />
+      </LocaleProvider>,
+    );
+    await userEvent.type(await screen.findByRole("textbox", { name: "Name" }), "zoo");
+    // 内容が同じ文書（別のオブジェクト）で描画し直しても、入力中の値は消えない
+    view.rerender(
+      <LocaleProvider>
+        <ComponentTree document={parseComponents(doc)!} appId="app" surfaceId="s1" submit />
+      </LocaleProvider>,
+    );
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("zoo");
+  });
 });
