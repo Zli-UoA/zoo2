@@ -11,9 +11,12 @@ const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 function decodeTextLines(raw, label) {
   const trimmed = raw.trim();
   assert.ok(trimmed.length > 0, `${label} must not be empty`);
-  const decoded = trimmed.includes('\n')
-    ? trimmed
-    : Buffer.from(trimmed, 'base64').toString('utf8').trim();
+  assert.match(
+    trimmed,
+    /^[A-Za-z0-9+/]+={0,2}$/,
+    `${label} must be encoded in outer Base64 without raw newlines`,
+  );
+  const decoded = Buffer.from(trimmed, 'base64').toString('utf8').trim();
   const lines = decoded.split(/\r?\n/);
   assert.ok(lines.length >= 2, `${label} must have at least 2 lines`);
   return lines;

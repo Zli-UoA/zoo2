@@ -101,6 +101,8 @@ function WaitForSingleObject(hHandle: THandle; dwMilliseconds: LongWord): LongWo
   external 'WaitForSingleObject@kernel32.dll stdcall';
 function CloseHandle(hObject: THandle): BOOL;
   external 'CloseHandle@kernel32.dll stdcall';
+function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
 
 function InitializeSetup(): Boolean;
 var
@@ -150,16 +152,9 @@ begin
     HasWebView2Key(HKCU, 'Software\Microsoft\EdgeUpdate\Clients\' + WEBVIEW2_CLIENT_GUID);
 end;
 
-function EscapePowerShellSingleQuoted(const S: String): String;
-begin
-  Result := S;
-  StringChangeEx(Result, '''', '''''', True);
-end;
-
 function VerifyMicrosoftSignature(const FilePath: String): Boolean;
 var
   PsExe: String;
-  SafePath: String;
   Cmd: String;
   ResultCode: Integer;
 begin
@@ -167,15 +162,22 @@ begin
   PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   if not FileExists(PsExe) then
     PsExe := 'powershell.exe';
-  SafePath := EscapePowerShellSingleQuoted(FilePath);
-  Cmd :=
-    '-NoProfile -NonInteractive -WindowStyle Hidden -Command "' +
-    '$s = Get-AuthenticodeSignature -LiteralPath ''' + SafePath + '''; ' +
-    'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate -and ' +
-    '($s.SignerCertificate.Subject -match ''(^|,)\s*O=\x22?Microsoft Corporation\x22?\s*(,|$)'')) ' +
-    '{ exit 0 } else { exit 1 }"';
-  if Exec(PsExe, Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    Result := (ResultCode = 0);
+  // U+2019 (’) 等の引用符解釈を避けるため、対象パスはコードへ埋め込まず環境変数で渡す。
+  if not SetEnvironmentVariable('ZOO2_WV2_INSTALLER', FilePath) then
+    Exit;
+  try
+    Cmd :=
+      '-NoProfile -NonInteractive -WindowStyle Hidden -Command "' +
+      '$p = $env:ZOO2_WV2_INSTALLER; if (-not $p) { exit 1 }; ' +
+      '$s = Get-AuthenticodeSignature -LiteralPath $p; ' +
+      'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate -and ' +
+      '($s.SignerCertificate.Subject -match ''(^|,)\s*O=\x22?Microsoft Corporation\x22?\s*(,|$)'')) ' +
+      '{ exit 0 } else { exit 1 }"';
+    if Exec(PsExe, Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      Result := (ResultCode = 0);
+  finally
+    SetEnvironmentVariable('ZOO2_WV2_INSTALLER', '');
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

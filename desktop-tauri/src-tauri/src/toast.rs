@@ -394,8 +394,8 @@ mod windows_impl {
         Data::Xml::Dom::XmlDocument,
         Foundation::TypedEventHandler,
         UI::Notifications::{
-            ToastActivatedEventArgs, ToastDismissedEventArgs, ToastFailedEventArgs,
-            ToastNotification, ToastNotificationManager,
+            ToastActivatedEventArgs, ToastDismissalReason, ToastDismissedEventArgs,
+            ToastFailedEventArgs, ToastNotification, ToastNotificationManager,
         },
         Win32::{
             Foundation::RPC_E_CHANGED_MODE,
@@ -452,14 +452,26 @@ mod windows_impl {
         let _ = tx.send(Box::new(task));
     }
 
+    pub(super) fn should_release_on_dismiss(
+        reason: windows::core::Result<ToastDismissalReason>,
+    ) -> bool {
+        !matches!(reason, Ok(ToastDismissalReason::TimedOut))
+    }
+
     pub(super) fn retain_toast(
         toast: &ToastNotification,
         tag: Option<&str>,
     ) -> windows::core::Result<u64> {
         let id = TOAST_INSTANCE_SEQ.fetch_add(1, Ordering::Relaxed);
         let dismissed =
-            TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(move |_, _| {
-                release_toast(id);
+            TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(move |_, args| {
+                let reason = args
+                    .as_ref()
+                    .map(ToastDismissedEventArgs::Reason)
+                    .unwrap_or_else(|| Err(windows::core::Error::empty()));
+                if should_release_on_dismiss(reason) {
+                    release_toast(id);
+                }
                 Ok(())
             });
         toast.Dismissed(&dismissed)?;
@@ -850,6 +862,21 @@ mod tests {
         assert_eq!(run("decline"), (0, 1, 0));
         assert_eq!(run(""), (0, 0, 1));
         assert_eq!(run("unknown"), (0, 0, 1));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_toast_dismissed_keeps_timed_out_and_releases_others() {
+        use windows::UI::Notifications::ToastDismissalReason;
+        assert!(!super::windows_impl::should_release_on_dismiss(Ok(
+            ToastDismissalReason::TimedOut
+        )));
+        assert!(super::windows_impl::should_release_on_dismiss(Ok(
+            ToastDismissalReason::UserCanceled
+        )));
+        assert!(super::windows_impl::should_release_on_dismiss(Ok(
+            ToastDismissalReason::ApplicationHidden
+        )));
     }
 
     #[cfg(target_os = "windows")]

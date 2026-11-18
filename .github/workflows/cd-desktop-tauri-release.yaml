@@ -338,26 +338,27 @@ jobs:
           pattern: zoo2-desktop-tauri-release-*
           merge-multiple: true
           path: dist
-      # リリース済みのときは、そのリリースの署名から latest.json を作り直す。
-      - name: Download signatures from the existing release
+      # リリース済みのときは、そのリリースの成果物と署名を取得して latest.json を作り直す。
+      - name: Download existing release assets and signatures
         if: needs.version.outputs.build != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
-        run: gh release download "$TAG" --pattern '*.sig' --dir dist
+        run: gh release download "$TAG" --dir dist
       # アプリの自動更新 (tauri-plugin-updater) が読む形式。インストールの形ごとに、ファイルと署名を書く。
       - name: Generate latest.json and checksums
         env:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
+          BUILD: ${{ needs.version.outputs.build }}
         run: |
           base="https://github.com/$GH_REPO/releases/download/$TAG"
-          # platforms に、ファイルと署名の組を 1 つ足す。署名がない形 (前の版にない形) は飛ばす。
+          # platforms に、ファイルと署名の組を 1 つ足す。ファイルか署名がない形は飛ばす。
           platforms='{}'
           add() {
-            [ -f "dist/$2.sig" ] || return 0
+            [ -f "dist/$2" ] && [ -f "dist/$2.sig" ] || return 0
             platforms=$(jq -c --arg key "$1" --arg url "$base/$2" --rawfile sig "dist/$2.sig" \
               '. + {($key): {url: $url, signature: $sig}}' <<< "$platforms")
           }
@@ -377,15 +378,16 @@ jobs:
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --argjson platforms "$platforms" \
             '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' > dist/latest.json
-          # インストール用のファイルがあるときだけ SHA256SUMS を作る (verify_only では macOS・Windows のみになる)。
-          shopt -s nullglob
-          (
-            cd dist
-            files=(*.deb *.AppImage *.dmg *.app.tar.gz *.exe)
-            if [ "${#files[@]}" -gt 0 ]; then
-              sha256sum -- "${files[@]}" > SHA256SUMS
-            fi
-          )
+          if [ "$BUILD" = true ]; then
+            shopt -s nullglob
+            (
+              cd dist
+              files=(*.deb *.AppImage *.dmg *.app.tar.gz *.exe)
+              if [ "${#files[@]}" -gt 0 ]; then
+                sha256sum -- "${files[@]}" > SHA256SUMS
+              fi
+            )
+          fi
           cat dist/latest.json
       - name: Verify latest.json and signatures
         env:
@@ -393,9 +395,8 @@ jobs:
           BUILD: ${{ needs.version.outputs.build }}
           VERIFY_ONLY: ${{ inputs.verify_only || false }}
         run: |
-          args=(--manifest dist/latest.json --dir dist --pubkey "$PUBKEY")
+          args=(--manifest dist/latest.json --dir dist --pubkey "$PUBKEY" --verify-files)
           if [ "$BUILD" = true ]; then
-            args+=(--verify-files)
             if [ "$VERIFY_ONLY" = true ]; then
               args+=(--require "darwin-aarch64,darwin-x86_64,windows-x86_64")
             else

@@ -312,11 +312,23 @@ fn has_matching_inno_registry(dir: &std::path::Path) -> bool {
 
 #[cfg(any(target_os = "windows", test))]
 fn normalize_windows_path(raw: &str) -> String {
-    raw.trim()
-        .trim_matches('"')
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_ascii_lowercase()
+    let trimmed = raw.trim().trim_matches('"').replace('/', "\\");
+    let without_verbatim = if let Some(unc) = trimmed
+        .strip_prefix(r"\\?\UNC\")
+        .or_else(|| trimmed.strip_prefix(r"\\?\unc\"))
+    {
+        format!(r"\\{unc}")
+    } else if let Some(local) = trimmed.strip_prefix(r"\\?\") {
+        local.to_string()
+    } else {
+        trimmed
+    };
+    without_verbatim.trim_end_matches('\\').to_ascii_lowercase()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn canonicalize_if_exists(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -335,18 +347,27 @@ fn matches_inno_uninstall_entry(
     install_location: Option<&str>,
     uninstall_string: Option<&str>,
 ) -> bool {
-    let dir_norm = normalize_windows_path(&exe_dir.to_string_lossy());
+    let canonical_dir = canonicalize_if_exists(exe_dir);
+    let dir_norm = normalize_windows_path(&canonical_dir.to_string_lossy());
     if dir_norm.is_empty() {
         return false;
     }
     let location_matches = install_location
-        .map(normalize_windows_path)
+        .map(|loc| {
+            let trimmed = loc.trim().trim_matches('"');
+            let resolved = canonicalize_if_exists(std::path::Path::new(trimmed));
+            normalize_windows_path(&resolved.to_string_lossy())
+        })
         .is_some_and(|loc| loc == dir_norm);
-    let expected_uninstaller =
-        normalize_windows_path(&exe_dir.join("unins000.exe").to_string_lossy());
+    let expected_uninstaller = normalize_windows_path(
+        &canonicalize_if_exists(&canonical_dir.join("unins000.exe")).to_string_lossy(),
+    );
     let uninstaller_matches = uninstall_string
         .map(extract_exe_from_command)
-        .map(normalize_windows_path)
+        .map(|raw| {
+            let resolved = canonicalize_if_exists(std::path::Path::new(raw));
+            normalize_windows_path(&resolved.to_string_lossy())
+        })
         .is_some_and(|unins| unins == expected_uninstaller);
     location_matches && uninstaller_matches
 }
@@ -699,20 +720,52 @@ fn updater_dir(app: &AppHandle) -> std::path::PathBuf {
         .join("updates")
 }
 
+#[cfg(any(target_os = "windows", test))]
+const UPDATER_CLEANUP_GRACE: Duration = Duration::from_secs(15 * 60);
+
+#[cfg(any(target_os = "windows", test))]
+fn is_stale_updater_artifact(
+    modified: Option<std::time::SystemTime>,
+    now: std::time::SystemTime,
+    lock_active: bool,
+) -> bool {
+    if lock_active {
+        return false;
+    }
+    let Some(modified) = modified else {
+        return false;
+    };
+    now.duration_since(modified)
+        .is_ok_and(|age| age >= UPDATER_CLEANUP_GRACE)
+}
+
 #[cfg(target_os = "windows")]
 fn cleanup_old_inno_installers(app: &AppHandle) {
     let dir = updater_dir(app);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
+    let now = std::time::SystemTime::now();
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.starts_with("zoo2-updater-")
-            && name.ends_with(".exe")
-            && std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file())
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        if name.starts_with("zoo2-updater-") && name.ends_with(".exe") {
+            let lock_path = updater_lock_path(&path);
+            let lock_active = lock_path.exists() && std::fs::remove_file(&lock_path).is_err();
+            if is_stale_updater_artifact(meta.modified().ok(), now, lock_active) {
+                let _ = std::fs::remove_file(&path);
+            }
+        } else if name.starts_with("zoo2-updater-")
+            && name.ends_with(".exe.lock")
+            && is_stale_updater_artifact(meta.modified().ok(), now, false)
         {
             let _ = std::fs::remove_file(&path);
         }
@@ -720,12 +773,49 @@ fn cleanup_old_inno_installers(app: &AppHandle) {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn escape_ps_single_quoted(value: &str) -> Result<String, String> {
-    if value.contains(['\r', '\n', '\0']) {
-        return Err("パスに制御文字が含まれているため更新を起動できません".to_string());
-    }
-    Ok(value.replace('\'', "''"))
+fn updater_lock_path(installer_path: &std::path::Path) -> std::path::PathBuf {
+    let mut os = installer_path.as_os_str().to_os_string();
+    os.push(".lock");
+    std::path::PathBuf::from(os)
 }
+
+#[cfg(any(target_os = "windows", test))]
+const INNO_WATCHER_SCRIPT: &str = "\
+$ErrorActionPreference = 'SilentlyContinue'\n\
+$installer = $env:ZOO2_UPDATER_INSTALLER\n\
+$exe = $env:ZOO2_UPDATER_EXE\n\
+$argsLine = $env:ZOO2_UPDATER_ARGS\n\
+$lockPath = $env:ZOO2_UPDATER_LOCK\n\
+$oldPid = 0\n\
+[void][int]::TryParse($env:ZOO2_UPDATER_PID, [ref]$oldPid)\n\
+$lockStream = $null\n\
+$code = -1\n\
+try {\n\
+  if ($lockPath) {\n\
+    $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)\n\
+  }\n\
+  if ($oldPid -gt 0) {\n\
+    $old = Get-Process -Id $oldPid -ErrorAction SilentlyContinue\n\
+    if ($old -and $old.ProcessName -like 'zoo2*') { $old.WaitForExit(15000) | Out-Null }\n\
+  }\n\
+  if ($installer) {\n\
+    $p = Start-Process -FilePath $installer -ArgumentList $argsLine -PassThru\n\
+    if ($p) {\n\
+      $null = $p.Handle\n\
+      $p.WaitForExit()\n\
+      $code = [int]$p.ExitCode\n\
+    }\n\
+  }\n\
+} catch {\n\
+  $code = -1\n\
+} finally {\n\
+  if ($installer) { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue }\n\
+  if ($lockStream) { $lockStream.Dispose() }\n\
+  if ($lockPath) { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }\n\
+}\n\
+if ($code -ne 0 -and $exe -and (Test-Path -LiteralPath $exe)) {\n\
+  Start-Process -FilePath $exe -ArgumentList @('--update-failed', [string]$code)\n\
+}\n";
 
 #[cfg(any(target_os = "windows", test))]
 fn encode_utf16le_base64(script: &str) -> String {
@@ -751,39 +841,6 @@ fn encode_utf16le_base64(script: &str) -> String {
         });
     }
     out
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn build_inno_watcher_script(
-    old_pid: u32,
-    installer_path: &std::path::Path,
-    exe_path: &std::path::Path,
-    args_line: &str,
-) -> Result<String, String> {
-    let installer = escape_ps_single_quoted(&installer_path.to_string_lossy())?;
-    let exe = escape_ps_single_quoted(&exe_path.to_string_lossy())?;
-    let args = escape_ps_single_quoted(args_line)?;
-    Ok(format!(
-        "$ErrorActionPreference = 'SilentlyContinue'\n\
-         try {{\n\
-           $old = Get-Process -Id {old_pid} -ErrorAction SilentlyContinue\n\
-           if ($old -and $old.ProcessName -like 'zoo2*') {{ $old.WaitForExit(15000) | Out-Null }}\n\
-         }} catch {{}}\n\
-         $installer = '{installer}'\n\
-         $exe = '{exe}'\n\
-         $argsLine = '{args}'\n\
-         $code = -1\n\
-         try {{\n\
-           $p = Start-Process -FilePath $installer -ArgumentList $argsLine -Wait -PassThru\n\
-           if ($p) {{ $code = [int]$p.ExitCode }}\n\
-         }} catch {{\n\
-           $code = -1\n\
-         }}\n\
-         Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue\n\
-         if ($code -ne 0 -and (Test-Path -LiteralPath $exe)) {{\n\
-           Start-Process -FilePath $exe -ArgumentList @('--update-failed', [string]$code)\n\
-         }}\n"
-    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -825,19 +882,12 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
         .collect();
     let installer_path = dir.join(format!("zoo2-updater-{version}-{}.exe", std::process::id()));
     std::fs::write(&installer_path, &ready.bytes).map_err(|e| e.to_string())?;
-
+    let lock_path = updater_lock_path(&installer_path);
     let args = inno_installer_args(install_dir, std::process::id());
-    let script = match build_inno_watcher_script(std::process::id(), &installer_path, &exe, &args) {
-        Ok(script) => script,
-        Err(err) => {
-            let _ = std::fs::remove_file(&installer_path);
-            return Err(err);
-        }
-    };
-    let encoded = encode_utf16le_base64(&script);
+    let encoded = encode_utf16le_base64(INNO_WATCHER_SCRIPT);
 
     // 親プロセス終了を待ってからインストーラーを待機実行し、非 0 終了時は失敗通知付きで再起動する。
-    // {app} 配下のバイナリを監視役にすると上書きを妨げるため、一時実行をシステム PowerShell に委ねる。
+    // U+2019 等の文字解釈による破損を防ぐため、パスと引数は固定スクリプトへ環境変数として渡す。
     let spawned = std::process::Command::new(system_powershell_exe())
         .args([
             "-NoProfile",
@@ -847,6 +897,11 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
             "-EncodedCommand",
             &encoded,
         ])
+        .env("ZOO2_UPDATER_PID", std::process::id().to_string())
+        .env("ZOO2_UPDATER_INSTALLER", &installer_path)
+        .env("ZOO2_UPDATER_EXE", &exe)
+        .env("ZOO2_UPDATER_ARGS", &args)
+        .env("ZOO2_UPDATER_LOCK", &lock_path)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     if let Err(err) = spawned {
@@ -900,6 +955,15 @@ mod tests {
             Some(r"C:\Users\Alice\AppData\Local\Programs\zoo2\"),
             None,
         ));
+        assert!(matches_inno_uninstall_entry(
+            std::path::Path::new(r"\\?\C:\Users\Alice\AppData\Local\Programs\zoo2"),
+            Some(r"C:\Users\Alice\AppData\Local\Programs\zoo2\"),
+            Some(r#""C:\Users\Alice\AppData\Local\Programs\zoo2\unins000.exe""#),
+        ));
+        assert_eq!(
+            normalize_windows_path(r"\\?\UNC\server\share\zoo2\"),
+            r"\\server\share\zoo2"
+        );
     }
 
     #[test]
@@ -932,16 +996,24 @@ mod tests {
     }
 
     #[test]
-    fn watcher_script_escapes_single_quotes_and_rejects_newlines() {
-        let installer = std::path::Path::new(r"C:\Users\O'Connor\updates\setup.exe");
-        let exe = std::path::Path::new(r"C:\Users\O'Connor\zoo2\zoo2-desktop-tauri.exe");
-        let script = build_inno_watcher_script(42, installer, exe, r#"/DIR="C:\O'Connor""#)
-            .expect("valid paths");
-        assert!(script.contains(r"C:\Users\O''Connor\updates\setup.exe"));
-        assert!(script.contains("--update-failed"));
+    fn watcher_script_reads_env_vars_and_waits_only_for_installer_process() {
+        assert!(INNO_WATCHER_SCRIPT.contains("$env:ZOO2_UPDATER_INSTALLER"));
+        assert!(INNO_WATCHER_SCRIPT.contains("$env:ZOO2_UPDATER_ARGS"));
+        assert!(INNO_WATCHER_SCRIPT.contains("$env:ZOO2_UPDATER_LOCK"));
+        assert!(INNO_WATCHER_SCRIPT.contains("$p.WaitForExit()"));
+        assert!(!INNO_WATCHER_SCRIPT.contains(" -Wait"));
+        assert!(INNO_WATCHER_SCRIPT.contains("--update-failed"));
+    }
 
-        let bad = std::path::Path::new("C:\\bad\npath\\setup.exe");
-        assert!(build_inno_watcher_script(42, bad, exe, "/SILENT").is_err());
+    #[test]
+    fn stale_updater_artifact_check_respects_lock_and_grace_period() {
+        let now = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(3600);
+        let recent = now - Duration::from_secs(60);
+        let stale = now - Duration::from_secs(20 * 60);
+        assert!(!is_stale_updater_artifact(Some(recent), now, false));
+        assert!(!is_stale_updater_artifact(Some(stale), now, true));
+        assert!(!is_stale_updater_artifact(None, now, false));
+        assert!(is_stale_updater_artifact(Some(stale), now, false));
     }
 
     #[test]

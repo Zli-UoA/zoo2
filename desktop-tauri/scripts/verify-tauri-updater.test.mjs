@@ -97,6 +97,22 @@ test('verifyManifest validates windows-x86_64 installer signature and rejects ta
       verifyFileSignature(setupPath, sigB64, keys.pubkeyB64),
       /signature verification failed/,
     );
+    await assert.rejects(
+      verifyManifest({
+        manifestPath,
+        distDir: tmp,
+        pubkey: keys.pubkeyB64,
+        requiredPlatforms: ['windows-x86_64'],
+        verifyFiles: true,
+      }),
+      /signature verification failed/,
+    );
+
+    const rawMinisignSig = Buffer.from(sigB64, 'base64').toString('utf8');
+    await assert.rejects(
+      verifyFileSignature(setupPath, rawMinisignSig, keys.pubkeyB64),
+      /outer Base64/,
+    );
 
     const fakeExe = path.join(tmp, 'zoo2-desktop-tauri.exe');
     fs.writeFileSync(fakeExe, Buffer.concat([Buffer.from('MZ...'), Buffer.from(keys.pubkeyB64)]));
