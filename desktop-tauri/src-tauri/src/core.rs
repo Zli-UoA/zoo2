@@ -64,10 +64,63 @@ pub struct Core {
     config: Result<Config, String>,
     http: reqwest::Client,
     inner: Mutex<Inner>,
+    /// ブラウザー起動とキャンセルを順序付ける同期ゲート（`inner` とは別に保ち、ブロッキング I/O で `inner` を止めない）。
+    browser_launch: Arc<BrowserLaunchGate>,
     /// OS の通知を出すか (`notifications.json` に保存する)。
     notifications: std::sync::Mutex<NotificationSettings>,
     /// 待っている E2EE の再認証。新しく始めたら、前のものは取り消す。
     reauth: std::sync::Mutex<Option<AbortHandle>>,
+}
+
+#[derive(Default)]
+struct BrowserLaunchGate {
+    state: std::sync::Mutex<BrowserLaunchState>,
+}
+
+#[derive(Default)]
+struct BrowserLaunchState {
+    active_gen: Option<u64>,
+    cancelled_through: u64,
+}
+
+impl BrowserLaunchGate {
+    fn arm(&self, generation: u64) {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation > guard.cancelled_through
+            && guard.active_gen.is_none_or(|cur| generation > cur)
+        {
+            guard.active_gen = Some(generation);
+        }
+    }
+
+    fn cancel(&self, generation: u64) {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.cancelled_through = guard.cancelled_through.max(generation);
+        if guard.active_gen.is_some_and(|cur| cur <= generation) {
+            guard.active_gen = None;
+        }
+    }
+
+    fn launch_if_active<F>(&self, generation: u64, launcher: F) -> bool
+    where
+        F: FnOnce(),
+    {
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.active_gen != Some(generation) || generation <= guard.cancelled_through {
+            return false;
+        }
+        launcher();
+        true
+    }
 }
 
 struct Inner {
@@ -128,6 +181,7 @@ impl Core {
             ui,
             config: config.map_err(|err| format!("{err:#}")),
             http: reqwest::Client::new(),
+            browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),
             reauth: std::sync::Mutex::new(None),
             inner: Mutex::new(Inner {
@@ -799,43 +853,47 @@ impl Core {
             .clone()
             .unwrap_or_else(|| login.verification_uri.clone());
         // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
-        // 想定外のオリジン・スキームは自動で開かず、キャンセル済みなら開かない。
+        // 非ループバック HTTP と IdP 以外のオリジンは自動で開かず、中止済みなら実行時にも抑止する。
         if is_same_issuer_origin(&url, &issuer) {
-            let core = self.clone();
+            let gate = self.browser_launch.clone();
+            gate.arm(generation);
+            let app = self.app.clone();
             tauri::async_runtime::spawn(async move {
-                let active = {
-                    let inner = core.inner.lock().await;
-                    inner.generation == generation
-                        && matches!(inner.state, SessionState::LoggingIn { .. })
-                };
-                if !active {
-                    return;
-                }
-                let app = core.app.clone();
-                match tokio::task::spawn_blocking(move || open_in_browser(&app, &url)).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => {
-                        eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
-                    }
-                    Err(err) => {
-                        eprintln!("ログイン URL をブラウザーで開く処理が失敗しました: {err}");
-                    }
+                if let Err(err) = tokio::task::spawn_blocking(move || {
+                    gate.launch_if_active(generation, || {
+                        if let Err(err) = open_in_browser(&app, &url) {
+                            eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
+                        }
+                    });
+                })
+                .await
+                {
+                    eprintln!("ログイン URL をブラウザーで開く処理が失敗しました: {err}");
                 }
             });
         } else {
-            eprintln!("ログイン URL のオリジンが IdP と一致しないため、自動では開きません");
+            eprintln!("ログイン URL のスキームまたはオリジンが不正なため、自動では開きません");
         }
         Ok(login)
     }
 
     pub async fn cancel_login(&self) {
-        let mut inner = self.inner.lock().await;
-        if let Some(task) = inner.login_task.take() {
-            task.abort();
-        }
-        if matches!(inner.state, SessionState::LoggingIn { .. }) {
-            inner.generation += 1;
-            self.set_state(&mut inner, SessionState::LoggedOut);
+        let cancelled_gen = {
+            let mut inner = self.inner.lock().await;
+            if let Some(task) = inner.login_task.take() {
+                task.abort();
+            }
+            if matches!(inner.state, SessionState::LoggingIn { .. }) {
+                let cancelled = inner.generation;
+                inner.generation += 1;
+                self.set_state(&mut inner, SessionState::LoggedOut);
+                Some(cancelled)
+            } else {
+                None
+            }
+        };
+        if let Some(cancelled_gen) = cancelled_gen {
+            self.browser_launch.cancel(cancelled_gen);
         }
     }
 
@@ -1137,20 +1195,41 @@ fn load_notification_settings() -> NotificationSettings {
         .unwrap_or_default()
 }
 
-/// ログイン URL が IdP (`issuer`) と同じオリジンの HTTP(S) URL かを確かめる。
+fn is_loopback_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+/// ログイン URL が IdP (`issuer`) と同じオリジンの HTTPS URL（開発用ループバックのみ HTTP 許可）かを確かめる。
 fn is_same_issuer_origin(url: &str, issuer: &str) -> bool {
     let (Ok(target), Ok(issuer)) = (url::Url::parse(url), url::Url::parse(issuer)) else {
         return false;
     };
-    matches!(target.scheme(), "http" | "https") && target.origin() == issuer.origin()
+    if target.origin() != issuer.origin() {
+        return false;
+    }
+    match target.scheme() {
+        "https" => true,
+        // 開発時のローカル検証のみ HTTP を許可し、リモートでの平文送信を防ぐ。
+        "http" => is_loopback_host(&target),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_same_issuer_origin;
+    use super::{BrowserLaunchGate, is_same_issuer_origin};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[test]
-    fn login_url_origin_validation_allows_only_same_http_origin() {
+    fn login_url_origin_validation_requires_same_https_or_loopback_origin() {
         assert!(is_same_issuer_origin(
             "https://account.zli.works/device?user_code=ABCD-1234",
             "https://account.zli.works/realms/zli"
@@ -1158,6 +1237,22 @@ mod tests {
         assert!(is_same_issuer_origin(
             "http://localhost:8080/device",
             "http://localhost:8080"
+        ));
+        assert!(is_same_issuer_origin(
+            "http://127.0.0.1:8080/device",
+            "http://127.0.0.1:8080"
+        ));
+        assert!(is_same_issuer_origin(
+            "http://[::1]:8080/device",
+            "http://[::1]:8080"
+        ));
+        assert!(!is_same_issuer_origin(
+            "http://account.zli.works/device",
+            "http://account.zli.works/realms/zli"
+        ));
+        assert!(!is_same_issuer_origin(
+            "http://localhost.evil.example:8080/device",
+            "http://localhost.evil.example:8080"
         ));
         assert!(!is_same_issuer_origin(
             "https://evil.example/device",
@@ -1183,5 +1278,34 @@ mod tests {
             "not a url",
             "https://account.zli.works"
         ));
+    }
+
+    #[test]
+    fn browser_launch_gate_skips_launch_when_cancelled_before_blocking_task_runs() {
+        let gate = BrowserLaunchGate::default();
+        let launched = Arc::new(AtomicUsize::new(0));
+
+        // 状態確認後にブロッキングタスク実行前に中止されたケース
+        gate.arm(1);
+        gate.cancel(1);
+        assert!(!gate.launch_if_active(1, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 0);
+
+        // 中止されていないログイン試行は通常どおり起動する
+        gate.arm(2);
+        assert!(gate.launch_if_active(2, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 1);
+
+        // 先行世代の中止通知が遅れて届いても新しい世代の起動を妨げない
+        gate.arm(3);
+        gate.cancel(2);
+        assert!(gate.launch_if_active(3, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 2);
     }
 }
