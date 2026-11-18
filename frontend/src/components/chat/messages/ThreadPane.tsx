@@ -157,6 +157,9 @@ export function ThreadPane({
     isMember &&
     membership !== "joined" &&
     (membership === "left" || (threadTracked ?? (participantCount ?? 0) > 0));
+  // 参加者がまだ居ない最初の返信前でも、投稿せずに参加できる（入力欄は残す）。
+  const canJoinBeforeFirstReply =
+    isMember && membership === "none" && !needsJoin && !isArchived && !!onJoinThread;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -283,8 +286,21 @@ export function ThreadPane({
       {participantCount !== undefined && participantsOpen ? (
         <ThreadParticipants count={participantCount} participants={participants ?? []} />
       ) : null}
-      {!readOnly && isMember && ((isArchived && onReopenThread) || membershipError) ? (
+      {!readOnly &&
+      isMember &&
+      ((isArchived && onReopenThread) || membershipError || canJoinBeforeFirstReply) ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
+          {canJoinBeforeFirstReply ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={membershipPending || isOffline}
+              aria-busy={membershipPending}
+              onClick={onJoinThread}
+            >
+              {t("threads.join")}
+            </Button>
+          ) : null}
           {isArchived && onReopenThread ? (
             <Button
               variant="outline"

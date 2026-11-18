@@ -344,7 +344,8 @@ export const FirstReplyWithoutJoining: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeEnabled();
-    await expect(canvas.queryByRole("button", { name: "参加する" })).not.toBeInTheDocument();
+    // 投稿せずに参加する導線も残す。
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
   }),
 };
 export const LeftThread: Story = {
