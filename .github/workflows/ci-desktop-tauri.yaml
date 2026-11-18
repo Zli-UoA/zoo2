@@ -66,6 +66,8 @@ jobs:
             libdbus-1-dev \
             libxdo-dev \
             file
+      - name: macOS のビルド再試行を検証する
+        run: node --test desktop-tauri/scripts/build-macos.test.mjs
       - name: Read Rust toolchain
         id: rust-toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"

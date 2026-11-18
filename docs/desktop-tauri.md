@@ -139,6 +139,8 @@ GitHub の Environment `desktop-tauri-release` に、次の Secrets をすべて
 
 新規リリースで 1 つでも未設定なら、ビルド前にエラーで止める。ad-hoc 署名には切り替えない。署名・公証後に `codesign --verify`、`xcrun stapler validate`、`spctl --assess` を実行し、失敗した配布物はアップロードしない。この確認が済んだ `.app` が DMG と自動更新用の `.app.tar.gz` に含まれる。既存リリースの `latest.json` だけを修復する場合は、Apple の Secrets を必要としない。
 
+macOS の配布ビルドで `codesign` が `A timestamp was expected but was not found.` を返した場合だけ、30 秒・60 秒待って最大 2 回再試行する。タイムスタンプ取得の一時的な失敗で、ビルド環境の準備からやり直すことを避けるため。毎回同じ設定で Tauri のビルド・署名・公証を実行し、最後まで失敗した場合や別のエラーでは処理を止める。タイムスタンプや署名・公証の検証は省略しない。
+
 初回の準備は次の順で行う。
 
 1. Apple Developer Program に加入し、Account Holder が [Developer ID Application 証明書を発行する](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/)。Mac のキーチェーンアクセスで CSR を作り、Apple Developer に送る。発行された `.cer` を、CSR を作った Mac のキーチェーンに登録する。
