@@ -90,6 +90,8 @@ jobs:
               const api = process.env.GITHUB_API_URL || 'https://api.github.com';
               const seen = new Set();
               let requests = 0;
+              const activeRuns = new Set();
+              const countHeavy = jobs => jobs.filter(j => ['queued', 'in_progress'].includes(j.status) && (j.labels || []).includes(LARGE_RUNNER)).length;
               let busy = 0;
               // 予算か期限が尽きたら null を返す。呼び出し側は、heavy の使用状況は不明として扱う。
               const page = async (path, params, key) => {
@@ -117,7 +119,7 @@ jobs:
                 }
               };
               for (const workflow_id of LARGE_WORKFLOWS) {
-                for (const status of ['in_progress', 'queued']) {
+                for (const status of ['queued', 'in_progress']) {
                   const runs = await page(`workflows/${workflow_id}/runs`, {status}, 'workflow_runs');
                   if (!runs) return {busy, partial: true};
                   for (const run of runs) {
@@ -126,8 +128,23 @@ jobs:
                     seen.add(run.id);
                     const jobs = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
                     if (!jobs) return {busy, partial: true};
-                    busy += jobs.filter(j => ['queued', 'in_progress'].includes(j.status) && (j.labels || []).includes(LARGE_RUNNER)).length;
-                    if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
+                    const current = countHeavy(jobs);
+                    if (current === 0) continue;
+                    busy += current;
+                    if (busy >= HEAVY_RUNNERS) {
+                      // 別の run で先に数えたジョブは、その後に完了していることがある。
+                      busy = current;
+                      for (const id of activeRuns.keys()) {
+                        if (busy >= HEAVY_RUNNERS) break;
+                        const refreshed = await page(`runs/${id}/jobs`, {filter: 'latest'}, 'jobs');
+                        if (!refreshed) return {busy, partial: true};
+                        const count = countHeavy(refreshed);
+                        if (count === 0) activeRuns.delete(id);
+                        busy += count;
+                      }
+                      if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
+                    }
+                    activeRuns.add(run.id);
                   }
                 }
               }
@@ -164,7 +181,7 @@ jobs:
             if (context.payload.repository?.private === false) {
               // 重いジョブだけ、Actions variable CI_LARGE_RUNNER で、大きな runner（zoo2-infra の zli-k8s-heavy）に切り替えられる。
               // 空なら Hosted。fork の PR と merge group は、上で Hosted に固定している。
-              const large = (process.env.LARGE_RUNNER || '').trim();
+              const large = process.env.LARGE_RUNNER || '';
               if (large && large !== LARGE_RUNNER) core.warning(`CI_LARGE_RUNNER must be empty or ${LARGE_RUNNER}; using hosted`);
               let largeRunsOn = large === LARGE_RUNNER ? LARGE_RUNNER : HOSTED;
               let reason = 'public repository; no self-hosted queue';
@@ -180,9 +197,12 @@ jobs:
                   const {busy, partial} = await heavyJobsWithin();
                   if (partial) {
                     core.warning(`Heavy runner usage unknown: the API request budget (${MAX_HEAVY_API_REQUESTS}) ran out; using ${LARGE_RUNNER}`);
-                  } else if (busy >= HEAVY_RUNNERS) {
-                    largeRunsOn = HOSTED;
-                    reason += `; ${LARGE_RUNNER} busy (${busy}/${HEAVY_RUNNERS})`;
+                  } else {
+                    core.info(`Heavy runner usage checked: ${busy}/${HEAVY_RUNNERS}`);
+                    if (busy >= HEAVY_RUNNERS) {
+                      largeRunsOn = HOSTED;
+                      reason += `; ${LARGE_RUNNER} busy (${busy}/${HEAVY_RUNNERS})`;
+                    }
                   }
                 } catch (error) {
                   core.warning(`Heavy runner usage unavailable (${error.status || 'network error'}); using ${LARGE_RUNNER}`);
