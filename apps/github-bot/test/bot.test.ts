@@ -464,6 +464,34 @@ test("scheduled channel reminders are timezone aware and post at most once per d
   assert.match([...f.zoo.messages.values()][0].content, /@alice_zoo/);
 });
 
+test("reminders post an untrusted PR title as plain text", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  f.remote.pr.requested_reviewers = [{ login: "alice" }];
+  f.remote.pr.title = "Fix [github.com/acme/project/pull/5](https://evil.example/x) </plain>**x**";
+  f.store.set("reminder:channel", { time: "00:00", zone: "Asia/Tokyo" });
+  await f.bot.reminders();
+  const content = [...f.zoo.messages.values()][0].content;
+  assert.match(content, /<plain>Fix \[github\.com\/acme\/project\/pull\/5\]\(https:\/\/evil\.example\/x\) \*\*x\*\*<\/plain>/);
+  assert.equal(content.split("</plain>").length, 2);
+});
+
+test("untrusted comment text is posted as plain text per line", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  f.remote.comment!.body = "[x](https://evil.example)\n</plain>[y](https://evil.example)";
+  await f.bot.githubEvent(
+    job("issue_comment", {
+      action: "created",
+      issue: f.remote.issue,
+      comment: { id: 99, body: "x" },
+    }),
+  );
+  const reply = [...f.zoo.messages.values()].find((m) => m.parent_id)!;
+  assert.match(reply.content, /<plain>\[x\]\(https:\/\/evil\.example\)<\/plain>\n<plain>\[y\]/);
+});
+
 test("Discussions answer updates edit the parent, and discussion comment edits reuse its reply", async (t) => {
   const f = fixture();
   t.after(() => f.store.close());
