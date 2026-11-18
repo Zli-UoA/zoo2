@@ -68,9 +68,9 @@ const cases = [
       ['heavy idle: no heavy jobs', {...base, largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
       ['heavy has a free runner: one running job', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
       ['heavy full: two running jobs go to hosted', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
-      ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 3, jobs: 3}}, H, H],
-      ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 4, jobs: 3}}, H, H],
-      ['a run moving out of queued is counted', {...base, largeExpected: H, movingRun: true, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 1, jobs: 1}}, H, H],
+      ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 4, jobs: 3}}, H, H],
+      ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [...Array.from({length: 100}, () => job('completed')), job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      ['a run moving out of queued is counted', {...base, largeExpected: H, movingRun: true, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['a padded runner label is rejected', {...base, large: 'zli-k8s-heavy ', largeExpected: H, warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
       ['other labels and finished jobs are not counted', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress', 'ubuntu-latest'), job('completed'), job('waiting'), job('queued', 'zli-k8s')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
       ['the current run is not counted', {...base, runId: 1, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 4, jobs: 0}}, H, H],
@@ -102,7 +102,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
     const heavy = {runs: 0, jobs: 0, tokens: new Set(), aborted: undefined};
     // heavy の使用状況は、ワークフロー自身のトークンで、Node の fetch から、公開リポジトリの Actions のジョブ一覧を直接読む。
     // Runner の一覧は読まない。状態確認用のトークン（PAT）のクライアント（github）は使わない。
-    const requestedRuns = new Set();
+    const jobReads = new Map();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (url, init) => {
       const u = new URL(url);
@@ -139,8 +139,11 @@ for (const [name, input, expected, hostedExpected] of cases) {
       heavy.jobs++;
       assert.equal(u.searchParams.get('filter'), 'latest');
       const [runId] = rest2;
-      if (input.finishedRun === runId && requestedRuns.has(runId)) return paged([], 'jobs');
-      requestedRuns.add(runId);
+      if (input.movingRun && heavy.runs < 2) return paged([], 'jobs');
+      if (u.searchParams.get('page') === '1') {
+        jobReads.set(runId, (jobReads.get(runId) || 0) + 1);
+      }
+      if (input.finishedRun === runId && jobReads.get(runId) > 1) return paged([], 'jobs');
       return paged((input.heavyJobs || {})[runId] || [], 'jobs');
     };
     try {

@@ -119,33 +119,35 @@ jobs:
                 }
               };
               for (const workflow_id of LARGE_WORKFLOWS) {
+                const runs = [];
                 for (const status of ['queued', 'in_progress']) {
-                  const runs = await page(`workflows/${workflow_id}/runs`, {status}, 'workflow_runs');
-                  if (!runs) return {busy, partial: true};
-                  for (const run of runs) {
-                    // 2つの status の問い合わせの間に queued から in_progress へ移った run を、2回数えない。
-                    if (run.id === context.runId || seen.has(run.id)) continue;
-                    seen.add(run.id);
-                    const jobs = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
-                    if (!jobs) return {busy, partial: true};
-                    const current = countHeavy(jobs);
-                    if (current === 0) continue;
-                    busy += current;
-                    if (busy >= HEAVY_RUNNERS) {
-                      // 別の run で先に数えたジョブは、その後に完了していることがある。
-                      busy = current;
-                      for (const id of activeRuns.keys()) {
-                        if (busy >= HEAVY_RUNNERS) break;
-                        const refreshed = await page(`runs/${id}/jobs`, {filter: 'latest'}, 'jobs');
-                        if (!refreshed) return {busy, partial: true};
-                        const count = countHeavy(refreshed);
-                        if (count === 0) activeRuns.delete(id);
-                        busy += count;
-                      }
-                      if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
+                  const listed = await page(`workflows/${workflow_id}/runs`, {status}, 'workflow_runs');
+                  if (!listed) return {busy, partial: true};
+                  runs.push(...listed);
+                }
+                // 両方の一覧を取得してから、各 run の最新ジョブを一度だけ数える。
+                for (const run of runs) {
+                  if (run.id === context.runId || seen.has(run.id)) continue;
+                  seen.add(run.id);
+                  const jobs = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
+                  if (!jobs) return {busy, partial: true};
+                  const current = countHeavy(jobs);
+                  if (current === 0) continue;
+                  busy += current;
+                  if (busy >= HEAVY_RUNNERS) {
+                    // 別の run で先に数えたジョブは、その後に完了していることがある。
+                    busy = current;
+                    for (const id of activeRuns.keys()) {
+                      if (busy >= HEAVY_RUNNERS) break;
+                      const refreshed = await page(`runs/${id}/jobs`, {filter: 'latest'}, 'jobs');
+                      if (!refreshed) return {busy, partial: true};
+                      const count = countHeavy(refreshed);
+                      if (count === 0) activeRuns.delete(id);
+                      busy += count;
                     }
-                    activeRuns.add(run.id);
+                    if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
                   }
+                  activeRuns.add(run.id);
                 }
               }
               return {busy, partial: false};
