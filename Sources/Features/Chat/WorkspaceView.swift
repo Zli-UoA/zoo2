@@ -27,9 +27,6 @@ struct WorkspaceView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
-        .alert("ピン留めの変更", isPresented: Binding(get: { workspace.pinUpdateError != nil }, set: { if !$0 { workspace.pinUpdateError = nil } })) {
-            Button("閉じる", role: .cancel) { workspace.pinUpdateError = nil }
-        } message: { Text(workspace.pinUpdateError ?? "") }
         .sheet(isPresented: Binding(get: { workspace.calls.showingCall }, set: { workspace.calls.showingCall = $0 })) {
             CallView(store: workspace.calls, workspace: workspace)
         }
@@ -118,6 +115,14 @@ private struct ConversationDirectory: View {
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
         .navigationTitle(directMessages ? "DM" : "チャンネル")
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let error = workspace.pinUpdateError {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    .background(.regularMaterial)
+            }
+        }
         .searchable(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索")
         .refreshable {
             await workspace.refresh()

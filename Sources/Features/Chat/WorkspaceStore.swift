@@ -31,7 +31,7 @@ final class WorkspaceStore {
     private(set) var pinnedChannelIDs: [String] = []
     private(set) var pinsError: String?
     private(set) var updatingPin = false
-    var pinUpdateError: String?
+    private(set) var pinUpdateError: String?
     private var pinsVersion: Int64?
     private(set) var channelMembers: [String: [Person]] = [:]
     private(set) var memberErrors: [String: String] = [:]

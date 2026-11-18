@@ -2,7 +2,7 @@ import XCTest
 
 final class ZooUITests: XCTestCase {
     @MainActor
-    func testChannelLongPressPinsFromDirectoryAndHeader() {
+    func testChannelPinsFromDirectoryAndDetails() {
         let app = launchWorkspace()
         let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
         channel.press(forDuration: 0.8)
@@ -16,17 +16,59 @@ final class ZooUITests: XCTestCase {
         channel.tap()
         let header = app.buttons["channel-details"]
         XCTAssertTrue(header.waitForExistence(timeout: 5))
-        header.press(forDuration: 0.8)
+        header.tap()
+        XCTAssertTrue(app.navigationBars["チャンネル詳細"].waitForExistence(timeout: 5))
         XCTAssertTrue(pin.waitForExistence(timeout: 5))
         XCTAssertEqual(pin.label, "ピン留めを解除")
-        capture(app, name: "チャンネル内の長押しでピン解除")
+        capture(app, name: "チャンネル詳細のピン留め設定")
         pin.tap()
+        let unpinned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "ピン留め"), object: pin)
+        XCTAssertEqual(XCTWaiter.wait(for: [unpinned], timeout: 5), .completed)
+        pin.tap()
+        let pinned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "ピン留めを解除"), object: pin)
+        XCTAssertEqual(XCTWaiter.wait(for: [pinned], timeout: 5), .completed)
+        pin.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "ピン留め"), object: pin)], timeout: 5), .completed)
+        app.buttons["閉じる"].tap()
         app.navigationBars.buttons.firstMatch.tap()
         XCTAssertTrue(channel.waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["ピン留め"].exists)
         channel.press(forDuration: 0.8)
         XCTAssertTrue(pin.waitForExistence(timeout: 5))
         XCTAssertEqual(pin.label, "ピン留め")
+    }
+
+    @MainActor
+    func testPinFailureStaysVisibleAboveLongDirectory() {
+        let app = launchWorkspace(pinFailure: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].press(forDuration: 0.8)
+        let pin = app.buttons["toggle-channel-pin"]
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        pin.tap()
+        let error = app.staticTexts["ピン留めを変更できませんでした。接続を確認して、もう一度お試しください。"]
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertTrue(error.isHittable)
+        app.swipeUp()
+        XCTAssertTrue(error.isHittable)
+        capture(app, name: "長い一覧の上部に固定したピン保存エラー")
+    }
+
+    @MainActor
+    func testPinFailureCanBeRetriedInsideDetails() {
+        let app = launchWorkspace(pinFailure: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        app.buttons["channel-details"].tap()
+        let pin = app.buttons["toggle-channel-pin"]
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        pin.tap()
+        let error = app.staticTexts["ピン留めを変更できませんでした。接続を確認して、もう一度お試しください。"]
+        XCTAssertTrue(error.waitForExistence(timeout: 5))
+        XCTAssertEqual(pin.label, "ピン留め")
+        capture(app, name: "詳細画面のピン保存エラー")
+        pin.tap()
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "ピン留めを解除"), object: pin)
+        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 5), .completed)
+        XCTAssertFalse(error.exists)
     }
 
     @MainActor
@@ -152,7 +194,7 @@ final class ZooUITests: XCTestCase {
 
     @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
-                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false) -> XCUIApplication {
+                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -161,6 +203,7 @@ final class ZooUITests: XCTestCase {
         if dark { app.launchArguments += ["-zoo.appearance", "dark"] }
         if video { app.launchArguments.append("--uitesting-video") }
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
+        if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()

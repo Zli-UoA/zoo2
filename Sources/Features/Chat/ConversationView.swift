@@ -65,8 +65,6 @@ struct ConversationView: View {
                     .foregroundStyle(.primary)
                     .accessibilityLabel("\(workspace.name(for: store.channel))の詳細")
                     .accessibilityIdentifier("channel-details")
-                    .contextMenu { ChannelPinButton(channel: store.channel, workspace: workspace) }
-                    .accessibilityHint("タップで詳細、長押しでピン留めを変更できます")
                 }
             }
             if parentID == nil, store.canPost, !composerFocused {

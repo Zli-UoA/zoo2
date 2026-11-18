@@ -47,6 +47,7 @@ final class PreviewChatClient: ChatClient {
     private var joinedPublic = false
     private var readPositions: [String: String] = [:]
     private var failedReadOnce = false
+    private var failNextPin = ProcessInfo.processInfo.arguments.contains("--uitesting-pin-failure")
     private var pins = ChannelPins(pins: ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") ? [ChannelPin(channel_id: channelID, position: 0)] : [], version: 0)
     private var memberships: [ChannelMembership] = []
     private var allChannels: [Channel] = [
@@ -63,6 +64,9 @@ final class PreviewChatClient: ChatClient {
     init(failNextSend: Bool = ProcessInfo.processInfo.arguments.contains("--uitesting-send-failure")) {
         self.failNextSend = failNextSend
         allChannels.append(Channel(id: discoverableID, channel_name: "雑談", is_private: false, is_dm: false))
+        if failNextPin {
+            allChannels += (1...30).map { Channel(id: UUID().uuidString.lowercased(), channel_name: "開発\($0)", is_private: false, is_dm: false) }
+        }
         let welcomeReaction = MessageReaction(id: "88888888-8888-4888-8888-888888888888", message_id: Self.messageID,
                                               user_id: colleague.id, emoji: "👍")
         allMessages = [
@@ -113,6 +117,10 @@ final class PreviewChatClient: ChatClient {
         pins
     }
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
+        if failNextPin {
+            failNextPin = false
+            throw URLError(.notConnectedToInternet)
+        }
         guard expectedVersion == pins.version else { throw ZooError.rejected(409, "ピン留めが変更されました。") }
         var rows = pins.pins.filter { $0.channel_id != id }
         if pinned { rows.append(ChannelPin(channel_id: id, position: (rows.map(\.position).max() ?? -1) + 1)) }

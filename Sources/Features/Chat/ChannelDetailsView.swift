@@ -16,7 +16,13 @@ struct ChannelDetailsView: View {
                     LabeledContent("種類", value: channel.is_dm ? "ダイレクトメッセージ" : channel.is_private ? "非公開チャンネル" : "公開チャンネル")
                     if channel.archive_at != nil { Label("アーカイブ済み", systemImage: "archivebox") }
                     if channel.encrypted == true { Label("暗号化された会話", systemImage: "lock.shield") }
-                    if workspace.pinnedChannelIDs.contains(channel.id) { Label("ピン留め済み", systemImage: "pin.fill") }
+                }
+                Section("ピン留め") {
+                    ChannelPinButton(channel: channel, workspace: workspace)
+                    if workspace.updatingPin { ProgressView("保存中…") }
+                    if let error = workspace.pinUpdateError {
+                        Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                    }
                 }
                 Section("メンバー") {
                     if let error = workspace.memberErrors[channel.id] {
