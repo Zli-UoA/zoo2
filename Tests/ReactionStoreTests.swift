@@ -48,10 +48,13 @@ struct ReactionStoreTests {
         let harness = try ChatHarness()
         defer { harness.close() }
         let store = try await seed(harness, rows: [])
+        var additions: [String] = []
+        store.onReactionAdded = { additions.append($0) }
         harness.stub { _ in (503, [:], Data()) }
         await store.toggleReaction(messageID: messageID, emoji: "👍")
         #expect(store.reactions(for: messageID).isEmpty)
         #expect(store.reactionError(for: messageID) != nil)
+        #expect(additions.isEmpty)
         let entered = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         let row = MessageReaction(id: "mine", message_id: messageID, user_id: userID, emoji: "👍")
@@ -73,6 +76,7 @@ struct ReactionStoreTests {
         #expect(store.reactions(for: messageID).isEmpty)
         #expect(!store.isReactionPending(messageID: messageID, emoji: "👍"))
         #expect(!store.canReact(to: messageID))
+        #expect(additions.isEmpty)
     }
 
     @Test("旧形式では同期前の書き込みを防ぎ、アーカイブ後も取得済みのスタンプを表示する")

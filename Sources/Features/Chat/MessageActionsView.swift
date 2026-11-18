@@ -155,9 +155,8 @@ struct MessageActionsView: View {
                 (workspace.emoji(for: ":\(name):") ?? workspace.emoji(for: ":\(alias):")).map { ":\($0.name):" }
             }
         let existing = groups.filter { !$0.emoji.hasPrefix("apub:") }.map(\.emoji)
-        var seen: Set<String> = []
-        return Array((existing + registered + ["👍", "❤️", "🎉", "😊", "😢", "👏"])
-            .filter { seen.insert($0).inserted }.prefix(6))
+        return workspace.recentEmojis.choices(fallback: existing + registered + ["👍", "❤️", "🎉", "😊", "😢", "👏"],
+                                            canonical: store.canonicalEmoji)
     }
 
     private func actionLabel(_ title: LocalizedStringKey, icon: String) -> some View {

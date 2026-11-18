@@ -22,6 +22,7 @@ final class ConversationStore {
     var focusedMessageID: String?
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored var onRead: (() -> Void)?
+    @ObservationIgnored var onReactionAdded: ((String) -> Void)?
     @ObservationIgnored var canonicalEmoji: (String) -> String = ReactionEmoji.key
     private var fallbackReactions: [String: [MessageReaction]]?
     private(set) var reactionSyncError: String?
@@ -340,6 +341,7 @@ extension ConversationStore {
             reactionWrites[messageID, default: [:]][write.row.id] = write
             latestReactionWrite = write.token
             reconcileReactionWrites()
+            if !write.isRemoval { onReactionAdded?(canonicalEmoji(write.row.emoji)) }
         } catch {
             guard active, accessGeneration == epoch, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?() }

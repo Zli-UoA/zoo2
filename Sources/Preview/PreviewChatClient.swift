@@ -1,6 +1,24 @@
 #if DEBUG
 import Foundation
 
+// 可変な共有状態を持たず、UI テスト専用画像を同期で返して外部配信に依存させない。
+final class PreviewEmojiURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "ui.test.invalid" && request.url?.path == "/stamp.png"
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                                             headerFields: ["Content-Type": "image/png"]),
+              let data = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR4nO3T0QmAMAyE4W7mNI7lVK7hDu0AtvaO5FqCOcib+H8glpKLuOe86ui2xuUIJC5F/A/ABF1BnmEaooxPESvin4hQgHofr1sG6MVZRAJMf4IVMIyjCAtgGrcg3OLop2AvAQmIBfBG0HEUgT5jGvpSSTynXgP20vIB9b499AAAAABJRU5ErkJggg==") else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @MainActor
 final class PreviewPushReceiptStore: PushReceiptStore {
     private var receipt: PushReceipt?
@@ -92,7 +110,7 @@ final class PreviewChatClient: ChatClient {
             .map { ChannelReadState(channel_id: $0.id, has_unread: $0.id == Self.channelID, last_read_at: nil) }
     }
     func emojis() async throws -> [WorkspaceEmoji] {
-        [WorkspaceEmoji(name: "sakura", url: "", category: "動物園", aliases: ["hana"])]
+        [WorkspaceEmoji(name: "sakura", url: "https://ui.test.invalid/stamp.png", category: "動物園", aliases: ["hana"])]
     }
 
     func emojiAccounts() async throws -> [EmojiAccount] {
