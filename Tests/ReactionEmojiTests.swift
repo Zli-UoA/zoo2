@@ -1,5 +1,44 @@
+import Foundation
 import Testing
 @testable import Zoo
+
+@Suite("スタンプの折り返し")
+struct ReactionFlowLayoutTests {
+    @Test("サイズを揃え、幅に収まる最後のスタンプまで同じ行に置く")
+    func wrapsAtAvailableWidth() {
+        let sizes = [CGSize(width: 44, height: 44), CGSize(width: 71, height: 44), CGSize(width: 44, height: 44)]
+        let frames = ReactionFlowLayout.frames(for: sizes, maxWidth: 147)
+        #expect(frames == [CGRect(x: 0, y: 0, width: 71, height: 44),
+                           CGRect(x: 76, y: 0, width: 71, height: 44),
+                           CGRect(x: 0, y: 49, width: 71, height: 44)])
+    }
+
+    @Test("大きな文字や画像の高さを次の行に反映する")
+    func respectsTallestChip() {
+        let sizes = [CGSize(width: 44, height: 70), CGSize(width: 44, height: 44), CGSize(width: 70, height: 50)]
+        let frames = ReactionFlowLayout.frames(for: sizes, maxWidth: 145)
+        #expect(frames.allSatisfy { $0.size == CGSize(width: 70, height: 70) })
+        #expect(frames[2].minY == 75)
+        #expect(frames[2].maxY == 145)
+    }
+
+    @Test("狭い幅でも先頭に空行を作らず、各スタンプを別の行に置く", arguments: [0.0, 30.0, 44.0])
+    func narrowWidth(_ width: Double) {
+        let sizes = Array(repeating: CGSize(width: 44, height: 44), count: 3)
+        let frames = ReactionFlowLayout.frames(for: sizes, maxWidth: CGFloat(width))
+        #expect(frames.map(\.minX) == [0, 0, 0])
+        #expect(frames.map(\.minY) == [0, 49, 98])
+    }
+
+    @Test("空の一覧と幅制約のない測定を扱う")
+    func emptyAndUnconstrained() {
+        #expect(ReactionFlowLayout.frames(for: [], maxWidth: 300).isEmpty)
+        let sizes = Array(repeating: CGSize(width: 44, height: 44), count: 3)
+        let frames = ReactionFlowLayout.frames(for: sizes, maxWidth: .infinity)
+        #expect(frames.map(\.minY) == [0, 0, 0])
+        #expect(frames.last?.maxX == 142)
+    }
+}
 
 @Suite("Emoji Kitchen のスタンプ")
 struct ReactionEmojiTests {

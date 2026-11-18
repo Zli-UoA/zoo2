@@ -139,6 +139,11 @@ final class PreviewChatClient: ChatClient {
                     content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z",
                     display_data: MessageDisplayData(reactions: []))
         ]
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-wrapped-reactions") {
+            allMessages[0].display_data?.reactions = ["👍", "❤️", "🎉", "👏", "🙌", "😂", "🙏", "👀", "😊", "🔥", "💯", "✨"].map { emoji in
+                MessageReaction(id: UUID().uuidString.lowercased(), message_id: Self.messageID, user_id: colleague.id, emoji: emoji)
+            }
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") {
             allMessages[0].content = "@you さん、@sakura と確認しましょう。"
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", file_name: "さくら.png", content_type: "image/png")]

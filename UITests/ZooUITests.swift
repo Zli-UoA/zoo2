@@ -266,6 +266,33 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testReactionsWrapAndRemainInteractive() {
+        let app = launchWorkspace(wrappedReactions: true)
+        let messageID = "22222222-2222-4222-8222-222222222222"
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let celebration = app.buttons["reaction-\(messageID)-🎉"]
+        XCTAssertTrue(celebration.waitForExistence(timeout: 10))
+        let chips = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "reaction-\(messageID)-")).allElementsBoundByIndex
+        XCTAssertEqual(chips.count, 12)
+        let chipSize = celebration.frame.size
+        XCTAssertGreaterThan((chips.map { $0.frame.minY }.max() ?? 0) - (chips.map { $0.frame.minY }.min() ?? 0), 40)
+        for chip in chips {
+            XCTAssertEqual(chip.frame.width, chipSize.width, accuracy: 1)
+            XCTAssertEqual(chip.frame.height, chipSize.height, accuracy: 1)
+            XCTAssertTrue(chip.isHittable)
+            XCTAssertGreaterThanOrEqual(chip.frame.minX, 0)
+            XCTAssertLessThanOrEqual(chip.frame.maxX, app.frame.width)
+        }
+        capture(app, name: "複数行に折り返すスタンプ")
+        celebration.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "2人、自分も付けています"), object: celebration)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
+        celebration.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["2人がリアクションしました"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["message-action-more-reactions"].exists)
+    }
+
+    @MainActor
     func testReactionLongPressShowsPeopleWithoutToggling() {
         let app = launchWorkspace()
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -398,7 +425,7 @@ final class ZooUITests: XCTestCase {
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
                                  threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, attachments: Bool = false,
                                  pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,
-                                 tallImage: Bool = false) -> XCUIApplication {
+                                 tallImage: Bool = false, wrappedReactions: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -407,6 +434,7 @@ final class ZooUITests: XCTestCase {
         if dark { app.launchArguments += ["-zoo.appearance", "dark"] }
         if video { app.launchArguments.append("--uitesting-video") }
         if tallImage { app.launchArguments.append("--uitesting-tall-image") }
+        if wrappedReactions { app.launchArguments.append("--uitesting-wrapped-reactions") }
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if call { app.launchArguments.append("--uitesting-call") }
@@ -627,12 +655,27 @@ final class ZooUITests: XCTestCase {
         let latest = app.staticTexts["履歴 60"]
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
         XCTAssertTrue(latest.isHittable)
+        let jump = app.buttons["scroll-to-latest"]
+        XCTAssertFalse(jump.exists)
+        let latestY = latest.frame.minY
+        let list = app.scrollViews["message-list"]
+        let shortStart = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.4))
+        shortStart.press(forDuration: 0.05, thenDragTo: shortStart.withOffset(CGVector(dx: 0, dy: 120)),
+                         withVelocity: .slow, thenHoldForDuration: 0.3)
+        XCTAssertGreaterThan(latest.frame.minY - latestY, 80)
+        XCTAssertLessThan(latest.frame.minY - latestY, 240)
+        XCTAssertFalse(jump.exists)
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         // カードの押下表示が出てから動かしても、長押しメニューを開く前ならスクロールできる。
         start.press(forDuration: 0.25, thenDragTo: end)
         XCTAssertFalse(latest.isHittable)
         XCTAssertFalse(app.buttons["message-action-reply"].exists)
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        capture(app, name: "十分に遡ったときだけ表示する最新メッセージボタン")
+        jump.tap()
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(latest.isHittable)
     }
 
     @MainActor

@@ -135,6 +135,7 @@ private struct MessageList: View {
     let openThread: (String) -> Void
     @Environment(\.scenePhase) private var scenePhase
     @State private var followingLatest = false
+    @State private var showsLatestButton = false
     @State private var positionedInitialMessages = false
     @State private var selectedMessage: Message?
     @State private var pressingMessageID: String?
@@ -216,10 +217,13 @@ private struct MessageList: View {
             .accessibilityIdentifier(parentID == nil ? "message-list" : "thread-message-list")
             .defaultScrollAnchor(.bottom, for: .initialOffset)
             .scrollDismissesKeyboard(.interactively)
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
-            } action: { _, atBottom in
-                if isVisible { followingLatest = atBottom }
+            .onScrollGeometryChange(for: MessageScrollState.self) { geometry in
+                MessageScrollState(distanceToBottom: geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height)
+            } action: { _, state in
+                if isVisible {
+                    followingLatest = state.followingLatest
+                    showsLatestButton = state.showsLatestButton
+                }
             }
             .onChange(of: positionKey, initial: true) { _, _ in
                 guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
@@ -243,12 +247,18 @@ private struct MessageList: View {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !followingLatest, !messages.isEmpty {
-                    Button("最新のメッセージ", systemImage: "arrow.down") {
+                if positionedInitialMessages, showsLatestButton, !messages.isEmpty {
+                    Button {
                         store.focusedMessageID = nil
-                        withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if let latestID = messages.last?.id {
+                            withAnimation { proxy.scrollTo(latestID, anchor: .bottom) }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down").frame(width: 44, height: 44)
                     }
-                    .labelStyle(.iconOnly).padding(12).glassEffect().padding()
+                    .buttonStyle(.glass).buttonBorderShape(.circle).padding()
+                    .accessibilityLabel("最新のメッセージ")
+                    .accessibilityIdentifier("scroll-to-latest")
                 }
             }
         }
