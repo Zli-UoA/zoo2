@@ -122,14 +122,4 @@ final class PushTests: XCTestCase {
         XCTAssertNil(PushDestination(payload: ["user_id": user, "channel_id": channel, "message_id": "https://evil.example"]))
     }
 
-    func testHTTPSCallbackRequiresExactOriginAndIssuer() throws {
-        let base = "https://zli.chat/ios/oauth/callback?state=s&code=ok"
-        let issuer = "https://account.zli.works/api/auth"
-        XCTAssertEqual(try PKCE.code(from: URL(string: base + "&iss=" + issuer)!, expectedState: "s", expectedIssuer: issuer), "ok")
-        for value in [base, base + "&iss=https://evil.example", base + "&iss=" + issuer + "&iss=" + issuer,
-                      base.replacingOccurrences(of: "zli.chat", with: "user@zli.chat"),
-                      base.replacingOccurrences(of: "zli.chat", with: "zli.chat:443"), base + "#fragment"] {
-            XCTAssertThrowsError(try PKCE.code(from: URL(string: value)!, expectedState: "s", expectedIssuer: issuer))
-        }
-    }
 }

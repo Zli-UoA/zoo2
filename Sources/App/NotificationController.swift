@@ -22,7 +22,7 @@ final class NotificationController {
     private(set) var enabled = false
     private(set) var registrationFailed = false
     var destination: PushDestination?
-    private let registration = PushRegistration()
+    private let registration: PushRegistration
     private let transport: HTTPTransport
     private var api: APIClient?
     private var userID: String?
@@ -30,7 +30,10 @@ final class NotificationController {
     private var token: String?
     private var generation = UUID()
     private let environment = Bundle.main.object(forInfoDictionaryKey: "APNSEnvironment") as? String == "production" ? "production" : "sandbox"
-    init(transport: HTTPTransport = HTTPTransport()) { self.transport = transport }
+    init(transport: HTTPTransport = HTTPTransport(), receiptStore: any PushReceiptStore = KeychainPushReceiptStore()) {
+        self.transport = transport
+        registration = PushRegistration(store: receiptStore)
+    }
 
     func connect(api: APIClient, userID: String) {
         generation = UUID()

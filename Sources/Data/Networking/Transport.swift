@@ -6,7 +6,6 @@ struct ConnectionSettings: Codable, Equatable, Sendable {
     var clientID = "UPPfdYapcgiBgnfZIoGvFuJMAEIhXQOV"
     var resource = "https://zli.chat/api"
     var scope = "openid profile offline_access"
-    static let callback = "https://zli.chat/ios/oauth/callback"
 
     static func secureURL(_ raw: String) throws -> URL {
         guard let url = URL(string: raw), url.scheme == "https", url.host != nil,
@@ -48,7 +47,20 @@ final class HTTPTransport: Sendable {
         self.session = session ?? URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
     }
 
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    func send(_ request: URLRequest, timeout: Duration? = nil) async throws -> (Data, HTTPURLResponse) {
+        if let timeout {
+            // URLRequest のタイムアウトは受信のたびに延びるため、通信全体の期限を別に設ける。
+            return try await withThrowingTaskGroup(of: (Data, HTTPURLResponse).self) { group in
+                group.addTask { try await self.send(request) }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw URLError(.timedOut)
+                }
+                defer { group.cancelAll() }
+                guard let result = try await group.next() else { throw CancellationError() }
+                return result
+            }
+        }
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse else { throw ZooError.invalidResponse }
         return (data, response)

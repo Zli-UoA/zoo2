@@ -6,6 +6,56 @@ struct Person: Codable, Identifiable, Hashable, Sendable {
     var display_name: String
     var is_bot: Bool = false
     var is_admin: Bool? = nil
+    var avatar_url: String? = nil
+
+    var name: String { display_name.isEmpty ? user_name : display_name }
+
+    var avatarURL: URL? {
+        guard let avatar_url, avatar_url.utf8.count <= 2048,
+              let url = URL(string: avatar_url), url.scheme?.lowercased() == "https",
+              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
+              url.absoluteString.utf8.count <= 2048 else { return nil }
+        return url
+    }
+}
+
+extension Person {
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        user_name = try values.decode(String.self, forKey: .user_name)
+        display_name = try values.decode(String.self, forKey: .display_name)
+        is_admin = try values.decodeIfPresent(Bool.self, forKey: .is_admin)
+        avatar_url = try values.decodeIfPresent(String.self, forKey: .avatar_url)
+        // REST は Bool、Electric は PostgreSQL の真偽値を文字列で返す。
+        switch try values.decode(JSONValue.self, forKey: .is_bot) {
+        case .bool(let value): is_bot = value
+        case .string("true"), .string("t"): is_bot = true
+        case .string("false"), .string("f"): is_bot = false
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .is_bot, in: values, debugDescription: "ユーザー種別の真偽値を読み取れません。")
+        }
+    }
+}
+
+struct Channel: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    var channel_name: String
+    var description: String?
+    var is_private: Bool
+    var is_dm: Bool
+    var archive_at: String?
+    var deleted_at: String?
+    var encrypted: Bool?
+
+    var canPost: Bool { archive_at == nil && deleted_at == nil && encrypted != true }
+    var symbol: String { encrypted == true ? "lock.shield" : is_dm ? "bubble.left.and.bubble.right" : is_private ? "lock" : "number" }
+}
+
+struct ChannelReadState: Codable, Sendable {
+    let channel_id: String
+    var has_unread: Bool
+    let last_read_at: String?
 }
 
 struct Message: Codable, Identifiable, Hashable, Sendable {
@@ -18,6 +68,19 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     var deleted_at: String?
     var parent_id: String?
     var card: String?
+
+    var date: Date? { ZooDate.parse(created_at) }
+}
+
+enum ZooDate {
+    static func parse(_ value: String) -> Date? {
+        var normalized = value.replacingOccurrences(of: " ", with: "T")
+        if !normalized.hasSuffix("Z"), !normalized.dropFirst(10).contains("+"), !normalized.dropFirst(10).contains("-") {
+            normalized += "Z"
+        }
+        return (try? Date(normalized, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+            ?? (try? Date(normalized, strategy: .iso8601))
+    }
 }
 
 struct Envelope<T: Decodable & Sendable>: Decodable, Sendable {

@@ -4,13 +4,29 @@ import Testing
 @testable import Zoo
 
 // URLProtocolの継承にはunchecked適合が必要なため、追加する可変状態はすべてMutexで保護します。
-private final class StubProtocol: URLProtocol, @unchecked Sendable {
+final class StubProtocol: URLProtocol, @unchecked Sendable {
     typealias Handler = @Sendable (URLRequest) async throws -> (Int, [String: String], Data)
     private static let handlers = Mutex<[String: Handler]>([:])
     private let loading = Mutex((task: Optional<Task<Void, Never>>.none, stopped: false))
 
     static func install(_ handler: Handler?, id: String) {
         handlers.withLock { $0[id] = handler }
+    }
+
+    nonisolated static func body(_ request: URLRequest) throws -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { throw URLError(.badServerResponse) }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var bytes = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&bytes, maxLength: bytes.count)
+            if count < 0 { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+            if count == 0 { break }
+            data.append(contentsOf: bytes.prefix(count))
+        }
+        return data
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -59,22 +75,6 @@ struct NetworkTests {
         StubProtocol.install(handler, id: stubID)
     }
 
-    nonisolated private static func body(_ request: URLRequest) throws -> Data {
-        if let data = request.httpBody { return data }
-        guard let stream = request.httpBodyStream else { throw URLError(.badServerResponse) }
-        stream.open()
-        defer { stream.close() }
-        var data = Data()
-        var bytes = [UInt8](repeating: 0, count: 1024)
-        while stream.hasBytesAvailable {
-            let count = stream.read(&bytes, maxLength: bytes.count)
-            if count < 0 { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
-            if count == 0 { break }
-            data.append(contentsOf: bytes.prefix(count))
-        }
-        return data
-    }
-
     private func client(expired: Bool = false) throws -> APIClient {
         let settings = ConnectionSettings(server: "https://api.test.invalid", issuer: "https://id.test.invalid",
                                           clientID: UUID().uuidString, resource: "https://api.test.invalid", scope: "openid")
@@ -96,7 +96,7 @@ struct NetworkTests {
             #expect(request.url?.host == "previous.test.invalid")
             #expect(request.url?.path == "/api/push/apns/revoke")
             #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
-            let body = try #require(JSONSerialization.jsonObject(with: Self.body(request)) as? [String: String])
+            let body = try #require(JSONSerialization.jsonObject(with: StubProtocol.body(request)) as? [String: String])
             #expect(body["id"] == receipt.id)
             #expect(body["revocation_secret"] == receipt.secret)
             return (200, [:], Data("<html>SPA のフォールバックページ</html>".utf8))
@@ -116,7 +116,7 @@ struct NetworkTests {
                 return (200, [:], Data(#"{"sandbox":true,"production":false}"#.utf8))
             }
             #expect(request.url?.path == "/api/push/apns/subscriptions")
-            let body = try #require(JSONSerialization.jsonObject(with: Self.body(request)) as? [String: Any])
+            let body = try #require(JSONSerialization.jsonObject(with: StubProtocol.body(request)) as? [String: Any])
             #expect(body["created_at"] as? Int64 == receipt.createdAt)
             #expect(body["environment"] as? String == "sandbox")
             return (200, [:], try JSONSerialization.data(withJSONObject: ["id": receipt.id]))
