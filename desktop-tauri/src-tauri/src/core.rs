@@ -774,6 +774,18 @@ impl Core {
                 login: login.clone(),
             },
         );
+        drop(inner);
+        let app = self.app.clone();
+        let url = login
+            .verification_uri_complete
+            .clone()
+            .unwrap_or_else(|| login.verification_uri.clone());
+        // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(err) = open_in_browser(&app, &url) {
+                eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
+            }
+        });
         Ok(login)
     }
 

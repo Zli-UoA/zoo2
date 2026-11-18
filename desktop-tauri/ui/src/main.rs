@@ -205,13 +205,66 @@ fn App() -> impl IntoView {
 }
 
 #[component]
+fn ZooMark() -> impl IntoView {
+    view! {
+        <svg class="auth-logo" viewBox="0 0 256 256" aria-hidden="true">
+            <g transform="translate(42.905 41.975) scale(.93)">
+                <path
+                    d="M91.0854 60C107.654 60 121.085 46.5685 121.085 30C121.085 13.4315 107.654 0 91.0854 0C74.5169 0 61.0854 13.4315 61.0854 30C61.0854 46.5685 74.5169 60 91.0854 60Z"
+                    fill="currentColor"
+                />
+                <path
+                    d="M152.171 82.2368C168.739 82.2368 182.171 68.8054 182.171 52.2368C182.171 35.6683 168.739 22.2368 152.171 22.2368C135.602 22.2368 122.171 35.6683 122.171 52.2368C122.171 68.8054 135.602 82.2368 152.171 82.2368Z"
+                    fill="currentColor"
+                />
+                <path
+                    d="M30 82.2368C46.5685 82.2368 60 68.8054 60 52.2368C60 35.6683 46.5685 22.2368 30 22.2368C13.4315 22.2368 0 35.6683 0 52.2368C0 68.8054 13.4315 82.2368 30 82.2368Z"
+                    fill="currentColor"
+                />
+                <path
+                    d="M91.0859 65C124.223 65.0003 151.086 91.8631 151.086 125C151.086 157.878 124.641 184.58 91.8613 184.995L91.0859 185H37.0859C33.7722 185 31.085 182.314 31.085 179V125C31.085 91.8629 57.9489 65 91.0859 65Z"
+                    fill="currentColor"
+                />
+            </g>
+        </svg>
+    }
+}
+
+#[component]
+fn ExternalLinkIcon() -> impl IntoView {
+    view! {
+        <svg
+            class="auth-btn-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+        >
+            <path d="M15 3h6v6" />
+            <path d="M10 14 21 3" />
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+        </svg>
+    }
+}
+
+#[component]
 fn Login(state: Option<SessionState>) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
+    let starting = RwSignal::new(false);
     let start = move |_| {
+        if starting.get_untracked() {
+            return;
+        }
+        starting.set(true);
+        ctx.error.set(None);
         spawn_local(async move {
             if let Err(err) = tauri::invoke0::<DeviceLogin>(command::START_LOGIN).await {
                 ctx.error.set(Some(err.message));
             }
+            starting.set(false);
         });
     };
     let cancel = move |_| {
@@ -219,11 +272,41 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
             ctx.report(tauri::invoke0::<()>(command::CANCEL_LOGIN).await);
         });
     };
-    let body = match state {
-        None | Some(SessionState::Starting) => view! { <p>"読み込んでいます…"</p> }.into_any(),
+    let panel = match state {
+        None | Some(SessionState::Starting) => view! {
+            <div class="auth-eyebrow">
+                <span class="auth-pill" aria-hidden="true"></span>
+                <span>"ZOO2 DESKTOP"</span>
+            </div>
+            <h1 class="auth-title">"読み込んでいます"</h1>
+            <p class="auth-lead">"セッションを確認しています…"</p>
+            <div class="auth-status">
+                <span class="auth-dot" aria-hidden="true"></span>
+                <span>"しばらくお待ちください"</span>
+            </div>
+        }
+        .into_any(),
         Some(SessionState::LoggedOut) => view! {
-            <p>"zoo2 にログインしてください。"</p>
-            <button on:click=start>"ブラウザーでログイン"</button>
+            <div class="auth-eyebrow">
+                <span class="auth-pill" aria-hidden="true"></span>
+                <span>"WELCOME BACK"</span>
+            </div>
+            <h1 class="auth-title">"ログイン"</h1>
+            <p class="auth-lead">"zoo2 を始めるには、ブラウザーで Zli アカウントを認証してください。"</p>
+            <div class="auth-actions">
+                <button
+                    type="button"
+                    class="auth-btn auth-btn-primary"
+                    disabled=move || starting.get()
+                    on:click=start
+                >
+                    <ExternalLinkIcon />
+                    <span>
+                        {move || if starting.get() { "ブラウザーを開いています…" } else { "ブラウザーでログイン" }}
+                    </span>
+                </button>
+            </div>
+            <p class="auth-hint">"ボタンを押すと既定のブラウザーが自動で開きます。"</p>
         }
         .into_any(),
         Some(SessionState::LoggingIn { login }) => {
@@ -232,22 +315,59 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
                 .clone()
                 .unwrap_or(login.verification_uri.clone());
             view! {
-                <p>"ブラウザーで次のページを開き、コードを確かめて承認してください。"</p>
-                <p class="code">{login.user_code}</p>
-                <p><a href=url.clone()>{url.clone()}</a></p>
-                <p class="muted">"承認を待っています…"</p>
-                <button on:click=cancel>"中止"</button>
+                <div class="auth-eyebrow">
+                    <span class="auth-pill" aria-hidden="true"></span>
+                    <span>"DEVICE AUTHORIZATION"</span>
+                </div>
+                <h1 class="auth-title">"ブラウザーで承認"</h1>
+                <p class="auth-lead">"開いたブラウザーの画面に表示されているコードが一致しているか確かめて承認してください。"</p>
+                <div class="auth-code-card">
+                    <span class="auth-code-label">"確認コード"</span>
+                    <p class="auth-code">{login.user_code}</p>
+                </div>
+                <div class="auth-status">
+                    <span class="auth-dot" aria-hidden="true"></span>
+                    <span>"承認を待っています…"</span>
+                </div>
+                <div class="auth-actions">
+                    <a class="auth-btn auth-btn-primary" href=url.clone()>
+                        <ExternalLinkIcon />
+                        <span>"ブラウザーで開く"</span>
+                    </a>
+                    <button type="button" class="auth-btn auth-btn-outline" on:click=cancel>
+                        "中止"
+                    </button>
+                </div>
+                <div class="auth-fallback">
+                    <p class="auth-fallback-note">"自動で開かない場合は上のボタンまたは下のリンクを押してください。"</p>
+                    <a class="auth-url" href=url.clone()>{url.clone()}</a>
+                </div>
             }
             .into_any()
         }
         Some(SessionState::Failed { message }) => view! {
-            <p>"起動できませんでした。"</p>
-            <pre>{message}</pre>
+            <div class="auth-eyebrow">
+                <span class="auth-pill" aria-hidden="true"></span>
+                <span>"STARTUP ERROR"</span>
+            </div>
+            <h1 class="auth-title">"起動できませんでした"</h1>
+            <pre class="auth-failed">{message}</pre>
         }
         .into_any(),
         Some(SessionState::Ready { .. }) => ().into_any(),
     };
-    view! { <div class="login">{body}</div> }
+    view! {
+        <div class="auth-shell">
+            <aside class="auth-hero" aria-hidden="true">
+                <div class="auth-hero-inner">
+                    <ZooMark />
+                </div>
+            </aside>
+            <main class="auth-main">
+                <section class="auth-card">{panel}</section>
+            </main>
+        </div>
+    }
 }
 
 #[component]
