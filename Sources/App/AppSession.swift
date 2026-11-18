@@ -32,6 +32,9 @@ final class AppSession {
             session.userID = client.currentUser.id
             let calls = CallStore(client: client, userID: client.currentUser.id, makeMedia: { PreviewCallMedia() }, permission: { true })
             session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil, calls: calls)
+            if let workspace = session.workspace, ProcessInfo.processInfo.arguments.contains("--uitesting-attachments") {
+                Task { await client.prepareAttachmentDraft(in: workspace) }
+            }
             return session
         }
         if isUITesting {

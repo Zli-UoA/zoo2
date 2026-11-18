@@ -35,6 +35,14 @@ private final class FakeCallClient: CallClient {
     var accepted = false
     var failStream = false
     var delivered: (@MainActor () -> Void)?
+    var inviteRequests: [(String, [String])] = []
+    var cancelledInvitations: [String] = []
+    var inviteResult: [CreatedCallInvitation] = []
+    var inviteFailure: Error?
+    var beforeInviteResult: (@MainActor () async -> Void)?
+    var invitationRows: [CallInvitation] = []
+    var invitationsDelivered: (@MainActor () -> Void)?
+    let invitationUpdates = AsyncStream<[CallInvitation]>.makeStream()
 
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
         observed = true
@@ -44,8 +52,25 @@ private final class FakeCallClient: CallClient {
         try await Task.sleep(for: .seconds(86_400))
     }
     func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws { commands.append(action); commandObserved?(action) }
-    func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws { receive([]) }
+    func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
+        receive(invitationRows)
+        invitationsDelivered?()
+        for await rows in invitationUpdates.stream {
+            receive(rows)
+            invitationsDelivered?()
+        }
+    }
     func answerCallInvitation(id: String, accept: Bool) async throws { accepted = accept }
+    func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
+        inviteRequests.append((channelID, userIDs))
+        await beforeInviteResult?()
+        if let inviteFailure { throw inviteFailure }
+        return inviteResult
+    }
+    func cancelCallInvitation(id: String) async throws {
+        if let inviteFailure { throw inviteFailure }
+        cancelledInvitations.append(id)
+    }
 }
 
 @MainActor
@@ -69,6 +94,218 @@ private final class FakeCallMedia: CallMedia {
 @MainActor @Suite("通話のライフサイクル", .timeLimit(.minutes(1)))
 struct CallStoreTests {
     private var channel: Channel { Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false) }
+
+    private func connected(_ client: FakeCallClient, channel: Channel? = nil, participants: [CallParticipant] = [], capacity: Int = 6) async -> CallStore {
+        client.events = [.room(CallRoom(participants: participants, max_participants: capacity, ice_servers: []))]
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true })
+        await withCheckedContinuation { continuation in
+            client.delivered = { continuation.resume() }
+            store.start(channel: channel ?? self.channel)
+        }
+        client.delivered = nil
+        return store
+    }
+
+    private func observeInvitations(_ client: FakeCallClient, store: CallStore) async -> Task<Void, Never> {
+        var task: Task<Void, Never>!
+        await withCheckedContinuation { continuation in
+            client.invitationsDelivered = { continuation.resume() }
+            task = Task { await store.runInvitations() }
+        }
+        client.invitationsDelivered = nil
+        return task
+    }
+
+    private func deliverInvitations(_ rows: [CallInvitation], client: FakeCallClient) async {
+        await withCheckedContinuation { continuation in
+            client.invitationsDelivered = { continuation.resume() }
+            client.invitationUpdates.continuation.yield(rows)
+        }
+        client.invitationsDelivered = nil
+    }
+
+    @Test("チャンネルの招待候補から自分・bot・無効な人・参加者・呼び出し中の人を除く")
+    func invitationCandidates() async {
+        let client = FakeCallClient()
+        let participant = CallParticipant(session_id: "remote", user_id: "joined", user_name: "joined", display_name: "参加者", is_muted: false)
+        let store = await connected(client, participants: [participant], capacity: 3)
+        defer { store.shutdown() }
+        let now = Date.now
+        func invitation(_ id: String, invitee: String, channelID: String? = nil, expiry: Date? = nil) -> CallInvitation {
+            CallInvitation(id: id, channel_id: channelID ?? channel.id, inviter_id: "me", invitee_id: invitee,
+                           status: "pending", expires_at: (expiry ?? now.addingTimeInterval(30)).ISO8601Format())
+        }
+        client.invitationRows = [invitation("pending", invitee: "pending"), invitation("joined", invitee: "joined"),
+                                 invitation("expired", invitee: "expired", expiry: now.addingTimeInterval(-1)),
+                                 invitation("elsewhere", invitee: "elsewhere", channelID: "other")]
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel() }
+        var members = ["me", "joined", "pending", "expired", "elsewhere"].map { Person(id: $0, user_name: $0, display_name: $0) }
+        members += [Person(id: "bot", user_name: "bot", display_name: "bot", is_bot: true),
+                    Person(id: "inactive", user_name: "inactive", display_name: "無効", is_deactivated: true)]
+        #expect(store.invitationCandidates(members: members, at: now).map(\.id) == ["expired", "elsewhere"])
+        #expect(store.invitationSlots(at: now) == 1)
+        #expect(store.invitationSlots(at: now.addingTimeInterval(31)) == 2)
+        #expect(store.invitations.isEmpty)
+        #expect(!(await store.invite(userIDs: ["expired", "elsewhere"], members: members, channelID: channel.id)))
+        #expect(!(await store.invite(userIDs: ["outsider"], members: members, channelID: channel.id)))
+        #expect(client.inviteRequests.isEmpty)
+    }
+
+    @Test("招待失敗でも通話を続け、選択した相手へ再送できる")
+    func retryInvitation() async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        let members = [Person(id: "other", user_name: "other", display_name: "相手")]
+        client.inviteFailure = URLError(.notConnectedToInternet)
+        #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
+        #expect(store.ready && store.channel != nil && store.error == nil)
+        #expect(store.invitationError != nil && !store.inviting)
+        client.inviteFailure = nil
+        client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
+        #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
+        #expect(client.inviteRequests.count == 2)
+        #expect(client.inviteRequests.last?.1 == ["other"])
+        #expect(store.invitationError == nil && store.invitationNotice == "1人に招待を送りました。")
+        #expect(store.invitationCandidates(members: members).isEmpty)
+        #expect(store.invitationSlots() == 5)
+        if let invitation = store.pendingOutgoing().first {
+            await store.cancelInvitation(invitation)
+            #expect(client.cancelledInvitations == ["invite"] && store.pendingOutgoing().isEmpty)
+        } else { Issue.record("同期前に取り消せる招待がありません") }
+    }
+
+    @Test("API応答より先に届いた招待を重複させず、終了済みなら復活させない", arguments: [false, true])
+    func inviteSynchronization(endsBeforeResponse: Bool) async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel() }
+        let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
+                                        status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
+        client.beforeInviteResult = {
+            await deliverInvitations([invitation], client: client)
+            if endsBeforeResponse { await deliverInvitations([], client: client) }
+        }
+        let members = [Person(id: "other", user_name: "other", display_name: "相手")]
+        #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
+        #expect(store.pendingOutgoing().count == (endsBeforeResponse ? 0 : 1))
+        await deliverInvitations([], client: client)
+        #expect(store.pendingOutgoing().isEmpty)
+    }
+
+    @Test("同期がAPI応答より遅れても招待の重複送信・重複表示を防ぐ")
+    func delayedInvitationSynchronization() async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel() }
+        let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
+                                        status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        let members = [Person(id: "other", user_name: "other", display_name: "相手")]
+        client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
+        client.beforeInviteResult = {
+            #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
+        }
+        #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
+        #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
+        #expect(client.inviteRequests.count == 1 && store.pendingOutgoing().count == 1)
+        #expect(store.pendingOutgoing(at: .now.addingTimeInterval(31)).isEmpty)
+        await deliverInvitations([invitation], client: client)
+        #expect(store.pendingOutgoing().count == 1)
+        await deliverInvitations([], client: client)
+        #expect(store.pendingOutgoing().isEmpty)
+    }
+
+    @Test("同期前に取り消した招待は古いpending行が届いても復活しない")
+    func cancellationBeforeSynchronization() async throws {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel() }
+        let members = [Person(id: "other", user_name: "other", display_name: "相手")]
+        client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
+        #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
+        let invitation = try #require(store.pendingOutgoing().first)
+        await store.cancelInvitation(invitation)
+        await deliverInvitations([invitation], client: client)
+        #expect(store.pendingOutgoing().isEmpty && store.invitationSlots() == 6)
+        #expect(store.invitationCandidates(members: members).map(\.id) == ["other"])
+        await deliverInvitations([], client: client)
+        client.inviteResult = [CreatedCallInvitation(id: "new-invite", invitee_id: "other")]
+        #expect(await store.invite(userIDs: ["other"], members: members, channelID: channel.id))
+        #expect(store.pendingOutgoing().map(\.id) == ["new-invite"])
+    }
+
+    @Test("DMと未接続の通話には手動招待を送らない")
+    func rejectsDMAndDisconnected() async {
+        let client = FakeCallClient()
+        var dm = channel
+        dm.is_dm = true
+        let store = await connected(client, channel: dm)
+        let members = [Person(id: "other", user_name: "other", display_name: "相手")]
+        #expect(store.invitationCandidates(members: members).isEmpty)
+        #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
+        store.finish()
+        #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
+        #expect(client.inviteRequests.isEmpty)
+    }
+
+    @Test("通話を切り替えた後に古い招待の結果を表示しない")
+    func ignoresLateInvitationResult() async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
+        client.beforeInviteResult = {
+            store.finish()
+            await withCheckedContinuation { continuation in
+                client.delivered = { continuation.resume() }
+                store.start(channel: channel)
+            }
+            client.delivered = nil
+        }
+        let members = [Person(id: "other", user_name: "other", display_name: "相手")]
+        #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
+        #expect(store.ready && store.invitationNotice == nil && store.invitationError == nil && !store.inviting)
+    }
+
+    @Test("サーバーが一部または全員を招待しなかった場合を伝える", arguments: [0, 1])
+    func partialInvitations(count: Int) async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        let members = ["one", "two"].map { Person(id: $0, user_name: $0, display_name: $0) }
+        client.inviteResult = count == 0 ? [] : [CreatedCallInvitation(id: "invite", invitee_id: "one")]
+        #expect(await store.invite(userIDs: ["one", "two"], members: members, channelID: channel.id) == (count > 0))
+        #expect(store.ready)
+        if count == 0 { #expect(store.invitationError != nil) }
+        else { #expect(store.invitationNotice?.contains("残りのメンバー") == true) }
+    }
+
+    @Test("自分の呼び出しを取り消し、失敗時は再試行できる")
+    func cancelInvitation() async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
+                                        status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        client.invitationRows = [invitation]
+        let task = await observeInvitations(client, store: store)
+        defer { task.cancel() }
+        client.inviteFailure = URLError(.notConnectedToInternet)
+        await store.cancelInvitation(invitation)
+        #expect(store.pendingOutgoing().count == 1 && store.invitationError != nil && store.ready)
+        client.inviteFailure = nil
+        await store.cancelInvitation(invitation)
+        #expect(store.pendingOutgoing().isEmpty && store.invitationError == nil)
+        #expect(client.cancelledInvitations == ["invite"] && store.cancellingInvitations.isEmpty)
+    }
 
     @Test("初期状態より先のイベントを保留し、終了時にマイクと接続を閉じる")
     func lifecycle() async throws {
@@ -127,6 +364,34 @@ struct CallStoreTests {
 
 @MainActor @Suite("通話のネイティブAPI契約")
 struct NativeCallAPITests {
+    @Test("チャンネル招待は宛先をPOSTし、Envelopeのない招待一覧を受け取る")
+    func invite() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path == "/api/channels/11111111-1111-4111-8111-111111111111/call/invites")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-access")
+            let body = try JSONDecoder().decode([String: JSONValue].self, from: StubProtocol.body(request))
+            #expect(body["user_ids"] == .array([.string("other")]))
+            return (200, [:], Data(#"{"invites":[{"id":"invite","invitee_id":"other"}]}"#.utf8))
+        }
+        let created = try await harness.client.inviteToCall(channelID: "11111111-1111-4111-8111-111111111111", userIDs: ["other"])
+        #expect(created.count == 1 && created.first?.invitee_id == "other")
+    }
+
+    @Test("取り消し済み・応答済みの招待の取り消しを成功として扱う", arguments: [200, 404, 409])
+    func cancel(status: Int) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path == "/api/call-invites/22222222-2222-4222-8222-222222222222/cancel")
+            return (status, [:], Data(#"{"ok":true}"#.utf8))
+        }
+        try await harness.client.cancelCallInvitation(id: "22222222-2222-4222-8222-222222222222")
+    }
+
     @Test("SSEの改行境界を保ち、認証付きで初期状態と退出を受け取る")
     func stream() async throws {
         let harness = try ChatHarness()

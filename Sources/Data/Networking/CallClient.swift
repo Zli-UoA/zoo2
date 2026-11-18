@@ -6,6 +6,8 @@ protocol CallClient {
     func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws
     func answerCallInvitation(id: String, accept: Bool) async throws
+    func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation]
+    func cancelCallInvitation(id: String) async throws
 }
 
 extension NativeChatClient {
@@ -49,5 +51,21 @@ extension NativeChatClient {
     func answerCallInvitation(id: String, accept: Bool) async throws {
         guard UUID(uuidString: id) != nil else { throw ZooError.invalidResponse }
         _ = try await api.data("api/call-invites/\(id)/\(accept ? "accept" : "decline")", method: "POST")
+    }
+
+    func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
+        guard UUID(uuidString: channelID) != nil, !userIDs.isEmpty, userIDs.count <= 5 else {
+            throw ZooError.invalidResponse
+        }
+        struct Response: Decodable { let invites: [CreatedCallInvitation] }
+        let data = try await api.data("api/channels/\(channelID)/call/invites", method: "POST",
+                                      body: ["user_ids": .array(userIDs.map(JSONValue.string))])
+        return try JSONDecoder().decode(Response.self, from: data).invites
+    }
+
+    func cancelCallInvitation(id: String) async throws {
+        guard UUID(uuidString: id) != nil else { throw ZooError.invalidResponse }
+        do { _ = try await api.data("api/call-invites/\(id)/cancel", method: "POST") }
+        catch ZooError.rejected(let status, _) where status == 404 || status == 409 { }
     }
 }

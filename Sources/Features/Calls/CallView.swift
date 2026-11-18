@@ -43,6 +43,7 @@ struct CallView: View {
     @Bindable var store: CallStore
     let workspace: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
+    @State private var invitingChannel: Channel?
 
     var body: some View {
         NavigationStack {
@@ -64,6 +65,25 @@ struct CallView: View {
                             }
                         }
                     }
+                    if !channel.is_dm {
+                        Section("招待") {
+                            Button("メンバーを招待", systemImage: "person.badge.plus") { invitingChannel = channel }
+                                .disabled(!store.ready).accessibilityIdentifier("call-invite")
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                ForEach(store.pendingOutgoing(at: context.date)) { invitation in
+                                    HStack {
+                                        Text("\(workspace.people[invitation.invitee_id]?.name ?? "メンバー")さんを呼び出し中…")
+                                        Spacer()
+                                        Button("取り消す") { Task { await store.cancelInvitation(invitation) } }
+                                            .disabled(!store.ready || store.cancellingInvitations.contains(invitation.id))
+                                            .accessibilityIdentifier("call-cancel-\(invitation.invitee_id)")
+                                    }
+                                }
+                            }
+                            if let notice = store.invitationNotice { Text(notice).foregroundStyle(.secondary) }
+                            if let error = store.invitationError { Text(error).foregroundStyle(.red) }
+                        }
+                    }
                     Section {
                         Button(store.muted ? "ミュートを解除" : "ミュート", systemImage: store.muted ? "mic.slash" : "mic") { store.toggleMute() }
                             .disabled(!store.ready || store.changingMute).accessibilityIdentifier("call-mute")
@@ -77,6 +97,84 @@ struct CallView: View {
             }
             .navigationTitle("音声通話").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } } }
+            .sheet(item: $invitingChannel) { channel in
+                CallInviteView(store: store, workspace: workspace, channel: channel)
+            }
+            .onChange(of: store.ready) { _, ready in if !ready { invitingChannel = nil } }
+        }
+    }
+}
+
+private struct CallInviteView: View {
+    let store: CallStore
+    let workspace: WorkspaceStore
+    let channel: Channel
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<String> = []
+
+    var body: some View {
+        NavigationStack {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let members = workspace.channelMembers[channel.id] ?? []
+                let candidates = store.invitationCandidates(members: members, at: context.date)
+                let chosen = selected.intersection(candidates.map(\.id))
+                let slots = store.invitationSlots(at: context.date)
+                List {
+                    Section {
+                        Text("\(channel.channel_name)の通話に招待します。")
+                        Text(slots == 0 ? "通話は満員です。" : "あと\(slots)人まで招待できます。")
+                            .foregroundStyle(.secondary)
+                    }
+                    Section("メンバー") {
+                        if let error = workspace.memberErrors[channel.id] {
+                            Text(error).foregroundStyle(.red)
+                            Button("再読み込み") { Task { await workspace.loadMembers(channelID: channel.id) } }
+                        } else if workspace.channelMembers[channel.id] == nil {
+                            ProgressView("メンバーを読み込み中…")
+                        } else if candidates.isEmpty {
+                            Text("招待できるメンバーはいません。")
+                        } else {
+                            ForEach(candidates) { person in
+                                Button {
+                                    if selected.contains(person.id) { selected.remove(person.id) }
+                                    else { selected.insert(person.id) }
+                                } label: {
+                                    HStack {
+                                        PersonRow(person: person)
+                                        Spacer()
+                                        Image(systemName: chosen.contains(person.id) ? "checkmark.circle.fill" : "circle")
+                                    }.contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(store.inviting || (!chosen.contains(person.id) && chosen.count >= slots))
+                                .accessibilityLabel(person.name)
+                                .accessibilityValue(chosen.contains(person.id) ? "選択済み" : "未選択")
+                                .accessibilityIdentifier("call-invite-member-\(person.id)")
+                            }
+                        }
+                    }
+                    if let error = store.invitationError {
+                        Section { Text(error).foregroundStyle(.red).accessibilityIdentifier("call-invite-error") }
+                    }
+                }
+                .onChange(of: candidates.map(\.id)) { _, ids in selected.formIntersection(ids) }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("閉じる") { dismiss() }.accessibilityIdentifier("call-invite-close")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button(store.inviting ? "送信中…" : "招待する") {
+                            Task {
+                                if await store.invite(userIDs: chosen, members: members, channelID: channel.id) { dismiss() }
+                            }
+                        }
+                        .disabled(!store.ready || store.inviting || chosen.isEmpty || chosen.count > slots || workspace.memberErrors[channel.id] != nil)
+                        .accessibilityIdentifier("call-send-invitations")
+                    }
+                }
+            }
+            .navigationTitle("メンバーを招待").navigationBarTitleDisplayMode(.inline)
+            .task { await workspace.loadMembers(channelID: channel.id) }
         }
     }
 }

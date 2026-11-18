@@ -1,17 +1,65 @@
 #if DEBUG
+import CoreText
+import ImageIO
 import Foundation
+
+enum PreviewPDF {
+    static let data: Data = {
+        let bytes = NSMutableData()
+        var bounds = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let consumer = CGDataConsumer(data: bytes),
+              let context = CGContext(consumer: consumer, mediaBox: &bounds, nil) else { return Data() }
+        let attributes = [kCTFontAttributeName: CTFontCreateWithName("HiraginoSans-W3" as CFString, 24, nil)] as CFDictionary
+        for page in 1...2 {
+            context.beginPDFPage(nil)
+            context.textPosition = CGPoint(x: 60, y: 720)
+            let text = CFAttributedStringCreate(nil, "PDFの表示確認（\(page)ページ目）" as CFString, attributes)!
+            CTLineDraw(CTLineCreateWithAttributedString(text), context)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return bytes as Data
+    }()
+}
+
+enum PreviewImage {
+    static func data(for path: String) -> Data? {
+        switch path {
+        case "/stamp.png": stamp
+        case "/tall.png": tall
+        default: nil
+        }
+    }
+
+    private static let stamp = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR4nO3T0QmAMAyE4W7mNI7lVK7hDu0AtvaO5FqCOcib+H8glpKLuOe86ui2xuUIJC5F/A/ABF1BnmEaooxPESvin4hQgHofr1sG6MVZRAJMf4IVMIyjCAtgGrcg3OLop2AvAQmIBfBG0HEUgT5jGvpSSTynXgP20vIB9b499AAAAABJRU5ErkJggg==")
+    private static let tall: Data? = {
+        guard let context = CGContext(data: nil, width: 240, height: 1600, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        for row in 0..<8 {
+            context.setFillColor(CGColor(red: CGFloat(row) / 10, green: 0.5, blue: 0.8, alpha: 1))
+            context.fill(CGRect(x: 0, y: row * 200, width: 240, height: 200))
+        }
+        let bytes = NSMutableData()
+        guard let image = context.makeImage(),
+              let destination = CGImageDestinationCreateWithData(bytes, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return bytes as Data
+    }()
+}
 
 // 可変な共有状態を持たず、UI テスト専用画像を同期で返して外部配信に依存させない。
 final class PreviewEmojiURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "ui.test.invalid" && request.url?.path == "/stamp.png"
+        request.url?.host == "ui.test.invalid" && ["/stamp.png", "/tall.png"].contains(request.url?.path ?? "")
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         guard let url = request.url,
               let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
                                              headerFields: ["Content-Type": "image/png"]),
-              let data = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR4nO3T0QmAMAyE4W7mNI7lVK7hDu0AtvaO5FqCOcib+H8glpKLuOe86ui2xuUIJC5F/A/ABF1BnmEaooxPESvin4hQgHofr1sG6MVZRAJMf4IVMIyjCAtgGrcg3OLop2AvAQmIBfBG0HEUgT5jGvpSSTynXgP20vIB9b499AAAAABJRU5ErkJggg==") else { return }
+              let data = PreviewImage.data(for: url.path) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
@@ -57,9 +105,13 @@ final class PreviewChatClient: ChatClient {
     private var joinedPublic = false
     private var readPositions: [String: String] = [:]
     private var failedReadOnce = false
+    private var pdfURLRequests = 0
     private var failNextPin = ProcessInfo.processInfo.arguments.contains("--uitesting-pin-failure")
     private var pins = ChannelPins(pins: ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") ? [ChannelPin(channel_id: channelID, position: 0)] : [], version: 0)
     private var memberships: [ChannelMembership] = []
+    private var callInvitations: [CallInvitation] = []
+    private var callInvitationsChanged: AsyncStream<[CallInvitation]>.Continuation?
+    private var failNextCallInvite = ProcessInfo.processInfo.arguments.contains("--uitesting-call-invite-failure")
     private var allChannels: [Channel] = [
         Channel(id: channelID, channel_name: "一般", description: "日々の話題やお知らせを共有しましょう。", is_private: false, is_dm: false),
         Channel(id: "55555555-5555-4555-8555-555555555555", channel_name: "開発", description: "ものづくりの相談はこちら。", is_private: false, is_dm: false),
@@ -92,8 +144,17 @@ final class PreviewChatClient: ChatClient {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", file_name: "さくら.png", content_type: "image/png")]
             allMessages[1].created_at = "2026-11-19T09:01:00Z"
         }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-tall-image") {
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04",
+                file_name: "縦長画像.png", content_type: "image/png")]
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-video") {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "確認用.mp4", content_type: "video/mp4")]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-pdf") {
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03",
+                file_name: "確認資料.pdf", content_type: "application/pdf",
+                is_sensitive: ProcessInfo.processInfo.arguments.contains("--uitesting-sensitive-pdf"))]
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-thread-directory") {
             allMessages.append(Message(id: "77777777-7777-4777-8777-777777777777", user_id: currentUser.id,
@@ -122,12 +183,37 @@ final class PreviewChatClient: ChatClient {
         try await receive(.room(CallRoom(participants: [participant], max_participants: 6, ice_servers: [])))
         try await Task.sleep(for: .seconds(86_400))
     }
-    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {}
+    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {
+        if action == "leave" {
+            callInvitations.removeAll { $0.channel_id == channelID }
+            callInvitationsChanged?.yield(callInvitations)
+        }
+    }
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
-        receive([])
-        try await Task.sleep(for: .seconds(86_400))
+        let (stream, continuation) = AsyncStream<[CallInvitation]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        callInvitationsChanged = continuation
+        defer { continuation.finish(); callInvitationsChanged = nil }
+        receive(callInvitations)
+        for await invitations in stream { receive(invitations) }
     }
     func answerCallInvitation(id: String, accept: Bool) async throws {}
+    func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
+        if failNextCallInvite {
+            failNextCallInvite = false
+            throw URLError(.notConnectedToInternet)
+        }
+        let created = userIDs.map { id in
+            CallInvitation(id: UUID().uuidString.lowercased(), channel_id: channelID, inviter_id: currentUser.id,
+                           invitee_id: id, status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        }
+        callInvitations += created
+        callInvitationsChanged?.yield(callInvitations)
+        return created.map { CreatedCallInvitation(id: $0.id, invitee_id: $0.invitee_id) }
+    }
+    func cancelCallInvitation(id: String) async throws {
+        callInvitations.removeAll { $0.id == id }
+        callInvitationsChanged?.yield(callInvitations)
+    }
 
     func channelPins() async throws -> ChannelPins {
         pins
@@ -154,7 +240,21 @@ final class PreviewChatClient: ChatClient {
         let unread = ["--uitesting-chat-details", "--uitesting-read-retry"].contains { ProcessInfo.processInfo.arguments.contains($0) }
         return ChannelReadState(channel_id: channelID, has_unread: unread && readPositions[channelID] == nil, last_read_at: readPositions[channelID])
     }
+    func attachmentData(from url: URL) async throws -> Data {
+        if url.host == "ui.test.invalid", let image = PreviewImage.data(for: url.path) { return image }
+        guard url.host == "ui.test.invalid", ["/preview.pdf", "/invalid.pdf"].contains(url.path) else {
+            throw ZooError.invalidResponse
+        }
+        return url.path == "/invalid.pdf" ? Data("破損したPDF".utf8) : PreviewPDF.data
+    }
+
     func attachmentURL(id: String) async throws -> URL {
+        if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04" { return URL(string: serverURL + "/tall.png")! }
+        if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03" {
+            pdfURLRequests += 1
+            let failing = ProcessInfo.processInfo.arguments.contains("--uitesting-pdf-failure") && pdfURLRequests == 2
+            return URL(string: serverURL + (failing ? "/invalid.pdf" : "/preview.pdf"))!
+        }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02" {
             // 実際のAVPlayerを、外部通信も実ユーザーの動画も使わずに検証する。
             let data = Data(base64Encoded: "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")!
@@ -239,11 +339,31 @@ final class PreviewChatClient: ChatClient {
             try await Task.sleep(for: .milliseconds(200))
         }
     }
-    func send(id: String, channelID: String, content: String, parentID: String?) async throws -> Message {
+    private var uploadedAttachments: [String: MessageAttachment] = [:]
+
+    func prepareAttachmentDraft(in workspace: WorkspaceStore) async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let urls = ["添付確認.txt", "削除確認.txt"].map { directory.appendingPathComponent($0) }
+            for url in urls { try Data("画面テスト用の添付です。".utf8).write(to: url) }
+            await workspace.conversation(for: allChannels[0]).importFiles(urls, parentID: nil)
+        } catch { workspace.error = "テスト用の添付を用意できませんでした。" }
+    }
+
+    func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String {
+        let id = UUID().uuidString.lowercased()
+        uploadedAttachments[id] = MessageAttachment(id: id, file_name: attachment.fileName, content_type: attachment.contentType)
+        return id
+    }
+
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = []) async throws -> Message {
         if failNextSend { failNextSend = false; throw URLError(.notConnectedToInternet) }
         if let existing = allMessages.first(where: { $0.id == id }) { return existing }
         let message = Message(id: id, user_id: currentUser.id, channel_id: channelID, content: content,
-                              created_at: Date().ISO8601Format(), parent_id: parentID, display_data: MessageDisplayData(reactions: []))
+                              created_at: Date().ISO8601Format(), parent_id: parentID,
+                              display_data: MessageDisplayData(reactions: [], attachments: attachmentIDs.compactMap { uploadedAttachments[$0] }))
         allMessages.append(message)
         if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
             incomingReply = (.now.advanced(by: .seconds(5)), channelID, parentID)

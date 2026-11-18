@@ -15,6 +15,15 @@ final class CallStore {
     private(set) var speakerEnabled = false
     private(set) var changingMute = false
     private(set) var invitations: [CallInvitation] = []
+    private(set) var outgoingInvitations: [CallInvitation] = []
+    private var submittedInvitations: [CallInvitation] = []
+    private var invitationsSeenWhileSending: Set<String> = []
+    private var cancelledInvitationExpirations: [String: Date] = [:]
+    private(set) var inviting = false
+    private(set) var cancellingInvitations: Set<String> = []
+    private(set) var invitationError: String?
+    private(set) var invitationNotice: String?
+    private(set) var maxParticipants = 6
     var error: String?
     var showingCall = false
     @ObservationIgnored var onExpiredSession: (() -> Void)?
@@ -73,6 +82,7 @@ final class CallStore {
                                                max_participants: room.max_participants, ice_servers: room.ice_servers)
                         for id in departed { try await engine.handle(.left(id)) }
                         ready = true
+                        maxParticipants = min(6, max(1, room.max_participants))
                         timeout?.cancel(); timeout = nil
                         participants = initial.participants
                         try await engine.handle(.room(initial))
@@ -187,6 +197,8 @@ final class CallStore {
         signals?.finish(); signals = nil
         media?.close(); media = nil
         channel = nil; participants = []; ready = false; muted = false; speakerEnabled = false; changingMute = false
+        inviting = false; cancellingInvitations = []; invitationError = nil; invitationNotice = nil
+        submittedInvitations = []; invitationsSeenWhileSending = []
         if let oldChannel, let oldSession {
             let client = client
             Task { try? await client.callCommand(channelID: oldChannel, action: "leave", body: ["session_id": .string(oldSession)]) }
@@ -206,10 +218,18 @@ final class CallStore {
                 try await client.observeCallInvitations { [weak self] values in
                     guard let self, active, !Task.isCancelled else { return }
                     invitations = values.filter { $0.invitee_id == userID && $0.status == "pending" }
+                    cancelledInvitationExpirations = cancelledInvitationExpirations.filter { $0.value > .now }
+                    outgoingInvitations = values.filter {
+                        $0.inviter_id == userID && $0.status == "pending" && cancelledInvitationExpirations[$0.id] == nil
+                    }
+                    let receivedIDs = Set(values.map(\.id))
+                    if inviting { invitationsSeenWhileSending.formUnion(receivedIDs) }
+                    submittedInvitations.removeAll { receivedIDs.contains($0.id) || (ZooDate.parse($0.expires_at) ?? .distantPast) <= .now }
                 }
             } catch {
                 guard active, !Task.isCancelled else { return }
                 invitations = []
+                outgoingInvitations = []
                 if case ZooError.expiredSession = error { onExpiredSession?(); return }
             }
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
@@ -228,5 +248,80 @@ final class CallStore {
         }
     }
 
-    func shutdown() { active = false; finish(); invitations = []; error = nil; showingCall = false }
+    func pendingOutgoing(at date: Date = .now) -> [CallInvitation] {
+        (outgoingInvitations + submittedInvitations).filter { invitation in
+            invitation.channel_id == channel?.id && (ZooDate.parse(invitation.expires_at) ?? .distantPast) > date &&
+            !participants.contains(where: { $0.user_id == invitation.invitee_id })
+        }
+    }
+
+    func invitationSlots(at date: Date = .now) -> Int {
+        max(0, maxParticipants - participants.count - Set(pendingOutgoing(at: date).map(\.invitee_id)).count)
+    }
+
+    func invitationCandidates(members: [Person], at date: Date = .now) -> [Person] {
+        guard ready, channel?.is_dm == false else { return [] }
+        let unavailable = Set(participants.map(\.user_id) + pendingOutgoing(at: date).map(\.invitee_id) + [userID])
+        return members.filter { !$0.is_bot && !$0.is_deactivated && !unavailable.contains($0.id) }
+    }
+
+    func invite(userIDs: Set<String>, members: [Person], channelID: String) async -> Bool {
+        guard active, ready, !inviting, let channel, channel.id == channelID, !channel.is_dm,
+              let session = sessionID else { return false }
+        let candidates = Set(invitationCandidates(members: members).map(\.id))
+        guard !userIDs.isEmpty, userIDs.isSubset(of: candidates), userIDs.count <= invitationSlots() else {
+            invitationError = "参加者や空き人数が変わりました。招待するメンバーを選び直してください。"
+            return false
+        }
+        inviting = true; invitationError = nil; invitationNotice = nil
+        invitationsSeenWhileSending = []
+        submittedInvitations.removeAll { (ZooDate.parse($0.expires_at) ?? .distantPast) <= .now }
+        defer { if sessionID == session { inviting = false } }
+        do {
+            let created = try await client.inviteToCall(channelID: channelID, userIDs: userIDs.sorted())
+            guard active, sessionID == session, !Task.isCancelled else { return false }
+            guard !created.isEmpty else {
+                invitationError = "招待できませんでした。満員、参加済み、または呼び出し中の可能性があります。"
+                return false
+            }
+            // Shapeが遅れても取り消せるように返却IDを保持する。応答前に観測済みの招待は復活させない。
+            submittedInvitations += created.filter { !invitationsSeenWhileSending.contains($0.id) }.map {
+                CallInvitation(id: $0.id, channel_id: channelID, inviter_id: userID, invitee_id: $0.invitee_id,
+                               status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+            }
+            invitationNotice = created.count == userIDs.count ? "\(created.count)人に招待を送りました。" :
+                "\(created.count)人に招待を送りました。残りのメンバーは満員、参加済み、または呼び出し中のため招待できませんでした。"
+            return true
+        } catch {
+            guard active, sessionID == session, !Task.isCancelled else { return false }
+            invitationError = "招待を送れませんでした。接続を確認して、もう一度お試しください。"
+            if case ZooError.expiredSession = error { onExpiredSession?() }
+            return false
+        }
+    }
+
+    func cancelInvitation(_ invitation: CallInvitation) async {
+        guard active, ready, invitation.channel_id == channel?.id, invitation.inviter_id == userID,
+              !cancellingInvitations.contains(invitation.id), let session = sessionID else { return }
+        cancellingInvitations.insert(invitation.id); invitationError = nil
+        defer { if sessionID == session { cancellingInvitations.remove(invitation.id) } }
+        do {
+            try await client.cancelCallInvitation(id: invitation.id)
+            guard active, sessionID == session, !Task.isCancelled else { return }
+            // 取消APIより遅れて届くpending行で、終了した呼び出しを再表示しない。
+            cancelledInvitationExpirations = cancelledInvitationExpirations.filter { $0.value > .now }
+            cancelledInvitationExpirations[invitation.id] = ZooDate.parse(invitation.expires_at) ?? .now.addingTimeInterval(30)
+            outgoingInvitations.removeAll { $0.id == invitation.id }
+            submittedInvitations.removeAll { $0.id == invitation.id }
+        } catch {
+            guard active, sessionID == session, !Task.isCancelled else { return }
+            invitationError = "呼び出しを取り消せませんでした。もう一度お試しください。"
+            if case ZooError.expiredSession = error { onExpiredSession?() }
+        }
+    }
+
+    func shutdown() {
+        active = false; finish(); invitations = []; outgoingInvitations = []; cancelledInvitationExpirations = [:]
+        error = nil; showingCall = false
+    }
 }

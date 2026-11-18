@@ -82,6 +82,11 @@ struct CallInvitation: Decodable, Identifiable, Sendable {
     let expires_at: String
 }
 
+struct CreatedCallInvitation: Decodable, Sendable {
+    let id: String
+    let invitee_id: String
+}
+
 // SSE の改行区切りを独立させ、分割受信や複数 data 行でも同じイベントに復元する。
 struct CallEventParser {
     private var name = ""

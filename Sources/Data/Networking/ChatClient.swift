@@ -15,6 +15,7 @@ protocol ChatClient: InboxClient, CallClient {
     func members(channelID: String) async throws -> [ChannelMembership]
     func readState(channelID: String) async throws -> ChannelReadState
     func attachmentURL(id: String) async throws -> URL
+    func attachmentData(from url: URL) async throws -> Data
     func readStates() async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
     func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws
@@ -23,7 +24,8 @@ protocol ChatClient: InboxClient, CallClient {
     func removeReaction(messageID: String, emoji: String) async throws
     func emojis() async throws -> [WorkspaceEmoji]
     func emojiAccounts() async throws -> [EmojiAccount]
-    func send(id: String, channelID: String, content: String, parentID: String?) async throws -> Message
+    func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String]) async throws -> Message
     func edit(id: String, content: String) async throws -> Message
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
@@ -67,6 +69,17 @@ struct NativeChatClient: ChatClient {
         return url
     }
 
+    func attachmentData(from url: URL) async throws -> Data {
+        guard DisplayEmoji.assetURL(url.absoluteString) != nil else { throw ZooError.invalidResponse }
+        // 署名付きURLにはAPIの認証トークンを付けず、ストレージの401でログアウトさせない。
+        let (data, response) = try await api.transport.send(URLRequest(url: url))
+        try Task.checkCancellation()
+        guard (200..<300).contains(response.statusCode) else {
+            throw ZooError.rejected(response.statusCode, "添付ファイルを取得できませんでした。")
+        }
+        return data
+    }
+
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws {
         _ = try segment(channelID)
         try await ShapeStream(api: api).observe("api/shapes/messages", query: ["channel_id": channelID],
@@ -101,11 +114,28 @@ struct NativeChatClient: ChatClient {
         return directory.accounts.map { $0.resolved(relativeTo: serverURL) }
     }
 
-    func send(id: String, channelID: String, content: String, parentID: String?) async throws -> Message {
+    func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String {
+        let result: AttachmentUpload = try await api.write("api/attachments/presign", body: [
+            "channel_id": .string(try segment(channelID)), "file_name": .string(attachment.fileName),
+            "file_size": .number(Double(attachment.byteCount)), "content_type": .string(attachment.contentType)
+        ])
+        let id = try segment(result.attachment_id)
+        guard let url = URL(string: result.upload_url), url.scheme == "https", url.host != nil,
+              url.user == nil, url.password == nil, url.fragment == nil else { throw ZooError.invalidResponse }
+        try Task.checkCancellation()
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue(attachment.contentType, forHTTPHeaderField: "Content-Type")
+        try await api.transport.upload(request, from: attachment.file.url)
+        return id
+    }
+
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = []) async throws -> Message {
         _ = try segment(id)
         _ = try segment(channelID)
         var body: [String: JSONValue] = ["id": .string(id), "channel_id": .string(channelID), "content": .string(content)]
         if let parentID { body["parent_id"] = .string(try segment(parentID)) }
+        if !attachmentIDs.isEmpty { body["attachment_ids"] = .array(try attachmentIDs.map { .string(try segment($0)) }) }
         return try await api.write("api/messages", body: body)
     }
 
