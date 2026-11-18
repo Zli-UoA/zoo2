@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @Bindable var store: ConversationStore
@@ -8,6 +9,7 @@ struct ComposerView: View {
     @State private var selection: TextSelection?
     @State private var submitting = false
     @State private var showingEmoji = false
+    @State private var showingFiles = false
     @State private var emojiInsertionRange: Range<String.Index>?
     @ScaledMetric(relativeTo: .body) private var candidateHeight: CGFloat = 48
 
@@ -21,7 +23,8 @@ struct ComposerView: View {
         let name = workspace.name(for: store.channel)
         return store.channel.is_dm ? "\(name) へのメッセージ" : "#\(name) へのメッセージ"
     }
-    private var canSend: Bool { !submitting && !store.sending.contains(key) && store.validContent(draft.wrappedValue) }
+    private var canSend: Bool { !submitting && store.canSend(parentID: parentID) }
+    private var attachmentsBusy: Bool { submitting || store.sending.contains(key) || store.importingAttachments.contains(key) }
     private var selectedRange: Range<String.Index>? {
         guard let selection, case .selection(let range) = selection.indices else { return nil }
         let text = draft.wrappedValue
@@ -45,6 +48,7 @@ struct ComposerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("send-error")
             }
             if store.canPost {
+                attachmentDrafts
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .center, spacing: 8) {
                         if !expanded { additions }
@@ -90,6 +94,14 @@ struct ComposerView: View {
                 showingEmoji = false
             }
         }
+        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                Task { await store.importFiles(urls, parentID: parentID) }
+            case .failure(let error):
+                store.sendErrors[key] = "ファイルを選択できませんでした。\(error.localizedDescription)"
+            }
+        }
         .task(id: submitting) {
             if submitting {
                 await store.send(parentID: parentID)
@@ -101,6 +113,10 @@ struct ComposerView: View {
 
     private var additions: some View {
         Menu {
+            Button("ファイルを添付", systemImage: "paperclip") {
+                focused = false
+                showingFiles = true
+            }.disabled(attachmentsBusy)
             Button("スタンプを挿入", systemImage: "face.smiling") { openEmoji() }
             Button("メンションを挿入", systemImage: "at") { insertMention() }
         } label: {
@@ -108,6 +124,40 @@ struct ComposerView: View {
                 .foregroundStyle(.secondary).frame(width: 40, height: 40)
                 .background(.primary.opacity(0.05), in: Circle())
         }.accessibilityLabel("メッセージに追加").accessibilityIdentifier("composer-additions")
+    }
+
+    @ViewBuilder private var attachmentDrafts: some View {
+        let attachments = store.draftAttachments[key] ?? []
+        if !attachments.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { attachment in
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(attachment.fileName).lineLimit(1)
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.byteCount), countStyle: .file))
+                                    .foregroundStyle(.secondary)
+                            }.font(.caption)
+                            Button { store.removeAttachment(attachment.id, parentID: parentID) } label: {
+                                Image(systemName: "xmark.circle.fill").frame(width: 32, height: 32)
+                            }
+                            .disabled(attachmentsBusy)
+                            .accessibilityLabel("添付を削除：\(attachment.fileName)")
+                        }
+                        .padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 6)
+                        .frame(maxWidth: 260)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityIdentifier("draft-attachment-\(attachment.fileName)")
+                    }
+                }
+            }.scrollIndicators(.hidden).fixedSize(horizontal: false, vertical: true)
+        }
+        if store.importingAttachments.contains(key) {
+            ProgressView("ファイルを読み込み中…").font(.caption)
+        } else if let status = store.uploadStatus[key] {
+            ProgressView(status).font(.caption)
+        }
     }
 
     private var sendButton: some View {

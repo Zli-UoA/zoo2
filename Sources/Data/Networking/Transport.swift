@@ -74,6 +74,15 @@ final class HTTPTransport: Sendable {
             throw ZooError.rejected(response.statusCode, String(message.prefix(240)))
         }
     }
+
+    func upload(_ request: URLRequest, from file: URL) async throws {
+        let (_, response) = try await session.upload(for: request, fromFile: file)
+        guard let response = response as? HTTPURLResponse else { throw ZooError.invalidResponse }
+        // ストレージの署名切れは、アプリのログイン期限切れとは別に再試行する。
+        guard (200..<300).contains(response.statusCode) else {
+            throw ZooError.rejected(response.statusCode, "ファイルをアップロードできませんでした。")
+        }
+    }
 }
 
 @MainActor

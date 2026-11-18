@@ -267,11 +267,31 @@ final class PreviewChatClient: ChatClient {
             try await Task.sleep(for: .milliseconds(200))
         }
     }
-    func send(id: String, channelID: String, content: String, parentID: String?) async throws -> Message {
+    private var uploadedAttachments: [String: MessageAttachment] = [:]
+
+    func prepareAttachmentDraft(in workspace: WorkspaceStore) async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let urls = ["添付確認.txt", "削除確認.txt"].map { directory.appendingPathComponent($0) }
+            for url in urls { try Data("画面テスト用の添付です。".utf8).write(to: url) }
+            await workspace.conversation(for: allChannels[0]).importFiles(urls, parentID: nil)
+        } catch { workspace.error = "テスト用の添付を用意できませんでした。" }
+    }
+
+    func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String {
+        let id = UUID().uuidString.lowercased()
+        uploadedAttachments[id] = MessageAttachment(id: id, file_name: attachment.fileName, content_type: attachment.contentType)
+        return id
+    }
+
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = []) async throws -> Message {
         if failNextSend { failNextSend = false; throw URLError(.notConnectedToInternet) }
         if let existing = allMessages.first(where: { $0.id == id }) { return existing }
         let message = Message(id: id, user_id: currentUser.id, channel_id: channelID, content: content,
-                              created_at: Date().ISO8601Format(), parent_id: parentID, display_data: MessageDisplayData(reactions: []))
+                              created_at: Date().ISO8601Format(), parent_id: parentID,
+                              display_data: MessageDisplayData(reactions: [], attachments: attachmentIDs.compactMap { uploadedAttachments[$0] }))
         allMessages.append(message)
         if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
             incomingReply = (.now.advanced(by: .seconds(5)), channelID, parentID)

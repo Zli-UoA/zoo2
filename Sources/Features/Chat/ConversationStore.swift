@@ -17,6 +17,10 @@ final class ConversationStore {
     private(set) var sending: Set<String> = []
     private(set) var mutationInProgress = false
     var drafts: [String: String] = [:]
+    private(set) var draftAttachments: [String: [DraftAttachment]] = [:]
+    private(set) var importingAttachments: Set<String> = []
+    private(set) var uploadStatus: [String: String] = [:]
+    private var uploadedAttachmentIDs: [UUID: String] = [:]
     var sendErrors: [String: String] = [:]
     var actionError: String?
     var focusedMessageID: String?
@@ -46,6 +50,8 @@ final class ConversationStore {
     private struct PendingSend {
         let id: String
         let content: String
+        let attachmentIDs: [UUID]
+        var messageAttempted = false
     }
 
     init(channel: Channel, client: any ChatClient, userID: String) {
@@ -75,12 +81,57 @@ final class ConversationStore {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.unicodeScalars.count <= 40_000
     }
 
+    func canSend(parentID: String?) -> Bool {
+        let key = draftKey(parentID)
+        let text = drafts[key] ?? ""
+        return canPost && !sending.contains(key) && !importingAttachments.contains(key) &&
+            text.unicodeScalars.count <= 40_000 && (validContent(text) || !(draftAttachments[key] ?? []).isEmpty)
+    }
+
+    func importFiles(_ urls: [URL], parentID: String?) async {
+        let key = draftKey(parentID)
+        guard canPost, !sending.contains(key), !importingAttachments.contains(key), !urls.isEmpty else { return }
+        guard (draftAttachments[key]?.count ?? 0) + urls.count <= DraftAttachment.maximumCount else {
+            sendErrors[key] = AttachmentImportError.tooMany.localizedDescription
+            return
+        }
+        let epoch = accessGeneration
+        importingAttachments.insert(key)
+        sendErrors[key] = nil
+        defer { importingAttachments.remove(key) }
+        do {
+            let files = try await DraftAttachment.importing(urls)
+            try Task.checkCancellation()
+            guard canPost, epoch == accessGeneration else { return }
+            draftAttachments[key, default: []].append(contentsOf: files)
+        } catch {
+            guard canPost, epoch == accessGeneration, !Task.isCancelled else { return }
+            sendErrors[key] = "ファイルを追加できませんでした。\(error.localizedDescription)"
+        }
+    }
+
+    func removeAttachment(_ id: UUID, parentID: String?) {
+        let key = draftKey(parentID)
+        guard !sending.contains(key), !importingAttachments.contains(key) else { return }
+        draftAttachments[key]?.removeAll { $0.id == id }
+        uploadedAttachmentIDs[id] = nil
+        sendErrors[key] = nil
+    }
+
+    private func clearDraftAttachments() {
+        draftAttachments = [:]
+        uploadedAttachmentIDs = [:]
+        pendingSends = [:]
+        uploadStatus = [:]
+    }
+
     func update(_ channel: Channel) {
         if channel.encrypted != self.channel.encrypted {
             streamGeneration = UUID()
             accessGeneration = UUID()
             clearReactions()
             clearAttachments()
+            clearDraftAttachments()
         }
         self.channel = channel
         if channel.encrypted == true { messages = []; remoteMessages = []; localWrites = [:] }
@@ -136,6 +187,7 @@ final class ConversationStore {
     private func revokeAccess() {
         accessGeneration = UUID()
         clearAttachments()
+        clearDraftAttachments()
         streamGeneration = UUID()
         blocked = true
         loading = false
@@ -179,27 +231,61 @@ final class ConversationStore {
     func send(parentID: String? = nil) async {
         let key = draftKey(parentID)
         let content = drafts[key] ?? ""
-        guard canPost, validContent(content), !sending.contains(key) else { return }
+        guard canSend(parentID: parentID) else { return }
+        let attachments = draftAttachments[key] ?? []
+        let attachmentIDs = attachments.map(\.id)
         let epoch = accessGeneration
-        let pending = pendingSends[key].flatMap { $0.content == content ? $0 : nil }
-            ?? PendingSend(id: UUID().uuidString.lowercased(), content: content)
+        let previous = pendingSends[key]
+        let matching = previous.flatMap { $0.content == content && $0.attachmentIDs == attachmentIDs ? $0 : nil }
+        if matching == nil, let previous, previous.messageAttempted {
+            // 応答が失われた投稿に紐付いている可能性があるため、別の投稿では添付も作り直す。
+            for id in previous.attachmentIDs { uploadedAttachmentIDs[id] = nil }
+        }
+        let pending = matching
+            ?? PendingSend(id: UUID().uuidString.lowercased(), content: content, attachmentIDs: attachmentIDs)
         pendingSends[key] = pending
         sending.insert(key)
         sendErrors[key] = nil
-        defer { sending.remove(key) }
+        defer { sending.remove(key); uploadStatus[key] = nil }
         do {
-            let message = try await client.send(id: pending.id, channelID: channel.id, content: content, parentID: parentID)
+            var uploaded: [MessageAttachment] = []
+            for (index, attachment) in attachments.enumerated() {
+                try Task.checkCancellation()
+                guard canPost, epoch == accessGeneration else { return }
+                uploadStatus[key] = "ファイルを送信中（\(index + 1)/\(attachments.count)）"
+                let id: String
+                if let existing = uploadedAttachmentIDs[attachment.id] { id = existing }
+                else {
+                    id = try await client.upload(attachment, channelID: channel.id)
+                    try Task.checkCancellation()
+                    guard canPost, epoch == accessGeneration else { return }
+                    uploadedAttachmentIDs[attachment.id] = id
+                }
+                uploaded.append(MessageAttachment(id: id, file_name: attachment.fileName,
+                                                  content_type: attachment.contentType, is_sensitive: true))
+            }
+            uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
+            pendingSends[key]?.messageAttempted = true
+            var message = try await client.send(id: pending.id, channelID: channel.id, content: content,
+                                                parentID: parentID, attachmentIDs: uploaded.map(\.id))
             try Task.checkCancellation()
             guard active, !blocked, epoch == accessGeneration, channel.encrypted != true else { return }
+            if !uploaded.isEmpty, message.display_data?.attachments.isEmpty != false {
+                // センシティブ属性が同期されるまでは、添付を自動で表示しない。
+                if message.display_data == nil { message.display_data = MessageDisplayData() }
+                message.display_data?.attachments = uploaded
+            }
             localWrites[message.id] = message
             render()
             pendingSends[key] = nil
             if drafts[key] == content { drafts[key] = "" }
+            draftAttachments[key]?.removeAll { attachmentIDs.contains($0.id) }
+            for id in attachmentIDs { uploadedAttachmentIDs[id] = nil }
             focusedMessageID = message.id
         } catch {
             guard active, epoch == accessGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?(); return }
-            sendErrors[key] = "送信できませんでした。本文を保持しています。\(error.localizedDescription)"
+            sendErrors[key] = "送信できませんでした。本文と添付を保持しています。\(error.localizedDescription)"
         }
     }
 
@@ -293,6 +379,7 @@ final class ConversationStore {
     func shutdown() {
         active = false
         clearAttachments()
+        clearDraftAttachments()
         clearReactions()
         streamGeneration = UUID()
         accessGeneration = UUID()

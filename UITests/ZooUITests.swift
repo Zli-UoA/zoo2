@@ -2,6 +2,50 @@ import XCTest
 
 final class ZooUITests: XCTestCase {
     @MainActor
+    func testFileAttachmentsCanBeRemovedAndRetried() {
+        let app = launchWorkspace(failingSend: true, attachments: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let remove = app.buttons["添付を削除：添付確認.txt"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        XCTAssertTrue(remove.isHittable)
+        XCTAssertTrue(app.staticTexts["こんにちは！ Zoo の iOS 版へようこそ。"].isHittable)
+        capture(app, name: "ファイルを添付した入力欄")
+        remove.tap()
+        XCTAssertFalse(remove.exists)
+        let remaining = app.buttons["添付を削除：削除確認.txt"]
+        XCTAssertTrue(remaining.isHittable)
+        let send = app.buttons["send-message"]
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
+        XCTAssertTrue(app.staticTexts["send-error"].waitForExistence(timeout: 5))
+        XCTAssertTrue(remaining.exists)
+        send.tap()
+        XCTAssertTrue(remaining.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["削除確認.txt"].waitForExistence(timeout: 5))
+        XCTAssertFalse(send.isEnabled)
+        capture(app, name: "本文なしの添付投稿を再送した会話")
+    }
+
+    @MainActor
+    func testFilePickerCancellationPreservesDraft() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let field = composer(app)
+        field.tap()
+        field.typeText("添付を選ぶ前の下書き")
+        app.buttons["composer-additions"].tap()
+        app.buttons["ファイルを添付"].tap()
+        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "キャンセル"])).firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        capture(app, name: "添付ファイルの選択画面")
+        cancel.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(field.value as? String, "添付を選ぶ前の下書き")
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        XCTAssertFalse(app.staticTexts["send-error"].exists)
+    }
+
+    @MainActor
     func testChannelCallInvitesAndCancellation() {
         let app = launchWorkspace(call: true, callInviteFailure: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -272,7 +316,7 @@ final class ZooUITests: XCTestCase {
 
     @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
-                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, callInviteFailure: Bool = false) -> XCUIApplication {
+                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, callInviteFailure: Bool = false, attachments: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -284,6 +328,7 @@ final class ZooUITests: XCTestCase {
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if call { app.launchArguments.append("--uitesting-call") }
         if callInviteFailure { app.launchArguments.append("--uitesting-call-invite-failure") }
+        if attachments { app.launchArguments.append("--uitesting-attachments") }
         if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()
