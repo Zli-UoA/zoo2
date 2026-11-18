@@ -61,6 +61,8 @@ pub struct CheckMenuItem(pub MenuItem<tauri::Wry>);
 struct Updates {
     /// 取得して署名を確かめた更新。
     ready: Mutex<Option<Ready>>,
+    /// インストーラーの配置や起動を進めている最中か (同時実行で同じ一時ファイルを壊さないため)。
+    installing: Mutex<bool>,
     /// macOS のトレイへ足したメニューの項目。新しい版が続けて出たら、文言だけ変える。
     #[cfg(target_os = "macos")]
     item: Mutex<Option<MenuItem<Wry>>>,
@@ -349,6 +351,24 @@ fn is_inno_uninstaller_name(name: &str) -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
+fn split_uninstaller_parent_and_name(raw: &str) -> Option<(&str, &str)> {
+    let trimmed = raw.trim().trim_matches('"');
+    let sep_idx = trimmed.rfind(['\\', '/'])?;
+    let file_name = &trimmed[sep_idx + 1..];
+    if file_name.is_empty() {
+        return None;
+    }
+    let parent = if sep_idx == 0 {
+        &trimmed[..1]
+    } else if sep_idx == 2 && trimmed.as_bytes()[1] == b':' {
+        &trimmed[..=sep_idx]
+    } else {
+        &trimmed[..sep_idx]
+    };
+    Some((parent, file_name))
+}
+
+#[cfg(any(target_os = "windows", test))]
 fn matches_inno_uninstall_entry(
     exe_dir: &std::path::Path,
     install_location: Option<&str>,
@@ -371,16 +391,11 @@ fn matches_inno_uninstall_entry(
     }
 
     let raw_uninstaller = extract_exe_from_command(uninstall_string?);
-    if raw_uninstaller.is_empty() {
-        return None;
-    }
-    let unins_path = std::path::Path::new(raw_uninstaller);
-    let file_name = unins_path.file_name()?.to_str()?;
+    let (raw_parent, file_name) = split_uninstaller_parent_and_name(raw_uninstaller)?;
     if !is_inno_uninstaller_name(file_name) {
         return None;
     }
-    let unins_parent = unins_path.parent()?;
-    let resolved_parent = canonicalize_if_exists(unins_parent);
+    let resolved_parent = canonicalize_if_exists(std::path::Path::new(raw_parent));
     if normalize_windows_path(&resolved_parent.to_string_lossy()) != dir_norm {
         return None;
     }
@@ -569,9 +584,15 @@ pub fn install_and_restart(app: &AppHandle) {
     let Some(state) = app.try_state::<Updates>() else {
         return;
     };
+    let mut installing = lock(&state.installing);
+    if *installing {
+        return;
+    }
     let Some(ready) = lock(&state.ready).take() else {
         return;
     };
+    *installing = true;
+    drop(installing);
     updater_window::open(app);
     let title = format!("v{} をインストールしています", ready.update.version);
     updater_window::set(
@@ -591,10 +612,7 @@ pub fn install_and_restart(app: &AppHandle) {
         if bundle_type().is_none() {
             match install_inno_setup(&app, &ready) {
                 Ok(()) => app.exit(0),
-                Err(err) => {
-                    restore_ready_on_failure(&app, ready);
-                    show_result(&app, "更新できませんでした", &err.to_string(), true);
-                }
+                Err(err) => finish_failed_install(&app, ready, &err.to_string()),
             }
             return;
         }
@@ -604,11 +622,17 @@ pub fn install_and_restart(app: &AppHandle) {
             Err(err) => {
                 // パスワードの入力をやめたときなども、もう一度押せるように残す。
                 // インストール中に新しい版の取得が終わっていた場合は、古い版で上書きしない。
-                restore_ready_on_failure(&app, ready);
-                show_result(&app, "更新できませんでした", &err.to_string(), true);
+                finish_failed_install(&app, ready, &err.to_string());
             }
         }
     });
+}
+
+fn finish_failed_install(app: &AppHandle, failed: Ready, detail: &str) {
+    let updates = app.state::<Updates>();
+    *lock(&updates.installing) = false;
+    restore_ready_on_failure(app, failed);
+    show_result(app, "更新できませんでした", detail, true);
 }
 
 fn restore_ready_on_failure(app: &AppHandle, failed: Ready) {
@@ -738,11 +762,11 @@ fn inno_installer_args(install_dir: &std::path::Path, pid: u32) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn updater_dir(app: &AppHandle) -> std::path::PathBuf {
+fn updater_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()
         .app_local_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("updates")
+        .map(|dir| dir.join("updates"))
+        .map_err(|err| format!("更新ファイルの保存先を取得できませんでした ({err})"))
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -779,7 +803,10 @@ fn try_lock_updater_exclusive(lock_path: &std::path::Path) -> Option<std::fs::Fi
 
 #[cfg(target_os = "windows")]
 fn cleanup_old_inno_installers(app: &AppHandle) {
-    cleanup_old_inno_installers_in(&updater_dir(app), std::time::SystemTime::now());
+    let Ok(dir) = updater_dir(app) else {
+        return;
+    };
+    cleanup_old_inno_installers_in(&dir, std::time::SystemTime::now());
 }
 
 #[cfg(target_os = "windows")]
@@ -858,6 +885,7 @@ $lockPath = $env:ZOO2_UPDATER_LOCK\n\
 $oldPid = 0\n\
 [void][int]::TryParse($env:ZOO2_UPDATER_PID, [ref]$oldPid)\n\
 $lockStream = $null\n\
+$relaunchOnFailure = $false\n\
 $code = -1\n\
 try {\n\
   if ($lockPath) {\n\
@@ -865,22 +893,26 @@ try {\n\
   }\n\
   [Console]::Out.WriteLine('LOCKED')\n\
   [Console]::Out.Flush()\n\
+  $waited = 0\n\
+  while ($installer -and -not (Test-Path -LiteralPath $installer) -and $waited -lt 100) {\n\
+    Start-Sleep -Milliseconds 50\n\
+    $waited++\n\
+  }\n\
+  if (-not ($installer -and (Test-Path -LiteralPath $installer))) {\n\
+    throw 'installer missing'\n\
+  }\n\
+  $relaunchOnFailure = $true\n\
+  [Console]::Out.WriteLine('ARMED')\n\
+  [Console]::Out.Flush()\n\
   if ($oldPid -gt 0) {\n\
     $old = Get-Process -Id $oldPid -ErrorAction SilentlyContinue\n\
     if ($old -and $old.ProcessName -like 'zoo2*') { $null = $old.WaitForExit(15000) }\n\
   }\n\
-  $waited = 0\n\
-  while ($installer -and -not (Test-Path -LiteralPath $installer) -and $waited -lt 50) {\n\
-    Start-Sleep -Milliseconds 100\n\
-    $waited++\n\
-  }\n\
-  if ($installer -and (Test-Path -LiteralPath $installer)) {\n\
-    $p = Start-Process -FilePath $installer -ArgumentList $argsLine -PassThru\n\
-    if ($p) {\n\
-      $null = $p.Handle\n\
-      $p.WaitForExit()\n\
-      $code = [int]$p.ExitCode\n\
-    }\n\
+  $p = Start-Process -FilePath $installer -ArgumentList $argsLine -PassThru\n\
+  if ($p) {\n\
+    $null = $p.Handle\n\
+    $p.WaitForExit()\n\
+    $code = [int]$p.ExitCode\n\
   }\n\
 } catch {\n\
   $code = -1\n\
@@ -889,7 +921,7 @@ try {\n\
   if ($lockStream) { $lockStream.Dispose() }\n\
   if ($lockPath) { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }\n\
 }\n\
-if ($code -ne 0 -and $exe -and (Test-Path -LiteralPath $exe)) {\n\
+if ($relaunchOnFailure -and $code -ne 0 -and $exe -and (Test-Path -LiteralPath $exe)) {\n\
   Start-Process -FilePath $exe -ArgumentList @('--update-failed', [string]$code)\n\
 }\n";
 
@@ -929,6 +961,40 @@ fn system_powershell_exe() -> std::path::PathBuf {
 }
 
 #[cfg(target_os = "windows")]
+type WatcherStdoutRx = std::sync::mpsc::Receiver<std::io::Result<String>>;
+
+#[cfg(target_os = "windows")]
+fn await_watcher_signal(
+    child: &mut std::process::Child,
+    rx: &WatcherStdoutRx,
+    expected: &str,
+) -> Result<(), String> {
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(line)) if line.trim() == expected => Ok(()),
+        Ok(Ok(line)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!(
+                "更新監視プロセスの初期化に失敗しました ({})",
+                line.trim()
+            ))
+        }
+        Ok(Err(err)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("更新監視プロセスの待機に失敗しました ({err})"))
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!(
+                "更新監視プロセスのシグナル ({expected}) 待機がタイムアウトしました"
+            ))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn spawn_locked_powershell_watcher(
     script: &str,
     old_pid: u32,
@@ -936,7 +1002,7 @@ fn spawn_locked_powershell_watcher(
     exe_path: &std::path::Path,
     args_line: &str,
     lock_path: &std::path::Path,
-) -> Result<std::process::Child, String> {
+) -> Result<(std::process::Child, WatcherStdoutRx), String> {
     use std::{
         io::{BufRead, BufReader},
         os::windows::process::CommandExt,
@@ -975,31 +1041,24 @@ fn spawn_locked_powershell_watcher(
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
-        let res = reader.read_line(&mut line).map(|_| line);
-        let _ = tx.send(res);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                    break;
+                }
+            }
+        }
     });
-    match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(line)) if line.trim() == "LOCKED" => Ok(child),
-        Ok(Ok(line)) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(format!(
-                "更新監視プロセスの初期化に失敗しました ({})",
-                line.trim()
-            ))
-        }
-        Ok(Err(err)) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(format!("更新監視プロセスの待機に失敗しました ({err})"))
-        }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err("更新監視プロセスのロック取得がタイムアウトしました".to_string())
-        }
-    }
+    await_watcher_signal(&mut child, &rx, "LOCKED")?;
+    Ok((child, rx))
 }
 
 #[cfg(target_os = "windows")]
@@ -1013,7 +1072,7 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
         .parent()
         .ok_or_else(|| "インストール先ディレクトリが見つかりません".to_string())?;
 
-    let dir = updater_dir(app);
+    let dir = updater_dir(app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let version: String = ready
         .update
@@ -1033,9 +1092,9 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
     std::fs::write(&part_path, &ready.bytes).map_err(|e| e.to_string())?;
 
     let args = inno_installer_args(install_dir, std::process::id());
-    // 監視プロセスが排他ロックを握った ("LOCKED") ことを確認してから .exe へ改名し、
-    // 作成から監視引き渡しまで清掃処理との間に無防備な隙間を作らない。
-    let mut watcher = match spawn_locked_powershell_watcher(
+    // 1) "LOCKED": 清掃競合を防ぐ排他ロック確保を確認してから .exe へ改名する。
+    // 2) "ARMED": 監視プロセスが .exe を認識して起動待ちに入ったことを確認してから自プロセスを終了する。
+    let (mut watcher, rx) = match spawn_locked_powershell_watcher(
         INNO_WATCHER_SCRIPT,
         std::process::id(),
         &installer_path,
@@ -1043,7 +1102,7 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
         &args,
         &lock_path,
     ) {
-        Ok(child) => child,
+        Ok(pair) => pair,
         Err(err) => {
             let _ = std::fs::remove_file(&part_path);
             let _ = std::fs::remove_file(&lock_path);
@@ -1056,6 +1115,12 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
         let _ = watcher.wait();
         let _ = std::fs::remove_file(&lock_path);
         return Err(format!("インストーラーを配置できませんでした ({err})"));
+    }
+    if let Err(err) = await_watcher_signal(&mut watcher, &rx, "ARMED") {
+        let _ = std::fs::remove_file(&installer_path);
+        let _ = std::fs::remove_file(&part_path);
+        let _ = std::fs::remove_file(&lock_path);
+        return Err(err);
     }
     Ok(())
 }
@@ -1231,7 +1296,7 @@ Add-Type -TypeDefinition $src -OutputAssembly $env:ZOO2_STUB_OUT -OutputType Win
             std::fs::write(installer_cfg, format!("{}\n{code}\n", ran_marker.display())).unwrap();
             std::fs::write(fake_cfg, format!("{}\n0\n", relaunch_marker.display())).unwrap();
 
-            let mut watcher = spawn_locked_powershell_watcher(
+            let (mut watcher, rx) = spawn_locked_powershell_watcher(
                 INNO_WATCHER_SCRIPT,
                 0,
                 &installer_exe,
@@ -1241,6 +1306,8 @@ Add-Type -TypeDefinition $src -OutputAssembly $env:ZOO2_STUB_OUT -OutputType Win
             )
             .expect("watcher should lock cleanly");
             std::fs::rename(&part_path, &installer_exe).unwrap();
+            await_watcher_signal(&mut watcher, &rx, "ARMED")
+                .expect("watcher should arm after installer rename");
 
             let status = watcher.wait().unwrap();
             assert!(status.success(), "{label}: watcher exit status {status}");
@@ -1297,7 +1364,7 @@ $lockStream.Dispose()\n\
 Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyContinue\n";
 
         std::fs::write(&active_part, b"dummy").unwrap();
-        let mut holder = spawn_locked_powershell_watcher(
+        let (mut holder, _rx) = spawn_locked_powershell_watcher(
             hold_script,
             0,
             &active_installer,

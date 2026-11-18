@@ -759,7 +759,7 @@ impl Core {
 
     pub async fn start_login(self: &Arc<Self>) -> Result<DeviceLogin, IpcError> {
         let (config, oidc) = self.oidc()?;
-        let generation = {
+        let (prev_gen, generation) = {
             let mut inner = self.inner.lock().await;
             if matches!(inner.state, SessionState::Ready { .. }) {
                 return Err(IpcError::new(ErrorCode::WrongMode, "ログイン済みです"));
@@ -767,9 +767,12 @@ impl Core {
             if let Some(task) = inner.login_task.take() {
                 task.abort();
             }
+            let prev = inner.generation;
             inner.generation += 1;
-            inner.generation
+            (prev, inner.generation)
         };
+        // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。
+        self.browser_launch.cancel(prev_gen);
         let discovery = tokio::time::timeout(
             REAUTH_HTTP_TIMEOUT,
             auth::discover(&self.http, &oidc.issuer),
@@ -826,6 +829,7 @@ impl Core {
             .await;
             match result {
                 Ok(manager) => {
+                    core.browser_launch.cancel(generation);
                     core.finish_login(
                         generation,
                         Credentials::Bearer(manager.clone()),
@@ -838,6 +842,8 @@ impl Core {
                     if inner.generation == generation {
                         core.set_state(&mut inner, SessionState::LoggedOut);
                     }
+                    drop(inner);
+                    core.browser_launch.cancel(generation);
                 }
             }
         }));
@@ -1304,6 +1310,13 @@ mod tests {
         gate.arm(3);
         gate.cancel(2);
         assert!(gate.launch_if_active(3, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 2);
+
+        // 次の試行へ置き換えられた (new arm の前に prev を失効させた) 直後の旧タスクも拒否される
+        gate.cancel(3);
+        assert!(!gate.launch_if_active(3, || {
             launched.fetch_add(1, Ordering::SeqCst);
         }));
         assert_eq!(launched.load(Ordering::SeqCst), 2);
