@@ -66,6 +66,8 @@ private struct ConversationDirectory: View {
     @State private var unreadOnly = false
     @State private var creating = false
     @State private var browsing = false
+    @State private var pinnedExpanded = true
+    @State private var listExpanded = true
 
     private var showsThreadIndex: Bool {
         !directMessages && workspace.selectedTab == .channels && workspace.channelPath.isEmpty && scenePhase == .active
@@ -103,8 +105,13 @@ private struct ConversationDirectory: View {
                 }
             }
             let pinned = workspace.pinnedChannelIDs.compactMap { id in channels.first { $0.id == id } }
-            if !pinned.isEmpty { Section("ピン留め") { channelRows(pinned) } }
-            Section("一覧") { channelRows(channels.filter { !workspace.pinnedChannelIDs.contains($0.id) }) }
+            let unpinned = channels.filter { !workspace.pinnedChannelIDs.contains($0.id) }
+            if !pinned.isEmpty {
+                channelSection("ピン留め", id: "pinned", channels: pinned, isExpanded: $pinnedExpanded)
+            }
+            if !unpinned.isEmpty {
+                channelSection("一覧", id: "list", channels: unpinned, isExpanded: $listExpanded)
+            }
             if let error = workspace.pinsError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
                 Button("ピン留めを再読み込み") { Task { await workspace.loadPins() } }
@@ -151,6 +158,32 @@ private struct ConversationDirectory: View {
         }
         .sheet(isPresented: $browsing) { ChannelBrowser(workspace: workspace) }
     }
+
+    private func channelSection(_ title: LocalizedStringKey, id: String, channels: [Channel],
+                                isExpanded: Binding<Bool>) -> some View {
+        let expanded = isExpanded.wrappedValue || !search.isEmpty
+        return Section {
+            if expanded { channelRows(channels) }
+        } header: {
+            Button {
+                withAnimation(.snappy) { isExpanded.wrappedValue.toggle() }
+            } label: {
+                HStack {
+                    Text(title)
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .accessibilityHidden(true)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!search.isEmpty)
+            .accessibilityValue(expanded ? "展開中" : "折り畳み中")
+            .accessibilityIdentifier("channel-section-\(id)")
+        }
+    }
+
     private func channelRows(_ channels: [Channel]) -> some View {
         ForEach(channels) { channel in
                 NavigationLink(value: ChatRoute.channel(channel.id)) {

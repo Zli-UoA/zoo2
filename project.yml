@@ -1,6 +1,7 @@
 name: Zoo
 options:
   bundleIdPrefix: works.zli
+  developmentLanguage: ja
   deploymentTarget:
     iOS: '26.0'
 settings:
@@ -49,6 +50,7 @@ targets:
       path: Info.plist
       properties:
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
+        NSPhotoLibraryAddUsageDescription: アップロードされた画像や動画を写真に保存します。
         UIBackgroundModes: [audio]
         APNSEnvironment: $(APNS_ENVIRONMENT)
         ZooPreviewKeychainGroup: $(AppIdentifierPrefix)works.zli.zoo.preview

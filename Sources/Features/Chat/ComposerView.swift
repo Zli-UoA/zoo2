@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import UniformTypeIdentifiers
 
 struct ComposerView: View {
@@ -10,6 +11,8 @@ struct ComposerView: View {
     @State private var submitting = false
     @State private var showingEmoji = false
     @State private var showingFiles = false
+    @State private var showingPhotos = false
+    @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var emojiInsertionRange: Range<String.Index>?
     @ScaledMetric(relativeTo: .body) private var candidateHeight: CGFloat = 48
 
@@ -23,8 +26,11 @@ struct ComposerView: View {
         let name = workspace.name(for: store.channel)
         return store.channel.is_dm ? "\(name) へのメッセージ" : "#\(name) へのメッセージ"
     }
-    private var canSend: Bool { !submitting && store.canSend(parentID: parentID) }
-    private var attachmentsBusy: Bool { submitting || store.sending.contains(key) || store.importingAttachments.contains(key) }
+    private var canSend: Bool { !submitting && selectedPhotos.isEmpty && store.canSend(parentID: parentID) }
+    private var attachmentsBusy: Bool {
+        submitting || !selectedPhotos.isEmpty || store.sending.contains(key) || store.importingAttachments.contains(key)
+    }
+    private var remainingAttachmentCount: Int { DraftAttachment.maximumCount - (store.draftAttachments[key]?.count ?? 0) }
     private var selectedRange: Range<String.Index>? {
         guard let selection, case .selection(let range) = selection.indices else { return nil }
         let text = draft.wrappedValue
@@ -104,6 +110,14 @@ struct ComposerView: View {
                 store.sendErrors[key] = "ファイルを選択できませんでした。\(error.localizedDescription)"
             }
         }
+        .photosPicker(isPresented: $showingPhotos, selection: $selectedPhotos,
+                      maxSelectionCount: max(1, remainingAttachmentCount), selectionBehavior: .ordered,
+                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
+        .task(id: selectedPhotos) {
+            guard !selectedPhotos.isEmpty else { return }
+            await store.importPhotos(selectedPhotos, parentID: parentID)
+            selectedPhotos = []
+        }
         .task(id: submitting) {
             if submitting {
                 await store.send(parentID: parentID)
@@ -119,6 +133,12 @@ struct ComposerView: View {
 
     private var additions: some View {
         Menu {
+            Button("写真・動画を添付", systemImage: "photo.on.rectangle") {
+                focused = false
+                showingPhotos = true
+            }
+            .disabled(attachmentsBusy || remainingAttachmentCount <= 0)
+            .accessibilityIdentifier("composer-attach-photos")
             Button("ファイルを添付", systemImage: "paperclip") {
                 focused = false
                 showingFiles = true

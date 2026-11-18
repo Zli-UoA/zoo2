@@ -26,6 +26,7 @@ final class CallStore {
     private(set) var maxParticipants = 6
     var error: String?
     var showingCall = false
+    @ObservationIgnored var onWillStart: (() -> Void)?
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var media: (any CallMedia)?
     @ObservationIgnored private var connection: Task<Void, Never>?
@@ -46,6 +47,7 @@ final class CallStore {
     @discardableResult
     func start(channel: Channel, invitationID: String? = nil) -> Task<Void, Never>? {
         guard active, self.channel == nil, channel.canPost else { return nil }
+        onWillStart?()
         let session = UUID().uuidString.lowercased()
         self.channel = channel; sessionID = session
         error = nil; showingCall = true

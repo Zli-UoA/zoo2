@@ -1,5 +1,7 @@
 import Foundation
 import Observation
+import PhotosUI
+import SwiftUI
 
 @Observable @MainActor
 final class ConversationStore {
@@ -25,6 +27,7 @@ final class ConversationStore {
     var actionError: String?
     var focusedMessageID: String?
     @ObservationIgnored var onExpiredSession: (() -> Void)?
+    @ObservationIgnored var onAccessRevoked: (() -> Void)?
     @ObservationIgnored var onRead: (() -> Void)?
     @ObservationIgnored var onReactionAdded: ((String) -> Void)?
     @ObservationIgnored var canonicalEmoji: (String) -> String = ReactionEmoji.key
@@ -89,9 +92,29 @@ final class ConversationStore {
     }
 
     func importFiles(_ urls: [URL], parentID: String?) async {
+        await importAttachments(count: urls.count, parentID: parentID) {
+            try await DraftAttachment.importing(urls)
+        }
+    }
+
+    func importPhotos(_ items: [PhotosPickerItem], parentID: String?) async {
+        await importAttachments(count: items.count, parentID: parentID) {
+            var files: [DraftAttachment] = []
+            for item in items {
+                try Task.checkCancellation()
+                guard let file = try await item.loadTransferable(type: DraftAttachment.self) else {
+                    throw AttachmentImportError.photoUnavailable
+                }
+                files.append(file)
+            }
+            return files
+        }
+    }
+
+    func importAttachments(count: Int, parentID: String?, load: () async throws -> [DraftAttachment]) async {
         let key = draftKey(parentID)
-        guard canPost, !sending.contains(key), !importingAttachments.contains(key), !urls.isEmpty else { return }
-        guard (draftAttachments[key]?.count ?? 0) + urls.count <= DraftAttachment.maximumCount else {
+        guard canPost, !sending.contains(key), !importingAttachments.contains(key), count > 0 else { return }
+        guard (draftAttachments[key]?.count ?? 0) + count <= DraftAttachment.maximumCount else {
             sendErrors[key] = AttachmentImportError.tooMany.localizedDescription
             return
         }
@@ -100,7 +123,7 @@ final class ConversationStore {
         sendErrors[key] = nil
         defer { importingAttachments.remove(key) }
         do {
-            let files = try await DraftAttachment.importing(urls)
+            let files = try await load()
             try Task.checkCancellation()
             guard canPost, epoch == accessGeneration else { return }
             draftAttachments[key, default: []].append(contentsOf: files)
@@ -134,7 +157,10 @@ final class ConversationStore {
             clearDraftAttachments()
         }
         self.channel = channel
-        if channel.encrypted == true { messages = []; remoteMessages = []; localWrites = [:] }
+        if channel.encrypted == true {
+            onAccessRevoked?()
+            messages = []; remoteMessages = []; localWrites = [:]
+        }
     }
 
     func run() async {
@@ -185,6 +211,7 @@ final class ConversationStore {
     }
 
     private func revokeAccess() {
+        onAccessRevoked?()
         accessGeneration = UUID()
         clearAttachments()
         clearDraftAttachments()
@@ -378,6 +405,7 @@ final class ConversationStore {
 
     func shutdown() {
         active = false
+        onAccessRevoked?()
         clearAttachments()
         clearDraftAttachments()
         clearReactions()

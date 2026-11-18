@@ -13,11 +13,14 @@ struct ImagePreviewView: UIViewRepresentable {
     }
 }
 
-final class AttachmentImageScrollView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+final class AttachmentImageScrollView: UIScrollView, UIScrollViewDelegate {
     let imageView: UIImageView
     var onDismiss: () -> Void
     private var viewportSize: CGSize = .zero
-    private let dismissPan = UIPanGestureRecognizer()
+    private lazy var dismissGesture = AttachmentPreviewDismissGesture(view: self, canDismiss: { [weak self] in
+        guard let self else { return false }
+        return zoomScale <= minimumZoomScale
+    }, onDismiss: { [weak self] in self?.onDismiss() })
 
     init(image: UIImage, onDismiss: @escaping () -> Void) {
         imageView = UIImageView(image: image)
@@ -35,16 +38,13 @@ final class AttachmentImageScrollView: UIScrollView, UIScrollViewDelegate, UIGes
         imageView.accessibilityIdentifier = "attachment-preview-image"
         imageView.isAccessibilityElement = true
         imageView.accessibilityLabel = "添付画像"
-        imageView.accessibilityHint = "ピンチで拡大縮小、ダブルタップで拡大または全体表示。全体表示中は下スワイプで閉じます。"
+        imageView.accessibilityHint = "ピンチで拡大縮小、ダブルタップで拡大または全体表示。全体表示中に下へ強くスワイプすると閉じます。"
         addSubview(imageView)
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleZoom(_:)))
         doubleTap.numberOfTapsRequired = 2
         addGestureRecognizer(doubleTap)
-        dismissPan.addTarget(self, action: #selector(dismissIfNeeded(_:)))
-        dismissPan.maximumNumberOfTouches = 1
-        dismissPan.delegate = self
-        addGestureRecognizer(dismissPan)
+        _ = dismissGesture
     }
 
     required init?(coder: NSCoder) { nil }
@@ -86,14 +86,4 @@ final class AttachmentImageScrollView: UIScrollView, UIScrollViewDelegate, UIGes
         }
     }
 
-    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        guard gestureRecognizer === dismissPan else { return super.gestureRecognizerShouldBegin(gestureRecognizer) }
-        let velocity = dismissPan.velocity(in: self)
-        return zoomScale <= minimumZoomScale && velocity.y > abs(velocity.x)
-    }
-
-    @objc private func dismissIfNeeded(_ gesture: UIPanGestureRecognizer) {
-        guard gesture.state == .ended, zoomScale <= minimumZoomScale else { return }
-        if gesture.translation(in: self).y > 100 || gesture.velocity(in: self).y > 800 { onDismiss() }
-    }
 }
