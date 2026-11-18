@@ -1,6 +1,9 @@
+mod preview;
+
 use crate::{
     error::AppError,
     models::{ApnsSubscription, Notification},
+    push::NotificationPreview,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::Serialize;
@@ -155,11 +158,31 @@ fn endpoint(environment: &str, token: &str) -> anyhow::Result<String> {
     Ok(format!("https://{host}/3/device/{token}"))
 }
 
-fn payload(notification: &Notification) -> Value {
-    // ロック画面やログアウト直後の端末に、送信者や本文を表示しない。
+fn fallback_payload(notification: &Notification) -> Value {
+    // 未対応の端末や復号できない端末にも汎用通知で遷移先を届ける。
     json!({"aps": {"alert": {"title": "Zoo", "body": "新しい通知があります"}, "sound": "default", "thread-id": notification.channel_id},
            "notification_id": notification.id, "channel_id": notification.channel_id,
            "message_id": notification.message_id, "user_id": notification.user_id})
+}
+
+fn payload(
+    notification: &Notification,
+    preview: &NotificationPreview,
+    revocation_hash: &str,
+) -> Value {
+    let aad = format!(
+        "zoo-preview-v1|{}|{}|{}|{}",
+        notification.user_id,
+        notification.id,
+        notification.channel_id,
+        notification.message_id.as_deref().unwrap_or_default()
+    );
+    preview::attach(
+        fallback_payload(notification),
+        preview,
+        revocation_hash,
+        &aad,
+    )
 }
 
 fn delivery_configs() -> anyhow::Result<Vec<(&'static str, ApnsConfig)>> {
@@ -219,7 +242,6 @@ async fn deliver(
     )
     .exec(db)
     .await?;
-    let body = payload(notification);
     for subscription in subscriptions {
         let Some((_, config)) = configs
             .iter()
@@ -228,13 +250,7 @@ async fn deliver(
             continue;
         };
         let result = config
-            .send(
-                client,
-                &subscription,
-                &body,
-                &notification.id,
-                can_deliver(db, &subscription, Some(notification)),
-            )
+            .send(client, db, &subscription, PushEvent::Channel(notification))
             .await;
         match result {
             Ok(DeliveryOutcome::Invalid(invalid_at)) => {
@@ -249,21 +265,44 @@ async fn deliver(
     Ok(())
 }
 
-async fn can_deliver(
+#[derive(Clone, Copy)]
+enum PushEvent<'a> {
+    Channel(&'a Notification),
+    Test(&'a str),
+}
+
+impl PushEvent<'_> {
+    fn id(&self) -> &str {
+        match self {
+            Self::Channel(n) => &n.id,
+            Self::Test(id) => id,
+        }
+    }
+}
+
+async fn authorized_payload(
     db: &mut dyn toasty::db::Executor,
     subscription: &ApnsSubscription,
-    notification: Option<&Notification>,
-) -> anyhow::Result<bool> {
-    // 配信を待つ間の再登録・退室・通知休止・メッセージ削除を同じ照会で反映する。
+    event: PushEvent<'_>,
+) -> anyhow::Result<Option<Value>> {
+    let notification = match event {
+        PushEvent::Channel(n) => Some(n),
+        PushEvent::Test(_) => None,
+    };
+    // 配信先の権限と、編集・暗号化切り替え後の本文を端末ごとに同じスナップショットで決定する。
     let rows = toasty::sql::query(
-        "SELECT 1::text FROM apns_subscriptions s JOIN users u ON u.id=s.user_id
+        "SELECT COALESCE(NULLIF(actor.display_name,''),actor.user_name), c.channel_name, c.is_dm,
+             CASE WHEN NOT c.encrypted THEN left(m.content,240) END
+         FROM apns_subscriptions s JOIN users u ON u.id=s.user_id
+         LEFT JOIN channels c ON c.id=$4
+         LEFT JOIN messages m ON m.id=$5 AND m.channel_id=c.id AND m.deleted_at IS NULL
+         LEFT JOIN users actor ON actor.id=$7
          WHERE s.id=$1 AND s.revocation_hash=$2 AND s.user_id=$3 AND NOT u.is_deactivated
-           AND ($4::text IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$4 AND c.deleted_at IS NULL
+           AND ($4::text IS NULL OR (c.id IS NOT NULL AND c.deleted_at IS NULL AND actor.id IS NOT NULL
            AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
-             SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
+               SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
            AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=u.id AND dnd_until>now())
-           AND (EXISTS(SELECT 1 FROM messages WHERE id=$5 AND channel_id=c.id AND deleted_at IS NULL)
-                OR ($5::text IS NULL AND $6='missed_call'))))",
+           AND (m.id IS NOT NULL OR ($5::text IS NULL AND $6='missed_call'))))",
     )
     .bind(subscription.id.as_str())
     .bind(subscription.revocation_hash.as_str())
@@ -271,8 +310,39 @@ async fn can_deliver(
     .bind_typed(notification.map(|n| n.channel_id.as_str()), toasty::schema::db::Type::Text)
     .bind_typed(notification.and_then(|n| n.message_id.as_deref()), toasty::schema::db::Type::Text)
     .bind(notification.map_or("", |n| n.notification_type.as_str()))
+    .bind_typed(notification.map(|n| n.actor_id.as_str()), toasty::schema::db::Type::Text)
     .exec(db).await?;
-    Ok(!rows.is_empty())
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let PushEvent::Channel(notification) = event else {
+        return Ok(Some(test_payload(
+            &subscription.user_id,
+            event.id(),
+            &subscription.revocation_hash,
+        )));
+    };
+    use toasty::stmt::Value as Column;
+    let [
+        Column::String(name),
+        Column::String(channel),
+        Column::Bool(is_dm),
+        content,
+    ] = row.as_record_unwrap().fields.as_slice()
+    else {
+        anyhow::bail!("通知に必要な送信者またはチャンネルを取得できませんでした");
+    };
+    let content = match content {
+        Column::String(text) => Some(text.as_str()),
+        Column::Null => None,
+        _ => anyhow::bail!("通知のメッセージを取得できませんでした"),
+    };
+    let preview = NotificationPreview::new(notification, name, channel, *is_dm, content);
+    Ok(Some(payload(
+        notification,
+        &preview,
+        &subscription.revocation_hash,
+    )))
 }
 
 // TRUNCATE と同じ順序で履歴表、容量行をロックし、相互に解放を待つのを防ぐ。
@@ -341,13 +411,7 @@ pub(crate) async fn test_device(
         .ok_or_else(|| AppError::ServiceUnavailable("端末の通知環境が設定されていません".into()))?;
     let client = client()?;
     let result = config
-        .send(
-            &client,
-            subscription,
-            &test_payload(&subscription.user_id, test_id),
-            test_id,
-            can_deliver(db, subscription, None),
-        )
+        .send(&client, db, subscription, PushEvent::Test(test_id))
         .await?;
     match result {
         DeliveryOutcome::Accepted => Ok(()),
@@ -363,9 +427,20 @@ pub(crate) async fn test_device(
     }
 }
 
-fn test_payload(user: &str, test_id: &str) -> Value {
-    json!({"aps":{"alert":{"title":"Zoo","body":"このiPhoneでZooの通知を受信できました。"},"sound":"default"},
-           "type":"push_test","user_id":user, "test_id":test_id})
+fn test_payload(user: &str, test_id: &str, revocation_hash: &str) -> Value {
+    let body = "このiPhoneでZooの通知を受信できました。";
+    let fallback = json!({"aps":{"alert":{"title":"Zoo","body":body},"sound":"default"},
+                          "type":"push_test","user_id":user, "test_id":test_id});
+    preview::attach(
+        fallback,
+        &NotificationPreview {
+            title: "Zoo · #通知テスト".into(),
+            body: body.into(),
+            notification_type: "push_test".into(),
+        },
+        revocation_hash,
+        &format!("zoo-preview-v1|{user}|{test_id}||"),
+    )
 }
 
 enum DeliveryOutcome {
@@ -378,10 +453,9 @@ impl ApnsConfig {
     async fn send(
         &self,
         client: &reqwest::Client,
+        db: &mut toasty::Db,
         sub: &ApnsSubscription,
-        body: &Value,
-        collapse_id: &str,
-        can_send: impl Future<Output = anyhow::Result<bool>>,
+        event: PushEvent<'_>,
     ) -> Result<DeliveryOutcome, AppError> {
         let url = endpoint(&sub.environment, &sub.device_token)?;
         let now = SystemTime::now()
@@ -395,20 +469,20 @@ impl ApnsConfig {
             .header("apns-push-type", "alert")
             .header("apns-priority", "10")
             .header("apns-expiration", (now.as_secs() + 300).to_string())
-            .header("apns-collapse-id", collapse_id)
-            .json(body);
-        send_if_allowed(request, can_send).await
+            .header("apns-collapse-id", event.id());
+        send_if_allowed(request, authorized_payload(db, sub, event)).await
     }
 }
 
 async fn send_if_allowed(
     request: reqwest::RequestBuilder,
-    can_send: impl Future<Output = anyhow::Result<bool>>,
+    authorized: impl Future<Output = anyhow::Result<Option<Value>>>,
 ) -> Result<DeliveryOutcome, AppError> {
-    if !can_send.await? {
+    let Some(body) = authorized.await? else {
         return Ok(DeliveryOutcome::Skipped);
-    }
+    };
     let response = request
+        .json(&body)
         .send()
         .await
         .map_err(|_| AppError::BadGateway("Appleに接続できませんでした".into()))?;
@@ -448,6 +522,20 @@ fn invalidation_time(body: &Value) -> anyhow::Result<jiff::civil::DateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn can_deliver(
+        db: &mut dyn toasty::db::Executor,
+        sub: &ApnsSubscription,
+        notification: Option<&Notification>,
+    ) -> anyhow::Result<bool> {
+        Ok(authorized_payload(
+            db,
+            sub,
+            notification.map_or(PushEvent::Test("テスト"), PushEvent::Channel),
+        )
+        .await?
+        .is_some())
+    }
 
     #[tokio::test]
     #[ignore = "マイグレーションを適用したPostgreSQLを使用"]
@@ -505,6 +593,70 @@ mod tests {
         .exec(&mut tx)
         .await?;
         assert!(can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        let other_device = ApnsSubscription::create()
+            .id(digest(&channel))
+            .user_id(user.as_str())
+            .device_token(digest(&message))
+            .environment("production")
+            .revocation_hash(digest(&other))
+            .created_at(crate::models::now_utc_millis())
+            .exec(&mut tx)
+            .await?;
+        let preview = |envelope: Value, n: &Notification, sub: &ApnsSubscription| {
+            let aad = format!(
+                "zoo-preview-v1|{}|{}|{}|{}",
+                n.user_id,
+                n.id,
+                n.channel_id,
+                n.message_id.as_deref().unwrap_or_default()
+            );
+            preview::tests::open_for_subscription(&envelope, &aad, &sub.revocation_hash).unwrap()
+        };
+        let first = authorized_payload(&mut tx, &sub, PushEvent::Channel(&notification))
+            .await?
+            .unwrap();
+        assert_eq!(
+            preview(first, &notification, &sub),
+            json!({"title":"通知テスト","body":"通知テスト","notificationType":"dm"})
+        );
+        toasty::sql::statement("SAVEPOINT before_edit")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("UPDATE messages SET content='編集後' WHERE id=$1")
+            .bind(message.as_str())
+            .exec(&mut tx)
+            .await?;
+        let edited = authorized_payload(&mut tx, &other_device, PushEvent::Channel(&notification))
+            .await?
+            .unwrap();
+        assert_eq!(
+            preview(edited, &notification, &other_device)["body"],
+            "編集後"
+        );
+        toasty::sql::statement("UPDATE channels SET encrypted=true WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        let redacted =
+            authorized_payload(&mut tx, &other_device, PushEvent::Channel(&notification))
+                .await?
+                .unwrap();
+        assert_eq!(
+            preview(redacted, &notification, &other_device)["body"],
+            crate::push::ENCRYPTED_MESSAGE_BODY
+        );
+        let missed = Notification {
+            message_id: None,
+            notification_type: "missed_call".into(),
+            ..notification.clone()
+        };
+        let call = authorized_payload(&mut tx, &sub, PushEvent::Channel(&missed))
+            .await?
+            .unwrap();
+        assert_eq!(preview(call, &missed, &sub)["body"], "不在着信");
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT before_edit")
+            .exec(&mut tx)
+            .await?;
         toasty::sql::statement("SAVEPOINT original_device")
             .exec(&mut tx)
             .await?;
@@ -680,12 +832,12 @@ mod tests {
         .await;
         assert!(matches!(failed, Err(AppError::Internal(_))));
         assert!(matches!(
-            send_if_allowed(request(), async { Ok(false) }).await,
+            send_if_allowed(request(), async { Ok(None) }).await,
             Ok(DeliveryOutcome::Skipped)
         ));
         assert!(server.received_requests().await.unwrap().is_empty());
         assert!(matches!(
-            send_if_allowed(request(), async { Ok(true) }).await,
+            send_if_allowed(request(), async { Ok(Some(json!({}))) }).await,
             Err(AppError::BadGateway(_))
         ));
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
@@ -693,7 +845,7 @@ mod tests {
 
     #[tokio::test]
     async fn self_test_is_generic_and_requires_apns_acceptance() {
-        let payload = test_payload("自分のID", "今回の通知ID");
+        let payload = test_payload("自分のID", "今回の通知ID", &digest("テスト端末"));
         assert_eq!(payload["test_id"], "今回の通知ID");
         assert_eq!(payload["type"], "push_test");
         assert_eq!(payload["user_id"], "自分のID");

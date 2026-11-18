@@ -191,38 +191,69 @@ impl NotificationPayload {
 /// 暗号化チャンネルの Web Push の本文。
 pub const ENCRYPTED_MESSAGE_BODY: &str = "新しいメッセージ";
 
+#[derive(Serialize)]
+pub(crate) struct NotificationPreview {
+    pub title: String,
+    pub body: String,
+    #[serde(rename = "notificationType")]
+    pub notification_type: String,
+}
+
+impl NotificationPreview {
+    pub(crate) fn new(
+        notification: &Notification,
+        name: &str,
+        channel_name: &str,
+        is_dm: bool,
+        visible_content: Option<&str>,
+    ) -> Self {
+        let name: String = name.chars().take(60).collect();
+        let title = if is_dm {
+            name
+        } else {
+            format!(
+                "{name} · #{}",
+                channel_name.chars().take(60).collect::<String>()
+            )
+        };
+        let body = if notification.message_id.is_none() {
+            "不在着信"
+        } else {
+            visible_content.unwrap_or(ENCRYPTED_MESSAGE_BODY)
+        };
+        Self {
+            title,
+            body: body.chars().take(240).collect(),
+            notification_type: notification.notification_type.clone(),
+        }
+    }
+}
+
 fn notification_payload(
     notification: &Notification,
     actor: &User,
     channel: &Channel,
-    message: &Message,
+    message: Option<&Message>,
 ) -> NotificationPayload {
-    let name = if actor.display_name.is_empty() {
-        &actor.user_name
-    } else {
-        &actor.display_name
+    let preview = NotificationPreview::new(
+        notification,
+        display_name(actor),
+        &channel.channel_name,
+        channel.is_dm,
+        message
+            .filter(|_| !channel.encrypted)
+            .map(|message| message.content.as_str()),
+    );
+    let url = match message {
+        Some(message) => format!("/channels/{}?message={}", channel.id, message.id),
+        None => format!("/channels/{}", channel.id),
     };
-    let channel_name: String = channel.channel_name.chars().take(60).collect();
     NotificationPayload {
-        title: if channel.is_dm {
-            name.chars().take(60).collect()
-        } else {
-            format!(
-                "{} · #{}",
-                name.chars().take(60).collect::<String>(),
-                channel_name
-            )
-        },
-        // 暗号化チャンネルの本文はサーバーで読めないので、「新しいメッセージ」を送り、暗号文を
-        // `e2ee` に付ける (#358、#365)。Service Worker が復号できたら本文に置き換える。
-        body: if channel.encrypted {
-            ENCRYPTED_MESSAGE_BODY.to_string()
-        } else {
-            message.content.chars().take(240).collect()
-        },
-        url: format!("/channels/{}?message={}", channel.id, message.id),
+        title: preview.title,
+        body: preview.body,
+        url,
         tag: format!("zoo-{}", notification.id),
-        notification_type: notification.notification_type.clone(),
+        notification_type: preview.notification_type,
         e2ee: None,
         invite_id: None,
     }
@@ -288,7 +319,7 @@ async fn build_payload(
     }
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let mut payload = notification_payload(notification, &actor, &channel, &message);
+    let mut payload = notification_payload(notification, &actor, &channel, Some(&message));
     if channel.encrypted {
         payload.e2ee = encrypted_push(db, notification, &message).await?;
     }
@@ -524,13 +555,12 @@ async fn push_to_user(
     Ok(())
 }
 
-fn display_name(user: &User) -> String {
-    let name = if user.display_name.is_empty() {
+fn display_name(user: &User) -> &str {
+    if user.display_name.is_empty() {
         &user.user_name
     } else {
         &user.display_name
-    };
-    name.chars().take(60).collect()
+    }
 }
 
 /// 不在着信の Web Push の本文。
@@ -540,23 +570,7 @@ async fn missed_call_payload(
 ) -> anyhow::Result<NotificationPayload> {
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let name = display_name(&actor);
-    Ok(NotificationPayload {
-        title: if channel.is_dm {
-            name
-        } else {
-            format!(
-                "{name} · #{}",
-                channel.channel_name.chars().take(60).collect::<String>()
-            )
-        },
-        body: "不在着信".into(),
-        url: format!("/channels/{}", channel.id),
-        tag: format!("zoo-{}", notification.id),
-        notification_type: "missed_call".into(),
-        e2ee: None,
-        invite_id: None,
-    })
+    Ok(notification_payload(notification, &actor, &channel, None))
 }
 
 /// 通話の招待の、Web Push に必要な値。
@@ -622,7 +636,7 @@ async fn deliver_call_invites(
             } else {
                 let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
                 let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
-                let name = display_name(&actor);
+                let name: String = display_name(&actor).chars().take(60).collect();
                 NotificationPayload {
                     title: if channel.is_dm {
                         name
@@ -944,7 +958,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             "message_id":"message", "notification_type":"mention", "is_read":false, "created_at":now
         }))
         .unwrap();
-        let payload = notification_payload(&notification, &actor, &channel, &message);
+        let payload = notification_payload(&notification, &actor, &channel, Some(&message));
         assert_eq!(payload.title, "Alice · #general");
         assert_eq!(
             payload.body,
@@ -959,12 +973,12 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         assert!(keys.encrypt(&payload).unwrap().len() <= 4096);
         channel.is_dm = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).title,
+            notification_payload(&notification, &actor, &channel, Some(&message)).title,
             "Alice"
         );
         channel.encrypted = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).body,
+            notification_payload(&notification, &actor, &channel, Some(&message)).body,
             ENCRYPTED_MESSAGE_BODY
         );
     }
