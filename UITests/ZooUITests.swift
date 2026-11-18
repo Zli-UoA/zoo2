@@ -11,12 +11,14 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false) -> XCUIApplication {
+    private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
+                                 threadDirectory: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
         if liveMessage { app.launchArguments.append("--uitesting-live-message") }
         if longHistory { app.launchArguments.append("--uitesting-long-history") }
+        if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()
         XCTAssertTrue(app.buttons["channel-11111111-1111-4111-8111-111111111111"].waitForExistence(timeout: 10))
         return app
@@ -43,6 +45,19 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         message.press(forDuration: 0.8)
         XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func selectTab(_ title: String, in app: XCUIApplication, dismissingKeyboard: Bool = false) {
+        if dismissingKeyboard {
+            let dismiss = app.buttons["dismiss-composer-keyboard"]
+            XCTAssertTrue(dismiss.wait(for: \.isHittable, toEqual: true, timeout: 5))
+            dismiss.tap()
+        }
+        let tab = app.tabBars.buttons[title]
+        XCTAssertTrue(tab.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        tab.tap()
+        XCTAssertTrue(tab.wait(for: \.isSelected, toEqual: true, timeout: 5))
     }
 
     @MainActor
@@ -256,12 +271,102 @@ final class ZooUITests: XCTestCase {
         field.typeText("新しい会話")
         app.buttons["create-channel"].tap()
         XCTAssertTrue(app.navigationBars["新しい会話"].waitForExistence(timeout: 5))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        selectTab("プロフィール", in: app)
         app.buttons["workspace-settings"].tap()
         app.buttons["logout"].tap()
         let confirmation = app.sheets.buttons["ログアウト"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
         confirmation.tap()
         XCTAssertTrue(app.buttons["login"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testTabsPreserveThreadAndDirectMessageDrafts() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        openActions(for: app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"], in: app)
+        app.buttons["message-action-reply"].tap()
+        XCTAssertTrue(app.navigationBars["スレッド"].waitForExistence(timeout: 5))
+        app.typeText("スレッドの下書き")
+
+        selectTab("DM", in: app, dismissingKeyboard: true)
+        app.buttons["new-dm"].tap()
+        app.buttons["dm-recipient-44444444-4444-4444-8444-444444444444"].tap()
+        app.buttons["start-dm"].tap()
+        XCTAssertTrue(app.navigationBars["さくら"].waitForExistence(timeout: 5))
+        let dm = composer(app)
+        dm.tap()
+        dm.typeText("DMの下書き")
+
+        selectTab("チャンネル", in: app, dismissingKeyboard: true)
+        XCTAssertTrue(app.navigationBars["スレッド"].waitForExistence(timeout: 5))
+        XCTAssertEqual(composer(app, reply: true).value as? String, "スレッドの下書き")
+        selectTab("DM", in: app)
+        XCTAssertTrue(app.navigationBars["さくら"].waitForExistence(timeout: 5))
+        XCTAssertEqual(composer(app).value as? String, "DMの下書き")
+    }
+
+    @MainActor
+    func testJoinedThreadOpensFromChannelDirectory() {
+        let app = launchWorkspace(threadDirectory: true)
+        let entry = app.buttons["channel-thread-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
+        entry.tap()
+        let thread = app.navigationBars["スレッド"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["参加中のスレッドです"].waitForExistence(timeout: 5))
+        thread.buttons.element(boundBy: 0).tap()
+        let channel = app.navigationBars["一般"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 5))
+        channel.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["チャンネル"].waitForExistence(timeout: 5))
+        XCTAssertTrue(entry.exists)
+    }
+
+    @MainActor
+    func testJoinChannelAndOpenNotification() {
+        let app = launchWorkspace()
+        let joined = app.buttons["channel-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+        XCTAssertFalse(joined.exists)
+        app.buttons["new-conversation"].tap()
+        app.buttons["チャンネルを探す"].tap()
+        app.buttons["browse-channel-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"].tap()
+        let bar = app.navigationBars["雑談"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        bar.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(joined.waitForExistence(timeout: 5))
+
+        selectTab("通知", in: app)
+        let mention = app.buttons["inbox-open-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(mention.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["承認"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["inbox-read-all"].waitForNonExistence(timeout: 5))
+        mention.tap()
+        XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"].exists)
+        XCTAssertTrue(app.tabBars.buttons["チャンネル"].isSelected)
+    }
+
+    @MainActor
+    func testEditPublicProfile() {
+        let app = launchWorkspace()
+        selectTab("プロフィール", in: app)
+        let edit = app.buttons["profile-edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        edit.tap()
+        let name = app.textFields["profile-name"]
+        name.tap()
+        name.typeText("動物園の花子")
+        let textView = app.textViews["profile-summary"]
+        let summary = textView.exists ? textView : app.textFields["profile-summary"]
+        summary.tap()
+        summary.typeText("よろしくお願いします")
+        app.buttons["profile-save"].tap()
+        XCTAssertTrue(app.staticTexts["よろしくお願いします"].waitForExistence(timeout: 5))
+        selectTab("通知", in: app)
+        selectTab("プロフィール", in: app)
+        edit.tap()
+        XCTAssertEqual(name.value as? String, "動物園の花子")
+        XCTAssertEqual(summary.value as? String, "よろしくお願いします")
     }
 }

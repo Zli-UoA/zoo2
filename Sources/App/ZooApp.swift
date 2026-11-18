@@ -6,10 +6,12 @@ struct ZooApp: App {
     @UIApplicationDelegateAdaptor(NotificationDelegate.self) private var delegate
     @State private var session = AppSession.configured()
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage(AppearancePreference.key) private var appearance = AppearancePreference.system
 
     var body: some Scene {
         WindowGroup {
             RootView(session: session)
+                .preferredColorScheme(appearance.colorScheme)
                 .environment(\.locale, Locale(identifier: "ja_JP"))
                 .tint(Color(red: 0.15, green: 0.39, blue: 0.35))
                 .task {

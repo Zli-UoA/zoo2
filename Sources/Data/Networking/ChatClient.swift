@@ -1,9 +1,12 @@
 import Foundation
 
 @MainActor
-protocol ChatClient: Sendable {
-    var serverURL: String { get }
+protocol ChatClient: InboxClient {
+    var accountProfileURL: URL? { get }
+    func publicProfile() async throws -> PublicProfile
+    func updatePublicProfile(name: String, summary: String) async throws -> PublicProfile
     func channels() async throws -> [Channel]
+    func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
@@ -19,7 +22,9 @@ protocol ChatClient: Sendable {
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel
-    func directMessage(userID: String) async throws -> Channel
+    func directMessage(userIDs: [String]) async throws -> Channel
+    func dmMemberships() async throws -> [ChannelMembership]
+    func joinChannel(id: String) async throws
 }
 
 @MainActor
@@ -92,8 +97,16 @@ struct NativeChatClient: ChatClient {
                                                   "description": .string(description), "is_private": .bool(isPrivate)])
     }
 
-    func directMessage(userID: String) async throws -> Channel {
-        try await api.write("api/dms", body: ["target_user_ids": .array([.string(try segment(userID))])])
+    func directMessage(userIDs: [String]) async throws -> Channel {
+        try await api.write("api/dms", body: ["target_user_ids": .array(try userIDs.map { .string(try segment($0)) })])
+    }
+
+    func dmMemberships() async throws -> [ChannelMembership] {
+        try await ShapeStream(api: api).snapshot("api/shapes/channel_users", as: ChannelMembership.self)
+    }
+
+    func joinChannel(id: String) async throws {
+        _ = try await api.data("api/channels/\(try segment(id))/join", method: "POST")
     }
 
     private func segment(_ id: String) throws -> String {

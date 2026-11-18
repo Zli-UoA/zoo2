@@ -4,112 +4,209 @@ struct WorkspaceView: View {
     @Bindable var workspace: WorkspaceStore
     let session: AppSession
     @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        TabView(selection: $workspace.selectedTab) {
+            Tab("チャンネル", systemImage: "number", value: WorkspaceTab.channels) {
+                chatStack(path: $workspace.channelPath, directMessages: false)
+            }
+            Tab("DM", systemImage: "bubble.left.and.bubble.right.fill", value: WorkspaceTab.directMessages) {
+                chatStack(path: $workspace.dmPath, directMessages: true)
+            }
+            Tab("通知", systemImage: "bell.fill", value: WorkspaceTab.notifications) {
+                NavigationStack {
+                    InboxView(store: workspace.inbox, workspace: workspace,
+                              isActive: workspace.selectedTab == .notifications && scenePhase == .active,
+                              openChat: workspace.openInboxMessage)
+                }
+            }
+            .badge(workspace.inbox.unreadCount)
+            Tab("プロフィール", systemImage: "person.crop.circle.fill", value: WorkspaceTab.profile) {
+                NavigationStack { ProfileView(workspace: workspace, session: session) }
+            }
+        }
+        .modifier(ConversationSync(workspace: workspace))
+        .task(id: scenePhase) {
+            if scenePhase == .active { await workspace.run() }
+        }
+        .task(id: scenePhase) {
+            if scenePhase == .active { await workspace.inbox.run() }
+        }
+    }
+
+    private func chatStack(path: Binding<[ChatRoute]>, directMessages: Bool) -> some View {
+        NavigationStack(path: path) {
+            ConversationDirectory(workspace: workspace, directMessages: directMessages)
+                .navigationDestination(for: ChatRoute.self) { route in
+                    if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
+                        ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
+                    } else {
+                        ContentUnavailableView("会話を表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+                    }
+                }
+        }
+    }
+}
+
+private struct ConversationDirectory: View {
+    let workspace: WorkspaceStore
+    let directMessages: Bool
+    @Environment(\.scenePhase) private var scenePhase
     @State private var search = ""
     @State private var unreadOnly = false
-    @State private var showingSettings = false
-    @State private var showingCreate = false
-    @State private var showingPeople = false
+    @State private var creating = false
+    @State private var browsing = false
+
+    private var showsThreadIndex: Bool {
+        !directMessages && workspace.selectedTab == .channels && workspace.channelPath.isEmpty && scenePhase == .active
+    }
 
     private var visible: [Channel] {
         workspace.channels.filter {
-            $0.archive_at == nil && (!unreadOnly || workspace.unread.contains($0.id)) &&
+            $0.is_dm == directMessages && $0.archive_at == nil && workspace.joinedChannelIDs.contains($0.id) &&
+            (!unreadOnly || workspace.unread.contains($0.id)) &&
             (search.isEmpty || workspace.name(for: $0).localizedStandardContains(search) ||
              ($0.description ?? "").localizedStandardContains(search))
         }
     }
 
     var body: some View {
-        NavigationStack(path: $workspace.path) {
-            List {
-                Section {
-                    HStack(spacing: 12) {
-                        AvatarView(name: workspace.user.name, url: workspace.people[workspace.user.id]?.avatarURL)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("いつもの会話を、ここから。 ").font(.headline)
-                            Text(workspace.user.name).font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }.padding(.vertical, 8)
+        List {
+            if let error = workspace.error {
+                Label(error, systemImage: "wifi.exclamationmark")
+                Button("再読み込み") { Task { await workspace.refresh() } }
+            }
+            let channels = visible
+            if !workspace.hasLoaded && workspace.loading {
+                ProgressView("読み込み中…")
+            } else if channels.isEmpty {
+                if !search.isEmpty { ContentUnavailableView.search(text: search) }
+                else if unreadOnly { ContentUnavailableView("未読の会話はありません", systemImage: "checkmark.circle") }
+                else if directMessages {
+                    ContentUnavailableView {
+                        Label("DMはまだありません", systemImage: "bubble.left.and.bubble.right")
+                    } actions: { Button("DMを始める") { creating = true } }
+                } else {
+                    ContentUnavailableView {
+                        Label("参加中のチャンネルはありません", systemImage: "number")
+                    } actions: { Button("チャンネルを探す") { browsing = true } }
                 }
-                if let error = workspace.error {
-                    Section {
-                        Label(error, systemImage: "wifi.exclamationmark")
-                            .font(.callout).foregroundStyle(.secondary)
-                        Button("再読み込み") { Task { await workspace.refresh() } }
+            }
+            ForEach(channels) { channel in
+                NavigationLink(value: ChatRoute.channel(channel.id)) {
+                    HStack(spacing: 12) {
+                        if let peer = workspace.directMessagePeer(for: channel) {
+                            AvatarView(name: peer.name, url: peer.avatarURL)
+                        } else {
+                            Image(systemName: channel.symbol).font(.title3).foregroundStyle(.tint)
+                                .frame(width: 32, height: 38)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(workspace.name(for: channel))
+                                .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
+                            if let description = channel.description, !description.isEmpty {
+                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 4)
+                        if workspace.unread.contains(channel.id) {
+                            Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
+                        }
+                    }.padding(.vertical, 3)
+                }
+                .accessibilityIdentifier("channel-\(channel.id)")
+                if !directMessages, channel.encrypted != true {
+                    ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
+                        workspace.openListedThread(parentID, in: channel)
                     }
                 }
-                if workspace.loading && !workspace.hasLoaded {
-                    ProgressView("チャンネルを読み込んでいます…")
-                } else if visible.isEmpty {
-                    ContentUnavailableView(search.isEmpty ? "チャンネルがありません" : "見つかりませんでした",
-                                           systemImage: search.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass",
-                                           description: Text(unreadOnly ? "未読の会話はありません。" : "検索条件を変えるか、新しい会話を始めてください。"))
-                }
-                channelSection("チャンネル", channels: visible.filter { !$0.is_dm })
-                channelSection("ダイレクトメッセージ", channels: visible.filter(\.is_dm))
             }
-            .navigationTitle("Zoo")
-            .searchable(text: $search, prompt: "チャンネルを検索")
-            .refreshable { await workspace.refresh() }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("設定", systemImage: "person.crop.circle") { showingSettings = true }
-                        .accessibilityIdentifier("workspace-settings")
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button("未読のみ", systemImage: unreadOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") {
-                        unreadOnly.toggle()
-                    }.accessibilityValue(unreadOnly ? "有効" : "無効")
-                    Menu("会話を始める", systemImage: "square.and.pencil") {
-                        Button("チャンネルを作成", systemImage: "number") { showingCreate = true }
-                        Button("ダイレクトメッセージ", systemImage: "person.2") { showingPeople = true }
+            if !directMessages { ChannelThreadPagination(store: workspace.threads) }
+        }
+        .navigationTitle(directMessages ? "DM" : "チャンネル")
+        .searchable(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索")
+        .refreshable {
+            await workspace.refresh()
+            if showsThreadIndex { await workspace.threads.refresh() }
+        }
+        .task(id: showsThreadIndex) { if showsThreadIndex { await workspace.threads.run() } }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("未読のみ", systemImage: unreadOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") {
+                    unreadOnly.toggle()
+                }.accessibilityValue(unreadOnly ? "有効" : "無効")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if directMessages {
+                    Button("新しいDM", systemImage: "square.and.pencil") { creating = true }
+                        .accessibilityIdentifier("new-dm")
+                } else {
+                    Menu("チャンネルの操作", systemImage: "plus") {
+                        Button("チャンネルを探す", systemImage: "magnifyingglass") { browsing = true }
+                        Button("チャンネルを作成", systemImage: "number") { creating = true }
                     }.accessibilityIdentifier("new-conversation")
                 }
             }
-            .navigationDestination(for: ChatRoute.self) { route in
-                if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
-                    ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
-                } else {
-                    ContentUnavailableView("チャンネルを表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
-                }
-            }
-            .sheet(isPresented: $showingSettings) { SettingsView(session: session, user: workspace.people[workspace.user.id] ?? workspace.user) }
-            .sheet(isPresented: $showingCreate) { CreateChannelView(workspace: workspace) }
-            .sheet(isPresented: $showingPeople) { PeopleView(workspace: workspace) }
         }
-        .modifier(ConversationSync(workspace: workspace))
-        .task(id: scenePhase) {
-            if scenePhase == .active { await workspace.run() }
+        .sheet(isPresented: $creating) {
+            if directMessages { PeopleView(workspace: workspace) }
+            else { CreateChannelView(workspace: workspace) }
+        }
+        .sheet(isPresented: $browsing) { ChannelBrowser(workspace: workspace) }
+    }
+}
+
+private struct ChannelBrowser: View {
+    let workspace: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+    @State private var includeArchived = false
+    @State private var opening: Channel?
+    @State private var error: String?
+
+    private var matches: [Channel] {
+        workspace.channels.filter { channel in
+            guard !channel.is_dm,
+                  search.isEmpty || channel.channel_name.localizedStandardContains(search) else { return false }
+            let joined = workspace.joinedChannelIDs.contains(channel.id)
+            if channel.archive_at != nil { return includeArchived && (!channel.is_private || joined) }
+            return !channel.is_private && !joined
         }
     }
 
-    @ViewBuilder
-    private func channelSection(_ title: String, channels: [Channel]) -> some View {
-        if !channels.isEmpty {
-            Section(title) {
-                ForEach(channels) { channel in
-                    NavigationLink(value: ChatRoute.channel(channel.id)) {
-                        HStack(spacing: 12) {
-                            if let peer = workspace.directMessagePeer(for: channel) {
-                                AvatarView(name: peer.name, url: peer.avatarURL)
-                            } else {
-                                Image(systemName: channel.symbol)
-                                    .font(.title3).foregroundStyle(.tint)
-                                    .frame(width: 32, height: 38)
-                            }
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(workspace.name(for: channel))
-                                    .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
-                                if let description = channel.description, !description.isEmpty {
-                                    Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                            }
-                            Spacer(minLength: 4)
-                            if workspace.unread.contains(channel.id) {
-                                Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
-                            }
-                        }.padding(.vertical, 3)
+    var body: some View {
+        NavigationStack {
+            List {
+                Toggle("アーカイブ済みを含める", isOn: $includeArchived)
+                if let error { Text(error).foregroundStyle(.red) }
+                if matches.isEmpty { Text("該当するチャンネルはありません").foregroundStyle(.secondary) }
+                ForEach(matches) { channel in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(channel.channel_name)
+                            if let description = channel.description { Text(description).font(.caption).foregroundStyle(.secondary) }
+                        }
+                        Spacer()
+                        Button(channel.archive_at == nil ? "参加" : "開く") { opening = channel }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("browse-channel-\(channel.id)")
                     }
-                    .accessibilityIdentifier("channel-\(channel.id)")
+                }
+            }
+            .disabled(opening != nil)
+            .navigationTitle("チャンネルを探す")
+            .searchable(text: $search, prompt: "チャンネル名を検索")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
+            .task(id: opening?.id) {
+                guard let channel = opening else { return }
+                defer { opening = nil }
+                do {
+                    if channel.archive_at == nil { try await workspace.client.joinChannel(id: channel.id) }
+                    try Task.checkCancellation()
+                    workspace.addAndOpen(channel, joined: channel.archive_at == nil)
+                    dismiss()
+                } catch {
+                    if !Task.isCancelled { self.error = error.localizedDescription; workspace.report(error) }
                 }
             }
         }
@@ -136,6 +233,7 @@ private struct ConversationSync: ViewModifier {
         let readable = store.flatMap { !$0.blocked && $0.channel.encrypted != true ? $0 : nil }
         let reactions = readable.flatMap { $0.needsReactionStream ? $0 : nil }
         let authors = readable.map { Authors(channelID: $0.channel.id, ids: Set($0.messages.map(\.user_id))) }
+        let needsEmojiCatalog = scenePhase == .active && (store != nil || workspace.selectedTab == .notifications)
         content
             .task(id: readable?.syncRequest) { await readable?.run() }
             .task(id: reactions?.syncRequest) { await reactions?.runReactions() }
@@ -144,8 +242,8 @@ private struct ConversationSync: ViewModifier {
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
                 if readable.reactionResyncTicket == ticket { readable.retryAccess() }
             }
-            .task(id: store?.channel.id) {
-                guard store != nil else { return }
+            .task(id: needsEmojiCatalog) {
+                guard needsEmojiCatalog else { return }
                 async let emojis: Void = workspace.loadEmojis()
                 async let accounts: Void = workspace.loadEmojiAccounts()
                 _ = await (emojis, accounts)
@@ -153,50 +251,6 @@ private struct ConversationSync: ViewModifier {
             .task(id: authors) {
                 if let readable { await workspace.resolveAuthors(in: readable.messages) }
             }
-    }
-}
-
-private struct SettingsView: View {
-    let session: AppSession
-    let user: Person
-    @Environment(\.dismiss) private var dismiss
-    @State private var confirmingLogout = false
-    @State private var enabling = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("アカウント") {
-                    HStack(spacing: 12) {
-                        AvatarView(name: user.name, url: user.avatarURL)
-                        Text(user.name).font(.headline)
-                    }
-                    LabeledContent("表示名", value: user.name)
-                    LabeledContent("ユーザー名", value: "@" + user.user_name)
-                }
-                Section("通知") {
-                    Text(session.notifications.status).font(.callout)
-                    if session.notifications.enabled {
-                        Button("通知を無効にする") { session.notifications.disable() }
-                    } else {
-                        Button("通知を有効にする") { enabling = true }.disabled(enabling)
-                    }
-                    if let url = URL(string: UIApplication.openSettingsURLString) { Link("iOS の通知設定を開く", destination: url) }
-                }
-                Section {
-                    Button("ログアウト", role: .destructive) { confirmingLogout = true }
-                        .accessibilityIdentifier("logout")
-                }
-            }
-            .navigationTitle("設定").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { dismiss() } } }
-            .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {
-                Button("ログアウト", role: .destructive) { dismiss(); session.logout() }
-            } message: { Text("この端末のログイン情報と下書きを削除します。") }
-            .task(id: enabling) {
-                if enabling { await session.notifications.enable(); enabling = false }
-            }
-        }
     }
 }
 
@@ -252,40 +306,64 @@ private struct PeopleView: View {
     let workspace: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
-    @State private var selected: String?
+    @State private var recipients: Set<String> = []
+    @State private var submitting = false
     @State private var error: String?
+
+    private var candidates: [Person] {
+        workspace.people.values.filter {
+            $0.id != workspace.user.id && !$0.is_bot && !$0.is_deactivated &&
+            (recipients.contains($0.id) || search.isEmpty || $0.name.localizedStandardContains(search) ||
+             $0.user_name.localizedStandardContains(search))
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
 
     var body: some View {
         NavigationStack {
             List {
                 if let error { Text(error).foregroundStyle(.red) }
-                ForEach(workspace.people.values.filter {
-                    $0.id != workspace.user.id && !$0.is_bot &&
-                    (search.isEmpty || $0.name.localizedStandardContains(search) || $0.user_name.localizedStandardContains(search))
-                }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) { person in
-                    Button { selected = person.id } label: {
-                        HStack {
-                            AvatarView(name: person.name, url: person.avatarURL)
-                            VStack(alignment: .leading) {
-                                Text(person.name).foregroundStyle(.primary)
-                                Text("@" + person.user_name).font(.caption).foregroundStyle(.secondary)
+                Section("宛先（9人まで）") {
+                    ForEach(candidates) { person in
+                        let selected = recipients.contains(person.id)
+                        Button {
+                            if selected { recipients.remove(person.id) }
+                            else { recipients.insert(person.id) }
+                        } label: {
+                            HStack {
+                                AvatarView(name: person.name, url: person.avatarURL)
+                                VStack(alignment: .leading) {
+                                    Text(person.name).foregroundStyle(.primary)
+                                    Text("@\(person.user_name)").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                             }
-                            Spacer()
-                            if selected == person.id { ProgressView() }
                         }
-                    }.disabled(selected != nil)
+                        .disabled(!selected && recipients.count >= 9)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityIdentifier("dm-recipient-\(person.id)")
+                    }
                 }
             }
+            .disabled(submitting)
             .searchable(text: $search, prompt: "名前を検索")
-            .navigationTitle("ダイレクトメッセージ").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
-            .task(id: selected) {
-                guard let selected else { return }
-                defer { self.selected = nil }
+            .navigationTitle("新しいDM").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("開始") { submitting = true }
+                        .disabled(recipients.isEmpty || submitting)
+                        .accessibilityIdentifier("start-dm")
+                }
+            }
+            .task(id: submitting) {
+                guard submitting else { return }
+                defer { submitting = false }
                 do {
-                    let channel = try await workspace.client.directMessage(userID: selected)
+                    let ids = recipients.sorted()
+                    let channel = try await workspace.client.directMessage(userIDs: ids)
                     try Task.checkCancellation()
-                    workspace.addAndOpen(channel)
+                    workspace.addAndOpen(channel, members: ids + [workspace.user.id])
                     dismiss()
                 } catch {
                     if !Task.isCancelled { self.error = error.localizedDescription; workspace.report(error) }

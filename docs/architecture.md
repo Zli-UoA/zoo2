@@ -2,13 +2,13 @@
 
 ## ネイティブ画面と状態
 
-画面は SwiftUI の `NavigationStack`、`List`、`ScrollView`、`sheet` で構成します。
+ログイン後は SwiftUI の `TabView` にチャンネル、DM、通知、プロフィールを配置し、それぞれに `NavigationStack` を持たせます。
 `AppSession` が認証と通知を管理し、認証後に `WorkspaceStore` を作成します。
 `WorkspaceStore` はチャンネル、ユーザー、未読、画面遷移、チャンネル別の `ConversationStore` を保持します。
 `ConversationStore` は履歴、スレッド、下書き、送信・同期状態を管理します。
 UI の状態は `@MainActor` と `@Observable` で管理し、データを `Sendable` の値として扱います。
 
-チャンネルと返信先のスレッドは同じ `NavigationStack` に積み、同じ `ConversationStore` を使います。
+チャンネルとDMの画面履歴を個別に保持し、それぞれの返信先を同じスタックに積みます。通知から会話を開くと、その会話が属するタブを選択します。
 同期は表示中のチャンネルとアプリの前面表示に紐付き、スレッドとの往復中も続きます。
 チャンネルを離れたりバックグラウンドへ移ったりすると通信をキャンセルし、復帰時に再取得します。
 ログアウトではワークスペースと下書きを破棄し、遅れて届いた応答を適用しません。
@@ -27,6 +27,11 @@ URL に含める識別子は UUID であることを検証します。
 | チャンネル・ユーザー・未読 | `GET /api/channels`、`GET /api/shapes/users`、`GET /api/channel-read-states` |
 | 通知の遷移先を確認 | `GET /api/channels/{id}` |
 | メッセージ同期 | `GET /api/shapes/messages?channel_id=...` |
+| 参加中のスレッド | `GET /api/threads` |
+| 公開チャンネルへの参加 | `POST /api/channels/{id}/join` |
+| アプリ内通知 | `GET /api/shapes/notifications`、`GET /api/activitypub/notifications` |
+| 通知の既読 | `POST /api/notifications/read`、`POST /api/notifications/read-all` |
+| 公開プロフィールの表示・編集 | `GET /api/activitypub/profile`、`PUT /api/activitypub/profile` |
 | 送信・返信 | `POST /api/messages` |
 | 編集・削除 | `PATCH /api/messages/{id}`、`DELETE /api/messages/{id}` |
 | スタンプの追加・取り消し | `POST /api/messages/{id}/reactions`、`DELETE /api/messages/{id}/reactions?emoji=...` |

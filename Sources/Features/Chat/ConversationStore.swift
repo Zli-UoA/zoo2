@@ -62,6 +62,10 @@ final class ConversationStore {
         return parent
     }
     func replies(to id: String) -> [Message] { messages.filter { $0.parent_id == id } }
+    func prepareForThread(_ id: String) {
+        focusedMessageID = nil
+        if messagesByID[id] == nil { loading = true }
+    }
     func draftKey(_ parentID: String?) -> String { parentID ?? "root" }
     func validContent(_ text: String) -> Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.unicodeScalars.count <= 40_000
@@ -83,7 +87,7 @@ final class ConversationStore {
         let epoch = UUID()
         streamGeneration = epoch
         blocked = false
-        loading = messages.isEmpty
+        loading = loading || messages.isEmpty
         var delay = 2
         while active, !Task.isCancelled, epoch == streamGeneration {
             do {

@@ -51,6 +51,16 @@ struct ConversationView: View {
         .background(Color(.systemBackground))
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if isVisible && composerFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("キーボードを閉じる", systemImage: "keyboard.chevron.compact.down") {
+                        composerFocused = false
+                    }
+                    .accessibilityIdentifier("dismiss-composer-keyboard")
+                }
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             ComposerView(store: store, parentID: parentID, focused: $composerFocused)
         }
@@ -68,7 +78,7 @@ struct ConversationView: View {
             if let target { workspace.openThread(target, in: store, focusComposer: false) }
         }
         .onChange(of: isVisible && threadUnavailable, initial: true) { _, unavailable in
-            if unavailable, workspace.path.last == route { workspace.path.removeLast() }
+            if unavailable { workspace.closeThread(route) }
         }
     }
 }

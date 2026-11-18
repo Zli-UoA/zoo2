@@ -106,8 +106,8 @@ struct NativeChatTests {
                        created_at: "2026-11-18T09:00:00Z", parent_id: parent)
     }
 
-    nonisolated private static func envelope(_ message: Message) throws -> Data {
-        let value = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(message))
+    nonisolated private static func envelope(_ row: some Encodable) throws -> Data {
+        let value = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(row))
         return try JSONEncoder().encode(["data": value, "txid": .string("123")])
     }
 
@@ -254,6 +254,62 @@ struct NativeChatTests {
         #expect(await workspace.open(valid))
         #expect(workspace.path == [.channel(Self.channelID)])
         #expect(workspace.conversation(for: channel).focusedMessageID == message)
+    }
+
+    @Test("グループDMは宛先全員を送信し、一覧を更新してもメンバーの名前と他タブの履歴を保つ")
+    func groupDirectMessage() async throws {
+        let preview = PreviewChatClient()
+        let workspace = WorkspaceStore(client: preview, user: preview.currentUser)
+        await workspace.refresh()
+        let recipients = workspace.people.values.filter { $0.id != workspace.user.id }.map(\.id).sorted()
+        #expect(recipients.count == 2)
+        let dm = try await preview.directMessage(userIDs: recipients)
+        workspace.channelPath = [.channel(Self.channelID)]
+        workspace.addAndOpen(dm, members: recipients + [workspace.user.id])
+        await workspace.refresh()
+        #expect(workspace.selectedTab == .directMessages)
+        #expect(workspace.dmPath == [.channel(dm.id)])
+        #expect(workspace.channelPath == [.channel(Self.channelID)])
+        #expect(workspace.name(for: dm) == "あおい、さくら")
+
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let bytes = try Self.envelope(dm)
+        harness.stub { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path == "/api/dms")
+            let payload = try JSONDecoder().decode([String: [String]].self, from: StubProtocol.body(request))
+            #expect(payload["target_user_ids"] == recipients)
+            return (200, [:], bytes)
+        }
+        #expect(try await harness.client.directMessage(userIDs: recipients).id == dm.id)
+    }
+
+    @Test("通知から会話を取得している途中で別タブに移ると元の要求は画面を切り替えない")
+    func leavingInboxCancelsNavigation() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let bytes = try JSONEncoder().encode(channel)
+        harness.stub { _ in
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return (200, [:], bytes)
+        }
+        let user = Person(id: Self.userID, user_name: "you", display_name: "あなた")
+        let workspace = WorkspaceStore(client: harness.client, user: user)
+        workspace.selectedTab = .notifications
+        let open = Task { await workspace.openInboxMessage(channelID: Self.channelID, messageID: nil) }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        workspace.selectedTab = .directMessages
+        release.continuation.yield(())
+        #expect(await open.value == false)
+        #expect(workspace.selectedTab == .directMessages)
+        #expect(workspace.channelPath.isEmpty)
     }
 
     @Test("返信通知は親スレッドを一段だけ開き、チャンネル通知で元の会話に戻る")

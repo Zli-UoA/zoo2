@@ -43,7 +43,7 @@ struct ReactionChips: View {
 
 struct ReactionGlyph: View {
     let emoji: String
-    let message: Message
+    let message: Message?
     let workspace: WorkspaceStore
     @State private var kitchenImage: URL?
 
@@ -77,7 +77,7 @@ struct ReactionGlyph: View {
         guard emoji.hasPrefix(":"), emoji.hasSuffix(":"), emoji.count > 2 else { return nil }
         let name = String(emoji.dropFirst().dropLast())
         let custom = workspace.emoji(for: emoji)
-        if let attached = message.display_data?.emojis {
+        if let attached = message?.display_data?.emojis {
             for spelling in [name] + (custom?.aliases ?? []) {
                 if let url = attached[spelling]?.imageURL(relativeTo: workspace.client.serverURL) { return url }
             }

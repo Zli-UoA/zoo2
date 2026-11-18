@@ -1,6 +1,10 @@
 import Foundation
 import Observation
 
+enum WorkspaceTab: Hashable {
+    case channels, directMessages, notifications, profile
+}
+
 enum ChatRoute: Hashable {
     case channel(String)
     case thread(channelID: String, parentID: String, focusComposer: Bool)
@@ -16,9 +20,13 @@ enum ChatRoute: Hashable {
 final class WorkspaceStore {
     let user: Person
     let client: any ChatClient
+    let inbox: InboxStore
+    let threads: ChannelThreads
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
     private(set) var unread: Set<String> = []
+    private(set) var joinedChannelIDs: Set<String> = []
+    private var groupMembers: [String: [String]] = [:]
     private(set) var emojis: [WorkspaceEmoji] = []
     private(set) var emojiError: String?
     private var emojisByKey: [String: WorkspaceEmoji] = [:]
@@ -30,7 +38,20 @@ final class WorkspaceStore {
     private(set) var loading = false
     private(set) var hasLoaded = false
     var error: String?
-    var path: [ChatRoute] = []
+    var selectedTab: WorkspaceTab = .channels {
+        didSet { if oldValue != selectedTab { tabVisit = UUID() } }
+    }
+    @ObservationIgnored private var tabVisit = UUID()
+    var channelPath: [ChatRoute] = []
+    var dmPath: [ChatRoute] = []
+
+    var path: [ChatRoute] {
+        switch selectedTab {
+        case .channels: channelPath
+        case .directMessages: dmPath
+        case .notifications, .profile: []
+        }
+    }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
     private var active = true
@@ -41,17 +62,26 @@ final class WorkspaceStore {
     init(client: any ChatClient, user: Person) {
         self.client = client
         self.user = user
+        inbox = InboxStore(client: client, userID: user.id)
+        threads = ChannelThreads(client: client)
+        inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
+        threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
     func name(for channel: Channel) -> String {
         guard channel.is_dm else { return channel.channel_name }
-        let ids = channel.channel_name.split(separator: ":").dropFirst().map(String.init)
-        let names = ids.filter { $0 != user.id }.compactMap { people[$0]?.name }
-        return names.isEmpty ? "ダイレクトメッセージ" : names.joined(separator: "、")
+        if channel.channel_name.hasPrefix("dm:group:") {
+            let names = (groupMembers[channel.id] ?? []).filter { $0 != user.id }.compactMap { people[$0]?.name }
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            guard !names.isEmpty else { return "グループDM" }
+            let summary = names.prefix(3).joined(separator: "、")
+            return names.count > 3 ? "\(summary) ほか\(names.count - 3)人" : summary
+        }
+        return directMessagePeer(for: channel)?.name ?? "ダイレクトメッセージ"
     }
 
     func directMessagePeer(for channel: Channel) -> Person? {
-        guard channel.is_dm else { return nil }
+        guard channel.is_dm, !channel.channel_name.hasPrefix("dm:group:") else { return nil }
         let ids = channel.channel_name.split(separator: ":").dropFirst().map(String.init).filter { $0 != user.id }
         guard ids.count == 1 else { return nil }
         return people[ids[0]]
@@ -75,16 +105,27 @@ final class WorkspaceStore {
             self.people = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
             self.people.merge(resolvedAuthors) { current, _ in current }
             unread = Set(states.filter(\.has_unread).map(\.channel_id))
+            joinedChannelIDs = Set(states.map(\.channel_id))
+            let visibleIDs = Set(self.channels.map(\.id))
+            channelPath.removeAll { !visibleIDs.contains($0.channelID) }
+            dmPath.removeAll { !visibleIDs.contains($0.channelID) }
             for (id, conversation) in conversations {
                 if let channel = self.channels.first(where: { $0.id == id }) { conversation.update(channel) }
                 else {
                     conversation.shutdown()
                     conversations[id] = nil
-                    path.removeAll { $0.channelID == id }
                 }
             }
             hasLoaded = true
             error = nil
+            let groups = Set(self.channels.filter { $0.is_dm && $0.channel_name.hasPrefix("dm:group:") }.map(\.id))
+            if !groups.isEmpty {
+                let members = try await client.dmMemberships()
+                try Task.checkCancellation()
+                guard active, channelGeneration == epoch else { return }
+                groupMembers = Dictionary(grouping: members.filter { groups.contains($0.channel_id) }, by: \.channel_id)
+                    .mapValues { $0.map(\.user_id) }
+            } else { groupMembers = [:] }
         } catch { report(error) }
     }
 
@@ -153,18 +194,39 @@ final class WorkspaceStore {
         }
     }
 
-    func addAndOpen(_ channel: Channel) {
+    func addAndOpen(_ channel: Channel, joined: Bool = true, members: [String]? = nil) {
         guard active else { return }
         channelGeneration = UUID()
         if let index = channels.firstIndex(where: { $0.id == channel.id }) { channels[index] = channel }
         else { channels.append(channel) }
-        path = [.channel(channel.id)]
+        if joined { joinedChannelIDs.insert(channel.id) }
+        if let members { groupMembers[channel.id] = members }
+        selectedTab = channel.is_dm ? .directMessages : .channels
+        if channel.is_dm { dmPath = [.channel(channel.id)] }
+        else { channelPath = [.channel(channel.id)] }
     }
 
     func openThread(_ parentID: String, in store: ConversationStore, focusComposer: Bool) {
         guard active, path.last == .channel(store.channel.id), !store.blocked,
               store.channel.encrypted != true, store.message(id: parentID) != nil else { return }
-        path.append(.thread(channelID: store.channel.id, parentID: parentID, focusComposer: focusComposer))
+        let route = ChatRoute.thread(channelID: store.channel.id, parentID: parentID, focusComposer: focusComposer)
+        if store.channel.is_dm { dmPath.append(route) }
+        else { channelPath.append(route) }
+    }
+
+    func closeThread(_ route: ChatRoute) {
+        guard case .thread = route, path.last == route else { return }
+        if selectedTab == .directMessages { dmPath.removeLast() }
+        else { channelPath.removeLast() }
+    }
+
+    func openListedThread(_ parentID: String, in channel: Channel) {
+        guard active, selectedTab == .channels, joinedChannelIDs.contains(channel.id),
+              !channel.is_dm, channel.encrypted != true else { return }
+        let store = conversation(for: channel)
+        guard !store.blocked else { report(ZooError.rejected(403, "この会話を閲覧できません。")); return }
+        store.prepareForThread(parentID)
+        channelPath = [.channel(channel.id), .thread(channelID: channel.id, parentID: parentID, focusComposer: false)]
     }
 
     func resolveAuthors(in messages: [Message]) async {
@@ -188,20 +250,31 @@ final class WorkspaceStore {
 
     func open(_ target: PushDestination) async -> Bool {
         guard active, target.userID.lowercased() == user.id.lowercased() else { return false }
+        return await openMessage(channelID: target.channelID, messageID: target.messageID)
+    }
+
+    func openInboxMessage(channelID: String, messageID: String?) async -> Bool {
+        guard selectedTab == .notifications else { return false }
+        return await openMessage(channelID: channelID, messageID: messageID, requiredVisit: tabVisit)
+    }
+
+    private func openMessage(channelID: String, messageID: String?, requiredVisit: UUID? = nil) async -> Bool {
+        guard active else { return false }
         let epoch = UUID()
         destinationGeneration = epoch
         do {
-            let channel = try await client.channel(id: target.channelID)
+            let channel = try await client.channel(id: channelID)
             try Task.checkCancellation()
-            guard active, destinationGeneration == epoch, channel.deleted_at == nil else { return false }
+            guard active, destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit,
+                  channel.deleted_at == nil else { return false }
             let store = conversation(for: channel)
             store.update(channel)
-            store.focusedMessageID = target.messageID
-            addAndOpen(channel)
+            store.focusedMessageID = messageID
+            addAndOpen(channel, joined: false)
             if let parentID = store.focusedThreadID { openThread(parentID, in: store, focusComposer: false) }
             return true
         } catch {
-            report(error)
+            if destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit { report(error) }
             return false
         }
     }
@@ -218,6 +291,8 @@ final class WorkspaceStore {
         channelGeneration = UUID()
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
+        inbox.shutdown()
+        threads.shutdown()
         channels = []
         people = [:]
         resolvedAuthors = [:]
@@ -228,6 +303,10 @@ final class WorkspaceStore {
         emojiAccounts = []
         accountsByName = [:]
         emojiAccountError = nil
-        path = []
+        groupMembers = [:]
+        joinedChannelIDs = []
+        channelPath = []
+        dmPath = []
+        selectedTab = .channels
     }
 }
