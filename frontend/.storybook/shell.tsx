@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 
+import { PinnedChannelsProvider } from "../src/hooks/usePinnedChannels";
 import {
   ShellContext,
   type ShellContextValue,
@@ -55,5 +56,9 @@ export function StoryShell({
     ],
   );
 
-  return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
+  return (
+    <ShellContext.Provider value={value}>
+      <PinnedChannelsProvider>{children}</PinnedChannelsProvider>
+    </ShellContext.Provider>
+  );
 }

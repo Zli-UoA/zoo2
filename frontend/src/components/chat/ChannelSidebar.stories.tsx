@@ -1,7 +1,7 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, screen, userEvent, within } from "storybook/test";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import {
@@ -198,6 +198,150 @@ export const Sections: Story = {
   }),
 };
 export const MobileSections: Story = { ...Sections, globals: { viewport: { value: "mobile" } } };
+
+const nsfw = {
+  ...storyChannels[1],
+  id: "channel-nsfw",
+  channel_name: "nsfw",
+  is_nsfw: true,
+};
+
+const pinnedAt = "2026-01-03 09:00:00.000";
+const pinnedRows = [
+  {
+    user_id: "user-alice",
+    channel_id: "channel-design",
+    position: 0,
+    created_at: pinnedAt,
+    updated_at: pinnedAt,
+  },
+  {
+    user_id: "user-alice",
+    channel_id: dm.id,
+    position: 1,
+    created_at: pinnedAt,
+    updated_at: pinnedAt,
+  },
+  {
+    user_id: "user-alice",
+    channel_id: nsfw.id,
+    position: 2,
+    created_at: pinnedAt,
+    updated_at: pinnedAt,
+  },
+  // アーカイブ中のピンはサーバーに残るが、サイドバーには出さない。
+  {
+    user_id: "user-alice",
+    channel_id: "channel-archive",
+    position: 3,
+    created_at: pinnedAt,
+    updated_at: pinnedAt,
+  },
+];
+
+const pinnedCollections = {
+  ...storyCollections,
+  channels: [...storyChannels, dm, nsfw],
+  channelUsers: [
+    ...storyChannelUsers,
+    { channel_id: dm.id, user_id: "user-alice", joined_at: dm.created_at },
+    { channel_id: dm.id, user_id: "user-bob", joined_at: dm.created_at },
+    { channel_id: nsfw.id, user_id: "user-alice", joined_at: nsfw.created_at },
+  ],
+  userPinnedChannels: pinnedRows,
+};
+
+const pinnedApi = http.get("*/api/channel-pins", () =>
+  HttpResponse.json({ pins: pinnedRows, version: 3 }),
+);
+
+const pinnedReorderRequests: unknown[] = [];
+const pinnedReorderApi = http.patch("*/api/channel-pins/order", async ({ request }) => {
+  pinnedReorderRequests.push(await request.json());
+  return HttpResponse.json({
+    data: {
+      version: 4,
+      pins: [
+        { ...pinnedRows[1], position: 0 },
+        { ...pinnedRows[0], position: 1 },
+        { ...pinnedRows[2], position: 2 },
+        { ...pinnedRows[3], position: 3 },
+      ],
+    },
+    txid: "12",
+  });
+});
+
+export const Pinned: Story = {
+  args: { channels: [...storyChannels, dm, nsfw] },
+  parameters: {
+    // メニューを開くと Base UI のフォーカスガードが aria-hidden で focusable になる。
+    // メニュー操作自体は play で確認し、静的な a11y は対象外にする。
+    a11y: { test: "todo" },
+    collections: pinnedCollections,
+    msw: { handlers: [pinnedApi, pinnedReorderApi] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    pinnedReorderRequests.length = 0;
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: "ピン留め" })).toBeVisible();
+    const section = await canvas.findByRole("region", { name: "ピン留め" });
+    const pinned = within(section);
+    // ピン留めの節では、通常チャンネルと DM が保存した順に並ぶ。
+    await expect(pinned.getByRole("link", { name: "design" })).toBeVisible();
+    await expect(pinned.getByRole("link", { name: "Bob" })).toBeVisible();
+    await expect(pinned.getByRole("link", { name: /nsfw/ })).toBeVisible();
+    await expect(pinned.getAllByText("NSFW")).toHaveLength(1);
+    const initialLinks = pinned.getAllByRole("link");
+    await expect(initialLinks).toHaveLength(3);
+    // 保存した順（design → Bob）で、通常の一覧や並び順の既定値に引きずられない。
+    await expect(initialLinks[0]).toHaveTextContent("design");
+    await expect(initialLinks[1]).toHaveTextContent("Bob");
+    // アーカイブ中のピンは表示しない。
+    await expect(canvas.queryAllByRole("link", { name: "old-announcements" })).toHaveLength(0);
+
+    // 行メニューの「下へ移動」で PATCH が呼ばれ、返った並びを表示する。
+    await userEvent.click(await pinned.findByRole("button", { name: "design のチャンネル操作" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "下へ移動" }));
+    await waitFor(() => expect(pinnedReorderRequests).toHaveLength(1));
+    await expect(pinnedReorderRequests[0]).toMatchObject({
+      channel_ids: [dm.id, "channel-design", nsfw.id],
+    });
+    await waitFor(async () => {
+      const links = pinned.getAllByRole("link");
+      await expect(links[0]).toHaveTextContent("Bob");
+      await expect(links[1]).toHaveTextContent("design");
+    });
+  }),
+};
+
+export const MobilePinned: Story = {
+  ...Pinned,
+  globals: { viewport: { value: "mobile" } },
+};
+
+export const PinnedReorderError: Story = {
+  args: { channels: [...storyChannels, dm] },
+  parameters: {
+    a11y: { test: "error" },
+    collections: pinnedCollections,
+    msw: {
+      handlers: [
+        http.get("*/api/channel-pins", () =>
+          HttpResponse.json({ error: "server error" }, { status: 500 }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("alert")).toBeVisible();
+    // 取得に失敗しても、Electric の行があればピンは表示する。
+    await expect((await canvas.findAllByRole("link", { name: "design" })).length).toBeGreaterThan(
+      0,
+    );
+  }),
+};
 
 export const SelectedArchivedThread: Story = {
   decorators: [

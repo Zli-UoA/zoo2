@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import type { ChannelUserRow, UserRow } from "../../lib/electric/types";
+import type { ChannelRow, ChannelUserRow, UserRow } from "../../lib/electric/types";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../lib/i18n/locale";
 import { userLabel } from "./memberCandidates";
 
@@ -141,4 +141,46 @@ export async function waitForDmAvailability(
     }
     await sleep(pollMs);
   }
+}
+
+/**
+ * DM の表示名（channel_id → 表示名）をまとめて作る。サイドバーの DM 一覧と
+ * ピン留めの一覧で同じ名前を使う。
+ */
+export function buildDmLabels({
+  channels,
+  memberships,
+  users,
+  currentUserId,
+  locale,
+  t,
+}: {
+  channels: readonly Pick<ChannelRow, "id" | "channel_name">[];
+  memberships: readonly Pick<ChannelUserRow, "user_id" | "channel_id">[];
+  users: readonly Pick<UserRow, "id" | "display_name" | "user_name">[];
+  currentUserId: string | null;
+  locale?: Locale;
+  t: TFunction;
+}): Map<string, string> {
+  const membersByChannel = new Map<string, Pick<ChannelUserRow, "user_id">[]>();
+  for (const membership of memberships) {
+    const rows = membersByChannel.get(membership.channel_id);
+    if (rows) {
+      rows.push(membership);
+    } else {
+      membersByChannel.set(membership.channel_id, [membership]);
+    }
+  }
+  const labels = new Map<string, string>();
+  for (const channel of channels) {
+    const resolved = resolveDmDisplayName({
+      channelName: channel.channel_name,
+      members: membersByChannel.get(channel.id) ?? [],
+      users,
+      currentUserId,
+      locale,
+    });
+    labels.set(channel.id, formatDmDisplayName(resolved, t));
+  }
+  return labels;
 }

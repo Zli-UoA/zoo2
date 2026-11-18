@@ -51,6 +51,10 @@ export function shapeQueryParams(
       "params[1]": options.userId,
     };
   }
+  if (shape === "userPinnedChannels") {
+    if (!options.userId) throw new Error("Channel pin shapes require a user ID");
+    return { where: "user_id = $1", "params[1]": options.userId };
+  }
   if (shape === "notifications") {
     if (!options.userId) throw new Error("Notification shapes require a user ID");
     return { where: "user_id = $1", "params[1]": options.userId };
