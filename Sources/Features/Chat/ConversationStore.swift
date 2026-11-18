@@ -13,6 +13,7 @@ final class ConversationStore {
     private(set) var loading = true
     private(set) var syncError: String?
     private(set) var blocked = false
+    private(set) var syncRequest = UUID()
     private(set) var sending: Set<String> = []
     private(set) var mutationInProgress = false
     var drafts: [String: String] = [:]
@@ -55,6 +56,11 @@ final class ConversationStore {
         return messages.filter { $0.parent_id == nil || !ids.contains($0.parent_id!) }
     }
     func message(id: String) -> Message? { messagesByID[id] }
+    var focusedThreadID: String? {
+        guard let focusedMessageID, let parent = messagesByID[focusedMessageID]?.parent_id,
+              messagesByID[parent] != nil else { return nil }
+        return parent
+    }
     func replies(to id: String) -> [Message] { messages.filter { $0.parent_id == id } }
     func draftKey(_ parentID: String?) -> String { parentID ?? "root" }
     func validContent(_ text: String) -> Bool {
@@ -72,6 +78,7 @@ final class ConversationStore {
     }
 
     func run() async {
+        guard !Task.isCancelled else { return }
         guard active, channel.encrypted != true else { loading = false; return }
         let epoch = UUID()
         streamGeneration = epoch
@@ -111,7 +118,11 @@ final class ConversationStore {
         }
     }
 
-    func retryAccess() { if active { blocked = false } }
+    func retryAccess() {
+        guard active else { return }
+        blocked = false
+        syncRequest = UUID()
+    }
 
     private func revokeAccess() {
         accessGeneration = UUID()
@@ -362,7 +373,7 @@ extension ConversationStore {
     }
 
     func runReactions() async {
-        guard needsReactionStream else { return }
+        guard !Task.isCancelled, needsReactionStream else { return }
         let epoch = UUID()
         reactionStreamGeneration = epoch
         defer {

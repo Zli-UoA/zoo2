@@ -3,16 +3,26 @@ import SwiftUI
 struct ConversationView: View {
     @Bindable var store: ConversationStore
     let workspace: WorkspaceStore
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var thread: ThreadTarget?
-    @State private var threadFocusRequest: UUID?
-    @State private var retry = UUID()
+    let route: ChatRoute
+    @FocusState private var composerFocused: Bool
+    @State private var didRequestInitialFocus = false
 
-    private struct ThreadTarget: Identifiable { let id: String }
+    private var parentID: String? {
+        if case .thread(_, let parent, _) = route { return parent }
+        return nil
+    }
+
+    private var isVisible: Bool { workspace.path.last == route }
+
+    private var threadUnavailable: Bool {
+        guard let parentID else { return false }
+        return store.blocked || store.channel.encrypted == true ||
+            (!store.loading && store.syncError == nil && store.message(id: parentID) == nil)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if let description = store.channel.description, !description.isEmpty {
+            if parentID == nil, let description = store.channel.description, !description.isEmpty {
                 Text(description).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal).padding(.bottom, 8)
@@ -25,67 +35,61 @@ struct ConversationView: View {
                     HStack {
                         Label(error, systemImage: "wifi.exclamationmark").font(.caption)
                         Spacer()
-                        Button("再試行") {
-                            store.retryAccess()
-                            retry = UUID()
-                        }.font(.caption.bold())
+                        Button("再試行") { store.retryAccess() }.font(.caption.bold())
                     }.padding(12).background(.orange.opacity(0.12))
                 }
-                MessageList(store: store, workspace: workspace, parentID: nil,
-                            canMarkRead: thread == nil && store.focusedMessageID == nil) { id in
-                    threadFocusRequest = store.canPost ? UUID() : nil
-                    thread = ThreadTarget(id: id)
+                MessageList(store: store, workspace: workspace, parentID: parentID, isVisible: isVisible,
+                            composerFocused: $composerFocused) { id in
+                    if parentID == nil {
+                        workspace.openThread(id, in: store, focusComposer: store.canPost)
+                    } else {
+                        composerFocused = store.canPost
+                    }
                 }
             }
         }
         .background(Color(.systemBackground))
-        .navigationTitle(workspace.name(for: store.channel))
+        .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom, spacing: 0) { ComposerView(store: store, parentID: nil) }
-        .task(id: "\(scenePhase)-\(retry)-\(store.channel.encrypted == true)-\(store.blocked)") {
-            if scenePhase == .active, !store.blocked { await store.run() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ComposerView(store: store, parentID: parentID, focused: $composerFocused)
         }
-        .task(id: "\(scenePhase)-\(retry)-\(store.channel.encrypted == true)-\(store.blocked)-\(store.needsReactionStream)") {
-            if scenePhase == .active, store.channel.encrypted != true, !store.blocked, store.needsReactionStream {
-                await store.runReactions()
-            }
-        }
-        .task(id: scenePhase == .active ? store.reactionResyncTicket : nil) {
-            guard scenePhase == .active, store.reactionResyncTicket != nil else { return }
-            do { try await Task.sleep(for: .seconds(15)) } catch { return }
-            retry = UUID()
-        }
-        .task(id: scenePhase) {
-            if scenePhase == .active {
-                async let emojis: Void = workspace.loadEmojis()
-                async let accounts: Void = workspace.loadEmojiAccounts()
-                _ = await (emojis, accounts)
-            }
-        }
-        .task(id: "\(scenePhase)-\(Set(store.messages.map(\.user_id)).sorted())") {
-            if scenePhase == .active { await workspace.resolveAuthors(in: store.messages) }
-        }
-        .onChange(of: store.focusedMessageID, initial: true) { _, id in openFocusedThread(id) }
-        .onChange(of: store.messages.map(\.id)) { _, _ in openFocusedThread(store.focusedMessageID) }
-        .sheet(item: $thread, onDismiss: { threadFocusRequest = nil }) { target in
-            NavigationStack {
-                MessageList(store: store, workspace: workspace, parentID: target.id, canMarkRead: false) { _ in
-                    threadFocusRequest = UUID()
+        .background {
+            if case .thread(_, _, true) = route {
+                ThreadAppearanceObserver {
+                    guard isVisible, store.canPost, !didRequestInitialFocus else { return }
+                    didRequestInitialFocus = true
+                    composerFocused = true
                 }
-                    .navigationTitle("スレッド").navigationBarTitleDisplayMode(.inline)
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        ComposerView(store: store, parentID: target.id, focusRequest: threadFocusRequest)
-                    }
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { thread = nil } } }
+                .frame(width: 0, height: 0)
             }
+        }
+        .onChange(of: isVisible && parentID == nil ? store.focusedThreadID : nil, initial: true) { _, target in
+            if let target { workspace.openThread(target, in: store, focusComposer: false) }
+        }
+        .onChange(of: isVisible && threadUnavailable, initial: true) { _, unavailable in
+            if unavailable, workspace.path.last == route { workspace.path.removeLast() }
         }
     }
+}
 
-    private func openFocusedThread(_ id: String?) {
-        guard let id, let message = store.messages.first(where: { $0.id == id }) else { return }
-        if let parent = message.parent_id, store.messages.contains(where: { $0.id == parent }) {
-            thread = ThreadTarget(id: parent)
-        } else { thread = nil }
+// SwiftUI の onAppear は横移動の開始時にも呼ばれるため、返信欄は UIKit の表示完了時にフォーカスする。
+private struct ThreadAppearanceObserver: UIViewControllerRepresentable {
+    let didAppear: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.didAppear = didAppear
+    }
+
+    final class Controller: UIViewController {
+        var didAppear: (() -> Void)?
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            didAppear?()
+        }
     }
 }
 
@@ -93,21 +97,25 @@ private struct MessageList: View {
     @Bindable var store: ConversationStore
     let workspace: WorkspaceStore
     let parentID: String?
-    let canMarkRead: Bool
+    let isVisible: Bool
+    @FocusState.Binding var composerFocused: Bool
     let openThread: (String) -> Void
     @Environment(\.scenePhase) private var scenePhase
     @State private var followingLatest = false
     @State private var positionedInitialMessages = false
     @State private var selectedMessage: Message?
     @State private var replyAfterDismiss: String?
+    @State private var wasComposingBeforeMenu = false
 
     private var messages: [Message] {
         if let parentID { return store.messages.filter { $0.id == parentID || $0.parent_id == parentID } }
         return store.roots
     }
 
+    private var scrollTarget: String? { isVisible ? store.focusedMessageID : nil }
+
     private var readID: String? {
-        guard canMarkRead, parentID == nil, followingLatest, scenePhase == .active,
+        guard isVisible, parentID == nil, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
               selectedMessage == nil, replyAfterDismiss == nil else { return nil }
         return messages.last(where: { $0.parent_id == nil })?.id
     }
@@ -151,10 +159,12 @@ private struct MessageList: View {
             .scrollDismissesKeyboard(.interactively)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
-            } action: { _, atBottom in followingLatest = atBottom }
+            } action: { _, atBottom in
+                if isVisible { followingLatest = atBottom }
+            }
             .onChange(of: messages.last?.id, initial: true) { _, lastID in
-                guard lastID != nil else { return }
-                if let focused = store.focusedMessageID, messages.contains(where: { $0.id == focused }) {
+                guard isVisible, lastID != nil else { return }
+                if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
                     positionedInitialMessages = true
                     proxy.scrollTo(focused, anchor: .center)
                     store.focusedMessageID = nil
@@ -163,7 +173,7 @@ private struct MessageList: View {
                     proxy.scrollTo("conversation-bottom", anchor: .bottom)
                 }
             }
-            .onChange(of: store.focusedMessageID, initial: true) { _, id in
+            .onChange(of: scrollTarget, initial: true) { _, id in
                 if let id, messages.contains(where: { $0.id == id }) {
                     positionedInitialMessages = true
                     proxy.scrollTo(id, anchor: .center)
@@ -185,13 +195,22 @@ private struct MessageList: View {
             isPresented
         }
         .sheet(item: $selectedMessage, onDismiss: {
-            if let id = replyAfterDismiss, store.message(id: id) != nil { openThread(id) }
+            if let id = replyAfterDismiss {
+                if store.message(id: id) != nil { openThread(id) }
+            } else if wasComposingBeforeMenu, isVisible, store.canPost {
+                composerFocused = true
+            }
             replyAfterDismiss = nil
+            wasComposingBeforeMenu = false
         }) { selected in
             if let message = store.message(id: selected.id) {
                 MessageActionsView(store: store, workspace: workspace, message: message,
                                    canOpenThread: canOpenThread(for: message)) {
                     replyAfterDismiss = parentID ?? message.id
+                    // キーボードのフォーカスを渡す前にメニューを閉じ、画面遷移だけをアニメーションさせる。
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { selectedMessage = nil }
                 }
             }
         }
@@ -204,7 +223,10 @@ private struct MessageList: View {
         let person = workspace.people[message.user_id]
         let name = person?.name ?? "ユーザー"
         let showActions = {
-            if hasActions(for: message) { selectedMessage = message }
+            guard hasActions(for: message) else { return }
+            wasComposingBeforeMenu = composerFocused
+            composerFocused = false
+            selectedMessage = message
         }
         return HStack(alignment: .top, spacing: 12) {
             AvatarView(name: name, url: person?.avatarURL)
@@ -284,9 +306,8 @@ struct AvatarView: View {
 private struct ComposerView: View {
     @Bindable var store: ConversationStore
     let parentID: String?
-    var focusRequest: UUID?
     @State private var submitting = false
-    @FocusState private var focused: Bool
+    @FocusState.Binding var focused: Bool
 
     private var key: String { store.draftKey(parentID) }
     private var draft: Binding<String> {
@@ -327,9 +348,6 @@ private struct ComposerView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(.bar)
-        .onChange(of: focusRequest, initial: true) { _, request in
-            if request != nil, store.canPost { focused = true }
-        }
         .task(id: submitting) {
             if submitting { await store.send(parentID: parentID); submitting = false }
         }

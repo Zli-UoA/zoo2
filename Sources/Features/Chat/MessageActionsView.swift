@@ -64,10 +64,7 @@ struct MessageActionsView: View {
                 }
 
                 if canOpenThread {
-                    Button {
-                        reply()
-                        dismiss()
-                    } label: {
+                    Button(action: reply) {
                         VStack(spacing: 6) {
                             Image(systemName: "bubble.left").font(.title2)
                             Text(store.canPost ? "返信する" : "スレッドを表示").font(.subheadline.bold())

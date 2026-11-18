@@ -1,6 +1,17 @@
 import Foundation
 import Observation
 
+enum ChatRoute: Hashable {
+    case channel(String)
+    case thread(channelID: String, parentID: String, focusComposer: Bool)
+
+    var channelID: String {
+        switch self {
+        case .channel(let id), .thread(let id, _, _): id
+        }
+    }
+}
+
 @Observable @MainActor
 final class WorkspaceStore {
     let user: Person
@@ -19,7 +30,7 @@ final class WorkspaceStore {
     private(set) var loading = false
     private(set) var hasLoaded = false
     var error: String?
-    var path: [String] = []
+    var path: [ChatRoute] = []
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
     private var active = true
@@ -69,7 +80,7 @@ final class WorkspaceStore {
                 else {
                     conversation.shutdown()
                     conversations[id] = nil
-                    path.removeAll { $0 == id }
+                    path.removeAll { $0.channelID == id }
                 }
             }
             hasLoaded = true
@@ -147,7 +158,13 @@ final class WorkspaceStore {
         channelGeneration = UUID()
         if let index = channels.firstIndex(where: { $0.id == channel.id }) { channels[index] = channel }
         else { channels.append(channel) }
-        path = [channel.id]
+        path = [.channel(channel.id)]
+    }
+
+    func openThread(_ parentID: String, in store: ConversationStore, focusComposer: Bool) {
+        guard active, path.last == .channel(store.channel.id), !store.blocked,
+              store.channel.encrypted != true, store.message(id: parentID) != nil else { return }
+        path.append(.thread(channelID: store.channel.id, parentID: parentID, focusComposer: focusComposer))
     }
 
     func resolveAuthors(in messages: [Message]) async {
@@ -181,6 +198,7 @@ final class WorkspaceStore {
             store.update(channel)
             store.focusedMessageID = target.messageID
             addAndOpen(channel)
+            if let parentID = store.focusedThreadID { openThread(parentID, in: store, focusComposer: false) }
             return true
         } catch {
             report(error)

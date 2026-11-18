@@ -252,8 +252,42 @@ struct NativeChatTests {
         let message = "22222222-2222-4222-8222-222222222222"
         let valid = try #require(PushDestination(payload: ["user_id": Self.userID, "channel_id": Self.channelID, "message_id": message]))
         #expect(await workspace.open(valid))
-        #expect(workspace.path == [Self.channelID])
+        #expect(workspace.path == [.channel(Self.channelID)])
         #expect(workspace.conversation(for: channel).focusedMessageID == message)
+    }
+
+    @Test("返信通知は親スレッドを一段だけ開き、チャンネル通知で元の会話に戻る")
+    func threadNotificationRoute() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let channelBytes = try JSONEncoder().encode(channel)
+        let channelPath = "/api/channels/\(channel.id)"
+        harness.stub { request in
+            if request.url?.path == "/api/messages" {
+                return (200, [:], try Self.envelope(Self.sentMessage(request)))
+            }
+            #expect(request.url?.path == channelPath)
+            return (200, [:], channelBytes)
+        }
+        let user = Person(id: Self.userID, user_name: "you", display_name: "あなた")
+        let workspace = WorkspaceStore(client: harness.client, user: user)
+        let store = workspace.conversation(for: channel)
+        store.drafts["root"] = "親メッセージ"
+        await store.send()
+        let parent = try #require(store.roots.first)
+        store.drafts[parent.id] = "通知の対象となる返信"
+        await store.send(parentID: parent.id)
+        let reply = try #require(store.replies(to: parent.id).first)
+        let target = try #require(PushDestination(payload: ["user_id": user.id, "channel_id": channel.id, "message_id": reply.id]))
+        #expect(await workspace.open(target))
+        workspace.openThread(parent.id, in: store, focusComposer: true)
+        #expect(workspace.path == [.channel(channel.id), .thread(channelID: channel.id, parentID: parent.id, focusComposer: false)])
+        #expect(store.focusedMessageID == reply.id)
+
+        let channelTarget = try #require(PushDestination(payload: ["user_id": user.id, "channel_id": channel.id]))
+        #expect(await workspace.open(channelTarget))
+        #expect(workspace.path == [.channel(channel.id)])
+        #expect(store.focusedMessageID == nil)
     }
 
     @Test("閲覧権限の喪失後に届く送信応答で履歴を再表示しない")
@@ -330,7 +364,7 @@ struct NativeChatTests {
         release.continuation.yield(())
         await refresh.value
         #expect(workspace.channels.map(\.id) == [Self.channelID])
-        #expect(workspace.path == [Self.channelID])
+        #expect(workspace.path == [.channel(Self.channelID)])
     }
 
     @Test("一覧に含まれない bot の投稿者を個別 API で補完する")

@@ -65,9 +65,9 @@ struct WorkspaceView: View {
                     }.accessibilityIdentifier("new-conversation")
                 }
             }
-            .navigationDestination(for: String.self) { id in
-                if let channel = workspace.channels.first(where: { $0.id == id }) {
-                    ConversationView(store: workspace.conversation(for: channel), workspace: workspace)
+            .navigationDestination(for: ChatRoute.self) { route in
+                if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
+                    ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
                 } else {
                     ContentUnavailableView("チャンネルを表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
                 }
@@ -76,6 +76,7 @@ struct WorkspaceView: View {
             .sheet(isPresented: $showingCreate) { CreateChannelView(workspace: workspace) }
             .sheet(isPresented: $showingPeople) { PeopleView(workspace: workspace) }
         }
+        .modifier(ConversationSync(workspace: workspace))
         .task(id: scenePhase) {
             if scenePhase == .active { await workspace.run() }
         }
@@ -86,7 +87,7 @@ struct WorkspaceView: View {
         if !channels.isEmpty {
             Section(title) {
                 ForEach(channels) { channel in
-                    NavigationLink(value: channel.id) {
+                    NavigationLink(value: ChatRoute.channel(channel.id)) {
                         HStack(spacing: 12) {
                             if let peer = workspace.directMessagePeer(for: channel) {
                                 AvatarView(name: peer.name, url: peer.avatarURL)
@@ -112,6 +113,46 @@ struct WorkspaceView: View {
                 }
             }
         }
+    }
+}
+
+private struct ConversationSync: ViewModifier {
+    let workspace: WorkspaceStore
+    @Environment(\.scenePhase) private var scenePhase
+
+    private struct Authors: Equatable {
+        let channelID: String
+        let ids: Set<String>
+    }
+
+    private var activeConversation: ConversationStore? {
+        guard scenePhase == .active, let id = workspace.path.last?.channelID,
+              let channel = workspace.channels.first(where: { $0.id == id }) else { return nil }
+        return workspace.conversation(for: channel)
+    }
+
+    func body(content: Content) -> some View {
+        let store = activeConversation
+        let readable = store.flatMap { !$0.blocked && $0.channel.encrypted != true ? $0 : nil }
+        let reactions = readable.flatMap { $0.needsReactionStream ? $0 : nil }
+        let authors = readable.map { Authors(channelID: $0.channel.id, ids: Set($0.messages.map(\.user_id))) }
+        content
+            .task(id: readable?.syncRequest) { await readable?.run() }
+            .task(id: reactions?.syncRequest) { await reactions?.runReactions() }
+            .task(id: readable?.reactionResyncTicket) {
+                guard let readable, let ticket = readable.reactionResyncTicket else { return }
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                if readable.reactionResyncTicket == ticket { readable.retryAccess() }
+            }
+            .task(id: store?.channel.id) {
+                guard store != nil else { return }
+                async let emojis: Void = workspace.loadEmojis()
+                async let accounts: Void = workspace.loadEmojiAccounts()
+                _ = await (emojis, accounts)
+            }
+            .task(id: authors) {
+                if let readable { await workspace.resolveAuthors(in: readable.messages) }
+            }
     }
 }
 

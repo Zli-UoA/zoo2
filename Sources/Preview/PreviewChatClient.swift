@@ -23,7 +23,7 @@ final class PreviewChatClient: ChatClient {
     ]
     private var allMessages: [Message] = []
     private var failNextSend: Bool
-    private var incomingAt: ContinuousClock.Instant?
+    private var incomingReply: (at: ContinuousClock.Instant, channelID: String, parentID: String)?
 
     init(failNextSend: Bool = ProcessInfo.processInfo.arguments.contains("--uitesting-send-failure")) {
         self.failNextSend = failNextSend
@@ -93,10 +93,13 @@ final class PreviewChatClient: ChatClient {
             try await Task.sleep(for: .milliseconds(300))
         }
         while !Task.isCancelled {
-            if let incomingAt, ContinuousClock.now >= incomingAt {
-                self.incomingAt = nil
-                allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: Self.channelID,
+            if let incomingReply, ContinuousClock.now >= incomingReply.at {
+                self.incomingReply = nil
+                allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: incomingReply.channelID,
                                            content: "別の端末からの新着", created_at: Date().ISO8601Format(),
+                                           display_data: MessageDisplayData(reactions: [])))
+                allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: incomingReply.channelID,
+                                           content: "別の端末からの返信", created_at: Date().ISO8601Format(), parent_id: incomingReply.parentID,
                                            display_data: MessageDisplayData(reactions: [])))
             }
             receive(allMessages.filter { $0.channel_id == channelID })
@@ -109,8 +112,8 @@ final class PreviewChatClient: ChatClient {
         let message = Message(id: id, user_id: currentUser.id, channel_id: channelID, content: content,
                               created_at: Date().ISO8601Format(), parent_id: parentID, display_data: MessageDisplayData(reactions: []))
         allMessages.append(message)
-        if parentID != nil, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
-            incomingAt = ContinuousClock.now.advanced(by: .seconds(5))
+        if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
+            incomingReply = (.now.advanced(by: .seconds(5)), channelID, parentID)
         }
         return message
     }
