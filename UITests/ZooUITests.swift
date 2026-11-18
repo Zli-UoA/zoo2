@@ -77,7 +77,10 @@ final class ZooUITests: XCTestCase {
         field.tap()
         field.typeText("添付を選ぶ前の下書き")
         app.buttons["composer-additions"].tap()
-        app.buttons["ファイルを添付"].tap()
+        let attach = app.buttons["composer-attach-file"]
+        XCTAssertTrue(attach.waitForExistence(timeout: 5))
+        capture(app, name: "入力中に開いた添付メニュー")
+        attach.tap()
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "キャンセル"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
         capture(app, name: "添付ファイルの選択画面")

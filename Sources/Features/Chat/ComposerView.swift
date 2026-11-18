@@ -51,7 +51,7 @@ struct ComposerView: View {
                 attachmentDrafts
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .center, spacing: 8) {
-                        if !expanded { additions }
+                        if !expanded { additionSpace }
                         TextField(placeholder, text: draft, selection: $selection, axis: .vertical)
                             .lineLimit(1...6).focused($focused)
                             .padding(.vertical, expanded ? 12 : 10)
@@ -63,7 +63,7 @@ struct ComposerView: View {
                     .padding(.horizontal, expanded ? 12 : 0)
                     if expanded {
                         HStack(spacing: 4) {
-                            additions
+                            additionSpace
                             Button { openEmoji() } label: {
                                 Image(systemName: "face.smiling").font(.system(size: 21)).frame(width: 40, height: 40)
                             }.accessibilityLabel("スタンプを挿入").accessibilityIdentifier("composer-emoji")
@@ -75,6 +75,8 @@ struct ComposerView: View {
                         }.foregroundStyle(.secondary).padding(.top, 4)
                     }
                 }
+                // フォーカスが外れても同じボタンを保ち、表示中のメニューを閉じない。
+                .overlay(alignment: .bottomLeading) { additions }
                 .padding(expanded ? 8 : 4)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: expanded ? 24 : 28))
                 .overlay(alignment: .top) { mentionPanel }
@@ -111,12 +113,16 @@ struct ComposerView: View {
         }
     }
 
+    private var additionSpace: some View {
+        Color.clear.frame(width: 40, height: 40).accessibilityHidden(true).allowsHitTesting(false)
+    }
+
     private var additions: some View {
         Menu {
             Button("ファイルを添付", systemImage: "paperclip") {
                 focused = false
                 showingFiles = true
-            }.disabled(attachmentsBusy)
+            }.disabled(attachmentsBusy).accessibilityIdentifier("composer-attach-file")
             Button("スタンプを挿入", systemImage: "face.smiling") { openEmoji() }
             Button("メンションを挿入", systemImage: "at") { insertMention() }
         } label: {
