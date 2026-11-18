@@ -2,8 +2,8 @@
 ; ビルド例:
 ;   iscc /DAppVersion=0.2.12 desktop-tauri\installer\zoo2.iss
 
-#if Ver < EncodeVer(6, 3, 0)
-  #error This script requires Inno Setup 6.3.0 or later for UTF-8 without BOM.
+#if Ver < EncodeVer(6, 5, 2)
+  #error This script requires Inno Setup 6.5.2 or later for UTF-8 without BOM and PNG wizard images.
 #endif
 
 #ifndef AppVersion
@@ -41,6 +41,9 @@ CloseApplicationsFilter=*.exe
 ; 自動更新時の再起動は /RELAUNCH=1 と [Run] で確実に行う。
 RestartApplications=no
 SetupIconFile=..\src-tauri\icons\icon.ico
+WizardImageFile=wizard-image.png
+WizardImageBackColor=$00D6FF
+WizardSmallImageFile=wizard-small.png
 UninstallDisplayIcon={app}\zoo2-desktop-tauri.exe
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseFilename}

@@ -199,7 +199,7 @@ cargo tauri build --bundles deb    # NixOS では AppImage を作れないので
 - macOS の通知は、notify-rust の `preview-macos-un` で UNUserNotificationCenter から出し、起動時に許可を求める（古い NSUserNotification は許可を求められず、Finder として出そうとして表示されないことがある）。
 - (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。
 - 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml`（Windows では `%APPDATA%\zoo2-desktop-tauri\config.toml`）で変える。
-- Windows のリリース構成をローカルで作るときは、`cargo tauri build --no-bundle -- --locked` 後に `iscc /DAppVersion=<版> desktop-tauri\installer\zoo2.iss` を実行する（Inno Setup 6.3 以降、WebView2 Runtime、Windows 開発者用ビルドツールが必要）。Windows の Authenticode コード署名は未導入のため、初回実行時に SmartScreen の確認が出る。
+- Windows のリリース構成をローカルで作るときは、`cargo tauri build --no-bundle -- --locked` 後に `iscc /DAppVersion=<版> desktop-tauri\installer\zoo2.iss` を実行する（Inno Setup 6.5.2 以降、WebView2 Runtime、Windows 開発者用ビルドツールが必要）。Windows の Authenticode コード署名は未導入のため、初回実行時に SmartScreen の確認が出る。
 - ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。画面は同梱の `leptos` になる。Web の画面を試すときは、frontend の dev サーバー（`pnpm dev`）を立てて、debug ビルドで `ZOO_DESKTOP_UI=remote ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` を付ける。
 - NVIDIA と Wayland の組み合わせで画面が出ないときは、`WEBKIT_DISABLE_DMABUF_RENDERER=1` を付ける。
 - `wasm-bindgen` は `desktop-tauri/ui/Cargo.toml` で、nixpkgs の `wasm-bindgen-cli` と同じ版に固定している。flake.lock を更新して版が変わったら、両方をそろえる。

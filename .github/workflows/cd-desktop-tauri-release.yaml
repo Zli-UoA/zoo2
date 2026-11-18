@@ -150,7 +150,7 @@ jobs:
           }
           $needInstall = $true
           if ($iscc -and (Test-Path $iscc)) {
-            $probe = "#if Ver < EncodeVer(6, 3, 0)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
+            $probe = "#if Ver < EncodeVer(6, 5, 2)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
             $probe | & $iscc /Q /O- - | Out-Null
             if ($LASTEXITCODE -eq 0) { $needInstall = $false }
           }
