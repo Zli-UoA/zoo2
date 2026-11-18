@@ -61,26 +61,31 @@ async fn subscribe(
     // 同時に異なる端末を追加してもアカウントごとの上限を守る。
     lock_registration(&mut tx, &format!("apns-user:{}", actor.id)).await?;
     lock_registration(&mut tx, &id).await?;
-    validate_registration_time(body.created_at, unix_seconds()?)?;
     let revocation_id = digest(&format!("{id}:{secret_hash}"));
+    // DBのロック待ちが続いても、登録の期限と解除情報の寿命を同じ瞬間の時刻で判定する。
+    let eligibility = toasty::sql::query(
+        "WITH verification AS MATERIALIZED (SELECT clock_timestamp() AS verified_at)
+         SELECT floor(extract(epoch FROM verified_at))::bigint, EXISTS (
+             SELECT 1 FROM apns_revocations
+             WHERE ((id=$1 AND invalidated_at IS NULL) OR (id=$2 AND extract(epoch FROM invalidated_at) >= $3::bigint))
+               AND revoked_at >= (verified_at AT TIME ZONE 'UTC') - interval '11 minutes'
+         ) FROM verification",
+    )
+    .bind(revocation_id)
+    .bind(id.as_str())
+    .bind(body.created_at)
+    .exec(&mut tx)
+    .await?;
+    let result = eligibility[0].as_record_unwrap();
+    let now = i64::try_from(result[0].clone())?;
+    validate_registration_time(body.created_at, now)?;
+    if bool::try_from(result[1].clone())? {
+        return Err(AppError::Conflict("この通知登録は解除済みです".into()));
+    }
     let confirmed_at = jiff::Timestamp::from_second(body.created_at)
         .map_err(|_| AppError::BadRequest("端末の確認時刻が正しくありません".into()))?
         .to_zoned(jiff::tz::TimeZone::UTC)
         .datetime();
-    if !toasty::sql::query(
-        "SELECT 1::text FROM apns_revocations
-         WHERE ((id=$1 AND invalidated_at IS NULL) OR (id=$2 AND invalidated_at >= $3::text::timestamp))
-           AND revoked_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'",
-    )
-    .bind(revocation_id)
-    .bind(id.as_str())
-    .bind(confirmed_at.to_string())
-    .exec(&mut tx)
-    .await?
-    .is_empty()
-    {
-        return Err(AppError::Conflict("この通知登録は解除済みです".into()));
-    }
     let existing = ApnsSubscription::filter(ApnsSubscription::fields().id().eq(id.as_str()))
         .first()
         .exec(&mut tx)
@@ -240,7 +245,19 @@ async fn revoke(
     crate::apns::prune_revocations(&mut tx).await?;
     if !known
         && toasty::sql::query(
-            "SELECT id::text FROM apns_revocation_capacity WHERE id AND records < 10000",
+            // 満杯かつ期限切れの行が残る場合だけ、有効な行を上限まで数える。
+            "SELECT id::text FROM apns_revocation_capacity WHERE id AND CASE
+                 WHEN records < 10000 THEN true
+                 WHEN EXISTS (
+                     SELECT 1 FROM apns_revocations
+                     WHERE revoked_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'
+                 ) THEN NOT EXISTS (
+                     SELECT 1 FROM apns_revocations
+                     WHERE revoked_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'
+                     LIMIT 1 OFFSET 9999
+                 )
+                 ELSE false
+             END",
         )
         .exec(&mut tx)
         .await?
@@ -258,13 +275,6 @@ async fn revoke(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"ok": true})))
-}
-
-fn unix_seconds() -> Result<i64, AppError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_secs() as i64)
-        .map_err(|error| AppError::Internal(error.into()))
 }
 
 fn validate_registration_time(created: i64, now: i64) -> Result<(), AppError> {

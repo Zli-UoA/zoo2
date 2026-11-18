@@ -8,6 +8,7 @@ use axum::{
     response::Response,
 };
 use backend::{db::init_db, models::ApnsSubscription, routes::create_router, state::AppState};
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -78,7 +79,16 @@ fn registration(token: &str, secret: &str) -> Value {
 async fn check_registration() -> anyhow::Result<()> {
     // 共有の開発DBに残った解除記録が、容量とプロセス側レートの検証に混ざらないようにする。
     let fixture = test_db::ThreadDb::new().await?;
-    let mut config = fixture.config.clone();
+    let result =
+        std::panic::AssertUnwindSafe(check_registration_with_config(fixture.config.clone()))
+            .catch_unwind()
+            .await;
+    let cleanup = fixture.cleanup().await;
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+    cleanup
+}
+
+async fn check_registration_with_config(mut config: backend::config::Config) -> anyhow::Result<()> {
     let mut url = reqwest::Url::parse(&config.database_url)?;
     let parameters: Vec<_> = url
         .query_pairs()
@@ -143,6 +153,38 @@ async fn check_registration() -> anyhow::Result<()> {
             .status(),
         StatusCode::BAD_REQUEST
     );
+    for issued in [i64::MIN, -62_198_755_200, i64::MAX] {
+        let mut out_of_range = registration(&token, &secret);
+        out_of_range["created_at"] = issued.into();
+        assert_eq!(
+            post(&app, REGISTER, Some(&alice), out_of_range)
+                .await?
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    // 解除記録の読み取りが待たされる間に、解除記録と元の登録要求が共に期限切れになる。
+    let mut blocker = db.clone();
+    let mut tx = blocker.transaction().await?;
+    toasty::sql::statement("LOCK TABLE apns_revocations IN ACCESS EXCLUSIVE MODE")
+        .exec(&mut tx)
+        .await?;
+    let marker = backend::apns::digest(&format!("{id}:{}", backend::apns::digest(&secret)));
+    toasty::sql::statement(
+        "INSERT INTO apns_revocations(id,revoked_at) VALUES (
+            $1,(clock_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes' + interval '0.5 seconds')",
+    ).bind(marker.as_str()).exec(&mut tx).await?;
+    let mut last_second = registration(&token, &secret);
+    last_second["created_at"] = (jiff::Timestamp::now().as_second() - 600).into();
+    let mut delayed = std::pin::pin!(post(&app, REGISTER, Some(&alice), last_second));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(1200), &mut delayed)
+            .await
+            .is_err()
+    );
+    tx.commit().await?;
+    assert_eq!(delayed.await?.status(), StatusCode::BAD_REQUEST);
+    assert!(row().exec(&mut db).await?.is_none());
     // 確認が古い要求は同じ応答を返しても、端末を再確認した時刻を進めない。
     let now = jiff::Timestamp::now().as_second();
     let register_at = |issued: i64| {
@@ -375,9 +417,38 @@ async fn check_registration() -> anyhow::Result<()> {
         .status(),
         StatusCode::CONFLICT
     );
+    // 期限切れが1回の回収件数を超えていても、その行は有効な解除記録の上限に含めない。
+    toasty::sql::statement(
+        "INSERT INTO apns_revocations(id,revoked_at)
+         SELECT $1 || n::text,(statement_timestamp() AT TIME ZONE 'UTC') - interval '12 minutes'
+         FROM generate_series(1,10200) n",
+    )
+    .bind(prefix.as_str())
+    .exec(&mut db)
+    .await?;
+    assert_eq!(
+        post(&secured, REVOKE, None, revoke(&unknown, &fresh))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        toasty::sql::query(
+            "SELECT 1::text FROM apns_revocations WHERE starts_with(id,$1) HAVING count(*)=10072"
+        )
+        .bind(prefix.as_str())
+        .exec(&mut db)
+        .await?
+        .len(),
+        1
+    );
+    toasty::sql::statement("DELETE FROM apns_revocations WHERE starts_with(id,$1)")
+        .bind(prefix.as_str())
+        .exec(&mut db)
+        .await?;
     // 未登録端末からの解除要求が上限に達しても、正規端末は直ちに配信を停止できる。
-    // 間違った解除情報、登録前の解除、DB上限の確認で3枠を消費済み。
-    for _ in 3..120 {
+    // 間違った解除情報、登録前の解除、DB上限2回の確認で4枠を消費済み。
+    for _ in 4..120 {
         let unknown = backend::apns::digest(&Uuid::new_v4().to_string());
         let response = post(&secured, REVOKE, None, revoke(&unknown, &fresh)).await?;
         assert_eq!(response.status(), StatusCode::OK);
@@ -404,6 +475,5 @@ async fn check_registration() -> anyhow::Result<()> {
             .status(),
         StatusCode::CONFLICT
     );
-    fixture.cleanup().await?;
     Ok(())
 }

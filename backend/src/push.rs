@@ -396,7 +396,11 @@ impl Delivery {
 #[derive(Clone, Copy)]
 pub(crate) enum PushRecipient<'a> {
     Notification(&'a Notification),
-    CallInvite(&'a str),
+    CallInvite {
+        user_id: &'a str,
+        channel_id: &'a str,
+    },
+    CallInviteEnd(&'a str),
 }
 
 #[derive(Clone, Copy)]
@@ -409,7 +413,7 @@ impl<'a> PushRecipient<'a> {
     fn user_id(self) -> &'a str {
         match self {
             Self::Notification(notification) => &notification.user_id,
-            Self::CallInvite(invitee_id) => invitee_id,
+            Self::CallInvite { user_id, .. } | Self::CallInviteEnd(user_id) => user_id,
         }
     }
 
@@ -418,9 +422,15 @@ impl<'a> PushRecipient<'a> {
         db: &mut dyn toasty::db::Executor,
         device: PushDevice<'_>,
     ) -> anyhow::Result<bool> {
-        let notification = match self {
-            Self::Notification(notification) => Some(notification),
-            Self::CallInvite(_) => None,
+        let (channel_id, message_id, requires_message) = match self {
+            Self::Notification(n) => (
+                Some(n.channel_id.as_str()),
+                n.message_id.as_deref(),
+                n.message_id.is_some() || n.notification_type != "missed_call",
+            ),
+            Self::CallInvite { channel_id, .. } => (Some(channel_id), None, false),
+            // 退室後も端末に表示済みの着信を閉じる。終了通知には本文もチャンネル名も含まれない。
+            Self::CallInviteEnd(_) => (None, None, false),
         };
         // 現在の購読世代と閲覧権限を同じスナップショットで確認する。通話招待にはメッセージがない。
         let query = |registration: &str| {
@@ -432,13 +442,13 @@ impl<'a> PushRecipient<'a> {
                    WHERE u.id=s.user_id AND NOT u.is_deactivated AND c.deleted_at IS NULL
                      AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
                        SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
-                     AND (EXISTS(SELECT 1 FROM messages WHERE id=$3 AND channel_id=c.id AND deleted_at IS NULL)
-                       OR ($3='' AND $4='missed_call'))))"
+                     AND (NOT $4 OR EXISTS(SELECT 1 FROM messages
+                       WHERE id=$3 AND channel_id=c.id AND deleted_at IS NULL))))"
             ))
             .bind(self.user_id())
-            .bind_typed(notification.map(|n| n.channel_id.as_str()), toasty::schema::db::Type::Text)
-            .bind(notification.and_then(|n| n.message_id.as_deref()).unwrap_or(""))
-            .bind(notification.map_or("", |n| n.notification_type.as_str()))
+            .bind_typed(channel_id, toasty::schema::db::Type::Text)
+            .bind(message_id.unwrap_or(""))
+            .bind(requires_message)
         };
         let query = match device {
             PushDevice::WebOrFcm(s) => query(
@@ -492,13 +502,7 @@ async fn push_to_user(
             // Calls are a Web-only feature; native Android subscribes to message notifications.
             if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
                 match android
-                    .send(
-                        client,
-                        &subscription.endpoint,
-                        user_id,
-                        payload,
-                        recipient.can_receive(db, PushDevice::WebOrFcm(&subscription)),
-                    )
+                    .send(client, db, recipient, &subscription, payload)
                     .await
                 {
                     Ok(true) => {
@@ -666,7 +670,7 @@ async fn deliver_call_invites(
                 NotificationPayload {
                     title: String::new(),
                     body: String::new(),
-                    url: format!("/channels/{}", invite.channel_id),
+                    url: String::new(),
                     tag: call_invite_tag(&invite.id),
                     notification_type: "call_invite_end".into(),
                     e2ee: None,
@@ -710,7 +714,14 @@ async fn deliver_call_invites(
                 Some(&config),
                 None,
                 &mut db,
-                PushRecipient::CallInvite(&invite.invitee_id),
+                if end {
+                    PushRecipient::CallInviteEnd(&invite.invitee_id)
+                } else {
+                    PushRecipient::CallInvite {
+                        user_id: &invite.invitee_id,
+                        channel_id: &invite.channel_id,
+                    }
+                },
                 &payload,
                 &delivery,
             )
@@ -812,7 +823,11 @@ mod tests {
             created_at: crate::models::now_utc_millis(),
         };
         let recipient = PushRecipient::Notification(&notification);
-        let invitee = PushRecipient::CallInvite(&user);
+        let invitee = PushRecipient::CallInvite {
+            user_id: &user,
+            channel_id: &channel,
+        };
+        let invite_end = PushRecipient::CallInviteEnd(&user);
         let web = PushSubscription::create()
             .id(message.clone())
             .user_id(user.clone())
@@ -832,6 +847,8 @@ mod tests {
         let web_device = PushDevice::WebOrFcm(&web);
         let apple_device = PushDevice::Apns(&apple);
         assert!(!recipient.can_receive(&mut tx, web_device).await?);
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        assert!(invite_end.can_receive(&mut tx, web_device).await?);
         toasty::sql::statement(
             "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
         )
@@ -845,6 +862,13 @@ mod tests {
         toasty::sql::statement("SAVEPOINT device_check")
             .exec(&mut tx)
             .await?;
+        toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
+            .bind(user.as_str())
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        assert!(invite_end.can_receive(&mut tx, web_device).await?);
         toasty::sql::statement("SET LOCAL search_path=pg_catalog")
             .exec(&mut tx)
             .await?;
@@ -857,6 +881,7 @@ mod tests {
             .bind(user.as_str()).exec(&mut tx).await?;
         assert!(!recipient.can_receive(&mut tx, apple_device).await?);
         assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        assert!(!invite_end.can_receive(&mut tx, web_device).await?);
         toasty::sql::statement("UPDATE user_event_settings SET dnd_until=NULL WHERE user_id=$1")
             .bind(user.as_str())
             .exec(&mut tx)
@@ -913,7 +938,7 @@ mod tests {
         let transferred_device = PushDevice::WebOrFcm(&transferred);
         delete_invalid_subscription(&mut tx, &transferred).await;
         assert!(
-            !PushRecipient::CallInvite(&other_user)
+            !PushRecipient::CallInviteEnd(&other_user)
                 .can_receive(&mut tx, transferred_device)
                 .await?
         );

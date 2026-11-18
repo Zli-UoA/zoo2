@@ -1,5 +1,6 @@
 //! Native Android delivery. Provider credentials and registration tokens are never logged.
-use super::NotificationPayload;
+use super::{NotificationPayload, PushDevice, PushRecipient};
+use crate::models::PushSubscription;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -59,19 +60,35 @@ impl FcmConfig {
         }))
     }
 
-    async fn access_token(&self, client: &reqwest::Client) -> anyhow::Result<String> {
+    async fn access_token(
+        &self,
+        client: &reqwest::Client,
+        token_url: &str,
+        before_refresh: impl Future<Output = anyhow::Result<bool>>,
+    ) -> anyhow::Result<Option<String>> {
         struct CachedToken {
             key: Vec<u8>,
             token: String,
             until: Instant,
         }
         static CACHE: OnceLock<Mutex<Option<CachedToken>>> = OnceLock::new();
-        let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().await;
-        if let Some(cached) = cache
-            .as_ref()
-            .filter(|v| v.key == self.cache_key && v.until > Instant::now())
-        {
-            return Ok(cached.token.clone());
+        let cache = CACHE.get_or_init(|| Mutex::new(None));
+        let cached_token = |entry: &Option<CachedToken>| {
+            entry
+                .as_ref()
+                .filter(|v| v.key == self.cache_key && v.until > Instant::now())
+                .map(|v| v.token.clone())
+        };
+        if let Some(token) = cached_token(&*cache.lock().await) {
+            return Ok(Some(token));
+        }
+        // 配信を見送る端末のためのOAuth更新を省く。権限照会中は他の配送のキャッシュを塞がない。
+        if !before_refresh.await? {
+            return Ok(None);
+        }
+        let mut cache = cache.lock().await;
+        if let Some(token) = cached_token(&cache) {
+            return Ok(Some(token));
         }
         #[derive(Serialize)]
         struct Claims<'a> {
@@ -95,7 +112,7 @@ impl FcmConfig {
         )
         .map_err(|_| anyhow::anyhow!("FCM OAuth assertion failed"))?;
         let response = client
-            .post(TOKEN_URL)
+            .post(token_url)
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 ("assertion", assertion.as_str()),
@@ -120,26 +137,32 @@ impl FcmConfig {
             token: token.access_token.clone(),
             until,
         });
-        Ok(token.access_token)
+        Ok(Some(token.access_token))
     }
 
     /// True only for an explicitly unregistered token; configuration errors must not delete devices.
     pub(super) async fn send(
         &self,
         client: &reqwest::Client,
-        endpoint: &str,
-        user: &str,
+        db: &mut toasty::Db,
+        recipient: PushRecipient<'_>,
+        subscription: &PushSubscription,
         payload: &NotificationPayload,
-        can_receive: impl Future<Output = anyhow::Result<bool>>,
     ) -> anyhow::Result<bool> {
-        let (token, binding) = registration(endpoint)
+        let (token, binding) = registration(&subscription.endpoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid Android registration"))?;
-        let body = message(token, binding, user, payload);
+        let body = message(token, binding, recipient.user_id(), payload);
         anyhow::ensure!(
             serde_json::to_vec(&body["message"]["data"])?.len() <= 4096,
             "FCM data payload too large"
         );
-        let access = self.access_token(client).await?;
+        let device = PushDevice::WebOrFcm(subscription);
+        let Some(access) = self
+            .access_token(client, TOKEN_URL, recipient.can_receive(db, device))
+            .await?
+        else {
+            return Ok(false);
+        };
         post_message(
             client,
             &format!(
@@ -148,7 +171,7 @@ impl FcmConfig {
             ),
             &access,
             &body,
-            can_receive,
+            recipient.can_receive(db, device),
         )
         .await
     }
@@ -329,6 +352,54 @@ mod tests {
                 None => assert!(result.is_err()),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn denied_devices_skip_oauth_and_cached_tokens_skip_the_precheck() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"access_token":"test-token","expires_in":3600})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let rsa =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        let config = FcmConfig {
+            project_id: "test".into(),
+            email: "test@example.com".into(),
+            key: EncodingKey::from_rsa_pem(&rsa.private_key_to_pem_pkcs8().unwrap()).unwrap(),
+            cache_key: uuid::Uuid::new_v4().as_bytes().to_vec(),
+        };
+        let client = super::super::push_client().unwrap();
+        let url = server.uri();
+        for permission in [Ok(false), Err(anyhow::anyhow!("照会失敗"))] {
+            let unavailable = permission.is_err();
+            let token = config
+                .access_token(&client, &url, std::future::ready(permission))
+                .await;
+            assert_eq!(token.is_err(), unavailable);
+            assert!(token.ok().flatten().is_none());
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert_eq!(
+            config
+                .access_token(&client, &url, async { Ok(true) })
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("test-token")
+        );
+        let cached = config
+            .access_token(&client, &url, async {
+                panic!("キャッシュ利用時に事前照会が走りました")
+            })
+            .await
+            .unwrap();
+        assert_eq!(cached.as_deref(), Some("test-token"));
     }
 
     #[tokio::test]
