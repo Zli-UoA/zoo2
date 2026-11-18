@@ -68,7 +68,10 @@ const cases = [
       ['heavy idle: no heavy jobs', {...base, largeExpected: 'zli-k8s-heavy', heavyCalls: {runs: 4, jobs: 0}}, H, H],
       ['heavy has a free runner: one running job', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
       ['heavy full: two running jobs go to hosted', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
-      ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 4, jobs: 3}}, H, H],
+      ['heavy full: running and queued jobs across workflows', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      ['a full queued run is counted when the second listing fails', {...base, largeExpected: H, heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued'), job('queued')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['an incomplete listing warns when the queued run is below capacity', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['the latest run can finish during confirmation', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, finishedRun: '2', heavyCalls: {runs: 4, jobs: 4}}, H, H],
       ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [...Array.from({length: 100}, () => job('completed')), job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 4, jobs: 4}}, H, H],
       ['a run moving out of queued is counted', {...base, largeExpected: H, movingRun: true, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['a padded runner label is rejected', {...base, large: 'zli-k8s-heavy ', largeExpected: H, warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
@@ -126,7 +129,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
       };
       if (kind === 'workflows') {
         heavy.runs++;
-        if (input.heavyError) return {ok: false, status: 403, json: async () => { throw new Error('response must not be read'); }};
+        if (input.heavyError === true || input.heavyError === heavy.runs) return {ok: false, status: 403, json: async () => { throw new Error('response must not be read'); }};
         await hang();
         const [workflow] = rest2;
         if (input.movingRun && workflow === 'ci-backend.yaml') {
@@ -191,6 +194,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
       if (input.heavyHang) assert.equal(aborted, true, 'the deadline aborts the request in flight');
       assert.ok(warnings.every(m => !m.includes('private response') && !m.includes('response must not be logged')));
       if (input.warning) assert.deepEqual(warnings, [input.warning]);
+      else if (input.heavyCalls) assert.deepEqual(warnings, []);
     } finally {
       globalThis.fetch = originalFetch;
     }

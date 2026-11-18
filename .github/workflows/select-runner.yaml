@@ -120,10 +120,17 @@ jobs:
               };
               for (const workflow_id of LARGE_WORKFLOWS) {
                 const runs = [];
+                let listError;
                 for (const status of ['queued', 'in_progress']) {
-                  const listed = await page(`workflows/${workflow_id}/runs`, {status}, 'workflow_runs');
-                  if (!listed) return {busy, partial: true};
-                  runs.push(...listed);
+                  try {
+                    const listed = await page(`workflows/${workflow_id}/runs`, {status}, 'workflow_runs');
+                    if (!listed) return {busy, partial: true};
+                    runs.push(...listed);
+                  } catch (error) {
+                    if (runs.length === 0) throw error;
+                    listError = error;
+                    break;
+                  }
                 }
                 // 両方の一覧を取得してから、各 run の最新ジョブを一度だけ数える。
                 for (const run of runs) {
@@ -131,7 +138,7 @@ jobs:
                   seen.add(run.id);
                   const jobs = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
                   if (!jobs) return {busy, partial: true};
-                  const current = countHeavy(jobs);
+                  let current = countHeavy(jobs);
                   if (current === 0) continue;
                   busy += current;
                   if (busy >= HEAVY_RUNNERS) {
@@ -145,10 +152,18 @@ jobs:
                       if (count === 0) activeRuns.delete(id);
                       busy += count;
                     }
+                    if (busy >= HEAVY_RUNNERS && current < HEAVY_RUNNERS) {
+                      const refreshed = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
+                      if (!refreshed) return {busy, partial: true};
+                      busy -= current;
+                      current = countHeavy(refreshed);
+                      busy += current;
+                    }
                     if (busy >= HEAVY_RUNNERS) return {busy, partial: false};
                   }
-                  activeRuns.add(run.id);
+                  if (current > 0) activeRuns.add(run.id);
                 }
+                if (listError) throw listError;
               }
               return {busy, partial: false};
             };
