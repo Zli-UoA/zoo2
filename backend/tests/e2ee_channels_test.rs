@@ -1704,32 +1704,49 @@ async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
 
     // Hold the second membership uncommitted while another transaction changes the user to
     // `single`. The status trigger cannot see this row; the insert trigger must serialize both.
-    let mut membership_db = env.db.clone();
-    let mut membership_tx = membership_db.transaction().await?;
-    toasty::sql::statement(
-        "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, now())",
-    )
-    .bind(guest.as_str())
-    .bind(second_channel.as_str())
-    .exec(&mut membership_tx)
-    .await?;
+    // Both sides run on connections with known PIDs so the observation below can target this
+    // transition waiting on this membership insert; a query-shaped match could catch an
+    // unrelated test's UPDATE and let the race pass without the needed wait.
+    let database_url = Config::from_env().database_url;
+    let (mut membership_connection, membership_driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(membership_driver);
+    let membership_pid: i32 = membership_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let mut membership_tx = membership_connection.transaction().await?;
+    membership_tx
+        .execute(
+            "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, now())",
+            &[&guest, &second_channel],
+        )
+        .await?;
 
-    let mut status_db = env.db.clone();
+    let transition_url = database_url.clone();
     let transitioning_guest = guest.clone();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (pid_tx, pid_rx) = tokio::sync::oneshot::channel::<i32>();
     let transition = tokio::spawn(async move {
-        let _ = started_tx.send(());
-        let mut tx = status_db.transaction().await?;
-        toasty::sql::statement("UPDATE users SET guest_kind = 'single' WHERE id = $1")
-            .bind(transitioning_guest.as_str())
-            .exec(&mut tx)
-            .await?;
-        tx.commit().await
+        let (mut connection, driver) =
+            tokio_postgres::connect(&transition_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let tx = connection.transaction().await?;
+        // Send the PID before the UPDATE: the UPDATE blocks on the membership
+        // transaction's users-row lock, so reporting the PID only afterwards
+        // would deadlock the test itself.
+        let pid: i32 = tx.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
+        let _ = pid_tx.send(pid);
+        tx.execute(
+            "UPDATE users SET guest_kind = 'single' WHERE id = $1",
+            &[&transitioning_guest],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<(), tokio_postgres::Error>(())
     });
-    started_rx.await?;
-    let config = Config::from_env();
+    let transition_pid = pid_rx.await?;
     let (observer, observer_driver) =
-        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(observer_driver);
     let transition_was_waiting = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -1738,8 +1755,8 @@ async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
             }
             let row = observer
                 .query_one(
-                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE 'UPDATE users SET guest_kind%')",
-                    &[],
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid)))",
+                    &[&transition_pid, &membership_pid],
                 )
                 .await?;
             if row.get::<_, bool>(0) {

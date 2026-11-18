@@ -857,6 +857,11 @@ async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() ->
     let reassign = tokio::spawn(async move {
         let mut db = reassign_db;
         let mut tx = db.transaction().await?;
+        // JoinHandle を破棄してもタスクは止まらない。DB 側のロック待ちに期限を付け、
+        // 後片付けの削除がこのトランザクションを待って止まらないようにする。
+        toasty::sql::statement("SET LOCAL statement_timeout = '10s'")
+            .exec(&mut tx)
+            .await?;
         backend::slack::link::reassign(&mut tx, &reassign_team, "UG-RACE", "Guest", &reassign_user)
             .await?;
         tx.commit().await?;
@@ -884,7 +889,9 @@ async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() ->
     .await??;
 
     transition.commit().await?;
-    tokio::time::timeout(std::time::Duration::from_secs(10), reassign).await???;
+    // statement_timeout (10s) より長く待つ。失敗時も、再割り当てのトランザクションが
+    // DB 側で中断を終えてから後片付けへ進む。
+    tokio::time::timeout(std::time::Duration::from_secs(15), reassign).await???;
     let memberships = sql(
         &state,
         "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE user_id=$1 AND channel_id=$2",
@@ -923,6 +930,10 @@ async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() ->
             .bind(user.as_str())
             .bind(owner.as_str())
             .bind(placeholder.as_str())
+            .exec(&mut tx)
+            .await?;
+        // 残ったロック待ちで後片付けが無期限に止まらないようにする。
+        toasty::sql::statement("SET LOCAL statement_timeout = '10s'")
             .exec(&mut tx)
             .await?;
         toasty::sql::statement("DELETE FROM users WHERE id IN ($1,$2,$3)")
