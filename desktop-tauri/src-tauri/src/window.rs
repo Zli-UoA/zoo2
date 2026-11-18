@@ -225,37 +225,45 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let popup_core = core.clone();
     let perm_core = core.clone();
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-    let window = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
-        .title("zoo2")
-        .inner_size(1100.0, 760.0)
-        .min_inner_size(480.0, 360.0)
-        .on_navigation(move |url| {
-            if classify(url, &nav_core) != Origin::Other {
-                return true;
-            }
-            // 許したオリジン以外 (メッセージ中のリンクなど) は、既定のブラウザーで開く。
-            open_external(&handle, &nav_core, url);
-            false
-        })
-        // `target="_blank"` や `window.open` も、新しいウィンドウは作らず、既定のブラウザーで開く。
-        .on_new_window(move |url, _features| {
-            open_external(&popup_handle, &popup_core, &url);
-            NewWindowResponse::Deny
-        })
-        // 通話 (getUserMedia) のマイクとカメラは、(b) の Web の画面にだけ許す。
-        // macOS では、このあと OS がマイクの使用を尋ねる (Info.plist の説明文を出す)。
-        .on_permission_request(move |webview, kind| {
-            let remote = webview
-                .url()
-                .is_ok_and(|url| classify(&url, &perm_core) == Origin::Remote);
-            match kind {
-                PermissionKind::Microphone | PermissionKind::Camera if remote => {
-                    PermissionResponse::Allow
-                }
-                _ => PermissionResponse::Default,
-            }
-        })
-        .build()?;
+    let window = {
+        let mut builder =
+            WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
+                .title("zoo2")
+                .inner_size(1100.0, 760.0)
+                .min_inner_size(480.0, 360.0)
+                .on_navigation(move |url| {
+                    if classify(url, &nav_core) != Origin::Other {
+                        return true;
+                    }
+                    // 許したオリジン以外 (メッセージ中のリンクなど) は、既定のブラウザーで開く。
+                    open_external(&handle, &nav_core, url);
+                    false
+                })
+                // `target="_blank"` や `window.open` も、新しいウィンドウは作らず、既定のブラウザーで開く。
+                .on_new_window(move |url, _features| {
+                    open_external(&popup_handle, &popup_core, &url);
+                    NewWindowResponse::Deny
+                })
+                // 通話 (getUserMedia) のマイクとカメラは、(b) の Web の画面にだけ許す。
+                // macOS では、このあと OS がマイクの使用を尋ねる (Info.plist の説明文を出す)。
+                .on_permission_request(move |webview, kind| {
+                    let remote = webview
+                        .url()
+                        .is_ok_and(|url| classify(&url, &perm_core) == Origin::Remote);
+                    match kind {
+                        PermissionKind::Microphone | PermissionKind::Camera if remote => {
+                            PermissionResponse::Allow
+                        }
+                        _ => PermissionResponse::Default,
+                    }
+                });
+        #[cfg(target_os = "windows")]
+        if let Ok(dir) = app.path().app_local_data_dir() {
+            // WebView2 の保存データもアンインストール対象 (%LOCALAPPDATA%\chat.zli.desktop) に揃える。
+            builder = builder.data_directory(dir);
+        }
+        builder.build()?
+    };
     #[cfg(target_os = "linux")]
     enable_webrtc(&window);
     Ok(())

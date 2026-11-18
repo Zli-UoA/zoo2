@@ -223,6 +223,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ConfigDir: String;
   LocalDataDir: String;
+  FallbackWebViewDir: String;
   PromptText: String;
   FailedDirs: String;
 begin
@@ -233,7 +234,8 @@ begin
 
   ConfigDir := ExpandConstant('{userappdata}\zoo2-desktop-tauri');
   LocalDataDir := ExpandConstant('{localappdata}\chat.zli.desktop');
-  if (not UninstallSilent) and (DirExists(ConfigDir) or DirExists(LocalDataDir)) then begin
+  FallbackWebViewDir := ExpandConstant('{app}\zoo2-desktop-tauri.exe.WebView2');
+  if (not UninstallSilent) and (DirExists(ConfigDir) or DirExists(LocalDataDir) or DirExists(FallbackWebViewDir)) then begin
     PromptText := CustomMessage('RemoveUserDataPrompt') + #13#10 + #13#10 + CustomMessage('RemoveUserDataHint');
     if SuppressibleMsgBox(PromptText, mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then begin
       FailedDirs := '';
@@ -243,6 +245,11 @@ begin
         if FailedDirs <> '' then
           FailedDirs := FailedDirs + #13#10;
         FailedDirs := FailedDirs + LocalDataDir;
+      end;
+      if DirExists(FallbackWebViewDir) and (not DelTree(FallbackWebViewDir, True, True, True)) then begin
+        if FailedDirs <> '' then
+          FailedDirs := FailedDirs + #13#10;
+        FailedDirs := FailedDirs + FallbackWebViewDir;
       end;
       if FailedDirs <> '' then
         SuppressibleMsgBox(Format(CustomMessage('RemoveUserDataFailed'), [FailedDirs]), mbError, MB_OK, IDOK);

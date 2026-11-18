@@ -53,6 +53,7 @@ pub fn show_with(
     body: &str,
     on_click: impl FnOnce(&AppHandle) + Send + 'static,
 ) {
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     #[cfg(unix)]
     let mut notification = {
         let mut notification = notify_rust::Notification::new();
@@ -174,7 +175,7 @@ impl CallToast {
     }
 
     /// まだ閉じていないときだけ `show` を呼び、成功したら表示済みへ遷移させる。
-    #[cfg(any(target_os = "windows", test))]
+    #[cfg(target_os = "windows")]
     fn show_if_open(&self, handle: ToastHandle, show: impl FnOnce() -> bool) -> bool {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if matches!(*state, CallToastState::Closed) {
@@ -223,6 +224,7 @@ pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: Cal
         return;
     }
 
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     #[cfg(unix)]
     let mut notification = {
         let mut notification = notify_rust::Notification::new();
@@ -419,8 +421,8 @@ mod windows_impl {
     static CALL_TOAST_SEQ: AtomicU64 = AtomicU64::new(1);
     static TOAST_INSTANCE_SEQ: AtomicU64 = AtomicU64::new(1);
 
-    struct ActiveToast {
-        tag: Option<String>,
+    pub(super) struct ActiveToast {
+        pub(super) tag: Option<String>,
         // WinRT のイベント通知を受け取る間、COM オブジェクトへの参照を保持する。
         _toast: ToastNotification,
     }
@@ -428,11 +430,11 @@ mod windows_impl {
     static ACTIVE_TOASTS: OnceLock<Mutex<HashMap<u64, ActiveToast>>> = OnceLock::new();
     static TOAST_WORKER: OnceLock<mpsc::Sender<Box<dyn FnOnce() + Send>>> = OnceLock::new();
 
-    fn active_toasts() -> &'static Mutex<HashMap<u64, ActiveToast>> {
+    pub(super) fn active_toasts() -> &'static Mutex<HashMap<u64, ActiveToast>> {
         ACTIVE_TOASTS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    fn spawn_mta_task(task: impl FnOnce() + Send + 'static) {
+    pub(super) fn spawn_mta_task(task: impl FnOnce() + Send + 'static) {
         let tx = TOAST_WORKER.get_or_init(|| {
             let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
             std::thread::Builder::new()
@@ -450,7 +452,10 @@ mod windows_impl {
         let _ = tx.send(Box::new(task));
     }
 
-    fn retain_toast(toast: &ToastNotification, tag: Option<&str>) -> windows::core::Result<u64> {
+    pub(super) fn retain_toast(
+        toast: &ToastNotification,
+        tag: Option<&str>,
+    ) -> windows::core::Result<u64> {
         let id = TOAST_INSTANCE_SEQ.fetch_add(1, Ordering::Relaxed);
         let dismissed =
             TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(move |_, _| {
@@ -492,7 +497,7 @@ mod windows_impl {
             .remove(&id);
     }
 
-    fn release_toast_by_tag(tag: &str) {
+    pub(super) fn release_toast_by_tag(tag: &str) {
         active_toasts()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -659,6 +664,22 @@ mod windows_impl {
         });
     }
 
+    pub(super) fn dispatch_call_action(actions: CallActions, arg: &str) {
+        match arg {
+            "accept" => {
+                if let Some(accept) = actions.accept {
+                    accept();
+                }
+            }
+            "decline" => {
+                if let Some(decline) = actions.decline {
+                    decline();
+                }
+            }
+            _ => (actions.open)(),
+        }
+    }
+
     fn show_call_invite_inner(
         shared: &CallToast,
         tag: &str,
@@ -688,19 +709,7 @@ mod windows_impl {
                 .and_then(|a| a.Arguments().ok())
                 .map(|s| s.to_string_lossy())
                 .unwrap_or_default();
-            match arg.as_str() {
-                "accept" => {
-                    if let Some(accept) = actions.accept {
-                        accept();
-                    }
-                }
-                "decline" => {
-                    if let Some(decline) = actions.decline {
-                        decline();
-                    }
-                }
-                _ => (actions.open)(),
-            }
+            dispatch_call_action(actions, arg.as_str());
             Ok(())
         });
         if let Err(err) = toast.Activated(&handler) {
@@ -799,5 +808,143 @@ mod tests {
                 doc.LoadXml(&HSTRING::from(&sample)).unwrap();
             }
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_toast_dispatch_routes_accept_decline_and_body_click() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let run = |arg: &str| -> (usize, usize, usize) {
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let declined = Arc::new(AtomicUsize::new(0));
+            let opened = Arc::new(AtomicUsize::new(0));
+            let a = accepted.clone();
+            let d = declined.clone();
+            let o = opened.clone();
+            super::windows_impl::dispatch_call_action(
+                super::CallActions {
+                    accept: Some(Box::new(move || {
+                        a.fetch_add(1, Ordering::SeqCst);
+                    })),
+                    decline: Some(Box::new(move || {
+                        d.fetch_add(1, Ordering::SeqCst);
+                    })),
+                    open: Box::new(move || {
+                        o.fetch_add(1, Ordering::SeqCst);
+                    }),
+                },
+                arg,
+            );
+            (
+                accepted.load(Ordering::SeqCst),
+                declined.load(Ordering::SeqCst),
+                opened.load(Ordering::SeqCst),
+            )
+        };
+
+        assert_eq!(run("accept"), (1, 0, 0));
+        assert_eq!(run("decline"), (0, 1, 0));
+        assert_eq!(run(""), (0, 0, 1));
+        assert_eq!(run("unknown"), (0, 0, 1));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_toast_worker_retains_winrt_com_objects_until_release() {
+        use std::sync::mpsc;
+        use windows::{
+            Data::Xml::Dom::XmlDocument,
+            Foundation::TypedEventHandler,
+            UI::Notifications::ToastNotification,
+            core::{HSTRING, IInspectable},
+        };
+
+        let xml = build_call_toast_xml("Test", "着信テスト", true, true);
+        let (done_tx, done_rx) = mpsc::channel();
+        super::windows_impl::spawn_mta_task(move || {
+            let result = (|| -> windows::core::Result<()> {
+                let doc = XmlDocument::new()?;
+                doc.LoadXml(&HSTRING::from(&xml))?;
+                let toast = ToastNotification::CreateToastNotification(&doc)?;
+                let handler =
+                    TypedEventHandler::<ToastNotification, IInspectable>::new(|_, _| Ok(()));
+                toast.Activated(&handler)?;
+                let tag = "test-retain-1";
+                let id = super::windows_impl::retain_toast(&toast, Some(tag))?;
+                {
+                    let map = super::windows_impl::active_toasts()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    assert!(map.contains_key(&id));
+                }
+                super::windows_impl::release_toast_by_tag(tag);
+                {
+                    let map = super::windows_impl::active_toasts()
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    assert!(!map.contains_key(&id));
+                }
+                Ok(())
+            })();
+            let _ = done_tx.send(result);
+        });
+        done_rx.recv().unwrap().unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires interactive Windows notification session"]
+    fn windows_live_action_center_toast_roundtrip() {
+        use std::{sync::mpsc, time::Duration};
+        use windows::{
+            Data::Xml::Dom::XmlDocument,
+            Foundation::TypedEventHandler,
+            UI::Notifications::{ToastNotification, ToastNotificationManager},
+            core::{HSTRING, IInspectable},
+        };
+
+        let xml = build_call_toast_xml("zoo2-test", "WinRT toast verification", true, true);
+        let tag = "smoke-call-1";
+        let (done_tx, done_rx) = mpsc::channel();
+        super::windows_impl::spawn_mta_task(move || {
+            let result = (|| -> windows::core::Result<()> {
+                let doc = XmlDocument::new()?;
+                doc.LoadXml(&HSTRING::from(&xml))?;
+                let toast = ToastNotification::CreateToastNotification(&doc)?;
+                toast.SetTag(&HSTRING::from(tag))?;
+                toast.SetGroup(&HSTRING::from("calls"))?;
+                let _id = super::windows_impl::retain_toast(&toast, Some(tag))?;
+                let handler =
+                    TypedEventHandler::<ToastNotification, IInspectable>::new(|_, _| Ok(()));
+                toast.Activated(&handler)?;
+                let notifier = ToastNotificationManager::CreateToastNotifierWithId(
+                    &HSTRING::from(super::WINDOWS_APP_ID),
+                )?;
+                notifier.Show(&toast)?;
+                Ok(())
+            })();
+            let _ = done_tx.send(result);
+        });
+        done_rx.recv().unwrap().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        {
+            let map = super::windows_impl::active_toasts()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                map.values().any(|t| t.tag.as_deref() == Some(tag)),
+                "toast COM reference must stay retained after worker callback returns"
+            );
+        }
+        super::windows_impl::close_toast(tag);
+        std::thread::sleep(Duration::from_millis(300));
+        let map = super::windows_impl::active_toasts()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!map.values().any(|t| t.tag.as_deref() == Some(tag)));
     }
 }
