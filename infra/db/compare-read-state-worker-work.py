@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 small = json.loads((Path(sys.argv[1]) / 'work.json').read_text())
 large = json.loads((Path(sys.argv[2]) / 'work.json').read_text())
-assert small.keys() == large.keys() and len(small) == 12, 'missing query conditions'
+assert small.keys() == large.keys() and len(small) == 14, 'missing query conditions'
 
 
 # Static lookup tables are seeded with a fixed number of rows and never grow

@@ -271,6 +271,34 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
     for (name, sql, args) in queries {
         measure(&url, name, sql, args, true, &output, &mut metrics).await?;
     }
+    // A scoped claim for a workspace with no rows must not walk another
+    // workspace's due entries. This runs after the global ready measurements so
+    // its deliberately skewed fixture cannot change their plans.
+    let other_team = format!("{team}-other-team");
+    let other_tasks = (count / 10) as i32;
+    client.execute("INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) SELECT $1,'O'||n,$2,NULL FROM generate_series(0,$3::integer-1)n", &[&other_team,&channels[0],&other_tasks]).await?;
+    client.execute("INSERT INTO slack_channel_syncs(team_id,slack_channel_id,available_at) SELECT $1,'O'||n,'2020-01-02' FROM generate_series(0,$2::integer-1)n", &[&other_team,&other_tasks]).await?;
+    client
+        .batch_execute("ANALYZE slack_channel_syncs; ANALYZE slack_channels")
+        .await?;
+    for (name, sql) in [
+        ("slack_wake_team_empty", claim_sql(true, true)),
+        ("slack_due_team_empty", claim_sql(false, true)),
+    ] {
+        measure(
+            &url,
+            name,
+            sql,
+            vec![
+                uuid::Uuid::new_v4().to_string(),
+                format!("{team}-team-absent"),
+            ],
+            true,
+            &output,
+            &mut metrics,
+        )
+        .await?;
+    }
     if let Some(dir) = &output {
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
     }
