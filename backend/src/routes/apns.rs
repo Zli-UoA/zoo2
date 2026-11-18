@@ -2,7 +2,7 @@ use crate::{
     apns::{ApnsConfig, digest, lock_registration, validate_registration},
     auth::AuthUser,
     error::AppError,
-    models::{ApnsRevocation, ApnsSubscription, now_utc_millis},
+    models::ApnsSubscription,
     state::AppState,
 };
 use axum::{
@@ -63,11 +63,21 @@ async fn subscribe(
     lock_registration(&mut tx, &id).await?;
     validate_registration_time(body.created_at, unix_seconds()?)?;
     let revocation_id = digest(&format!("{id}:{secret_hash}"));
-    if ApnsRevocation::filter(ApnsRevocation::fields().id().eq(revocation_id.as_str()))
-        .first()
-        .exec(&mut tx)
-        .await?
-        .is_some()
+    let confirmed_at = jiff::Timestamp::from_second(body.created_at)
+        .map_err(|_| AppError::BadRequest("端末の確認時刻が正しくありません".into()))?
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .datetime();
+    if !toasty::sql::query(
+        "SELECT 1::text FROM apns_revocations
+         WHERE ((id=$1 AND invalidated_at IS NULL) OR (id=$2 AND invalidated_at >= $3::text::timestamp))
+           AND revoked_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'",
+    )
+    .bind(revocation_id)
+    .bind(id.as_str())
+    .bind(confirmed_at.to_string())
+    .exec(&mut tx)
+    .await?
+    .is_empty()
     {
         return Err(AppError::Conflict("この通知登録は解除済みです".into()));
     }
@@ -82,12 +92,14 @@ async fn subscribe(
                 "以前の端末登録を解除してから再登録してください".into(),
             ));
         }
-        // Appleの失効通知が遅れても、端末が再度確認したトークンを残す。
-        ApnsSubscription::filter(ApnsSubscription::fields().id().eq(id.as_str()))
-            .update()
-            .created_at(now_utc_millis())
-            .exec(&mut tx)
-            .await?;
+        // 再送の到着時刻でAppleの失効を打ち消さないよう、端末が確認した時刻だけを進める。
+        if confirmed_at > existing.created_at {
+            ApnsSubscription::filter(ApnsSubscription::fields().id().eq(id.as_str()))
+                .update()
+                .created_at(confirmed_at)
+                .exec(&mut tx)
+                .await?;
+        }
     } else {
         let devices =
             ApnsSubscription::filter(ApnsSubscription::fields().user_id().eq(actor.id.as_str()))
@@ -102,7 +114,7 @@ async fn subscribe(
             .device_token(body.device_token)
             .environment(body.environment)
             .revocation_hash(secret_hash)
-            .created_at(now_utc_millis())
+            .created_at(confirmed_at)
             .exec(&mut tx)
             .await?;
     }
@@ -205,32 +217,41 @@ async fn revoke(
     .bind(secret_hash.as_str())
     .exec(&mut tx)
     .await?;
-    if removed.is_empty() {
-        // 正しい解除・同じ解除の再送は、未登録端末用の枠が埋まっても成功させる。
-        if ApnsRevocation::filter(ApnsRevocation::fields().id().eq(revocation_id.as_str()))
-            .first()
-            .exec(&mut tx)
-            .await?
-            .is_some()
-        {
-            return Ok(Json(json!({"ok":true})));
+    let mut known = !removed.is_empty();
+    if !known {
+        // ログアウト済みなら再送を成功させ、Appleの失効で削除済みなら正規の解除として扱う。
+        let marker = toasty::sql::query(
+            "SELECT invalidated_at IS NULL
+             FROM apns_revocations WHERE id=$1
+             AND revoked_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'",
+        )
+        .bind(revocation_id.as_str())
+        .exec(&mut tx)
+        .await?;
+        if let Some(row) = marker.first() {
+            if matches!(row.as_record_unwrap()[0], toasty::stmt::Value::Bool(true)) {
+                return Ok(Json(json!({"ok":true})));
+            }
+            known = true;
+        } else {
+            limit_revocations()?;
         }
-        limit_revocations()?;
-        lock_registration(&mut tx, "apns-revocations-capacity").await?;
     }
-    toasty::sql::statement("DELETE FROM apns_revocations WHERE revoked_at < statement_timestamp() - interval '11 minutes'")
-        .exec(&mut tx).await?;
-    if removed.is_empty()
-        && !toasty::sql::query("SELECT 1::text FROM apns_revocations OFFSET 9999 LIMIT 1")
-            .exec(&mut tx)
-            .await?
-            .is_empty()
+    crate::apns::prune_revocations(&mut tx).await?;
+    if !known
+        && toasty::sql::query(
+            "SELECT id::text FROM apns_revocation_capacity WHERE id AND records < 10000",
+        )
+        .exec(&mut tx)
+        .await?
+        .is_empty()
     {
+        tx.commit().await?;
         return Err(AppError::RateLimited);
     }
     toasty::sql::statement(
-        "INSERT INTO apns_revocations (id, revoked_at) VALUES($1, statement_timestamp())
-         ON CONFLICT (id) DO UPDATE SET revoked_at=EXCLUDED.revoked_at",
+        "INSERT INTO apns_revocations (id, revoked_at) VALUES($1, statement_timestamp() AT TIME ZONE 'UTC')
+         ON CONFLICT (id) DO UPDATE SET revoked_at=EXCLUDED.revoked_at, invalidated_at=NULL",
     )
     .bind(revocation_id)
     .exec(&mut tx)
@@ -305,7 +326,7 @@ mod tests {
             .device_token(token)
             .environment("sandbox")
             .revocation_hash(digest(&secret))
-            .created_at(now_utc_millis())
+            .created_at(crate::models::now_utc_millis())
             .exec(&mut db)
             .await?;
         let request = Revocation {

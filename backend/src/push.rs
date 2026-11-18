@@ -2,7 +2,7 @@
 pub mod fcm;
 use crate::{
     error::AppError,
-    models::{Channel, Message, Notification, PushSubscription, User},
+    models::{ApnsSubscription, Channel, Message, Notification, PushSubscription, User},
     state::AppState,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -337,41 +337,30 @@ async fn deliver(mut db: toasty::Db, notifications: &[Notification]) -> anyhow::
     }
     let client = push_client()?;
     for notification in notifications {
-        if notification_is_deliverable(&mut db, notification).await?
-            && let Some(payload) = build_payload(&mut db, notification).await?
+        let payload = match build_payload(&mut db, notification).await {
+            Ok(Some(payload)) => payload,
+            Ok(None) => continue,
+            Err(_) => {
+                tracing::warn!("通知の本文を取得できませんでした");
+                continue;
+            }
+        };
+        if push_to_user(
+            &client,
+            config.as_ref(),
+            android.as_ref(),
+            &mut db,
+            PushRecipient::Notification(notification),
+            &payload,
+            &Delivery::NORMAL,
+        )
+        .await
+        .is_err()
         {
-            push_to_user(
-                &client,
-                config.as_ref(),
-                android.as_ref(),
-                &mut db,
-                &notification.user_id,
-                &payload,
-                &Delivery::NORMAL,
-            )
-            .await?;
+            tracing::warn!("受信者へのWeb Push・FCMの配信に失敗しました");
         }
     }
     Ok(())
-}
-
-// 送信キューに入った後の退会・無効化・削除・通知休止も、全配送先で反映する。
-pub(crate) async fn notification_is_deliverable(
-    db: &mut dyn toasty::db::Executor,
-    notification: &Notification,
-) -> anyhow::Result<bool> {
-    let rows = toasty::sql::query(
-        "SELECT 1::text FROM users u JOIN channels c ON c.id=$2
-         WHERE u.id=$1 AND NOT u.is_deactivated AND c.deleted_at IS NULL
-           AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
-                SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
-           AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=u.id AND dnd_until>now())
-           AND (EXISTS(SELECT 1 FROM messages WHERE id=$3 AND channel_id=c.id AND deleted_at IS NULL)
-                OR ($3='' AND $4='missed_call'))",
-    ).bind(notification.user_id.as_str()).bind(notification.channel_id.as_str())
-        .bind(notification.message_id.as_deref().unwrap_or("")).bind(notification.notification_type.as_str())
-        .exec(db).await?;
-    Ok(!rows.is_empty())
 }
 
 pub(crate) fn push_client() -> anyhow::Result<reqwest::Client> {
@@ -404,16 +393,97 @@ impl Delivery {
     };
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum PushRecipient<'a> {
+    Notification(&'a Notification),
+    CallInvite(&'a str),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PushDevice<'a> {
+    WebOrFcm(&'a PushSubscription),
+    Apns(&'a ApnsSubscription),
+}
+
+impl<'a> PushRecipient<'a> {
+    fn user_id(self) -> &'a str {
+        match self {
+            Self::Notification(notification) => &notification.user_id,
+            Self::CallInvite(invitee_id) => invitee_id,
+        }
+    }
+
+    async fn can_receive(
+        self,
+        db: &mut dyn toasty::db::Executor,
+        device: PushDevice<'_>,
+    ) -> anyhow::Result<bool> {
+        let notification = match self {
+            Self::Notification(notification) => Some(notification),
+            Self::CallInvite(_) => None,
+        };
+        // 現在の購読世代と閲覧権限を同じスナップショットで確認する。通話招待にはメッセージがない。
+        let query = |registration: &str| {
+            toasty::sql::query(format!(
+                "SELECT 1::text FROM ({registration}) s WHERE s.user_id=$1
+                 AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=s.user_id AND dnd_until>now())
+                 AND ($2::text IS NULL OR EXISTS(
+                   SELECT 1 FROM users u JOIN channels c ON c.id=$2
+                   WHERE u.id=s.user_id AND NOT u.is_deactivated AND c.deleted_at IS NULL
+                     AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
+                       SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
+                     AND (EXISTS(SELECT 1 FROM messages WHERE id=$3 AND channel_id=c.id AND deleted_at IS NULL)
+                       OR ($3='' AND $4='missed_call'))))"
+            ))
+            .bind(self.user_id())
+            .bind_typed(notification.map(|n| n.channel_id.as_str()), toasty::schema::db::Type::Text)
+            .bind(notification.and_then(|n| n.message_id.as_deref()).unwrap_or(""))
+            .bind(notification.map_or("", |n| n.notification_type.as_str()))
+        };
+        let query = match device {
+            PushDevice::WebOrFcm(s) => query(
+                "SELECT user_id FROM push_subscriptions WHERE id=$5 AND created_at=$6::text::timestamp
+                 AND p256dh IS NOT DISTINCT FROM $7 AND auth_secret IS NOT DISTINCT FROM $8",
+            )
+            .bind(s.id.as_str())
+            .bind(s.created_at.to_string())
+            .bind_typed(s.p256dh.as_deref(), toasty::schema::db::Type::Text)
+            .bind_typed(s.auth_secret.as_deref(), toasty::schema::db::Type::Text),
+            PushDevice::Apns(s) => query(
+                "SELECT user_id FROM apns_subscriptions WHERE id=$5 AND revocation_hash=$6",
+            )
+            .bind(s.id.as_str())
+            .bind(s.revocation_hash.as_str()),
+        };
+        Ok(!query.exec(db).await?.is_empty())
+    }
+
+    pub(crate) async fn should_send(
+        self,
+        db: &mut dyn toasty::db::Executor,
+        device: PushDevice<'_>,
+    ) -> bool {
+        match self.can_receive(db, device).await {
+            Ok(allowed) => allowed,
+            Err(_) => {
+                tracing::warn!("端末の通知登録と閲覧権限を確認できませんでした");
+                false
+            }
+        }
+    }
+}
+
 /// 1 人のユーザーの、すべての購読へ送る。
 async fn push_to_user(
     client: &reqwest::Client,
     config: Option<&PushConfig>,
     android: Option<&fcm::FcmConfig>,
     db: &mut toasty::Db,
-    user_id: &str,
+    recipient: PushRecipient<'_>,
     payload: &NotificationPayload,
     delivery: &Delivery,
 ) -> anyhow::Result<()> {
+    let user_id = recipient.user_id();
     let subscriptions = PushSubscription::filter(PushSubscription::fields().user_id().eq(user_id))
         .exec(db)
         .await?;
@@ -422,19 +492,20 @@ async fn push_to_user(
             // Calls are a Web-only feature; native Android subscribes to message notifications.
             if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
                 match android
-                    .send(client, &subscription.endpoint, user_id, payload)
+                    .send(
+                        client,
+                        &subscription.endpoint,
+                        user_id,
+                        payload,
+                        recipient.can_receive(db, PushDevice::WebOrFcm(&subscription)),
+                    )
                     .await
                 {
                     Ok(true) => {
-                        PushSubscription::filter(
-                            PushSubscription::fields().id().eq(subscription.id.as_str()),
-                        )
-                        .delete()
-                        .exec(db)
-                        .await?;
+                        delete_invalid_subscription(db, &subscription).await;
                     }
                     Ok(false) => {}
-                    Err(_) => tracing::warn!("Android push delivery failed"),
+                    Err(_) => tracing::warn!("Android端末に通知を配信できませんでした"),
                 }
             }
             continue;
@@ -445,7 +516,10 @@ async fn push_to_user(
         let Ok(endpoint) = validate_endpoint(&subscription.endpoint) else {
             continue;
         };
-        let body = match (subscription.p256dh, subscription.auth_secret) {
+        let body = match (
+            subscription.p256dh.clone(),
+            subscription.auth_secret.clone(),
+        ) {
             (Some(p256dh), Some(auth)) => {
                 match (SubscriptionKeys { p256dh, auth }).encrypt_fitting(payload) {
                     Ok(body) => Some(body),
@@ -458,6 +532,13 @@ async fn push_to_user(
             // Older registrations receive a generic alert until the browser refreshes its keys.
             _ => None,
         };
+        // 先の端末への配信を待つ間に変わった閲覧権限・通知休止も、次の端末に反映する。
+        if !recipient
+            .should_send(db, PushDevice::WebOrFcm(&subscription))
+            .await
+        {
+            continue;
+        }
         // 期限つきの送信は、残りの時間を TTL にする。残りがなければ、送らない。
         let remaining = delivery.expires.map(|expires| {
             expires
@@ -473,18 +554,27 @@ async fn push_to_user(
             Ok(response)
                 if response.status().as_u16() == 404 || response.status().as_u16() == 410 =>
             {
-                PushSubscription::filter(
-                    PushSubscription::fields().id().eq(subscription.id.as_str()),
-                )
-                .delete()
-                .exec(db)
-                .await?;
+                delete_invalid_subscription(db, &subscription).await;
             }
             Ok(response) if response.status().is_success() => {}
             _ => tracing::warn!("Web Push provider did not accept delivery"),
         }
     }
     Ok(())
+}
+
+async fn delete_invalid_subscription(db: &mut dyn toasty::db::Executor, s: &PushSubscription) {
+    if toasty::sql::statement(
+        "DELETE FROM push_subscriptions WHERE id=$1 AND user_id=$2 AND created_at=$3::text::timestamp
+         AND p256dh IS NOT DISTINCT FROM $4 AND auth_secret IS NOT DISTINCT FROM $5",
+    )
+    .bind(s.id.as_str()).bind(s.user_id.as_str()).bind(s.created_at.to_string())
+    .bind_typed(s.p256dh.as_deref(), toasty::schema::db::Type::Text)
+    .bind_typed(s.auth_secret.as_deref(), toasty::schema::db::Type::Text)
+    .exec(db).await.is_err()
+    {
+        tracing::warn!("失効した通知登録を削除できませんでした");
+    }
 }
 
 fn display_name(user: &User) -> String {
@@ -572,13 +662,6 @@ async fn deliver_call_invites(
     for invite in invites {
         // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
         let result: anyhow::Result<()> = async {
-            // 着信もその取り消しも、応答不可の受信者には配信しない。
-            let mut tx = db.transaction().await?;
-            let quiet = crate::apps::one(&mut tx,
-                "SELECT to_json(EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",
-                &[&invite.invitee_id]).await? == true;
-            tx.commit().await?;
-            if quiet { return Ok(()); }
             let payload = if end {
                 NotificationPayload {
                     title: String::new(),
@@ -627,7 +710,7 @@ async fn deliver_call_invites(
                 Some(&config),
                 None,
                 &mut db,
-                &invite.invitee_id,
+                PushRecipient::CallInvite(&invite.invitee_id),
                 &payload,
                 &delivery,
             )
@@ -728,7 +811,27 @@ mod tests {
             is_read: false,
             created_at: crate::models::now_utc_millis(),
         };
-        assert!(!notification_is_deliverable(&mut tx, &notification).await?);
+        let recipient = PushRecipient::Notification(&notification);
+        let invitee = PushRecipient::CallInvite(&user);
+        let web = PushSubscription::create()
+            .id(message.clone())
+            .user_id(user.clone())
+            .endpoint(format!("https://example.org/{message}"))
+            .created_at(crate::models::now_utc_millis())
+            .exec(&mut tx)
+            .await?;
+        let apple = ApnsSubscription::create()
+            .id(message.clone())
+            .user_id(user.clone())
+            .device_token(message.clone())
+            .environment("sandbox")
+            .revocation_hash("旧世代")
+            .created_at(crate::models::now_utc_millis())
+            .exec(&mut tx)
+            .await?;
+        let web_device = PushDevice::WebOrFcm(&web);
+        let apple_device = PushDevice::Apns(&apple);
+        assert!(!recipient.can_receive(&mut tx, web_device).await?);
         toasty::sql::statement(
             "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
         )
@@ -736,10 +839,24 @@ mod tests {
         .bind(channel.as_str())
         .exec(&mut tx)
         .await?;
-        assert!(notification_is_deliverable(&mut tx, &notification).await?);
+        assert!(recipient.can_receive(&mut tx, web_device).await?);
+        assert!(recipient.can_receive(&mut tx, apple_device).await?);
+        assert!(invitee.can_receive(&mut tx, web_device).await?);
+        toasty::sql::statement("SAVEPOINT device_check")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("SET LOCAL search_path=pg_catalog")
+            .exec(&mut tx)
+            .await?;
+        assert!(!recipient.should_send(&mut tx, apple_device).await);
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT device_check")
+            .exec(&mut tx)
+            .await?;
+        assert!(recipient.should_send(&mut tx, web_device).await);
         toasty::sql::statement("INSERT INTO user_event_settings(user_id,dnd_until) VALUES($1, now() + interval '1 hour') ON CONFLICT (user_id) DO UPDATE SET dnd_until=EXCLUDED.dnd_until")
             .bind(user.as_str()).exec(&mut tx).await?;
-        assert!(!notification_is_deliverable(&mut tx, &notification).await?);
+        assert!(!recipient.can_receive(&mut tx, apple_device).await?);
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
         toasty::sql::statement("UPDATE user_event_settings SET dnd_until=NULL WHERE user_id=$1")
             .bind(user.as_str())
             .exec(&mut tx)
@@ -748,18 +865,73 @@ mod tests {
             .bind(message.as_str())
             .exec(&mut tx)
             .await?;
-        assert!(!notification_is_deliverable(&mut tx, &notification).await?);
+        assert!(!recipient.can_receive(&mut tx, web_device).await?);
         let missed_call = Notification {
             notification_type: "missed_call".into(),
             message_id: None,
             ..notification
         };
-        assert!(notification_is_deliverable(&mut tx, &missed_call).await?);
+        let missed = PushRecipient::Notification(&missed_call);
+        assert!(missed.can_receive(&mut tx, apple_device).await?);
+
+        // 購読を取得した後の解除・新しい世代への切り替えは、この端末だけを配信対象から外す。
+        toasty::sql::statement(
+            "UPDATE apns_subscriptions SET revocation_hash='新世代' WHERE id=$1",
+        )
+        .bind(apple.id.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(!missed.can_receive(&mut tx, apple_device).await?);
+        assert!(missed.can_receive(&mut tx, web_device).await?);
+        toasty::sql::statement(
+            "UPDATE push_subscriptions SET created_at=created_at+interval '1 second' WHERE id=$1",
+        )
+        .bind(web.id.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        delete_invalid_subscription(&mut tx, &web).await;
+        let updated = PushSubscription::get_by_id(&mut tx, web.id.as_str()).await?;
+        let current_device = PushDevice::WebOrFcm(&updated);
+        assert!(invitee.can_receive(&mut tx, current_device).await?);
+        let other_user = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'別の利用者')",
+        )
+        .bind(other_user.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement("UPDATE push_subscriptions SET user_id=$2 WHERE id=$1")
+            .bind(updated.id.as_str())
+            .bind(other_user.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!invitee.can_receive(&mut tx, current_device).await?);
+        delete_invalid_subscription(&mut tx, &updated).await;
+        let transferred = PushSubscription::get_by_id(&mut tx, web.id.as_str()).await?;
+        assert_eq!(transferred.user_id, other_user);
+        let transferred_device = PushDevice::WebOrFcm(&transferred);
+        delete_invalid_subscription(&mut tx, &transferred).await;
+        assert!(
+            !PushRecipient::CallInvite(&other_user)
+                .can_receive(&mut tx, transferred_device)
+                .await?
+        );
+        let current_apple = ApnsSubscription::get_by_id(&mut tx, apple.id.as_str()).await?;
+        assert!(
+            missed
+                .can_receive(&mut tx, PushDevice::Apns(&current_apple))
+                .await?
+        );
         toasty::sql::statement("UPDATE channels SET deleted_at=now() WHERE id=$1")
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
-        assert!(!notification_is_deliverable(&mut tx, &missed_call).await?);
+        assert!(
+            !missed
+                .can_receive(&mut tx, PushDevice::Apns(&current_apple))
+                .await?
+        );
         tx.rollback().await?;
         Ok(())
     }

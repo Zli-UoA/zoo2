@@ -10,9 +10,14 @@ erDiagram
       boolean id PK
       text ltl_channel_pattern
     }
+    apns_revocation_capacity {
+      boolean id PK
+      bigint records
+    }
     apns_revocations {
       text id PK
       timestamp(3) revoked_at
+      timestamp(3) invalidated_at
     }
     apns_subscriptions {
       text id PK

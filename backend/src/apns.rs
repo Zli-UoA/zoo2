@@ -182,10 +182,9 @@ pub(crate) async fn deliver_batch(
     }
     let client = crate::push::push_client()?;
     for notification in notifications {
-        if crate::push::notification_is_deliverable(&mut db, notification).await?
-            && deliver(&client, &configs, &mut db, notification)
-                .await
-                .is_err()
+        if deliver(&client, &configs, &mut db, notification)
+            .await
+            .is_err()
         {
             tracing::warn!("iPhoneへの通知を送信できませんでした");
         }
@@ -214,17 +213,42 @@ async fn deliver(
         else {
             continue;
         };
+        if !crate::push::PushRecipient::Notification(notification)
+            .should_send(db, crate::push::PushDevice::Apns(&subscription))
+            .await
+        {
+            continue;
+        }
         let result = config
             .send(client, &subscription, &body, &notification.id)
             .await;
         match result {
             Ok(Some(invalid_at)) => {
-                delete_invalid(db, &subscription, invalid_at).await?;
+                if delete_invalid(db, &subscription, invalid_at).await.is_err() {
+                    tracing::warn!("失効したiPhoneの通知登録を削除できませんでした");
+                }
             }
             Ok(None) => {}
             Err(_) => tracing::warn!("Appleが通知を受理しませんでした"),
         }
     }
+    Ok(())
+}
+
+// 容量行を先にロックし、期限切れの回収と個々の記録の更新を常に同じ順に行う。
+pub(crate) async fn prune_revocations(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
+    toasty::sql::query("SELECT id::text FROM apns_revocation_capacity WHERE id FOR UPDATE")
+        .exec(tx)
+        .await?;
+    toasty::sql::statement(
+        "WITH expired AS (
+             SELECT id FROM apns_revocations
+             WHERE revoked_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'
+             ORDER BY revoked_at LIMIT 128 FOR UPDATE SKIP LOCKED
+         ) DELETE FROM apns_revocations r USING expired WHERE r.id=expired.id",
+    )
+    .exec(tx)
+    .await?;
     Ok(())
 }
 
@@ -235,19 +259,30 @@ async fn delete_invalid(
 ) -> anyhow::Result<()> {
     let mut tx = db.transaction().await?;
     lock_registration(&mut tx, &subscription.id).await?;
-    // 配信中に解除・再登録された端末や、Appleの失効時刻より新しい登録を消さない。
-    ApnsSubscription::filter(
-        ApnsSubscription::fields()
-            .id()
-            .eq(subscription.id.as_str())
-            .and(
-                ApnsSubscription::fields()
-                    .revocation_hash()
-                    .eq(subscription.revocation_hash.as_str()),
-            )
-            .and(ApnsSubscription::fields().created_at().le(invalid_at)),
+    prune_revocations(&mut tx).await?;
+    // 失効後に届く登録を拒否し、実際に削除した世代は後のログアウトでも本人と認識する。
+    let capability = digest(&format!(
+        "{}:{}",
+        subscription.id, subscription.revocation_hash
+    ));
+    toasty::sql::statement(
+        "WITH removed AS (
+            DELETE FROM apns_subscriptions WHERE id=$1 AND revocation_hash=$2
+              AND created_at <= $3::text::timestamp RETURNING id
+         ), markers AS (
+            SELECT $1::text AS id UNION ALL SELECT $4::text FROM removed
+         )
+         INSERT INTO apns_revocations(id,revoked_at,invalidated_at)
+         SELECT id, statement_timestamp() AT TIME ZONE 'UTC', $3::text::timestamp FROM markers
+         ON CONFLICT (id) DO UPDATE SET revoked_at=EXCLUDED.revoked_at,
+             invalidated_at=GREATEST(apns_revocations.invalidated_at, EXCLUDED.invalidated_at)
+         WHERE apns_revocations.invalidated_at IS NOT NULL
+            OR apns_revocations.revoked_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '11 minutes'",
     )
-    .delete()
+    .bind(subscription.id.as_str())
+    .bind(subscription.revocation_hash.as_str())
+    .bind(invalid_at.to_string())
+    .bind(capability)
     .exec(&mut tx)
     .await?;
     tx.commit().await?;
@@ -386,6 +421,9 @@ mod tests {
             .await?;
         tx.commit().await?;
         expired.await?;
+        let marker = toasty::sql::query("SELECT 1::text FROM apns_revocations WHERE id=$1 AND invalidated_at=$2::text::timestamp")
+            .bind(id.as_str()).bind(invalid_at.to_string()).exec(&mut db).await?;
+        assert_eq!(marker.len(), 1);
         assert!(
             ApnsSubscription::filter(ApnsSubscription::fields().id().eq(id.as_str()))
                 .first()
@@ -393,6 +431,21 @@ mod tests {
                 .await?
                 .is_some()
         );
+        // 410が本当に行を削除した場合は、後からログアウトする同じ世代の解除情報も保持する。
+        let next_invalidation = crate::models::now_utc_millis();
+        delete_invalid(&mut db, &sub, next_invalidation).await?;
+        assert!(
+            ApnsSubscription::filter(ApnsSubscription::fields().id().eq(id.as_str()))
+                .first()
+                .exec(&mut db)
+                .await?
+                .is_none()
+        );
+        let capability = digest(&format!("{id}:{}", sub.revocation_hash));
+        let markers = toasty::sql::query(
+            "SELECT id FROM apns_revocations WHERE id IN ($1,$2) AND invalidated_at=$3::text::timestamp",
+        ).bind(id.as_str()).bind(capability).bind(next_invalidation.to_string()).exec(&mut db).await?;
+        assert_eq!(markers.len(), 2);
         Ok(())
     }
 

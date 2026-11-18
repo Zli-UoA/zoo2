@@ -130,6 +130,7 @@ impl FcmConfig {
         endpoint: &str,
         user: &str,
         payload: &NotificationPayload,
+        can_receive: impl Future<Output = anyhow::Result<bool>>,
     ) -> anyhow::Result<bool> {
         let (token, binding) = registration(endpoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid Android registration"))?;
@@ -147,6 +148,7 @@ impl FcmConfig {
             ),
             &access,
             &body,
+            can_receive,
         )
         .await
     }
@@ -157,7 +159,12 @@ async fn post_message(
     url: &str,
     access: &str,
     body: &Value,
+    can_receive: impl Future<Output = anyhow::Result<bool>>,
 ) -> anyhow::Result<bool> {
+    // OAuthの更新を待つ間にメンバー資格や通知設定が変わることがある。
+    if !can_receive.await? {
+        return Ok(false);
+    }
     let response = client
         .post(url)
         .bearer_auth(access)
@@ -314,6 +321,7 @@ mod tests {
                 &format!("{}/v1/projects/test/messages:send", server.uri()),
                 "test-oauth-token",
                 &body,
+                std::future::ready(Ok(true)),
             )
             .await;
             match expected {
@@ -321,5 +329,24 @@ mod tests {
                 None => assert!(result.is_err()),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn permission_denied_or_unavailable_skips_fcm_request() {
+        let server = wiremock::MockServer::start().await;
+        let client = super::super::push_client().unwrap();
+        for permission in [Ok(false), Err(anyhow::anyhow!("照会失敗"))] {
+            let expected = permission.as_ref().ok().copied();
+            let result = post_message(
+                &client,
+                &server.uri(),
+                "test-token",
+                &json!({}),
+                std::future::ready(permission),
+            )
+            .await;
+            assert_eq!(result.ok(), expected);
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

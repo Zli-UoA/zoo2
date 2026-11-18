@@ -1,12 +1,13 @@
+#[path = "support/thread_db.rs"]
+mod test_db;
+
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
     response::Response,
 };
-use backend::{
-    config::Config, db::init_db, models::ApnsSubscription, routes::create_router, state::AppState,
-};
+use backend::{db::init_db, models::ApnsSubscription, routes::create_router, state::AppState};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -75,8 +76,23 @@ fn registration(token: &str, secret: &str) -> Value {
 }
 
 async fn check_registration() -> anyhow::Result<()> {
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    // 共有の開発DBに残った解除記録が、容量とプロセス側レートの検証に混ざらないようにする。
+    let fixture = test_db::ThreadDb::new().await?;
+    let mut config = fixture.config.clone();
+    let mut url = reqwest::Url::parse(&config.database_url)?;
+    let parameters: Vec<_> = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let value = if key == "options" {
+                format!("{value} -cTimeZone=Asia/Tokyo")
+            } else {
+                value.into_owned()
+            };
+            (key.into_owned(), value)
+        })
+        .collect();
+    url.query_pairs_mut().clear().extend_pairs(parameters);
+    config.database_url = url.to_string();
     let mut db = init_db(&config.database_url).await?;
     let mut secured_config = config.clone();
     secured_config.dev_auth_enabled = false;
@@ -127,15 +143,57 @@ async fn check_registration() -> anyhow::Result<()> {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    // 同じ端末・同じ解除情報でも、期限を更新して登録を継続できる。
-    for age in [540, 0] {
+    // 確認が古い要求は同じ応答を返しても、端末を再確認した時刻を進めない。
+    let now = jiff::Timestamp::now().as_second();
+    let register_at = |issued: i64| {
         let mut request = registration(&token, &secret);
-        request["created_at"] = (jiff::Timestamp::now().as_second() - age).into();
-        let result = post(&app, REGISTER, Some(&alice), request).await?;
+        request["created_at"] = issued.into();
+        request
+    };
+    let utc = |s| {
+        jiff::Timestamp::from_second(s)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .datetime()
+    };
+    for (issued, expected) in [
+        (now - 540, now - 540),
+        (now - 540, now - 540),
+        (now - 400, now - 400),
+        (now - 540, now - 400),
+    ] {
+        let result = post(&app, REGISTER, Some(&alice), register_at(issued)).await?;
         assert_eq!(result.status(), StatusCode::OK);
         let body: Value = serde_json::from_slice(&to_bytes(result.into_body(), 4096).await?)?;
         assert_eq!(body["id"], id);
+        assert_eq!(
+            row().exec(&mut db).await?.unwrap().created_at,
+            utc(expected)
+        );
     }
+    // 410の処理が最初に完了した場合も、端末の再確認が失効より新しくなるまで登録し直せない。
+    let invalid_at = now - 300;
+    toasty::sql::statement("DELETE FROM apns_subscriptions WHERE id=$1")
+        .bind(id.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("INSERT INTO apns_revocations(id,revoked_at,invalidated_at) VALUES($1, statement_timestamp() AT TIME ZONE 'UTC', $2::text::timestamp)")
+        .bind(id.as_str()).bind(utc(invalid_at).to_string()).exec(&mut db).await?;
+    for issued in [now - 540, invalid_at] {
+        assert_eq!(
+            post(&app, REGISTER, Some(&alice), register_at(issued))
+                .await?
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert!(row().exec(&mut db).await?.is_none());
+    }
+    assert_eq!(
+        post(&app, REGISTER, Some(&alice), register_at(now))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
     let test_request = |id: &str, secret: &str| json!({"id":id, "revocation_secret":secret, "test_id":Uuid::new_v4().to_string()});
     assert_eq!(
         post(&secured, TEST, None, test_request(&id, &secret))
@@ -190,6 +248,18 @@ async fn check_registration() -> anyhow::Result<()> {
         );
         assert!(row().exec(&mut db).await?.is_none());
     }
+    // 端末の失効、誤った解除情報、正規の解除を1件ずつ数え、解除の再送では増えない。
+    assert_eq!(
+        toasty::sql::query("SELECT 1::text FROM apns_revocation_capacity WHERE id AND records=3")
+            .exec(&mut db)
+            .await?
+            .len(),
+        1
+    );
+    let revoke_id = backend::apns::digest(&format!("{id}:{}", backend::apns::digest(&secret)));
+    let utc_record = toasty::sql::query("SELECT 1::text FROM apns_revocations WHERE id=$1 AND abs(extract(epoch FROM revoked_at - (statement_timestamp() AT TIME ZONE 'UTC'))) < 30")
+        .bind(revoke_id).exec(&mut db).await?;
+    assert_eq!(utc_record.len(), 1);
     // ログアウトの後に届いた登録でも、古い解除情報を復活させない。
     assert_eq!(
         post(&app, REGISTER, Some(&alice), registration(&token, &secret))
@@ -246,8 +316,23 @@ async fn check_registration() -> anyhow::Result<()> {
         .status(),
         StatusCode::OK
     );
+    // 同じ世代がすでにAppleの410で削除されていても、ログアウトは正規の解除として扱う。
+    let retired_token = backend::apns::digest(&Uuid::new_v4().to_string());
+    let retired_id = backend::apns::digest(&format!("sandbox:{retired_token}"));
+    let retired_capability =
+        backend::apns::digest(&format!("{retired_id}:{}", backend::apns::digest(&fresh)));
+    toasty::sql::statement(
+        "INSERT INTO apns_revocations(id,revoked_at,invalidated_at)
+         SELECT id, statement_timestamp() AT TIME ZONE 'UTC', $3::text::timestamp
+         FROM (VALUES ($1::text), ($2::text)) AS markers(id)",
+    )
+    .bind(retired_id.as_str())
+    .bind(retired_capability)
+    .bind(utc(invalid_at).to_string())
+    .exec(&mut db)
+    .await?;
     let prefix = format!("apns-capacity-{bob}-");
-    toasty::sql::statement("INSERT INTO apns_revocations(id,revoked_at) SELECT $1 || n::text,now() FROM generate_series(1,10000) n")
+    toasty::sql::statement("INSERT INTO apns_revocations(id,revoked_at) SELECT $1 || n::text,statement_timestamp() AT TIME ZONE 'UTC' FROM generate_series(1,10000) n")
         .bind(prefix.as_str()).exec(&mut db).await?;
     let unknown = backend::apns::digest(&Uuid::new_v4().to_string());
     let saturated = post(&secured, REVOKE, None, revoke(&unknown, &fresh))
@@ -256,6 +341,23 @@ async fn check_registration() -> anyhow::Result<()> {
     let known = post(&secured, REVOKE, None, revoke(&busy_id, &fresh))
         .await?
         .status();
+    assert_eq!(
+        post(&secured, REVOKE, None, revoke(&retired_id, &fresh))
+            .await?
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        post(
+            &app,
+            REGISTER,
+            Some(&bob),
+            registration(&retired_token, &fresh)
+        )
+        .await?
+        .status(),
+        StatusCode::CONFLICT
+    );
     toasty::sql::statement("DELETE FROM apns_revocations WHERE starts_with(id,$1)")
         .bind(prefix.as_str())
         .exec(&mut db)
@@ -274,17 +376,19 @@ async fn check_registration() -> anyhow::Result<()> {
         StatusCode::CONFLICT
     );
     // 未登録端末からの解除要求が上限に達しても、正規端末は直ちに配信を停止できる。
-    let mut limited = false;
-    for _ in 0..=120 {
+    // 間違った解除情報、登録前の解除、DB上限の確認で3枠を消費済み。
+    for _ in 3..120 {
         let unknown = backend::apns::digest(&Uuid::new_v4().to_string());
         let response = post(&secured, REVOKE, None, revoke(&unknown, &fresh)).await?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            limited = true;
-            break;
-        }
         assert_eq!(response.status(), StatusCode::OK);
     }
-    assert!(limited);
+    let over_limit = backend::apns::digest(&Uuid::new_v4().to_string());
+    assert_eq!(
+        post(&secured, REVOKE, None, revoke(&over_limit, &fresh))
+            .await?
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
     for _ in 0..2 {
         assert_eq!(
             post(&secured, REVOKE, None, revoke(&id, &fresh))
@@ -300,5 +404,6 @@ async fn check_registration() -> anyhow::Result<()> {
             .status(),
         StatusCode::CONFLICT
     );
+    fixture.cleanup().await?;
     Ok(())
 }

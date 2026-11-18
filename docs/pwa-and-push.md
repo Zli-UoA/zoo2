@@ -46,9 +46,11 @@ tail -c 65 vapid-public.der | openssl base64 -A | tr '+/' '-_' | tr -d '='
 
 iOSアプリは `GET /api/push/apns/config` で利用できる環境を確認し、`POST /api/push/apns/subscriptions` で端末を登録する。ログアウトや通知を無効にしたときは、端末が保存した解除情報を `POST /api/push/apns/revoke` に送る。通知本文にはチャットの内容を含めず、タップ後に対象の会話を開く。
 
-登録したiPhoneの設定からテスト通知を送ると、`POST /api/push/apns/test` がログイン中のユーザーと端末の登録情報を照合し、そのiPhoneに確認用の通知を1件送る。送信は同じ登録につき1分に1回まで。Appleが送信を受け付けた時点と、端末が受信した時点は別々に確認できる。
+登録したiPhoneの設定からテスト通知を送ると、`POST /api/push/apns/test` がログイン中のユーザーと端末の登録情報を照合し、そのiPhoneに確認用の通知を1件送る。送信は同じ購読につき1分に1回までで、登録を解除した後に新しく作った購読には新しい送信枠が割り当てられる。Appleが送信を受け付けた時点と、端末が受信した時点は別々に確認できる。
 
-本番のZooバックエンドは、zoo2-infraのSecret `zoo2-apns` から `APPLE_TEAM_ID` と、環境ごとの `APNS_SANDBOX_KEY_ID`・`APNS_SANDBOX_PRIVATE_KEY`、`APNS_PRODUCTION_KEY_ID`・`APNS_PRODUCTION_PRIVATE_KEY` を受け取る。開発署名の実機はサンドボックス、配布版は本番を使用する。どちらの鍵もトピック `works.zli.zoo` 専用で、対応する環境の鍵を設定したときに配信を有効にする。
+本番のZooバックエンドは、zoo2-infraのSecret `zoo2-apns` から `APPLE_TEAM_ID` と、環境ごとの `APNS_SANDBOX_KEY_ID`・`APNS_SANDBOX_PRIVATE_KEY`、`APNS_PRODUCTION_KEY_ID`・`APNS_PRODUCTION_PRIVATE_KEY` を受け取る。開発署名の実機はサンドボックス、配布版は本番を使用する。どちらの鍵もトピック `works.zli.zoo` 専用である。
+
+各環境のKey IDと秘密鍵が両方とも未設定なら、その環境のAPNs配信を無効にして起動する。有効にする環境では共通のTeam IDとその環境のKey ID・秘密鍵がすべて必須となる。片方だけの指定や不正な鍵があると、設定エラーとしてバックエンドの起動が失敗する。
 
 ### Web Push
 
