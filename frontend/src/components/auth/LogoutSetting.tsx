@@ -7,6 +7,7 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { useE2ee } from "../../lib/e2ee/e2ee-context";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
+import { setAppBadge } from "../../lib/pwa/badge";
 import { disablePush } from "../../lib/pwa/push";
 import { UnbackedKeysLogoutDialog } from "../e2ee/UnbackedKeysLogoutDialog";
 import { Button } from "../ui/button";
@@ -100,6 +101,8 @@ export function LogoutButton() {
       e2ee.cancelLogout();
       return;
     }
+    // フルページの遷移で React の後始末が走らないので、前のユーザーの未読数を消しておく。
+    setAppBadge(0);
     await clearEncryptionData();
     try {
       await clearUserData();

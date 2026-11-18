@@ -746,6 +746,20 @@
       "addEncrypted": "加入加密頻道",
       "notReady": "呢個 App 未準備好加密（未登記裝置）。請開咗 App 之後再試。",
       "encryptedHint": "將 App 加入加密頻道，要成員批准。"
+    },
+    "components": {
+      "unsupported": "暫時未支援呢個元件",
+      "more": "更多操作",
+      "choose": "請揀",
+      "search": "搜尋",
+      "noOptions": "冇選項",
+      "uploading": "上載緊…",
+      "page": "第 {{page}} / {{pages}} 頁",
+      "spoiler": "有劇透內容（可以喺網頁版睇）",
+      "webOnly": "請喺網頁版做呢個操作",
+      "date": "日期",
+      "time": "時間",
+      "datetime": "日期同時間"
     }
   },
   "search": {

@@ -122,6 +122,7 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     channel_id: "text",
     content: "text",
     card: "text",
+    components: "text",
     app_blocks: "text",
     app_attachments: "text",
     app_unfurls: "text",

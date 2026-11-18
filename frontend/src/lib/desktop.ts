@@ -130,6 +130,32 @@ export function desktopSetFocus(channelId: string | null): void {
   }).catch(() => {});
 }
 
+let badgeInFlight = false;
+let badgePending: number | null = null;
+
+/**
+ * Dock やランチャーのアイコンに未読数を出す。`0` 以下で消す。古い版のアプリでは何も起きない。
+ * IPC の呼び出しは到着の順番が保証されないので、前の呼び出しが終わってから次を送る。
+ * 待っている間に変わった値は、最後の 1 つだけ送る。
+ */
+export function desktopSetBadge(count: number): void {
+  badgePending = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (badgeInFlight) return;
+  badgeInFlight = true;
+  void (async () => {
+    while (badgePending !== null) {
+      const next = badgePending;
+      badgePending = null;
+      try {
+        await invoke("zoo_set_badge", { count: next });
+      } catch {
+        // 古い版のアプリにはこのコマンドがない。表示が出ないだけなので無視する。
+      }
+    }
+    badgeInFlight = false;
+  })();
+}
+
 /** アプリが OS の通知を出すかどうか。 */
 export type DesktopNotificationSettings = { enabled: boolean };
 
@@ -224,6 +250,8 @@ export async function desktopListen<T>(
 
 /** テスト用。判定の結果とトークンのキャッシュを捨てる。 */
 export function resetDesktopForTest(): void {
+  badgeInFlight = false;
+  badgePending = null;
   detected = null;
   isDesktop = false;
   cachedToken = null;

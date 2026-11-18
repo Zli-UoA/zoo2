@@ -487,9 +487,11 @@ fn bad(msg: &str) -> AppError {
 }
 
 /// 選んだ値の一覧（1 つなら文字列、複数なら配列）。文字列でない要素があれば None（不正な値）。
+/// null と空文字は「選ばなかった」（必須かどうかは check_submission が見る）
 fn chosen(value: &Value) -> Option<Vec<&str>> {
     match value {
         Value::Null => Some(Vec::new()),
+        Value::String(s) if s.is_empty() => Some(Vec::new()),
         Value::String(s) => Some(vec![s.as_str()]),
         Value::Array(a) => a.iter().map(Value::as_str).collect(),
         _ => None,
@@ -536,7 +538,8 @@ fn check_value(c: &crate::components::Component, value: &Value) -> Result<(), Ap
         }
         C::Overflow(g) | C::RadioGroup(g) => {
             let v = chosen_or_bad(value)?;
-            if v.len() != 1 || !in_options(&g.options, &v) {
+            // 選ばなかった（空）は通し、必須の確認に任せる
+            if v.len() > 1 || !in_options(&g.options, &v) {
                 return Err(bad("Invalid selection"));
             }
         }

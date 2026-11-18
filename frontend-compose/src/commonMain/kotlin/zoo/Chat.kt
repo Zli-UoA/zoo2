@@ -929,9 +929,14 @@ internal fun Message(
                         } else if (encryptedChannel) {
                             Text(app.t("e2ee.legacy.unencryptedBadge"), small = true, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        val cards = if (encryptedRow) null else messageCards(message["card"])
+                        // メッセージ部品があれば、カードとブロックの旧形式は使わない。本文を隠すフラグがあれば本文を出さない。
+                        // 暗号化した行には、部品・カード・ブロックを付けられない（E2EE のトリガーが拒否する）
+                        // 再コンポーズのたびに JSON を読み直さない
+                        val components = remember(message["components"], encryptedRow) { if (encryptedRow) null else parseComponents(message["components"]) }
+                        val cards = if (encryptedRow || components != null) null else messageCards(message["card"])
                         val blockCards =
-                            !encryptedRow && parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
+                            if (components != null) components.hidesContent
+                            else !encryptedRow && parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
                         if (!blockCards) {
                             if (cards != null) cards.forEach { MessageCard(it) }
                             else {

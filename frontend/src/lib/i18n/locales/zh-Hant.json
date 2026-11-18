@@ -746,6 +746,20 @@
       "addEncrypted": "新增到加密頻道",
       "notReady": "此應用程式尚未完成加密準備（註冊裝置）。請啟動應用程式後再試一次。",
       "encryptedHint": "將應用程式新增到加密頻道需要成員許可。"
+    },
+    "components": {
+      "unsupported": "暫不支援此元件",
+      "more": "更多操作",
+      "choose": "請選擇",
+      "search": "搜尋",
+      "noOptions": "沒有選項",
+      "uploading": "正在上傳…",
+      "page": "第 {{page}} / {{pages}} 頁",
+      "spoiler": "包含劇透內容（可在網頁版查看）",
+      "webOnly": "請在網頁版進行此操作",
+      "date": "日期",
+      "time": "時間",
+      "datetime": "日期和時間"
     }
   },
   "search": {

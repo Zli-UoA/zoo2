@@ -929,7 +929,7 @@ private fun AppHome(app: Session, id: String, channelId: String? = app.contextCh
             ) {
                 Blocks(
                     app,
-                    it.nested("document")["blocks"],
+                    it.nested("document"),
                     id,
                     it.text("id"),
                     channel = it.text("channel_id").ifEmpty { channelId },
@@ -979,7 +979,12 @@ fun Blocks(
     submit: Boolean = false,
     done: suspend () -> Unit = {},
 ) {
-    val blocks = parseBlocks(value)
+    // 新しい形式の文書（`{"components":[...]}`）なら部品として描画する。旧形式は `{"blocks":[...]}` か配列
+    parseComponents(value)?.let { doc ->
+        ComponentTree(app, doc, appId, surface, message, channel, submit, done = done)
+        return
+    }
+    val blocks = parseBlocks((value as? JsonObject)?.get("blocks") ?: value)
     var values by
         remember(appId, surface, message) { mutableStateOf<Map<String, String>>(emptyMap()) }
     val key = "blocks:$appId:$surface:$message"
@@ -1102,7 +1107,7 @@ fun AppSurfaces(app: Session) {
             Text(app.t("apps.form"), muted = true)
             Blocks(
                 app,
-                modal.nested("document")["blocks"],
+                modal.nested("document"),
                 modal.text("app_id"),
                 modal.text("id"),
                 channel = modal.text("channel_id"),
@@ -1140,7 +1145,7 @@ fun AppSurfaces(app: Session) {
                             }
                             Blocks(
                                 app,
-                                row.nested("document")["blocks"],
+                                row.nested("document"),
                                 row.text("app_id"),
                                 row.text("id"),
                                 channel = row.text("channel_id"),
@@ -1641,7 +1646,18 @@ fun Webhooks(app: Session, channel: Row, close: () -> Unit = { app.dialog = null
 @Composable
 fun MessageAppContent(app: Session, message: Row) {
     val appId = message.text("app_origin_id").ifEmpty { message.text("app_id") }
-    if (appId.isNotEmpty())
+    val doc = remember(message["components"]) { parseComponents(message["components"]) }
+    if (doc != null)
+        // Webhook と Slack 取り込みの部品は app_origin_id がないので、操作部品は押せない状態で出す
+        ComponentTree(
+            app,
+            doc,
+            message.text("app_origin_id").ifEmpty { null },
+            message = message.text("id"),
+            channel = message.text("channel_id").ifEmpty { app.contextChannelId },
+            attachments = message.array("app_attachments").rows(),
+        )
+    else if (appId.isNotEmpty())
         Blocks(
             app,
             message.array("app_blocks"),
@@ -1671,7 +1687,10 @@ fun MessageAppContent(app: Session, message: Row) {
             Button("${unfurl.text("name")} · APP") {
                 app.navigate("/apps/${unfurl.text("app_id")}")
             }
-            messageCards(unfurl["card"])?.singleOrNull()?.let { MessageCard(it) }
+            val unfurlDoc = parseComponents(unfurl["components"])
+            if (unfurlDoc != null)
+                ComponentTree(app, unfurlDoc, unfurl.text("app_id"), message = message.text("id"), channel = app.contextChannelId)
+            else messageCards(unfurl["card"])?.singleOrNull()?.let { MessageCard(it) }
             if (unfurl.present("url") && app.contextChannelId != null)
                 Row {
                     listOf("details", "comments").forEach { kind ->

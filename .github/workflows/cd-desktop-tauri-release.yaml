@@ -1,6 +1,11 @@
 name: CD Desktop Tauri Release
 on:
   workflow_dispatch:
+    inputs:
+      verify_only:
+        description: macOS の署名・公証だけを検証し、リリースを公開しない
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -13,7 +18,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: desktop-tauri-release
+  group: ${{ inputs.verify_only && format('desktop-tauri-verify-{0}', github.ref) || 'desktop-tauri-release' }}
   cancel-in-progress: false
 # desktop-tauri/src-tauri/Cargo.toml の version を上げて main に入れると、desktop-tauri-v<version> の
 # タグで GitHub Release を作り、アプリの自動更新が読む latest.json を desktop-tauri-updater の
@@ -25,11 +30,13 @@ concurrency:
 # - Secrets: TAURI_SIGNING_PRIVATE_KEY と TAURI_SIGNING_PRIVATE_KEY_PASSWORD (秘密鍵とそのパスワード)
 # - Variables: TAURI_UPDATER_PUBKEY (公開鍵。アプリに入れて、更新の署名を確かめる)
 # どれかがなければ、リリースを作らずに終わります。
+# macOS の新規リリースには、Developer ID 署名・公証用の APPLE_* Secrets も必須です。
+# 登録する値と手順は docs/desktop-tauri.md の「macOS の署名と公証」にあります。
 jobs:
   version:
-    # 手動実行でも、レビュー前の作業ブランチからは公開しない。
-    if: github.ref == 'refs/heads/main'
-    # 署名鍵の Secret を移す先。main に限り、必要ならレビュアーを付ける（リポジトリの Settings で設定する）。
+    # 作業ブランチでは、明示した手動検証だけを許可する。
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.verify_only)
+    # 本番と手動検証で同じ署名鍵を使う。許可するブランチや承認者は Environment で設定する。
     environment: desktop-tauri-release
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -48,18 +55,35 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERIFY_ONLY: ${{ inputs.verify_only || false }}
           HAS_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
           HAS_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
+          HAS_APPLE_SIGNING: >-
+            ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' &&
+                secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' &&
+                secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop-tauri/src-tauri/Cargo.toml | head -n 1)
           tag="desktop-tauri-v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
+          if [ "$VERIFY_ONLY" = true ]; then
+            if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ] || [ "$HAS_APPLE_SIGNING" != true ]; then
+              echo "::error::署名・公証の検証に必要な Secrets または TAURI_UPDATER_PUBKEY が不足しています。"
+              exit 1
+            fi
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "macOS の署名・公証を検証します。成果物は Actions に保存し、リリースは公開しません。" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
             echo "更新の署名の鍵 (Secrets の TAURI_SIGNING_PRIVATE_KEY、Variables の TAURI_UPDATER_PUBKEY) がないので、リリースを作りません。" >> "$GITHUB_STEP_SUMMARY"
             echo "build=false" >> "$GITHUB_OUTPUT"
             echo "publish=false" >> "$GITHUB_OUTPUT"
           elif ! gh release view "$tag" > /dev/null 2>&1; then
+            if [ "$HAS_APPLE_SIGNING" != true ]; then
+              echo "::error::macOS の署名・公証用 Secrets が不足しています。docs/desktop-tauri.md の「macOS の署名と公証」に従って登録してください。"
+              exit 1
+            fi
             echo "build=true" >> "$GITHUB_OUTPUT"
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
@@ -77,19 +101,13 @@ jobs:
   build:
     needs: version
     if: needs.version.outputs.build == 'true'
-    # 署名鍵の Secret を移す先。main に限り、必要ならレビュアーを付ける（リポジトリの Settings で設定する）。
+    # 本番と手動検証で同じ署名鍵を使う。許可するブランチや承認者は Environment で設定する。
     environment: desktop-tauri-release
     strategy:
       fail-fast: true
       matrix:
-        include:
-          # deb が依存する glibc と WebKitGTK を古めに合わせ、Ubuntu 22.04 でも入るようにする。
-          - name: linux
-            os: ubuntu-22.04
-          # Apple Silicon と Intel の両方で動く universal の .app と .dmg。
-          # Developer ID の署名と公証はまだしていない (ad-hoc 署名だけ。README の「macOS」)。
-          - name: macos
-            os: macos-15
+        # 手動検証は macOS のみ。本番では Ubuntu 22.04 向けの Linux 版も作る。
+        include: ${{ fromJSON(inputs.verify_only && '[{"name":"macos","os":"macos-15"}]' || '[{"name":"linux","os":"ubuntu-22.04"},{"name":"macos","os":"macos-15"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -138,20 +156,38 @@ jobs:
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
       # 公開鍵をアプリに入れ、更新用の署名 (.sig) も作る。
-      - name: Bundle
+      - name: 配布物を作成する
         working-directory: ./desktop-tauri/src-tauri
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: |
           config=$(jq -nc --arg pubkey "$PUBKEY" \
-            '{bundle: {createUpdaterArtifacts: true, macOS: {signingIdentity: "-"}}, plugins: {updater: {pubkey: $pubkey}}}')
+            '{bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $pubkey}}}')
           if [ "$RUNNER_OS" = macOS ]; then
+            case "$APPLE_SIGNING_IDENTITY" in
+              "Developer ID Application: "*) ;;
+              *) echo "::error::APPLE_SIGNING_IDENTITY には Developer ID Application 証明書の名前を指定してください。"; exit 1 ;;
+            esac
             cargo tauri build --target universal-apple-darwin --bundles app,dmg --config "$config" -- --locked
           else
             cargo tauri build --bundles deb,appimage --config "$config" -- --locked
           fi
+      - name: macOS の署名と公証を検証する
+        if: runner.os == 'macOS'
+        working-directory: ./desktop-tauri/src-tauri
+        run: |
+          app=target/universal-apple-darwin/release/bundle/macos/zoo2.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
       - name: Collect
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -171,7 +207,7 @@ jobs:
           }
           if [ "$RUNNER_OS" = macOS ]; then
             bundle=desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle
-            # .app.tar.gz は自動更新が使う。.dmg はインストール用なので署名は要らない。
+            # .app.tar.gz は自動更新が使う。.dmg には自動更新用の .sig は要らない。
             collect "$bundle/macos/zoo2.app.tar.gz" "zoo2_${VERSION}_universal.app.tar.gz"
             cp "$bundle/dmg/zoo2_${VERSION}_universal.dmg" dist/
           else
@@ -190,7 +226,7 @@ jobs:
   release:
     needs: [version, build]
     # ビルドを飛ばしたとき (リリース済みで latest.json だけ公開し直すとき) も動かす。
-    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && !inputs.verify_only && needs.version.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

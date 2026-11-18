@@ -160,7 +160,7 @@ await zoo.setComponents(id, message([
 
 ### 操作とイベント
 
-利用者がボタンを押す・select で選ぶと `action.invoked`、モーダルやホームの送信で `view.submitted` が届きます。`data` は次の値を持ちます。
+利用者がボタンを押す・select で選ぶと `action.invoked`、モーダルやホームの送信で `view.submitted` が届きます。Label の中の入力欄は、選んだときには送らず、送信でまとめて送ります。メッセージに Label があると、モーダルと同じく下に「送信」ボタンが付き、押すと `view.submitted` が届きます（`data.message_id` が入ります）。`data` は次の値を持ちます。
 
 | キー | 内容 |
 | --- | --- |
@@ -169,7 +169,7 @@ await zoo.setComponents(id, message([
 | `values` | `custom_id` ごとの値。select・checkbox group は配列（1 つでも配列）、radio group・ボタンの `value`・入力欄は文字列、checkbox は真偽値、datetime picker は UNIX 秒、user / channel select は zoo の ID の配列 |
 | `trigger_id`、`response_path` | モーダルを開く、一時メッセージを返すための値（下を参照） |
 
-サーバーは、値が選択肢の中にあるか、個数が `min_values`〜`max_values` に収まるか、送信で `required` の入力が空でないか、`format` に合うかを確かめ、合わなければ 400 にします。押せない状態（`disabled`）の部品とリンクボタンは操作できません。
+サーバーは、値が選択肢の中にあるか、個数が `min_values`〜`max_values` に収まるか、送信で `required` の入力が空でないか、`format` に合うかを確かめ、合わなければ 400 にします。押せない状態（`disabled`）の部品とリンクボタンは操作できません。Label の中の `disabled` の欄も、クライアントは変更させず、初期値のまま送ります。
 
 ### ファイルの送信（file upload）
 
