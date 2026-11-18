@@ -172,15 +172,29 @@ fn delivery_configs() -> anyhow::Result<Vec<(&'static str, ApnsConfig)>> {
     Ok(configs)
 }
 
-pub(crate) async fn deliver_batch(
-    mut db: toasty::Db,
-    notifications: &[Notification],
-) -> anyhow::Result<()> {
+pub(crate) fn dispatch(db: toasty::Db, notifications: Vec<Notification>) {
+    tokio::spawn(async move {
+        if deliver_batch(db, &notifications).await.is_err() {
+            tracing::warn!("iPhoneへの通知を送信できませんでした");
+        }
+    });
+}
+
+fn client() -> anyhow::Result<reqwest::Client> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = crate::push::push_client()?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
+
+async fn deliver_batch(mut db: toasty::Db, notifications: &[Notification]) -> anyhow::Result<()> {
     let configs = delivery_configs()?;
     if configs.is_empty() {
         return Ok(());
     }
-    let client = crate::push::push_client()?;
+    let client = client()?;
     for notification in notifications {
         if deliver(&client, &configs, &mut db, notification)
             .await
@@ -213,30 +227,59 @@ async fn deliver(
         else {
             continue;
         };
-        if !crate::push::PushRecipient::Notification(notification)
-            .should_send(db, crate::push::PushDevice::Apns(&subscription))
-            .await
-        {
-            continue;
-        }
         let result = config
-            .send(client, &subscription, &body, &notification.id)
+            .send(
+                client,
+                &subscription,
+                &body,
+                &notification.id,
+                can_deliver(db, &subscription, Some(notification)),
+            )
             .await;
         match result {
-            Ok(Some(invalid_at)) => {
+            Ok(DeliveryOutcome::Invalid(invalid_at)) => {
                 if delete_invalid(db, &subscription, invalid_at).await.is_err() {
                     tracing::warn!("失効したiPhoneの通知登録を削除できませんでした");
                 }
             }
-            Ok(None) => {}
-            Err(_) => tracing::warn!("Appleが通知を受理しませんでした"),
+            Ok(DeliveryOutcome::Skipped | DeliveryOutcome::Accepted) => {}
+            Err(_) => tracing::warn!("端末への通知を配信できませんでした"),
         }
     }
     Ok(())
 }
 
-// 容量行を先にロックし、期限切れの回収と個々の記録の更新を常に同じ順に行う。
+async fn can_deliver(
+    db: &mut dyn toasty::db::Executor,
+    subscription: &ApnsSubscription,
+    notification: Option<&Notification>,
+) -> anyhow::Result<bool> {
+    // 配信を待つ間の再登録・退室・通知休止・メッセージ削除を同じ照会で反映する。
+    let rows = toasty::sql::query(
+        "SELECT 1::text FROM apns_subscriptions s JOIN users u ON u.id=s.user_id
+         WHERE s.id=$1 AND s.revocation_hash=$2 AND s.user_id=$3 AND NOT u.is_deactivated
+           AND ($4::text IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$4 AND c.deleted_at IS NULL
+           AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
+             SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
+           AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=u.id AND dnd_until>now())
+           AND (EXISTS(SELECT 1 FROM messages WHERE id=$5 AND channel_id=c.id AND deleted_at IS NULL)
+                OR ($5::text IS NULL AND $6='missed_call'))))",
+    )
+    .bind(subscription.id.as_str())
+    .bind(subscription.revocation_hash.as_str())
+    .bind(notification.map_or(subscription.user_id.as_str(), |n| n.user_id.as_str()))
+    .bind_typed(notification.map(|n| n.channel_id.as_str()), toasty::schema::db::Type::Text)
+    .bind_typed(notification.and_then(|n| n.message_id.as_deref()), toasty::schema::db::Type::Text)
+    .bind(notification.map_or("", |n| n.notification_type.as_str()))
+    .exec(db).await?;
+    Ok(!rows.is_empty())
+}
+
+// TRUNCATE と同じ順序で履歴表、容量行をロックし、相互に解放を待つのを防ぐ。
 pub(crate) async fn prune_revocations(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
+    toasty::sql::statement("LOCK TABLE apns_revocations IN ROW EXCLUSIVE MODE")
+        .exec(tx)
+        .await?;
     toasty::sql::query("SELECT id::text FROM apns_revocation_capacity WHERE id FOR UPDATE")
         .exec(tx)
         .await?;
@@ -296,28 +339,39 @@ pub(crate) async fn test_device(
 ) -> Result<(), AppError> {
     let config = ApnsConfig::from_env(&subscription.environment)?
         .ok_or_else(|| AppError::ServiceUnavailable("端末の通知環境が設定されていません".into()))?;
-    let client = crate::push::push_client()?;
+    let client = client()?;
     let result = config
         .send(
             &client,
             subscription,
             &test_payload(&subscription.user_id, test_id),
             test_id,
+            can_deliver(db, subscription, None),
         )
-        .await
-        .map_err(|_| AppError::BadGateway("Appleがテスト通知を受理しませんでした".into()))?;
-    if let Some(invalid_at) = result {
-        delete_invalid(db, subscription, invalid_at).await?;
-        return Err(AppError::BadGateway(
-            "Appleがこの端末トークンの失効を通知しました".into(),
-        ));
+        .await?;
+    match result {
+        DeliveryOutcome::Accepted => Ok(()),
+        DeliveryOutcome::Skipped => Err(AppError::NotFound(
+            "この端末の通知登録を確認できません".into(),
+        )),
+        DeliveryOutcome::Invalid(invalid_at) => {
+            delete_invalid(db, subscription, invalid_at).await?;
+            Err(AppError::BadGateway(
+                "Appleがこの端末トークンの失効を通知しました".into(),
+            ))
+        }
     }
-    Ok(())
 }
 
 fn test_payload(user: &str, test_id: &str) -> Value {
     json!({"aps":{"alert":{"title":"Zoo","body":"このiPhoneでZooの通知を受信できました。"},"sound":"default"},
            "type":"push_test","user_id":user, "test_id":test_id})
+}
+
+enum DeliveryOutcome {
+    Skipped,
+    Accepted,
+    Invalid(jiff::civil::DateTime),
 }
 
 impl ApnsConfig {
@@ -327,39 +381,52 @@ impl ApnsConfig {
         sub: &ApnsSubscription,
         body: &Value,
         collapse_id: &str,
-    ) -> anyhow::Result<Option<jiff::civil::DateTime>> {
+        can_send: impl Future<Output = anyhow::Result<bool>>,
+    ) -> Result<DeliveryOutcome, AppError> {
         let url = endpoint(&sub.environment, &sub.device_token)?;
-        let response = client
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(anyhow::Error::from)?;
+        let request = client
             .post(url)
             .version(reqwest::Version::HTTP_2)
             .bearer_auth(self.authorization().await?)
             .header("apns-topic", "works.zli.zoo")
             .header("apns-push-type", "alert")
             .header("apns-priority", "10")
-            .header(
-                "apns-expiration",
-                (SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() + 300).to_string(),
-            )
+            .header("apns-expiration", (now.as_secs() + 300).to_string())
             .header("apns-collapse-id", collapse_id)
-            .json(body)
-            .send()
-            .await?;
-        delivery_response(response).await
+            .json(body);
+        send_if_allowed(request, can_send).await
     }
 }
 
-async fn delivery_response(
-    response: reqwest::Response,
-) -> anyhow::Result<Option<jiff::civil::DateTime>> {
+async fn send_if_allowed(
+    request: reqwest::RequestBuilder,
+    can_send: impl Future<Output = anyhow::Result<bool>>,
+) -> Result<DeliveryOutcome, AppError> {
+    if !can_send.await? {
+        return Ok(DeliveryOutcome::Skipped);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| AppError::BadGateway("Appleに接続できませんでした".into()))?;
+    delivery_response(response)
+        .await
+        .map_err(|_| AppError::BadGateway("Appleが通知を受理しませんでした".into()))
+}
+
+async fn delivery_response(response: reqwest::Response) -> anyhow::Result<DeliveryOutcome> {
     if response.status() == reqwest::StatusCode::OK {
-        return Ok(None);
+        return Ok(DeliveryOutcome::Accepted);
     }
     anyhow::ensure!(
         response.status() == reqwest::StatusCode::GONE,
         "Appleが通知を受理しませんでした"
     );
     let json = response.json::<Value>().await?;
-    Ok(Some(invalidation_time(&json)?))
+    Ok(DeliveryOutcome::Invalid(invalidation_time(&json)?))
 }
 
 fn invalidation_time(body: &Value) -> anyhow::Result<jiff::civil::DateTime> {
@@ -381,6 +448,138 @@ fn invalidation_time(body: &Value) -> anyhow::Result<jiff::civil::DateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "マイグレーションを適用したPostgreSQLを使用"]
+    async fn delivery_requires_current_device_membership_and_visible_message() -> anyhow::Result<()>
+    {
+        let mut db = crate::db::init_db(&crate::config::Config::from_env().database_url).await?;
+        let mut tx = db.transaction().await?;
+        let user = uuid::Uuid::new_v4().to_string();
+        let other = uuid::Uuid::new_v4().to_string();
+        for id in [&user, &other] {
+            toasty::sql::statement(
+                "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'通知テスト')",
+            )
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
+        }
+        let channel = uuid::Uuid::new_v4().to_string();
+        let message = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement("INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1,$1,$2,true,true)")
+            .bind(channel.as_str()).bind(user.as_str()).exec(&mut tx).await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,channel_id,user_id,content) VALUES($1,$2,$3,'通知テスト')",
+        )
+        .bind(message.as_str())
+        .bind(channel.as_str())
+        .bind(user.as_str())
+        .exec(&mut tx)
+        .await?;
+        let sub = ApnsSubscription::create()
+            .id(digest(&user))
+            .user_id(user.as_str())
+            .device_token(digest(&other))
+            .environment("sandbox")
+            .revocation_hash(digest(&message))
+            .created_at(crate::models::now_utc_millis())
+            .exec(&mut tx)
+            .await?;
+        let notification = Notification {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user.clone(),
+            actor_id: other.clone(),
+            channel_id: channel.clone(),
+            message_id: Some(message.clone()),
+            notification_type: "dm".into(),
+            is_read: false,
+            created_at: crate::models::now_utc_millis(),
+        };
+        assert!(!can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        toasty::sql::statement(
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+        )
+        .bind(user.as_str())
+        .bind(channel.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        toasty::sql::statement("SAVEPOINT original_device")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement(
+            "UPDATE apns_subscriptions SET revocation_hash='新世代' WHERE id=$1",
+        )
+        .bind(sub.id.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(!can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        let renewed = ApnsSubscription::get_by_id(&mut tx, sub.id.as_str()).await?;
+        assert!(!can_deliver(&mut tx, &sub, None).await?);
+        assert!(can_deliver(&mut tx, &renewed, None).await?);
+        assert!(can_deliver(&mut tx, &renewed, Some(&notification)).await?);
+        toasty::sql::statement("UPDATE apns_subscriptions SET user_id=$2 WHERE id=$1")
+            .bind(sub.id.as_str())
+            .bind(other.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!can_deliver(&mut tx, &renewed, Some(&notification)).await?);
+        assert!(!can_deliver(&mut tx, &renewed, None).await?);
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT original_device")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement(
+            "INSERT INTO user_event_settings(user_id,dnd_until) VALUES($1,now()+interval '1 hour')
+             ON CONFLICT(user_id) DO UPDATE SET dnd_until=EXCLUDED.dnd_until",
+        )
+        .bind(user.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(!can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        assert!(can_deliver(&mut tx, &sub, None).await?);
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT original_device")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("UPDATE users SET is_deactivated=true WHERE id=$1")
+            .bind(user.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT original_device")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("SET LOCAL search_path=pg_catalog")
+            .exec(&mut tx)
+            .await?;
+        assert!(
+            can_deliver(&mut tx, &sub, Some(&notification))
+                .await
+                .is_err()
+        );
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT original_device")
+            .exec(&mut tx)
+            .await?;
+        assert!(can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        toasty::sql::statement("UPDATE messages SET deleted_at=now() WHERE id=$1")
+            .bind(message.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!can_deliver(&mut tx, &sub, Some(&notification)).await?);
+        let missed = Notification {
+            notification_type: "missed_call".into(),
+            message_id: None,
+            ..notification
+        };
+        assert!(can_deliver(&mut tx, &sub, Some(&missed)).await?);
+        toasty::sql::statement("UPDATE channels SET deleted_at=now() WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!can_deliver(&mut tx, &sub, Some(&missed)).await?);
+        tx.rollback().await?;
+        Ok(())
+    }
     #[tokio::test]
     #[ignore = "マイグレーションを適用したPostgreSQLを使用"]
     async fn apns_invalidation_waits_for_device_registration() -> anyhow::Result<()> {
@@ -471,6 +670,28 @@ mod tests {
         assert!(ApnsConfig::from_values("ABCDEFGHIJ", "ABCDEFGHIJ", "not a key").is_err());
     }
     #[tokio::test]
+    async fn authorization_failure_is_distinct_from_provider_failure() {
+        let server = wiremock::MockServer::start().await;
+        let client = client().unwrap();
+        let request = || client.post(server.uri());
+        let failed = send_if_allowed(request(), async {
+            anyhow::bail!("端末の照会に失敗")
+        })
+        .await;
+        assert!(matches!(failed, Err(AppError::Internal(_))));
+        assert!(matches!(
+            send_if_allowed(request(), async { Ok(false) }).await,
+            Ok(DeliveryOutcome::Skipped)
+        ));
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(matches!(
+            send_if_allowed(request(), async { Ok(true) }).await,
+            Err(AppError::BadGateway(_))
+        ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn self_test_is_generic_and_requires_apns_acceptance() {
         let payload = test_payload("自分のID", "今回の通知ID");
         assert_eq!(payload["test_id"], "今回の通知ID");
@@ -489,8 +710,8 @@ mod tests {
                 .unwrap();
             let result = delivery_response(reqwest::Response::from(response)).await;
             match status {
-                200 => assert!(matches!(result, Ok(None))),
-                410 => assert!(matches!(result, Ok(Some(_)))),
+                200 => assert!(matches!(result, Ok(DeliveryOutcome::Accepted))),
+                410 => assert!(matches!(result, Ok(DeliveryOutcome::Invalid(_)))),
                 _ => assert!(result.is_err()),
             }
         }
