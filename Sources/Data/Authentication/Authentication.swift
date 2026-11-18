@@ -17,19 +17,25 @@ enum TokenVault {
     static func load(_ account: String) throws -> TokenSet? {
         var request = query(account)
         request[kSecReturnData as String] = true
+        request[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
         let status = SecItemCopyMatching(request as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else {
+        guard status == errSecSuccess, let item = result as? [String: Any], let data = item[kSecValueData as String] as? Data else {
             throw ZooError.auth("保存したログイン情報を読み取れませんでした。端末のロックを解除して再度お試しください。")
         }
-        return try JSONDecoder().decode(TokenSet.self, from: data)
+        let token = try JSONDecoder().decode(TokenSet.self, from: data)
+        // 既存の保存項目も移行し、通話中に画面をロックしても更新トークンを保存できるようにする。
+        if item[kSecAttrAccessible as String] as? String != kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String {
+            try save(token, account: account)
+        }
+        return token
     }
 
     static func save(_ token: TokenSet, account: String) throws {
         let bytes = try JSONEncoder().encode(token)
         let attributes: [String: Any] = [kSecValueData as String: bytes,
-                                        kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+                                        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         var status = SecItemUpdate(query(account) as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var request = query(account)
