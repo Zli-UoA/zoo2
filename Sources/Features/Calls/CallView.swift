@@ -52,7 +52,7 @@ struct CallView: View {
                         Label(workspace.name(for: channel), systemImage: "headphones").font(.title2.bold())
                         if !store.ready { ProgressView("接続中…") }
                         else if store.participants.count <= 1 { Text("ほかのメンバーの参加を待っています。") }
-                        Text("アプリを離れると通話を終了します。").font(.caption).foregroundStyle(.secondary)
+                        Text("ほかのアプリを開いても通話を続けられます。").font(.caption).foregroundStyle(.secondary)
                     }
                     Section("参加者（\(store.participants.count)人）") {
                         ForEach(store.participants) { person in

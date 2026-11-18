@@ -30,7 +30,8 @@ final class AppSession {
                                      notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
             let client = PreviewChatClient()
             session.userID = client.currentUser.id
-            session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+            let calls = CallStore(client: client, userID: client.currentUser.id, makeMedia: { PreviewCallMedia() }, permission: { true })
+            session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil, calls: calls)
             return session
         }
         if isUITesting {

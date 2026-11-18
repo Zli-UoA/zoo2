@@ -123,15 +123,17 @@ Web版の `origin/main`（`35cf0be3`）を基準に、ピンは `/api/channel-pi
 ストレージへの画像・動画リクエストにAPIトークンを渡しません。画像ロード失敗はURLを一度更新し、その後は手動で再試行します。
 拡大画面はURLを再取得し、動画はタップ後に再生、閉じる操作やバックグラウンド移行で停止します。
 
-## 前面での音声通話
+## 音声通話
 
 `WorkspaceStore` の `CallStore` が画面遷移から独立して通話を保持し、`NativeCallMedia` がネイティブWebRTCの音声接続を管理します。
 Webと同じ最大6人のP2Pメッシュで、サーバーの `room_state.ice_servers` をそのまま利用します。
 SSE接続自体が入室となり、初期状態より先のイベントを保留し、セッションIDの辞書順で小さい側からOfferを送ります。
 SDPの適用前に届いたICE候補を保留し、重複Offerには保存済みAnswerを返します。
 シグナルの送信を直列化し、503のみ短く再試行します。heartbeatは10秒ごとです。
-接続切断・退出・ログアウト・音声割り込み・バックグラウンド移行でマイク、Peer、SSE、heartbeatを終了します。
+接続切断・退出・ログアウト・音声割り込みでマイク、Peer、SSE、heartbeatを終了します。
+アプリがバックグラウンドへ移動しても、開始済み通話のメディア、SSE、heartbeatを保持します。既存の `playAndRecord` / `voiceChat` 音声セッションに加え、`UIBackgroundModes` の `audio` を有効にしています。[Appleの音声セッション仕様](https://developer.apple.com/documentation/avfaudio/avaudiosession/category-swift.struct/playandrecord)に基づく設定です。
+認証トークンは `AfterFirstUnlockThisDeviceOnly` で保存し、旧項目も読み取り時に移行します。画面ロック中のトークン更新を可能にし、他端末へは移行しません。[AppleのKeychainアクセス条件](https://developer.apple.com/documentation/security/ksecattraccessibleafterfirstunlockthisdeviceonly)を参照してください。
 招待は `call_invites` shapeから取得します。DMの招待はサーバーが最初の入室時に作成します。
 
-終了中の着信とバックグラウンド継続には対応していません。現在のサーバーのAPNsは通常の通知のみで、VoIP招待配信・PushKit登録がありません。
+終了中の着信には対応していません。現在のサーバーのAPNsは通常の通知のみで、VoIP招待配信・PushKit登録がありません。
 携帯回線や異なるNAT間の接続品質にはサーバーのTURN設定が関わるため、配布前に実機2台とWebクライアント間で音声・ミュート・Bluetooth・切断を確認します。

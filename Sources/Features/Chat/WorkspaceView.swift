@@ -30,9 +30,6 @@ struct WorkspaceView: View {
         .sheet(isPresented: Binding(get: { workspace.calls.showingCall }, set: { workspace.calls.showingCall = $0 })) {
             CallView(store: workspace.calls, workspace: workspace)
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .background { workspace.calls.finish() }
-        }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
             if let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                type == AVAudioSession.InterruptionType.began.rawValue { workspace.calls.finish() }

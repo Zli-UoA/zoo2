@@ -69,14 +69,14 @@ final class WorkspaceStore {
     private var channelGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
 
-    init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard) {
+    init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard, calls: CallStore? = nil) {
         self.client = client
         self.user = user
-        calls = CallStore(client: client, userID: user.id)
+        self.calls = calls ?? CallStore(client: client, userID: user.id)
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
-        calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
+        self.calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }

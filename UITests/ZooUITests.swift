@@ -2,6 +2,33 @@ import XCTest
 
 final class ZooUITests: XCTestCase {
     @MainActor
+    func testCallSurvivesBackgroundAndCanEndAfterReturning() {
+        let app = launchWorkspace(call: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        app.buttons["start-call"].tap()
+        let mute = app.buttons["call-mute"]
+        XCTAssertTrue(mute.waitForExistence(timeout: 5))
+        XCTAssertTrue(mute.isEnabled)
+        mute.tap()
+        XCTAssertEqual(mute.label, "ミュートを解除")
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5) || app.state == .runningBackgroundSuspended)
+        app.activate()
+        XCTAssertTrue(mute.waitForExistence(timeout: 5))
+        XCTAssertEqual(mute.label, "ミュートを解除")
+        XCTAssertFalse(app.staticTexts["通話は終了しました。"].exists)
+        mute.tap()
+        XCTAssertEqual(mute.label, "ミュート")
+        capture(app, name: "バックグラウンドから復帰した通話")
+        app.buttons["閉じる"].tap()
+        let banner = app.buttons["active-call"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 5))
+        banner.tap()
+        app.buttons["call-end"].tap()
+        XCTAssertTrue(banner.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
     func testChannelPinsFromDirectoryAndDetails() {
         let app = launchWorkspace()
         let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
@@ -195,7 +222,7 @@ final class ZooUITests: XCTestCase {
 
     @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
-                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false) -> XCUIApplication {
+                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -205,6 +232,7 @@ final class ZooUITests: XCTestCase {
         if video { app.launchArguments.append("--uitesting-video") }
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
+        if call { app.launchArguments.append("--uitesting-call") }
         if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()

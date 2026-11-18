@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Synchronization
 import Testing
 @testable import Zoo
@@ -63,6 +64,37 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
             return state.task
         }
         task?.cancel()
+    }
+}
+
+@MainActor
+@Suite("通話中の認証情報保存")
+struct TokenVaultTests {
+    @Test("新規保存と旧設定からの移行で、ロック中に更新できる端末専用項目を使う", arguments: [false, true])
+    func backgroundAccessibility(legacy: Bool) throws {
+        let account = "test-background-call-\(UUID().uuidString)"
+        defer { TokenVault.delete(account) }
+        let token = TokenSet(access: "test-access", refresh: "test-refresh", expires: .now.addingTimeInterval(3600))
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: "works.zli.zoo.session", kSecAttrAccount as String: account]
+        if legacy {
+            var item = query
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            item[kSecValueData as String] = try JSONEncoder().encode(token)
+            #expect(SecItemAdd(item as CFDictionary, nil) == errSecSuccess)
+        } else { try TokenVault.save(token, account: account) }
+        #expect(try TokenVault.load(account)?.refresh == "test-refresh")
+
+        var attributesQuery = query
+        attributesQuery[kSecReturnAttributes as String] = true
+        var result: CFTypeRef?
+        #expect(SecItemCopyMatching(attributesQuery as CFDictionary, &result) == errSecSuccess)
+        let attributes = try #require(result as? [String: Any])
+        #expect(attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+
+        try TokenVault.save(TokenSet(access: "test-new-access", refresh: "test-rotated-refresh", expires: .now.addingTimeInterval(3600)), account: account)
+        let reloaded = try #require(try TokenVault.load(account))
+        #expect(reloaded.access == "test-new-access" && reloaded.refresh == "test-rotated-refresh")
     }
 }
 

@@ -35,6 +35,16 @@ final class InMemoryNotificationPreviewKeys: NotificationPreviewKeyStorage {
 
 // UI テストは本番の認証・通知・投稿に触れず、実際の SwiftUI 画面を操作する。
 @MainActor
+final class PreviewCallMedia: CallMedia {
+    func start(sessionID: String, room: CallRoom, signal: @escaping @MainActor (String, CallSignal) -> Void,
+               failed: @escaping @MainActor () -> Void) throws {}
+    func handle(_ event: CallEvent) async throws {}
+    func mute(_ muted: Bool) {}
+    func speaker(_ enabled: Bool) throws {}
+    func close() {}
+}
+
+@MainActor
 final class PreviewChatClient: ChatClient {
     let serverURL = "https://ui.test.invalid"
     static let channelID = "11111111-1111-4111-8111-111111111111"
@@ -104,7 +114,13 @@ final class PreviewChatClient: ChatClient {
         try await Task.sleep(for: .seconds(86_400))
     }
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
-        throw ZooError.rejected(503, "プレビューでは実際の通話を開始しません。")
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-call") else {
+            throw ZooError.rejected(503, "プレビューでは実際の通話を開始しません。")
+        }
+        let participant = CallParticipant(session_id: sessionID, user_id: currentUser.id,
+                                          user_name: currentUser.user_name, display_name: currentUser.name, is_muted: false)
+        try await receive(.room(CallRoom(participants: [participant], max_participants: 6, ice_servers: [])))
+        try await Task.sleep(for: .seconds(86_400))
     }
     func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {}
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
