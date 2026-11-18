@@ -54,7 +54,9 @@ final class PushTests: XCTestCase {
         backend.failRevoke = true
         await registration.update(backend: backend, account: nil, token: nil, environment: "sandbox").value
         await registration.update(backend: backend, account: "second", token: "aabb", environment: "sandbox").value
-        XCTAssertEqual(store.receipt, original)
+        XCTAssertEqual(store.receipt?.id, original?.id)
+        XCTAssertEqual(store.receipt?.secret, original?.secret)
+        XCTAssertEqual(store.receipt?.revocationPending, true)
         XCTAssertEqual(backend.subscribed.count, 1)
         backend.failRevoke = false
         let restarted = PushRegistration(store: store)
@@ -79,7 +81,7 @@ final class PushTests: XCTestCase {
         release?.resume()
         await logout.value
         XCTAssertNil(store.receipt)
-        XCTAssertEqual(backend.revoked, backend.subscribed)
+        XCTAssertEqual(backend.revoked.map(\.secret), backend.subscribed.map(\.secret))
     }
 
     func testKeychainFailureNeverSendsUnrecoverableRegistration() async {
@@ -89,20 +91,45 @@ final class PushTests: XCTestCase {
         XCTAssertTrue(backend.subscribed.isEmpty)
     }
 
-    func testExpiredReceiptRotatesOnlyAfterSuccessfulRevocation() async {
+    func testRenewalKeepsSubscriptionWhenOfflineOrClockChanges() async throws {
         let store = MemoryPushStore(), backend = StubPushBackend()
         let registration = PushRegistration(store: store)
         await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
-        store.receipt?.createdAt = Int64(Date().timeIntervalSince1970) - 601
-        let old = store.receipt
+        let original = try XCTUnwrap(store.receipt)
+        for offset: Int64 in [-601, 300] {
+            store.receipt?.createdAt = original.createdAt + offset
+            backend.failSubscribe = true
+            await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
+            let renewed = try XCTUnwrap(store.receipt)
+            XCTAssertEqual(renewed.id, original.id)
+            XCTAssertEqual(renewed.secret, original.secret)
+            XCTAssertNil(renewed.revocationPending)
+            XCTAssertNotEqual(renewed.createdAt, original.createdAt + offset)
+            XCTAssertEqual(backend.subscribed.last, renewed)
+            XCTAssertTrue(backend.revoked.isEmpty)
+            backend.failSubscribe = false
+            await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
+            XCTAssertEqual(backend.subscribed.last, renewed)
+        }
+    }
+
+    func testReenablingAfterLostRevocationFinishesRevocationFirst() async throws {
+        let store = MemoryPushStore(), backend = StubPushBackend()
+        let registration = PushRegistration(store: store)
+        await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
+        let original = try XCTUnwrap(store.receipt)
         backend.failRevoke = true
+        await registration.update(backend: backend, account: nil, token: nil, environment: "sandbox").value
         await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
-        XCTAssertEqual(store.receipt, old)
-        XCTAssertEqual(backend.subscribed.count, 1)
+        XCTAssertEqual(store.receipt?.revocationPending, true)
+        XCTAssertEqual(backend.subscribed, [original])
         backend.failRevoke = false
-        await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
-        XCTAssertNotEqual(store.receipt?.secret, old?.secret)
-        XCTAssertGreaterThan(store.receipt!.createdAt, old!.createdAt)
+        let restarted = PushRegistration(store: store)
+        await restarted.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
+        XCTAssertEqual(backend.revoked.last?.secret, original.secret)
+        XCTAssertEqual(store.receipt?.id, original.id)
+        XCTAssertNotEqual(store.receipt?.secret, original.secret)
+        XCTAssertNil(store.receipt?.revocationPending)
     }
 
     func testTokenRotationRevokesPreviousDeviceBeforeRegistering() async {
@@ -120,6 +147,11 @@ final class PushTests: XCTestCase {
         XCTAssertNil(PushDestination(payload: ["user_id": user, "channel_id": "../private"]))
         XCTAssertNil(PushDestination(payload: ["channel_id": channel]))
         XCTAssertNil(PushDestination(payload: ["user_id": user, "channel_id": channel, "message_id": "https://evil.example"]))
+        let id = UUID()
+        let test: [String: String] = ["type": "push_test", "user_id": user, "test_id": id.uuidString, "channel_id": channel]
+        XCTAssertEqual(PushNotice(payload: test), .test(userID: user, id: id))
+        XCTAssertNil(PushDestination(payload: test))
+        XCTAssertNil(PushNotice(payload: ["type": "push_test", "user_id": user]))
     }
 
 }

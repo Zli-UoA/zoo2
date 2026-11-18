@@ -31,5 +31,7 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>ZooPreviewKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)works.zli.zoo.preview</string>
 </dict>
 </plist>

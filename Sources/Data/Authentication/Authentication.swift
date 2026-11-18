@@ -14,13 +14,16 @@ enum TokenVault {
          kSecAttrAccount as String: account]
     }
 
-    static func load(_ account: String) -> TokenSet? {
+    static func load(_ account: String) throws -> TokenSet? {
         var request = query(account)
         request[kSecReturnData as String] = true
         var result: CFTypeRef?
-        guard SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return try? JSONDecoder().decode(TokenSet.self, from: data)
+        let status = SecItemCopyMatching(request as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else {
+            throw ZooError.auth("保存したログイン情報を読み取れませんでした。端末のロックを解除して再度お試しください。")
+        }
+        return try JSONDecoder().decode(TokenSet.self, from: data)
     }
 
     static func save(_ token: TokenSet, account: String) throws {
@@ -59,16 +62,24 @@ final class Authentication {
     let settings: ConnectionSettings
     let transport: HTTPTransport
     private var tokens: TokenSet?
+    private var loadedTokens = false
     private var refreshTask: Task<TokenSet, Error>?
     private var generation = UUID()
 
     init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport()) {
         self.settings = settings
         self.transport = transport
-        self.tokens = TokenVault.load(settings.storageKey)
     }
 
-    var hasSession: Bool { tokens != nil }
+    private func sessionTokens() throws -> TokenSet? {
+        if !loadedTokens {
+            tokens = try TokenVault.load(settings.storageKey)
+            loadedTokens = true
+        }
+        return tokens
+    }
+
+    var hasSession: Bool { get throws { try sessionTokens() != nil } }
 
     func discovery() async throws -> Discovery {
         let issuer = try ConnectionSettings.secureURL(settings.issuer)
@@ -224,7 +235,7 @@ final class Authentication {
 
     func accessToken() async throws -> String {
         try Task.checkCancellation()
-        guard let tokens else { throw ZooError.expiredSession }
+        guard let tokens = try sessionTokens() else { throw ZooError.expiredSession }
         if tokens.expires.timeIntervalSinceNow > 30 { return tokens.access }
         let epoch = generation
         let task: Task<TokenSet, Error>
@@ -268,6 +279,7 @@ final class Authentication {
         refreshTask?.cancel()
         refreshTask = nil
         tokens = nil
+        loadedTokens = true
         TokenVault.delete(settings.storageKey)
     }
 }

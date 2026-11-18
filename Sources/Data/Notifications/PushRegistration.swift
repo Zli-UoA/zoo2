@@ -9,6 +9,7 @@ struct PushReceipt: Codable, Equatable {
     let environment: String
     let secret: String
     var createdAt: Int64 = Int64(Date().timeIntervalSince1970)
+    var revocationPending: Bool?
     var id: String { Self.digest("\(environment):\(token)") }
     static func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
 }
@@ -75,6 +76,15 @@ struct LivePushBackend: PushBackend {
         struct Response: Decodable { let id: String }
         guard try JSONDecoder().decode(Response.self, from: data).id == receipt.id else { throw ZooError.invalidResponse }
     }
+
+    func sendTest(to receipt: PushReceipt, account: String, id: UUID) async throws {
+        guard let api, receipt.server == api.settings.server, receipt.account == account,
+              receipt.revocationPending != true else { throw ZooError.auth("この端末の通知登録を確認してください。") }
+        let data = try await api.data("api/push/apns/test", method: "POST", body: [
+            "id": .string(receipt.id), "revocation_secret": .string(receipt.secret), "test_id": .string(id.uuidString)])
+        struct Response: Decodable { let ok: Bool }
+        guard try JSONDecoder().decode(Response.self, from: data).ok else { throw ZooError.invalidResponse }
+    }
     func revoke(_ receipt: PushReceipt) async throws {
         // 登録解除には元のサーバーと解除専用の秘密情報だけを使い、新しいアカウントの Bearer トークンは使わない。
         var request = URLRequest(url: try ConnectionSettings.secureURL(receipt.server).appendingPathComponent("api/push/apns/revoke"))
@@ -97,31 +107,41 @@ final class PushRegistration {
     // 中断を挟む処理も直列化し、進行中の登録が終わってからログアウトに伴う解除を行う。
     @discardableResult
     func update(backend: any PushBackend, account: String?, token: String?, environment: String,
-                completion: @escaping @MainActor (Error?) -> Void = { _ in }) -> Task<Void, Never> {
+                completion: @escaping @MainActor (Result<PushReceipt?, Error>) -> Void = { _ in }) -> Task<Void, Never> {
         let previous = tail
         let task = Task {
             await previous?.value
             do {
-                try await self.reconcile(backend: backend, account: account, token: token, environment: environment)
-                completion(nil)
-            } catch { completion(error) }
+                let receipt = try await self.reconcile(backend: backend, account: account, token: token, environment: environment)
+                completion(.success(receipt))
+            } catch { completion(.failure(error)) }
         }
         tail = task
         return task
     }
 
-    private func reconcile(backend: any PushBackend, account: String?, token: String?, environment: String) async throws {
+    private func reconcile(backend: any PushBackend, account: String?, token: String?, environment: String) async throws -> PushReceipt? {
         var receipt = try store.load()
-        if let old = receipt, old.server != backend.server || old.account != account ||
-            (token != nil && old.token != token) || old.environment != environment ||
-            Date().timeIntervalSince1970 - Double(old.createdAt) > 540 ||
-            Double(old.createdAt) - Date().timeIntervalSince1970 > 30 {
+        if var old = receipt, old.revocationPending == true || old.server != backend.server || old.account != account ||
+            (token != nil && old.token != token) || old.environment != environment {
+            if old.revocationPending != true {
+                // 解除応答が失われたときも、同じアカウントで失効済みの解除情報を再利用しない。
+                old.revocationPending = true
+                try store.save(old)
+            }
             try await backend.revoke(old)
             try store.save(nil)
             receipt = nil
         }
-        guard let account, let token else { return }
-        if receipt == nil {
+        guard let account, let token else { return nil }
+        let now = Int64(Date().timeIntervalSince1970)
+        if var existing = receipt {
+            if existing.createdAt < now - 540 || existing.createdAt > now + 30 {
+                existing.createdAt = now
+                try store.save(existing)
+                receipt = existing
+            }
+        } else {
             var bytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw ZooError.invalidResponse }
             receipt = PushReceipt(server: backend.server, account: account, token: token, environment: environment,
@@ -130,5 +150,6 @@ final class PushRegistration {
             try store.save(receipt)
         }
         if let receipt { try await backend.subscribe(receipt) }
+        return receipt
     }
 }

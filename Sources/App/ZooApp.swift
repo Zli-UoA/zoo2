@@ -17,8 +17,7 @@ struct ZooApp: App {
                 .task {
                     guard !AppSession.isUITesting else { return }
                     delegate.bind(session.notifications)
-                    session.notifications.cleanupAtLaunch()
-                    await session.connect(interactive: false)
+                    await session.resume()
                 }
                 .onChange(of: scenePhase) { _, value in
                     if value == .active, !AppSession.isUITesting { Task { await session.resume() } }

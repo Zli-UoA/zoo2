@@ -5,33 +5,36 @@ import Observation
 final class AppSession {
     private(set) var userID: String?
     private(set) var workspace: WorkspaceStore?
-    private(set) var connecting = false
+    var connecting: Bool { connection != nil }
     private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
     var error: String?
     let notifications: NotificationController
     private let authentication: Authentication
     private let api: APIClient
-    private var connectionTask: Task<Void, Never>?
+    private var connection: (task: Task<Void, Never>, interactive: Bool)?
     private var generation = UUID()
 
     init(settings: ConnectionSettings = ConnectionSettings(), transport: HTTPTransport = HTTPTransport(),
-         notificationStore: any PushReceiptStore = KeychainPushReceiptStore()) {
+         notificationStore: any PushReceiptStore = KeychainPushReceiptStore(),
+         previewKeys: any NotificationPreviewKeyStorage = NotificationPreviewKeyStore()) {
         authentication = Authentication(settings: settings, transport: transport)
         api = APIClient(settings: settings, auth: authentication, transport: transport)
-        notifications = NotificationController(transport: transport, receiptStore: notificationStore)
+        notifications = NotificationController(transport: transport, receiptStore: notificationStore, previewKeys: previewKeys)
     }
 
     static func configured() -> AppSession {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--uitesting-workspace") {
-            let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"), notificationStore: PreviewPushReceiptStore())
+            let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
+                                     notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
             let client = PreviewChatClient()
             session.userID = client.currentUser.id
             session.workspace = WorkspaceStore(client: client, user: client.currentUser)
             return session
         }
         if isUITesting {
-            return AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"), notificationStore: PreviewPushReceiptStore())
+            return AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
+                              notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
         }
         #endif
         return AppSession()
@@ -47,35 +50,34 @@ final class AppSession {
     }
 
     func startLogin() {
-        guard connectionTask == nil, !connecting, userID == nil else { return }
+        guard !connecting, userID == nil else { return }
+        notifications.discardAccountNotifications()
+        beginConnection(interactive: true)
+    }
+
+    @discardableResult
+    private func beginConnection(interactive: Bool) -> Task<Void, Never> {
         let epoch = generation
-        connectionTask = Task {
+        let task = Task {
             guard generation == epoch, !Task.isCancelled else { return }
-            await connect(interactive: true)
+            await connect(interactive: interactive)
         }
+        connection = (task, interactive)
+        return task
     }
 
     func cancelLogin() {
-        guard connectionTask != nil || connecting else { return }
-        generation = UUID()
-        connectionTask?.cancel()
-        connectionTask = nil
-        authentication.logout()
-        deviceAuthorization = nil
-        connecting = false
-        error = nil
+        guard let connection else { return }
+        if connection.interactive { logout() } else { cancelConnection() }
     }
 
-    func connect(interactive: Bool) async {
-        guard !connecting, userID == nil, interactive || authentication.hasSession else { return }
+    private func connect(interactive: Bool) async {
         let epoch = generation
-        connecting = true
         error = nil
         defer {
             if generation == epoch {
-                connecting = false
                 deviceAuthorization = nil
-                connectionTask = nil
+                connection = nil
             }
         }
         do {
@@ -95,29 +97,47 @@ final class AppSession {
             }
             self.workspace = workspace
             notifications.connect(api: api, userID: user.id)
+            await notifications.resume()
             await deliverDestination()
         } catch {
             guard generation == epoch, !Task.isCancelled, !(error is CancellationError) else { return }
-            if case ZooError.expiredSession = error { authentication.logout() }
+            if case ZooError.expiredSession = error {
+                authentication.logout()
+                notifications.logout()
+            }
             self.error = error.localizedDescription
         }
     }
 
-    func logout() {
+    private func cancelConnection() {
         generation = UUID()
-        connectionTask?.cancel()
-        connectionTask = nil
+        connection?.task.cancel()
+        connection = nil
+        deviceAuthorization = nil
+        error = nil
+    }
+
+    func logout() {
+        cancelConnection()
         workspace?.shutdown()
         workspace = nil
-        deviceAuthorization = nil
         userID = nil
-        connecting = false
-        error = nil
         notifications.logout()
         authentication.logout()
     }
 
     func resume() async {
+        if userID == nil {
+            guard !connecting else { return }
+            do {
+                if try authentication.hasSession {
+                    await beginConnection(interactive: false).value
+                } else {
+                    await notifications.revokeRegistration().value
+                }
+            } catch { self.error = error.localizedDescription }
+            return
+        }
         await notifications.resume()
         await deliverDestination()
     }

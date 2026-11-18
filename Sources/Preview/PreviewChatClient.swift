@@ -8,6 +8,13 @@ final class PreviewPushReceiptStore: PushReceiptStore {
     func save(_ receipt: PushReceipt?) throws { self.receipt = receipt }
 }
 
+@MainActor
+final class InMemoryNotificationPreviewKeys: NotificationPreviewKeyStorage {
+    private var key: NotificationPreviewKey?
+    func load() -> NotificationPreviewKey? { key }
+    func save(_ key: NotificationPreviewKey?) { self.key = key }
+}
+
 // UI テストは本番の認証・通知・投稿に触れず、実際の SwiftUI 画面を操作する。
 @MainActor
 final class PreviewChatClient: ChatClient {

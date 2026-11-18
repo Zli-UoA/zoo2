@@ -174,6 +174,15 @@ private struct ProfileSettingsView: View {
             Section("プッシュ通知") {
                 Text(session.notifications.status)
                 if session.notifications.enabled {
+                    if session.notifications.canSendTest {
+                        Button("テスト通知を送る") { Task { await session.notifications.sendTest() } }
+                            .disabled(session.notifications.sendingTest)
+                            .accessibilityIdentifier("send-test-push")
+                    }
+                    if let result = session.notifications.testStatus { Text(result) }
+                    if session.notifications.registrationFailed {
+                        Button("通知の登録を再試行") { enabling = true }.disabled(enabling)
+                    }
                     Button("通知を無効にする") { session.notifications.disable() }
                 } else {
                     Button("通知を有効にする") { enabling = true }.disabled(enabling)

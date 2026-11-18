@@ -137,7 +137,7 @@ struct DeviceAuthorizationTests {
             #expect(shown.first?.userCode == "ABCD-EFGH")
             #expect(shown.first?.verificationURL.absoluteString == "https://id.test.invalid/device?user_code=ABCD-EFGH")
             #expect(clock.waits == [.seconds(5), .seconds(5), .seconds(10), .seconds(10)])
-            #expect(TokenVault.load(settings.storageKey)?.refresh == "approved-refresh")
+            #expect(try TokenVault.load(settings.storageKey)?.refresh == "approved-refresh")
             let restored = Authentication(settings: settings, transport: auth.transport)
             #expect(try await restored.accessToken() == "approved-access")
         }
@@ -174,11 +174,11 @@ struct DeviceAuthorizationTests {
                 return (400, [:], Data(#"{"error":"authorization_pending"}"#.utf8))
             }
         }
-        try await withAuthentication { auth in
+        try await withAuthentication { (auth: Authentication) async throws in
             await #expect(throws: ZooError.self) { try await auth.login(clock: clock) { _ in } }
             #expect(clock.waits == [.seconds(5), .seconds(5), .seconds(2)])
             #expect(attempts.withLock { $0 } == 2)
-            #expect(TokenVault.load(settings.storageKey) == nil)
+            #expect(try TokenVault.load(settings.storageKey) == nil)
         }
     }
 
@@ -195,9 +195,9 @@ struct DeviceAuthorizationTests {
                 return Self.token
             }
         }
-        try await withAuthentication { auth in
+        try await withAuthentication { (auth: Authentication) async throws in
             await #expect(throws: ZooError.self) { try await auth.login(clock: clock) { _ in } }
-            #expect(!auth.hasSession)
+            #expect(try !auth.hasSession)
         }
     }
 
@@ -241,7 +241,7 @@ struct DeviceAuthorizationTests {
             #expect(clock.waits == (retryAfter == "20"
                 ? [.seconds(5), .seconds(20), .seconds(40)]
                 : [.seconds(5), .seconds(10), .seconds(20)]))
-            #expect(auth.hasSession)
+            #expect(try auth.hasSession)
         }
     }
 
@@ -260,11 +260,11 @@ struct DeviceAuthorizationTests {
                 return Self.token
             }
         }
-        try await withAuthentication { auth in
+        try await withAuthentication { (auth: Authentication) async throws in
             await #expect(throws: ZooError.self) { try await auth.login(clock: clock) { _ in } }
             #expect(clock.waits == [.seconds(5), .seconds(25)])
             #expect(attempts.withLock { $0 } == 1)
-            #expect(!auth.hasSession)
+            #expect(try !auth.hasSession)
         }
     }
 
@@ -283,8 +283,8 @@ struct DeviceAuthorizationTests {
         let started = ContinuousClock.now
         await #expect(throws: ZooError.self) { try await auth.login { _ in } }
         #expect(started.duration(to: .now) < .seconds(5))
-        #expect(!auth.hasSession)
-        #expect(TokenVault.load(settings.storageKey) == nil)
+        #expect(try !auth.hasSession)
+        #expect(try TokenVault.load(settings.storageKey) == nil)
     }
 
     @Test("拒否・失効・設定エラーで待機を終了する", arguments: ["access_denied", "expired_token", "invalid_client", "unauthorized_client", "invalid_scope", "invalid_target"])
@@ -299,10 +299,10 @@ struct DeviceAuthorizationTests {
                 return (400, [:], try JSONEncoder().encode(["error": code]))
             }
         }
-        try await withAuthentication { auth in
+        try await withAuthentication { (auth: Authentication) async throws in
             await #expect(throws: ZooError.self) { try await auth.login(clock: AdvancingClock()) { _ in } }
             #expect(attempts.withLock { $0 } == 1)
-            #expect(!auth.hasSession)
+            #expect(try !auth.hasSession)
         }
     }
 
@@ -358,13 +358,13 @@ struct DeviceAuthorizationTests {
             #expect(request.url?.path == "/device/code")
             return try Self.grant()
         }
-        try await withAuthentication { auth in
+        try await withAuthentication { (auth: Authentication) async throws in
             let task = Task { try await auth.login { _ in shown.continuation.yield(()) } }
             var iterator = shown.stream.makeAsyncIterator()
             _ = await iterator.next()
             task.cancel()
             await #expect(throws: CancellationError.self) { try await task.value }
-            #expect(TokenVault.load(settings.storageKey) == nil)
+            #expect(try TokenVault.load(settings.storageKey) == nil)
         }
     }
 
@@ -384,23 +384,25 @@ struct DeviceAuthorizationTests {
                 return Self.token
             }
         }
-        try await withAuthentication { auth in
+        try await withAuthentication { (auth: Authentication) async throws in
             let task = Task { try await auth.login(clock: AdvancingClock()) { _ in } }
             var iterator = started.stream.makeAsyncIterator()
             _ = await iterator.next()
             auth.logout()
             release.continuation.yield(())
             await #expect(throws: CancellationError.self) { try await task.value }
-            #expect(!auth.hasSession)
-            #expect(TokenVault.load(settings.storageKey) == nil)
+            #expect(try !auth.hasSession)
+            #expect(try TokenVault.load(settings.storageKey) == nil)
         }
     }
 
     @Test("キャンセル直後の再試行を古い接続タスクが妨げない")
     func appSessionCanRetryImmediatelyAfterCancellation() async throws {
         let transport = transport()
-        let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore())
+        let session = AppSession(settings: settings, transport: transport, notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
         defer { session.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        let destination = try #require(PushDestination(payload: ["user_id": UUID().uuidString, "channel_id": UUID().uuidString]))
+        session.notifications.opened(.message(destination))
         let requested = AsyncStream<Void>.makeStream()
         defer { requested.continuation.finish() }
         stub { _ in
@@ -408,6 +410,7 @@ struct DeviceAuthorizationTests {
             return (400, [:], Data())
         }
         session.startLogin()
+        #expect(session.notifications.destination == destination)
         session.cancelLogin()
         session.startLogin()
         var iterator = requested.stream.makeAsyncIterator()
@@ -416,5 +419,167 @@ struct DeviceAuthorizationTests {
         #expect(!session.connecting)
         #expect(session.deviceAuthorization == nil)
         #expect(session.error == nil)
+    }
+
+    @Test("アカウント切替で通知センターの本文を消去し、既にタップされた遷移先は本人確認まで保持する", arguments: [false, true])
+    func discardingAccountNotificationsRemovesDeliveredPreviews(hasReceipt: Bool) async throws {
+        let transport = transport()
+        defer { transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        let receipts = PreviewPushReceiptStore(), keys = InMemoryNotificationPreviewKeys()
+        let user = UUID().uuidString
+        if hasReceipt {
+            let receipt = PushReceipt(server: settings.server, account: PushReceipt.digest(settings.storageKey + "|" + user),
+                                      token: "aabb", environment: "sandbox", secret: "解除用テスト値")
+            try receipts.save(receipt)
+            keys.save(NotificationPreviewKey(userID: user, secret: receipt.secret))
+        }
+        stub { request in
+            #expect(request.url?.path == "/api/push/apns/revoke")
+            throw URLError(.notConnectedToInternet)
+        }
+        let controller = NotificationController(transport: transport, receiptStore: receipts, previewKeys: keys)
+        let target = try #require(PushDestination(payload: ["user_id": user, "channel_id": UUID().uuidString]))
+        controller.opened(.message(target))
+        var delivered = ["以前の通知本文"]
+        let revocation = controller.discardAccountNotifications { delivered.removeAll() }
+        #expect(keys.load() == nil)
+        #expect(delivered.isEmpty)
+        #expect(controller.destination == target)
+        await revocation.value
+    }
+
+    @Test("復元の一時エラーでは通知を維持し、手動ログインの開始時に旧利用者の鍵を即時削除する")
+    func failedRestoreKeepsPreviewUntilInteractiveLogin() async throws {
+        let transport = transport()
+        let receipts = PreviewPushReceiptStore()
+        let keys = InMemoryNotificationPreviewKeys()
+        let user = UUID().uuidString
+        let receipt = PushReceipt(server: settings.server, account: PushReceipt.digest(settings.storageKey + "|" + user), token: "aabb",
+                                  environment: "sandbox", secret: "解除用テスト値")
+        let original = NotificationPreviewKey(userID: user, secret: receipt.secret)
+        keys.save(original)
+        try receipts.save(receipt)
+        try TokenVault.save(TokenSet(access: "test-access", refresh: nil, expires: .now.addingTimeInterval(3600)), account: settings.storageKey)
+        defer { TokenVault.delete(settings.storageKey); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        let paths = Mutex<[String]>([])
+        stub { request in
+            paths.withLock { $0.append(request.url?.path ?? "") }
+            return (503, [:], Data())
+        }
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: keys)
+        session.notifications.received(token: Data([0xaa, 0xbb]))
+        await session.resume()
+        await session.resume()
+        #expect(session.error != nil)
+        #expect(paths.withLock { $0 } == ["/api/users/me", "/api/users/me"])
+        #expect(try receipts.load() == receipt)
+        #expect(keys.load() == original)
+
+        let requests = AsyncStream<String>.makeStream()
+        defer { requests.continuation.finish() }
+        stub { request in
+            requests.continuation.yield(request.url?.path ?? "")
+            throw URLError(.notConnectedToInternet)
+        }
+        session.startLogin()
+        #expect(keys.load() == nil)
+        var iterator = requests.stream.makeAsyncIterator()
+        let first = await iterator.next(), second = await iterator.next()
+        #expect(Set([first, second].compactMap { $0 }) == ["/api/push/apns/revoke", "/.well-known/openid-configuration"])
+        #expect(try TokenVault.load(settings.storageKey) == nil)
+        #expect(try receipts.load()?.revocationPending == true)
+        #expect(keys.load() == nil)
+    }
+
+    @Test("ログアウト済みの起動で失敗した端末登録の解除を次の前面復帰時に再試行する")
+    func signedOutResumeRetriesRevocation() async throws {
+        let transport = transport()
+        let receipts = PreviewPushReceiptStore()
+        let receipt = PushReceipt(server: settings.server, account: "利用者", token: "aabb",
+                                  environment: "sandbox", secret: "解除用テスト値")
+        try receipts.save(receipt)
+        defer { transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        let attempts = Mutex(0)
+        stub { request in
+            #expect(request.url?.path == "/api/push/apns/revoke")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            let attempt = attempts.withLock { $0 += 1; return $0 }
+            if attempt == 1 { throw URLError(.notConnectedToInternet) }
+            return (200, [:], Data(#"{"ok":true}"#.utf8))
+        }
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
+        await session.resume()
+        #expect(try receipts.load()?.secret == receipt.secret)
+        #expect(try receipts.load()?.revocationPending == true)
+        await session.resume()
+        #expect(try receipts.load() == nil)
+        #expect(attempts.withLock { $0 } == 2)
+    }
+
+    @Test("復元した認証が失効していたら端末登録を解除する")
+    func expiredRestoreRevokesPushReceipt() async throws {
+        let transport = transport()
+        let receipts = PreviewPushReceiptStore()
+        try receipts.save(PushReceipt(server: settings.server, account: "利用者", token: "aabb",
+                                     environment: "sandbox", secret: "解除用テスト値"))
+        try TokenVault.save(TokenSet(access: "expired-access", refresh: nil, expires: .now.addingTimeInterval(3600)), account: settings.storageKey)
+        let revoked = AsyncStream<Void>.makeStream()
+        defer {
+            revoked.continuation.finish()
+            TokenVault.delete(settings.storageKey)
+            transport.session.invalidateAndCancel()
+            StubProtocol.install(nil, id: stubID)
+        }
+        stub { request in
+            if request.url?.path == "/api/users/me" { return (401, [:], Data()) }
+            #expect(request.url?.path == "/api/push/apns/revoke")
+            revoked.continuation.yield(())
+            return (200, [:], Data(#"{"ok":true}"#.utf8))
+        }
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
+        await session.resume()
+        var iterator = revoked.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        await session.resume()
+        #expect(try TokenVault.load(settings.storageKey) == nil)
+        #expect(try receipts.load() == nil)
+        #expect(session.userID == nil)
+    }
+
+    @Test("遅れている自動復元をキャンセルしても認証情報と端末登録を維持する")
+    func cancellingRestorationKeepsPushReceipt() async throws {
+        let transport = transport()
+        let receipts = PreviewPushReceiptStore()
+        let receipt = PushReceipt(server: settings.server, account: "利用者", token: "aabb",
+                                  environment: "sandbox", secret: "解除用テスト値")
+        try receipts.save(receipt)
+        try TokenVault.save(TokenSet(access: "test-access", refresh: nil, expires: .now.addingTimeInterval(3600)), account: settings.storageKey)
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer {
+            started.continuation.finish()
+            release.continuation.finish()
+            TokenVault.delete(settings.storageKey)
+            transport.session.invalidateAndCancel()
+            StubProtocol.install(nil, id: stubID)
+        }
+        stub { request in
+            #expect(request.url?.path == "/api/users/me")
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return (401, [:], Data())
+        }
+        let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
+        let restoring = Task { await session.resume() }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        session.cancelLogin()
+        release.continuation.yield(())
+        await restoring.value
+        #expect(!session.connecting)
+        #expect(session.error == nil)
+        #expect(try TokenVault.load(settings.storageKey)?.access == "test-access")
+        #expect(try receipts.load() == receipt)
     }
 }
