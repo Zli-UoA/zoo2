@@ -1014,6 +1014,10 @@ mod tests {
         assert!(!is_stale_updater_artifact(Some(stale), now, true));
         assert!(!is_stale_updater_artifact(None, now, false));
         assert!(is_stale_updater_artifact(Some(stale), now, false));
+        assert_eq!(
+            updater_lock_path(std::path::Path::new(r"C:\updates\zoo2-updater-0.2.12.exe")),
+            std::path::Path::new(r"C:\updates\zoo2-updater-0.2.12.exe.lock")
+        );
     }
 
     #[test]
