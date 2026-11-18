@@ -132,3 +132,36 @@ export interface LeaveChannelResponse {
   user_id: string;
   channel_id: string;
 }
+
+/** ユーザーごとにピン留めしたチャンネル・DM の 1 行。 */
+export interface UserPinnedChannelResponse {
+  user_id: string;
+  channel_id: string;
+  position: number;
+  /** アーカイブ中のチャンネルのピン。位置は保ち、表示だけを止める。 */
+  archived?: boolean;
+  created_at: TimestampString;
+  updated_at: TimestampString;
+}
+
+export interface ChannelPinsResponse {
+  pins: UserPinnedChannelResponse[];
+  version: number;
+}
+
+export interface PinChannelResult {
+  pin: UserPinnedChannelResponse;
+  version: number;
+  pins: UserPinnedChannelResponse[];
+}
+
+export interface UnpinChannelResult {
+  removed: boolean;
+  version: number;
+  pins: UserPinnedChannelResponse[];
+}
+
+export interface ReorderChannelPinsResult {
+  version: number;
+  pins: UserPinnedChannelResponse[];
+}

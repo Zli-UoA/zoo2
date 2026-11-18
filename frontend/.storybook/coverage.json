@@ -94,8 +94,15 @@
         "LongDescription",
         "Mobile",
         "WebhookSettingsOpen",
-        "Encrypted"
+        "Encrypted",
+        "Pinned",
+        "PinnedArchived",
+        "PinLimit"
       ]
+    },
+    {
+      "file": "src/components/chat/ChannelListItem.stories.tsx",
+      "states": ["Default", "Active", "Unread", "Nsfw", "DropIndicator", "ActiveCall"]
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
@@ -124,7 +131,10 @@
         "EmptyThreadTitle",
         "MobileThreads",
         "Sections",
-        "MobileSections"
+        "MobileSections",
+        "Pinned",
+        "MobilePinned",
+        "PinnedReorderError"
       ]
     },
     {
@@ -145,6 +155,7 @@
         "Default",
         "Active",
         "Unread",
+        "DropIndicator",
         "LongName",
         "UserAvatar",
         "UserAvatarFallback",
@@ -161,6 +172,7 @@
         "UsersError",
         "Unread",
         "Group",
+        "PinFromMenu",
         "UserAvatar"
       ]
     },
@@ -1002,12 +1014,23 @@
     },
     {
       "file": "src/components/chat/ChannelHeader.tsx",
-      "story": "src/components/chat/ChannelHeader.stories.tsx"
+      "story": "src/components/chat/ChannelHeader.stories.tsx",
+      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。"
+    },
+    {
+      "file": "src/components/chat/ChannelListItem.tsx",
+      "story": "src/components/chat/ChannelListItem.stories.tsx"
     },
     {
       "file": "src/components/chat/ChannelScreen.tsx",
       "story": "src/components/chat/ChannelScreen.stories.tsx",
       "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/ChannelPinMenu.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "Pinned Story の行メニューで対象名入りの aria-label、ピン留め・解除・上下移動を確認し、下へ移動で PATCH /api/channel-pins/order が呼ばれることまで検証する。DmSection の PinFromMenu も使う。409 の回復は usePinnedChannels.test.ts で検証する。"
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",
@@ -1016,6 +1039,12 @@
         "src/lib/electric/collections.persistence.test.ts",
         "src/components/chat/ChannelSidebar.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/chat/PinnedSection.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
     },
     {
       "file": "src/components/chat/ChannelThreadItems.tsx",
@@ -1041,7 +1070,8 @@
     },
     {
       "file": "src/components/chat/DmSection.tsx",
-      "story": "src/components/chat/DmSection.stories.tsx"
+      "story": "src/components/chat/DmSection.stories.tsx",
+      "reason": "Default・Empty・Loading・LoadError・UsersError の一覧状態と、PinFromMenu で実際の行メニューからピン留めする操作を確認する。"
     },
     {
       "file": "src/components/chat/MembersPanel.tsx",

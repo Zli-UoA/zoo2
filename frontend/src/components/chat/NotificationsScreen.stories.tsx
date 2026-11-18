@@ -72,7 +72,7 @@ async function readyNotificationsList() {
   const list = await within(region).findByRole("list", { name: "通知" });
   await waitFor(async () => {
     await expect(list).toBeVisible();
-    await expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await expect(within(region).queryByRole("status")).not.toBeInTheDocument();
   });
   return list;
 }
@@ -83,8 +83,8 @@ const meta = {
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
   play: playForImplementation(async () => {
-    await screen.findByRole("region", { name: "通知" });
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    const region = await screen.findByRole("region", { name: "通知" });
+    await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
   }),
   decorators: [
     (Story) => (
@@ -104,10 +104,10 @@ export const Default: Story = {
   decorators: [withUnreadPreview],
   play: playForImplementation(async () => {
     await readyNotificationsList();
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    const region = await screen.findByRole("region", { name: "通知" });
+    await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
     const list = screen.getByRole("list", { name: "通知" });
-    const region = screen.getByRole("region", { name: "通知" });
     await expect(list.getBoundingClientRect().width).toBe(region.getBoundingClientRect().width);
     for (const row of Array.from(list.children))
       await expect(row.getBoundingClientRect().width).toBe(list.getBoundingClientRect().width - 32);
@@ -154,7 +154,8 @@ export const DirectMessages: Story = {
   },
   play: playForImplementation(async () => {
     await readyNotificationsList();
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    const region = await screen.findByRole("region", { name: "通知" });
+    await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
     await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
@@ -181,8 +182,8 @@ export const MessageLayoutComparison: Story = {
   ),
   play: playForImplementation(async () => {
     await readyNotificationsList();
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
-    const notification = screen.getByRole("region", { name: "通知" });
+    const notification = await screen.findByRole("region", { name: "通知" });
+    await waitFor(() => expect(within(notification).queryByRole("status")).not.toBeInTheDocument());
     const message = screen.getByRole("region", { name: "メッセージ表示の比較用" });
     const notificationHeader = notification.querySelector("header")!;
     const messageHeader = message.querySelector("header")!;
@@ -217,8 +218,9 @@ export const Loading: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByRole("status")).toBeVisible();
-    const list = within(screen.getByRole("region", { name: "通知" })).getByRole("list", {
+    const region = await screen.findByRole("region", { name: "通知" });
+    await expect(await within(region).findByRole("status")).toBeVisible();
+    const list = within(region).getByRole("list", {
       hidden: true,
     });
     await expect(list).toHaveAttribute("inert");
@@ -255,12 +257,11 @@ export const BodiesReadyTogether: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByRole("status")).toBeVisible();
-    await expect(
-      within(screen.getByRole("region", { name: "通知" })).getByRole("list", { hidden: true }),
-    ).not.toBeVisible();
+    const region = await screen.findByRole("region", { name: "通知" });
+    await expect(await within(region).findByRole("status")).toBeVisible();
+    await expect(within(region).getByRole("list", { hidden: true })).not.toBeVisible();
     releaseNotificationBodies();
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByRole("list", { name: "通知" })).toBeVisible();
     await expect(screen.getByText("本文 notification-mention")).toBeVisible();
     await expect(screen.getAllByText(/^本文 notification-/)).toHaveLength(4);
@@ -297,12 +298,13 @@ export const LoadingOnScroll: Story = {
   },
   play: playForImplementation(async () => {
     await readyNotificationsList();
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    const region = await screen.findByRole("region", { name: "通知" });
+    await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
     const list = screen.getByRole("list", { name: "通知" });
     const scrollRoot = list.parentElement!;
     await expect(screen.getByText("本文 scroll-0")).toBeVisible();
     scrollRoot.scrollTop = scrollRoot.scrollHeight;
-    const spinner = await screen.findByRole("status");
+    const spinner = await within(region).findByRole("status");
     await expect(spinner).toBeVisible();
     await expect(list).toBeVisible();
     await expect(list).not.toHaveAttribute("inert");
@@ -313,7 +315,7 @@ export const LoadingOnScroll: Story = {
       scrollRoot.getBoundingClientRect().bottom,
     );
     scrollRoot.scrollTop = 0;
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByText("本文 scroll-0")).toBeVisible();
   }),
 };

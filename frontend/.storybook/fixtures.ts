@@ -11,6 +11,7 @@ import type {
   MessageRow,
   NotificationRow,
   UserRow,
+  UserPinnedChannelRow,
   CallInviteRow,
 } from "../src/lib/electric/types";
 
@@ -25,6 +26,7 @@ export interface StoryCollectionsInput {
   reactions?: MessageReactionRow[];
   notifications?: NotificationRow[];
   attachments?: AttachmentRow[];
+  userPinnedChannels?: UserPinnedChannelRow[];
   config?: Partial<AppConfig>;
 }
 
@@ -164,6 +166,12 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
       createStoryChannelLeaveCollection(
         (input.channelLeaves ?? []).filter((row) => row.user_id === userId),
       ) as unknown as ReturnType<CollectionsBundle["channelLeaves"]>,
+    userPinnedChannels: (userId: string) =>
+      rowsCollection<UserPinnedChannelRow>(
+        "userPinnedChannels",
+        (row) => `${row.user_id}:${row.channel_id}`,
+        (input.userPinnedChannels ?? []).filter((row) => row.user_id === userId),
+      ) as unknown as ReturnType<CollectionsBundle["userPinnedChannels"]>,
     notifications: (userId: string) => {
       let collection = notificationCache.get(userId);
       if (!collection) {

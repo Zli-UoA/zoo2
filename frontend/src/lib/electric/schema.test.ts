@@ -5,6 +5,7 @@ import {
   CHANNEL_LEAVE_SCHEMA,
   MESSAGE_REACTION_SCHEMA,
   SHAPE_META,
+  USER_PINNED_CHANNEL_SCHEMA,
   coerceElectricRow,
   coerceElectricValue,
   toNumber,
@@ -106,6 +107,23 @@ describe("SHAPE_META", () => {
       table: "message_reactions",
       proxyPath: "message_reactions",
     });
+  });
+
+  it("maps the pinned channel shape and coerces its position", () => {
+    expect(SHAPE_META.userPinnedChannels).toEqual({
+      table: "user_pinned_channels",
+      proxyPath: "user_pinned_channels",
+    });
+    expect(USER_PINNED_CHANNEL_SCHEMA.columns.position).toBe("int4");
+    expect(
+      coerceElectricRow("user_pinned_channels", {
+        user_id: "user-1",
+        channel_id: "channel-1",
+        position: "2",
+        created_at: "2026-11-16 00:00:00.000",
+        updated_at: "2026-11-16 00:00:00.000",
+      }).position,
+    ).toBe(2);
   });
 });
 

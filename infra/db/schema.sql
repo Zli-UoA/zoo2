@@ -4258,3 +4258,23 @@ CREATE INDEX app_ui_expiry ON app_ui(expires_at) WHERE expires_at IS NOT NULL;
 -- 利用者の画面の一覧（GET /api/apps/{id}/surfaces）。全件を読まず、その利用者の画面だけを更新順に読む。
 -- 一覧に出さない trigger・options（短い間だけの行）は入れない（入れると、消えた行の項目が溜まり、主キーで引く問い合わせの計画もこの索引に寄る）
 CREATE INDEX app_ui_user ON app_ui(user_id, updated_at) WHERE kind NOT IN ('trigger','options');
+-- ユーザーごとのピン留めしたチャンネル・DM。位置はユーザーごとに独立して並べる。
+CREATE TABLE user_pinned_channels (
+  user_id text NOT NULL REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  channel_id text NOT NULL REFERENCES channels(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  position integer NOT NULL CHECK (position >= 0),
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, channel_id)
+);
+CREATE INDEX idx_user_pinned_channels_user_position ON user_pinned_channels (user_id, position, channel_id);
+CREATE INDEX idx_user_pinned_channels_channel ON user_pinned_channels (channel_id);
+
+-- ピン留めの並びの版。書き込みはユーザー単位でこの行をロックして直列にする。
+CREATE TABLE user_channel_pin_states (
+  user_id text NOT NULL PRIMARY KEY REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  version bigint NOT NULL DEFAULT 0 CHECK (version >= 0),
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;

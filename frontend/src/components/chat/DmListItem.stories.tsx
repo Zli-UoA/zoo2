@@ -29,6 +29,14 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 export const Active: Story = { args: { active: true } };
 export const Unread: Story = { args: { unread: true } };
+/** ドラッグ中の挿入位置。行の下端に移動先の線を出す。 */
+export const DropIndicator: Story = {
+  args: { dropIndicator: "after", draggable: true },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector('[data-drop-indicator="after"]')).toBeVisible();
+  }),
+};
+
 export const LongName: Story = {
   args: { label: "とても長い名前のメンバーとのダイレクトメッセージ" },
 };

@@ -1,12 +1,12 @@
--- 解除後に遅れて届く登録要求を識別するため、解除記録を一定期間保持する。
-CREATE TABLE "apns_revocations" (
+-- 先行プレビューで同じテーブルが作成済みの場合は、登録と解除記録を引き継ぐ。
+CREATE TABLE IF NOT EXISTS "apns_revocations" (
   "id" text NOT NULL,
   "revoked_at" timestamp(3) NOT NULL,
   PRIMARY KEY ("id")
 );
-CREATE INDEX "idx_apns_revocations_revoked_at" ON "apns_revocations" ("revoked_at");
+CREATE INDEX IF NOT EXISTS "idx_apns_revocations_revoked_at" ON "apns_revocations" ("revoked_at");
 
-CREATE TABLE "apns_subscriptions" (
+CREATE TABLE IF NOT EXISTS "apns_subscriptions" (
   "id" text NOT NULL,
   "user_id" text NOT NULL,
   "device_token" text NOT NULL,
@@ -19,4 +19,4 @@ CREATE TABLE "apns_subscriptions" (
   CONSTRAINT "apns_subscriptions_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON UPDATE CASCADE ON DELETE CASCADE,
   CONSTRAINT "apns_subscriptions_environment_check" CHECK (environment = ANY (ARRAY['sandbox'::text, 'production'::text]))
 );
-CREATE INDEX "idx_apns_subscriptions_user_id" ON "apns_subscriptions" ("user_id");
+CREATE INDEX IF NOT EXISTS "idx_apns_subscriptions_user_id" ON "apns_subscriptions" ("user_id");
