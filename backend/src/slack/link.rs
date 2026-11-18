@@ -1001,18 +1001,13 @@ pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Res
             (super::user_id(team, slack_user), user.to_string())
         })
         .collect();
-    // 全員分のメンバー単位のロックとチャンネルの行を、付け替えの前にまとめて取る (`lock_moves`)
+    // 全員分のメンバー単位のロックとチャンネルの行を、付け替えの前にまとめて取る (`lock_moves`)。
+    // lock_moves は lock_members 経由で全対象の users 行を ID 順に先にロックするため、
+    // ここでの個別のユーザー行ロックは不要。
     let refs: Vec<(&str, &str)> = pairs
         .iter()
         .map(|(from, to)| (from.as_str(), to.as_str()))
         .collect();
-    // Membership triggers lock users rows, so acquire the entire sorted set before
-    // lock_moves takes member advisory locks and channel rows.
-    let user_ids: Vec<&str> = pairs
-        .iter()
-        .flat_map(|(from, to)| [from.as_str(), to.as_str()])
-        .collect();
-    crate::routes::e2ee_channels::lock_membership_users(tx, &user_ids).await?;
     lock_moves(tx, &refs).await?;
     for (placeholder, user) in &pairs {
         move_content(tx, placeholder, user).await?;

@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use backend::{
-    auth::DEFAULT_DEV_USER_ID, config::Config, db::init_db, routes::create_router, state::AppState,
+    auth::DEFAULT_DEV_USER_ID, config::Config, db::init_db_with_pool, routes::create_router,
+    state::AppState,
 };
 
 async fn setup_app() -> anyhow::Result<(axum::Router, AppState)> {
@@ -15,37 +16,37 @@ async fn setup_app() -> anyhow::Result<(axum::Router, AppState)> {
 
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let db = init_db(&config.database_url).await?;
+    // 競合テストは blocker のトランザクションで 1 接続を保持したまま API 要求を出す。
+    // 環境の DB_MAX_POOL_SIZE=1 で止まらないよう、この suite 固有のプール上限を使う。
+    let db = init_db_with_pool(&config.database_url, 4).await?;
     let state = AppState::new(db.clone(), config);
     let app = create_router(state.clone());
     Ok((app, state))
 }
 
-async fn create_test_user(app: &axum::Router, id: &str, name: &str) -> anyhow::Result<()> {
-    let payload = json!({
-        "id": id,
-        "user_name": format!("{}_{}", name, uuid::Uuid::new_v4().simple()),
-        "display_name": name,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/users")
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+async fn create_test_user(state: &AppState, id: &str, name: &str) -> anyhow::Result<()> {
+    // API で作成すると既定チャンネルへ自動参加する。既定チャンネルがある環境では
+    // 全員が追加の共有チャンネルを持つことになり、'single' ゲストへの遷移 (23514) や
+    // DM の許可判定の前提が壊れるため、直接行を挿入して参加させない。
+    let mut db = state.db.clone();
+    toasty::sql::statement("INSERT INTO users (id, user_name, display_name) VALUES ($1, $2, $3)")
+        .bind(id)
+        .bind(format!("{}_{}", name, uuid::Uuid::new_v4().simple()))
+        .bind(name)
+        .exec(&mut db)
+        .await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn test_direct_message_1on1_flow() -> anyhow::Result<()> {
-    let (app, _) = setup_app().await?;
+    let (app, state) = setup_app().await?;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
 
-    create_test_user(&app, &alice_id, "alice").await?;
-    create_test_user(&app, &bob_id, "bob").await?;
+    create_test_user(&state, &alice_id, "alice").await?;
+    create_test_user(&state, &bob_id, "bob").await?;
 
     // 1. Alice が Bob との 1対1 DM を作成
     let dm_payload = json!({
@@ -116,13 +117,13 @@ async fn test_direct_message_1on1_flow() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_direct_message_leave_and_reopen() -> anyhow::Result<()> {
-    let (app, _) = setup_app().await?;
+    let (app, state) = setup_app().await?;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
 
-    create_test_user(&app, &alice_id, "alice").await?;
-    create_test_user(&app, &bob_id, "bob").await?;
+    create_test_user(&state, &alice_id, "alice").await?;
+    create_test_user(&state, &bob_id, "bob").await?;
 
     // 1. Alice が Bob との 1対1 DM を作成 (Alice が created_user_id)
     let dm_payload = json!({
@@ -269,12 +270,14 @@ async fn reopening_plain_dm_waits_for_users_before_locking_channel() -> anyhow::
     dotenvy::from_filename("../.env").ok();
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let db = init_db(&config.database_url).await?;
-    let app = create_router(AppState::new(db.clone(), config.clone()));
+    // 競合テストは blocker のトランザクションで 1 接続を保持したまま API 要求を出す。
+    let db = backend::db::init_db_with_pool(&config.database_url, 4).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
     let actor = uuid::Uuid::new_v4().to_string();
     let target = uuid::Uuid::new_v4().to_string();
-    create_test_user(&app, &actor, "lock_order_actor").await?;
-    create_test_user(&app, &target, "lock_order_target").await?;
+    create_test_user(&state, &actor, "lock_order_actor").await?;
+    create_test_user(&state, &target, "lock_order_target").await?;
 
     let create = Request::builder()
         .method("POST")
@@ -426,12 +429,14 @@ async fn reopening_plain_dm_does_not_deadlock_with_concurrent_e2ee_conversion() 
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     config.e2ee_encrypted_channels_enabled = true;
-    let db = init_db(&config.database_url).await?;
-    let app = create_router(AppState::new(db.clone(), config.clone()));
+    // 競合テストは blocker のトランザクションで 1 接続を保持したまま API 要求を出す。
+    let db = backend::db::init_db_with_pool(&config.database_url, 4).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
     let actor = uuid::Uuid::new_v4().to_string();
     let target = uuid::Uuid::new_v4().to_string();
-    create_test_user(&app, &actor, "reopen_convert_actor").await?;
-    create_test_user(&app, &target, "reopen_convert_target").await?;
+    create_test_user(&state, &actor, "reopen_convert_actor").await?;
+    create_test_user(&state, &target, "reopen_convert_target").await?;
 
     // Single-channel guests may reopen this DM because they share this channel.
     let shared_channel = uuid::Uuid::new_v4().to_string();
@@ -631,12 +636,14 @@ async fn reopening_encrypted_dm_serializes_with_encrypted_note_rejection() -> an
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     config.e2ee_encrypted_channels_enabled = true;
-    let db = init_db(&config.database_url).await?;
-    let app = create_router(AppState::new(db.clone(), config.clone()));
+    // 競合テストは blocker のトランザクションで 1 接続を保持したまま API 要求を出す。
+    let db = backend::db::init_db_with_pool(&config.database_url, 4).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
     let actor = uuid::Uuid::new_v4().to_string();
     let target = uuid::Uuid::new_v4().to_string();
-    create_test_user(&app, &actor, "reopen_encrypted_actor").await?;
-    create_test_user(&app, &target, "reopen_encrypted_target").await?;
+    create_test_user(&state, &actor, "reopen_encrypted_actor").await?;
+    create_test_user(&state, &target, "reopen_encrypted_target").await?;
 
     let shared_channel = uuid::Uuid::new_v4().to_string();
     let create_channel = Request::builder()
@@ -815,15 +822,15 @@ async fn reopening_encrypted_dm_serializes_with_encrypted_note_rejection() -> an
 
 #[tokio::test]
 async fn test_group_dm_flow() -> anyhow::Result<()> {
-    let (app, _) = setup_app().await?;
+    let (app, state) = setup_app().await?;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
     let charlie_id = uuid::Uuid::new_v4().to_string();
 
-    create_test_user(&app, &alice_id, "alice").await?;
-    create_test_user(&app, &bob_id, "bob").await?;
-    create_test_user(&app, &charlie_id, "charlie").await?;
+    create_test_user(&state, &alice_id, "alice").await?;
+    create_test_user(&state, &bob_id, "bob").await?;
+    create_test_user(&state, &charlie_id, "charlie").await?;
 
     // 1. Alice が Bob, Charlie とのグループ DM を作成
     let dm_payload = json!({
@@ -864,13 +871,13 @@ async fn test_group_dm_flow() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_dm_validation_errors() -> anyhow::Result<()> {
-    let (app, _) = setup_app().await?;
+    let (app, state) = setup_app().await?;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
 
-    create_test_user(&app, &alice_id, "alice").await?;
-    create_test_user(&app, &bob_id, "bob").await?;
+    create_test_user(&state, &alice_id, "alice").await?;
+    create_test_user(&state, &bob_id, "bob").await?;
 
     // 1. target_user_ids が空
     let req = Request::builder()
@@ -961,7 +968,7 @@ async fn test_dm_validation_errors() -> anyhow::Result<()> {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let charlie_id = uuid::Uuid::new_v4().to_string();
-    create_test_user(&app, &charlie_id, "charlie").await?;
+    create_test_user(&state, &charlie_id, "charlie").await?;
 
     let dm_dup_req = Request::builder()
         .method("POST")
@@ -980,16 +987,16 @@ async fn test_dm_validation_errors() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_dm_access_control_and_privacy() -> anyhow::Result<()> {
-    let (app, _) = setup_app().await?;
+    let (app, state) = setup_app().await?;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
     let charlie_id = uuid::Uuid::new_v4().to_string();
     let admin_id = DEFAULT_DEV_USER_ID; // 開発環境の特権管理者
 
-    create_test_user(&app, &alice_id, "alice").await?;
-    create_test_user(&app, &bob_id, "bob").await?;
-    create_test_user(&app, &charlie_id, "charlie").await?;
+    create_test_user(&state, &alice_id, "alice").await?;
+    create_test_user(&state, &bob_id, "bob").await?;
+    create_test_user(&state, &charlie_id, "charlie").await?;
 
     // Alice と Bob の DM を作成
     let dm_payload = json!({
@@ -1201,13 +1208,13 @@ async fn test_dm_access_control_and_privacy() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_dm_creation() -> anyhow::Result<()> {
-    let (app, _) = setup_app().await?;
+    let (app, state) = setup_app().await?;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
 
-    create_test_user(&app, &alice_id, "alice").await?;
-    create_test_user(&app, &bob_id, "bob").await?;
+    create_test_user(&state, &alice_id, "alice").await?;
+    create_test_user(&state, &bob_id, "bob").await?;
 
     // Alice と Bob の双方が同時に POST /api/dms を送信する
     let app1 = app.clone();
@@ -1277,9 +1284,9 @@ async fn test_concurrent_guest_transition_rejects_dm_creation() -> anyhow::Resul
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
     let carol_id = uuid::Uuid::new_v4().to_string();
-    create_test_user(&app, &alice_id, "alice_guest_race").await?;
-    create_test_user(&app, &bob_id, "bob_guest_race").await?;
-    create_test_user(&app, &carol_id, "carol_guest_race").await?;
+    create_test_user(&state, &alice_id, "alice_guest_race").await?;
+    create_test_user(&state, &bob_id, "bob_guest_race").await?;
+    create_test_user(&state, &carol_id, "carol_guest_race").await?;
 
     for (label, target_ids) in [
         ("1on1", vec![bob_id.clone()]),

@@ -9,9 +9,10 @@ DECLARE
   key_count smallint;
   keys text[];
   predicate text;
+  index_valid boolean;
 BEGIN
-  SELECT indexrelid, indnkeyatts, pg_get_expr(indpred, indrelid)
-    INTO index_oid, key_count, predicate
+  SELECT indexrelid, indnkeyatts, pg_get_expr(indpred, indrelid), indisvalid
+    INTO index_oid, key_count, predicate, index_valid
   FROM pg_index
   WHERE indexrelid = to_regclass('public.idx_channel_notes_expired');
 
@@ -23,6 +24,9 @@ BEGIN
     INTO keys
   FROM generate_series(1, key_count) AS positions(position);
 
+  IF NOT COALESCE(index_valid, false) THEN
+    RAISE EXCEPTION 'idx_channel_notes_expired is invalid; drop it with DROP INDEX CONCURRENTLY and retry Atlas';
+  END IF;
   IF keys IS DISTINCT FROM ARRAY['channel_id', 'deleted_at', 'id']::text[] THEN
     RAISE EXCEPTION 'wrong idx_channel_notes_expired key order: %', keys;
   END IF;

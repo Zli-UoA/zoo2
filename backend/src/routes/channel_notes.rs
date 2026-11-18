@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, header},
     middleware,
     response::Response,
@@ -28,11 +28,15 @@ pub struct NoteResponse {
     pub created_user_id: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 削除済み一覧でのみ設定する。次ページのカーソルにも使う。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
 impl From<ChannelNote> for NoteResponse {
     fn from(note: ChannelNote) -> Self {
         Self {
+            deleted_at: None,
             id: note.id,
             channel_id: note.channel_id,
             title: note.title,
@@ -247,14 +251,21 @@ pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
             // cannot consume every pass while older rows in other channels wait.
             let channels_remaining = active_channels.len() - index;
             let per_channel = remaining.div_ceil(channels_remaining);
+            // 先頭の per_channel 件だけを候補として読み、その中の未ロック行を削除する。
+            // LIMIT が SKIP LOCKED の後にあると、ロック済み行を返却件数に数えないため、削除が
+            // 0 件でも期限切れの全行を走査し、この間の API 書き込みを advisory lock で待たせる。
+            // スキップした行は次の回転で再び候補になる。
             let deleted = toasty::sql::statement(
-                "DELETE FROM channel_notes WHERE id IN (
+                "WITH candidates AS MATERIALIZED (
                 SELECT id FROM channel_notes
                 WHERE channel_id = $1
                   AND deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'
                 ORDER BY deleted_at, id
-                LIMIT $2 FOR UPDATE SKIP LOCKED
-            )",
+                LIMIT $2
+            ), locked AS (
+                SELECT c.id FROM candidates c JOIN channel_notes n ON n.id = c.id
+                FOR UPDATE OF n SKIP LOCKED
+            ) DELETE FROM channel_notes WHERE id IN (SELECT id FROM locked)",
             )
             .bind(channel_id.as_str())
             .bind(per_channel as i32)
@@ -451,7 +462,11 @@ fn validate(input: &NoteInput) -> Result<(), AppError> {
 
 fn note_path(channel_id: &str, note_id: &str) -> Result<(), AppError> {
     Uuid::parse_str(channel_id).map_err(|_| AppError::BadRequest("Invalid channel ID".into()))?;
-    Uuid::parse_str(note_id).map_err(|_| AppError::BadRequest("Invalid note ID".into()))?;
+    // 一覧は保存済みの id をそのまま返す。作成 API は UUID を保存するが、ノートロック契約に
+    // 従う直接 SQL は任意の text id を書き得るため、項目 API も同じ形式を受け付ける。
+    if note_id.is_empty() {
+        return Err(AppError::BadRequest("Invalid note ID".into()));
+    }
     Ok(())
 }
 
@@ -476,11 +491,29 @@ async fn list(
     Ok(Json(ApiResponse::new(result, None::<String>)))
 }
 
+#[derive(Deserialize)]
+struct DeletedNotesQuery {
+    limit: Option<i64>,
+    /// `"<deleted_at> <id>"`。前ページの最後の項目から継続する。
+    after: Option<String>,
+}
+
 async fn list_deleted(
     State(state): State<AppState>,
     actor: AuthUser,
     Path(channel_id): Path<String>,
+    Query(query): Query<DeletedNotesQuery>,
 ) -> Result<Json<ApiResponse<Vec<NoteResponse>>>, AppError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200) as i32;
+    let (after_deleted_at, after_id) = match query.after.as_deref() {
+        None | Some("") => (String::new(), String::new()),
+        Some(cursor) => match cursor.split_once(' ') {
+            Some((deleted_at, id)) if !deleted_at.is_empty() && !id.is_empty() => {
+                (deleted_at.to_string(), id.to_string())
+            }
+            _ => return Err(AppError::BadRequest("Invalid deleted note cursor".into())),
+        },
+    };
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, false).await?;
@@ -505,13 +538,19 @@ async fn list_deleted(
     let rows = toasty::sql::query(
         "SELECT id, channel_id, title, content, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
-                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') \
+                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
+                to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
          FROM channel_notes \
          WHERE channel_id = $1 AND deleted_at IS NOT NULL \
            AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-         ORDER BY deleted_at, id",
+           AND (CASE WHEN $2 = '' THEN true \
+                     ELSE (deleted_at, id) > ($2::timestamp(3), $3) END) \
+         ORDER BY deleted_at, id LIMIT $4",
     )
     .bind(channel_id.as_str())
+    .bind(after_deleted_at.as_str())
+    .bind(after_id.as_str())
+    .bind(limit)
     .exec(&mut tx)
     .await?;
     let result: Vec<NoteResponse> = rows
@@ -532,7 +571,9 @@ async fn list_deleted(
                 Some(toasty::stmt::Value::String(created_user_id)),
                 Some(toasty::stmt::Value::String(created_at)),
                 Some(toasty::stmt::Value::String(updated_at)),
+                Some(toasty::stmt::Value::String(deleted_at)),
             ) = (
+                fields.next(),
                 fields.next(),
                 fields.next(),
                 fields.next(),
@@ -555,6 +596,10 @@ async fn list_deleted(
                 .parse::<jiff::civil::DateTime>()
                 .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
                 .to_string();
+            let deleted_at = deleted_at
+                .parse::<jiff::civil::DateTime>()
+                .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+                .to_string();
             Ok(NoteResponse {
                 id,
                 channel_id,
@@ -564,6 +609,7 @@ async fn list_deleted(
                 created_user_id,
                 created_at,
                 updated_at,
+                deleted_at: Some(deleted_at),
             })
         })
         .collect::<Result<_, _>>()?;

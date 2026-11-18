@@ -917,6 +917,14 @@ async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() ->
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
+        // 既定チャンネルへの参加行は ON DELETE RESTRICT でユーザー削除を拒否する。
+        // このテストで作ったユーザーの参加行だけを先に消す。
+        toasty::sql::statement("DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)")
+            .bind(user.as_str())
+            .bind(owner.as_str())
+            .bind(placeholder.as_str())
+            .exec(&mut tx)
+            .await?;
         toasty::sql::statement("DELETE FROM users WHERE id IN ($1,$2,$3)")
             .bind(user.as_str())
             .bind(owner.as_str())
@@ -1005,18 +1013,39 @@ async fn reconcile_team_and_sorted_import_membership_locks_do_not_deadlock() -> 
     anyhow::ensure!(linked_order.len() == 2, "expected two linked Slack users");
     let first_slack = linked_order[0]["slack_user_id"].as_str().unwrap();
     let second_slack = linked_order[1]["slack_user_id"].as_str().unwrap();
+    // 取り込み側 (本番) は小さい users 行から順にロックする。bulk pre-lock が無い場合の
+    // 回帰は、reconcile_team の順序なし取得が「大きい users 行に対応する組」を先に返す
+    // ときだけ再現する。その順序を UPDATE ではなく行の挿入順で整え、同じ形の照会で
+    // 先頭が実際に大きい行かまで確認する。確認できなければ、このテストは pre-lock の
+    // 欠落を検証できないため、黙って通す代わりに失敗させる。
     exec(
         &state,
-        "UPDATE slack_users SET user_id=$3 WHERE team_id=$1 AND slack_user_id=$2",
+        "DELETE FROM slack_users WHERE team_id=$1 AND linked",
+        &[&team],
+    )
+    .await?;
+    exec(
+        &state,
+        "INSERT INTO slack_users (team_id,slack_user_id,user_id,linked) VALUES ($1,$2,$3,true)",
         &[&team, first_slack, &high],
     )
     .await?;
     exec(
         &state,
-        "UPDATE slack_users SET user_id=$3 WHERE team_id=$1 AND slack_user_id=$2",
+        "INSERT INTO slack_users (team_id,slack_user_id,user_id,linked) VALUES ($1,$2,$3,true)",
         &[&team, second_slack, &low],
     )
     .await?;
+    let arranged = sql(
+        &state,
+        "SELECT json_build_object('slack_user_id',slack_user_id,'user_id',user_id)::text FROM slack_users WHERE team_id=$1 AND linked",
+        &[&team],
+    )
+    .await?;
+    anyhow::ensure!(
+        arranged.len() == 2 && arranged[0]["user_id"].as_str() == Some(high.as_str()),
+        "fixture row order does not put the higher user first; the live reconcile phase cannot exercise the missing pre-lock"
+    );
     let first_placeholder = backend::slack::user_id(&team, first_slack);
 
     // Reproduce the old lock order on PostgreSQL: reconcile owns the higher
@@ -1144,24 +1173,10 @@ async fn reconcile_team_and_sorted_import_membership_locks_do_not_deadlock() -> 
         Ok::<(), tokio_postgres::Error>(())
     })
     .await??;
+    // 3 本目の待機はポーリングしない。PostgreSQL がデッドロックを解消すると待機は
+    // 観測より先に消え、正しい 40P01 でもタイムアウトしてしまう。最初の 2 待機で
+    // サイクルの前辺を確認したら、期限付きで 3 タスクの結果をそのまま回収する。
     let _ = try_high_tx.send(());
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let import_waiting: bool = baseline_observer
-                .query_one(
-                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
-                    &[&import_pid, &reconcile_pid],
-                )
-                .await?
-                .get(0);
-            if import_waiting {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        Ok::<(), tokio_postgres::Error>(())
-    })
-    .await??;
     let baseline_results = [
         tokio::time::timeout(Duration::from_secs(10), baseline_gate).await??,
         tokio::time::timeout(Duration::from_secs(10), baseline_reconcile).await??,
@@ -1318,6 +1333,16 @@ async fn reconcile_team_and_sorted_import_membership_locks_do_not_deadlock() -> 
             .await?;
         toasty::sql::statement("DELETE FROM channels WHERE id=$1")
             .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        // 既定チャンネルへの参加行は ON DELETE RESTRICT でユーザー削除を拒否する。
+        // このテストで作ったユーザーの参加行だけを先に消す。
+        toasty::sql::statement("DELETE FROM channel_user WHERE user_id IN ($1,$2,$3,$4,$5)")
+            .bind(low.as_str())
+            .bind(high.as_str())
+            .bind(owner.as_str())
+            .bind(placeholders[0].as_str())
+            .bind(placeholders[1].as_str())
             .exec(&mut tx)
             .await?;
         toasty::sql::statement("DELETE FROM users WHERE id IN ($1,$2,$3,$4,$5)")

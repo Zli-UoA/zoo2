@@ -270,132 +270,131 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     let active_note = format!("note-{target_active}-0");
     let deleted_note = format!("note-{target_deleted}-0");
     let mut metrics = serde_json::Map::new();
-    let list = format!(
-        "SELECT id,channel_id,title,content,position,deleted_at,version,created_user_id,created_at,updated_at \
-         FROM channel_notes WHERE channel_id={} AND deleted_at IS NULL",
-        quoted(&target_active)
-    );
-    measure(&url, "notes_list", &list, &[], 256., &output, &mut metrics).await?;
-    let list_empty = format!(
-        "SELECT id,channel_id,title,content,position,deleted_at,version,created_user_id,created_at,updated_at \
-         FROM channel_notes WHERE channel_id={} AND deleted_at IS NULL",
-        quoted(&target_empty)
-    );
+    // Probes bind the target ids as parameters, exactly like the production
+    // statements: custom samples (concurrency 1) plan with the bound values and
+    // generic samples (concurrency 8) plan without them.
+    let columns = "id,channel_id,title,content,position,deleted_at,version,created_user_id,created_at,updated_at";
+    let list =
+        format!("SELECT {columns} FROM channel_notes WHERE channel_id=$1 AND deleted_at IS NULL");
     measure(
         &url,
-        "notes_list_empty",
-        &list_empty,
-        &[],
+        "notes_list",
+        &list,
+        &[target_active.as_str()],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let list_deleted = format!(
-        "SELECT id, channel_id, title, content, version, created_user_id, \
+    measure(
+        &url,
+        "notes_list_empty",
+        &list,
+        &[target_empty.as_str()],
+        256.,
+        &output,
+        &mut metrics,
+    )
+    .await?;
+    let list_deleted = "SELECT id, channel_id, title, content, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
-                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') \
+                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
+                to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
          FROM channel_notes \
-         WHERE channel_id = {} AND deleted_at IS NOT NULL \
+         WHERE channel_id = $1 AND deleted_at IS NOT NULL \
            AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-         ORDER BY deleted_at, id",
-        quoted(&target_deleted)
-    );
+           AND (CASE WHEN $2 = '' THEN true ELSE (deleted_at, id) > ($2::timestamp(3), $3) END) \
+         ORDER BY deleted_at, id LIMIT $4::integer";
     measure(
         &url,
         "notes_list_deleted",
-        &list_deleted,
-        &[],
+        list_deleted,
+        &[target_deleted.as_str(), "", "", "50"],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
     let show = format!(
-        "SELECT id,channel_id,title,content,position,deleted_at,version,created_user_id,created_at,updated_at \
-         FROM channel_notes WHERE id={} AND channel_id={} AND deleted_at IS NULL",
-        quoted(&active_note),
-        quoted(&target_active)
+        "SELECT {columns} FROM channel_notes \
+         WHERE id=$1 AND channel_id=$2 AND deleted_at IS NULL"
     );
-    measure(&url, "notes_show", &show, &[], 256., &output, &mut metrics).await?;
-    let position = format!(
-        "SELECT COALESCE(MAX(position), -1) + 1 AS position \
-         FROM channel_notes WHERE channel_id = {} AND deleted_at IS NULL",
-        quoted(&target_active)
-    );
+    measure(
+        &url,
+        "notes_show",
+        &show,
+        &[active_note.as_str(), target_active.as_str()],
+        256.,
+        &output,
+        &mut metrics,
+    )
+    .await?;
+    let position = "SELECT COALESCE(MAX(position), -1) + 1 AS position \
+         FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL";
     measure(
         &url,
         "notes_position",
-        &position,
-        &[],
+        position,
+        &[target_active.as_str()],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let update = format!(
-        "UPDATE channel_notes SET title = 'updated', content = 'updated', version = version + 1, \
+    let update = "UPDATE channel_notes SET title = 'updated', content = 'updated', version = version + 1, \
          updated_at = statement_timestamp() AT TIME ZONE 'UTC' \
-         WHERE id = {} AND channel_id = {} AND version = 1 AND deleted_at IS NULL RETURNING id",
-        quoted(&active_note),
-        quoted(&target_active)
-    );
+         WHERE id = $1 AND channel_id = $2 AND version = $3::integer AND deleted_at IS NULL RETURNING id";
     measure(
         &url,
         "notes_update",
-        &update,
-        &[],
+        update,
+        &[active_note.as_str(), target_active.as_str(), "1"],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let delete = format!(
-        "UPDATE channel_notes SET deleted_at = statement_timestamp() AT TIME ZONE 'UTC', \
+    let delete = "UPDATE channel_notes SET deleted_at = statement_timestamp() AT TIME ZONE 'UTC', \
          version = version + 1, updated_at = statement_timestamp() AT TIME ZONE 'UTC' \
-         WHERE id = {} AND channel_id = {} AND version = 1 AND deleted_at IS NULL RETURNING id",
-        quoted(&active_note),
-        quoted(&target_active)
-    );
+         WHERE id = $1 AND channel_id = $2 AND version = $3::integer AND deleted_at IS NULL RETURNING id";
     measure(
         &url,
         "notes_delete",
-        &delete,
-        &[],
+        delete,
+        &[active_note.as_str(), target_active.as_str(), "1"],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let restore = format!(
-        "UPDATE channel_notes SET deleted_at = NULL, version = version + 1, \
+    // The production restore runs a second UPDATE that shifts later active
+    // notes. Measure both statements through one data-modifying CTE.
+    let restore = "WITH restored AS (\
+         UPDATE channel_notes SET deleted_at = NULL, version = version + 1, \
          updated_at = statement_timestamp() AT TIME ZONE 'UTC' \
-         WHERE id = {} AND channel_id = {} AND deleted_at IS NOT NULL \
+         WHERE id = $1 AND channel_id = $2 AND deleted_at IS NOT NULL \
            AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-         RETURNING position",
-        quoted(&deleted_note),
-        quoted(&target_deleted)
-    );
+         RETURNING id, position\
+     ) UPDATE channel_notes n SET position = n.position + 1 \
+         FROM restored r WHERE n.channel_id = $2 AND n.deleted_at IS NULL \
+         AND n.position >= r.position AND n.id <> r.id";
     measure(
         &url,
         "notes_restore",
-        &restore,
-        &[],
+        restore,
+        &[deleted_note.as_str(), target_deleted.as_str()],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let reorder_update = format!(
-        "UPDATE channel_notes SET position = 0 WHERE id = {} AND channel_id = {}",
-        quoted(&active_note),
-        quoted(&target_active)
-    );
+    let reorder_update =
+        "UPDATE channel_notes SET position = $3::integer WHERE id = $1 AND channel_id = $2";
     measure(
         &url,
         "notes_reorder_update",
-        &reorder_update,
-        &[],
+        reorder_update,
+        &[active_note.as_str(), target_active.as_str(), "0"],
         256.,
         &output,
         &mut metrics,
@@ -416,47 +415,44 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         &mut metrics,
     )
     .await?;
-    let cleanup_delete = format!(
-        "DELETE FROM channel_notes WHERE id IN (\
-         SELECT id FROM channel_notes WHERE channel_id = {} \
-         AND deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
-           ORDER BY deleted_at, id LIMIT $1::integer FOR UPDATE SKIP LOCKED)",
-        quoted(&target_deleted)
-    );
+    // The production cleanup reads a bounded candidate window before locking,
+    // so locked rows cannot extend the scan.
+    let cleanup_delete = "WITH candidates AS MATERIALIZED (\
+         SELECT id FROM channel_notes WHERE channel_id = $1 \
+           AND deleted_at < (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' \
+         ORDER BY deleted_at, id LIMIT $2::integer\
+     ), locked AS (\
+         SELECT c.id FROM candidates c JOIN channel_notes n ON n.id = c.id \
+         FOR UPDATE OF n SKIP LOCKED\
+     ) DELETE FROM channel_notes WHERE id IN (SELECT id FROM locked)";
     measure(
         &url,
         "notes_cleanup_delete",
-        &cleanup_delete,
-        &["100"],
+        cleanup_delete,
+        &[target_deleted.as_str(), "100"],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let plaintext_check = format!(
-        "SELECT encrypted FROM channels WHERE id = {} FOR SHARE",
-        quoted(&target_active)
-    );
+    let plaintext_check = "SELECT encrypted FROM channels WHERE id = $1 FOR SHARE";
     measure(
         &url,
         "notes_plaintext_check",
-        &plaintext_check,
-        &[],
+        plaintext_check,
+        &[target_active.as_str()],
         16.,
         &output,
         &mut metrics,
     )
     .await?;
-    let encrypt_check = format!(
-        "SELECT EXISTS (SELECT 1 FROM channel_notes WHERE channel_id = {} \
-         AND (deleted_at IS NULL OR deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'))",
-        quoted(&target_active)
-    );
+    let encrypt_check = "SELECT EXISTS (SELECT 1 FROM channel_notes WHERE channel_id = $1 \
+         AND (deleted_at IS NULL OR deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'))";
     measure(
         &url,
         "notes_encrypt_check",
-        &encrypt_check,
-        &[],
+        encrypt_check,
+        &[target_active.as_str()],
         256.,
         &output,
         &mut metrics,

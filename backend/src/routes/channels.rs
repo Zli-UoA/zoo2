@@ -609,8 +609,8 @@ pub(crate) async fn join_channel(
             e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
             e2ee_channels::check_member_limit(&mut tx, &id, 1).await?;
         } else {
-            e2ee_channels::lock_membership_users(&mut tx, &[auth_user.id.as_str()]).await?;
-            // ロックなしで平文と読んだあとに暗号化へ切り替わっていたら（#367）、epoch を増やさずに足さない。
+            // users 行はこのトランザクションの先頭でロック済み。ロックなしで平文と読んだ
+            // あとに暗号化へ切り替わっていたら（#367）、epoch を増やさずに足さない。
             e2ee_channels::ensure_still_plaintext(&mut tx, &id).await?;
         }
         let now = crate::models::now_utc_millis();

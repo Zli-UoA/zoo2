@@ -126,9 +126,14 @@ pub(super) async fn process(
         }
         match applied {
             Ok(()) => {}
-            // 待つか、トークンが使えないか、リースを失ったときは、ここで止める (ヒントは残る)
+            // 待つか、トークンが使えないか、リースを失ったか、対応先が変わったときは、
+            // ここで止める (ヒントは残る)。対応先の変更は残りのヒントにも影響するため、
+            // 続けて試行して attempts を増やしたり、Slack API を無駄に呼んだりしない。
             Err(
-                e @ (SyncError::RateLimited(_) | SyncError::NoAccess(_) | SyncError::LeaseLost),
+                e @ (SyncError::RateLimited(_)
+                | SyncError::NoAccess(_)
+                | SyncError::LeaseLost
+                | SyncError::TargetChanged),
             ) => {
                 return Err(e);
             }
@@ -138,7 +143,6 @@ pub(super) async fn process(
                 bump(db, team, slack_channel, &group).await?;
             }
             Err(SyncError::InvalidCursor) => bump(db, team, slack_channel, &group).await?,
-            Err(SyncError::TargetChanged) => bump(db, team, slack_channel, &group).await?,
         }
     }
     // 残りは、次の同期をすぐに起こして続ける
@@ -597,6 +601,14 @@ fn collect_apply_users(
         Some(row) if row["deleted"] == true => {}
         Some(_) => {
             if has_changed && !state.zoo_origin && message.is_importable() {
+                // insert_message は再構築した本文の投稿者も解決する。チャンネルをロックした
+                // 後に users 行をロックすると、users → channels の順でロックする変換と
+                // デッドロックになり得るため、既存メッセージでも投稿者を事前解決する。
+                let author = message.author().unwrap_or_default();
+                members.push(author.to_string());
+                if let Some((_, name)) = message_fallback_name(message) {
+                    fallbacks.insert(author.to_string(), name.to_string());
+                }
                 let edited = message
                     .edited
                     .as_ref()

@@ -41,10 +41,31 @@ psql "$NOTES_TEST_DATABASE_URL" -X -q -v ON_ERROR_STOP=1 -c \
   "INSERT INTO users (id, user_name, display_name) VALUES ('$user_id', '$user_id', 'Race Test');
    INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ('$channel_id', '$channel_id', '$user_id', true);"
 
+bounded_psql() {
+  # 接続と応答待ち全体に上限を設ける。観測用 psql が止まると待機ループが次の反復へ
+  # 進まず、cleanup にも到達しなくなる。期限切れなら psql を終了させて失敗扱いにする。
+  PGCONNECT_TIMEOUT=2 PGOPTIONS='-c statement_timeout=2000' \
+    psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c "$1" &
+  local probe_pid=$!
+  local waited=0
+  while kill -0 "$probe_pid" 2>/dev/null; do
+    if (( waited >= 30 )); then
+      kill "$probe_pid" 2>/dev/null || true
+      kill -KILL "$probe_pid" 2>/dev/null || true
+      wait "$probe_pid" 2>/dev/null || true
+      echo "observation query timed out: $1" >&2
+      return 1
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  wait "$probe_pid"
+}
+
 wait_for_activity() {
   local app="$1" predicate="$2"
   for _ in $(seq 1 100); do
-    if psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
+    if bounded_psql \
       "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = '$app' AND $predicate)" | rg -q '^t$'; then
       return 0
     fi

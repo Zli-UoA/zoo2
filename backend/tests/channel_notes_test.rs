@@ -1271,7 +1271,7 @@ async fn migration_write_barrier_racing_api_write_and_encryption_keeps_channel_s
 }
 
 #[tokio::test]
-#[ignore = "mutates a table trigger; run alone against a disposable PostgreSQL database"]
+#[ignore = "disables a trigger and commits an encrypted channel with a legacy plaintext note; run alone against a disposable PostgreSQL database"]
 async fn e2ee_migration_preflight_reports_sqlstate_55000_and_preserves_legacy_note()
 -> anyhow::Result<()> {
     let mut config = Config::from_env();
@@ -1318,18 +1318,34 @@ async fn e2ee_migration_preflight_reports_sqlstate_55000_and_preserves_legacy_no
         "ALTER TABLE channel_notes DISABLE TRIGGER channel_notes_e2ee_reject_plaintext",
     )
     .await?;
+    let legacy_id = Uuid::new_v4().to_string();
     tx.execute(
         "INSERT INTO channel_notes (id, channel_id, title, content, created_user_id) VALUES ($1, $2, 'legacy', 'plaintext', $3)",
-        &[&Uuid::new_v4().to_string(), &channel, &owner],
+        &[&legacy_id, &channel, &owner],
     )
     .await?;
+    tx.batch_execute(
+        "ALTER TABLE channel_notes ENABLE TRIGGER channel_notes_e2ee_reject_plaintext",
+    )
+    .await?;
+    // Commit the pre-migration note first. Rolling everything back in one
+    // transaction would also undo the note, and the test would not prove that
+    // a note which existed before the failure is preserved.
+    tx.commit().await?;
 
-    let error = tx
+    let error = connection
         .batch_execute(E2EE_NOTES_MIGRATION)
         .await
         .expect_err("preflight must refuse to strand an encrypted plaintext note");
     assert_eq!(error.code().map(|code| code.code()), Some("55000"));
-    tx.rollback().await?;
+    let preserved = connection
+        .query_one(
+            "SELECT title, content FROM channel_notes WHERE id = $1",
+            &[&legacy_id],
+        )
+        .await?;
+    assert_eq!(preserved.get::<_, String>(0), "legacy");
+    assert_eq!(preserved.get::<_, String>(1), "plaintext");
     Ok(())
 }
 
@@ -2972,6 +2988,10 @@ async fn channel_notes_get_rechecks_deactivation_after_authentication() -> anyho
     let (mut blocker_connection, blocker_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
     let blocker = blocker_connection.transaction().await?;
     blocker
         .batch_execute("LOCK TABLE channel_notes IN ACCESS EXCLUSIVE MODE")
@@ -2987,12 +3007,17 @@ async fn channel_notes_get_rechecks_deactivation_after_authentication() -> anyho
         )
         .await?;
 
+    let (mut observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
     let api = app.clone();
     let path = collection;
     let request_actor = actor.clone();
     let pending =
         tokio::spawn(async move { request(&api, "GET", &path, &request_actor, Value::Null).await });
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // 待機が認証より後の note 読み取りで起きていることを確認する。固定時間の待ちは、
+    // 認証前で止まっていても通ってしまうため、回帰を見逃す。
+    wait_until_blocked_by(&observer, blocker_pid).await?;
     assert!(
         !pending.is_finished(),
         "GET should reach the blocked note query after AuthUser's separate active check"
@@ -3038,6 +3063,10 @@ async fn channel_notes_get_rechecks_guest_status_before_public_read() -> anyhow:
     let (mut blocker_connection, blocker_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
     let blocker = blocker_connection.transaction().await?;
     blocker
         .batch_execute("LOCK TABLE channel_notes IN ACCESS EXCLUSIVE MODE")
@@ -3053,12 +3082,17 @@ async fn channel_notes_get_rechecks_guest_status_before_public_read() -> anyhow:
         )
         .await?;
 
+    let (mut observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
     let api = app.clone();
     let path = collection;
     let request_actor = actor.clone();
     let pending =
         tokio::spawn(async move { request(&api, "GET", &path, &request_actor, Value::Null).await });
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // 待機が認可より後の note 読み取りで起きていることを確認する。固定時間の待ちは、
+    // 認可前で止まっていても通ってしまうため、回帰を見逃す。
+    wait_until_blocked_by(&observer, blocker_pid).await?;
     assert!(
         !pending.is_finished(),
         "GET should reach the blocked note query after guest authorization"
@@ -3934,5 +3968,105 @@ async fn active_notes_per_channel_are_limited_on_create_and_restore() -> anyhow:
     )
     .await;
     assert_eq!(restored.0, StatusCode::OK, "{}", restored.1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn deleted_notes_list_is_paginated_by_deleted_at_and_id() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_deleted_page_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let (mut client, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    let prefix = format!("deleted-page-{}-", Uuid::new_v4().simple());
+    client
+        .execute(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at) \
+             SELECT $1 || n, $2, 'title', 'content', n, \
+               now() AT TIME ZONE 'UTC' - interval '1 hour' + n * interval '1 second', \
+               1, $3, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC' \
+             FROM generate_series(0, 59) n",
+            &[&prefix, &channel, &owner],
+        )
+        .await?;
+
+    let collection = format!("/api/channels/{channel}/notes/deleted");
+    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page1 = body["data"].as_array().unwrap();
+    assert_eq!(page1.len(), 50, "the default page is 50 notes");
+    let last = page1.last().unwrap();
+    let last_id = last["id"].as_str().unwrap().to_owned();
+    let last_deleted_at = last["deleted_at"].as_str().unwrap().to_owned();
+    assert_eq!(
+        last_id,
+        format!("{prefix}49"),
+        "items arrive in (deleted_at, id) order"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=200"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        60,
+        "limit=200 returns every restorable note"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?after={last_deleted_at}%20{last_id}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page2 = body["data"].as_array().unwrap();
+    assert_eq!(
+        page2.len(),
+        10,
+        "the cursor continues after the last page item"
+    );
+    assert_eq!(
+        page2[0]["id"].as_str().unwrap(),
+        format!("{prefix}50"),
+        "the second page starts at the first note after the cursor"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?after=not-a-cursor"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     Ok(())
 }

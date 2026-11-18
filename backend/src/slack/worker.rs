@@ -871,7 +871,7 @@ async fn ensure_user(
 ) -> Result<ZooUser, AppError> {
     if let Some(found) = query(
         tx,
-        "SELECT json_build_object('id',u.id,'user_name',u.user_name,'linked',s.linked,'name',s.name,'real_name',s.real_name,'profile_source',s.profile_source)::text FROM slack_users s \
+        "SELECT json_build_object('id',u.id,'user_name',u.user_name,'linked',s.linked,'name',s.name,'real_name',s.real_name,'profile_source',s.profile_source,'display_name',u.display_name,'is_bot',u.is_bot,'avatar_url',u.avatar_url)::text FROM slack_users s \
          JOIN users u ON u.id=s.user_id WHERE s.team_id=$1 AND s.slack_user_id=$2",
         &[team, slack_id],
     )
@@ -908,18 +908,32 @@ async fn ensure_user(
                 .filter(|url| url.starts_with("https://"))
                 .unwrap_or("");
             let is_bot = profile.map(|p| p.is_bot).unwrap_or(false) || slack_id.starts_with('B');
-            exec(
-                tx,
-                "UPDATE users SET display_name=$2,is_bot=$3::boolean,avatar_url=NULLIF($4,'') WHERE id=$1",
-                &[id, &display, if is_bot { "true" } else { "false" }, avatar],
-            )
-            .await?;
-            exec(
-                tx,
-                "UPDATE slack_users SET name=$3,real_name=$4,profile_source=CASE WHEN $5::boolean THEN 'profile' ELSE 'fallback' END WHERE team_id=$1 AND slack_user_id=$2 AND NOT linked",
-                &[team, slack_id, handle, real_name, if profile.is_some() { "true" } else { "false" }],
-            )
-            .await?;
+            let profile_source = if profile.is_some() { "profile" } else { "fallback" };
+            // ZIP 取り込みと差分同期は同じプロフィールで何度も解決し直すため、値が同じときは
+            // UPDATE を省く。無条件の UPDATE はファイル数×人数分の不要な行バージョンと
+            // WAL を作り、内容の変わらない配信も発生させる。
+            if found["display_name"].as_str() != Some(display.as_str())
+                || found["is_bot"].as_bool() != Some(is_bot)
+                || found["avatar_url"].as_str().unwrap_or_default() != avatar
+            {
+                exec(
+                    tx,
+                    "UPDATE users SET display_name=$2,is_bot=$3::boolean,avatar_url=NULLIF($4,'') WHERE id=$1",
+                    &[id, &display, if is_bot { "true" } else { "false" }, avatar],
+                )
+                .await?;
+            }
+            if found["name"].as_str() != Some(handle)
+                || found["real_name"].as_str().unwrap_or_default() != real_name
+                || found["profile_source"].as_str() != Some(profile_source)
+            {
+                exec(
+                    tx,
+                    "UPDATE slack_users SET name=$3,real_name=$4,profile_source=$5 WHERE team_id=$1 AND slack_user_id=$2 AND NOT linked",
+                    &[team, slack_id, handle, real_name, profile_source],
+                )
+                .await?;
+            }
             return Ok(ZooUser {
                 id: id.to_string(),
                 user_name: found["user_name"].as_str().unwrap_or_default().to_string(),

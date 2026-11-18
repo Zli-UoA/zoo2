@@ -11,8 +11,20 @@ the same user-row lock in `lock_membership_users` before its member advisory
 locks) first. After all old instances have stopped, apply this directory:
 
 ```sh
-atlas migrate apply --dir file://infra/db/deferred-migrations --url "$DATABASE_URL"
+atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred
 ```
 
-A follow-up change should move this file into `infra/db/migrations` with a
-version after the latest canonical migration and regenerate `atlas.sum`.
+`--revisions-schema` records this directory's progress in its own revision
+table (`atlas_schema_revisions_deferred`). Without it, the deferred version
+would become the "current" revision of the shared `atlas_schema_revisions`
+table, and a later canonical migration could collide with that version number
+or be skipped as already applied. The canonical history stays untouched, so
+`migrate status` on `infra/db/migrations` keeps reporting only canonical
+migrations. The follow-up that moves this file into `infra/db/migrations`
+applies the same idempotent `CREATE OR REPLACE FUNCTION` again in the canonical
+history and regenerates `atlas.sum`; the deferred revision table can then be
+dropped together with the moved file.
+
+A staging Compose procedure for this command is in `infra/README.md` (the
+standard `migrate` image does not contain this directory and the PostgreSQL
+port is not published to the host).

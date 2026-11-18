@@ -131,6 +131,14 @@ if [[ "$writer_status" -ne 0 ]]; then
   cat "$tmp_dir/writer.out" >&2
   exit "$writer_status"
 fi
+# The watchdog marker means Atlas overran the budget even if it happened to
+# fail with 55P03 right after the timeout. Check it before the SQLSTATE so an
+# over-budget run can never pass through the rollback checks below.
+if [[ -f "$tmp_dir/migration.timeout" ]]; then
+  cat "$tmp_dir/migration.out" >&2
+  echo "the migration lock watchdog fired before Atlas finished" >&2
+  exit 1
+fi
 if [[ "$migration_status" -eq 0 ]] || ! rg -q '55P03' "$tmp_dir/migration.out"; then
   cat "$tmp_dir/migration.out" >&2
   if [[ -f "$tmp_dir/migration.timeout" ]] && [[ "$migration_status" -ne 0 ]]; then

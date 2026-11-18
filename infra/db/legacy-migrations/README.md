@@ -72,13 +72,13 @@ databases on the same instance. The migrations applied were:
    `20261123000001`. Run `atlas migrate hash --dir file://<legacy-dir>` and
    `atlas migrate apply --dir file://<legacy-dir> --url <case1-url>`. This
    applies 76 files through the old expiry revision. Then apply the current
-   canonical directory to the same URL; it applies the remaining 24 files.
+   canonical directory to the same URL; it applies the remaining 29 files.
 2. **Old expiry and later main history:** build the same temporary directory,
    retaining migrations through `20261126010000` and removing the `20261127*`
    and `20261128*` files. Hash it, apply it to `notes_case2` (84 files), then
-   apply the current canonical directory (16 files).
+   apply the current canonical directory (21 files).
 3. **Clean current history:** apply the current canonical directory directly
-   to `notes_case3` (99 files).
+   to `notes_case3` (104 files).
 
 For each database, run this SQL to inspect both the retained historical hash
 and the canonical replacement:

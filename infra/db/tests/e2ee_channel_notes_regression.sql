@@ -1,7 +1,11 @@
 \set ON_ERROR_STOP on
 
--- Run against a fresh database loaded from the main schema at FETCH_HEAD:
---   git show FETCH_HEAD:infra/db/schema.sql | psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+-- Run against a fresh database loaded from the main schema at a pinned commit.
+-- FETCH_HEAD moves with every fetch and can already contain this branch's note
+-- guards, which would make the migration below fail before either mode runs.
+-- 7873efb7 is main after #595: it has the existing conversion guard and none
+-- of this branch's 20261129000001..000009 migrations.
+--   git show 7873efb7:infra/db/schema.sql | psql "$DATABASE_URL" -v ON_ERROR_STOP=1
 --   psql "$DATABASE_URL" -v branch=on -v mode=branch -f infra/db/tests/e2ee_channel_notes_regression.sql
 --   psql "$DATABASE_URL" -v branch=off -v mode=main -f infra/db/tests/e2ee_channel_notes_regression.sql
 -- Branch mode removes main-only grants and restores the branch's immutable

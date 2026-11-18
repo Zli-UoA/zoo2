@@ -4,6 +4,21 @@ use crate::models::{
 };
 
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
+    init_db_with_pool(
+        database_url,
+        max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok()),
+    )
+    .await
+}
+
+/// Create a pool with an explicit size. Integration tests use this when they
+/// hold one connection with a blocked transaction while concurrent API requests
+/// need their own: the environment's `DB_MAX_POOL_SIZE` must not decide whether
+/// the test can run.
+pub async fn init_db_with_pool(
+    database_url: &str,
+    pool_size: usize,
+) -> Result<toasty::Db, toasty::Error> {
     tracing::info!("Connecting to PostgreSQL via Toasty ORM...");
 
     let mut builder = toasty::Db::builder();
@@ -22,7 +37,7 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
         UserRole,
         Attachment
     ));
-    builder.max_pool_size(max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok()));
+    builder.max_pool_size(pool_size.max(1));
     let db = builder.connect(database_url).await?;
 
     tracing::info!("Successfully connected to PostgreSQL database");
