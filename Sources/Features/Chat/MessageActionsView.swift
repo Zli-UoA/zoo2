@@ -115,10 +115,10 @@ struct MessageActionsView: View {
                         Button { react(emoji) } label: {
                             glyph
                                 .padding(4)
-                                .frame(width: size, height: size)
-                                .background(selected ? Color.accentColor.opacity(0.14) : Color(.secondarySystemBackground), in: Circle())
-                                .overlay { if selected { Circle().strokeBorder(.tint) } }
-                                .contentShape(Circle())
+                                .frame(width: size * 1.4, height: size)
+                                .background(selected ? Color.accentColor.opacity(0.14) : Color(.secondarySystemBackground), in: Capsule())
+                                .overlay { if selected { Capsule().strokeBorder(.tint) } }
+                                .contentShape(Capsule())
                         }
                         .disabled(store.isReactionPending(messageID: message.id, emoji: emoji))
                         .accessibilityLabel(glyph.label)
@@ -139,9 +139,9 @@ struct MessageActionsView: View {
                             .foregroundStyle(.primary, Color(.secondarySystemBackground))
                             .offset(x: 4, y: -2)
                     }
-                    .frame(width: size, height: size)
-                    .background(Color(.secondarySystemBackground), in: Circle())
-                    .contentShape(Circle())
+                    .frame(width: size * 1.4, height: size)
+                    .background(Color(.secondarySystemBackground), in: Capsule())
+                    .contentShape(Capsule())
             }
             .accessibilityLabel("スタンプを追加")
             .accessibilityIdentifier("message-action-more-reactions")

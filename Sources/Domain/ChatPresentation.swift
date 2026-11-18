@@ -1,5 +1,16 @@
 import Foundation
 
+struct MessageScrollState: Equatable {
+    let followingLatest: Bool
+    let showsLatestButton: Bool
+
+    init(distanceToBottom: CGFloat) {
+        followingLatest = distanceToBottom <= 80
+        // 少し履歴を確認しただけではボタンを重ねず、既読・新着追従の判定は従来どおりに保つ。
+        showsLatestButton = distanceToBottom > 240
+    }
+}
+
 struct ChannelPin: Decodable, Sendable {
     let channel_id: String
     let position: Int64

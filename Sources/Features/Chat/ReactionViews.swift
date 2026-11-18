@@ -9,38 +9,36 @@ struct ReactionChips: View {
     var body: some View {
         let groups = store.reactions(for: message.id)
         if !groups.isEmpty {
-            ScrollView(.horizontal) {
-                HStack(spacing: 5) {
-                    ForEach(groups, id: \.emoji) { group in
-                        let glyph = ReactionGlyph(emoji: group.emoji, message: message, workspace: workspace)
-                        let selected = group.isMine
-                        HStack(spacing: 4) {
-                                glyph
-                                Text(group.count, format: .number).font(.caption.bold().monospacedDigit())
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                            .background(selected ? Color.accentColor.opacity(0.12) : Color(.secondarySystemBackground), in: Capsule())
-                            .overlay { Capsule().strokeBorder(selected ? Color.accentColor : Color(.separator), lineWidth: 1) }
-                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                        .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
-                            switch value {
-                            case .first: selectedEmoji = group.emoji
-                            case .second: toggle(group.emoji)
-                            }
-                        })
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction { toggle(group.emoji) }
-                        .accessibilityAction(named: "リアクションした人を表示") { selectedEmoji = group.emoji }
-                        .accessibilityLabel(glyph.label)
-                        .accessibilityValue(selected ? "\(group.count)人、自分も付けています" : "\(group.count)人")
-                        .accessibilityAddTraits(selected ? .isSelected : [])
-                        .accessibilityIdentifier("reaction-\(message.id)-\(group.emoji)")
+            ReactionFlowLayout {
+                ForEach(groups, id: \.emoji) { group in
+                    let glyph = ReactionGlyph(emoji: group.emoji, message: message, workspace: workspace)
+                    let selected = group.isMine
+                    HStack(spacing: 4) {
+                        glyph
+                        Text(group.count, format: .number).font(.caption.bold().monospacedDigit())
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                    .background(selected ? Color.accentColor.opacity(0.12) : Color(.secondarySystemBackground), in: Capsule())
+                    .overlay { Capsule().strokeBorder(selected ? Color.accentColor : Color(.separator), lineWidth: 1) }
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
+                        switch value {
+                        case .first: selectedEmoji = group.emoji
+                        case .second: toggle(group.emoji)
+                        }
+                    })
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { toggle(group.emoji) }
+                    .accessibilityAction(named: "リアクションした人を表示") { selectedEmoji = group.emoji }
+                    .accessibilityLabel(glyph.label)
+                    .accessibilityValue(selected ? "\(group.count)人、自分も付けています" : "\(group.count)人")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+                    .accessibilityIdentifier("reaction-\(message.id)-\(group.emoji)")
                 }
             }
-            .scrollIndicators(.hidden)
             .sheet(isPresented: Binding(get: { selectedEmoji != nil }, set: { if !$0 { selectedEmoji = nil } })) {
                 if let selectedEmoji { ReactionPeopleView(store: store, workspace: workspace, message: message, emoji: selectedEmoji) }
             }
@@ -50,6 +48,49 @@ struct ReactionChips: View {
     private func toggle(_ emoji: String) {
         guard store.canReact(to: message.id), !emoji.hasPrefix("apub:"), !store.isReactionPending(messageID: message.id, emoji: emoji) else { return }
         Task { await store.toggleReaction(messageID: message.id, emoji: emoji) }
+    }
+}
+
+struct ReactionFlowLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = frames(subviews: subviews, width: proposal.width)
+        return CGSize(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = frames(subviews: subviews, width: bounds.width)
+        for (subview, frame) in zip(subviews, frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                          anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func frames(subviews: Subviews, width: CGFloat?) -> [CGRect] {
+        let sizes = subviews.map { subview in
+            let ideal = subview.sizeThatFits(.unspecified)
+            guard let width, width.isFinite, ideal.width > width else { return ideal }
+            return subview.sizeThatFits(ProposedViewSize(width: max(0, width), height: nil))
+        }
+        return Self.frames(for: sizes, maxWidth: width ?? .infinity)
+    }
+
+    static func frames(for sizes: [CGSize], maxWidth: CGFloat) -> [CGRect] {
+        let spacing: CGFloat = 5
+        let size = CGSize(width: sizes.map(\.width).max() ?? 0, height: sizes.map(\.height).max() ?? 0)
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        return sizes.map { _ in
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            let frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            return frame
+        }
     }
 }
 
@@ -99,6 +140,7 @@ struct ReactionGlyph: View {
     let message: Message?
     let workspace: WorkspaceStore
     @State private var kitchenImage: URL?
+    @ScaledMetric(relativeTo: .body) private var size = 24.0
 
     private var username: String? {
         guard emoji.hasPrefix(":@"), emoji.hasSuffix(":"), emoji.count > 3 else { return nil }
@@ -133,15 +175,16 @@ struct ReactionGlyph: View {
     var body: some View {
         Group {
             if let username {
-                AccountStamp(account: workspace.emojiAccount(named: username), username: username, size: 24)
+                AccountStamp(account: workspace.emojiAccount(named: username), username: username, size: size)
             } else if let imageURL {
                 AsyncImage(url: imageURL) { phase in
                     if let image = phase.image {
-                        image.resizable().scaledToFit().frame(maxWidth: 86, maxHeight: 24)
+                        image.resizable().scaledToFit().frame(width: size, height: size)
                     } else { fallback }
                 }
             } else { fallback }
         }
+        .frame(width: size, height: size)
         .task(id: emoji) {
             guard emoji.hasPrefix("kitchen:") else { return }
             let url = await ReactionEmoji.kitchenImageURL(emoji)
@@ -150,8 +193,8 @@ struct ReactionGlyph: View {
     }
 
     private var fallback: some View {
-        Text(label).font(label.count == 1 ? .body : .caption)
-            .lineLimit(1).frame(maxWidth: 140)
+        Text(label).font(label.count == 1 ? .system(size: size) : .caption)
+            .lineLimit(1).minimumScaleFactor(0.5)
     }
 }
 

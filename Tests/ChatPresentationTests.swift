@@ -3,6 +3,20 @@ import Synchronization
 import Testing
 @testable import Zoo
 
+@Suite("最新メッセージへのスクロール")
+struct MessageScrollStateTests {
+    @Test("末尾との距離に応じて追従とボタン表示を別々に判定する", arguments: [
+        (-100.0, true, false), (0.0, true, false), (80.0, true, false),
+        (81.0, false, false), (120.0, false, false), (240.0, false, false),
+        (241.0, false, true), (1000.0, false, true)
+    ])
+    func distance(_ distance: Double, _ followsLatest: Bool, _ showsButton: Bool) {
+        let state = MessageScrollState(distanceToBottom: CGFloat(distance))
+        #expect(state.followingLatest == followsLatest)
+        #expect(state.showsLatestButton == showsButton)
+    }
+}
+
 @Suite("日付・未読・メンション")
 struct ChatPresentationTests {
     private func message(_ id: String, date: String, user: String = "other", parent: String? = nil) -> Message {
