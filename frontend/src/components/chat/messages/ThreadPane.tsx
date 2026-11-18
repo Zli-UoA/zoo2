@@ -452,14 +452,20 @@ export function ThreadPane({
               disabled={membership === undefined || isOffline}
               onJoin={isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread}
             />
-          ) : (
+          ) : null}
+          {/* 参加が必要になっても Composer はアンマウントせず隠す。入力中の本文・添付の下書きを保つ。 */}
+          <div hidden={needsJoin}>
             <Composer
               commands={commands}
               onRequestCommands={onRequestCommands}
               mentionUsers={mentionUsers}
               mentionMemberIds={mentionMemberIds}
               disabled={
-                !isMember || isOffline || membershipLoading || composeDisabledReason !== undefined
+                needsJoin ||
+                !isMember ||
+                isOffline ||
+                membershipLoading ||
+                composeDisabledReason !== undefined
               }
               onTyping={onTyping}
               onSend={onSendReply}
@@ -470,7 +476,7 @@ export function ThreadPane({
               }
               ariaLabel={t("threads.compose")}
             />
-          )}
+          </div>
         </>
       ) : null}
     </aside>
