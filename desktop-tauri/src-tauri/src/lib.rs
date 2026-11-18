@@ -88,6 +88,8 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             toast::request_permission_macos();
+            #[cfg(target_os = "windows")]
+            toast::ensure_windows_aumid(app.handle());
             // 設定を読めないときは確かめる (直した版を届けられるように)。
             let check_updates = !matches!(&config, Ok(config) if !config.check_updates);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));

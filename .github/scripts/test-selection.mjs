@@ -90,7 +90,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (jobs) console.log(`Changed workflow job closure (${workflow}): ${[...jobs].join(', ') || 'no application jobs'}`);
     selection = restrictWorkflow(selection, workflow, jobs);
   }
-  selection.desktopTauri ??= { check: true, macos: true };
+  selection.desktopTauri ??= { check: true, macos: true, windows: true };
   selection.backend.check ??= true;
   selection.backend.deploy ??= selection.backend.full;
   console.log(JSON.stringify(selection, null, 2));

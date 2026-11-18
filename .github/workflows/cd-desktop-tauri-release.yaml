@@ -106,8 +106,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        # 手動検証は macOS のみ。本番では Ubuntu 22.04 向けの Linux 版も作る。
-        include: ${{ fromJSON(inputs.verify_only && '[{"name":"macos","os":"macos-15"}]' || '[{"name":"linux","os":"ubuntu-22.04"},{"name":"macos","os":"macos-15"}]') }}
+        # 手動検証は macOS のみ。本番では Linux (Ubuntu 22.04)・macOS・Windows 版を作る。
+        include: ${{ fromJSON(inputs.verify_only && '[{"name":"macos","os":"macos-15"}]' || '[{"name":"linux","os":"ubuntu-22.04"},{"name":"macos","os":"macos-15"},{"name":"windows","os":"windows-latest"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -132,13 +132,40 @@ jobs:
             file
       - name: Read Rust toolchain
         id: rust-toolchain
+        shell: bash
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           targets: ${{ runner.os == 'macOS' && 'wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin' || 'wasm32-unknown-unknown' }}
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          $needInstall = $true
+          if ($iscc -and (Test-Path $iscc)) {
+            $probe = "#if Ver < EncodeVer(6, 3, 0)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
+            $probe | & $iscc /Q /O- - | Out-Null
+            if ($LASTEXITCODE -eq 0) { $needInstall = $false }
+          }
+          if ($needInstall) {
+            choco upgrade innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+            if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+              $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+            }
+          }
+          if (-not $iscc -or -not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install trunk, wasm-bindgen and tauri-cli
+        if: runner.os != 'Windows'
         # ci-desktop-tauri.yaml と同じ版にする。
         run: |
           case "$RUNNER_OS" in
@@ -155,8 +182,29 @@ jobs:
           tar -xz -C "$trunk_bin" -f "$RUNNER_TEMP/trunk.tar.gz"
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
+      - name: Install trunk, wasm-bindgen and tauri-cli (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trunkBin = Join-Path $env:USERPROFILE ".local\trunk\bin"
+          New-Item -ItemType Directory -Force -Path $trunkBin | Out-Null
+          $trunkBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $trunkZip = Join-Path $env:RUNNER_TEMP "trunk.zip"
+          Invoke-WebRequest -Uri "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-pc-windows-msvc.zip" -OutFile $trunkZip
+          $actualHash = (Get-FileHash -Algorithm SHA256 $trunkZip).Hash.ToLowerInvariant()
+          $expectedHash = "cd6ac15b9daff0365e5695036791ef2ce3c63f61c014f5a8c532363266e4569c"
+          if ($actualHash -ne $expectedHash) {
+            throw "trunk SHA-256 mismatch: expected $expectedHash, got $actualHash"
+          }
+          Expand-Archive -Path $trunkZip -DestinationPath $trunkBin -Force
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo install --locked tauri-cli --version 2.11.4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # 公開鍵をアプリに入れ、更新用の署名 (.sig) も作る。
       - name: 配布物を作成する
+        if: runner.os != 'Windows'
         working-directory: ./desktop-tauri/src-tauri
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -180,6 +228,26 @@ jobs:
           else
             cargo tauri build --bundles deb,appimage --config "$config" -- --locked
           fi
+      - name: 配布物を作成する (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $configPath = Join-Path $env:RUNNER_TEMP "updater-config.json"
+          $json = @{ plugins = @{ updater = @{ pubkey = $env:PUBKEY } } } | ConvertTo-Json -Compress -Depth 4
+          [System.IO.File]::WriteAllText($configPath, $json, [System.Text.UTF8Encoding]::new($false))
+          Push-Location desktop-tauri\src-tauri
+          try {
+            cargo tauri build --no-bundle --config $configPath -- --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+          iscc.exe "/DAppVersion=$env:VERSION" desktop-tauri\installer\zoo2.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: macOS の署名と公証を検証する
         if: runner.os == 'macOS'
         working-directory: ./desktop-tauri/src-tauri
@@ -189,6 +257,7 @@ jobs:
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
       - name: Collect
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -210,6 +279,9 @@ jobs:
             # .app.tar.gz は自動更新が使う。.dmg には自動更新用の .sig は要らない。
             collect "$bundle/macos/zoo2.app.tar.gz" "zoo2_${VERSION}_universal.app.tar.gz"
             cp "$bundle/dmg/zoo2_${VERSION}_universal.dmg" dist/
+          elif [ "$RUNNER_OS" = Windows ]; then
+            bundle=desktop-tauri/src-tauri/target/release/bundle
+            collect "$bundle/inno/zoo2_${VERSION}_x64-setup.exe" "zoo2_${VERSION}_x64-setup.exe"
           else
             bundle=desktop-tauri/src-tauri/target/release/bundle
             collect "$bundle/deb/zoo2_${VERSION}_amd64.deb" "zoo2_${VERSION}_amd64.deb"
@@ -271,6 +343,7 @@ jobs:
           add darwin-x86_64 "$app"
           add darwin-aarch64-app "$app"
           add darwin-x86_64-app "$app"
+          add windows-x86_64 "zoo2_${VERSION}_x64-setup.exe"
           jq -n \
             --arg version "$VERSION" \
             --arg notes "https://github.com/$GH_REPO/releases/tag/$TAG" \
@@ -279,7 +352,7 @@ jobs:
             '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' > dist/latest.json
           # ビルドしたとき (インストール用のファイルがあるとき) だけ作る。
           if [ -f "dist/zoo2_${VERSION}_amd64.deb" ]; then
-            (cd dist && sha256sum -- *.deb *.AppImage *.dmg *.app.tar.gz > SHA256SUMS)
+            (cd dist && sha256sum -- *.deb *.AppImage *.dmg *.app.tar.gz *.exe > SHA256SUMS)
           fi
           cat dist/latest.json
       - name: Create release

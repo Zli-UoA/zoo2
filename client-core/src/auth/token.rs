@@ -433,6 +433,7 @@ where
         if !file_type.is_file() {
             continue;
         }
+        #[cfg_attr(not(unix), allow(unused_variables))]
         let metadata = match std::fs::symlink_metadata(entry.path()) {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => continue,
@@ -3013,6 +3014,7 @@ mod tests {
         delete(&path).unwrap();
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn independent_process_logout_invalidates_a_rotated_token_held_only_in_memory() {
         const WORKER_PATH: &str = "ZOO2_TUI_LOGOUT_WORKER_PATH";
@@ -3090,6 +3092,7 @@ mod tests {
         assert_eq!(load(&path, &config, Some(API)).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn pending_refresh_persistence_does_not_restore_logout_or_replace_another_account() {
         let server = MockServer::start().await;

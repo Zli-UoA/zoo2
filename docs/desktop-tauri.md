@@ -1,6 +1,6 @@
 # デスクトップ版（Tauri）の設計
 
-macOS と Linux 向けのデスクトップ版を Tauri v2 で作る。PR の CI（`ci-desktop-tauri.yaml`）は、Linux に加えて macOS（macos-15）でもビルドを確かめる。画面は 2 案を作って比べる検証の段階にある。
+Linux・macOS・Windows 向けのデスクトップ版を Tauri v2 で作る。PR の CI（`ci-desktop-tauri.yaml`）は、Linux に加えて macOS（macos-15）と Windows（windows-latest）でもビルドを確かめる。画面は 2 案を作って比べる検証の段階にある。
 
 利用者向けの説明（インストール、ログイン、更新、困ったとき）は [desktop-tauri/README.md](../desktop-tauri/README.md) にある。
 
@@ -48,7 +48,7 @@ Electric の Shape を購読する側は、(a) と (b) で異なる。**どち�
 | アクセストークン | Rust 側だけが持つ | `zoo_access_token` で WebView に渡す |
 | 通知の Shape | Rust 側が購読する | React が購読している（通知の画面で使う）。React は変化を `zoo_notifications_observed` で Rust 側に渡す |
 | 通話の招待の Shape | Rust 側が購読する（着信のトースト用） | Rust 側が購読する（着信のトースト用。画面の表示用には、WebView 側も別に購読する）。詳しくは [音声通話と呼び出し](calls.md) |
-| 通知の判定と表示 | Rust 側（`client_types::notify`、`notify-rust`） | 同じ |
+| 通知の判定と表示 | Rust 側（`client_types::notify`、Unix は `notify-rust`、Windows は WinRT `ToastNotificationManager`） | 同じ |
 | ログイン画面 | Leptos | Leptos の同じ画面（下記） |
 
 ### (a) Leptos
@@ -97,7 +97,7 @@ ShapeEvent ─▶ 1 本のループ
 - 自分が起こしたもの、ウィンドウが前面にあって表示中のチャンネルのものは出さない。
 - DND（`GET /api/users/me/profile` の `dnd_until` が今より後）の間は出さない。止めた分を後でまとめて出すこともしない。backend の Web Push（`backend/src/push.rs`）と同じ扱い。`dnd_until` は起動時と 5 分ごとに取り直す。
 - 届くのは、アプリが動いている間（トレイに常駐している間を含む）だけ。アプリを終了している間の通知（APNs や UnifiedPush）は範囲外とする。
-- 表示は `notify-rust` で行う。`tauri-plugin-notification` はデスクトップでクリックを受け取れないため使わない。
+- 表示は Linux・macOS では `notify-rust`、Windows では WinRT の `ToastNotificationManager`（`toast.rs`）で行う。`tauri-plugin-notification` はデスクトップでクリックを受け取れないため使わない。Windows では起動時に HKCU 配下へ AUMID（`chat.zli.desktop`）と通知用アイコンを登録し、通常通知のクリックと通話着信のボタン操作（「応答」「拒否」）を受け取る。
 - Linux では通知に action を付け、専用のスレッドで `wait_for_action` を待つ。クリックされたら、ウィンドウを前に出して `zoo://open` を送る。
 - macOS では通知を出すだけで、クリックには対応しない（後続の項目）。
 - **未読バッジ**: React が `useUnifiedNotifications().unreadCount`（チャンネルと ActivityPub の未読から重複を引いた数）を `zoo_set_badge` で渡し、Rust 側が `set_badge_count` で Dock やランチャーのアイコンに出す。`0` 以下で消す。Rust 側のストアには ActivityPub の分がないので、数は React から受け取る。コマンドは同期にし、IPC の到着順は保証されないので、WebView 側が前の呼び出しの完了を待ってから次を送る（待つ間の値は最後の 1 つだけ送る）。ログアウトや期限切れ（`follow_session`）では Rust 側でも消す。macOS の Dock では表示される。Linux では、libunity が入っていて `com.canonical.Unity.LauncherEntry` を実装するドックが動いているときだけ出る（素の GNOME では出ない）。デスクトップファイル名が `zoo2.desktop`（`productName`）と一致することも要る。Windows は配布対象外。古い版のアプリにはこのコマンドがないので、Web 側は呼べなくても何もしない（`PROTOCOL_VERSION` は上げない）。PWA では、同じ未読数を `navigator.setAppBadge` で出す（`AppBadgeBridge`）。アプリを閉じている間の更新はしない（サーバーの push に未読数がないため）。
@@ -111,13 +111,13 @@ ShapeEvent ─▶ 1 本のループ
 
 ## 配布と更新
 
-- **配布**: `cd-desktop-tauri-release.yaml` が、`desktop-tauri/src-tauri/Cargo.toml` の `version` を上げて `main` に入れたときに、`desktop-tauri-v<version>` の GitHub Release を作る（TUI の `cd-tui-release.yaml` と同じ流れ）。Linux は deb と AppImage を、glibc と WebKitGTK を古めに合わせるため ubuntu-22.04 で作る。macOS は Apple シリコンと Intel の両方で動く universal の `.app`（自動更新用の `.app.tar.gz`）と `.dmg` を macos-15 で作る。自動更新に使うものには、それぞれの署名（`.sig`）を置く。リポジトリの「Latest」は TUI のままにする（`--latest=false`）。
+- **配布**: `cd-desktop-tauri-release.yaml` が、`desktop-tauri/src-tauri/Cargo.toml` の `version` を上げて `main` に入れたときに、`desktop-tauri-v<version>` の GitHub Release を作る（TUI の `cd-tui-release.yaml` と同じ流れ）。Linux は deb と AppImage を、glibc と WebKitGTK を古めに合わせるため ubuntu-22.04 で作る。macOS は Apple シリコンと Intel の両方で動く universal の `.app`（自動更新用の `.app.tar.gz`）と `.dmg` を macos-15 で作る。Windows は `windows-latest` 上で `cargo tauri build --no-bundle` と Inno Setup（`desktop-tauri/installer/zoo2.iss`）を組み合わせて `zoo2_<version>_x64-setup.exe` を作る（ユーザー権限・WebView2 未導入時はブートストラッパーから導入）。自動更新に使うものには、それぞれの署名（`.sig`。Inno Setup 版は `cargo tauri signer sign` で作成）を置く。リポジトリの「Latest」は TUI のままにする（`--latest=false`）。
 - **Nix**: flake の `packages.<system>.zoo2-desktop-tauri`（Linux のみ）。同梱の画面を `trunk build --offline` で先に作り（`zoo2-desktop-tauri-ui`）、`tauri/custom-protocol` の feature で Rust 側に埋め込む。`wrapGAppsHook3` で GIO のモジュールと schema を渡し、dlopen で読まれる `libayatana-appindicator` は `LD_LIBRARY_PATH` に足す。Nix のストアは書き換えられず、`bundle_type()` も取れないので、アプリの中からは更新しない。更新は flake の入力を上げて行う。
-- **更新の確認**: `tauri-plugin-updater` を Rust 側だけで使う（WebView には許可を出さない）。起動の 30 秒後と 6 時間ごとに `latest.json` を読み、新しい版があれば裏で取得して署名を確かめる。入れ替えと再起動は、通知かトレイのメニューを利用者が押したときだけ行う（書きかけの下書きを勝手に失わないため）。`check_updates = false`（`ZOO_CHECK_UPDATES=false`、TUI と同じ設定）なら自動では確かめない。
-- **macOS のメニューバー**: Tauri の既定のメニューに、アプリのメニューの「アップデートを確認…」を足す（`window::create_app_menu`）。押すと、準備済みの更新があればすぐ入れて再起動し、なければその場で確かめ、新しい版があれば取得して入れて再起動する。新しい版がないときと失敗したときは通知で知らせる。利用者が自分で押したときだけ確かめるので、`check_updates = false` でも使える。自動の確認と重ならないよう、確かめている間は待たせずに「確かめています」と通知する。確認とダウンロードの通信には、受信が 30 秒止まったら諦める `read_timeout` と、接続の `connect_timeout`（15 秒）を付ける（`configure_client`）。応答が止まっても、確かめている最中のまま残らないように。全体の時間には上限を付けない（遅い回線でも、受信が進んでいれば数十 MB の取得を終えられるように）。
+- **更新の確認**: `tauri-plugin-updater` を Rust 側だけで使う（WebView には許可を出さない）。起動の 30 秒後と 6 時間ごとに `latest.json` を読み、新しい版があれば裏で取得して署名を確かめる。Windows の `--no-bundle` + Inno Setup 版は `bundle_type()` が `None` になるため、実行ファイル横の `unins000.exe` の有無（`is_inno_installed`）でインストール済みを判定し、自動更新時は `Update::verify` で Minisign 署名を検証したうえで `<app_local_data_dir>/updates/zoo2-updater-*.exe` を `ShellExecuteW`（`/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /DIR="..." /WAITPID=<pid> /RELAUNCH=1`）で起動してアプリを終了し、Inno Setup 側で親プロセス・ミューテックス待機後にファイルを差し替えて再起動する。入れ替えと再起動は、通知かトレイのメニューを利用者が押したときだけ行う（書きかけの下書きを勝手に失わないため）。`check_updates = false`（`ZOO_CHECK_UPDATES=false`、TUI と同じ設定）なら自動では確かめない。
+- **メニューバーとトレイからの手動確認**: macOS はアプリメニュー（`window::create_app_menu`）、Linux と Windows はトレイメニュー（`window::create_tray`）に「アップデートを確認…」を足す。押すと、準備済みの更新があればすぐ入れて再起動し、なければその場で確かめ、新しい版があれば取得して入れて再起動する。新しい版がないときと失敗したときは通知で知らせる。利用者が自分で押したときだけ確かめるので、`check_updates = false` でも使える。自動の確認と重ならないよう、確かめている間は待たせずに「確かめています」と通知する。確認とダウンロードの通信には、受信が 30 秒止まったら諦める `read_timeout` と、接続の `connect_timeout`（15 秒）を付ける（`configure_client`）。応答が止まっても、確かめている最中のまま残らないように。全体の時間には上限を付けない（遅い回線でも、受信が進んでいれば数十 MB の取得を終えられるように）。
 - **更新のウィンドウ**: 利用者が更新を始めたとき（メニューの「アップデートを確認…」、トレイや通知の「更新して再起動」）は、アイコン、状態の文言、進捗バーだけの小さなウィンドウ（`updater_window`、画面は `ui/updater/`）に、確認、ダウンロードの進み具合（1% ごと）、インストールを順に出す。最新のときと失敗したときは結果を出して、少し後に閉じる。画面には IPC を許さず、状態は Rust 側から `window.zooUpdater.set()` を `eval` で渡す（読み込みの前に渡した状態は `on_page_load` で渡し直す）。自動の確認は裏で静かに行い、自動の取得の最中にメニューから押されたら、取得が終わり次第そのまま入れる。
-- **`latest.json` の置き場所**: 「Latest」が TUI なので `releases/latest/download/` は使えない。決まったタグ `desktop-tauri-updater` のリリース（prerelease）を 1 つ作り、リリースのたびに `latest.json` だけを置き直す。`platforms` には `linux-x86_64-deb` と `linux-x86_64-appimage`（と、古い形の `linux-x86_64`）、`darwin-aarch64` と `darwin-x86_64`（と `-app` 付き。どちらも universal の `.app.tar.gz`）を書く。署名がない形は書かない。プラグインは、ビルドしたときの形（deb なら `dpkg -i` を `pkexec` で、AppImage ならファイルの置き換え）で入れる。リリース済みの版でも、`latest.json` がその版を指していなければ、workflow は既存のリリースの署名から作り直して公開する（公開が途中で失敗しても、再実行で直る）。
-- **署名の鍵**: 秘密鍵は Secrets の `TAURI_SIGNING_PRIVATE_KEY` と `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`、公開鍵は Variables の `TAURI_UPDATER_PUBKEY` に置く。公開鍵はリリースのビルドのときだけ `--config` で `plugins.updater.pubkey` に入れる。リポジトリの `tauri.conf.json` は空のままにして、ローカルや CI のビルド、`cargo tauri dev` では更新を確かめない（`bundle_type()` が取れないときも確かめない）。鍵がなければ、workflow はリリースを作らずに終わる。
+- **`latest.json` の置き場所**: 「Latest」が TUI なので `releases/latest/download/` は使えない。決まったタグ `desktop-tauri-updater` のリリース（prerelease）を 1 つ作り、リリースのたびに `latest.json` だけを置き直す。`platforms` には `linux-x86_64-deb` と `linux-x86_64-appimage`（と、古い形の `linux-x86_64`）、`darwin-aarch64` と `darwin-x86_64`（と `-app` 付き。どちらも universal の `.app.tar.gz`）、`windows-x86_64`（Inno Setup の `zoo2_<version>_x64-setup.exe`）を書く。署名がない形は書かない。プラグインは、ビルドしたときの形（deb なら `dpkg -i` を `pkexec` で、AppImage ならファイルの置き換え、Windows Inno Setup 版は上記インストーラー起動）で入れる。リリース済みの版でも、`latest.json` がその版を指していなければ、workflow は既存のリリースの署名から作り直して公開する（公開が途中で失敗しても、再実行で直る）。
+- **署名の鍵**: 秘密鍵は Secrets の `TAURI_SIGNING_PRIVATE_KEY` と `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`、公開鍵は Variables の `TAURI_UPDATER_PUBKEY` に置く。公開鍵はリリースのビルドのときだけ `--config` で `plugins.updater.pubkey` に入れる。リポジトリの `tauri.conf.json` は空のままにして、ローカルや CI のビルド、`cargo tauri dev` では更新を確かめない（Linux / macOS で `bundle_type()` が取れないときや、Windows の非インストール版でも確かめない）。鍵がなければ、workflow はリリースを作らずに終わる。
 - **鍵の作り方と保管**: 管理者が手元で作る。秘密鍵とパスワードは、zoo2-infra の `github/zoo2-desktop-tauri/updater-signing-key.sops.yaml` に sops で暗号化して置き、これを正本にする（GitHub Secrets の値は後から読み出せないため）。GitHub Secrets へは、そこから `sops decrypt --extract` の出力を `gh secret set` に渡して登録する。手順は zoo2-infra の `github/README.md` にある。秘密鍵をなくすと、配った版はそれ以降の更新を受け付けない。
 - **後続の項目**:
   - `requireSignedVersion`（署名に版を含め、古い版への差し戻しを防ぐ）は入れていない。いまの tauri-cli（2.11.4）は署名に版を書かないため。CLI を上げたら有効にする。
@@ -198,7 +198,8 @@ cargo tauri build --bundles deb    # NixOS では AppImage を作れないので
 - 通知のオン・オフ: Web 版の設定画面の「通知」から `zoo_notification_settings` / `zoo_set_notifications` で読み書きし、Rust 側が `notifications.json` に保存する。オフのときは投稿の通知を出さない（更新の知らせは出す）。古い版のアプリにはこのコマンドがないので、Web 側は呼べなかったら説明だけを出す（`PROTOCOL_VERSION` は上げない）。デスクトップ版では Web Push を使わないので、設定画面のプッシュ通知の行は出さない。
 - macOS の通知は、notify-rust の `preview-macos-un` で UNUserNotificationCenter から出し、起動時に許可を求める（古い NSUserNotification は許可を求められず、Finder として出そうとして表示されないことがある）。
 - (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。
-- 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml` で変える。
+- 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml`（Windows では `%APPDATA%\zoo2-desktop-tauri\config.toml`）で変える。
+- Windows のリリース構成をローカルで作るときは、`cargo tauri build --no-bundle -- --locked` 後に `iscc /DAppVersion=<版> desktop-tauri\installer\zoo2.iss` を実行する（Inno Setup 6.3 以降、WebView2 Runtime、Windows 開発者用ビルドツールが必要）。Windows の Authenticode コード署名は未導入のため、初回実行時に SmartScreen の確認が出る。
 - ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。画面は同梱の `leptos` になる。Web の画面を試すときは、frontend の dev サーバー（`pnpm dev`）を立てて、debug ビルドで `ZOO_DESKTOP_UI=remote ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` を付ける。
 - NVIDIA と Wayland の組み合わせで画面が出ないときは、`WEBKIT_DISABLE_DMABUF_RENDERER=1` を付ける。
 - `wasm-bindgen` は `desktop-tauri/ui/Cargo.toml` で、nixpkgs の `wasm-bindgen-cli` と同じ版に固定している。flake.lock を更新して版が変わったら、両方をそろえる。

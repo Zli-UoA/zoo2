@@ -6,25 +6,26 @@
 //!
 //! 公開鍵 (`plugins.updater.pubkey`) は、リリースの workflow がビルドのときに入れる。空のとき
 //! (ローカルや CI のビルド) は何もしない。Linux では、deb や AppImage から動いていないとき
-//! (`bundle_type()` が `None`。`cargo tauri dev` など) も何もしない。macOS の `bundle_type()` は
-//! 印がなくても `App` を返すので、公開鍵の有無だけで決まる (公開鍵はリリースの `.app` にだけ入る)。
-//! 利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、自動では確かめない
-//! (TUI と同じ設定)。
+//! (`bundle_type()` が `None`。`cargo tauri dev` など) も何もしない。Windows では Inno Setup で
+//! インストールされた環境 (`unins000.exe` の存在) か `bundle_type()` で判定する。macOS の
+//! `bundle_type()` は印がなくても `App` を返すので、公開鍵の有無だけで決まる (公開鍵はリリースの
+//! `.app` にだけ入る)。利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、
+//! 自動では確かめない (TUI と同じ設定)。
 //!
-//! macOS では、メニューバーのアプリのメニューに「アップデートを確認…」を置く。押すと、その場で
-//! 確かめ、新しい版があれば取得して更新し、再起動する。`check_updates = false` でも使える
-//! (利用者が自分で押したときだけ確かめるので)。
+//! macOS ではメニューバーのアプリのメニューに、Windows・Linux ではトレイメニューに
+//! 「アップデートを確認…」を置く。押すと、その場で確かめ、新しい版があれば取得して更新し、
+//! 再起動する。`check_updates = false` でも使える (利用者が自分で押したときだけ確かめるので)。
 //!
 //! 利用者が更新を始めたとき (メニュー、トレイ、通知) は、更新のウィンドウ (`updater_window`) に
 //! 確認、ダウンロードの進み具合、インストールを順に出す。自動の確認は裏で静かに行う。
 
 use std::{sync::Mutex, time::Duration};
 
-use tauri::{
-    AppHandle, Manager, Wry,
-    menu::{Menu, MenuItem},
-    utils::platform::bundle_type,
-};
+#[cfg(target_os = "macos")]
+use tauri::Wry;
+#[cfg(target_os = "macos")]
+use tauri::menu::Menu;
+use tauri::{AppHandle, Manager, menu::MenuItem, utils::platform::bundle_type};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::{
@@ -32,11 +33,11 @@ use crate::{
     updater_window::{self, Bar, View},
 };
 
-/// トレイのメニューの「更新して再起動」。
+/// macOS トレイのメニューの「更新して再起動」。
+#[cfg(target_os = "macos")]
 pub const MENU_ID: &str = "update";
 
-/// macOS のメニューバーの「アップデートを確認…」。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// メニューバー (macOS) またはトレイ (Windows・Linux) の「アップデートを確認…」。
 pub const CHECK_MENU_ID: &str = "check_update";
 
 /// 起動の直後はログインや同期で忙しいので、少し待ってから確かめる。
@@ -48,17 +49,20 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// 接続を確立するまでの上限。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// トレイのメニュー。更新の準備ができたら、項目を足す。
+/// トレイのメニュー。macOS で更新の準備ができたら、項目を足す。
+#[cfg(target_os = "macos")]
 pub struct TrayMenu(pub Menu<Wry>);
 
-/// macOS のメニューバーの「アップデートを確認…」。更新の準備ができたら、文言を変える。
-pub struct CheckMenuItem(pub MenuItem<Wry>);
+/// メニューバー (macOS) またはトレイ (Windows・Linux) の「アップデートを確認…」。
+/// 更新の準備ができたら、文言を変える。
+pub struct CheckMenuItem(pub MenuItem<tauri::Wry>);
 
 #[derive(Default)]
 struct Updates {
     /// 取得して署名を確かめた更新。
     ready: Mutex<Option<Ready>>,
-    /// 足したメニューの項目。新しい版が続けて出たら、文言だけ変える。
+    /// macOS のトレイへ足したメニューの項目。新しい版が続けて出たら、文言だけ変える。
+    #[cfg(target_os = "macos")]
     item: Mutex<Option<MenuItem<Wry>>>,
     /// 確かめている最中か (自動の確認と、メニューから押したときが重ならないように)。
     checking: Mutex<bool>,
@@ -74,6 +78,9 @@ struct Ready {
 /// 更新の確認を始める。使えないビルドでは何もしない。利用者が止めたときは、自動では確かめない
 /// (メニューの「アップデートを確認…」は使える)。
 pub fn spawn(app: &AppHandle, check_updates: bool) {
+    #[cfg(target_os = "windows")]
+    cleanup_old_inno_installers(app);
+
     if !enabled(app) {
         return;
     }
@@ -93,9 +100,8 @@ pub fn spawn(app: &AppHandle, check_updates: bool) {
     });
 }
 
-/// メニューバーの「アップデートを確認…」を押したとき。更新のウィンドウを出し、準備済みの
-/// 更新があればすぐ入れる。なければその場で確かめ、新しい版があれば取得して入れる。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// メニューバーやトレイの「アップデートを確認…」を押したとき。更新のウィンドウを出し、
+/// 準備済みの更新があればすぐ入れる。なければその場で確かめ、新しい版があれば取得して入れる。
 pub fn check_now(app: &AppHandle) {
     updater_window::open(app);
     let Some(state) = app.try_state::<Updates>() else {
@@ -172,7 +178,32 @@ fn enabled(app: &AppHandle) -> bool {
         .and_then(|updater| updater.get("pubkey"))
         .and_then(|pubkey| pubkey.as_str())
         .unwrap_or_default();
-    !pubkey.is_empty() && bundle_type().is_some()
+    if pubkey.is_empty() {
+        return false;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        bundle_type().is_some() || is_inno_installed()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        bundle_type().is_some()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_inno_installed() -> bool {
+    cfg!(not(debug_assertions))
+        && std::env::current_exe()
+            .ok()
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .is_some_and(is_inno_installed_in)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_inno_installed_in(dir: &std::path::Path) -> bool {
+    dir.join("unins000.exe").is_file()
 }
 
 /// 新しい版を確かめて、あれば取得する。`notify` のときは、準備ができたことを通知で知らせる
@@ -318,21 +349,27 @@ impl Progress {
 fn show_menu_item(app: &AppHandle, version: &str) {
     let text = format!("更新して再起動 (v{version})");
     if let Some(check_item) = app.try_state::<CheckMenuItem>() {
+        #[cfg(target_os = "macos")]
         let _ = check_item.0.set_text(format!("{text}…"));
+        #[cfg(not(target_os = "macos"))]
+        let _ = check_item.0.set_text(&text);
     }
-    let state = app.state::<Updates>();
-    let mut item = lock(&state.item);
-    if let Some(item) = item.as_ref() {
-        let _ = item.set_text(text);
-        return;
-    }
-    let Some(menu) = app.try_state::<TrayMenu>() else {
-        return;
-    };
-    if let Ok(new) = MenuItem::with_id(app, MENU_ID, text, true, None::<&str>)
-        && menu.0.prepend(&new).is_ok()
+    #[cfg(target_os = "macos")]
     {
-        *item = Some(new);
+        let state = app.state::<Updates>();
+        let mut item = lock(&state.item);
+        if let Some(item) = item.as_ref() {
+            let _ = item.set_text(text);
+            return;
+        }
+        let Some(menu) = app.try_state::<TrayMenu>() else {
+            return;
+        };
+        if let Ok(new) = MenuItem::with_id(app, MENU_ID, text, true, None::<&str>)
+            && menu.0.prepend(&new).is_ok()
+        {
+            *item = Some(new);
+        }
     }
 }
 
@@ -357,8 +394,19 @@ pub fn install_and_restart(app: &AppHandle) {
         },
     );
     let app = app.clone();
-    // deb では pkexec が管理者のパスワードを聞くので、待つ間に他を止めないよう別のスレッドで入れる。
+    // deb では pkexec が、Windows ではインストーラー起動や UAC が待つことがあるため別スレッドで実行する。
     std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        if bundle_type().is_none() {
+            match install_inno_setup(&app, &ready) {
+                Ok(()) => app.exit(0),
+                Err(err) => {
+                    *lock(&app.state::<Updates>().ready) = Some(ready);
+                    show_result(&app, "更新できませんでした", &err.to_string(), true);
+                }
+            }
+            return;
+        }
         let result = ready.update.install(&ready.bytes);
         match result {
             Ok(()) => app.restart(),
@@ -371,8 +419,140 @@ pub fn install_and_restart(app: &AppHandle) {
     });
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn inno_installer_args(install_dir: &std::path::Path, pid: u32) -> String {
+    let dir = install_dir
+        .to_string_lossy()
+        .replace('"', "")
+        .trim_end_matches('\\')
+        .to_string();
+    format!(
+        r#"/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /DIR="{dir}" /WAITPID={pid} /RELAUNCH=1"#
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn updater_dir(app: &AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_local_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("updates")
+}
+
+#[cfg(target_os = "windows")]
+fn cleanup_old_inno_installers(app: &AppHandle) {
+    let dir = updater_dir(app);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("zoo2-updater-")
+            && name.ends_with(".exe")
+            && std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_file())
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
+    use windows::{
+        Win32::{
+            Foundation::HWND,
+            UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+        },
+        core::{PCWSTR, w},
+    };
+
+    ready
+        .update
+        .verify(&ready.bytes)
+        .map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let install_dir = exe
+        .parent()
+        .ok_or_else(|| "インストール先ディレクトリが見つかりません".to_string())?;
+
+    let dir = updater_dir(app);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let version: String = ready
+        .update
+        .version
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let installer_path = dir.join(format!("zoo2-updater-{version}-{}.exe", std::process::id()));
+    std::fs::write(&installer_path, &ready.bytes).map_err(|e| e.to_string())?;
+
+    let args = inno_installer_args(install_dir, std::process::id());
+    let path_wide: Vec<u16> = installer_path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let args_wide: Vec<u16> = args.encode_utf16().chain(std::iter::once(0)).collect();
+
+    // SAFETY: NUL 終端された UTF-16 パスと引数を渡して Inno Setup インストーラーを起動する。
+    let result = unsafe {
+        ShellExecuteW(
+            Some(HWND::default()),
+            w!("open"),
+            PCWSTR(path_wide.as_ptr()),
+            PCWSTR(args_wide.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 as isize <= 32 {
+        let _ = std::fs::remove_file(&installer_path);
+        return Err(format!(
+            "インストーラーを起動できませんでした (コード {})",
+            result.0 as isize
+        ));
+    }
+    Ok(())
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inno_installation_marker_detects_uninstaller() {
+        let dir = std::env::temp_dir().join(format!("zoo2-inno-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!is_inno_installed_in(&dir));
+        std::fs::write(dir.join("unins000.exe"), b"").unwrap();
+        assert!(is_inno_installed_in(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inno_installer_args_quote_dir_without_trailing_backslash() {
+        let dir = std::path::Path::new(r"C:\Program Files\zoo2\");
+        let args = inno_installer_args(dir, 1234);
+        assert!(args.contains(r#"/DIR="C:\Program Files\zoo2""#), "{args}");
+        assert!(args.contains("/WAITPID=1234"), "{args}");
+        assert!(args.contains("/RELAUNCH=1"), "{args}");
+        assert!(args.contains("/SILENT"), "{args}");
+    }
 }

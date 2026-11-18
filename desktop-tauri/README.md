@@ -1,8 +1,8 @@
 # zoo2 デスクトップ版 (Tauri)
 
-zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.app) で作っていて、Linux と macOS を 1 つのコードで扱います。
+zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.app) で作っていて、Linux・macOS・Windows を 1 つのコードで扱います。
 
-> **試験版です。** macOS 版は、まだ Apple の署名と公証をしていません。下の「[いまの制限](#いまの制限)」も読んでください。
+> **試験版です。** Windows 版は、まだコード署名（Authenticode）をしていません。下の「[いまの制限](#いまの制限)」も読んでください。
 
 - チャンネル一覧、タイムライン、入力欄を表示します。ほかの人の投稿はすぐに反映されます。
 - ウィンドウを閉じても、トレイに残って動き続けます。メンションや DM が届くと、OS の通知を出します。
@@ -29,7 +29,8 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 | そのほかの Linux (x86_64) | AppImage で動きます。WebKitGTK 4.1 が必要です |
 | NixOS / Nix (Linux) | flake のパッケージで入れられます (「[NixOS / Nix](#nixos--nix)」) |
 | macOS 11 以降 (Apple シリコン、Intel) | dmg で入れられます。署名と公証はまだなので、初回に手順が要ります (「[macOS](#macos)」) |
-| ARM64 の Linux、Windows | 対応していません |
+| Windows 10 / 11 (x86_64) | インストーラー (`exe`) で入れられます。WebView2 Runtime が要ります (未導入なら自動で入れます) |
+| ARM64 の Linux、ARM64 の Windows | 対応していません |
 
 ## インストール
 
@@ -48,21 +49,24 @@ gh release download desktop-tauri-v0.2.8 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 `main` に入ったばかりで、まだリリースしていない版を試すときは、GitHub Actions の「CI Desktop Tauri」が作るファイルを使います。ファイルは 7 日で消えます。この版は自分では更新しません。
 
 1. [CI Desktop Tauri の実行一覧](https://github.com/Zli-UoA/zoo2/actions/workflows/ci-desktop-tauri.yaml) で、`main` の成功した実行を開きます。
-2. 下の「Artifacts」から `zoo2-desktop-tauri-linux` をダウンロードして、展開します。
+2. 下の「Artifacts」から OS に合った成果物（`zoo2-desktop-tauri-linux`、`zoo2-desktop-tauri-macos`、`zoo2-desktop-tauri-windows`）をダウンロードして、展開します。
 
 ```bash
 gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run list --repo Zli-UoA/zoo2 --workflow ci-desktop-tauri.yaml --branch main --status success --limit 1 --json databaseId -q '.[0].databaseId')
 ```
 
+Windows の開発中の版を取得する場合は、成果物名に `zoo2-desktop-tauri-windows` を指定します。
+
 ### ファイル
 
-次のファイルがあります。`0.2.8` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
+次のファイルがあります。`0.2.8` の部分は版によって変わります。CI の成果物では、Linux / macOS / Windows それぞれの配布ファイルがダウンロードできます。
 
 | ファイル | 対象 |
 |---|---|
 | `zoo2_0.2.8_amd64.deb` | Ubuntu、Debian |
 | `zoo2_0.2.8_amd64.AppImage` | そのほかの Linux |
 | `zoo2_0.2.8_universal.dmg` | macOS (Apple シリコン、Intel) |
+| `zoo2_0.2.8_x64-setup.exe` | Windows 10 / 11 (x86_64) |
 
 ### Ubuntu / Debian
 
@@ -101,6 +105,15 @@ v0.2.10 以前のリリースと CI の検証用ビルドは公証していな�
 - 一度開こうとしてから、「システム設定」の「プライバシーとセキュリティ」で「このまま開く」を押します。
 
 2 回目からは、普通に開けます。アプリの中からの更新 (「[更新](#更新)」) も使えます。
+
+### Windows
+
+リリースの `zoo2_<版>_x64-setup.exe` (Inno Setup インストーラー) を実行して入れます。
+
+- ユーザーごとのフォルダー (`%LOCALAPPDATA%\Programs\zoo2`) に入るため、管理者権限は要りません。
+- Microsoft Edge WebView2 Runtime が入っていない環境では、インストール時にマイクロソフト公式の WebView2 ブートストラッパーを取得して自動で入れます。
+- インストーラーと実行ファイルには Authenticode 署名を付けていないため、初回実行時に Microsoft Defender SmartScreen の警告が出ることがあります。その場合は「詳細情報」→「実行」を押してください。
+- 通話や画面操作中はトレイに常駐し、通知（通話着信の「応答」「拒否」を含む）から操作できます。
 
 ### NixOS / Nix
 
@@ -170,15 +183,15 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
   - 自分の操作による通知
   - アカウントに DND (`dnd_until`) が設定されている間。Web 版の Push 通知と同じ扱いで、止めた分を後から出すこともしません (DND はいまのところ App の API から設定します)。DND はログインした直後と 5 分おきに確かめます。ログインした直後に確かめられなかったとき (オフラインなど) は、DND なしとして通知を出し、次に確かめられた時点から止めます
   - ウィンドウが前面にあり、そのチャンネルを表示しているとき
-- **通知のオン・オフ**: Web 版の画面の「設定」→「一般」→「通知」で切り替えます。オフにすると、アプリは投稿の通知を出しません (更新の知らせは出します)。設定はアプリに保存します (`~/.config/zoo2-desktop-tauri/notifications.json`)。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。
-- **通知のクリック**: Linux では、通知をクリックするとそのチャンネルを開きます。
+- **通知のオン・オフ**: Web 版の画面の「設定」→「一般」→「通知」で切り替えます。オフにすると、アプリは投稿の通知を出しません (更新の知らせは出します)。設定はアプリに保存します (Linux / macOS は `~/.config/zoo2-desktop-tauri/notifications.json`、Windows は `%APPDATA%\zoo2-desktop-tauri\notifications.json`)。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。
+- **通知のクリック**: Linux と Windows では、通知をクリックするとそのチャンネルを開きます。
 - **リンク**: メッセージ中のリンクなど、アプリの外のページは既定のブラウザーで開きます。Web 版 (`api_base_url` のサイト、`zli.chat` など) とログインのサイト (`account.zli.works` など) のほかは、開く前に「外部のサイトを開きます」と確かめます。
 - **暗号化 (E2EE)**: Web 版と同じく、「設定」の「暗号化」から使います。暗号化の設定、端末の失効、他のユーザーの検証などでログインし直すときは、既定のブラウザーが開きます。ブラウザーでパスキーを使ってログインし直すと、アプリに戻ります (ブラウザーのタブは閉じてかまいません)。解錠には、リカバリーキーを使ってください (アプリの中ではパスキーを使えないことがあります)。
 - **再読み込み**: Web 版の画面を読み込み直します。macOS はメニューバーの「表示」→「再読み込み」か ⌘R、どの OS でもトレイのメニューの「再読み込み」です。
 
 ## 設定項目
 
-`~/.config/zoo2-desktop-tauri/config.toml` と環境変数から読み込みます。環境変数が優先されます。ふだんは何も書かなくて構いません。
+Linux / macOS は `~/.config/zoo2-desktop-tauri/config.toml`、Windows は `%APPDATA%\zoo2-desktop-tauri\config.toml` と環境変数から読み込みます。環境変数が優先されます。ふだんは何も書かなくて構いません。
 
 | `config.toml` | 環境変数 | 既定値 | 内容 |
 |---|---|---|---|
@@ -200,15 +213,16 @@ GitHub Releases から入れたアプリは、自分で新しい版を確かめ�
 2. 準備ができると、「zoo2 を更新できます」という通知が出て、トレイのメニューに「更新して再起動 (v<版>)」が増えます。
 3. 通知かメニューを押すと、新しい版に入れ替えて、アプリを再起動します。押すまでは、いまの版のまま動きます。
 
-macOS では、メニューバーの「zoo2」→「アップデートを確認…」からも更新できます。押すと更新のウィンドウが開き、その場で確かめます。新しい版があれば、ダウンロードの進み具合を出しながら取得し、入れ替えてアプリを再起動します。新しい版がないときは「zoo2 は最新です」と出して、少し後に閉じます。トレイや通知の「更新して再起動」を押したときも、同じウィンドウにインストールの様子を出します。準備ができた更新があるときは、この項目が「更新して再起動 (v<版>)…」に変わります。
+macOS ではメニューバーの「zoo2」→「アップデートを確認…」、Linux と Windows ではトレイのメニューの「アップデートを確認…」からも更新できます。押すと更新のウィンドウが開き、その場で確かめます。新しい版があれば、ダウンロードの進み具合を出しながら取得し、入れ替えてアプリを再起動します。新しい版がないときは「zoo2 は最新です」と出して、少し後に閉じます。トレイや通知の「更新して再起動」を押したときも、同じウィンドウにインストールの様子を出します。準備ができた更新があるときは、この項目が「更新して再起動 (v<版>)…」に変わります。
 
 | 入れ方 | 入れ替えるとき |
 |---|---|
 | deb | `dpkg` で入れ直すので、管理者のパスワードを聞かれます。やめた場合は、もう一度押せば入れ直せます |
 | AppImage | ファイルを置き換えます。ファイルを置いたディレクトリに書き込めることが必要です |
 | macOS | `zoo2.app` を置き換えます。「アプリケーション」に書き込めることが必要です |
+| Windows | Inno Setup のサイレント更新インストーラーを起動し、更新後にアプリを再起動します |
 
-設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え)。
+設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え、Windows は `zoo2_<版>_x64-setup.exe` を実行)。
 
 CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) と、ソースから動かした場合は、自分では更新しません。
 
@@ -219,7 +233,7 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 | `nix profile` | `nix profile upgrade zoo2-desktop-tauri` |
 | NixOS の flake | `nix flake update zoo2` してから、`nixos-rebuild switch` (Home Manager なら `home-manager switch`) |
 
-自動で更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。この設定でも、macOS のメニューバーの「アップデートを確認…」は使えます。
+自動で更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。この設定でも、メニューバー（macOS）やトレイ（Linux / Windows）の「アップデートを確認…」は使えます。
 
 画面の種類によって、更新が要る範囲が違います。
 
@@ -233,13 +247,14 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 | deb | `sudo apt remove zoo2` |
 | AppImage | ファイルを消す |
 | macOS | 「アプリケーション」の `zoo2.app` をゴミ箱に入れる |
+| Windows | Windows の「設定」→「アプリ」→「インストールされているアプリ」から `zoo2` をアンインストールする |
 | `nix profile` | `nix profile remove zoo2-desktop-tauri` |
 | NixOS の flake | 設定から消して `nixos-rebuild switch` |
 
 設定とログインの状態は、アプリを消しても残ります。完全に消すときは、先にアプリからログアウトしてから、次のディレクトリを消してください。
 
-- `~/.config/zoo2-desktop-tauri` (設定とトークン)
-- `~/.local/share/chat.zli.desktop` と `~/.cache/chat.zli.desktop` (画面のデータとキャッシュ)
+- Linux / macOS: `~/.config/zoo2-desktop-tauri` (設定とトークン)、`~/.local/share/chat.zli.desktop` と `~/.cache/chat.zli.desktop` (画面のデータとキャッシュ)
+- Windows: `%APPDATA%\zoo2-desktop-tauri` (設定とトークン)、`%LOCALAPPDATA%\chat.zli.desktop` (画面のデータ、キャッシュ、更新の一時ファイル)
 
 ## 困ったとき
 
@@ -254,7 +269,8 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 
 ## いまの制限
 
-- macOS 版は、Apple の署名と公証をしていません。初回は「[macOS](#macos)」の手順で開きます。通知を押しても、チャンネルは開きません。
+- macOS 版は通知を押してもチャンネルを開きません。v0.2.10 以前は Apple の署名と公証がありません。
+- Windows 版のインストーラーと実行ファイルには Authenticode 署名を付けていないため、初回実行時に SmartScreen の警告が出ることがあります。
 - v0.2.0 までは既定の client_id が AuthZ に登録されていないので、そのままでは本番の zli.chat にログインできません。v0.2.1 以降に更新してください (アプリの中からの自動更新でも上がります)。
 - 暗号化でログインし直すには v0.2.8 以降が要ります。古い版では「アプリを更新してください」と出ます。
 - 最小限の画面 (`leptos`) では、スレッド、リアクション、編集、ファイルの添付、通話は使えません。既定の Web 版の画面 (`remote`) を使ってください。
