@@ -16,7 +16,10 @@ targets:
   Zoo:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources: [Sources, Shared]
+    dependencies:
+      - target: ZooNotificationService
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: works.zli.zoo
@@ -41,12 +44,31 @@ targets:
       path: Info.plist
       properties:
         APNSEnvironment: $(APNS_ENVIRONMENT)
+        ZooPreviewKeychainGroup: $(AppIdentifierPrefix)works.zli.zoo.preview
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+  ZooNotificationService:
+    type: app-extension
+    platform: iOS
+    sources: [NotificationService, Shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: works.zli.zoo.notification-service
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: NotificationService.entitlements
+    info:
+      path: NotificationService-Info.plist
+      properties:
+        CFBundleDisplayName: Zoo
+        ZooPreviewKeychainGroup: $(AppIdentifierPrefix)works.zli.zoo.preview
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
   ZooTests:
     type: bundle.unit-test
     platform: iOS
