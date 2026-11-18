@@ -1770,7 +1770,7 @@ async fn membership_insert_racing_single_guest_transition_preserves_single_chann
         .get::<_, String>(0);
     deferred_db
         .batch_execute(include_str!(
-            "../../infra/db/deferred-migrations/20261129000009_guest_membership_lock_order.sql"
+            "../../infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql"
         ))
         .await?;
     let result = std::panic::AssertUnwindSafe(run_membership_race(&env))

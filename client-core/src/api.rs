@@ -51,6 +51,23 @@ pub struct ThreadPage {
     pub next_cursor: Option<String>,
 }
 
+/// ピン留めの 1 行（`GET /api/channel-pins`）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PinnedChannel {
+    pub channel_id: String,
+    pub position: i64,
+    /// アーカイブ中のチャンネルのピン。位置は保ち、表示だけを止める。
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// 自分のピン留めと、並びの版。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ChannelPins {
+    pub pins: Vec<PinnedChannel>,
+    pub version: i64,
+}
+
 /// `GET /api/channels/{id}/typing`
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TypingUser {
@@ -690,6 +707,30 @@ impl ApiClient {
         self.write(Method::DELETE, &path, None).await
     }
 
+    /// メッセージ部品のボタン・選択肢を押したことをアプリへ送る（`/api/apps/{id}/invoke` の `action`）。
+    pub async fn invoke_app_action(
+        &self,
+        app_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        custom_id: &str,
+        value: Value,
+    ) -> Result<Value> {
+        let path = format!("/api/apps/{}/invoke", segment(app_id));
+        let body = json!({
+            "kind": "action",
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "action_id": custom_id,
+            "values": { custom_id: value },
+        });
+        Ok(self
+            .send(Method::POST, &path, Some(body))
+            .await?
+            .json()
+            .await?)
+    }
+
     pub async fn add_reaction(
         &self,
         reaction_id: &str,
@@ -718,6 +759,55 @@ impl ApiClient {
     pub async fn leave_channel(&self, channel_id: &str) -> Result<Option<String>> {
         let path = format!("/api/channels/{}/leave", segment(channel_id));
         self.write(Method::POST, &path, None).await
+    }
+
+    /// 自分のピン留めと、並びの版。
+    pub async fn channel_pins(&self) -> Result<ChannelPins> {
+        self.get("/api/channel-pins").await
+    }
+
+    /// チャンネルをピン留めする。成功したら新しい版を返す。409 `CHANNEL_PINS_CONFLICT` は
+    /// [`crate::http::ApiError`] として返るので、`channel_pins()` で最新の版を取ってやり直せる。
+    pub async fn pin_channel(&self, channel_id: &str, expected_version: i64) -> Result<i64> {
+        let body = json!({
+            "channel_id": channel_id,
+            "expected_version": expected_version,
+        });
+        self.pin_write(Method::POST, "/api/channel-pins", Some(body))
+            .await
+    }
+
+    /// ピン留めを解除する。成功したら新しい版を返す（解除する行がなくても版は変わらない）。
+    pub async fn unpin_channel(&self, channel_id: &str, expected_version: i64) -> Result<i64> {
+        let path = format!(
+            "/api/channel-pins/{}?expected_version={}",
+            segment(channel_id),
+            expected_version
+        );
+        self.pin_write(Method::DELETE, &path, None).await
+    }
+
+    /// ピンの並びを保存する。`channel_ids` は、いまピン留めされている有効なチャンネルの
+    /// 完全な並びでなければならない（追加・削除には使えない）。
+    pub async fn reorder_channel_pins(
+        &self,
+        channel_ids: &[String],
+        expected_version: i64,
+    ) -> Result<i64> {
+        let body = json!({
+            "channel_ids": channel_ids,
+            "expected_version": expected_version,
+        });
+        self.pin_write(Method::PATCH, "/api/channel-pins/order", Some(body))
+            .await
+    }
+
+    async fn pin_write(&self, method: Method, path: &str, body: Option<Value>) -> Result<i64> {
+        let envelope: Envelope<Value> = self.send_coded(method, path, body).await?.json().await?;
+        envelope
+            .data
+            .and_then(|data| data["version"].as_i64())
+            .ok_or_else(|| anyhow::anyhow!("ピン留めの応答に版がありません"))
     }
 
     pub async fn read_states(&self) -> Result<Vec<ReadState>> {
@@ -790,6 +880,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::http::ApiError;
     use crate::http::HttpError;
 
     fn client(server: &MockServer) -> ApiClient {
@@ -1275,5 +1366,66 @@ mod tests {
         assert_eq!(created.id, "c_new");
         assert_eq!(created.channel_name, "dev");
         assert_eq!(txid.as_deref(), Some("100"));
+    }
+
+    #[tokio::test]
+    async fn pin_writes_send_the_version_and_keep_the_conflict_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "pins": [{ "channel_id": "c1", "position": 0 }],
+                "version": 4
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .and(body_json(json!({
+                "channel_id": "c2",
+                "expected_version": 4
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "version": 5 },
+                "txid": "10"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/channel-pins/c1"))
+            .and(query_param("expected_version", "5"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "error": "conflict",
+                "code": "CHANNEL_PINS_CONFLICT",
+                "version": 6,
+                "pins": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": { "version": 7 },
+                "txid": "11"
+            })))
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let pins = api.channel_pins().await.unwrap();
+        assert_eq!(pins.version, 4);
+        assert_eq!(pins.pins[0].channel_id, "c1");
+        assert_eq!(api.pin_channel("c2", 4).await.unwrap(), 5);
+        assert_eq!(
+            api.reorder_channel_pins(&["c1".into()], 5).await.unwrap(),
+            7
+        );
+
+        let err = api.unpin_channel("c1", 5).await.unwrap_err();
+        assert!(ApiError::has_code(&err, "CHANNEL_PINS_CONFLICT"));
+        assert_eq!(
+            ApiError::status_of(&err),
+            Some(reqwest::StatusCode::CONFLICT)
+        );
     }
 }

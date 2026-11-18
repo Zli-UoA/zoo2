@@ -14,6 +14,7 @@ export interface FeedMessage {
   user_id: string;
   content: string;
   card?: string | null;
+  components?: string | null;
   app_blocks?: string | null;
   app_attachments?: string | null;
   app_unfurls?: string | null;

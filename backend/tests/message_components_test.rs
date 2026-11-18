@@ -320,7 +320,8 @@ async fn modal_submissions_check_required_and_formatted_inputs() -> anyhow::Resu
     let surface = ok(&f.app, "POST", "/api/apps/v1/surfaces", &f.token, json!({"kind":"modal","user_id":f.owner,"channel_id":f.channel,"trigger_id":trigger,"components":[
         {"type":18,"label":"Name","component":{"type":4,"custom_id":"name","style":1}},
         {"type":18,"label":"Count","component":{"type":4,"custom_id":"count","format":"number","min_value":1,"max_value":10,"required":false}},
-        {"type":18,"label":"Pick","component":{"type":21,"custom_id":"pick","options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}}
+        {"type":18,"label":"Pick","component":{"type":21,"custom_id":"pick","options":[{"label":"A","value":"a"},{"label":"B","value":"b"}]}},
+        {"type":18,"label":"Optional","component":{"type":21,"custom_id":"opt","required":false,"options":[{"label":"A","value":"a"}]}}
     ]})).await;
     let submit = |values: Value| json!({"kind":"submit","surface_id":surface["id"],"channel_id":f.channel,"values":values});
     for values in [
@@ -328,6 +329,8 @@ async fn modal_submissions_check_required_and_formatted_inputs() -> anyhow::Resu
         json!({"name":"n","count":"x","pick":"a"}),
         json!({"name":"n","count":"30","pick":"a"}),
         json!({"name":"n","pick":"z"}),
+        // 必須の radio を選ばなかった（空文字）
+        json!({"name":"n","pick":""}),
     ] {
         let (s, v) = request(&f.app, "POST", &invoke, &f.owner, submit(values.clone())).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{values}: {v}");
@@ -337,7 +340,8 @@ async fn modal_submissions_check_required_and_formatted_inputs() -> anyhow::Resu
         "POST",
         &invoke,
         &f.owner,
-        submit(json!({"name":"n","count":"3","pick":"b"})),
+        // 任意の radio は選ばなくてよい（空文字でも 400 にしない）
+        submit(json!({"name":"n","count":"3","pick":"b","opt":""})),
     )
     .await;
     Ok(())
@@ -370,6 +374,15 @@ async fn message_submissions_require_only_the_labelled_inputs() -> anyhow::Resul
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // 選ばなかった radio（空文字。古いクライアントが送る）も「選ばなかった」として通す
+    ok(
+        &f.app,
+        "POST",
+        &invoke,
+        &f.owner,
+        submit(json!({"name":"n","vote":""})),
+    )
+    .await;
     let v = ok(
         &f.app,
         "POST",

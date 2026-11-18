@@ -32,6 +32,8 @@ pub async fn init_db_with_pool(
         MessageReaction,
         Notification,
         crate::models::PushSubscription,
+        crate::models::ApnsSubscription,
+        crate::models::ApnsRevocation,
         ChannelUser,
         Role,
         UserRole,

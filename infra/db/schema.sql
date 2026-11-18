@@ -256,6 +256,58 @@ CREATE INDEX idx_push_subscriptions_user_id ON push_subscriptions (user_id);
 ALTER TABLE push_subscriptions ADD COLUMN p256dh text;
 ALTER TABLE push_subscriptions ADD COLUMN auth_secret text;
 
+CREATE TABLE apns_subscriptions (
+  id text NOT NULL PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  device_token text NOT NULL,
+  environment text NOT NULL CHECK (environment IN ('sandbox', 'production')),
+  revocation_hash text NOT NULL,
+  created_at timestamp(3) NOT NULL,
+  last_test_at timestamptz,
+  UNIQUE (device_token, environment)
+);
+CREATE INDEX idx_apns_subscriptions_user_id ON apns_subscriptions (user_id);
+
+-- 遅れて届いた登録要求で、ログアウト済みの端末に通知が再開されるのを防ぐ。
+CREATE TABLE apns_revocations (
+  id text NOT NULL PRIMARY KEY,
+  revoked_at timestamp(3) NOT NULL,
+  invalidated_at timestamp(3)
+);
+CREATE INDEX idx_apns_revocations_revoked_at ON apns_revocations (revoked_at);
+
+-- 未登録端末の解除を受け付けるときに、保持中の全記録を数え直さずに済むようにする。
+CREATE TABLE apns_revocation_capacity (
+  id boolean PRIMARY KEY CHECK (id),
+  records bigint NOT NULL CHECK (records >= 0)
+);
+INSERT INTO apns_revocation_capacity (id, records) VALUES (true, 0);
+
+CREATE FUNCTION update_apns_revocation_capacity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE changed bigint;
+BEGIN
+  IF TG_OP = 'TRUNCATE' THEN
+    UPDATE apns_revocation_capacity SET records = 0 WHERE id;
+  ELSE
+    SELECT count(*) INTO changed FROM affected_revocations;
+    IF changed > 0 THEN
+      UPDATE apns_revocation_capacity
+      SET records = records + CASE WHEN TG_OP = 'INSERT' THEN changed ELSE -changed END
+      WHERE id;
+    END IF;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER apns_revocations_after_insert AFTER INSERT ON apns_revocations
+  REFERENCING NEW TABLE AS affected_revocations
+  FOR EACH STATEMENT EXECUTE FUNCTION update_apns_revocation_capacity();
+CREATE TRIGGER apns_revocations_after_delete AFTER DELETE ON apns_revocations
+  REFERENCING OLD TABLE AS affected_revocations
+  FOR EACH STATEMENT EXECUTE FUNCTION update_apns_revocation_capacity();
+CREATE TRIGGER apns_revocations_after_truncate AFTER TRUNCATE ON apns_revocations
+  FOR EACH STATEMENT EXECUTE FUNCTION update_apns_revocation_capacity();
+
 -- App profiles are public; all other platform tables are server-only.
 CREATE TABLE apps (
  id text PRIMARY KEY,
@@ -4253,3 +4305,23 @@ CREATE INDEX app_ui_expiry ON app_ui(expires_at) WHERE expires_at IS NOT NULL;
 -- 利用者の画面の一覧（GET /api/apps/{id}/surfaces）。全件を読まず、その利用者の画面だけを更新順に読む。
 -- 一覧に出さない trigger・options（短い間だけの行）は入れない（入れると、消えた行の項目が溜まり、主キーで引く問い合わせの計画もこの索引に寄る）
 CREATE INDEX app_ui_user ON app_ui(user_id, updated_at) WHERE kind NOT IN ('trigger','options');
+-- ユーザーごとのピン留めしたチャンネル・DM。位置はユーザーごとに独立して並べる。
+CREATE TABLE user_pinned_channels (
+  user_id text NOT NULL REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  channel_id text NOT NULL REFERENCES channels(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  position integer NOT NULL CHECK (position >= 0),
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, channel_id)
+);
+CREATE INDEX idx_user_pinned_channels_user_position ON user_pinned_channels (user_id, position, channel_id);
+CREATE INDEX idx_user_pinned_channels_channel ON user_pinned_channels (channel_id);
+
+-- ピン留めの並びの版。書き込みはユーザー単位でこの行をロックして直列にする。
+CREATE TABLE user_channel_pin_states (
+  user_id text NOT NULL PRIMARY KEY REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  version bigint NOT NULL DEFAULT 0 CHECK (version >= 0),
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;

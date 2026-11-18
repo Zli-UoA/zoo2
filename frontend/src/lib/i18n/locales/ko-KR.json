@@ -580,6 +580,30 @@
     "you": "나",
     "closeParticipants": "참여자 목록 닫기"
   },
+  "channelPins": {
+    "title": "고정",
+    "menu": "채널 메뉴",
+    "channelMenu": "{{name}} 채널 메뉴",
+    "dmMenu": "{{name}} DM 메뉴",
+    "pin": "고정",
+    "unpin": "고정 해제",
+    "moveUp": "위로 이동",
+    "moveDown": "아래로 이동",
+    "dragHandle": "끌어서 순서 바꾸기",
+    "dismissError": "닫기",
+    "errors": {
+      "conflict": "다른 기기에서 고정된 채널이 바뀌었습니다. 최신 순서를 다시 불러왔으니 다시 시도해 주세요.",
+      "limitExceeded": "채널은 최대 50개까지 고정할 수 있습니다.",
+      "reorderConflict": "다른 기기에서 고정 순서가 바뀌었습니다. 최신 순서를 다시 불러왔으니 다시 시도해 주세요."
+    },
+    "announce": {
+      "pinned": "고정했습니다.",
+      "unpinned": "고정을 해제했습니다.",
+      "moved": "고정된 항목을 이동했습니다.",
+      "reorderConflict": "다른 기기에서 고정이 해제되어 이동하지 않았습니다.",
+      "reorderArchived": "채널이 보관되어 이동하지 않았습니다."
+    }
+  },
   "dms": {
     "title": "다이렉트 메시지",
     "createTitle": "새 다이렉트 메시지",
@@ -722,6 +746,20 @@
       "addEncrypted": "암호화 채널에 추가",
       "notReady": "이 앱은 아직 암호화 준비(기기 등록)를 마치지 않았습니다. 앱을 실행한 뒤 다시 시도하세요.",
       "encryptedHint": "암호화 채널에 앱을 추가하려면 멤버의 허락이 필요합니다."
+    },
+    "components": {
+      "unsupported": "아직 지원하지 않는 요소입니다",
+      "more": "기타 작업",
+      "choose": "선택하세요",
+      "search": "검색",
+      "noOptions": "후보가 없습니다",
+      "uploading": "업로드 중…",
+      "page": "{{page}} / {{pages}} 페이지",
+      "spoiler": "스포일러가 포함되어 있습니다(웹 버전에서 볼 수 있습니다)",
+      "webOnly": "이 조작은 웹 버전에서 할 수 있습니다",
+      "date": "날짜",
+      "time": "시간",
+      "datetime": "날짜와 시간"
     }
   },
   "search": {

@@ -1,6 +1,10 @@
 pub mod attachment;
 pub mod channel_webhook;
 pub use channel_webhook::ChannelWebhook;
+pub mod apns_revocation;
+pub use apns_revocation::ApnsRevocation;
+pub mod apns_subscription;
+pub use apns_subscription::ApnsSubscription;
 pub mod channel;
 pub mod channel_note;
 pub use channel_note::ChannelNote;
@@ -13,6 +17,7 @@ pub use push_subscription::PushSubscription;
 pub mod role;
 pub mod user;
 pub mod user_identity;
+pub mod user_pinned_channel;
 pub mod user_role;
 
 pub use attachment::Attachment;
@@ -24,6 +29,7 @@ pub use notification::Notification;
 pub use role::Role;
 pub use user::User;
 pub use user_identity::UserIdentity;
+pub use user_pinned_channel::UserPinnedChannel;
 pub use user_role::UserRole;
 
 /// 常に UTC 基準かつミリ秒精度（PostgreSQL timestamp(3) 適合）の現在日時を返す

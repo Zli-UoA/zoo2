@@ -580,6 +580,30 @@
     "you": "당신",
     "closeParticipants": "참가자 목록 닫기"
   },
+  "channelPins": {
+    "title": "고정",
+    "menu": "채널 조작",
+    "channelMenu": "{{name}} 채널 조작",
+    "dmMenu": "{{name}} DM 조작",
+    "pin": "고정",
+    "unpin": "고정 풀기",
+    "moveUp": "위로 이동",
+    "moveDown": "아래로 이동",
+    "dragHandle": "끌어서 순서 바꾸기",
+    "dismissError": "닫기",
+    "errors": {
+      "conflict": "다른 기기에서 고정한 채널이 바뀌었습니다. 최신 순서를 다시 읽어왔으니 다시 해보십시오.",
+      "limitExceeded": "채널은 최대 50개까지 고정할 수 있습니다.",
+      "reorderConflict": "다른 기기에서 고정 순서가 바뀌었습니다. 최신 순서를 다시 읽어왔으니 다시 해보십시오."
+    },
+    "announce": {
+      "pinned": "고정하였습니다.",
+      "unpinned": "고정을 풀었습니다.",
+      "moved": "고정한 항목을 이동하였습니다.",
+      "reorderConflict": "다른 기기에서 고정이 풀려 이동하지 않았습니다.",
+      "reorderArchived": "통로가 보관되여 이동하지 않았습니다."
+    }
+  },
   "dms": {
     "title": "직접통보문",
     "createTitle": "새 직접통보문",
@@ -722,6 +746,20 @@
       "addEncrypted": "암호화통로에 추가",
       "notReady": "이 응용프로그람은 아직 암호화준비(단말등록)를 마치지 않았습니다. 응용프로그람을 기동한 뒤 다시 시도하십시오.",
       "encryptedHint": "암호화통로에 응용프로그람을 넣으려면 성원의 허가가 필요합니다."
+    },
+    "components": {
+      "unsupported": "아직 지원하지 않는 요소입니다",
+      "more": "기타 조작",
+      "choose": "선택하십시오",
+      "search": "검색",
+      "noOptions": "후보가 없습니다",
+      "uploading": "올리는 중…",
+      "page": "{{page}} / {{pages}} 페지",
+      "spoiler": "미리보기를 가린 요소입니다(웨브판에서 볼수 있습니다)",
+      "webOnly": "이 조작은 웨브판에서 할수 있습니다",
+      "date": "날자",
+      "time": "시간",
+      "datetime": "날자와 시간"
     }
   },
   "search": {

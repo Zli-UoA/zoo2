@@ -185,9 +185,9 @@ POSTGRES_PASSWORD=staging-test-password \
     logs --no-color migrate
   ```
 
-  `20261129000002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
+  `20261129020002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
 
-  1. `migrate status` とログで停止箇所が `20261129000002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
+  1. `migrate status` とログで停止箇所が `20261129020002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
   2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`indisvalid` が `false` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。`indisvalid = true`、別スキーマ、別名、または対象 migration 以外の失敗なら削除しない。
 
      ```bash
@@ -220,7 +220,7 @@ POSTGRES_PASSWORD=staging-test-password \
      docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
      ```
 
-  `20261129000008_slack_sync_claim_team_index.sql` の
+  `20261129020008_slack_sync_claim_team_index.sql` の
   `CREATE INDEX CONCURRENTLY slack_channel_syncs_team_due_order` が失敗した場合も同じ流れで
   復旧します。この migration は `-- atlas:txmode none` のため、`CREATE` の完了後に Atlas が
   停止したときは有効 (`indisvalid = true`) なインデックスが残り、再実行は同名エラーで失敗します。
@@ -240,7 +240,7 @@ POSTGRES_PASSWORD=staging-test-password \
   ```
 
   `table_name = 'slack_channel_syncs'` の行があり、この migration の記録がまだ無い
-  （`migrate status` で `20261129000008` が pending）場合、`indisvalid` の真偽にかかわらず、
+  （`migrate status` で `20261129020008` が pending）場合、`indisvalid` の真偽にかかわらず、
   他の apply が動いていない状態で次を実行してから Atlas を再実行します。
   `DROP INDEX CONCURRENTLY` は名前で削除するため、有効なインデックスにも同じ手順が使えます。
   `IF NOT EXISTS` で再試行すると INVALID インデックスが残ったまま成功するため、使わないでください。
@@ -249,12 +249,12 @@ POSTGRES_PASSWORD=staging-test-password \
   DROP INDEX CONCURRENTLY public.slack_channel_syncs_team_due_order;
   ```
 
-  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261129000003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
+  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261129020003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
 
 ### Slack ゲスト所属トリガーの適用順序
 
-`20261129000001_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
-`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261129000009_guest_membership_lock_order.sql`
+`20261129020001_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
+`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql`
 に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
 advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
 「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック
@@ -267,12 +267,12 @@ advisory lock を取る経路があるため、旧インスタンスが動いて
 切り替え、旧インスタンスの終了を確認してから、deferred migration を適用してください。
 
 適用には、canonical と共通の `atlas_schema_revisions` を使わず、deferred 専用の
-リビジョン表に記録します。共有表に `20261129000009` が記録されると、将来の canonical
+リビジョン表に記録します。共有表に `20261129020009` が記録されると、将来の canonical
 migration が同じ版番号を使ったときに適用済みと判定されたり checksum 不一致で止まったりする
 ためです。
 
 ```sh
-atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred
+atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred --allow-dirty
 ```
 
 標準の `compose.stack` では `DATABASE_URL` は `migrate` コンテナ内だけにあり、
@@ -288,7 +288,8 @@ docker compose --project-directory . -f infra/compose.stack.yaml   run --rm --no
     migrate \
     migrate apply --dir file:///deferred-migrations \
       --url "$DATABASE_URL" \
-      --revisions-schema atlas_schema_revisions_deferred
+      --revisions-schema atlas_schema_revisions_deferred \
+      --allow-dirty
 ```
 
 この適用後、canonical migrations へ戻す follow-up で deferred migration を

@@ -11,6 +11,7 @@ import { SasVerificationHost } from "../components/e2ee/SasVerificationHost";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { IncomingCallDialog } from "../components/call/IncomingCallDialog";
 import { CallProvider } from "../lib/call/call-context";
+import { PinnedChannelsProvider } from "../hooks/usePinnedChannels";
 import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
 import { resolveConfig } from "../lib/config";
 
@@ -36,11 +37,13 @@ function ShellLayout() {
           <SipProvider config={config}>
             <HomeLiveProvider>
               <NotificationsProvider>
-                <AppShell>
-                  <Outlet />
-                </AppShell>
-                <SasVerificationHost />
-                <IncomingCallDialog />
+                <PinnedChannelsProvider>
+                  <AppShell>
+                    <Outlet />
+                  </AppShell>
+                  <SasVerificationHost />
+                  <IncomingCallDialog />
+                </PinnedChannelsProvider>
               </NotificationsProvider>
             </HomeLiveProvider>
             <SipCallBanner />

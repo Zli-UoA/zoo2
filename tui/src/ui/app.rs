@@ -21,7 +21,7 @@ use crate::{
         store::{Decryption, EncryptedRow, RecipientSummary},
     },
     electric::{self, Batch, ShapeEvent, ShapeId},
-    http::Credentials,
+    http::{ApiError, Credentials},
     store::Store,
 };
 
@@ -117,6 +117,8 @@ pub enum AppEvent {
         content: String,
         edit_base: Option<u64>,
     },
+    /// ピン留めの並びの版（`GET /api/channel-pins` または書き込みの応答）。
+    PinsVersion(i64),
     /// チャンネルか DM を作った（#361）。開く。`encrypted` は応答の値。
     Created {
         channel_id: String,
@@ -135,8 +137,15 @@ pub enum Focus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarItem {
     Channel(String),
-    Thread { channel_id: String, id: String },
-    MoreThreads { archived: bool },
+    /// サイドバー先頭のピン留め。通常の一覧にも同じチャンネルが出る。
+    Pinned(String),
+    Thread {
+        channel_id: String,
+        id: String,
+    },
+    MoreThreads {
+        archived: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +251,8 @@ pub struct App {
 
     /// 未読のあるチャンネル。
     pub unread: HashSet<String>,
+    /// ピン留めの並びの版。書き込みのたびに更新し、409 のときは取り直す。
+    pub pin_version: i64,
     /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
     marked_read: HashMap<String, String>,
     /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
@@ -331,6 +342,7 @@ impl App {
             update_available: None,
             should_quit: false,
             unread: HashSet::new(),
+            pin_version: 0,
             marked_read: HashMap::new(),
             typing: HashMap::new(),
             typing_session: uuid::Uuid::new_v4().to_string(),
@@ -352,9 +364,15 @@ impl App {
             known_encrypted_store: None,
             known_encrypted_in_flight: false,
         };
-        for id in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
+        for id in [
+            ShapeId::Channels,
+            ShapeId::Users,
+            ShapeId::ChannelUsers,
+            ShapeId::UserPinnedChannels,
+        ] {
             app.subscribe(id);
         }
+        app.refresh_pin_version();
         app
     }
 
@@ -789,6 +807,7 @@ impl App {
             }
             AppEvent::ReadStatesPollFinished => self.read_poll.finish(Instant::now(), true),
             AppEvent::EmojiPollFinished => self.emoji_poll.finish(Instant::now(), true),
+            AppEvent::PinsVersion(version) => self.pin_version = version,
             AppEvent::TypingPollFinished => self.typing_poll.finish(
                 Instant::now(),
                 self.typing.values().any(|users| !users.is_empty()) || self.typing_sent.is_some(),
@@ -1058,6 +1077,15 @@ impl App {
 
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
+        // ピン留めは先頭に出す。アーカイブ中は通常の一覧だけに残す（アンアーカイブで戻る）。
+        for pin in self.store.pinned_channels() {
+            let visible = self.store.channel(&pin.channel_id).is_some_and(|channel| {
+                channel.deleted_at.is_none() && channel.archive_at.is_none()
+            });
+            if visible {
+                items.push(SidebarItem::Pinned(pin.channel_id.clone()));
+            }
+        }
         for channel in self.store.channels() {
             items.push(SidebarItem::Channel(channel.id.clone()));
             let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
@@ -1336,6 +1364,11 @@ impl App {
             }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
+            // ピン留めの並び替えは Alt+↑↓ と [ / ]。通常の選択移動より先に判定する。
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => self.move_pinned(-1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => self.move_pinned(1),
+            KeyCode::Char('[') => self.move_pinned(-1),
+            KeyCode::Char(']') => self.move_pinned(1),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
             KeyCode::Char('g') | KeyCode::Home => self.move_selection(isize::MIN),
@@ -1363,6 +1396,8 @@ impl App {
                     };
                 }
             }
+            KeyCode::Char('p') => self.toggle_pin(),
+            // J はピン留め行でもチャンネル参加。並び替えは [ / ] と Alt+↑↓ に分ける。
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
@@ -1589,6 +1624,173 @@ impl App {
         }
     }
 
+    /// サイドバーで選択中のチャンネル。スレッド選択中はその親チャンネル。
+    fn selected_sidebar_channel(&self) -> Option<String> {
+        match self.focus {
+            Focus::Sidebar => self
+                .sidebar_items()
+                .get(self.sidebar_index)
+                .and_then(|item| match item {
+                    SidebarItem::Channel(id) | SidebarItem::Pinned(id) => Some(id.clone()),
+                    SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
+                    SidebarItem::MoreThreads { .. } => None,
+                }),
+            _ => self.current.clone(),
+        }
+    }
+
+    /// ピン留めの版を取り直す。起動時と、409 のあとに使う。
+    fn refresh_pin_version(&self) {
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(pins) = api.channel_pins().await {
+                let _ = tx.send(AppEvent::PinsVersion(pins.version));
+            }
+        });
+    }
+
+    /// 選択中のチャンネルのピン留めを切り替える。409 のときは最新の版で 1 回やり直す。
+    fn toggle_pin(&mut self) {
+        let Some(channel_id) = self.selected_sidebar_channel() else {
+            self.notify("チャンネルを選んでください");
+            return;
+        };
+        let pinned = self.store.is_pinned(&channel_id);
+        if !pinned && let Some(channel) = self.store.channel(&channel_id) {
+            // アーカイブ中・削除済みは新しくピン留めできない。サーバーと同じ条件を
+            // 先に確かめ、押しただけで API を送らない。ピン済みなら解除できる。
+            // チャンネル行がまだ届いていない場合は、同期前の有効な操作を誤って
+            // 拒否しないよう、サーバーの判定に任せる。
+            if channel.deleted_at.is_some() {
+                self.notify("削除済みのチャンネルはピン留めできません");
+                return;
+            }
+            if channel.archive_at.is_some() {
+                self.notify("アーカイブ中のチャンネルはピン留めできません");
+                return;
+            }
+            // `channel_user` の初回同期前は、未参加と「まだ届いていない」を区別できない。
+            // 同期済みのときだけゲストの未参加を理由に止める。
+            let is_guest = self
+                .store
+                .user(&self.me.id)
+                .is_some_and(|user| user.is_guest);
+            if is_guest
+                && self.store.is_synced(&ShapeId::Users)
+                && self.store.is_synced(&ShapeId::ChannelUsers)
+                && !self.store.is_member(&channel_id, &self.me.id)
+            {
+                self.notify("ゲストは参加していない公開チャンネルをピン留めできません");
+                return;
+            }
+        }
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        let version = self.pin_version;
+        self.spawn_api(
+            if pinned {
+                "ピン留めの解除"
+            } else {
+                "ピン留め"
+            },
+            async move {
+                let result = if pinned {
+                    api.unpin_channel(&channel_id, version).await
+                } else {
+                    api.pin_channel(&channel_id, version).await
+                };
+                match result {
+                    Ok(version) => {
+                        let _ = tx.send(AppEvent::PinsVersion(version));
+                        Ok(())
+                    }
+                    Err(err) if ApiError::has_code(&err, "CHANNEL_PINS_CONFLICT") => {
+                        let latest = api.channel_pins().await?;
+                        let version = if pinned {
+                            api.unpin_channel(&channel_id, latest.version).await?
+                        } else {
+                            api.pin_channel(&channel_id, latest.version).await?
+                        };
+                        let _ = tx.send(AppEvent::PinsVersion(version));
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
+            },
+        );
+    }
+
+    /// 選択中のピン留めを `delta` だけ動かす。409 のときは最新の版で 1 回やり直し、
+    /// 相手が先に解除していたら復活させない。
+    fn move_pinned(&mut self, delta: isize) {
+        let selected = match self.focus {
+            Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
+                Some(SidebarItem::Pinned(id)) => id.clone(),
+                _ => {
+                    self.notify("ピン留めを選んでください");
+                    return;
+                }
+            },
+            _ => return,
+        };
+        let ids: Vec<String> = self
+            .store
+            .pinned_channels()
+            .into_iter()
+            .filter(|pin| {
+                self.store.channel(&pin.channel_id).is_some_and(|channel| {
+                    channel.deleted_at.is_none() && channel.archive_at.is_none()
+                })
+            })
+            .map(|pin| pin.channel_id.clone())
+            .collect();
+        let Some(index) = ids.iter().position(|id| id == &selected) else {
+            return;
+        };
+        let target = (index as isize + delta).clamp(0, ids.len() as isize - 1) as usize;
+        if target == index {
+            return;
+        }
+        let mut order = ids;
+        order.remove(index);
+        order.insert(target, selected.clone());
+        let moved = selected.clone();
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        let version = self.pin_version;
+        self.spawn_api("ピン留めの並び替え", async move {
+            match api.reorder_channel_pins(&order, version).await {
+                Ok(version) => {
+                    let _ = tx.send(AppEvent::PinsVersion(version));
+                    Ok(())
+                }
+                Err(err) if ApiError::has_code(&err, "CHANNEL_PINS_CONFLICT") => {
+                    let latest = api.channel_pins().await?;
+                    let _ = tx.send(AppEvent::PinsVersion(latest.version));
+                    let latest_active: Vec<String> = latest
+                        .pins
+                        .iter()
+                        .filter(|pin| !pin.archived)
+                        .map(|pin| pin.channel_id.clone())
+                        .collect();
+                    if !latest_active.contains(&moved) {
+                        return Err(anyhow::anyhow!(
+                            "別の端末でピン留めが解除またはアーカイブされたため、並びを変えませんでした"
+                        ));
+                    }
+                    // ほかの端末が追加したピンは落とさず、最新の有効なピンの上で
+                    // 動かした項目だけを、意図した並びの隣を目印に入れ直す。
+                    let next = merge_pinned_order(&order, &moved, &latest_active);
+                    let version = api.reorder_channel_pins(&next, latest.version).await?;
+                    let _ = tx.send(AppEvent::PinsVersion(version));
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
+        });
+    }
+
     /// チャンネル名・スレッド名に `query` を含む行の添字。
     pub fn search_matches(&self, query: &str) -> Vec<usize> {
         let query = query.to_lowercase();
@@ -1597,7 +1799,7 @@ impl App {
             .enumerate()
             .filter(|(_, item)| {
                 let label = match item {
-                    SidebarItem::Channel(id) => self
+                    SidebarItem::Channel(id) | SidebarItem::Pinned(id) => self
                         .store
                         .channel(id)
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
@@ -1718,7 +1920,7 @@ impl App {
 
     fn activate_sidebar(&mut self) {
         match self.sidebar_items().get(self.sidebar_index).cloned() {
-            Some(SidebarItem::Channel(channel_id)) => {
+            Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
                 self.open_channel(channel_id);
                 self.focus = Focus::Messages;
             }
@@ -1978,7 +2180,7 @@ impl App {
                 .sidebar_items()
                 .get(self.sidebar_index)
                 .and_then(|item| match item {
-                    SidebarItem::Channel(id) => Some(id.clone()),
+                    SidebarItem::Channel(id) | SidebarItem::Pinned(id) => Some(id.clone()),
                     SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
                     SidebarItem::MoreThreads { .. } => None,
                 }),
@@ -2449,6 +2651,40 @@ fn step(current: Option<usize>, delta: isize, len: usize) -> Option<usize> {
 fn move_id(ids: &[String], current: Option<&str>, delta: isize) -> Option<String> {
     let index = current.and_then(|id| ids.iter().position(|candidate| candidate == id));
     step(index, delta, ids.len()).map(|index| ids[index].clone())
+}
+
+/// 競合したあとに送り直す並び。ほかの端末が追加したピンは最新の並びのまま残し、
+/// 動かした項目だけを、意図した並びで隣にある既存の項目を目印に入れ直す
+/// （末尾へ動かしたときは直前の項目の後ろ）。最新の添字をそのまま使うと、
+/// 他端末が前へピンを足したぶんだけ位置がずれる。
+fn merge_pinned_order(intended: &[String], moved: &str, latest_active: &[String]) -> Vec<String> {
+    let mut base: Vec<String> = latest_active
+        .iter()
+        .filter(|id| id.as_str() != moved)
+        .cloned()
+        .collect();
+    let Some(moved_index) = intended.iter().position(|id| id == moved) else {
+        return base;
+    };
+    // 動かした項目より後ろで、最新にも残っている最初の要素の前に置く。
+    for id in intended.iter().skip(moved_index + 1) {
+        if let Some(anchor) = base.iter().position(|candidate| candidate == id) {
+            base.insert(anchor, moved.to_owned());
+            return base;
+        }
+    }
+    // 末尾へ動かした場合は、直前の既存要素の後ろに置く。
+    for id in intended.iter().take(moved_index).rev() {
+        if let Some(anchor) = base.iter().position(|candidate| candidate == id) {
+            base.insert(anchor + 1, moved.to_owned());
+            return base;
+        }
+    }
+    base.insert(
+        if moved_index == 0 { 0 } else { base.len() },
+        moved.to_owned(),
+    );
+    base
 }
 
 #[cfg(test)]
@@ -2993,6 +3229,675 @@ mod tests {
         );
     }
 
+    fn upsert_rows(app: &mut App, shape: ShapeId, rows: &[(&str, serde_json::Value)]) {
+        for (key, row) in rows {
+            app.on_shape(ShapeEvent::Batch(
+                shape.clone(),
+                Batch {
+                    changes: vec![electric::Change::Upsert {
+                        key: (*key).into(),
+                        row: row.as_object().unwrap().clone(),
+                    }],
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+
+    fn mark_synced(app: &mut App, shape: ShapeId) {
+        app.on_shape(ShapeEvent::Batch(
+            shape,
+            Batch {
+                up_to_date: true,
+                ..Default::default()
+            },
+        ));
+    }
+
+    fn pinned_test_app(server: &wiremock::MockServer) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
+        let (mut app, rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[
+                (
+                    "c1",
+                    serde_json::json!({
+                        "id": "c1", "channel_name": "general", "is_private": "f"
+                    }),
+                ),
+                (
+                    "c2",
+                    serde_json::json!({
+                        "id": "c2", "channel_name": "design", "is_private": "f"
+                    }),
+                ),
+            ],
+        );
+        upsert_rows(
+            &mut app,
+            ShapeId::UserPinnedChannels,
+            &[
+                (
+                    "p1",
+                    serde_json::json!({
+                        "user_id": "u1", "channel_id": "c1", "position": 0,
+                        "created_at": "2026-11-11 00:00:00", "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+                (
+                    "p2",
+                    serde_json::json!({
+                        "user_id": "u1", "channel_id": "c2", "position": 1,
+                        "created_at": "2026-11-11 00:00:00", "updated_at": "2026-11-11 00:00:00"
+                    }),
+                ),
+            ],
+        );
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+        (app, rx)
+    }
+
+    #[tokio::test]
+    async fn pressing_p_on_an_archived_unpinned_channel_does_not_send_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {},
+                "txid": "1"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[(
+                "c1",
+                serde_json::json!({
+                    "id": "c1", "channel_name": "archived", "is_private": "f",
+                    "archive_at": "2026-11-10 00:00:00"
+                }),
+            )],
+        );
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("アーカイブ")),
+            "unexpected notice: {:?}",
+            app.notice
+        );
+        let posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/api/channel-pins"
+            })
+            .count();
+        assert_eq!(posts, 0);
+    }
+
+    #[tokio::test]
+    async fn pressing_p_on_an_unjoined_public_channel_as_a_guest_does_not_send_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {},
+                "txid": "1"
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Users,
+            &[(
+                "u1",
+                serde_json::json!({
+                    "id": "u1", "user_name": "alice", "display_name": "Alice",
+                    "is_guest": "t"
+                }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::Users);
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[(
+                "c1",
+                serde_json::json!({
+                    "id": "c1", "channel_name": "public", "is_private": "f"
+                }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::ChannelUsers);
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("ゲスト")),
+            "unexpected notice: {:?}",
+            app.notice
+        );
+        let posts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/api/channel-pins"
+            })
+            .count();
+        assert_eq!(posts, 0);
+    }
+
+    #[tokio::test]
+    async fn pressing_p_on_a_joined_public_channel_as_a_guest_sends_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "version": 1 },
+                "txid": "1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        upsert_rows(
+            &mut app,
+            ShapeId::Users,
+            &[(
+                "u1",
+                serde_json::json!({
+                    "id": "u1", "user_name": "alice", "display_name": "Alice",
+                    "is_guest": "t"
+                }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::Users);
+        upsert_rows(
+            &mut app,
+            ShapeId::Channels,
+            &[(
+                "c1",
+                serde_json::json!({
+                    "id": "c1", "channel_name": "public", "is_private": "f"
+                }),
+            )],
+        );
+        upsert_rows(
+            &mut app,
+            ShapeId::ChannelUsers,
+            &[(
+                "u1:c1",
+                serde_json::json!({ "user_id": "u1", "channel_id": "c1" }),
+            )],
+        );
+        mark_synced(&mut app, ShapeId::ChannelUsers);
+        app.focus = Focus::Sidebar;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        let mut sent = false;
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| {
+                    request.method == wiremock::http::Method::POST
+                        && request.url.path() == "/api/channel-pins"
+                })
+            {
+                sent = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(sent, "a joined guest should be able to pin the channel");
+    }
+
+    #[tokio::test]
+    async fn pressing_p_for_a_channel_not_yet_in_the_store_sends_a_request() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "version": 1 },
+                "txid": "1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        // 作成直後など、チャンネル行がまだ Shape で届いていない状態。
+        app.focus = Focus::Messages;
+        app.current = Some("new-channel".into());
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+        )));
+
+        let mut sent = false;
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| {
+                    request.method == wiremock::http::Method::POST
+                        && request.url.path() == "/api/channel-pins"
+                })
+            {
+                sent = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            sent,
+            "a channel missing from the store should be left to the server"
+        );
+    }
+
+    #[tokio::test]
+    async fn j_on_a_pinned_row_joins_instead_of_reordering() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channels/c1/join"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {},
+                "txid": "42"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+        assert!(matches!(app.sidebar_items()[0], SidebarItem::Pinned(_)));
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('J'),
+            KeyModifiers::NONE,
+        )));
+
+        let mut joined = false;
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| {
+                    request.method == wiremock::http::Method::POST
+                        && request.url.path() == "/api/channels/c1/join"
+                })
+            {
+                joined = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(joined, "J should join the channel on a pinned row");
+    }
+
+    #[tokio::test]
+    async fn brackets_and_alt_arrows_reorder_pinned_rows() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "version": 1, "pins": [] },
+                "txid": "43"
+            })))
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+
+        async fn reorder_count(server: &wiremock::MockServer) -> usize {
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| {
+                    request.method == wiremock::http::Method::PATCH
+                        && request.url.path() == "/api/channel-pins/order"
+                })
+                .count()
+        }
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..100 {
+            if reorder_count(&server).await == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        app.sidebar_index = 1;
+        app.on_terminal_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)));
+        for _ in 0..100 {
+            if reorder_count(&server).await >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == "/api/channel-pins/order"
+            })
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["channel_ids"], serde_json::json!(["c2", "c1"]));
+        assert_eq!(bodies[1]["channel_ids"], serde_json::json!(["c2", "c1"]));
+    }
+
+    #[tokio::test]
+    async fn reorder_retry_keeps_pins_added_on_another_device() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "pins": [
+                    { "channel_id": "c1", "position": 0, "archived": false },
+                    { "channel_id": "c2", "position": 1, "archived": false },
+                    { "channel_id": "c3", "position": 2, "archived": false }
+                ],
+                "version": 7
+            })))
+            .mount(&server)
+            .await;
+        // 最初の要求は 409 になり、最新には他端末が追加した c3 が入っている。
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = attempts.clone();
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                        "code": "CHANNEL_PINS_CONFLICT",
+                        "version": 7,
+                        "pins": [
+                            { "channel_id": "c2", "position": 0, "archived": false },
+                            { "channel_id": "c1", "position": 1, "archived": false },
+                            { "channel_id": "c3", "position": 2, "archived": false }
+                        ]
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "data": { "version": 8, "pins": [] },
+                        "txid": "44"
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+        app.pin_version = 6;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::PATCH)
+                .count()
+                >= 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == "/api/channel-pins/order"
+            })
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(
+            bodies[1]["channel_ids"],
+            serde_json::json!(["c2", "c1", "c3"])
+        );
+        assert_eq!(bodies[1]["expected_version"], 7);
+    }
+
+    #[tokio::test]
+    async fn reorder_retry_places_the_moved_pin_next_to_its_neighbor_when_another_device_inserted_before_it()
+     {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        // 手元は [c1, c2] で c1 を下へ動かす。ほかの端末が先頭に c3 を足している。
+        Mock::given(method("GET"))
+            .and(path("/api/channel-pins"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "pins": [
+                    { "channel_id": "c3", "position": 0, "archived": false },
+                    { "channel_id": "c1", "position": 1, "archived": false },
+                    { "channel_id": "c2", "position": 2, "archived": false }
+                ],
+                "version": 7
+            })))
+            .mount(&server)
+            .await;
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = attempts.clone();
+        Mock::given(method("PATCH"))
+            .and(path("/api/channel-pins/order"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                        "code": "CHANNEL_PINS_CONFLICT",
+                        "version": 7,
+                        "pins": [
+                            { "channel_id": "c3", "position": 0, "archived": false },
+                            { "channel_id": "c1", "position": 1, "archived": false },
+                            { "channel_id": "c2", "position": 2, "archived": false }
+                        ]
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "data": { "version": 8, "pins": [] },
+                        "txid": "45"
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        let (mut app, _rx) = pinned_test_app(&server);
+        app.pin_version = 6;
+        app.sidebar_index = 0;
+
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..100 {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::PATCH)
+                .count()
+                >= 2
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::PATCH
+                    && request.url.path() == "/api/channel-pins/order"
+            })
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        // 最新の添字 (1) ではなく、`c1` の直後に置いた `c2` の手前へ戻す。
+        assert_eq!(
+            bodies[1]["channel_ids"],
+            serde_json::json!(["c3", "c2", "c1"])
+        );
+        assert_eq!(bodies[1]["expected_version"], 7);
+    }
+
+    #[tokio::test]
+    async fn reorder_conflict_stops_when_the_moved_pin_is_archived_or_deleted_elsewhere() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        for latest_pins in [
+            serde_json::json!([
+                { "channel_id": "c1", "position": 0, "archived": true },
+                { "channel_id": "c2", "position": 1, "archived": false }
+            ]),
+            serde_json::json!([
+                { "channel_id": "c2", "position": 0, "archived": false }
+            ]),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/channel-pins"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "pins": latest_pins,
+                    "version": 7
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/channel-pins/order"))
+                .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                    "code": "CHANNEL_PINS_CONFLICT",
+                    "version": 7,
+                    "pins": []
+                })))
+                .mount(&server)
+                .await;
+            let (mut app, mut rx) = pinned_test_app(&server);
+            app.pin_version = 6;
+            app.sidebar_index = 0;
+
+            app.on_terminal_event(Event::Key(KeyEvent::new(
+                KeyCode::Char(']'),
+                KeyModifiers::NONE,
+            )));
+            let mut notice = None;
+            for _ in 0..100 {
+                match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                    Ok(Some(AppEvent::Notice(message))) => {
+                        notice = Some(message);
+                        break;
+                    }
+                    Ok(Some(_)) => {}
+                    _ => break,
+                }
+            }
+            assert!(
+                notice
+                    .as_deref()
+                    .is_some_and(|message| message.contains("アーカイブ")),
+                "unexpected notice: {notice:?}"
+            );
+            let patches = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method == wiremock::http::Method::PATCH)
+                .count();
+            assert_eq!(
+                patches, 1,
+                "must not retry after an archived/deleted conflict"
+            );
+        }
+    }
+
     #[test]
     fn step_clamps_and_starts_from_latest() {
         assert_eq!(step(None, 1, 0), None);
@@ -3022,5 +3927,46 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         assert_eq!(move_id(&ids, Some("a"), 1).as_deref(), Some("b"));
         assert_eq!(move_id(&ids, Some("gone"), -1).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn merge_pinned_order_keeps_a_pin_added_before_the_moved_one() {
+        fn ids(values: &[&str]) -> Vec<String> {
+            values.iter().map(|value| (*value).to_string()).collect()
+        }
+        // 手元は [c1, c2] で c1 を下へ。ほかの端末が先頭に c3 を足している。
+        // 最新の添字 1 に入れると [c3, c1, c2] に戻ってしまう。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2", "c1"]), "c1", &ids(&["c3", "c1", "c2"])),
+            ids(&["c3", "c2", "c1"])
+        );
+        // 上へ動かすときも、意図した並びで直後にある c1 の手前へ戻す。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2", "c1"]), "c2", &ids(&["c3", "c1", "c2"])),
+            ids(&["c3", "c2", "c1"])
+        );
+        // 末尾へ動かすときは、直前の既存要素の後ろに置く。
+        assert_eq!(
+            merge_pinned_order(
+                &ids(&["c2", "c3", "c1"]),
+                "c1",
+                &ids(&["c4", "c1", "c2", "c3"])
+            ),
+            ids(&["c4", "c2", "c3", "c1"])
+        );
+        // 隣の目印が無くなったときは、最初へ動かした場合だけ先頭に置く。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2", "c1"]), "c1", &ids(&["c3"])),
+            ids(&["c3", "c1"])
+        );
+        assert_eq!(
+            merge_pinned_order(&ids(&["c3", "c2"]), "c3", &ids(&["c1"])),
+            ids(&["c3", "c1"])
+        );
+        // 動かした項目が意図した並びに無ければ、最新の並びをそのまま使う。
+        assert_eq!(
+            merge_pinned_order(&ids(&["c2"]), "gone", &ids(&["c1", "c2"])),
+            ids(&["c1", "c2"])
+        );
     }
 }

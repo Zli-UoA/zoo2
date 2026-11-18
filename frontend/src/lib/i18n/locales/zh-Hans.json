@@ -580,6 +580,30 @@
     "you": "你",
     "closeParticipants": "关闭参与者列表"
   },
+  "channelPins": {
+    "title": "置顶",
+    "menu": "频道操作",
+    "channelMenu": "{{name}} 频道操作",
+    "dmMenu": "{{name}} 私信操作",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "dragHandle": "拖动以重新排序",
+    "dismissError": "关闭",
+    "errors": {
+      "conflict": "置顶的频道已在另一台设备上更改。已重新载入最新顺序，请重试。",
+      "limitExceeded": "最多只能置顶 50 个频道。",
+      "reorderConflict": "置顶顺序已在另一台设备上更改。已重新载入最新顺序，请重试。"
+    },
+    "announce": {
+      "pinned": "已置顶。",
+      "unpinned": "已取消置顶。",
+      "moved": "已移动置顶项目。",
+      "reorderConflict": "该项目已在另一台设备上取消置顶，因此未移动。",
+      "reorderArchived": "该频道已归档，因此未移动。"
+    }
+  },
   "dms": {
     "title": "私信",
     "createTitle": "新建私信",
@@ -722,6 +746,20 @@
       "addEncrypted": "添加到加密频道",
       "notReady": "此应用尚未完成加密准备（注册设备）。请启动应用后重试。",
       "encryptedHint": "将应用添加到加密频道需要成员许可。"
+    },
+    "components": {
+      "unsupported": "暂不支持此组件",
+      "more": "更多操作",
+      "choose": "请选择",
+      "search": "搜索",
+      "noOptions": "没有选项",
+      "uploading": "正在上传…",
+      "page": "第 {{page}} / {{pages}} 页",
+      "spoiler": "包含剧透内容（可在网页版查看）",
+      "webOnly": "请在网页版进行此操作",
+      "date": "日期",
+      "time": "时间",
+      "datetime": "日期和时间"
     }
   },
   "search": {

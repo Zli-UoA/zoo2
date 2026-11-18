@@ -8,6 +8,7 @@ import type {
   NotificationRow,
   CallInviteRow,
   TableName,
+  UserPinnedChannelRow,
   TableRowMap,
   UserRow,
 } from "./types";
@@ -45,7 +46,8 @@ export type ShapeName =
   | "channelLeaves"
   | "notifications"
   | "callInvites"
-  | "attachments";
+  | "attachments"
+  | "userPinnedChannels";
 
 export interface ShapeMeta {
   table: TableName;
@@ -62,6 +64,10 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   callInvites: { table: "call_invites", proxyPath: "call_invites" },
   attachments: { table: "attachments", proxyPath: "attachments" },
+  userPinnedChannels: {
+    table: "user_pinned_channels",
+    proxyPath: "user_pinned_channels",
+  },
 };
 
 export interface ShapeSchema<Row> {
@@ -116,6 +122,7 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     channel_id: "text",
     content: "text",
     card: "text",
+    components: "text",
     app_blocks: "text",
     app_attachments: "text",
     app_unfurls: "text",
@@ -212,6 +219,17 @@ export const CALL_INVITE_SCHEMA: ShapeSchema<CallInviteRow> = {
   },
 };
 
+export const USER_PINNED_CHANNEL_SCHEMA: ShapeSchema<UserPinnedChannelRow> = {
+  table: "user_pinned_channels",
+  columns: {
+    user_id: "text",
+    channel_id: "text",
+    position: "int4",
+    created_at: "timestamp",
+    updated_at: "timestamp",
+  },
+};
+
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
   notifications: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
@@ -222,6 +240,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   channel_leave: CHANNEL_LEAVE_SCHEMA,
   call_invites: CALL_INVITE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,
+  user_pinned_channels: USER_PINNED_CHANNEL_SCHEMA,
 };
 
 export function toNumber(value: number | string): number {

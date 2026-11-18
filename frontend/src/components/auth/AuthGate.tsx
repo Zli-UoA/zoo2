@@ -32,6 +32,7 @@ import {
   recordRedirectAttempt,
 } from "../../lib/oidc/pending";
 import { getOidcClient } from "../../lib/oidc/session";
+import { setAppBadge } from "../../lib/pwa/badge";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 import { Button } from "../ui/button";
@@ -216,6 +217,9 @@ function WebAuthGate({ children }: { children: ReactNode }) {
           return;
         }
         if (reason === "logout") {
+          // バッジはインストール済みアプリ全体で共有される。画面ごとのアンマウントでは消さず、
+          // ログアウト（アプリ全体の認証の終了）のときだけ消す。
+          setAppBadge(0);
           logoutBlocked.current = false;
           failedRedirectAt.current = null;
           try {

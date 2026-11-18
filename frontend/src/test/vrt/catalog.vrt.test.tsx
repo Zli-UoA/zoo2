@@ -1,7 +1,7 @@
 import { HomeLiveProvider } from "../../hooks/useHomeLive";
 import { delay, http, HttpResponse } from "msw";
 import { mockServer } from "../browser-setup";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import { useRef, useState, type ComponentProps, type ReactNode } from "react";
@@ -385,7 +385,7 @@ describe("catalog surfaces", () => {
         <NotificationsScreen />
       </div>,
     );
-    await screen.findByRole("status");
+    await within(await screen.findByRole("region", { name: "通知" })).findByRole("status");
     await expect(page).toMatchScreenshot("notifications-loading-desktop-light");
   });
 
@@ -405,7 +405,8 @@ describe("catalog surfaces", () => {
         );
         await screen.findByText(/今日のリリースは 18:00/);
         await screen.findByText(/リリースノートの下書き/);
-        await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+        const region = await screen.findByRole("region", { name: "通知" });
+        await waitFor(() => expect(within(region).queryByRole("status")).toBeNull());
         await document.fonts.ready;
         await expect(page).toMatchScreenshot(`notifications-full-width-${state.name}`);
       } finally {

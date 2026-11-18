@@ -17,7 +17,7 @@ type Surface = {
   app_id: string;
   name: string;
   channel_id: string | null;
-  document: { blocks?: unknown };
+  document: { blocks?: unknown; components?: unknown; flags?: number };
 };
 export function AppSurfaceHost() {
   const { currentUserId } = useCurrentUser();
@@ -81,7 +81,7 @@ function UserSurfaces() {
               appId={modal.app_id}
               surfaceId={modal.id}
               channelId={modal.channel_id}
-              blocks={modal.document.blocks}
+              blocks={modal.document}
               submit
               onDone={() => remove(modal.id)}
             />
@@ -111,7 +111,7 @@ function UserSurfaces() {
                 appId={surface.app_id}
                 surfaceId={surface.id}
                 channelId={surface.channel_id}
-                blocks={surface.document.blocks}
+                blocks={surface.document}
               />
             </section>
           ))}

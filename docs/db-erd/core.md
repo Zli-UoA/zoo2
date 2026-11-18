@@ -10,6 +10,25 @@ erDiagram
       boolean id PK
       text ltl_channel_pattern
     }
+    apns_revocation_capacity {
+      boolean id PK
+      bigint records
+    }
+    apns_revocations {
+      text id PK
+      timestamp(3) revoked_at
+      timestamp(3) invalidated_at
+    }
+    apns_subscriptions {
+      text id PK
+      text user_id FK
+      text device_token
+      text environment
+      text revocation_hash
+      timestamp(3) created_at
+      timestamptz last_test_at
+    }
+    apns_subscriptions }o--o| users : apns_subscriptions_user_id_fkey
     assistant_sessions {
       text id PK
       text installation_id FK
@@ -426,6 +445,12 @@ erDiagram
     typing_presence }o--o| channels : typing_presence_channel_id_fkey
     typing_presence }o--o| messages : typing_presence_parent_id_fkey
     typing_presence }o--o| users : typing_presence_user_id_fkey
+    user_channel_pin_states {
+      text user_id PK,FK
+      bigint version
+      timestamp(3) updated_at
+    }
+    user_channel_pin_states |o--o| users : user_channel_pin_states_user_id_fkey
     user_event_settings {
       text user_id PK,FK
       text preferences
@@ -444,6 +469,15 @@ erDiagram
       timestamp(3) updated_at
     }
     user_identities }o--o| users : user_identities_user_id_fkey
+    user_pinned_channels {
+      text user_id PK,FK
+      text channel_id PK,FK
+      integer position
+      timestamp(3) created_at
+      timestamp(3) updated_at
+    }
+    user_pinned_channels }o--o| channels : user_pinned_channels_channel_id_fkey
+    user_pinned_channels }o--o| users : user_pinned_channels_user_id_fkey
     user_reminders {
       text id PK
       text user_id FK

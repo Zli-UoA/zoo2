@@ -1,6 +1,6 @@
 # Deferred migrations
 
-`20261129000009_guest_membership_lock_order.sql` replaces
+`20261129020009_guest_membership_lock_order.sql` replaces
 `app_guest_membership_rules()` with the version that always locks the `users`
 row (`FOR NO KEY UPDATE`) before checking the single-channel guest rule.
 
@@ -11,8 +11,14 @@ the same user-row lock in `lock_membership_users` before its member advisory
 locks) first. After all old instances have stopped, apply this directory:
 
 ```sh
-atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred
+atlas migrate apply --dir file://infra/db/deferred-migrations   --url "$DATABASE_URL" --revisions-schema atlas_schema_revisions_deferred --allow-dirty
 ```
+
+`--allow-dirty` is required because the target database already carries the
+canonical schema and `atlas_schema_revisions`; without it Atlas rejects the
+apply with "connected database is not clean". Do not substitute
+`--baseline`, which would mark the version as applied without running the
+`CREATE OR REPLACE FUNCTION`.
 
 `--revisions-schema` records this directory's progress in its own revision
 table (`atlas_schema_revisions_deferred`). Without it, the deferred version

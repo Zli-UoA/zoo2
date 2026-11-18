@@ -141,9 +141,11 @@ pub(crate) async fn create_channel(
     validate_channel_description(payload.description.as_deref())?;
 
     let supplied_id = payload.id.clone();
-    let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    Uuid::parse_str(&id)
-        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+    let raw_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let id = Uuid::parse_str(&raw_id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {raw_id}")))?
+        .hyphenated()
+        .to_string();
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -435,6 +437,13 @@ pub(crate) async fn delete_channel(
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
+    // ピンの追加（channels への FOR SHARE）と直列にして、削除の直前に足されたピンも
+    // 同じトランザクションで片付ける。
+    let _ = toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(id.clone())
+        .exec(&mut tx)
+        .await?;
+
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
         .map_err(|err| {
@@ -502,6 +511,8 @@ pub(crate) async fn delete_channel(
         .updated_at(Some(now))
         .exec(&mut tx)
         .await?;
+    // 削除したチャンネルのピンを、全ユーザー分まとめて片付ける。
+    crate::routes::channel_pins::remove_channel_pins_in_tx(&mut tx, &id).await?;
 
     let deleted_channel = Channel::get_by_id(&mut tx, id.as_str()).await?;
     let txid = get_current_txid(&mut tx).await?;
@@ -896,6 +907,9 @@ pub(crate) async fn leave_channel(
     .delete()
     .exec(&mut tx)
     .await?;
+    // 退出したチャンネル（DM の非表示を含む）のピンを外す。再参加しても、
+    // 意図的に隠したピンが復活しないようにする。位置と版も同じトランザクションで詰める。
+    crate::routes::channel_pins::remove_user_pin_in_tx(&mut tx, &auth_user.id, &id).await?;
     // 退出日を残す（「チャンネルを探す」の退出日での並び替え用）。自分で退出した場合だけ記録し、
     // 再参加後にもう一度退出したときは上書きする。メンバー行の削除と同じトランザクションで行う。
     let _ = toasty::sql::query(
@@ -1243,6 +1257,8 @@ async fn kick_channel_user(
     .delete()
     .exec(&mut tx)
     .await?;
+    // キックされたユーザーのピンを外し、そのユーザーの版と位置を詰める。
+    crate::routes::channel_pins::remove_user_pin_in_tx(&mut tx, &user_id, &id).await?;
     if channel.encrypted {
         e2ee_channels::bump_channel_epoch(&mut tx, &id).await?;
     }

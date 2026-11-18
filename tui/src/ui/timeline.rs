@@ -157,11 +157,35 @@ fn message_lines(
 
     let mut lines = vec![Line::from(header)];
     match shown {
-        Shown::Plain | Shown::BeforeEncryption => lines.extend(mfm::render_with_accounts(
-            &message.content,
-            Some(ctx.me_name),
-            &ctx.store.account_profiles,
-        )),
+        Shown::Plain | Shown::BeforeEncryption => {
+            // メッセージ部品は文字にして出す。本文を隠すフラグがあれば、本文は部品の代わりの文字なので
+            // 部品の文字だけを出し、なければ本文の後ろに足す（ボタンなどの操作は Web 版で行う）。
+            let doc = message.components_document();
+            let text = match &doc {
+                Some(d) if d.hides_content() => d.fallback_text(MAX_COMPONENT_TEXT),
+                Some(d) => {
+                    let parts = d.fallback_text(MAX_COMPONENT_TEXT);
+                    if parts.is_empty() {
+                        message.content.clone()
+                    } else {
+                        format!("{}\n{parts}", message.content)
+                    }
+                }
+                None => message.content.clone(),
+            };
+            lines.extend(mfm::render_with_accounts(
+                &text,
+                Some(ctx.me_name),
+                &ctx.store.account_profiles,
+            ));
+            // ボタン・select・入力欄は文字にならない（ボタンだけの部品では何も出ない）ので、Web 版で操作できることを示す
+            if doc
+                .as_ref()
+                .is_some_and(|d| d.walk().iter().any(|c| c.custom_id().is_some()))
+            {
+                lines.push(Line::from(Span::styled("[操作は Web 版で行えます]", DIM)));
+            }
+        }
         Shown::Decrypted {
             message: d,
             warning,
@@ -309,6 +333,9 @@ pub fn scroll_to(
     (scroll, 0)
 }
 
+/// 部品から作る文字の上限（本文の上限と同じ）。
+const MAX_COMPONENT_TEXT: usize = 40_000;
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -393,6 +420,49 @@ mod tests {
         assert!(timeline.lines[8].to_string().contains("返信 3 件"));
         assert!(timeline.lines[5].to_string().starts_with("▌ "));
         assert!(timeline.lines[1].to_string().starts_with("  "));
+    }
+
+    #[test]
+    fn interactive_components_point_to_the_web_version() {
+        let mut store = Store::default();
+        let doc = json!({"flags":32768,"components":[{"type":1,"components":[
+            {"type":2,"style":1,"label":"","custom_id":"go"}]}]})
+        .to_string();
+        store.apply(
+            &ShapeId::Messages("c1".into()),
+            Batch {
+                changes: vec![Change::Upsert {
+                    key: "m1".into(),
+                    row: json!({ "id": "m1", "user_id": "u1", "channel_id": "c1", "content": "",
+                                 "components": doc, "created_at": "2026-11-01 00:00:00" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                }],
+                ..Default::default()
+            },
+        );
+        let messages = store.root_messages("c1");
+        let decryptions = Decryptions::default();
+        let ctx = Context {
+            store: &store,
+            me_name: "alice",
+            me_id: "u1",
+            decryptions: &decryptions,
+            encrypted: false,
+            encrypted_since: None,
+            selected: None,
+            reply_counts: None,
+            reactions: &HashMap::new(),
+        };
+        let timeline = build(&messages, &ctx, 60);
+        // ボタンだけの部品は文字にならないので、Web 版で操作できることを示す
+        assert!(
+            timeline
+                .lines
+                .iter()
+                .any(|l| l.to_string().contains("操作は Web 版で行えます"))
+        );
     }
 
     #[test]
