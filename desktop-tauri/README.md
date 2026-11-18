@@ -251,7 +251,7 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 | `nix profile` | `nix profile remove zoo2-desktop-tauri` |
 | NixOS の flake | 設定から消して `nixos-rebuild switch` |
 
-設定とログインの状態は、アプリを消しても残ります。完全に消すときは、先にアプリからログアウトしてから、次のディレクトリを消してください。
+設定とログインの状態は、アプリを消しても残ります（Windows のアンインストーラーでは、アンインストール完了時にこれらを一緒に削除するか確認ダイアログが出ます）。Linux・macOS や、Windows で残すを選んだあとに完全に消すときは、先にアプリからログアウトしてから、次のディレクトリを消してください。
 
 - Linux / macOS: `~/.config/zoo2-desktop-tauri` (設定とトークン)、`~/.local/share/chat.zli.desktop` と `~/.cache/chat.zli.desktop` (画面のデータとキャッシュ)
 - Windows: `%APPDATA%\zoo2-desktop-tauri` (設定とトークン)、`%LOCALAPPDATA%\chat.zli.desktop` (画面のデータ、キャッシュ、更新の一時ファイル)

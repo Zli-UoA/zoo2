@@ -57,9 +57,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 japanese.WebView2ExecFailed=Microsoft Edge WebView2 Runtime のインストーラーを起動できませんでした。
 japanese.WebView2InstallFailed=Microsoft Edge WebView2 Runtime のインストールに失敗しました (終了コード: %d)。
 japanese.WebView2DownloadFailed=Microsoft Edge WebView2 Runtime が見つからず、自動ダウンロードにも失敗しました。ネットワーク接続を確認してやり直してください。
+japanese.RemoveUserDataPrompt=設定やログイン情報、キャッシュデータ (%APPDATA%\zoo2-desktop-tauri、%LOCALAPPDATA%\chat.zli.desktop) も削除しますか？
+japanese.RemoveUserDataHint=「いいえ」を選ぶと、再インストール時に設定とログイン状態を引き継ぎます。
 english.WebView2ExecFailed=Failed to start the Microsoft Edge WebView2 Runtime installer.
 english.WebView2InstallFailed=Failed to install Microsoft Edge WebView2 Runtime (exit code: %d).
 english.WebView2DownloadFailed=Microsoft Edge WebView2 Runtime was not found and automatic download failed. Check your network connection and try again.
+english.RemoveUserDataPrompt=Do you also want to delete your settings, sign-in session, and cached data (%APPDATA%\zoo2-desktop-tauri, %LOCALAPPDATA%\chat.zli.desktop)?
+english.RemoveUserDataHint=Choose No to keep your settings and sign-in state if you reinstall zoo2 later.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -80,6 +84,7 @@ Filename: "{app}\zoo2-desktop-tauri.exe"; Flags: nowait; Check: ShouldRelaunchAf
 const
   SYNCHRONIZE = $00100000;
   APP_MUTEX_NAME = 'chat.zli.desktop-sim';
+  APP_AUMID_REGKEY = 'Software\Classes\AppUserModelId\chat.zli.desktop';
   WEBVIEW2_CLIENT_GUID = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   WEBVIEW2_BOOTSTRAPPER_URL = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
 
@@ -160,5 +165,29 @@ begin
     end;
   except
     Result := CustomMessage('WebView2DownloadFailed');
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ConfigDir: String;
+  LocalDataDir: String;
+  PromptText: String;
+begin
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+
+  RegDeleteKeyIncludingSubkeys(HKCU, APP_AUMID_REGKEY);
+
+  ConfigDir := ExpandConstant('{userappdata}\zoo2-desktop-tauri');
+  LocalDataDir := ExpandConstant('{localappdata}\chat.zli.desktop');
+  if (not UninstallSilent) and (DirExists(ConfigDir) or DirExists(LocalDataDir)) then begin
+    PromptText := CustomMessage('RemoveUserDataPrompt') + #13#10 + #13#10 + CustomMessage('RemoveUserDataHint');
+    if SuppressibleMsgBox(PromptText, mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then begin
+      if DirExists(ConfigDir) then
+        DelTree(ConfigDir, True, True, True);
+      if DirExists(LocalDataDir) then
+        DelTree(LocalDataDir, True, True, True);
+    end;
   end;
 end;
