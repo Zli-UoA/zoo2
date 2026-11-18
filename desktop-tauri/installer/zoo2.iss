@@ -28,11 +28,10 @@ AppPublisher=Zli
 AppPublisherURL=https://github.com/Zli-UoA/zoo2
 AppSupportURL=https://github.com/Zli-UoA/zoo2
 AppUpdatesURL=https://github.com/Zli-UoA/zoo2/releases
-DefaultDirName={autopf}\zoo2
+DefaultDirName={userpf}\zoo2
 DefaultGroupName=zoo2
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; tauri-plugin-single-instance が作成するミューテックス名 ({identifier}-sim)。
@@ -70,8 +69,8 @@ Source: "{#ExePath}"; DestDir: "{app}"; DestName: "zoo2-desktop-tauri.exe"; Flag
 
 [Icons]
 ; AppUserModelID を Tauri 側の WINDOWS_APP_ID と揃え、Windows トースト通知が zoo2 として出るようにする。
-Name: "{autoprograms}\zoo2"; Filename: "{app}\zoo2-desktop-tauri.exe"; AppUserModelID: "chat.zli.desktop"
-Name: "{autodesktop}\zoo2"; Filename: "{app}\zoo2-desktop-tauri.exe"; Tasks: desktopicon; AppUserModelID: "chat.zli.desktop"
+Name: "{userprograms}\zoo2"; Filename: "{app}\zoo2-desktop-tauri.exe"; AppUserModelID: "chat.zli.desktop"
+Name: "{userdesktop}\zoo2"; Filename: "{app}\zoo2-desktop-tauri.exe"; Tasks: desktopicon; AppUserModelID: "chat.zli.desktop"
 
 [Run]
 Filename: "{app}\zoo2-desktop-tauri.exe"; Description: "{cm:LaunchProgram,zoo2}"; Flags: nowait postinstall skipifsilent
