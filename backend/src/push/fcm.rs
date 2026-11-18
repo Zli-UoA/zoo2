@@ -7,11 +7,17 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     sync::OnceLock,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Instant};
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+
+#[derive(Clone)]
+struct AccessToken {
+    value: String,
+    usable_until: Instant,
+}
 
 pub struct FcmConfig {
     pub project_id: String,
@@ -65,18 +71,17 @@ impl FcmConfig {
         client: &reqwest::Client,
         token_url: &str,
         before_refresh: impl Future<Output = anyhow::Result<bool>>,
-    ) -> anyhow::Result<Option<String>> {
+    ) -> anyhow::Result<Option<AccessToken>> {
         struct CachedToken {
             key: Vec<u8>,
-            token: String,
-            until: Instant,
+            token: AccessToken,
         }
         static CACHE: OnceLock<Mutex<Option<CachedToken>>> = OnceLock::new();
         let cache = CACHE.get_or_init(|| Mutex::new(None));
         let cached_token = |entry: &Option<CachedToken>| {
             entry
                 .as_ref()
-                .filter(|v| v.key == self.cache_key && v.until > Instant::now())
+                .filter(|v| v.key == self.cache_key && v.token.usable_until > Instant::now())
                 .map(|v| v.token.clone())
         };
         if let Some(token) = cached_token(&*cache.lock().await) {
@@ -111,6 +116,7 @@ impl FcmConfig {
             &self.key,
         )
         .map_err(|_| anyhow::anyhow!("FCM OAuth assertion failed"))?;
+        let requested_at = Instant::now();
         let response = client
             .post(token_url)
             .form(&[
@@ -129,15 +135,20 @@ impl FcmConfig {
             expires_in: u64,
         }
         let token: Token = response.json().await?;
-        anyhow::ensure!(!token.access_token.is_empty(), "Empty FCM OAuth token");
-        let until =
-            Instant::now() + Duration::from_secs(token.expires_in.min(3600).saturating_sub(60));
+        anyhow::ensure!(
+            !token.access_token.is_empty() && token.expires_in > 0,
+            "FCMの認証トークンが無効です"
+        );
+        let lifetime = token.expires_in.min(3600);
+        let token = AccessToken {
+            value: token.access_token,
+            usable_until: requested_at + Duration::from_secs(lifetime - 60.min(lifetime / 2)),
+        };
         *cache = Some(CachedToken {
             key: self.cache_key.clone(),
-            token: token.access_token.clone(),
-            until,
+            token: token.clone(),
         });
-        Ok(Some(token.access_token))
+        Ok(Some(token))
     }
 
     /// True only for an explicitly unregistered token; configuration errors must not delete devices.
@@ -157,50 +168,62 @@ impl FcmConfig {
             "FCM data payload too large"
         );
         let device = PushDevice::WebOrFcm(subscription);
-        let Some(access) = self
-            .access_token(client, TOKEN_URL, recipient.can_receive(db, device))
+        let url = format!(
+            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+            self.project_id
+        );
+        // 最終照会の間に期限を過ぎた場合だけ、一度更新してから端末の権限も再確認する。
+        for _ in 0..2 {
+            let Some(access) = self
+                .access_token(client, TOKEN_URL, recipient.can_receive(db, device))
+                .await?
+            else {
+                return Ok(false);
+            };
+            if let Some(unregistered) = post_message(
+                client,
+                &url,
+                &access,
+                &body,
+                recipient.can_receive(db, device),
+            )
             .await?
-        else {
-            return Ok(false);
-        };
-        post_message(
-            client,
-            &format!(
-                "https://fcm.googleapis.com/v1/projects/{}/messages:send",
-                self.project_id
-            ),
-            &access,
-            &body,
-            recipient.can_receive(db, device),
-        )
-        .await
+            {
+                return Ok(unregistered);
+            }
+        }
+        anyhow::bail!("端末の確認中にFCMの認証トークンが失効しました")
     }
 }
 
+// None の場合だけ送信前にトークンが失効した。Some は購読を削除するかを表す。
 async fn post_message(
     client: &reqwest::Client,
     url: &str,
-    access: &str,
+    access: &AccessToken,
     body: &Value,
     can_receive: impl Future<Output = anyhow::Result<bool>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<bool>> {
     // OAuthの更新を待つ間にメンバー資格や通知設定が変わることがある。
     if !can_receive.await? {
-        return Ok(false);
+        return Ok(Some(false));
+    }
+    if access.usable_until <= Instant::now() {
+        return Ok(None);
     }
     let response = client
         .post(url)
-        .bearer_auth(access)
+        .bearer_auth(&access.value)
         .json(body)
         .send()
         .await?;
     if response.status().is_success() {
-        return Ok(false);
+        return Ok(Some(false));
     }
     let status = response.status();
     let error: Value = response.json().await.unwrap_or(Value::Null);
     if is_unregistered(&error) {
-        return Ok(true);
+        return Ok(Some(true));
     }
     anyhow::bail!("FCM provider rejected delivery (HTTP {})", status.as_u16())
 }
@@ -240,6 +263,13 @@ fn is_unregistered(error: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_access(value: &str) -> AccessToken {
+        AccessToken {
+            value: value.into(),
+            usable_until: Instant::now() + Duration::from_secs(60),
+        }
+    }
 
     #[test]
     fn configuration_is_optional_but_malformed_values_fail_closed() {
@@ -342,13 +372,13 @@ mod tests {
             let result = post_message(
                 &client,
                 &format!("{}/v1/projects/test/messages:send", server.uri()),
-                "test-oauth-token",
+                &test_access("test-oauth-token"),
                 &body,
                 std::future::ready(Ok(true)),
             )
             .await;
             match expected {
-                Some(value) => assert_eq!(result.unwrap(), value),
+                Some(value) => assert_eq!(result.unwrap(), Some(value)),
                 None => assert!(result.is_err()),
             }
         }
@@ -390,7 +420,8 @@ mod tests {
                 .access_token(&client, &url, async { Ok(true) })
                 .await
                 .unwrap()
-                .as_deref(),
+                .as_ref()
+                .map(|token| token.value.as_str()),
             Some("test-token")
         );
         let cached = config
@@ -399,7 +430,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(cached.as_deref(), Some("test-token"));
+        assert_eq!(
+            cached.as_ref().map(|token| token.value.as_str()),
+            Some("test-token")
+        );
     }
 
     #[tokio::test]
@@ -411,13 +445,39 @@ mod tests {
             let result = post_message(
                 &client,
                 &server.uri(),
-                "test-token",
+                &test_access("test-token"),
                 &json!({}),
                 std::future::ready(permission),
             )
             .await;
-            assert_eq!(result.ok(), expected);
+            assert_eq!(result.ok(), expected.map(Some));
         }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn token_expiring_during_permission_check_is_never_sent() {
+        let server = wiremock::MockServer::start().await;
+        let client = super::super::push_client().unwrap();
+        tokio::time::pause();
+        let access = test_access("old-token");
+        let result = post_message(&client, &server.uri(), &access, &json!({}), async {
+            tokio::time::advance(Duration::from_secs(65)).await;
+            Ok(true)
+        })
+        .await
+        .unwrap();
+        tokio::time::resume();
+        assert_eq!(result, None);
+        let refreshed = test_access("new-token");
+        assert_eq!(
+            post_message(&client, &server.uri(), &refreshed, &json!({}), async {
+                Ok(false)
+            })
+            .await
+            .unwrap(),
+            Some(false)
+        );
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

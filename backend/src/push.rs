@@ -380,26 +380,19 @@ pub(crate) fn push_client() -> anyhow::Result<reqwest::Client> {
 struct Delivery {
     ttl: u32,
     urgent: bool,
-    /// 送り終えていなければならない時刻。各購読への送信の直前に、残りの時間を TTL にする
-    /// （前の購読への送信に時間がかかっても、期限の過ぎた着信を届けないため）。
-    expires: Option<std::time::Instant>,
 }
 
 impl Delivery {
     const NORMAL: Self = Self {
         ttl: 300,
         urgent: false,
-        expires: None,
     };
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum PushRecipient<'a> {
     Notification(&'a Notification),
-    CallInvite {
-        user_id: &'a str,
-        channel_id: &'a str,
-    },
+    CallInvite(&'a CallInvitePush),
     CallInviteEnd(&'a str),
 }
 
@@ -413,7 +406,8 @@ impl<'a> PushRecipient<'a> {
     fn user_id(self) -> &'a str {
         match self {
             Self::Notification(notification) => &notification.user_id,
-            Self::CallInvite { user_id, .. } | Self::CallInviteEnd(user_id) => user_id,
+            Self::CallInvite(invite) => &invite.invitee_id,
+            Self::CallInviteEnd(user_id) => user_id,
         }
     }
 
@@ -422,20 +416,39 @@ impl<'a> PushRecipient<'a> {
         db: &mut dyn toasty::db::Executor,
         device: PushDevice<'_>,
     ) -> anyhow::Result<bool> {
-        let (channel_id, message_id, requires_message) = match self {
+        Ok(self
+            .delivery_ttl(db, device, Delivery::NORMAL.ttl)
+            .await?
+            .is_some())
+    }
+
+    async fn delivery_ttl(
+        self,
+        db: &mut dyn toasty::db::Executor,
+        device: PushDevice<'_>,
+        max_ttl: u32,
+    ) -> anyhow::Result<Option<u32>> {
+        let (channel_id, message_id, requires_message, invite) = match self {
             Self::Notification(n) => (
                 Some(n.channel_id.as_str()),
                 n.message_id.as_deref(),
                 n.message_id.is_some() || n.notification_type != "missed_call",
+                None,
             ),
-            Self::CallInvite { channel_id, .. } => (Some(channel_id), None, false),
+            Self::CallInvite(invite) => {
+                (Some(invite.channel_id.as_str()), None, false, Some(invite))
+            }
             // 退室後も端末に表示済みの着信を閉じる。終了通知には本文もチャンネル名も含まれない。
-            Self::CallInviteEnd(_) => (None, None, false),
+            Self::CallInviteEnd(_) => (None, None, false, None),
         };
         // 現在の購読世代と閲覧権限を同じスナップショットで確認する。通話招待にはメッセージがない。
         let query = |registration: &str| {
             toasty::sql::query(format!(
-                "SELECT 1::text FROM ({registration}) s WHERE s.user_id=$1
+                "SELECT floor(extract(epoch FROM i.expires_at-statement_timestamp())*1000)::bigint
+                 FROM ({registration}) s LEFT JOIN call_invites i
+                   ON i.id=$5::text::uuid AND i.channel_id=$2 AND i.invitee_id=s.user_id AND i.inviter_id=$6
+                    AND i.status='pending'
+                 WHERE s.user_id=$1 AND ($5::text IS NULL OR i.expires_at>statement_timestamp())
                  AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=s.user_id AND dnd_until>now())
                  AND ($2::text IS NULL OR EXISTS(
                    SELECT 1 FROM users u JOIN channels c ON c.id=$2
@@ -449,23 +462,42 @@ impl<'a> PushRecipient<'a> {
             .bind_typed(channel_id, toasty::schema::db::Type::Text)
             .bind(message_id.unwrap_or(""))
             .bind(requires_message)
+            .bind_typed(invite.map(|i| i.id.as_str()), toasty::schema::db::Type::Text)
+            .bind(invite.map_or("", |i| i.inviter_id.as_str()))
         };
         let query = match device {
             PushDevice::WebOrFcm(s) => query(
-                "SELECT user_id FROM push_subscriptions WHERE id=$5 AND created_at=$6::text::timestamp
-                 AND p256dh IS NOT DISTINCT FROM $7 AND auth_secret IS NOT DISTINCT FROM $8",
+                "SELECT user_id FROM push_subscriptions WHERE id=$7 AND created_at=$8::text::timestamp
+                 AND p256dh IS NOT DISTINCT FROM $9 AND auth_secret IS NOT DISTINCT FROM $10",
             )
             .bind(s.id.as_str())
             .bind(s.created_at.to_string())
             .bind_typed(s.p256dh.as_deref(), toasty::schema::db::Type::Text)
             .bind_typed(s.auth_secret.as_deref(), toasty::schema::db::Type::Text),
             PushDevice::Apns(s) => query(
-                "SELECT user_id FROM apns_subscriptions WHERE id=$5 AND revocation_hash=$6",
+                "SELECT user_id FROM apns_subscriptions WHERE id=$7 AND revocation_hash=$8",
             )
             .bind(s.id.as_str())
             .bind(s.revocation_hash.as_str()),
         };
-        Ok(!query.exec(db).await?.is_empty())
+        let started = std::time::Instant::now();
+        let Some(row) = query.exec(db).await?.into_iter().next() else {
+            return Ok(None);
+        };
+        if invite.is_none() {
+            return Ok(Some(max_ttl));
+        }
+        let toasty::stmt::Value::Record(record) = row else {
+            anyhow::bail!("通話招待の有効期限を取得できませんでした");
+        };
+        let [toasty::stmt::Value::I64(millis)] = record.fields.as_slice() else {
+            anyhow::bail!("通話招待の残り時間を取得できませんでした");
+        };
+        // DB照会中に経過した分も差し引き、残り1秒未満の着信は送らない。
+        let remaining =
+            Duration::from_millis(u64::try_from(*millis)?).saturating_sub(started.elapsed());
+        let ttl = u64::from(max_ttl).min(remaining.as_secs()) as u32;
+        Ok((ttl > 0).then_some(ttl))
     }
 
     pub(crate) async fn should_send(
@@ -537,22 +569,17 @@ async fn push_to_user(
             _ => None,
         };
         // 先の端末への配信を待つ間に変わった閲覧権限・通知休止も、次の端末に反映する。
-        if !recipient
-            .should_send(db, PushDevice::WebOrFcm(&subscription))
+        let ttl = match recipient
+            .delivery_ttl(db, PushDevice::WebOrFcm(&subscription), delivery.ttl)
             .await
         {
-            continue;
-        }
-        // 期限つきの送信は、残りの時間を TTL にする。残りがなければ、送らない。
-        let remaining = delivery.expires.map(|expires| {
-            expires
-                .saturating_duration_since(std::time::Instant::now())
-                .as_secs()
-        });
-        if remaining == Some(0) {
-            break;
-        }
-        let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
+            Ok(Some(ttl)) => ttl,
+            Ok(None) => continue,
+            Err(_) => {
+                tracing::warn!("端末の通知登録と配信期限を確認できませんでした");
+                continue;
+            }
+        };
         let result = send_with(client, config, endpoint, body, delivery, ttl).await;
         match result {
             Ok(response)
@@ -662,7 +689,6 @@ async fn deliver_call_invites(
         return Ok(());
     };
     let client = push_client()?;
-    let started = std::time::Instant::now();
     for invite in invites {
         // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
         let result: anyhow::Result<()> = async {
@@ -704,10 +730,6 @@ async fn deliver_call_invites(
             let delivery = Delivery {
                 ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
                 urgent: true,
-                // 着信は、招待の期限までに送れた購読にだけ送る（期限の過ぎた着信を、あとから出さない）。
-                expires: (!end).then_some(
-                    started + std::time::Duration::from_secs(u64::from(CALL_INVITE_TTL_SECONDS)),
-                ),
             };
             push_to_user(
                 &client,
@@ -717,10 +739,7 @@ async fn deliver_call_invites(
                 if end {
                     PushRecipient::CallInviteEnd(&invite.invitee_id)
                 } else {
-                    PushRecipient::CallInvite {
-                        user_id: &invite.invitee_id,
-                        channel_id: &invite.channel_id,
-                    }
+                    PushRecipient::CallInvite(&invite)
                 },
                 &payload,
                 &delivery,
@@ -823,10 +842,13 @@ mod tests {
             created_at: crate::models::now_utc_millis(),
         };
         let recipient = PushRecipient::Notification(&notification);
-        let invitee = PushRecipient::CallInvite {
-            user_id: &user,
-            channel_id: &channel,
+        let invite = CallInvitePush {
+            id: uuid::Uuid::new_v4().to_string(),
+            channel_id: channel.clone(),
+            inviter_id: user.clone(),
+            invitee_id: user.clone(),
         };
+        let invitee = PushRecipient::CallInvite(&invite);
         let invite_end = PushRecipient::CallInviteEnd(&user);
         let web = PushSubscription::create()
             .id(message.clone())
@@ -858,8 +880,67 @@ mod tests {
         .await?;
         assert!(recipient.can_receive(&mut tx, web_device).await?);
         assert!(recipient.can_receive(&mut tx, apple_device).await?);
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        toasty::sql::statement(
+            "INSERT INTO call_invites (id,channel_id,inviter_id,invitee_id,expires_at)
+            VALUES ($1::text::uuid,$2,$3,$3,statement_timestamp()+interval '1 minute')",
+        )
+        .bind(invite.id.as_str())
+        .bind(channel.as_str())
+        .bind(user.as_str())
+        .exec(&mut tx)
+        .await?;
         assert!(invitee.can_receive(&mut tx, web_device).await?);
+        assert_eq!(
+            invitee
+                .delivery_ttl(&mut tx, web_device, CALL_INVITE_TTL_SECONDS)
+                .await?,
+            Some(CALL_INVITE_TTL_SECONDS)
+        );
+        let wrong_inviter = CallInvitePush {
+            inviter_id: uuid::Uuid::new_v4().to_string(),
+            ..invite.clone()
+        };
+        assert!(
+            !PushRecipient::CallInvite(&wrong_inviter)
+                .can_receive(&mut tx, web_device)
+                .await?
+        );
         toasty::sql::statement("SAVEPOINT device_check")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("UPDATE call_invites SET expires_at=statement_timestamp()+interval '20 seconds' WHERE id=$1::text::uuid")
+            .bind(invite.id.as_str()).exec(&mut tx).await?;
+        assert!(matches!(
+            invitee
+                .delivery_ttl(&mut tx, web_device, CALL_INVITE_TTL_SECONDS)
+                .await?,
+            Some(1..=19)
+        ));
+        toasty::sql::statement("UPDATE call_invites SET expires_at=statement_timestamp()+interval '500 milliseconds' WHERE id=$1::text::uuid")
+            .bind(invite.id.as_str()).exec(&mut tx).await?;
+        assert_eq!(
+            invitee
+                .delivery_ttl(&mut tx, web_device, CALL_INVITE_TTL_SECONDS)
+                .await?,
+            None
+        );
+        assert_eq!(
+            invite_end.delivery_ttl(&mut tx, web_device, 60).await?,
+            Some(60)
+        );
+        toasty::sql::statement(
+            "UPDATE call_invites SET expires_at=statement_timestamp() WHERE id=$1::text::uuid",
+        )
+        .bind(invite.id.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        toasty::sql::statement("UPDATE call_invites SET status='cancelled',expires_at=statement_timestamp()+interval '1 minute' WHERE id=$1::text::uuid")
+            .bind(invite.id.as_str()).exec(&mut tx).await?;
+        assert!(!invitee.can_receive(&mut tx, web_device).await?);
+        assert!(invite_end.can_receive(&mut tx, web_device).await?);
+        toasty::sql::statement("ROLLBACK TO SAVEPOINT device_check")
             .exec(&mut tx)
             .await?;
         toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
