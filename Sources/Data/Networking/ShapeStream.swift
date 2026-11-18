@@ -84,10 +84,10 @@ struct ShapeState: Sendable {
 struct ShapeStream {
     let api: APIClient
 
-    func snapshot<T: Decodable & Sendable>(_ path: String, as type: T.Type) async throws -> [T] {
+    func snapshot<T: Decodable & Sendable>(_ path: String, query: [String: String] = [:], as type: T.Type) async throws -> [T] {
         var state = ShapeState()
         while !Task.isCancelled {
-            let request = try await api.request(path, query: state.query)
+            let request = try await api.request(path, query: query.merging(state.query) { _, new in new })
             let (data, response) = try await api.transport.send(request)
             try Task.checkCancellation()
             if let values = try state.apply(data, response: response, as: type) { return values }

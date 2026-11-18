@@ -4,6 +4,7 @@ struct ReactionChips: View {
     let store: ConversationStore
     let workspace: WorkspaceStore
     let message: Message
+    @State private var selectedEmoji: String?
 
     var body: some View {
         let groups = store.reactions(for: message.id)
@@ -13,10 +14,7 @@ struct ReactionChips: View {
                     ForEach(groups, id: \.emoji) { group in
                         let glyph = ReactionGlyph(emoji: group.emoji, message: message, workspace: workspace)
                         let selected = group.isMine
-                        Button {
-                            Task { await store.toggleReaction(messageID: message.id, emoji: group.emoji) }
-                        } label: {
-                            HStack(spacing: 4) {
+                        HStack(spacing: 4) {
                                 glyph
                                 Text(group.count, format: .number).font(.caption.bold().monospacedDigit())
                             }
@@ -25,10 +23,16 @@ struct ReactionChips: View {
                             .background(selected ? Color.accentColor.opacity(0.12) : Color(.secondarySystemBackground), in: Capsule())
                             .overlay { Capsule().strokeBorder(selected ? Color.accentColor : Color(.separator), lineWidth: 1) }
                             .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!store.canReact(to: message.id) || group.emoji.hasPrefix("apub:") ||
-                                  store.isReactionPending(messageID: message.id, emoji: group.emoji))
+                        .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
+                            switch value {
+                            case .first: selectedEmoji = group.emoji
+                            case .second: toggle(group.emoji)
+                            }
+                        })
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAction { toggle(group.emoji) }
+                        .accessibilityAction(named: "リアクションした人を表示") { selectedEmoji = group.emoji }
                         .accessibilityLabel(glyph.label)
                         .accessibilityValue(selected ? "\(group.count)人、自分も付けています" : "\(group.count)人")
                         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -37,7 +41,56 @@ struct ReactionChips: View {
                 }
             }
             .scrollIndicators(.hidden)
+            .sheet(isPresented: Binding(get: { selectedEmoji != nil }, set: { if !$0 { selectedEmoji = nil } })) {
+                if let selectedEmoji { ReactionPeopleView(store: store, workspace: workspace, message: message, emoji: selectedEmoji) }
+            }
         }
+    }
+
+    private func toggle(_ emoji: String) {
+        guard store.canReact(to: message.id), !emoji.hasPrefix("apub:"), !store.isReactionPending(messageID: message.id, emoji: emoji) else { return }
+        Task { await store.toggleReaction(messageID: message.id, emoji: emoji) }
+    }
+}
+
+private struct ReactionPeopleView: View {
+    let store: ConversationStore
+    let workspace: WorkspaceStore
+    let message: Message
+    let emoji: String
+    @State private var resolved: [String: Person] = [:]
+    @State private var error: String?
+
+    private var ids: [String] { store.reactionUserIDs(messageID: message.id, emoji: emoji) }
+
+    var body: some View {
+        List {
+            HStack {
+                ReactionGlyph(emoji: emoji, message: message, workspace: workspace)
+                Text("\(ids.count)人がリアクションしました")
+            }
+            ForEach(ids, id: \.self) { id in
+                if let person = workspace.people[id] ?? resolved[id] { PersonRow(person: person) }
+                else { Label("ユーザー", systemImage: "person.crop.circle") }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+        }
+        .accessibilityIdentifier("reaction-people-sheet")
+        .task(id: ids) {
+            for id in ids where workspace.people[id] == nil && resolved[id] == nil {
+                do {
+                    let person = try await workspace.client.person(id: id)
+                    try Task.checkCancellation()
+                    resolved[id] = person
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.error = "一部のユーザー情報を取得できませんでした。"
+                    if case ZooError.expiredSession = error { workspace.report(error) }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 

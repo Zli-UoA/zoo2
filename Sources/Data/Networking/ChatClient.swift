@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-protocol ChatClient: InboxClient {
+protocol ChatClient: InboxClient, CallClient {
     var accountProfileURL: URL? { get }
     func publicProfile() async throws -> PublicProfile
     func updatePublicProfile(name: String, summary: String) async throws -> PublicProfile
@@ -10,8 +10,14 @@ protocol ChatClient: InboxClient {
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
+    func channelPins() async throws -> ChannelPins
+    func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins
+    func members(channelID: String) async throws -> [ChannelMembership]
+    func readState(channelID: String) async throws -> ChannelReadState
+    func attachmentURL(id: String) async throws -> URL
     func readStates() async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
+    func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws
     func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws
     func addReaction(messageID: String, emoji: String) async throws -> MessageReaction
     func removeReaction(messageID: String, emoji: String) async throws
@@ -41,10 +47,34 @@ struct NativeChatClient: ChatClient {
     func person(id: String) async throws -> Person { try await api.get("api/users/\(try segment(id))") }
     func readStates() async throws -> [ChannelReadState] { try await api.get("api/channel-read-states") }
 
+    func channelPins() async throws -> ChannelPins { try await api.get("api/channel-pins") }
+    func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
+        let id = try segment(id)
+        if pinned {
+            return try await api.write("api/channel-pins", body: ["channel_id": .string(id), "expected_version": .number(Double(expectedVersion))])
+        }
+        return try await api.write("api/channel-pins/\(id)", method: "DELETE", query: ["expected_version": String(expectedVersion)])
+    }
+    func members(channelID: String) async throws -> [ChannelMembership] {
+        try await ShapeStream(api: api).snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
+    }
+    func readState(channelID: String) async throws -> ChannelReadState {
+        try await api.get("api/channels/\(try segment(channelID))/read-state")
+    }
+    func attachmentURL(id: String) async throws -> URL {
+        let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")
+        guard let url = result.data.url else { throw ZooError.invalidResponse }
+        return url
+    }
+
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws {
         _ = try segment(channelID)
         try await ShapeStream(api: api).observe("api/shapes/messages", query: ["channel_id": channelID],
                                                as: Message.self, receive: receive)
+    }
+
+    func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws {
+        try await ShapeStream(api: api).observe("api/shapes/attachments", query: ["channel_id": try segment(channelID)], as: MessageAttachment.self, receive: receive)
     }
 
     func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws {

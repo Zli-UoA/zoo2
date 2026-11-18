@@ -1,0 +1,180 @@
+import SwiftUI
+
+struct ComposerView: View {
+    @Bindable var store: ConversationStore
+    let workspace: WorkspaceStore
+    let parentID: String?
+    @FocusState.Binding var focused: Bool
+    @State private var selection: TextSelection?
+    @State private var submitting = false
+    @State private var showingEmoji = false
+    @State private var emojiInsertionRange: Range<String.Index>?
+    @ScaledMetric(relativeTo: .body) private var candidateHeight: CGFloat = 48
+
+    private var key: String { store.draftKey(parentID) }
+    private var draft: Binding<String> {
+        Binding(get: { store.drafts[key] ?? "" }, set: { store.drafts[key] = $0 })
+    }
+    private var expanded: Bool { focused }
+    private var placeholder: String {
+        if parentID != nil { return "スレッドに返信" }
+        let name = workspace.name(for: store.channel)
+        return store.channel.is_dm ? "\(name) へのメッセージ" : "#\(name) へのメッセージ"
+    }
+    private var canSend: Bool { !submitting && !store.sending.contains(key) && store.validContent(draft.wrappedValue) }
+    private var selectedRange: Range<String.Index>? {
+        guard let selection, case .selection(let range) = selection.indices else { return nil }
+        let text = draft.wrappedValue
+        guard valid(range.lowerBound, in: text), valid(range.upperBound, in: text) else { return nil }
+        return range
+    }
+    private var mentionQuery: MentionInput.Query? {
+        guard focused else { return nil }
+        let text = draft.wrappedValue
+        if let range = selectedRange {
+            guard range.isEmpty else { return nil }
+            return MentionInput.query(in: text, caret: range.lowerBound)
+        }
+        return MentionInput.query(in: text, caret: text.endIndex)
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            if let error = store.sendErrors[key] {
+                Text(error).font(.caption).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("send-error")
+            }
+            if store.canPost {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .center, spacing: 8) {
+                        if !expanded { additions }
+                        TextField(placeholder, text: draft, selection: $selection, axis: .vertical)
+                            .lineLimit(1...6).focused($focused)
+                            .padding(.vertical, expanded ? 12 : 10)
+                            .frame(minHeight: expanded ? 48 : 40)
+                            .accessibilityLabel(parentID == nil ? "メッセージを入力" : "返信を入力")
+                            .accessibilityIdentifier(parentID == nil ? "message-input" : "reply-input")
+                        if !expanded { sendButton }
+                    }
+                    .padding(.horizontal, expanded ? 12 : 0)
+                    if expanded {
+                        HStack(spacing: 4) {
+                            additions
+                            Button { openEmoji() } label: {
+                                Image(systemName: "face.smiling").font(.system(size: 21)).frame(width: 40, height: 40)
+                            }.accessibilityLabel("スタンプを挿入").accessibilityIdentifier("composer-emoji")
+                            Button { insertMention() } label: {
+                                Image(systemName: "at").font(.system(size: 21)).frame(width: 40, height: 40)
+                            }.accessibilityLabel("メンションを挿入").accessibilityIdentifier("composer-mention")
+                            Spacer(minLength: 0)
+                            sendButton
+                        }.foregroundStyle(.secondary).padding(.top, 4)
+                    }
+                }
+                .padding(expanded ? 8 : 4)
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: expanded ? 24 : 28))
+                .overlay(alignment: .top) { mentionPanel }
+                if draft.wrappedValue.unicodeScalars.count > 40_000 {
+                    Text("メッセージは 40,000 文字以内で入力してください。").font(.caption).foregroundStyle(.red)
+                }
+            } else {
+                Label(store.channel.encrypted == true ? "暗号化された会話には送信できません" :
+                      store.blocked ? "このチャンネルには送信できません" : "アーカイブ済みのチャンネルです", systemImage: "lock")
+                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+            }
+        }
+        .padding(.horizontal, expanded ? 8 : 16).padding(.vertical, 8)
+        .sheet(isPresented: $showingEmoji, onDismiss: { focused = true }) {
+            ReactionPicker(workspace: workspace) { value in
+                insert(value, replacing: emojiInsertionRange)
+                showingEmoji = false
+            }
+        }
+        .task(id: submitting) {
+            if submitting {
+                await store.send(parentID: parentID)
+                selection = nil
+                submitting = false
+            }
+        }
+    }
+
+    private var additions: some View {
+        Menu {
+            Button("スタンプを挿入", systemImage: "face.smiling") { openEmoji() }
+            Button("メンションを挿入", systemImage: "at") { insertMention() }
+        } label: {
+            Image(systemName: "plus").font(.system(size: 23, weight: .regular))
+                .foregroundStyle(.secondary).frame(width: 40, height: 40)
+                .background(.primary.opacity(0.05), in: Circle())
+        }.accessibilityLabel("メッセージに追加").accessibilityIdentifier("composer-additions")
+    }
+
+    private var sendButton: some View {
+        Button { submitting = true } label: {
+            Group {
+                if store.sending.contains(key) { ProgressView() }
+                else { Image(systemName: "paperplane.fill").font(.system(size: 19, weight: .semibold)).rotationEffect(.degrees(45)) }
+            }
+            .frame(width: 40, height: 40)
+            .foregroundStyle(canSend ? .white : Color.secondary)
+            .background(canSend ? Color(red: 0.16, green: 0.49, blue: 0.35) : .clear, in: Circle())
+        }
+        .buttonStyle(.plain).disabled(!canSend)
+        .accessibilityLabel("送信").accessibilityIdentifier(parentID == nil ? "send-message" : "send-reply")
+    }
+
+    @ViewBuilder private var mentionPanel: some View {
+        if let query = mentionQuery {
+            let candidates = MentionInput.candidates(people: workspace.channelMembers[store.channel.id] ?? [], query: query.text)
+            if !candidates.isEmpty {
+                let height = min(candidateHeight * CGFloat(candidates.count), 250)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(candidates) { candidate in
+                            Button { insert("@\(candidate.username) ", replacing: query.range) } label: {
+                                HStack(spacing: 10) {
+                                    AvatarView(name: candidate.name, url: candidate.avatarURL)
+                                    Text(candidate.name).fontWeight(.semibold).foregroundStyle(.primary).lineLimit(1)
+                                    Text("@\(candidate.username)").foregroundStyle(.secondary).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }.padding(.horizontal, 12).frame(height: candidateHeight).contentShape(Rectangle())
+                            }.buttonStyle(.plain).accessibilityIdentifier("mention-\(candidate.username)")
+                        }
+                    }
+                }
+                .frame(height: height).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 12).offset(y: -height - 6)
+                .accessibilityIdentifier("mention-suggestions")
+            }
+        }
+    }
+
+    private func openEmoji() {
+        emojiInsertionRange = selectedRange
+        focused = false
+        showingEmoji = true
+    }
+
+    private func insertMention() {
+        let text = draft.wrappedValue
+        let caret = selectedRange?.lowerBound ?? text.endIndex
+        let needsSpace = caret > text.startIndex && !text[text.index(before: caret)].isWhitespace
+        insert(needsSpace ? " @" : "@", replacing: selectedRange)
+    }
+
+    private func insert(_ value: String, replacing proposed: Range<String.Index>?) {
+        var text = draft.wrappedValue
+        let range = proposed.flatMap { valid($0.lowerBound, in: text) && valid($0.upperBound, in: text) ? $0 : nil }
+            ?? text.endIndex..<text.endIndex
+        let offset = text[..<range.lowerBound].utf16.count + value.utf16.count
+        text.replaceSubrange(range, with: value)
+        draft.wrappedValue = text
+        selection = TextSelection(insertionPoint: String.Index(utf16Offset: offset, in: text))
+        focused = true
+    }
+
+    private func valid(_ index: String.Index, in text: String) -> Bool {
+        index >= text.startIndex && index <= text.endIndex && (index == text.endIndex || text.indices.contains(index))
+    }
+}

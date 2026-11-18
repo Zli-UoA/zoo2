@@ -24,6 +24,9 @@ final class ConversationStore {
     @ObservationIgnored var onRead: (() -> Void)?
     @ObservationIgnored var onReactionAdded: ((String) -> Void)?
     @ObservationIgnored var canonicalEmoji: (String) -> String = ReactionEmoji.key
+    private var fallbackAttachments: [String: [MessageAttachment]] = [:]
+    private(set) var attachmentSyncError: String?
+    private var attachmentGeneration = UUID()
     private var fallbackReactions: [String: [MessageReaction]]?
     private(set) var reactionSyncError: String?
     private var reactionStreamGeneration = UUID()
@@ -77,6 +80,7 @@ final class ConversationStore {
             streamGeneration = UUID()
             accessGeneration = UUID()
             clearReactions()
+            clearAttachments()
         }
         self.channel = channel
         if channel.encrypted == true { messages = []; remoteMessages = []; localWrites = [:] }
@@ -131,6 +135,7 @@ final class ConversationStore {
 
     private func revokeAccess() {
         accessGeneration = UUID()
+        clearAttachments()
         streamGeneration = UUID()
         blocked = true
         loading = false
@@ -249,8 +254,45 @@ final class ConversationStore {
         }
     }
 
+    var needsAttachmentStream: Bool {
+        active && !blocked && channel.encrypted != true && messages.contains { $0.display_data == nil }
+    }
+
+    func attachments(for message: Message) -> [MessageAttachment] {
+        message.display_data?.attachments ?? fallbackAttachments[message.id] ?? []
+    }
+
+    private func clearAttachments() {
+        attachmentGeneration = UUID()
+        fallbackAttachments = [:]
+        attachmentSyncError = nil
+    }
+
+    func runAttachments() async {
+        let epoch = UUID()
+        attachmentGeneration = epoch
+        while needsAttachmentStream, !Task.isCancelled, attachmentGeneration == epoch {
+            do {
+                try await client.observeAttachments(channelID: channel.id) { values in
+                    guard self.needsAttachmentStream, !Task.isCancelled, self.attachmentGeneration == epoch else { return }
+                    self.fallbackAttachments = Dictionary(grouping: values ?? [], by: { $0.message_id ?? "" })
+                    self.attachmentSyncError = nil
+                }
+                try Task.checkCancellation()
+                throw ZooError.invalidResponse
+            } catch {
+                guard needsAttachmentStream, !Task.isCancelled, attachmentGeneration == epoch else { return }
+                if case ZooError.expiredSession = error { onExpiredSession?(); return }
+                if case ZooError.rejected(let status, _) = error, status == 403 || status == 404 { revokeAccess(); return }
+                attachmentSyncError = "添付の更新を取得できません。再試行しています。"
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            }
+        }
+    }
+
     func shutdown() {
         active = false
+        clearAttachments()
         clearReactions()
         streamGeneration = UUID()
         accessGeneration = UUID()
@@ -301,6 +343,10 @@ extension ConversationStore {
         let rows = (syncedReactions(for: messageID) ?? []).filter { $0.message_id == messageID }
         guard let writes = reactionWrites[messageID] else { return rows }
         return rows.filter { writes[$0.id] == nil } + writes.values.compactMap { $0.isRemoval ? nil : $0.row }
+    }
+
+    func reactionUserIDs(messageID: String, emoji: String) -> [String] {
+        Set(visibleReactions(for: messageID).filter { canonicalEmoji($0.emoji) == canonicalEmoji(emoji) }.map(\.user_id)).sorted()
     }
 
     func reactions(for messageID: String) -> [ReactionGroup] {

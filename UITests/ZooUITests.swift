@@ -2,6 +2,146 @@ import XCTest
 
 final class ZooUITests: XCTestCase {
     @MainActor
+    func testChannelLongPressPinsFromDirectoryAndHeader() {
+        let app = launchWorkspace()
+        let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        channel.press(forDuration: 0.8)
+        let pin = app.buttons["toggle-channel-pin"]
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        XCTAssertEqual(pin.label, "ピン留め")
+        capture(app, name: "一覧の長押しでピン留め")
+        pin.tap()
+        XCTAssertTrue(app.staticTexts["ピン留め"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons.matching(identifier: channel.identifier).count, 1)
+        channel.tap()
+        let header = app.buttons["channel-details"]
+        XCTAssertTrue(header.waitForExistence(timeout: 5))
+        header.press(forDuration: 0.8)
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        XCTAssertEqual(pin.label, "ピン留めを解除")
+        capture(app, name: "チャンネル内の長押しでピン解除")
+        pin.tap()
+        app.navigationBars.buttons.firstMatch.tap()
+        XCTAssertTrue(channel.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["ピン留め"].exists)
+        channel.press(forDuration: 0.8)
+        XCTAssertTrue(pin.waitForExistence(timeout: 5))
+        XCTAssertEqual(pin.label, "ピン留め")
+    }
+
+    @MainActor
+    func testPinnedChannelDetailsAndMentionSuggestions() {
+        let app = launchWorkspace(chatDetails: true)
+        let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        XCTAssertEqual(app.buttons.matching(identifier: channel.identifier).count, 1)
+        XCTAssertTrue(app.staticTexts["ピン留め"].exists)
+        capture(app, name: "ピン留めと一覧")
+        channel.tap()
+        XCTAssertTrue(app.staticTexts["ここから未読"].waitForExistence(timeout: 10))
+        app.buttons["channel-details"].tap()
+        XCTAssertTrue(app.navigationBars["チャンネル詳細"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["@sakura"].waitForExistence(timeout: 5))
+        capture(app, name: "チャンネル詳細とメンバー")
+        app.buttons["閉じる"].tap()
+        let field = composer(app)
+        field.tap()
+        field.typeText("@sak")
+        XCTAssertTrue(app.buttons["mention-sakura"].waitForExistence(timeout: 5))
+        capture(app, name: "メンション入力候補")
+        app.buttons["mention-sakura"].tap()
+        XCTAssertEqual(field.value as? String, "@sakura ")
+        field.typeText("確認をお願いします")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(app.staticTexts["@sakura 確認をお願いします"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testReactionLongPressShowsPeopleWithoutToggling() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let reaction = app.buttons["reaction-22222222-2222-4222-8222-222222222222-👍"]
+        XCTAssertTrue(reaction.waitForExistence(timeout: 10))
+        reaction.press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["1人がリアクションしました"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["リアクションした人"].exists)
+        XCTAssertFalse(app.buttons["閉じる"].exists)
+        XCTAssertTrue(app.staticTexts["@sakura"].exists)
+        XCTAssertFalse(app.buttons["message-action-more-reactions"].exists)
+        capture(app, name: "リアクションしたメンバー")
+        app.descendants(matching: .any)["reaction-people-sheet"].swipeDown()
+        XCTAssertEqual(reaction.value as? String, "1人")
+        reaction.tap()
+        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "2人、自分も付けています"), object: reaction)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 5), .completed)
+    }
+
+    @MainActor
+    func testImageAttachmentPreviewAndDateDividers() {
+        let app = launchWorkspace(chatDetails: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let preview = app.buttons["画像を拡大：さくら.png"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        capture(app, name: "未読線・日付・メンション・画像")
+        preview.tap()
+        XCTAssertTrue(app.navigationBars["さくら.png"].waitForExistence(timeout: 5))
+        capture(app, name: "添付画像の拡大")
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["date-divider-22222222-2222-4222-8222-222222222222"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["date-divider-66666666-6666-4666-8666-666666666666"].exists)
+    }
+
+    @MainActor
+    func testVideoAttachmentPlayback() {
+        let app = launchWorkspace(video: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let play = app.buttons["動画を再生：確認用.mp4"]
+        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        play.tap()
+        XCTAssertTrue(app.navigationBars["確認用.mp4"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["attachment-video-player"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["添付を開けません"].exists)
+        capture(app, name: "添付動画の再生")
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testReadStateRetryMarksShortConversationRead() {
+        let app = launchWorkspace(readRetry: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        XCTAssertTrue(app.staticTexts["未読の位置を取得できませんでした。"].waitForExistence(timeout: 10))
+        app.buttons["再読み込み"].tap()
+        XCTAssertTrue(app.staticTexts["ここから未読"].waitForExistence(timeout: 5))
+        capture(app, name: "取得失敗から復旧した未読境界")
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["未読のみ"].tap()
+        XCTAssertTrue(app.staticTexts["未読の会話はありません"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testComposerToolbarInsertsMentionAndEmoji() {
+        let app = launchWorkspace(dark: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let field = composer(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        capture(app, name: "Slackに合わせた通常時の入力欄")
+        field.tap()
+        app.buttons["composer-mention"].tap()
+        XCTAssertTrue(app.buttons["mention-sakura"].waitForExistence(timeout: 5))
+        capture(app, name: "Slackに合わせた入力欄と候補パネル")
+        app.buttons["mention-sakura"].tap()
+        field.typeText("ありがとう ")
+        app.buttons["composer-emoji"].tap()
+        XCTAssertTrue(app.buttons["pick-reaction-🎉"].waitForExistence(timeout: 5))
+        app.buttons["pick-reaction-🎉"].tap()
+        XCTAssertTrue(app.buttons["send-message"].wait(for: \.isHittable, toEqual: true, timeout: 5))
+        XCTAssertEqual(field.value as? String, "@sakura ありがとう 🎉")
+        capture(app, name: "スタンプを挿入した入力欄")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(app.staticTexts["@sakura ありがとう 🎉"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testWelcomeHasAccessibleLogin() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
@@ -12,12 +152,16 @@ final class ZooUITests: XCTestCase {
 
     @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
-                                 threadDirectory: Bool = false) -> XCUIApplication {
+                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
         if liveMessage { app.launchArguments.append("--uitesting-live-message") }
         if longHistory { app.launchArguments.append("--uitesting-long-history") }
+        if dark { app.launchArguments += ["-zoo.appearance", "dark"] }
+        if video { app.launchArguments.append("--uitesting-video") }
+        if readRetry { app.launchArguments.append("--uitesting-read-retry") }
+        if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()
         XCTAssertTrue(app.buttons["channel-11111111-1111-4111-8111-111111111111"].waitForExistence(timeout: 10))
@@ -72,7 +216,7 @@ final class ZooUITests: XCTestCase {
         field.typeText("日本語で送信テスト")
         app.buttons["send-message"].tap()
         XCTAssertTrue(app.staticTexts["日本語で送信テスト"].waitForExistence(timeout: 5))
-        XCTAssertEqual(field.value as? String, "メッセージを入力")
+        XCTAssertEqual(field.value as? String, "#一般 へのメッセージ")
         capture(app, name: "ネイティブチャットと日本語入力")
         openActions(for: app.staticTexts["こんにちは！ Zoo の iOS 版へようこそ。"], in: app)
         app.buttons["message-action-reply"].tap()
@@ -215,7 +359,7 @@ final class ZooUITests: XCTestCase {
         start.press(forDuration: 0, thenDragTo: end)
         XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["スレッド"].exists)
-        XCTAssertEqual(composer(app).value as? String, "メッセージを入力")
+        XCTAssertEqual(composer(app).value as? String, "#一般 へのメッセージ")
         openActions(for: welcome, in: app)
         app.buttons["message-action-reply"].tap()
         XCTAssertTrue(chip.waitForExistence(timeout: 5))
