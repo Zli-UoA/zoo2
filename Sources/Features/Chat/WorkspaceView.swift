@@ -111,7 +111,6 @@ private struct ConversationDirectory: View {
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
-        .navigationTitle(directMessages ? "DM" : "チャンネル")
         .safeAreaInset(edge: .top, spacing: 0) {
             if let error = workspace.pinUpdateError {
                 Label(error, systemImage: "exclamationmark.circle")
@@ -120,7 +119,8 @@ private struct ConversationDirectory: View {
                     .background(.regularMaterial)
             }
         }
-        .searchable(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: directMessages ? "DMを検索" : "チャンネルを検索")
         .refreshable {
             await workspace.refresh()
             await workspace.loadPins()

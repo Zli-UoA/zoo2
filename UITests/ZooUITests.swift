@@ -754,8 +754,7 @@ final class ZooUITests: XCTestCase {
         let channel = app.navigationBars["一般"]
         XCTAssertTrue(channel.waitForExistence(timeout: 5))
         channel.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.navigationBars["チャンネル"].waitForExistence(timeout: 5))
-        XCTAssertTrue(entry.exists)
+        XCTAssertTrue(entry.waitForExistence(timeout: 5))
     }
 
     @MainActor

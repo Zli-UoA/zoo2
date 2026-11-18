@@ -64,7 +64,6 @@ struct ProfileView: View {
                 .accessibilityIdentifier("workspace-settings")
             }
         }
-        .navigationTitle("プロフィール")
         .task { await load() }
         .refreshable { await load() }
         .sheet(isPresented: $editing) {

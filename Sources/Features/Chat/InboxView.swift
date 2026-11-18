@@ -42,7 +42,6 @@ struct InboxView: View {
         }
         .accessibilityIdentifier("inbox-list")
         .refreshable { await store.refresh() }
-        .navigationTitle("通知")
         .toolbar {
             if store.unreadCount > 0 {
                 ToolbarItem(placement: .topBarTrailing) {
