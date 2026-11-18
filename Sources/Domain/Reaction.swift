@@ -29,12 +29,14 @@ struct DisplayEmoji: Codable, Hashable, Sendable {
 struct MessageDisplayData: Codable, Hashable, Sendable {
     var reactions: [MessageReaction]?
     var emojis: [String: DisplayEmoji] = [:]
+    var attachments: [MessageAttachment] = []
 }
 
 extension MessageDisplayData {
     private struct Fields: Decodable {
         var reactions: [MessageReaction]?
         var emojis: [String: DisplayEmoji]?
+        var attachments: [MessageAttachment]?
     }
 
     init(from decoder: any Decoder) throws {
@@ -45,7 +47,7 @@ extension MessageDisplayData {
         } else {
             fields = try? Fields(from: decoder)
         }
-        self.init(reactions: fields?.reactions, emojis: fields?.emojis ?? [:])
+        self.init(reactions: fields?.reactions, emojis: fields?.emojis ?? [:], attachments: fields?.attachments ?? [])
     }
 }
 

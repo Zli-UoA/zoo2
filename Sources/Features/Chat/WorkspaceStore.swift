@@ -22,11 +22,20 @@ final class WorkspaceStore {
     let client: any ChatClient
     let inbox: InboxStore
     let threads: ChannelThreads
+    let calls: CallStore
     let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
     private(set) var unread: Set<String> = []
     private(set) var joinedChannelIDs: Set<String> = []
+    private(set) var pinnedChannelIDs: [String] = []
+    private(set) var pinsError: String?
+    private(set) var updatingPin = false
+    private(set) var pinUpdateError: String?
+    private var pinsVersion: Int64?
+    private(set) var channelMembers: [String: [Person]] = [:]
+    private(set) var memberErrors: [String: String] = [:]
+    private var memberRequests: Set<String> = []
     private var groupMembers: [String: [String]] = [:]
     private(set) var emojis: [WorkspaceEmoji] = []
     private(set) var emojiError: String?
@@ -63,9 +72,11 @@ final class WorkspaceStore {
     init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard) {
         self.client = client
         self.user = user
+        calls = CallStore(client: client, userID: user.id)
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
+        calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
@@ -134,8 +145,103 @@ final class WorkspaceStore {
     func run() async {
         while active, !Task.isCancelled {
             await refresh()
+            await loadPins()
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
         }
+    }
+
+    func loadPins() async {
+        guard active else { return }
+        do {
+            let result = try await client.channelPins()
+            try Task.checkCancellation()
+            guard active else { return }
+            applyPins(result)
+        } catch {
+            guard active, !Task.isCancelled else { return }
+            if case ZooError.expiredSession = error { report(error) }
+            else { pinsError = "ピン留めを取得できませんでした。" }
+        }
+    }
+
+    private func applyPins(_ result: ChannelPins) {
+        // 更新前に始まった一覧取得で、保存済みの状態を巻き戻さない。
+        guard result.version >= (pinsVersion ?? 0) else { return }
+        pinsVersion = result.version
+        pinnedChannelIDs = result.pins.sorted {
+            $0.position == $1.position ? $0.channel_id < $1.channel_id : $0.position < $1.position
+        }.map(\.channel_id)
+        pinsError = nil
+    }
+
+    func setChannelPinned(_ channel: Channel, pinned: Bool) async {
+        guard active, !updatingPin, channel.deleted_at == nil, !pinned || channel.archive_at == nil else { return }
+        updatingPin = true
+        pinUpdateError = nil
+        defer { updatingPin = false }
+        do {
+            if pinsVersion == nil {
+                let latest = try await client.channelPins()
+                try Task.checkCancellation()
+                guard active else { return }
+                applyPins(latest)
+            }
+            for attempt in 0..<2 {
+                try Task.checkCancellation()
+                guard active, let version = pinsVersion else { return }
+                do {
+                    let result = try await client.setChannelPinned(id: channel.id, pinned: pinned, expectedVersion: version)
+                    try Task.checkCancellation()
+                    guard active else { return }
+                    applyPins(result)
+                    return
+                } catch ZooError.rejected(409, _) where attempt == 0 {
+                    let latest = try await client.channelPins()
+                    try Task.checkCancellation()
+                    guard active else { return }
+                    applyPins(latest)
+                }
+            }
+        } catch {
+            guard active, !Task.isCancelled, !(error is CancellationError) else { return }
+            switch error {
+            case ZooError.expiredSession: report(error)
+            case ZooError.rejected(409, _): pinUpdateError = "別の端末でピン留めが変更されました。もう一度お試しください。"
+            case ZooError.rejected(404, _): pinUpdateError = "このチャンネルは表示できなくなりました。"
+            case ZooError.rejected(400, _): pinUpdateError = "ピン留めできませんでした。上限は50件で、アーカイブ済みのチャンネルは追加できません。"
+            default: pinUpdateError = "ピン留めを変更できませんでした。接続を確認して、もう一度お試しください。"
+            }
+        }
+    }
+
+    func loadMembers(channelID: String) async {
+        guard active, !memberRequests.contains(channelID) else { return }
+        memberRequests.insert(channelID)
+        defer { memberRequests.remove(channelID) }
+        do {
+            let members = try await client.members(channelID: channelID)
+            var resolved: [Person] = []
+            for id in Set(members.map(\.user_id)).sorted() {
+                if let person = people[id] { resolved.append(person) }
+                else { resolved.append(try await client.person(id: id)) }
+            }
+            try Task.checkCancellation()
+            guard active else { return }
+            channelMembers[channelID] = resolved.filter { !$0.is_deactivated }.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+            memberErrors[channelID] = nil
+        } catch {
+            guard active, !Task.isCancelled else { return }
+            if case ZooError.expiredSession = error { report(error) }
+            else { memberErrors[channelID] = "メンバーを取得できませんでした。" }
+        }
+    }
+
+    func mentionIdentity(_ username: String) -> Bool? {
+        if ["channel", "here"].contains(username.lowercased()) { return true }
+        guard let person = people.values.first(where: { $0.user_name.caseInsensitiveCompare(username) == .orderedSame }) else { return nil }
+        return person.id == user.id
     }
 
     func conversation(for channel: Channel) -> ConversationStore {
@@ -306,8 +412,11 @@ final class WorkspaceStore {
         channelGeneration = UUID()
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
+        calls.shutdown()
         inbox.shutdown()
         threads.shutdown()
+        pinnedChannelIDs = []; pinsError = nil; channelMembers = [:]; memberErrors = [:]
+        pinsVersion = nil; pinUpdateError = nil
         channels = []
         people = [:]
         resolvedAuthors = [:]

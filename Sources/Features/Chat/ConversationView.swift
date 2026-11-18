@@ -5,6 +5,7 @@ struct ConversationView: View {
     let workspace: WorkspaceStore
     let route: ChatRoute
     @FocusState private var composerFocused: Bool
+    @State private var showingDetails = false
     @State private var didRequestInitialFocus = false
 
     private var parentID: String? {
@@ -31,7 +32,7 @@ struct ConversationView: View {
                 ContentUnavailableView("暗号化された会話", systemImage: "lock.shield",
                                        description: Text("この iOS 版では暗号化された会話をまだ開けません。対応済みの Zoo クライアントをご利用ください。"))
             } else {
-                if let error = store.syncError ?? store.reactionSyncError {
+                if let error = store.syncError ?? store.reactionSyncError ?? store.attachmentSyncError {
                     HStack {
                         Label(error, systemImage: "wifi.exclamationmark").font(.caption)
                         Spacer()
@@ -51,7 +52,29 @@ struct ConversationView: View {
         .background(Color(.systemBackground))
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingDetails) { ChannelDetailsView(channel: store.channel, workspace: workspace) }
         .toolbar {
+            if parentID == nil {
+                ToolbarItem(placement: .principal) {
+                    Button { composerFocused = false; showingDetails = true } label: {
+                        HStack(spacing: 4) {
+                            Text(workspace.name(for: store.channel)).font(.headline).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.caption2)
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                    .accessibilityLabel("\(workspace.name(for: store.channel))の詳細")
+                    .accessibilityIdentifier("channel-details")
+                }
+            }
+            if parentID == nil, store.canPost, !composerFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("音声通話", systemImage: "headphones") {
+                        if workspace.calls.channel == nil { workspace.calls.start(channel: store.channel) }
+                        else { workspace.calls.showingCall = true }
+                    }.accessibilityIdentifier("start-call")
+                }
+            }
             if isVisible && composerFocused {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("キーボードを閉じる", systemImage: "keyboard.chevron.compact.down") {
@@ -62,7 +85,7 @@ struct ConversationView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            ComposerView(store: store, parentID: parentID, focused: $composerFocused)
+            ComposerView(store: store, workspace: workspace, parentID: parentID, focused: $composerFocused)
         }
         .background {
             if case .thread(_, _, true) = route {
@@ -114,8 +137,20 @@ private struct MessageList: View {
     @State private var followingLatest = false
     @State private var positionedInitialMessages = false
     @State private var selectedMessage: Message?
+    @State private var pressingMessageID: String?
     @State private var replyAfterDismiss: String?
     @State private var wasComposingBeforeMenu = false
+    @State private var initialReadState: ChannelReadState?
+    @State private var readStateLoaded = false
+    @State private var readStateError = false
+    @State private var readRetry = 0
+
+    private var firstUnreadID: String? {
+        parentID == nil ? MessageTimeline.firstUnread(in: messages, state: initialReadState, userID: store.userID) : nil
+    }
+    private var positionKey: String {
+        "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)"
+    }
 
     private var messages: [Message] {
         if let parentID { return store.messages.filter { $0.id == parentID || $0.parent_id == parentID } }
@@ -125,7 +160,7 @@ private struct MessageList: View {
     private var scrollTarget: String? { isVisible ? store.focusedMessageID : nil }
 
     private var readID: String? {
-        guard isVisible, parentID == nil, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
+        guard isVisible, parentID == nil, readStateLoaded, initialReadState != nil, positionedInitialMessages, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
               selectedMessage == nil, replyAfterDismiss == nil else { return nil }
         return messages.last(where: { $0.parent_id == nil })?.id
     }
@@ -154,12 +189,26 @@ private struct MessageList: View {
                         ContentUnavailableView("会話を始めましょう", systemImage: "bubble.left.and.bubble.right",
                                                description: Text("最初のメッセージを送ってみませんか。"))
                     }
+                    if readStateError {
+                        HStack {
+                            Text("未読の位置を取得できませんでした。").font(.caption)
+                            Button("再読み込み") { readStateLoaded = false; positionedInitialMessages = false; readRetry += 1 }
+                        }.padding().accessibilityIdentifier("read-state-error")
+                    }
                     if let error = store.actionError {
                         Text(error).font(.callout).foregroundStyle(.red).padding()
                     }
-                    ForEach(messages) { message in
-                        messageRow(message)
-                            .id(message.id)
+                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                        VStack(spacing: 0) {
+                            if MessageTimeline.startsDay(message, after: index > 0 ? messages[index - 1] : nil), let date = message.date {
+                                timelineDivider(date.formatted(.dateTime.year().month().day().weekday().locale(Locale(identifier: "ja_JP"))), color: .primary)
+                                    .accessibilityIdentifier("date-divider-\(message.id)")
+                            }
+                            if firstUnreadID == message.id {
+                                timelineDivider("ここから未読", color: .red).accessibilityIdentifier("unread-divider")
+                            }
+                            messageRow(message)
+                        }.id(message.id)
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
                 }.padding(.vertical, 8)
@@ -172,12 +221,15 @@ private struct MessageList: View {
             } action: { _, atBottom in
                 if isVisible { followingLatest = atBottom }
             }
-            .onChange(of: messages.last?.id, initial: true) { _, lastID in
-                guard isVisible, lastID != nil else { return }
+            .onChange(of: positionKey, initial: true) { _, _ in
+                guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
                 if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
                     positionedInitialMessages = true
                     proxy.scrollTo(focused, anchor: .center)
                     store.focusedMessageID = nil
+                } else if !positionedInitialMessages, let firstUnreadID {
+                    positionedInitialMessages = true
+                    proxy.scrollTo(firstUnreadID, anchor: .top)
                 } else if !positionedInitialMessages || followingLatest {
                     positionedInitialMessages = true
                     proxy.scrollTo("conversation-bottom", anchor: .bottom)
@@ -200,7 +252,27 @@ private struct MessageList: View {
                 }
             }
         }
-        .task(id: readID) { if let readID { await store.markRead(through: readID) } }
+        .task(id: readRetry) {
+            guard parentID == nil, !readStateLoaded else { return }
+            readStateError = false
+            do {
+                let state = try await workspace.client.readState(channelID: store.channel.id)
+                try Task.checkCancellation()
+                initialReadState = state
+            } catch {
+                guard !Task.isCancelled else { return }
+                readStateError = true
+                if case ZooError.expiredSession = error { workspace.report(error) }
+            }
+            readStateLoaded = true
+        }
+        .task(id: readID) {
+            guard let candidate = readID else { return }
+            // 初期位置決めやスクロールの途中を既読にせず、最新の投稿が見え続けた場合に確定する。
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            guard readID == candidate else { return }
+            await store.markRead(through: candidate)
+        }
         .sensoryFeedback(.impact(weight: .light), trigger: selectedMessage != nil) { _, isPresented in
             isPresented
         }
@@ -229,6 +301,15 @@ private struct MessageList: View {
         }
     }
 
+    private func timelineDivider(_ title: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(color.opacity(0.6)).frame(height: 1)
+            Text(title).font(.caption.bold()).fixedSize()
+            Rectangle().fill(color.opacity(0.6)).frame(height: 1)
+        }.foregroundStyle(color).padding(.horizontal, 16).padding(.vertical, 10)
+            .accessibilityElement(children: .combine)
+    }
+
     private func messageRow(_ message: Message) -> some View {
         let person = workspace.people[message.user_id]
         let name = person?.name ?? "ユーザー"
@@ -238,28 +319,42 @@ private struct MessageList: View {
             composerFocused = false
             selectedMessage = message
         }
+        let pressingChanged: (Bool) -> Void = { pressed in
+            if pressed { pressingMessageID = message.id }
+            else if pressingMessageID == message.id { pressingMessageID = nil }
+        }
         return HStack(alignment: .top, spacing: 12) {
             AvatarView(name: name, url: person?.avatarURL)
+                .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(name).font(.subheadline.bold())
-                    if person?.is_bot == true { Text("アプリ").font(.caption2).foregroundStyle(.secondary) }
-                    if let date = message.date {
-                        Text(date, format: .dateTime.month().day().hour().minute())
-                            .font(.caption2).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(name).font(.subheadline.bold())
+                        if person?.is_bot == true { Text("アプリ").font(.caption2).foregroundStyle(.secondary) }
+                        if let date = message.date {
+                            Text(date, format: .dateTime.hour().minute())
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if message.updated_at != nil { Text("編集済み").font(.caption2).foregroundStyle(.secondary) }
                     }
-                    if message.updated_at != nil { Text("編集済み").font(.caption2).foregroundStyle(.secondary) }
+                    if !message.content.isEmpty || store.attachments(for: message).isEmpty {
+                        MessageContentView(message: message, workspace: workspace)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("message-content-\(message.id)")
+                        .accessibilityAction(named: "メッセージの操作", showActions)
+                    }
+                    MessageAttachmentsView(attachments: store.attachments(for: message), workspace: workspace)
                 }
-                MessageContentView(message: message, workspace: workspace)
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityIdentifier("message-content-\(message.id)")
-                    .accessibilityAction(named: "メッセージの操作", showActions)
+                .contentShape(Rectangle())
+                .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
+                // スタンプの押下を本文の長押し判定から外し、メッセージ全体を暗くしない。
                 ReactionChips(store: store, workspace: workspace, message: message)
                 if parentID == nil {
                     let count = store.replies(to: message.id).count
                     if count > 0 {
                         Text("\(count) 件の返信").font(.caption).foregroundStyle(.secondary)
+                            .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                     }
                 }
                 if let error = store.reactionError(for: message.id) {
@@ -270,14 +365,13 @@ private struct MessageList: View {
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(store.focusedMessageID == message.id ? Color.accentColor.opacity(0.08) : .clear)
         .contentShape(Rectangle())
-        .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), showActions: showActions))
+        .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), isPressing: pressingMessageID == message.id))
     }
 }
 
 private struct MessagePressFeedback: ViewModifier {
     let isEnabled: Bool
-    let showActions: () -> Void
-    @State private var isPressing = false
+    let isPressing: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
@@ -289,7 +383,6 @@ private struct MessagePressFeedback: ViewModifier {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
-            .onLongPressGesture(perform: showActions, onPressingChanged: { isPressing = $0 })
     }
 }
 
@@ -313,56 +406,6 @@ struct AvatarView: View {
     }
 }
 
-private struct ComposerView: View {
-    @Bindable var store: ConversationStore
-    let parentID: String?
-    @State private var submitting = false
-    @FocusState.Binding var focused: Bool
-
-    private var key: String { store.draftKey(parentID) }
-    private var draft: Binding<String> {
-        Binding(get: { store.drafts[key] ?? "" }, set: { store.drafts[key] = $0 })
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            if let error = store.sendErrors[key] {
-                Text(error).font(.caption).foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("send-error")
-            }
-            if store.canPost {
-                HStack(alignment: .bottom, spacing: 10) {
-                    TextField(parentID == nil ? "メッセージを入力" : "返信を入力", text: draft, axis: .vertical)
-                        .lineLimit(1...6).focused($focused)
-                        .padding(.horizontal, 14).padding(.vertical, 12)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
-                        .accessibilityIdentifier(parentID == nil ? "message-input" : "reply-input")
-                    Button {
-                        submitting = true
-                    } label: {
-                        if store.sending.contains(key) { ProgressView().frame(width: 24, height: 24) }
-                        else { Image(systemName: "arrow.up").font(.headline).frame(width: 24, height: 24) }
-                    }
-                    .buttonStyle(.borderedProminent).buttonBorderShape(.circle)
-                    .disabled(submitting || store.sending.contains(key) || !store.validContent(draft.wrappedValue))
-                    .accessibilityLabel("送信").accessibilityIdentifier(parentID == nil ? "send-message" : "send-reply")
-                }
-                if draft.wrappedValue.unicodeScalars.count > 40_000 {
-                    Text("メッセージは 40,000 文字以内で入力してください。").font(.caption).foregroundStyle(.red)
-                }
-            } else {
-                Label(store.channel.encrypted == true ? "暗号化された会話には送信できません" :
-                      store.blocked ? "このチャンネルには送信できません" : "アーカイブ済みのチャンネルです", systemImage: "lock")
-                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(.bar)
-        .task(id: submitting) {
-            if submitting { await store.send(parentID: parentID); submitting = false }
-        }
-    }
-}
 
 struct EditMessageView: View {
     @Bindable var store: ConversationStore

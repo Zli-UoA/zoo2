@@ -12,12 +12,17 @@ settings:
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: F82XB5KFX2
     ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    exactVersion: 157.0.0
 targets:
   Zoo:
     type: application
     platform: iOS
     sources: [Sources, Shared]
     dependencies:
+      - package: WebRTC
       - target: ZooNotificationService
         embed: true
     settings:
@@ -43,6 +48,7 @@ targets:
     info:
       path: Info.plist
       properties:
+        NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
         APNSEnvironment: $(APNS_ENVIRONMENT)
         ZooPreviewKeychainGroup: $(AppIdentifierPrefix)works.zli.zoo.preview
         NSAppTransportSecurity:

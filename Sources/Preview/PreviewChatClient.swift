@@ -45,6 +45,10 @@ final class PreviewChatClient: ChatClient {
     private let otherColleague = Person(id: "99999999-9999-4999-8999-999999999999", user_name: "aoi", display_name: "あおい")
     private let discoverableID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     private var joinedPublic = false
+    private var readPositions: [String: String] = [:]
+    private var failedReadOnce = false
+    private var failNextPin = ProcessInfo.processInfo.arguments.contains("--uitesting-pin-failure")
+    private var pins = ChannelPins(pins: ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") ? [ChannelPin(channel_id: channelID, position: 0)] : [], version: 0)
     private var memberships: [ChannelMembership] = []
     private var allChannels: [Channel] = [
         Channel(id: channelID, channel_name: "一般", description: "日々の話題やお知らせを共有しましょう。", is_private: false, is_dm: false),
@@ -60,6 +64,9 @@ final class PreviewChatClient: ChatClient {
     init(failNextSend: Bool = ProcessInfo.processInfo.arguments.contains("--uitesting-send-failure")) {
         self.failNextSend = failNextSend
         allChannels.append(Channel(id: discoverableID, channel_name: "雑談", is_private: false, is_dm: false))
+        if failNextPin {
+            allChannels += (1...30).map { Channel(id: UUID().uuidString.lowercased(), channel_name: "開発\($0)", is_private: false, is_dm: false) }
+        }
         let welcomeReaction = MessageReaction(id: "88888888-8888-4888-8888-888888888888", message_id: Self.messageID,
                                               user_id: colleague.id, emoji: "👍")
         allMessages = [
@@ -70,6 +77,14 @@ final class PreviewChatClient: ChatClient {
                     content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z",
                     display_data: MessageDisplayData(reactions: []))
         ]
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") {
+            allMessages[0].content = "@you さん、@sakura と確認しましょう。"
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", file_name: "さくら.png", content_type: "image/png")]
+            allMessages[1].created_at = "2026-11-19T09:01:00Z"
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-video") {
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "確認用.mp4", content_type: "video/mp4")]
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-thread-directory") {
             allMessages.append(Message(id: "77777777-7777-4777-8777-777777777777", user_id: currentUser.id,
                                        channel_id: Self.channelID, content: "参加中のスレッドです",
@@ -82,6 +97,56 @@ final class PreviewChatClient: ChatClient {
                         display_data: MessageDisplayData(reactions: []))
             }
         }
+    }
+
+    func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws {
+        receive([])
+        try await Task.sleep(for: .seconds(86_400))
+    }
+    func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
+        throw ZooError.rejected(503, "プレビューでは実際の通話を開始しません。")
+    }
+    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {}
+    func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
+        receive([])
+        try await Task.sleep(for: .seconds(86_400))
+    }
+    func answerCallInvitation(id: String, accept: Bool) async throws {}
+
+    func channelPins() async throws -> ChannelPins {
+        pins
+    }
+    func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
+        if failNextPin {
+            failNextPin = false
+            throw URLError(.notConnectedToInternet)
+        }
+        guard expectedVersion == pins.version else { throw ZooError.rejected(409, "ピン留めが変更されました。") }
+        var rows = pins.pins.filter { $0.channel_id != id }
+        if pinned { rows.append(ChannelPin(channel_id: id, position: (rows.map(\.position).max() ?? -1) + 1)) }
+        pins = ChannelPins(pins: rows, version: pins.version + 1)
+        return pins
+    }
+    func members(channelID: String) async throws -> [ChannelMembership] {
+        try await people().map { ChannelMembership(channel_id: channelID, user_id: $0.id) }
+    }
+    func readState(channelID: String) async throws -> ChannelReadState {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-read-retry"), !failedReadOnce {
+            failedReadOnce = true
+            throw URLError(.notConnectedToInternet)
+        }
+        let unread = ["--uitesting-chat-details", "--uitesting-read-retry"].contains { ProcessInfo.processInfo.arguments.contains($0) }
+        return ChannelReadState(channel_id: channelID, has_unread: unread && readPositions[channelID] == nil, last_read_at: readPositions[channelID])
+    }
+    func attachmentURL(id: String) async throws -> URL {
+        if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02" {
+            // 実際のAVPlayerを、外部通信も実ユーザーの動画も使わずに検証する。
+            let data = Data(base64Encoded: "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")!
+            let file = FileManager.default.temporaryDirectory.appending(path: "zoo-preview.mp4")
+            try data.write(to: file, options: .atomic)
+            return file
+        }
+        return URL(string: serverURL + "/stamp.png")!
     }
 
     func channels() async throws -> [Channel] { allChannels }
@@ -107,7 +172,7 @@ final class PreviewChatClient: ChatClient {
     }
     func readStates() async throws -> [ChannelReadState] {
         allChannels.filter { $0.id != discoverableID || joinedPublic }
-            .map { ChannelReadState(channel_id: $0.id, has_unread: $0.id == Self.channelID, last_read_at: nil) }
+            .map { ChannelReadState(channel_id: $0.id, has_unread: $0.id == Self.channelID && readPositions[$0.id] == nil, last_read_at: readPositions[$0.id]) }
     }
     func emojis() async throws -> [WorkspaceEmoji] {
         [WorkspaceEmoji(name: "sakura", url: "https://ui.test.invalid/stamp.png", category: "動物園", aliases: ["hana"])]
@@ -176,7 +241,9 @@ final class PreviewChatClient: ChatClient {
         return allMessages[index]
     }
     func delete(id: String) async throws { allMessages.removeAll { $0.id == id } }
-    func markRead(channelID: String, messageID: String) async throws { }
+    func markRead(channelID: String, messageID: String) async throws {
+        readPositions[channelID] = allMessages.first { $0.id == messageID }?.created_at
+    }
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
         let channel = Channel(id: id, channel_name: name, description: description, is_private: isPrivate, is_dm: false)
         allChannels.append(channel)

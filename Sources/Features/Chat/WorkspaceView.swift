@@ -1,3 +1,4 @@
+import AVFAudio
 import SwiftUI
 
 struct WorkspaceView: View {
@@ -25,6 +26,18 @@ struct WorkspaceView: View {
                 NavigationStack { ProfileView(workspace: workspace, session: session) }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
+        .sheet(isPresented: Binding(get: { workspace.calls.showingCall }, set: { workspace.calls.showingCall = $0 })) {
+            CallView(store: workspace.calls, workspace: workspace)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { workspace.calls.finish() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
+            if let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+               type == AVAudioSession.InterruptionType.began.rawValue { workspace.calls.finish() }
+        }
+        .task(id: scenePhase) { if scenePhase == .active { await workspace.calls.runInvitations() } }
         .modifier(ConversationSync(workspace: workspace))
         .task(id: scenePhase) {
             if scenePhase == .active { await workspace.run() }
@@ -63,7 +76,7 @@ private struct ConversationDirectory: View {
 
     private var visible: [Channel] {
         workspace.channels.filter {
-            $0.is_dm == directMessages && $0.archive_at == nil && workspace.joinedChannelIDs.contains($0.id) &&
+            $0.is_dm == directMessages && $0.archive_at == nil && (workspace.joinedChannelIDs.contains($0.id) || workspace.pinnedChannelIDs.contains($0.id)) &&
             (!unreadOnly || workspace.unread.contains($0.id)) &&
             (search.isEmpty || workspace.name(for: $0).localizedStandardContains(search) ||
              ($0.description ?? "").localizedStandardContains(search))
@@ -92,41 +105,28 @@ private struct ConversationDirectory: View {
                     } actions: { Button("チャンネルを探す") { browsing = true } }
                 }
             }
-            ForEach(channels) { channel in
-                NavigationLink(value: ChatRoute.channel(channel.id)) {
-                    HStack(spacing: 12) {
-                        if let peer = workspace.directMessagePeer(for: channel) {
-                            AvatarView(name: peer.name, url: peer.avatarURL)
-                        } else {
-                            Image(systemName: channel.symbol).font(.title3).foregroundStyle(.tint)
-                                .frame(width: 32, height: 38)
-                        }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(workspace.name(for: channel))
-                                .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
-                            if let description = channel.description, !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 4)
-                        if workspace.unread.contains(channel.id) {
-                            Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
-                        }
-                    }.padding(.vertical, 3)
-                }
-                .accessibilityIdentifier("channel-\(channel.id)")
-                if !directMessages, channel.encrypted != true {
-                    ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
-                        workspace.openListedThread(parentID, in: channel)
-                    }
-                }
+            let pinned = workspace.pinnedChannelIDs.compactMap { id in channels.first { $0.id == id } }
+            if !pinned.isEmpty { Section("ピン留め") { channelRows(pinned) } }
+            Section("一覧") { channelRows(channels.filter { !workspace.pinnedChannelIDs.contains($0.id) }) }
+            if let error = workspace.pinsError {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+                Button("ピン留めを再読み込み") { Task { await workspace.loadPins() } }
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
         .navigationTitle(directMessages ? "DM" : "チャンネル")
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let error = workspace.pinUpdateError {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    .background(.regularMaterial)
+            }
+        }
         .searchable(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索")
         .refreshable {
             await workspace.refresh()
+            await workspace.loadPins()
             if showsThreadIndex { await workspace.threads.refresh() }
         }
         .task(id: showsThreadIndex) { if showsThreadIndex { await workspace.threads.run() } }
@@ -154,6 +154,40 @@ private struct ConversationDirectory: View {
         }
         .sheet(isPresented: $browsing) { ChannelBrowser(workspace: workspace) }
     }
+    private func channelRows(_ channels: [Channel]) -> some View {
+        ForEach(channels) { channel in
+                NavigationLink(value: ChatRoute.channel(channel.id)) {
+                    HStack(spacing: 12) {
+                        if let peer = workspace.directMessagePeer(for: channel) {
+                            AvatarView(name: peer.name, url: peer.avatarURL)
+                        } else {
+                            Image(systemName: channel.symbol).font(.title3).foregroundStyle(.tint)
+                                .frame(width: 32, height: 38)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(workspace.name(for: channel))
+                                .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
+                            if let description = channel.description, !description.isEmpty {
+                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 4)
+                        if workspace.unread.contains(channel.id) {
+                            Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
+                        }
+                    }.padding(.vertical, 3)
+                }
+                .accessibilityIdentifier("channel-\(channel.id)")
+                .contextMenu { ChannelPinButton(channel: channel, workspace: workspace) }
+                .accessibilityHint("長押しでピン留めを変更できます")
+                if !directMessages, channel.encrypted != true {
+                    ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
+                        workspace.openListedThread(parentID, in: channel)
+                    }
+                }
+            }
+    }
+
 }
 
 private struct ChannelBrowser: View {
@@ -231,11 +265,14 @@ private struct ConversationSync: ViewModifier {
     func body(content: Content) -> some View {
         let store = activeConversation
         let readable = store.flatMap { !$0.blocked && $0.channel.encrypted != true ? $0 : nil }
+        let attachments = readable.flatMap { $0.needsAttachmentStream ? $0 : nil }
         let reactions = readable.flatMap { $0.needsReactionStream ? $0 : nil }
         let authors = readable.map { Authors(channelID: $0.channel.id, ids: Set($0.messages.map(\.user_id))) }
         let needsEmojiCatalog = scenePhase == .active && (store != nil || workspace.selectedTab == .notifications)
         content
             .task(id: readable?.syncRequest) { await readable?.run() }
+            .task(id: readable?.channel.id) { if let readable { await workspace.loadMembers(channelID: readable.channel.id) } }
+            .task(id: attachments?.syncRequest) { await attachments?.runAttachments() }
             .task(id: reactions?.syncRequest) { await reactions?.runReactions() }
             .task(id: readable?.reactionResyncTicket) {
                 guard let readable, let ticket = readable.reactionResyncTicket else { return }

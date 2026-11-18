@@ -7,7 +7,7 @@ struct MessageContentView: View {
     @State private var images: [URL: UIImage] = [:]
 
     var body: some View {
-        let parts = MessageContent.parse(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content) {
+        let parts = MessageContent.parse(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content, mention: workspace.mentionIdentity) {
             workspace.emojiImageURL(for: $0, message: message)
         }
         let urls = Array(Set(parts.compactMap { part -> URL? in
@@ -58,6 +58,12 @@ enum MessageContentText {
                 var link = AttributedString(value)
                 link.link = url
                 text.append(link)
+            case .mention(let value, let isSelf):
+                var mention = AttributedString(value)
+                mention.foregroundColor = isSelf ? Color(.label) : Color.accentColor
+                mention.backgroundColor = isSelf ? Color.yellow.opacity(0.3) : Color.accentColor.opacity(0.12)
+                mention.font = .body.bold()
+                text.append(mention)
             case .emoji(let name, let url):
                 if let image = thumbnails[url] {
                     flush()

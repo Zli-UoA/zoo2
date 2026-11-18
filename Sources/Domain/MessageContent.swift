@@ -5,6 +5,7 @@ enum MessageContent {
         case text(String)
         case link(String, URL)
         case emoji(String, URL)
+        case mention(String, isSelf: Bool)
     }
 
     private static let links = try! NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -18,7 +19,9 @@ enum MessageContent {
         return values
     }()
 
-    static func parse(_ text: String, emojiURL: (String) -> URL?) -> [Part] {
+    private static let mentions = try! NSRegularExpression(pattern: #"(?:^|[\s(\[{<（「『"'。、])(@[A-Za-z0-9._-]+)(?![@A-Za-z0-9._-])"#)
+
+    static func parse(_ text: String, mention: (String) -> Bool? = { _ in nil }, emojiURL: (String) -> URL?) -> [Part] {
         let full = NSRange(text.startIndex..., in: text)
         var protected = literalCode.matches(in: text, range: full).map(\.range)
         var replacements: [(NSRange, Part)] = []
@@ -45,6 +48,18 @@ enum MessageContent {
             } else { continue }
             // 未登録の候補では進めず、時刻などの直後にあるスタンプの開始位置を保つ。
             emojiEnd = NSMaxRange(candidate)
+            protected.append(candidate)
+        }
+        for match in mentions.matches(in: text, range: full) {
+            var range = match.range(at: 1)
+            guard !overlaps(range), let swiftRange = Range(range, in: text) else { continue }
+            var raw = String(text[swiftRange])
+            var resolved = mention(String(raw.dropFirst()))
+            while resolved == nil, raw.hasSuffix(".") {
+                raw.removeLast(); range.length -= 1
+                resolved = mention(String(raw.dropFirst()))
+            }
+            if let isSelf = resolved { replacements.append((range, .mention(raw, isSelf: isSelf))) }
         }
         var result: [Part] = []
         var cursor = text.startIndex
