@@ -25,11 +25,12 @@ final class AppSession {
     static func configured() -> AppSession {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--uitesting-workspace") {
+            URLProtocol.registerClass(PreviewEmojiURLProtocol.self)
             let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
                                      notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
             let client = PreviewChatClient()
             session.userID = client.currentUser.id
-            session.workspace = WorkspaceStore(client: client, user: client.currentUser)
+            session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
             return session
         }
         if isUITesting {

@@ -22,6 +22,7 @@ final class WorkspaceStore {
     let client: any ChatClient
     let inbox: InboxStore
     let threads: ChannelThreads
+    let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
     private(set) var unread: Set<String> = []
@@ -59,9 +60,10 @@ final class WorkspaceStore {
     private var channelGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
 
-    init(client: any ChatClient, user: Person) {
+    init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard) {
         self.client = client
         self.user = user
+        recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
@@ -144,6 +146,7 @@ final class WorkspaceStore {
         }
         store.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         store.onRead = { [weak self] in self?.unread.remove(channel.id) }
+        store.onReactionAdded = { [weak self] emoji in self?.recentEmojis.record(emoji) }
         conversations[channel.id] = store
         return store
     }
@@ -173,6 +176,18 @@ final class WorkspaceStore {
     }
 
     func emoji(for key: String) -> WorkspaceEmoji? { emojisByKey[key] }
+
+    func emojiImageURL(for key: String, message: Message?) -> URL? {
+        guard key.hasPrefix(":"), key.hasSuffix(":"), key.count > 2 else { return nil }
+        let name = String(key.dropFirst().dropLast())
+        if name.hasPrefix("@") { return emojiAccount(named: String(name.dropFirst()))?.avatarURL }
+        let custom = emoji(for: key)
+        let spellings = [name] + (custom.map { [$0.name] + $0.aliases } ?? [])
+        for spelling in spellings {
+            if let url = message?.display_data?.emojis[spelling]?.imageURL(relativeTo: client.serverURL) { return url }
+        }
+        return custom?.imageURL
+    }
 
     func emojiAccount(named username: String) -> EmojiAccount? { accountsByName[username] }
 

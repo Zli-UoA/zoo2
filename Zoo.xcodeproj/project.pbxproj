@@ -17,14 +17,17 @@
 		369996B563277F8F04860E89 /* Authentication.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE2C3E0430A8484BCDF3C08 /* Authentication.swift */; };
 		392A7D2098A29B5DCA8A6142 /* NativeChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88DEB360DFCD9A5EF93469D1 /* NativeChatTests.swift */; };
 		405AACB7802EF4C664BD4491 /* ChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 711EDB0B396F6C1055FA6A00 /* ChatClient.swift */; };
+		429726CC1380B378CAB26B5C /* MessageContentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */; };
 		45A27E9D3E513F620D9347E4 /* ShapeStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 729D2F9CAA0005F2308EDB51 /* ShapeStream.swift */; };
 		4BB114C8A59D8BBF6C2BF478 /* NotificationPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51FA111F133136EC511F356C /* NotificationPreview.swift */; };
 		4EEE80F7647418932F36D08C /* NotificationPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51FA111F133136EC511F356C /* NotificationPreview.swift */; };
 		4F4D1850FA0057D0613FA47F /* NotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95F69CCAB38F5C906204A606 /* NotificationController.swift */; };
 		59C0C5DAB08E66F2221143F8 /* InboxClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE28572B36977689E59203F7 /* InboxClient.swift */; };
+		619C4086FC2C7B16E0290B58 /* MessageContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A6231AA0F97D2C2FE8A5F7 /* MessageContent.swift */; };
 		6294A116360D5449F2A4F0ED /* DeviceAuthorization.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA7E89B56716F9AA82A2F4D6 /* DeviceAuthorization.swift */; };
 		629CBE9A77BFB961DC63F37C /* ReactionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D1B04C11A2D816B7C0D96E6 /* ReactionStoreTests.swift */; };
 		6F79207BEBC306B815434F8F /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 571CA0D7A4D889087A27F93F /* InboxView.swift */; };
+		739FFABA115543EED15A1D4F /* emoji-shortcodes.json in Resources */ = {isa = PBXBuildFile; fileRef = 0D12A552929A7154204E90F7 /* emoji-shortcodes.json */; };
 		764FA59F0F9FE5A199A2671E /* InboxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC689D03E4645DE16F8B4B81 /* InboxStore.swift */; };
 		8B63EFD9224ABEA01A76DF21 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB9A5B575F132C8A8A643AF0 /* PushRegistration.swift */; };
 		8E3428710962832BB747862C /* ZooUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC94312E8CFE12AB23C0391 /* ZooUITests.swift */; };
@@ -39,8 +42,11 @@
 		B73229EA47C697500B02EFED /* NetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B4C4BE48C074ADC1E8D7E50 /* NetworkTests.swift */; };
 		BADBA7C701C6D031CB67657B /* ReactionAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715B4A6037103403F6BAB12C /* ReactionAPITests.swift */; };
 		BB53492E2C9E9D9B56158D8F /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74D10B033D5C3D0C961760E1 /* ConversationView.swift */; };
+		BD43708051C7990E25AA94FB /* RecentEmojiTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BD9F627E87B53FCAE111D3 /* RecentEmojiTests.swift */; };
+		BF1C5E0426827CE0608E5917 /* RecentEmojiStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 985B83A89647699294246A71 /* RecentEmojiStore.swift */; };
 		C31C91820F333AD6CA379BAD /* PublicProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53517A665AD0645C38D84A55 /* PublicProfileTests.swift */; };
 		C580295A0FA0732AD4F7B261 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D8EDA8358A4697C4243F758 /* Models.swift */; };
+		C5B5810FC62F77131841AD31 /* MessageContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3F28894DBFC427AB91B2C6 /* MessageContentView.swift */; };
 		C8DDA6D83460E900E77BD63F /* Inbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D2847CAD736A4314F78236 /* Inbox.swift */; };
 		C9B97BBBDE456DB67AA52447 /* PushTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90753D29DA20E7D9A00BEDF1 /* PushTests.swift */; };
 		CC872F1EB856FF294BB96E95 /* ZooApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48CC24CCF9A14802AAA837EF /* ZooApp.swift */; };
@@ -95,7 +101,9 @@
 /* Begin PBXFileReference section */
 		05000AC84EE5E734A2AFE311 /* Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport.swift; sourceTree = "<group>"; };
 		063DF0C2E97E24E252310F6D /* ChannelThreads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelThreads.swift; sourceTree = "<group>"; };
+		0D12A552929A7154204E90F7 /* emoji-shortcodes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "emoji-shortcodes.json"; sourceTree = "<group>"; };
 		1EECD0A3E9993C94D242F919 /* ReactionEmoji.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionEmoji.swift; sourceTree = "<group>"; };
+		21BD9F627E87B53FCAE111D3 /* RecentEmojiTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentEmojiTests.swift; sourceTree = "<group>"; };
 		258E0881472B6BEFF7E2FBCD /* MessageActionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageActionsView.swift; sourceTree = "<group>"; };
 		282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "emoji-kitchen.json"; sourceTree = "<group>"; };
 		2D8EDA8358A4697C4243F758 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -123,6 +131,7 @@
 		90753D29DA20E7D9A00BEDF1 /* PushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTests.swift; sourceTree = "<group>"; };
 		95F69CCAB38F5C906204A606 /* NotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationController.swift; sourceTree = "<group>"; };
 		9735CAB96A606BA5BE947D4C /* ReactionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionViews.swift; sourceTree = "<group>"; };
+		985B83A89647699294246A71 /* RecentEmojiStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentEmojiStore.swift; sourceTree = "<group>"; };
 		9B63CA9B6C88E3CF73B1BB96 /* ConversationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStore.swift; sourceTree = "<group>"; };
 		9BB00E9CE7E9A70261228578 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 		B645A73FF1D4ADD1E97AD470 /* ZooTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooTests.swift; sourceTree = "<group>"; };
@@ -136,10 +145,13 @@
 		D0BF1120D18E1AAF42BFA9A9 /* NotificationPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPreviewTests.swift; sourceTree = "<group>"; };
 		DBE2C3E0430A8484BCDF3C08 /* Authentication.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Authentication.swift; sourceTree = "<group>"; };
 		E7D2847CAD736A4314F78236 /* Inbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Inbox.swift; sourceTree = "<group>"; };
+		E8A6231AA0F97D2C2FE8A5F7 /* MessageContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContent.swift; sourceTree = "<group>"; };
 		EA7E89B56716F9AA82A2F4D6 /* DeviceAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAuthorization.swift; sourceTree = "<group>"; };
 		EB9A5B575F132C8A8A643AF0 /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistration.swift; sourceTree = "<group>"; };
 		FBC906A0FC1D802E3166886F /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
+		FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentTests.swift; sourceTree = "<group>"; };
 		FC689D03E4645DE16F8B4B81 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
+		FF3F28894DBFC427AB91B2C6 /* MessageContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -171,8 +183,10 @@
 				FC689D03E4645DE16F8B4B81 /* InboxStore.swift */,
 				571CA0D7A4D889087A27F93F /* InboxView.swift */,
 				258E0881472B6BEFF7E2FBCD /* MessageActionsView.swift */,
+				FF3F28894DBFC427AB91B2C6 /* MessageContentView.swift */,
 				43520FE923FB021B0362378A /* ProfileView.swift */,
 				9735CAB96A606BA5BE947D4C /* ReactionViews.swift */,
+				985B83A89647699294246A71 /* RecentEmojiStore.swift */,
 				FBC906A0FC1D802E3166886F /* WorkspaceStore.swift */,
 				CC569C67B29AAED83605FB8B /* WorkspaceView.swift */,
 			);
@@ -185,6 +199,7 @@
 				6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */,
 				4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */,
 				BDFA0EA73CA3D24EFC391EBC /* InboxTests.swift */,
+				FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */,
 				88DEB360DFCD9A5EF93469D1 /* NativeChatTests.swift */,
 				4B4C4BE48C074ADC1E8D7E50 /* NetworkTests.swift */,
 				D0BF1120D18E1AAF42BFA9A9 /* NotificationPreviewTests.swift */,
@@ -193,6 +208,7 @@
 				715B4A6037103403F6BAB12C /* ReactionAPITests.swift */,
 				6EAF718542356B731B86C80C /* ReactionEmojiTests.swift */,
 				6D1B04C11A2D816B7C0D96E6 /* ReactionStoreTests.swift */,
+				21BD9F627E87B53FCAE111D3 /* RecentEmojiTests.swift */,
 				B645A73FF1D4ADD1E97AD470 /* ZooTests.swift */,
 			);
 			path = Tests;
@@ -255,6 +271,7 @@
 			isa = PBXGroup;
 			children = (
 				E7D2847CAD736A4314F78236 /* Inbox.swift */,
+				E8A6231AA0F97D2C2FE8A5F7 /* MessageContent.swift */,
 				2D8EDA8358A4697C4243F758 /* Models.swift */,
 				4E0ABD4A57191371D0DC3ECE /* Reaction.swift */,
 				1EECD0A3E9993C94D242F919 /* ReactionEmoji.swift */,
@@ -312,6 +329,7 @@
 			isa = PBXGroup;
 			children = (
 				282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */,
+				0D12A552929A7154204E90F7 /* emoji-shortcodes.json */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -457,6 +475,7 @@
 			files = (
 				3263A20A1D055056EC277DE4 /* Assets.xcassets in Resources */,
 				2B5E49E1F342B071682412A5 /* emoji-kitchen.json in Resources */,
+				739FFABA115543EED15A1D4F /* emoji-shortcodes.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -470,6 +489,7 @@
 				A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */,
 				0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */,
 				9C4AC6D0333226761FBC7CA9 /* InboxTests.swift in Sources */,
+				429726CC1380B378CAB26B5C /* MessageContentTests.swift in Sources */,
 				392A7D2098A29B5DCA8A6142 /* NativeChatTests.swift in Sources */,
 				B73229EA47C697500B02EFED /* NetworkTests.swift in Sources */,
 				F9C7123D1EE2F360EA0B2F27 /* NotificationPreviewTests.swift in Sources */,
@@ -478,6 +498,7 @@
 				BADBA7C701C6D031CB67657B /* ReactionAPITests.swift in Sources */,
 				F3624288C10B9A47EA6B22CB /* ReactionEmojiTests.swift in Sources */,
 				629CBE9A77BFB961DC63F37C /* ReactionStoreTests.swift in Sources */,
+				BD43708051C7990E25AA94FB /* RecentEmojiTests.swift in Sources */,
 				F5D85CCE34285260C4DF7809 /* ZooTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -515,6 +536,8 @@
 				764FA59F0F9FE5A199A2671E /* InboxStore.swift in Sources */,
 				6F79207BEBC306B815434F8F /* InboxView.swift in Sources */,
 				F45AF34081A8EA8F438CD18C /* MessageActionsView.swift in Sources */,
+				619C4086FC2C7B16E0290B58 /* MessageContent.swift in Sources */,
+				C5B5810FC62F77131841AD31 /* MessageContentView.swift in Sources */,
 				C580295A0FA0732AD4F7B261 /* Models.swift in Sources */,
 				4F4D1850FA0057D0613FA47F /* NotificationController.swift in Sources */,
 				4EEE80F7647418932F36D08C /* NotificationPreview.swift in Sources */,
@@ -525,6 +548,7 @@
 				9D27F27E4CFD3E1504D92CD4 /* Reaction.swift in Sources */,
 				96C7DF5DEA20135848135EA6 /* ReactionEmoji.swift in Sources */,
 				CECE10939ABC3008116CB9A3 /* ReactionViews.swift in Sources */,
+				BF1C5E0426827CE0608E5917 /* RecentEmojiStore.swift in Sources */,
 				45A27E9D3E513F620D9347E4 /* ShapeStream.swift in Sources */,
 				10BB2C6455AAF407C2416BDB /* Transport.swift in Sources */,
 				315B522216D2D5026C38736B /* WorkspaceStore.swift in Sources */,

@@ -250,7 +250,7 @@ private struct MessageList: View {
                     }
                     if message.updated_at != nil { Text("編集済み").font(.caption2).foregroundStyle(.secondary) }
                 }
-                Text(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content)
+                MessageContentView(message: message, workspace: workspace)
                     .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("message-content-\(message.id)")

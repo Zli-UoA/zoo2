@@ -74,15 +74,7 @@ struct ReactionGlyph: View {
         if let id = remoteImageID {
             return (try? ConnectionSettings.secureURL(workspace.client.serverURL))?.appending(path: "api/activitypub/emoji-images/\(id)")
         }
-        guard emoji.hasPrefix(":"), emoji.hasSuffix(":"), emoji.count > 2 else { return nil }
-        let name = String(emoji.dropFirst().dropLast())
-        let custom = workspace.emoji(for: emoji)
-        if let attached = message?.display_data?.emojis {
-            for spelling in [name] + (custom?.aliases ?? []) {
-                if let url = attached[spelling]?.imageURL(relativeTo: workspace.client.serverURL) { return url }
-            }
-        }
-        return custom?.imageURL
+        return workspace.emojiImageURL(for: emoji, message: message)
     }
 
     var body: some View {

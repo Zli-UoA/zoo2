@@ -141,6 +141,43 @@ final class ZooUITests: XCTestCase {
         let accountChip = app.buttons["reaction-\(messageID)-:@zoo:"]
         XCTAssertTrue(accountChip.waitForExistence(timeout: 5))
         XCTAssertEqual(accountChip.label, "動物園（@zoo）のスタンプ")
+        openActions(for: welcome, in: app)
+        let recent = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-action-quick-"))
+        XCTAssertEqual(recent.element(boundBy: 0).identifier, "message-action-quick-:@zoo:")
+        XCTAssertEqual(recent.element(boundBy: 1).identifier, "message-action-quick-:sakura:")
+        XCTAssertEqual(recent.element(boundBy: 2).identifier, "message-action-quick-👍")
+        capture(app, name: "利用履歴順のスタンプ候補")
+    }
+
+    @MainActor
+    func testMessageLinksAndInlineEmoji() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let input = composer(app)
+        input.tap()
+        let original = "確認 :smile: :hana: :unknown_stamp:\nhttps://example.com/"
+        app.typeText(original)
+        app.buttons["send-message"].tap()
+        let message = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+                                                          "message-content-", "確認 😄")).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertTrue(message.label.contains(":unknown_stamp:"))
+        let link = app.links["https://example.com/"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        capture(app, name: "本文のリンクとスタンプ")
+        // 本文中央は URL と重なるため、通常の文字部分を長押しする。
+        message.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["message-action-edit"].waitForExistence(timeout: 5))
+        app.buttons["message-action-edit"].tap()
+        let editor = app.textFields["edit-message-input"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertEqual(editor.value as? String, original)
+        app.buttons["save-message-edit"].tap()
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        link.tap()
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 5))
     }
 
     @MainActor
