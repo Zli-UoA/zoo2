@@ -11,6 +11,7 @@ final class PreviewPushReceiptStore: PushReceiptStore {
 // UI テストは本番の認証・通知・投稿に触れず、実際の SwiftUI 画面を操作する。
 @MainActor
 final class PreviewChatClient: ChatClient {
+    let serverURL = "https://ui.test.invalid"
     static let channelID = "11111111-1111-4111-8111-111111111111"
     static let messageID = "22222222-2222-4222-8222-222222222222"
     let currentUser = Person(id: "33333333-3333-4333-8333-333333333333", user_name: "you", display_name: "あなた")
@@ -26,16 +27,21 @@ final class PreviewChatClient: ChatClient {
 
     init(failNextSend: Bool = ProcessInfo.processInfo.arguments.contains("--uitesting-send-failure")) {
         self.failNextSend = failNextSend
+        let welcomeReaction = MessageReaction(id: "88888888-8888-4888-8888-888888888888", message_id: Self.messageID,
+                                              user_id: colleague.id, emoji: "👍")
         allMessages = [
             Message(id: Self.messageID, user_id: colleague.id, channel_id: Self.channelID,
-                    content: "こんにちは！ Zoo の iOS 版へようこそ。", created_at: "2026-11-18T09:00:00Z"),
+                    content: "こんにちは！ Zoo の iOS 版へようこそ。", created_at: "2026-11-18T09:00:00Z",
+                    display_data: MessageDisplayData(reactions: [welcomeReaction])),
             Message(id: "66666666-6666-4666-8666-666666666666", user_id: currentUser.id, channel_id: Self.channelID,
-                    content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z")
+                    content: "SwiftUI で、いつもの会話がもっと身近に。", created_at: "2026-11-18T09:01:00Z",
+                    display_data: MessageDisplayData(reactions: []))
         ]
         if ProcessInfo.processInfo.arguments.contains("--uitesting-long-history") {
             allMessages = (1...60).map { index in
                 Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: Self.channelID,
-                        content: "履歴 \(index)", created_at: Date(timeIntervalSince1970: 1_795_000_000 + Double(index)).ISO8601Format())
+                        content: "履歴 \(index)", created_at: Date(timeIntervalSince1970: 1_795_000_000 + Double(index)).ISO8601Format(),
+                        display_data: MessageDisplayData(reactions: []))
             }
         }
     }
@@ -51,6 +57,37 @@ final class PreviewChatClient: ChatClient {
         return person
     }
     func readStates() async throws -> [ChannelReadState] { [ChannelReadState(channel_id: Self.channelID, has_unread: true, last_read_at: nil)] }
+    func emojis() async throws -> [WorkspaceEmoji] {
+        [WorkspaceEmoji(name: "sakura", url: "", category: "動物園", aliases: ["hana"])]
+    }
+
+    func emojiAccounts() async throws -> [EmojiAccount] {
+        [EmojiAccount(username: "sakura", display_name: "さくら", avatar_url: nil),
+         EmojiAccount(username: "zoo", display_name: "動物園", avatar_url: nil)]
+    }
+
+    func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws {
+        while !Task.isCancelled {
+            receive(allMessages.filter { $0.channel_id == channelID }.flatMap { $0.display_data?.reactions ?? [] })
+            try await Task.sleep(for: .milliseconds(200))
+        }
+    }
+
+    func addReaction(messageID: String, emoji: String) async throws -> MessageReaction {
+        guard let index = allMessages.firstIndex(where: { $0.id == messageID }) else { throw ZooError.invalidResponse }
+        var reactions = allMessages[index].display_data?.reactions ?? []
+        if let existing = reactions.first(where: { $0.user_id == currentUser.id && $0.emoji == emoji }) { return existing }
+        let row = MessageReaction(id: UUID().uuidString.lowercased(), message_id: messageID, user_id: currentUser.id, emoji: emoji)
+        reactions.append(row)
+        allMessages[index].display_data = MessageDisplayData(reactions: reactions)
+        return row
+    }
+
+    func removeReaction(messageID: String, emoji: String) async throws {
+        guard let index = allMessages.firstIndex(where: { $0.id == messageID }) else { throw ZooError.invalidResponse }
+        allMessages[index].display_data?.reactions?.removeAll { $0.user_id == currentUser.id && $0.emoji == emoji }
+    }
+
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-long-history") {
             try await Task.sleep(for: .milliseconds(300))
@@ -59,7 +96,8 @@ final class PreviewChatClient: ChatClient {
             if let incomingAt, ContinuousClock.now >= incomingAt {
                 self.incomingAt = nil
                 allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: Self.channelID,
-                                           content: "別の端末からの新着", created_at: Date().ISO8601Format()))
+                                           content: "別の端末からの新着", created_at: Date().ISO8601Format(),
+                                           display_data: MessageDisplayData(reactions: [])))
             }
             receive(allMessages.filter { $0.channel_id == channelID })
             try await Task.sleep(for: .milliseconds(200))
@@ -69,7 +107,7 @@ final class PreviewChatClient: ChatClient {
         if failNextSend { failNextSend = false; throw URLError(.notConnectedToInternet) }
         if let existing = allMessages.first(where: { $0.id == id }) { return existing }
         let message = Message(id: id, user_id: currentUser.id, channel_id: channelID, content: content,
-                              created_at: Date().ISO8601Format(), parent_id: parentID)
+                              created_at: Date().ISO8601Format(), parent_id: parentID, display_data: MessageDisplayData(reactions: []))
         allMessages.append(message)
         if parentID != nil, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
             incomingAt = ContinuousClock.now.advanced(by: .seconds(5))

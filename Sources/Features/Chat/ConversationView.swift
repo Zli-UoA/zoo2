@@ -20,11 +20,14 @@ struct ConversationView: View {
                 ContentUnavailableView("暗号化された会話", systemImage: "lock.shield",
                                        description: Text("この iOS 版では暗号化された会話をまだ開けません。対応済みの Zoo クライアントをご利用ください。"))
             } else {
-                if let error = store.syncError {
+                if let error = store.syncError ?? store.reactionSyncError {
                     HStack {
                         Label(error, systemImage: "wifi.exclamationmark").font(.caption)
                         Spacer()
-                        Button("再試行") { retry = UUID() }.font(.caption.bold())
+                        Button("再試行") {
+                            store.retryAccess()
+                            retry = UUID()
+                        }.font(.caption.bold())
                     }.padding(12).background(.orange.opacity(0.12))
                 }
                 MessageList(store: store, workspace: workspace, parentID: nil,
@@ -35,8 +38,25 @@ struct ConversationView: View {
         .navigationTitle(workspace.name(for: store.channel))
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom, spacing: 0) { ComposerView(store: store, parentID: nil) }
-        .task(id: "\(scenePhase)-\(retry)-\(store.channel.encrypted == true)") {
-            if scenePhase == .active { await store.run() }
+        .task(id: "\(scenePhase)-\(retry)-\(store.channel.encrypted == true)-\(store.blocked)") {
+            if scenePhase == .active, !store.blocked { await store.run() }
+        }
+        .task(id: "\(scenePhase)-\(retry)-\(store.channel.encrypted == true)-\(store.blocked)-\(store.needsReactionStream)") {
+            if scenePhase == .active, store.channel.encrypted != true, !store.blocked, store.needsReactionStream {
+                await store.runReactions()
+            }
+        }
+        .task(id: scenePhase == .active ? store.reactionResyncTicket : nil) {
+            guard scenePhase == .active, store.reactionResyncTicket != nil else { return }
+            do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            retry = UUID()
+        }
+        .task(id: scenePhase) {
+            if scenePhase == .active {
+                async let emojis: Void = workspace.loadEmojis()
+                async let accounts: Void = workspace.loadEmojiAccounts()
+                _ = await (emojis, accounts)
+            }
         }
         .task(id: "\(scenePhase)-\(Set(store.messages.map(\.user_id)).sorted())") {
             if scenePhase == .active { await workspace.resolveAuthors(in: store.messages) }
@@ -72,6 +92,7 @@ private struct MessageList: View {
     @State private var positionedInitialMessages = false
     @State private var deleting: Message?
     @State private var editing: Message?
+    @State private var pickingReaction: Message?
 
     private var messages: [Message] {
         if let parentID { return store.messages.filter { $0.id == parentID || $0.parent_id == parentID } }
@@ -145,6 +166,16 @@ private struct MessageList: View {
             }
         }
         .sheet(item: $editing) { message in EditMessageView(store: store, message: message) }
+        .sheet(item: $pickingReaction) { message in
+            ReactionPicker(workspace: workspace) { emoji in
+                pickingReaction = nil
+                Task { await store.toggleReaction(messageID: message.id, emoji: emoji) }
+            }
+            .disabled(!store.canReact(to: message.id))
+            .onChange(of: store.canReact(to: message.id)) { _, allowed in
+                if !allowed { pickingReaction = nil }
+            }
+        }
     }
 
     private func messageRow(_ message: Message) -> some View {
@@ -166,13 +197,26 @@ private struct MessageList: View {
                     .font(.body).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("message-content-\(message.id)")
-                if parentID == nil {
-                    let count = store.replies(to: message.id).count
-                    Button(count == 0 ? "返信" : "\(count) 件の返信", systemImage: "bubble.left") { openThread(message.id) }
-                        .font(.caption).buttonStyle(.plain).foregroundStyle(.tint)
-                        .frame(minHeight: 44, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .accessibilityIdentifier("reply-\(message.id)")
+                HStack(spacing: 4) {
+                    if parentID == nil {
+                        let count = store.replies(to: message.id).count
+                        Button(count == 0 ? "返信" : "\(count) 件の返信", systemImage: "bubble.left") { openThread(message.id) }
+                            .font(.caption).buttonStyle(.plain).foregroundStyle(.tint)
+                            .frame(minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .accessibilityIdentifier("reply-\(message.id)")
+                    }
+                    if store.canPost {
+                        Button("スタンプを追加", systemImage: "plus.bubble") { pickingReaction = message }
+                            .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.tint)
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                            .disabled(!store.canReact(to: message.id))
+                            .accessibilityIdentifier("add-reaction-\(message.id)")
+                    }
+                    ReactionChips(store: store, workspace: workspace, message: message)
+                }
+                if let error = store.reactionError(for: message.id) {
+                    Text(error).font(.caption).foregroundStyle(.red)
                 }
             }
         }

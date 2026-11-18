@@ -28,6 +28,9 @@ URL に含める識別子は UUID であることを検証します。
 | メッセージ同期 | `GET /api/shapes/messages?channel_id=...` |
 | 送信・返信 | `POST /api/messages` |
 | 編集・削除 | `PATCH /api/messages/{id}`、`DELETE /api/messages/{id}` |
+| スタンプの追加・取り消し | `POST /api/messages/{id}/reactions`、`DELETE /api/messages/{id}/reactions?emoji=...` |
+| ワークスペースのスタンプ一覧 | `GET /api/emojis` |
+| アカウントスタンプの名簿 | `GET /api/emoji-accounts` |
 | 既読 | `POST /api/channels/{id}/read-state` |
 | チャンネル・DM の作成 | `POST /api/channels`、`POST /api/dms` |
 
@@ -42,6 +45,11 @@ REST のユーザー応答には画像 URL が含まれないため、ユーザ�
 画像取得には API の Bearer トークンを付けません。未設定・読み込み中・取得失敗時は頭文字を表示します。
 
 ## Electric の同期
+
+メッセージと返信のスタンプには Web 版と同じ `display_data.reactions` を使い、外部の利用者を含めて人数を集計します。
+この列がない旧形式のメッセージがあるときだけ、チャンネル単位の `/api/shapes/message_reactions` も購読します。
+変更の応答を受けたら、自分のスタンプを画面に反映します。
+Emoji Kitchen の配信日と組み合わせには Web 版の `frontend/src/lib/emoji/emoji-kitchen.json` を同梱し、対応する合成画像を必要なときに取得します。
 
 初回は `offset=-1` で取得し、`electric-handle`、`electric-offset`、`electric-cursor` を引き継ぎます。
 `up-to-date` が届くまで初期取得を続け、その後は `live=true` のロングポーリングへ移ります。
@@ -88,4 +96,4 @@ Debug 限定の `PreviewChatClient` でネイティブ画面を操作します�
 テスト起動時は本番の認証情報・APNs 登録を操作しません。
 2026-11-18 に本番のセッション復元、承認されたチャンネルの閲覧、テスト投稿 1 件の送信・編集・再表示を確認しました。
 実機の APNs 配信は別途確認が必要です。
-暗号化、添付、リアクション、通話、オフライン永続化などの未対応機能は README に記載します。
+暗号化、添付、通話、オフライン永続化などの未対応機能は README に記載します。

@@ -2,12 +2,18 @@ import Foundation
 
 @MainActor
 protocol ChatClient: Sendable {
+    var serverURL: String { get }
     func channels() async throws -> [Channel]
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
     func readStates() async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
+    func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws
+    func addReaction(messageID: String, emoji: String) async throws -> MessageReaction
+    func removeReaction(messageID: String, emoji: String) async throws
+    func emojis() async throws -> [WorkspaceEmoji]
+    func emojiAccounts() async throws -> [EmojiAccount]
     func send(id: String, channelID: String, content: String, parentID: String?) async throws -> Message
     func edit(id: String, content: String) async throws -> Message
     func delete(id: String) async throws
@@ -19,6 +25,7 @@ protocol ChatClient: Sendable {
 @MainActor
 struct NativeChatClient: ChatClient {
     let api: APIClient
+    var serverURL: String { api.settings.server }
 
     func channels() async throws -> [Channel] { try await api.get("api/channels") }
     func channel(id: String) async throws -> Channel { try await api.get("api/channels/\(try segment(id))") }
@@ -33,6 +40,30 @@ struct NativeChatClient: ChatClient {
         _ = try segment(channelID)
         try await ShapeStream(api: api).observe("api/shapes/messages", query: ["channel_id": channelID],
                                                as: Message.self, receive: receive)
+    }
+
+    func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws {
+        try await ShapeStream(api: api).observe("api/shapes/message_reactions", query: ["channel_id": try segment(channelID)],
+                                               as: MessageReaction.self, receive: receive)
+    }
+
+    func addReaction(messageID: String, emoji: String) async throws -> MessageReaction {
+        try await api.write("api/messages/\(try segment(messageID))/reactions", body: ["emoji": .string(emoji)])
+    }
+
+    func removeReaction(messageID: String, emoji: String) async throws {
+        _ = try await api.data("api/messages/\(try segment(messageID))/reactions", method: "DELETE", query: ["emoji": emoji])
+    }
+
+    func emojis() async throws -> [WorkspaceEmoji] {
+        let catalog: [WorkspaceEmoji] = try await api.get("api/emojis")
+        return catalog.map { $0.resolved(relativeTo: serverURL) }
+    }
+
+    func emojiAccounts() async throws -> [EmojiAccount] {
+        struct Directory: Decodable { let accounts: [EmojiAccount] }
+        let directory: Directory = try await api.get("api/emoji-accounts")
+        return directory.accounts.map { $0.resolved(relativeTo: serverURL) }
     }
 
     func send(id: String, channelID: String, content: String, parentID: String?) async throws -> Message {

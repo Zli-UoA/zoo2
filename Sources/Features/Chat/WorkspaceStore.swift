@@ -8,6 +8,14 @@ final class WorkspaceStore {
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
     private(set) var unread: Set<String> = []
+    private(set) var emojis: [WorkspaceEmoji] = []
+    private(set) var emojiError: String?
+    private var emojisByKey: [String: WorkspaceEmoji] = [:]
+    private var emojiGeneration = UUID()
+    private(set) var emojiAccounts: [EmojiAccount] = []
+    private(set) var emojiAccountError: String?
+    private var accountsByName: [String: EmojiAccount] = [:]
+    private var accountGeneration = UUID()
     private(set) var loading = false
     private(set) var hasLoaded = false
     var error: String?
@@ -79,10 +87,59 @@ final class WorkspaceStore {
     func conversation(for channel: Channel) -> ConversationStore {
         if let existing = conversations[channel.id] { return existing }
         let store = ConversationStore(channel: channel, client: client, userID: user.id)
+        store.canonicalEmoji = { [weak self] value in
+            self?.emojisByKey[value].map { ":\($0.name):" } ?? ReactionEmoji.key(value)
+        }
         store.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         store.onRead = { [weak self] in self?.unread.remove(channel.id) }
         conversations[channel.id] = store
         return store
+    }
+
+    func loadEmojis() async {
+        guard active else { return }
+        let epoch = UUID()
+        emojiGeneration = epoch
+        do {
+            let catalog = try await client.emojis()
+            try Task.checkCancellation()
+            guard active, emojiGeneration == epoch else { return }
+            var byKey: [String: WorkspaceEmoji] = [:]
+            for emoji in catalog {
+                for name in [emoji.name] + emoji.aliases {
+                    byKey[":\(name):"] = emoji
+                }
+            }
+            emojisByKey = byKey
+            emojis = catalog
+            emojiError = nil
+        } catch {
+            guard active, emojiGeneration == epoch, !Task.isCancelled, !(error is CancellationError) else { return }
+            if case ZooError.expiredSession = error { onExpiredSession?() }
+            else { emojiError = "ワークスペースのスタンプを読み込めませんでした。" }
+        }
+    }
+
+    func emoji(for key: String) -> WorkspaceEmoji? { emojisByKey[key] }
+
+    func emojiAccount(named username: String) -> EmojiAccount? { accountsByName[username] }
+
+    func loadEmojiAccounts() async {
+        guard active else { return }
+        let epoch = UUID()
+        accountGeneration = epoch
+        do {
+            let accounts = try await client.emojiAccounts()
+            try Task.checkCancellation()
+            guard active, accountGeneration == epoch else { return }
+            accountsByName = Dictionary(accounts.map { ($0.username, $0) }, uniquingKeysWith: { first, _ in first })
+            emojiAccounts = accounts
+            emojiAccountError = nil
+        } catch {
+            guard active, accountGeneration == epoch, !Task.isCancelled, !(error is CancellationError) else { return }
+            if case ZooError.expiredSession = error { onExpiredSession?() }
+            else { emojiAccountError = "アカウントのスタンプを読み込めませんでした。" }
+        }
     }
 
     func addAndOpen(_ channel: Channel) {
@@ -147,6 +204,12 @@ final class WorkspaceStore {
         people = [:]
         resolvedAuthors = [:]
         unread = []
+        emojis = []
+        emojisByKey = [:]
+        emojiError = nil
+        emojiAccounts = []
+        accountsByName = [:]
+        emojiAccountError = nil
         path = []
     }
 }

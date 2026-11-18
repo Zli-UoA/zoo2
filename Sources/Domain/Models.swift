@@ -68,6 +68,7 @@ struct Message: Codable, Identifiable, Hashable, Sendable {
     var deleted_at: String?
     var parent_id: String?
     var card: String?
+    var display_data: MessageDisplayData?
 
     var date: Date? { ZooDate.parse(created_at) }
 }

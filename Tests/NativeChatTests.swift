@@ -69,7 +69,7 @@ struct ShapeTests {
 }
 
 @MainActor
-private final class ChatHarness {
+final class ChatHarness {
     let id = UUID().uuidString
     let api: APIClient
     var client: NativeChatClient { NativeChatClient(api: api) }

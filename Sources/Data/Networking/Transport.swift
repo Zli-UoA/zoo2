@@ -94,7 +94,11 @@ final class APIClient {
         guard var parts = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
             throw ZooError.invalidConfiguration
         }
-        if !query.isEmpty { parts.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) } }
+        if !query.isEmpty {
+            parts.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+            // フォーム形式のクエリで「+」を空白として解釈させない。
+            parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        }
         guard let url = parts.url else { throw ZooError.invalidConfiguration }
         var request = URLRequest(url: url)
         request.httpMethod = method

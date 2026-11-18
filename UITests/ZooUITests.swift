@@ -68,6 +68,75 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testMessageReactionsCanBeAddedAndRemoved() {
+        let app = launchWorkspace()
+        let messageID = "22222222-2222-4222-8222-222222222222"
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let thumbsUp = app.buttons.matching(identifier: "reaction-\(messageID)-👍")
+        let otherOnly = thumbsUp.matching(NSPredicate(format: "value == %@", "1人")).firstMatch
+        let includingMe = thumbsUp.matching(NSPredicate(format: "value == %@", "2人、自分も付けています")).firstMatch
+        XCTAssertTrue(otherOnly.waitForExistence(timeout: 5))
+        otherOnly.tap()
+        XCTAssertTrue(includingMe.waitForExistence(timeout: 5))
+        includingMe.tap()
+        XCTAssertTrue(otherOnly.waitForExistence(timeout: 5))
+
+        app.buttons["add-reaction-\(messageID)"].tap()
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("hana")
+        let sakura = app.buttons["pick-reaction-:sakura:"]
+        XCTAssertTrue(sakura.waitForExistence(timeout: 5))
+        sakura.tap()
+        let custom = app.buttons["reaction-\(messageID)-:sakura:"]
+        XCTAssertTrue(custom.waitForExistence(timeout: 5))
+        XCTAssertEqual(custom.value as? String, "1人、自分も付けています")
+        custom.tap()
+        XCTAssertTrue(custom.waitForNonExistence(timeout: 5))
+
+        app.buttons["add-reaction-\(messageID)"].tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("@zoo")
+        let account = app.buttons["pick-reaction-:@zoo:"]
+        XCTAssertTrue(account.waitForExistence(timeout: 5))
+        account.tap()
+        let accountChip = app.buttons["reaction-\(messageID)-:@zoo:"]
+        XCTAssertTrue(accountChip.waitForExistence(timeout: 5))
+        XCTAssertEqual(accountChip.label, "動物園（@zoo）のスタンプ")
+    }
+
+    @MainActor
+    func testReplyCanReceiveAStampInItsThread() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let open = app.buttons["reply-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.tap()
+        let input = composer(app, reply: true)
+        input.tap()
+        input.typeText("スタンプ用の返信")
+        app.buttons["send-reply"].tap()
+        let reply = app.staticTexts["スタンプ用の返信"]
+        XCTAssertTrue(reply.waitForExistence(timeout: 5))
+        let prefix = "message-content-"
+        XCTAssertTrue(reply.identifier.hasPrefix(prefix))
+        let messageID = reply.identifier.dropFirst(prefix.count)
+        app.buttons["add-reaction-\(messageID)"].tap()
+        let celebrate = app.buttons["pick-reaction-🎉"]
+        XCTAssertTrue(celebrate.waitForExistence(timeout: 5))
+        celebrate.tap()
+        let chip = app.buttons["reaction-\(messageID)-🎉"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+        XCTAssertEqual(chip.value as? String, "1人、自分も付けています")
+        capture(app, name: "返信に付けたスタンプ")
+        app.buttons["閉じる"].tap()
+        open.tap()
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testLongHistoryInitiallyShowsLatestMessage() {
         let app = launchWorkspace(longHistory: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
