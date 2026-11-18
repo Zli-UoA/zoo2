@@ -392,6 +392,45 @@ async fn authorize(
     Ok(channel)
 }
 
+/// A channel's active notes are returned and reordered in one request, so the
+/// API keeps their count bounded. Direct SQL writers that follow the note-lock
+/// contract should apply the same limit.
+pub const MAX_ACTIVE_NOTES_PER_CHANNEL: i64 = 500;
+
+async fn ensure_note_capacity(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<(), AppError> {
+    let rows = toasty::sql::query(
+        "SELECT count(*)::int AS count FROM channel_notes \
+         WHERE channel_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(channel_id)
+    .exec(tx)
+    .await?;
+    let count = match rows.first() {
+        Some(toasty::stmt::Value::Record(record)) => match record.fields.first() {
+            Some(toasty::stmt::Value::I32(value)) => *value as i64,
+            _ => {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected channel note count"
+                )));
+            }
+        },
+        _ => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Missing channel note count"
+            )));
+        }
+    };
+    if count >= MAX_ACTIVE_NOTES_PER_CHANNEL {
+        return Err(AppError::Conflict(format!(
+            "A channel can have at most {MAX_ACTIVE_NOTES_PER_CHANNEL} active notes"
+        )));
+    }
+    Ok(())
+}
+
 fn validate(input: &NoteInput) -> Result<(), AppError> {
     let title = input.title.trim();
     if title.is_empty() || title.chars().count() > 200 {
@@ -632,6 +671,7 @@ async fn restore(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    ensure_note_capacity(&mut tx, &channel_id).await?;
     let rows = toasty::sql::query(
         "UPDATE channel_notes          SET deleted_at = NULL, version = version + 1, updated_at = statement_timestamp() AT TIME ZONE 'UTC'          WHERE id = $2 AND channel_id = $1 AND deleted_at IS NOT NULL            AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'          RETURNING position",
     )
@@ -671,6 +711,7 @@ async fn create(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    ensure_note_capacity(&mut tx, &channel_id).await?;
     let id = Uuid::new_v4().to_string();
     let now = crate::models::now_utc_millis();
     let rows = toasty::sql::query("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL")

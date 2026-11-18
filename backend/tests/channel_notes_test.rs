@@ -3829,3 +3829,110 @@ async fn channel_note_duplicate_positions_tie_break_deterministically() -> anyho
     cleanup.commit().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn active_notes_per_channel_are_limited_on_create_and_restore() -> anyhow::Result<()> {
+    use backend::routes::channel_notes::MAX_ACTIVE_NOTES_PER_CHANNEL;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_limit_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(connection);
+    let seed_prefix = format!("seed-{}-", Uuid::new_v4().simple());
+    let seed = format!(
+        "BEGIN; SET LOCAL session_replication_role=replica; \
+         INSERT INTO channel_notes(id,channel_id,title,content,position,version,created_user_id,created_at,updated_at) \
+         SELECT '{seed_prefix}'||n,'{channel}','title','content',n,1,'{owner}', \
+           now() AT TIME ZONE 'UTC',now() AT TIME ZONE 'UTC' \
+         FROM generate_series(0,{}::integer-1)n; COMMIT;",
+        MAX_ACTIVE_NOTES_PER_CHANNEL - 1
+    );
+    client.batch_execute(&seed).await?;
+
+    let last = request(
+        &app,
+        "POST",
+        &format!("/api/channels/{channel}/notes"),
+        &owner,
+        json!({"title":"last","content":"body"}),
+    )
+    .await;
+    assert_eq!(last.0, StatusCode::OK, "{}", last.1);
+    let last_id = last.1["data"]["id"].as_str().unwrap().to_owned();
+
+    let rejected = request(
+        &app,
+        "POST",
+        &format!("/api/channels/{channel}/notes"),
+        &owner,
+        json!({"title":"over","content":"body"}),
+    )
+    .await;
+    assert_eq!(rejected.0, StatusCode::CONFLICT, "{}", rejected.1);
+
+    // A restorable note does not count while deleted; restoring it at the
+    // active limit must be rejected before it changes any rows.
+    let deleted = Uuid::new_v4().to_string();
+    client
+        .execute(
+            "INSERT INTO channel_notes(id,channel_id,title,content,position,deleted_at,version,created_user_id,created_at,updated_at) \
+             VALUES($1,$2,'deleted','body',0,now() AT TIME ZONE 'UTC' - interval '1 hour',1,$3,now() AT TIME ZONE 'UTC',now() AT TIME ZONE 'UTC')",
+            &[&deleted, &channel, &owner],
+        )
+        .await?;
+    let restore_rejected = request(
+        &app,
+        "POST",
+        &format!("/api/channels/{channel}/notes/{deleted}/restore"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        restore_rejected.0,
+        StatusCode::CONFLICT,
+        "{}",
+        restore_rejected.1
+    );
+
+    let removed = request(
+        &app,
+        "DELETE",
+        &format!("/api/channels/{channel}/notes/{last_id}"),
+        &owner,
+        json!({"version": 1}),
+    )
+    .await;
+    assert_eq!(removed.0, StatusCode::OK, "{}", removed.1);
+
+    let restored = request(
+        &app,
+        "POST",
+        &format!("/api/channels/{channel}/notes/{deleted}/restore"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(restored.0, StatusCode::OK, "{}", restored.1);
+    Ok(())
+}
