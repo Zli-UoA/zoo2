@@ -21,6 +21,12 @@ struct MessageAttachment: Codable, Identifiable, Hashable, Sendable {
 
     var isImage: Bool { content_type.lowercased().hasPrefix("image/") }
     var isVideo: Bool { content_type.lowercased().hasPrefix("video/") }
+    var isPDF: Bool {
+        let type = content_type.components(separatedBy: ";")[0].trimmingCharacters(in: .whitespaces).lowercased()
+        return type == "application/pdf" ||
+            (["", "application/octet-stream", "binary/octet-stream"].contains(type) &&
+             (file_name as NSString).pathExtension.lowercased() == "pdf")
+    }
 }
 
 extension MessageAttachment {

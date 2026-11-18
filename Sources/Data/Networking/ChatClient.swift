@@ -15,6 +15,7 @@ protocol ChatClient: InboxClient, CallClient {
     func members(channelID: String) async throws -> [ChannelMembership]
     func readState(channelID: String) async throws -> ChannelReadState
     func attachmentURL(id: String) async throws -> URL
+    func attachmentData(from url: URL) async throws -> Data
     func readStates() async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
     func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws
@@ -66,6 +67,17 @@ struct NativeChatClient: ChatClient {
         let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")
         guard let url = result.data.url else { throw ZooError.invalidResponse }
         return url
+    }
+
+    func attachmentData(from url: URL) async throws -> Data {
+        guard DisplayEmoji.assetURL(url.absoluteString) != nil else { throw ZooError.invalidResponse }
+        // 署名付きURLにはAPIの認証トークンを付けず、ストレージの401でログアウトさせない。
+        let (data, response) = try await api.transport.send(URLRequest(url: url))
+        try Task.checkCancellation()
+        guard (200..<300).contains(response.statusCode) else {
+            throw ZooError.rejected(response.statusCode, "添付ファイルを取得できませんでした。")
+        }
+        return data
     }
 
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws {

@@ -2,6 +2,49 @@ import XCTest
 
 final class ZooUITests: XCTestCase {
     @MainActor
+    func testPDFAttachmentPreview() {
+        let app = launchWorkspace(pdf: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let open = app.buttons["PDFを全画面で表示：確認資料.pdf"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["PDFを表示"].exists)
+        XCTAssertGreaterThan(open.frame.height, 150)
+        capture(app, name: "会話内のPDFプレビュー")
+        open.tap()
+        let pdf = app.descendants(matching: .any)["attachment-pdf-view"].firstMatch
+        XCTAssertTrue(pdf.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["確認資料.pdf"].exists)
+        XCTAssertEqual(app.staticTexts["pdf-page-count"].label, "2ページ")
+        XCTAssertLessThan(app.navigationBars["確認資料.pdf"].frame.minY, 100)
+        XCTAssertGreaterThan(pdf.frame.height, app.frame.height * 0.7)
+        capture(app, name: "添付PDFの全画面表示")
+        pdf.pinch(withScale: 1.5, velocity: 1)
+        pdf.swipeUp()
+        capture(app, name: "添付PDFの拡大とページ移動")
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testSensitivePDFCanRetryAfterFailure() {
+        let app = launchWorkspace(pdf: true, pdfFailure: true, sensitivePDF: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let reveal = app.buttons["センシティブな添付を表示"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["PDFを全画面で表示：確認資料.pdf"].exists)
+        reveal.tap()
+        let open = app.buttons["PDFを全画面で表示：確認資料.pdf"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.tap()
+        XCTAssertTrue(app.staticTexts["添付を開けません"].waitForExistence(timeout: 5))
+        app.buttons["再読み込み"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["attachment-pdf-view"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["添付を開けません"].exists)
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testFileAttachmentsCanBeRemovedAndRetried() {
         let app = launchWorkspace(failingSend: true, attachments: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -240,6 +283,40 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testTallImageFitsZoomsAndDismisses() {
+        let app = launchWorkspace(tallImage: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let open = app.buttons["画像を拡大：縦長画像.png"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5))
+        open.tap()
+        let viewport = app.scrollViews["attachment-image-view"]
+        let image = app.images["attachment-preview-image"]
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        XCTAssertLessThan(app.navigationBars["縦長画像.png"].frame.minY, 100)
+        XCTAssertGreaterThan(viewport.frame.height, app.frame.height * 0.7)
+        let fitted = image.frame
+        XCTAssertTrue(viewport.frame.insetBy(dx: -1, dy: -1).contains(fitted))
+        viewport.swipeLeft()
+        XCTAssertEqual(image.frame.minX, fitted.minX, accuracy: 1)
+        capture(app, name: "縦長画像の全体表示")
+        viewport.pinch(withScale: 2, velocity: 1)
+        XCTAssertGreaterThan(image.frame.width, fitted.width * 1.3)
+        XCTAssertTrue(app.buttons["閉じる"].isHittable)
+        capture(app, name: "画像をピンチで拡大")
+        image.doubleTap()
+        XCTAssertEqual(image.frame.width, fitted.width, accuracy: 1)
+        viewport.swipeDown()
+        XCTAssertTrue(viewport.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(open.isHittable)
+        open.tap()
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        image.doubleTap()
+        XCTAssertGreaterThan(image.frame.width, fitted.width * 1.3)
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(viewport.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
     func testImageAttachmentPreviewAndDateDividers() {
         let app = launchWorkspace(chatDetails: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -316,7 +393,9 @@ final class ZooUITests: XCTestCase {
 
     @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
-                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, callInviteFailure: Bool = false, attachments: Bool = false) -> XCUIApplication {
+                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, attachments: Bool = false,
+                                 pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,
+                                 tallImage: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -324,11 +403,15 @@ final class ZooUITests: XCTestCase {
         if longHistory { app.launchArguments.append("--uitesting-long-history") }
         if dark { app.launchArguments += ["-zoo.appearance", "dark"] }
         if video { app.launchArguments.append("--uitesting-video") }
+        if tallImage { app.launchArguments.append("--uitesting-tall-image") }
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if call { app.launchArguments.append("--uitesting-call") }
         if callInviteFailure { app.launchArguments.append("--uitesting-call-invite-failure") }
         if attachments { app.launchArguments.append("--uitesting-attachments") }
+        if pdf { app.launchArguments.append("--uitesting-pdf") }
+        if pdfFailure { app.launchArguments.append("--uitesting-pdf-failure") }
+        if sensitivePDF { app.launchArguments.append("--uitesting-sensitive-pdf") }
         if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()
