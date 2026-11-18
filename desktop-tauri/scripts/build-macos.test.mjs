@@ -8,11 +8,13 @@ import {fileURLToPath} from 'node:url';
 
 const script = fileURLToPath(new URL('./build-macos.sh', import.meta.url));
 const config = '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"テスト用 公開鍵"}}}';
-const timestamp = 'zoo2.app/Contents/MacOS/zoo2-desktop-tauri: A timestamp was expected but was not found.\n';
+const target = '/Users/runner/work/zoo2/zoo2/desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos/zoo2.app/Contents/MacOS/zoo2-desktop-tauri';
+const signing = `Signing with identity "Developer ID Application: テスト"\nSigning ${target}\n`;
+const timestamp = `${target}: A timestamp was expected but was not found.\n`;
 const codesign = 'Error failed to bundle project: failed codesign application: failed to run command codesign: failed to sign app\n';
-const temporaryFailure = {status: 1, stderr: timestamp + codesign};
+const temporaryFailure = {status: 1, stderr: signing + timestamp + codesign};
 
-function run(t, results, {teeFailure = false} = {}) {
+function run(t, results, {teeFailure = false, signal} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'zoo2-macos-build-test-'));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const bin = join(dir, 'bin');
@@ -33,13 +35,14 @@ fs.writeSync(1, result.stdout ?? 'ビルド実行\\n');
 fs.writeSync(2, result.stderr ?? '');
 process.exitCode = result.status;
 `, {mode: 0o755});
-  writeFileSync(join(bin, 'sleep'), '#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> sleeps\n', {mode: 0o755});
+  // シグナルの送信先は、このテストが起動した再試行スクリプトだけに限定する。
+  writeFileSync(join(bin, 'sleep'), '#!/usr/bin/env bash\nprintf "%s\\n" "$1" >> sleeps\nif [ -n "$TEST_SIGNAL" ]; then kill -s "$TEST_SIGNAL" "$PPID"; fi\n', {mode: 0o755});
   if (teeFailure) {
     writeFileSync(join(bin, 'tee'), '#!/usr/bin/env bash\ncat > /dev/null\nexit 74\n', {mode: 0o755});
   }
   const result = spawnSync('bash', [script, config], {
     cwd: dir,
-    env: {...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: logs, TEST_RESULTS: JSON.stringify(results)},
+    env: {...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: logs, TEST_RESULTS: JSON.stringify(results), TEST_SIGNAL: signal ?? ''},
     encoding: 'utf8',
     timeout: 10000,
   });
@@ -86,6 +89,8 @@ for (const [name, stderr] of [
   ['ビルド', 'error: could not compile zoo2-desktop-tauri\n'],
   ['タイムスタンプに言及した別処理', timestamp + 'error: 別処理が失敗しました\n'],
   ['別のタイムスタンプ処理', 'zoo2.app: timestamp service is not available\n' + codesign],
+  ['先行するタイムスタンプ警告と現在の署名', 'warning: ' + timestamp + signing + codesign],
+  ['別ファイルのタイムスタンプと現在の署名', signing + timestamp + 'Signing /another.app\n' + codesign],
 ]) {
   test(`${name}のエラーは直ちに失敗させる`, t => {
     const result = run(t, [{status: 17, stderr}]);
@@ -109,6 +114,15 @@ test('中断の終了コードはタイムスタンプエラーがあっても�
   assert.equal(result.attempts, 1);
   assert.equal(result.sleeps, '');
 });
+
+for (const [signal, status] of [['INT', 130], ['TERM', 143]]) {
+  test(`待機中に SIG${signal} を受けたら次のビルドを開始しない`, t => {
+    const result = run(t, [temporaryFailure, {status: 0}], {signal});
+    assert.equal(result.status, status);
+    assert.equal(result.attempts, 1);
+    assert.equal(result.sleeps, '30\n');
+  });
+}
 
 for (const build of [{status: 0}, temporaryFailure]) {
   test(`ログの保存が失敗したらビルドの終了コード ${build.status} にかかわらず失敗させる`, t => {

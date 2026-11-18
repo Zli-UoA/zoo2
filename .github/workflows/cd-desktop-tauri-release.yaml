@@ -176,7 +176,7 @@ jobs:
               "Developer ID Application: "*) ;;
               *) echo "::error::APPLE_SIGNING_IDENTITY には Developer ID Application 証明書の名前を指定してください。"; exit 1 ;;
             esac
-            bash ../scripts/build-macos.sh "$config"
+            exec bash ../scripts/build-macos.sh "$config"
           else
             cargo tauri build --bundles deb,appimage --config "$config" -- --locked
           fi

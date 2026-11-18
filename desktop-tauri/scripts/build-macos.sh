@@ -4,6 +4,9 @@ set -euo pipefail
 # 署名処理の出力を判定用に一時保存するため、他のユーザーから読めないようにする。
 build_log=$(umask 077; mktemp "${TMPDIR:-/tmp}/zoo2-tauri-build.XXXXXX")
 trap 'rm -f "$build_log"' EXIT
+# 待機中のキャンセルでも、子プロセスの終了後に次の試行へ進ませない。
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for attempt in 1 2 3; do
   if cargo tauri build --target universal-apple-darwin --bundles app,dmg --config "$1" -- --locked 2>&1 | tee "$build_log"; then
@@ -20,9 +23,13 @@ for attempt in 1 2 3; do
     exit "${statuses[0]}"
   fi
 
-  # 証明書・公証などの恒久的な失敗まで繰り返さないよう、実際の codesign エラーに限定する。
-  if ! grep -Eq ': A timestamp was expected but was not found\.$' "$build_log" ||
-     ! grep -Fq 'failed to run command codesign: failed to sign app' "$build_log"; then
+  # 先行する警告や別ファイルの署名結果を、今回失敗した codesign のエラーと混同しない。
+  if ! awk '
+    /^Signing \// { target = substr($0, 9); timestamp = 0; retry = 0 }
+    target != "" && $0 == target ": A timestamp was expected but was not found." { timestamp = 1 }
+    /failed to run command codesign: failed to sign app/ { retry = timestamp }
+    END { exit !retry }
+  ' "$build_log"; then
     exit "${statuses[0]}"
   fi
 
