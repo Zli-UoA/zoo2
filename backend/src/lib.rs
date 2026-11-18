@@ -1,4 +1,5 @@
 pub mod activitypub;
+pub mod apns;
 pub mod apps;
 pub mod auth;
 pub mod call_invites;

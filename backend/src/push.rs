@@ -315,13 +315,21 @@ pub fn dispatch_db(db: toasty::Db, notifications: Vec<Notification>) {
         return;
     }
     tokio::spawn(async move {
-        if deliver(db, notifications).await.is_err() {
-            tracing::warn!("Web Push delivery failed");
+        // Appleの通信待ちが他の受信者のWeb Push・FCM配信を止めないよう、配送経路ごとに順に処理する。
+        let (web, ios) = tokio::join!(
+            deliver(db.clone(), &notifications),
+            crate::apns::deliver_batch(db, &notifications),
+        );
+        if web.is_err() {
+            tracing::warn!("Web Push・FCMの配信に失敗しました");
+        }
+        if ios.is_err() {
+            tracing::warn!("iPhoneへの通知を送信できませんでした");
         }
     });
 }
 
-async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow::Result<()> {
+async fn deliver(mut db: toasty::Db, notifications: &[Notification]) -> anyhow::Result<()> {
     let config = PushConfig::from_env()?;
     let android = fcm::FcmConfig::from_env()?;
     if config.is_none() && android.is_none() {
@@ -329,37 +337,60 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
     }
     let client = push_client()?;
     for notification in notifications {
-        let Some(payload) = build_payload(&mut db, &notification).await? else {
-            continue;
-        };
-        push_to_user(
-            &client,
-            config.as_ref(),
-            android.as_ref(),
-            &mut db,
-            &notification.user_id,
-            &payload,
-            &Delivery::NORMAL,
-        )
-        .await?;
+        if notification_is_deliverable(&mut db, notification).await?
+            && let Some(payload) = build_payload(&mut db, notification).await?
+        {
+            push_to_user(
+                &client,
+                config.as_ref(),
+                android.as_ref(),
+                &mut db,
+                &notification.user_id,
+                &payload,
+                &Delivery::NORMAL,
+            )
+            .await?;
+        }
     }
     Ok(())
 }
 
-fn push_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+// 送信キューに入った後の退会・無効化・削除・通知休止も、全配送先で反映する。
+pub(crate) async fn notification_is_deliverable(
+    db: &mut dyn toasty::db::Executor,
+    notification: &Notification,
+) -> anyhow::Result<bool> {
+    let rows = toasty::sql::query(
+        "SELECT 1::text FROM users u JOIN channels c ON c.id=$2
+         WHERE u.id=$1 AND NOT u.is_deactivated AND c.deleted_at IS NULL
+           AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
+                SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
+           AND NOT EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=u.id AND dnd_until>now())
+           AND (EXISTS(SELECT 1 FROM messages WHERE id=$3 AND channel_id=c.id AND deleted_at IS NULL)
+                OR ($3='' AND $4='missed_call'))",
+    ).bind(notification.user_id.as_str()).bind(notification.channel_id.as_str())
+        .bind(notification.message_id.as_deref().unwrap_or("")).bind(notification.notification_type.as_str())
+        .exec(db).await?;
+    Ok(!rows.is_empty())
+}
+
+pub(crate) fn push_client() -> anyhow::Result<reqwest::Client> {
+    // APNsを含む通知プロバイダーへのTLS接続を、通知ごとに張り直さず再利用する。
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
-        .build()?)
+        .build()?;
+    Ok(CLIENT.get_or_init(|| client).clone())
 }
 
 /// Web Push の送り方。通話の着信は、短い TTL と `Urgency: high` で送る。
 struct Delivery {
     ttl: u32,
     urgent: bool,
-    /// 応答不可 (DND) のユーザーには送らない。着信を送らなかった人に取り消しだけが届かないよう、
-    /// 取り消し (`call_invite_end`) も同じ。
-    respect_dnd: bool,
     /// 送り終えていなければならない時刻。各購読への送信の直前に、残りの時間を TTL にする
     /// （前の購読への送信に時間がかかっても、期限の過ぎた着信を届けないため）。
     expires: Option<std::time::Instant>,
@@ -369,7 +400,6 @@ impl Delivery {
     const NORMAL: Self = Self {
         ttl: 300,
         urgent: false,
-        respect_dnd: true,
         expires: None,
     };
 }
@@ -384,10 +414,6 @@ async fn push_to_user(
     payload: &NotificationPayload,
     delivery: &Delivery,
 ) -> anyhow::Result<()> {
-    if delivery.respect_dnd {
-        let mut tx = db.transaction().await?;
-        if crate::apps::one(&mut tx,"SELECT json_build_object('quiet',EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",&[user_id]).await?["quiet"]==true{return Ok(());}
-    }
     let subscriptions = PushSubscription::filter(PushSubscription::fields().user_id().eq(user_id))
         .exec(db)
         .await?;
@@ -546,6 +572,13 @@ async fn deliver_call_invites(
     for invite in invites {
         // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
         let result: anyhow::Result<()> = async {
+            // 着信もその取り消しも、応答不可の受信者には配信しない。
+            let mut tx = db.transaction().await?;
+            let quiet = crate::apps::one(&mut tx,
+                "SELECT to_json(EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",
+                &[&invite.invitee_id]).await? == true;
+            tx.commit().await?;
+            if quiet { return Ok(()); }
             let payload = if end {
                 NotificationPayload {
                     title: String::new(),
@@ -584,7 +617,6 @@ async fn deliver_call_invites(
             let delivery = Delivery {
                 ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
                 urgent: true,
-                respect_dnd: true,
                 // 着信は、招待の期限までに送れた購読にだけ送る（期限の過ぎた着信を、あとから出さない）。
                 expires: (!end).then_some(
                     started + std::time::Duration::from_secs(u64::from(CALL_INVITE_TTL_SECONDS)),
@@ -662,6 +694,76 @@ async fn send_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "マイグレーションを適用したPostgreSQLを使用"]
+    async fn apns_and_other_transports_require_current_visibility() -> anyhow::Result<()> {
+        let mut db = crate::db::init_db(&crate::config::Config::from_env().database_url).await?;
+        let mut tx = db.transaction().await?;
+        let user = uuid::Uuid::new_v4().to_string();
+        let channel = uuid::Uuid::new_v4().to_string();
+        let message = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'通知テスト')",
+        )
+        .bind(user.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement("INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1,$1,$2,true,true)")
+            .bind(channel.as_str()).bind(user.as_str()).exec(&mut tx).await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,channel_id,user_id,content) VALUES($1,$2,$3,'テスト')",
+        )
+        .bind(message.as_str())
+        .bind(channel.as_str())
+        .bind(user.as_str())
+        .exec(&mut tx)
+        .await?;
+        let notification = Notification {
+            id: uuid::Uuid::new_v4().to_string(),
+            user_id: user.clone(),
+            actor_id: user.clone(),
+            channel_id: channel.clone(),
+            message_id: Some(message.clone()),
+            notification_type: "dm".into(),
+            is_read: false,
+            created_at: crate::models::now_utc_millis(),
+        };
+        assert!(!notification_is_deliverable(&mut tx, &notification).await?);
+        toasty::sql::statement(
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+        )
+        .bind(user.as_str())
+        .bind(channel.as_str())
+        .exec(&mut tx)
+        .await?;
+        assert!(notification_is_deliverable(&mut tx, &notification).await?);
+        toasty::sql::statement("INSERT INTO user_event_settings(user_id,dnd_until) VALUES($1, now() + interval '1 hour') ON CONFLICT (user_id) DO UPDATE SET dnd_until=EXCLUDED.dnd_until")
+            .bind(user.as_str()).exec(&mut tx).await?;
+        assert!(!notification_is_deliverable(&mut tx, &notification).await?);
+        toasty::sql::statement("UPDATE user_event_settings SET dnd_until=NULL WHERE user_id=$1")
+            .bind(user.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("UPDATE messages SET deleted_at=now() WHERE id=$1")
+            .bind(message.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!notification_is_deliverable(&mut tx, &notification).await?);
+        let missed_call = Notification {
+            notification_type: "missed_call".into(),
+            message_id: None,
+            ..notification
+        };
+        assert!(notification_is_deliverable(&mut tx, &missed_call).await?);
+        toasty::sql::statement("UPDATE channels SET deleted_at=now() WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(!notification_is_deliverable(&mut tx, &missed_call).await?);
+        tx.rollback().await?;
+        Ok(())
+    }
+
     #[test]
     fn endpoint_validation_prevents_ssrf() {
         for endpoint in [

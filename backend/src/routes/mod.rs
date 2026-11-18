@@ -1,3 +1,4 @@
+pub mod apns;
 pub mod attachments;
 pub mod bubble_chat;
 pub mod calls;
@@ -123,6 +124,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(pbx::router())
         .merge(notifications::router())
         .merge(push::router())
+        .merge(apns::router())
         .merge(read_states::router())
         .merge(shapes::router())
         .merge(telemetry::router())

@@ -249,6 +249,25 @@ CREATE INDEX idx_push_subscriptions_user_id ON push_subscriptions (user_id);
 ALTER TABLE push_subscriptions ADD COLUMN p256dh text;
 ALTER TABLE push_subscriptions ADD COLUMN auth_secret text;
 
+CREATE TABLE apns_subscriptions (
+  id text NOT NULL PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  device_token text NOT NULL,
+  environment text NOT NULL CHECK (environment IN ('sandbox', 'production')),
+  revocation_hash text NOT NULL,
+  created_at timestamp(3) NOT NULL,
+  last_test_at timestamptz,
+  UNIQUE (device_token, environment)
+);
+CREATE INDEX idx_apns_subscriptions_user_id ON apns_subscriptions (user_id);
+
+-- 遅れて届いた登録要求で、ログアウト済みの端末に通知が再開されるのを防ぐ。
+CREATE TABLE apns_revocations (
+  id text NOT NULL PRIMARY KEY,
+  revoked_at timestamp(3) NOT NULL
+);
+CREATE INDEX idx_apns_revocations_revoked_at ON apns_revocations (revoked_at);
+
 -- App profiles are public; all other platform tables are server-only.
 CREATE TABLE apps (
  id text PRIMARY KEY,
