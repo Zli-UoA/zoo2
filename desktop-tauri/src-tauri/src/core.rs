@@ -716,12 +716,30 @@ impl Core {
             inner.generation += 1;
             inner.generation
         };
-        let discovery = auth::discover(&self.http, &oidc.issuer)
-            .await
-            .map_err(to_ipc)?;
-        let authorization = device::start(&self.http, &discovery, oidc)
-            .await
-            .map_err(to_ipc)?;
+        let discovery = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            auth::discover(&self.http, &oidc.issuer),
+        )
+        .await
+        .map_err(|_| {
+            IpcError::new(
+                ErrorCode::Timeout,
+                "認証サーバーの応答がタイムアウトしました",
+            )
+        })?
+        .map_err(to_ipc)?;
+        let authorization = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            device::start(&self.http, &discovery, oidc),
+        )
+        .await
+        .map_err(|_| {
+            IpcError::new(
+                ErrorCode::Timeout,
+                "認証サーバーの応答がタイムアウトしました",
+            )
+        })?
+        .map_err(to_ipc)?;
         let login = DeviceLogin {
             user_code: authorization.user_code.clone(),
             verification_uri: authorization.verification_uri.clone(),
@@ -734,6 +752,7 @@ impl Core {
             return Err(IpcError::new(ErrorCode::Internal, "ログインを中止しました"));
         }
         let core = self.clone();
+        let issuer = oidc.issuer.clone();
         let (config, oidc) = (config.clone(), oidc.clone());
         inner.login_task = Some(tokio::spawn(async move {
             let result = async {
@@ -775,17 +794,37 @@ impl Core {
             },
         );
         drop(inner);
-        let app = self.app.clone();
         let url = login
             .verification_uri_complete
             .clone()
             .unwrap_or_else(|| login.verification_uri.clone());
         // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
-        tauri::async_runtime::spawn_blocking(move || {
-            if let Err(err) = open_in_browser(&app, &url) {
-                eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
-            }
-        });
+        // 想定外のオリジン・スキームは自動で開かず、キャンセル済みなら開かない。
+        if is_same_issuer_origin(&url, &issuer) {
+            let core = self.clone();
+            tauri::async_runtime::spawn(async move {
+                let active = {
+                    let inner = core.inner.lock().await;
+                    inner.generation == generation
+                        && matches!(inner.state, SessionState::LoggingIn { .. })
+                };
+                if !active {
+                    return;
+                }
+                let app = core.app.clone();
+                match tokio::task::spawn_blocking(move || open_in_browser(&app, &url)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
+                    }
+                    Err(err) => {
+                        eprintln!("ログイン URL をブラウザーで開く処理が失敗しました: {err}");
+                    }
+                }
+            });
+        } else {
+            eprintln!("ログイン URL のオリジンが IdP と一致しないため、自動では開きません");
+        }
         Ok(login)
     }
 
@@ -1096,4 +1135,53 @@ fn load_notification_settings() -> NotificationSettings {
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+/// ログイン URL が IdP (`issuer`) と同じオリジンの HTTP(S) URL かを確かめる。
+fn is_same_issuer_origin(url: &str, issuer: &str) -> bool {
+    let (Ok(target), Ok(issuer)) = (url::Url::parse(url), url::Url::parse(issuer)) else {
+        return false;
+    };
+    matches!(target.scheme(), "http" | "https") && target.origin() == issuer.origin()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_same_issuer_origin;
+
+    #[test]
+    fn login_url_origin_validation_allows_only_same_http_origin() {
+        assert!(is_same_issuer_origin(
+            "https://account.zli.works/device?user_code=ABCD-1234",
+            "https://account.zli.works/realms/zli"
+        ));
+        assert!(is_same_issuer_origin(
+            "http://localhost:8080/device",
+            "http://localhost:8080"
+        ));
+        assert!(!is_same_issuer_origin(
+            "https://evil.example/device",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "https://account.zli.works:8443/device",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "http://account.zli.works/device",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "file:///C:/Windows/System32/calc.exe",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "javascript:alert(1)",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "not a url",
+            "https://account.zli.works"
+        ));
+    }
 }

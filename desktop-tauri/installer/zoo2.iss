@@ -57,16 +57,20 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
+japanese.WebView2VerifyFailed=Microsoft Edge WebView2 Runtime インストーラーの署名を確認できませんでした。
 japanese.WebView2ExecFailed=Microsoft Edge WebView2 Runtime のインストーラーを起動できませんでした。
 japanese.WebView2InstallFailed=Microsoft Edge WebView2 Runtime のインストールに失敗しました (終了コード: %d)。
 japanese.WebView2DownloadFailed=Microsoft Edge WebView2 Runtime が見つからず、自動ダウンロードにも失敗しました。ネットワーク接続を確認してやり直してください。
 japanese.RemoveUserDataPrompt=設定やログイン情報、キャッシュデータ (%APPDATA%\zoo2-desktop-tauri、%LOCALAPPDATA%\chat.zli.desktop) も削除しますか？
 japanese.RemoveUserDataHint=「いいえ」を選ぶと、再インストール時に設定とログイン状態を引き継ぎます。
+japanese.RemoveUserDataFailed=一部の設定・データフォルダを削除できませんでした。アプリが終了しているか確認し、必要に応じて手動で削除してください:%n%n%s
+english.WebView2VerifyFailed=Failed to verify the digital signature of the Microsoft Edge WebView2 Runtime installer.
 english.WebView2ExecFailed=Failed to start the Microsoft Edge WebView2 Runtime installer.
 english.WebView2InstallFailed=Failed to install Microsoft Edge WebView2 Runtime (exit code: %d).
 english.WebView2DownloadFailed=Microsoft Edge WebView2 Runtime was not found and automatic download failed. Check your network connection and try again.
 english.RemoveUserDataPrompt=Do you also want to delete your settings, sign-in session, and cached data (%APPDATA%\zoo2-desktop-tauri, %LOCALAPPDATA%\chat.zli.desktop)?
 english.RemoveUserDataHint=Choose No to keep your settings and sign-in state if you reinstall zoo2 later.
+english.RemoveUserDataFailed=Could not delete some settings or data folders. Make sure zoo2 is closed and remove them manually if needed:%n%n%s
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -146,10 +150,39 @@ begin
     HasWebView2Key(HKCU, 'Software\Microsoft\EdgeUpdate\Clients\' + WEBVIEW2_CLIENT_GUID);
 end;
 
+function EscapePowerShellSingleQuoted(const S: String): String;
+begin
+  Result := S;
+  StringChangeEx(Result, '''', '''''', True);
+end;
+
+function VerifyMicrosoftSignature(const FilePath: String): Boolean;
+var
+  PsExe: String;
+  SafePath: String;
+  Cmd: String;
+  ResultCode: Integer;
+begin
+  Result := False;
+  PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  if not FileExists(PsExe) then
+    PsExe := 'powershell.exe';
+  SafePath := EscapePowerShellSingleQuoted(FilePath);
+  Cmd :=
+    '-NoProfile -NonInteractive -WindowStyle Hidden -Command "' +
+    '$s = Get-AuthenticodeSignature -LiteralPath ''' + SafePath + '''; ' +
+    'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate -and ' +
+    '($s.SignerCertificate.Subject -match ''(^|,)\s*O=\x22?Microsoft Corporation\x22?\s*(,|$)'')) ' +
+    '{ exit 0 } else { exit 1 }"';
+  if Exec(PsExe, Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   BootstrapperPath: String;
   ResultCode: Integer;
+  ElapsedMs: Integer;
 begin
   Result := '';
   if IsWebView2Installed() then
@@ -158,16 +191,31 @@ begin
   try
     DownloadTemporaryFile(WEBVIEW2_BOOTSTRAPPER_URL, 'MicrosoftEdgeWebView2Setup.exe', '', nil);
     BootstrapperPath := ExpandConstant('{tmp}\MicrosoftEdgeWebView2Setup.exe');
+  except
+    Result := CustomMessage('WebView2DownloadFailed');
+    Exit;
+  end;
+
+  try
+    if not VerifyMicrosoftSignature(BootstrapperPath) then begin
+      Result := CustomMessage('WebView2VerifyFailed');
+      Exit;
+    end;
     if not Exec(BootstrapperPath, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
       Result := CustomMessage('WebView2ExecFailed');
       Exit;
     end;
-    if (ResultCode <> 0) and (not IsWebView2Installed()) then begin
+    ElapsedMs := 0;
+    while (not IsWebView2Installed()) and (ElapsedMs < 5000) do begin
+      Sleep(500);
+      ElapsedMs := ElapsedMs + 500;
+    end;
+    if not IsWebView2Installed() then begin
       Result := Format(CustomMessage('WebView2InstallFailed'), [ResultCode]);
       Exit;
     end;
-  except
-    Result := CustomMessage('WebView2DownloadFailed');
+  finally
+    DeleteFile(BootstrapperPath);
   end;
 end;
 
@@ -176,6 +224,7 @@ var
   ConfigDir: String;
   LocalDataDir: String;
   PromptText: String;
+  FailedDirs: String;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
@@ -187,10 +236,16 @@ begin
   if (not UninstallSilent) and (DirExists(ConfigDir) or DirExists(LocalDataDir)) then begin
     PromptText := CustomMessage('RemoveUserDataPrompt') + #13#10 + #13#10 + CustomMessage('RemoveUserDataHint');
     if SuppressibleMsgBox(PromptText, mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then begin
-      if DirExists(ConfigDir) then
-        DelTree(ConfigDir, True, True, True);
-      if DirExists(LocalDataDir) then
-        DelTree(LocalDataDir, True, True, True);
+      FailedDirs := '';
+      if DirExists(ConfigDir) and (not DelTree(ConfigDir, True, True, True)) then
+        FailedDirs := ConfigDir;
+      if DirExists(LocalDataDir) and (not DelTree(LocalDataDir, True, True, True)) then begin
+        if FailedDirs <> '' then
+          FailedDirs := FailedDirs + #13#10;
+        FailedDirs := FailedDirs + LocalDataDir;
+      end;
+      if FailedDirs <> '' then
+        SuppressibleMsgBox(Format(CustomMessage('RemoveUserDataFailed'), [FailedDirs]), mbError, MB_OK, IDOK);
     end;
   end;
 end;

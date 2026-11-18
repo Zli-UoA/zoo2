@@ -161,6 +161,7 @@ impl CallToast {
     }
 
     /// 出し終えたら、ハンドルを預かる。すでに閉じる指示が出ていたら、すぐ閉じて `None`。
+    #[cfg(unix)]
     fn shown(&self, handle: ToastHandle) -> Option<ToastHandle> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if matches!(*state, CallToastState::Closed) {
@@ -170,6 +171,21 @@ impl CallToast {
         }
         *state = CallToastState::Shown(handle.clone());
         Some(handle)
+    }
+
+    /// まだ閉じていないときだけ `show` を呼び、成功したら表示済みへ遷移させる。
+    #[cfg(any(target_os = "windows", test))]
+    fn show_if_open(&self, handle: ToastHandle, show: impl FnOnce() -> bool) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if matches!(*state, CallToastState::Closed) {
+            return false;
+        }
+        if show() {
+            *state = CallToastState::Shown(handle);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -299,6 +315,13 @@ pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: Cal
 
 #[cfg(any(target_os = "windows", test))]
 mod windows_xml {
+    fn is_valid_xml_char(ch: char) -> bool {
+        ch == '\t'
+            || ch == '\n'
+            || ch == '\r'
+            || (ch >= '\u{0020}' && !matches!(ch, '\u{FFFE}' | '\u{FFFF}'))
+    }
+
     pub(super) fn escape_xml(text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         for ch in text.chars() {
@@ -308,7 +331,8 @@ mod windows_xml {
                 '>' => out.push_str("&gt;"),
                 '"' => out.push_str("&quot;"),
                 '\'' => out.push_str("&apos;"),
-                _ => out.push(ch),
+                c if is_valid_xml_char(c) => out.push(c),
+                _ => out.push('\u{FFFD}'),
             }
         }
         out
@@ -354,16 +378,23 @@ mod windows_xml {
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
-    use std::sync::{
-        Arc, Mutex, PoisonError,
-        atomic::{AtomicU64, Ordering},
+    use std::{
+        collections::HashMap,
+        sync::{
+            Arc, Mutex, OnceLock, PoisonError,
+            atomic::{AtomicU64, Ordering},
+            mpsc,
+        },
     };
 
     use tauri::{AppHandle, Manager};
     use windows::{
         Data::Xml::Dom::XmlDocument,
         Foundation::TypedEventHandler,
-        UI::Notifications::{ToastActivatedEventArgs, ToastNotification, ToastNotificationManager},
+        UI::Notifications::{
+            ToastActivatedEventArgs, ToastDismissedEventArgs, ToastFailedEventArgs,
+            ToastNotification, ToastNotificationManager,
+        },
         Win32::{
             Foundation::RPC_E_CHANGED_MODE,
             System::{
@@ -384,7 +415,89 @@ mod windows_impl {
 
     const CALL_TOAST_GROUP: &str = "calls";
     const APP_ICON_PNG: &[u8] = include_bytes!("../icons/128x128.png");
+    const MAX_ACTIVE_TOASTS: usize = 64;
     static CALL_TOAST_SEQ: AtomicU64 = AtomicU64::new(1);
+    static TOAST_INSTANCE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+    struct ActiveToast {
+        tag: Option<String>,
+        // WinRT のイベント通知を受け取る間、COM オブジェクトへの参照を保持する。
+        _toast: ToastNotification,
+    }
+
+    static ACTIVE_TOASTS: OnceLock<Mutex<HashMap<u64, ActiveToast>>> = OnceLock::new();
+    static TOAST_WORKER: OnceLock<mpsc::Sender<Box<dyn FnOnce() + Send>>> = OnceLock::new();
+
+    fn active_toasts() -> &'static Mutex<HashMap<u64, ActiveToast>> {
+        ACTIVE_TOASTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn spawn_mta_task(task: impl FnOnce() + Send + 'static) {
+        let tx = TOAST_WORKER.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            std::thread::Builder::new()
+                .name("winrt-toast".to_string())
+                .spawn(move || {
+                    // スレッドを終了させず MTA を維持し、表示後しばらく経ったクリックやボタン通知を受ける。
+                    let _com = ComGuard::init();
+                    while let Ok(job) = rx.recv() {
+                        job();
+                    }
+                })
+                .expect("WinRT トーストスレッドの起動に失敗しました");
+            tx
+        });
+        let _ = tx.send(Box::new(task));
+    }
+
+    fn retain_toast(toast: &ToastNotification, tag: Option<&str>) -> windows::core::Result<u64> {
+        let id = TOAST_INSTANCE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dismissed =
+            TypedEventHandler::<ToastNotification, ToastDismissedEventArgs>::new(move |_, _| {
+                release_toast(id);
+                Ok(())
+            });
+        toast.Dismissed(&dismissed)?;
+
+        let failed =
+            TypedEventHandler::<ToastNotification, ToastFailedEventArgs>::new(move |_, _| {
+                release_toast(id);
+                Ok(())
+            });
+        toast.Failed(&failed)?;
+
+        let mut map = active_toasts()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while map.len() >= MAX_ACTIVE_TOASTS {
+            let Some(&oldest_id) = map.keys().min() else {
+                break;
+            };
+            map.remove(&oldest_id);
+        }
+        map.insert(
+            id,
+            ActiveToast {
+                tag: tag.map(ToOwned::to_owned),
+                _toast: toast.clone(),
+            },
+        );
+        Ok(id)
+    }
+
+    fn release_toast(id: u64) {
+        active_toasts()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+    }
+
+    fn release_toast_by_tag(tag: &str) {
+        active_toasts()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, entry| entry.tag.as_deref() != Some(tag));
+    }
 
     /// COM アパートメントをマルチスレッドで初期化する。`Drop` で対になる終了処理を呼ぶ。
     struct ComGuard(bool);
@@ -479,8 +592,7 @@ mod windows_impl {
         let app = app.clone();
         let xml = build_toast_xml(title, body);
         let on_click: ToastClickCallback = Arc::new(Mutex::new(Some(Box::new(on_click))));
-        std::thread::spawn(move || {
-            let _com = ComGuard::init();
+        spawn_mta_task(move || {
             if let Err(err) = show_notification_inner(&app, &xml, on_click) {
                 eprintln!("通知を出せませんでした: {err}");
             }
@@ -495,8 +607,10 @@ mod windows_impl {
         let doc = XmlDocument::new()?;
         doc.LoadXml(&HSTRING::from(xml))?;
         let toast = ToastNotification::CreateToastNotification(&doc)?;
+        let toast_id = retain_toast(&toast, None)?;
         let app_clone = app.clone();
         let handler = TypedEventHandler::<ToastNotification, IInspectable>::new(move |_, _| {
+            release_toast(toast_id);
             if let Some(callback) = on_click
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -506,10 +620,17 @@ mod windows_impl {
             }
             Ok(())
         });
-        toast.Activated(&handler)?;
+        if let Err(err) = toast.Activated(&handler) {
+            release_toast(toast_id);
+            return Err(err);
+        }
         let notifier =
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(WINDOWS_APP_ID))?;
-        notifier.Show(&toast)
+        if let Err(err) = notifier.Show(&toast) {
+            release_toast(toast_id);
+            return Err(err);
+        }
+        Ok(())
     }
 
     pub(super) fn show_call_invite(
@@ -528,8 +649,7 @@ mod windows_impl {
         let seq = CALL_TOAST_SEQ.fetch_add(1, Ordering::Relaxed);
         // WinRT の Tag は旧 Windows 10 で最大 16 文字の制限があるため短く保つ。
         let tag = format!("call-{seq:x}");
-        std::thread::spawn(move || {
-            let _com = ComGuard::init();
+        spawn_mta_task(move || {
             if shared.is_closed() {
                 return;
             }
@@ -550,9 +670,11 @@ mod windows_impl {
         let toast = ToastNotification::CreateToastNotification(&doc)?;
         toast.SetTag(&HSTRING::from(tag))?;
         toast.SetGroup(&HSTRING::from(CALL_TOAST_GROUP))?;
+        let toast_id = retain_toast(&toast, Some(tag))?;
 
         let actions = Arc::new(Mutex::new(Some(actions)));
         let handler = TypedEventHandler::<ToastNotification, IInspectable>::new(move |_, args| {
+            release_toast(toast_id);
             let Some(actions) = actions
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -581,24 +703,44 @@ mod windows_impl {
             }
             Ok(())
         });
-        toast.Activated(&handler)?;
+        if let Err(err) = toast.Activated(&handler) {
+            release_toast(toast_id);
+            return Err(err);
+        }
 
         let notifier =
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(WINDOWS_APP_ID))?;
-        notifier.Show(&toast)?;
-        let _ = shared.shown(ToastHandle(tag.to_string()));
+        let mut show_err = None;
+        let shown = shared.show_if_open(ToastHandle(tag.to_string()), || {
+            match notifier.Show(&toast) {
+                Ok(()) => true,
+                Err(err) => {
+                    show_err = Some(err);
+                    false
+                }
+            }
+        });
+        if !shown {
+            release_toast(toast_id);
+            if let Some(err) = show_err {
+                return Err(err);
+            }
+        }
         Ok(())
     }
 
     pub(super) fn close_toast(tag: &str) {
-        let _com = ComGuard::init();
-        if let Ok(history) = ToastNotificationManager::History() {
-            let _ = history.RemoveGroupedTagWithId(
-                &HSTRING::from(tag),
-                h!("calls"),
-                &HSTRING::from(WINDOWS_APP_ID),
-            );
-        }
+        release_toast_by_tag(tag);
+        let tag = tag.to_string();
+        spawn_mta_task(move || {
+            if let Ok(history) = ToastNotificationManager::History() {
+                let _ = history.RemoveGroupedTagWithId(
+                    &HSTRING::from(tag),
+                    h!("calls"),
+                    &HSTRING::from(WINDOWS_APP_ID),
+                );
+            }
+        });
     }
 }
 
@@ -608,9 +750,11 @@ mod tests {
 
     #[test]
     fn windows_toast_xml_escapes_special_characters() {
-        let xml = build_toast_xml("A & <B>", "\"hello\" 'world'");
+        let xml = build_toast_xml("A & <B>", "\"hello\" 'world'\u{000B}next\t\n🎉\u{FFFE}");
         assert!(xml.contains("A &amp; &lt;B&gt;"));
-        assert!(xml.contains("&quot;hello&quot; &apos;world&apos;"));
+        assert!(xml.contains("&quot;hello&quot; &apos;world&apos;\u{FFFD}next\t\n🎉\u{FFFD}"));
+        assert!(!xml.contains('\u{000B}'));
+        assert!(!xml.contains('\u{FFFE}'));
         assert_eq!(escape_xml("normal"), "normal");
 
         #[cfg(target_os = "windows")]
@@ -619,6 +763,21 @@ mod tests {
             let doc = XmlDocument::new().unwrap();
             doc.LoadXml(&HSTRING::from(&xml)).unwrap();
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn call_toast_skips_show_after_close() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let toast = super::CallToast::default();
+        toast.close();
+        let called = AtomicBool::new(false);
+        let shown = toast.show_if_open(super::ToastHandle("call-1".into()), || {
+            called.store(true, Ordering::SeqCst);
+            true
+        });
+        assert!(!shown);
+        assert!(!called.load(Ordering::SeqCst));
     }
 
     #[test]

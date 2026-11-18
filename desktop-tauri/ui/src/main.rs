@@ -32,6 +32,7 @@ struct Ctx {
     profile_request: RwSignal<Option<u64>>,
     profile_checked: RwSignal<f64>,
     generation: RwSignal<u64>,
+    starting: RwSignal<bool>,
 }
 
 impl Ctx {
@@ -57,6 +58,9 @@ impl Ctx {
             self.session.get_untracked().map(|s| s.state),
             Some(SessionState::Ready { .. })
         );
+        if !matches!(info.state, SessionState::LoggedOut) {
+            self.starting.set(false);
+        }
         self.session.set(Some(info));
         if ready && !was_ready && leptos {
             let ctx = *self;
@@ -142,6 +146,7 @@ fn App() -> impl IntoView {
         profile_request: RwSignal::new(None),
         profile_checked: RwSignal::new(0.0),
         generation: RwSignal::new(0),
+        starting: RwSignal::new(false),
     };
     provide_context(ctx);
     if let Ok(timer) = set_interval_with_handle(
@@ -253,7 +258,7 @@ fn ExternalLinkIcon() -> impl IntoView {
 #[component]
 fn Login(state: Option<SessionState>) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
-    let starting = RwSignal::new(false);
+    let starting = ctx.starting;
     let start = move |_| {
         if starting.get_untracked() {
             return;
@@ -310,6 +315,12 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
         }
         .into_any(),
         Some(SessionState::LoggingIn { login }) => {
+            let has_complete = login.verification_uri_complete.is_some();
+            let lead = if has_complete {
+                "開いたブラウザーの画面に表示されているコードが一致しているか確かめて承認してください。"
+            } else {
+                "開いたブラウザーの画面に下の確認コードを入力して承認してください。"
+            };
             let url = login
                 .verification_uri_complete
                 .clone()
@@ -320,7 +331,7 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
                     <span>"DEVICE AUTHORIZATION"</span>
                 </div>
                 <h1 class="auth-title">"ブラウザーで承認"</h1>
-                <p class="auth-lead">"開いたブラウザーの画面に表示されているコードが一致しているか確かめて承認してください。"</p>
+                <p class="auth-lead">{lead}</p>
                 <div class="auth-code-card">
                     <span class="auth-code-label">"確認コード"</span>
                     <p class="auth-code">{login.user_code}</p>
@@ -330,7 +341,12 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
                     <span>"承認を待っています…"</span>
                 </div>
                 <div class="auth-actions">
-                    <a class="auth-btn auth-btn-primary" href=url.clone()>
+                    <a
+                        class="auth-btn auth-btn-primary"
+                        href=url.clone()
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
                         <ExternalLinkIcon />
                         <span>"ブラウザーで開く"</span>
                     </a>
@@ -340,7 +356,7 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
                 </div>
                 <div class="auth-fallback">
                     <p class="auth-fallback-note">"自動で開かない場合は上のボタンまたは下のリンクを押してください。"</p>
-                    <a class="auth-url" href=url.clone()>{url.clone()}</a>
+                    <a class="auth-url" href=url.clone() target="_blank" rel="noopener noreferrer">{url.clone()}</a>
                 </div>
             }
             .into_any()

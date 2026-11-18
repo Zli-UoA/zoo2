@@ -54,7 +54,11 @@ pub fn run() {
     };
     tauri::Builder::default()
         // 単一インスタンスは最初に登録する (2 つ目のプロセスを、他の初期化より前に止めるため)。
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            #[cfg(target_os = "windows")]
+            if let Some(detail) = update::take_inno_failure_message(args.into_iter().skip(1)) {
+                update::show_inno_failure(app, &detail);
+            }
             window::show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())

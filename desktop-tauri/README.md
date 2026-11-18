@@ -48,14 +48,21 @@ gh release download desktop-tauri-v0.2.8 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 
 `main` に入ったばかりで、まだリリースしていない版を試すときは、GitHub Actions の「CI Desktop Tauri」が作るファイルを使います。ファイルは 7 日で消えます。この版は自分では更新しません。
 
-1. [CI Desktop Tauri の実行一覧](https://github.com/Zli-UoA/zoo2/actions/workflows/ci-desktop-tauri.yaml) で、`main` の成功した実行を開きます。
+1. [CI Desktop Tauri の実行一覧](https://github.com/Zli-UoA/zoo2/actions/workflows/ci-desktop-tauri.yaml) で、`main` の成功した実行のうち、目的の OS 向けビルドが含まれる実行を開きます（変更箇所が Linux のみなどのときは Windows / macOS のジョブがスキップされるため、最新実行に成果物がない場合があります）。
 2. 下の「Artifacts」から OS に合った成果物（`zoo2-desktop-tauri-linux`、`zoo2-desktop-tauri-macos`、`zoo2-desktop-tauri-windows`）をダウンロードして、展開します。
 
 ```bash
-gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run list --repo Zli-UoA/zoo2 --workflow ci-desktop-tauri.yaml --branch main --status success --limit 1 --json databaseId -q '.[0].databaseId')
+# 直近の main 成功実行のうち、対象 OS の成果物を含む run ID を選ぶ例 (Linux 版)
+run_id=$(gh run list --repo Zli-UoA/zoo2 --workflow ci-desktop-tauri.yaml --branch main --status success --limit 20 --json databaseId -q '.[].databaseId' | while read -r id; do
+  if gh api "repos/Zli-UoA/zoo2/actions/runs/$id/artifacts" -q '.artifacts[].name' | grep -qx 'zoo2-desktop-tauri-linux'; then
+    echo "$id"
+    break
+  fi
+done)
+gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux "$run_id"
 ```
 
-Windows の開発中の版を取得する場合は、成果物名に `zoo2-desktop-tauri-windows` を指定します。
+Windows の開発中の版を取得する場合は、上の `zoo2-desktop-tauri-linux` を両方とも `zoo2-desktop-tauri-windows` に置き換えます。
 
 ### ファイル
 
@@ -183,7 +190,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
   - 自分の操作による通知
   - アカウントに DND (`dnd_until`) が設定されている間。Web 版の Push 通知と同じ扱いで、止めた分を後から出すこともしません (DND はいまのところ App の API から設定します)。DND はログインした直後と 5 分おきに確かめます。ログインした直後に確かめられなかったとき (オフラインなど) は、DND なしとして通知を出し、次に確かめられた時点から止めます
   - ウィンドウが前面にあり、そのチャンネルを表示しているとき
-- **通知のオン・オフ**: Web 版の画面の「設定」→「一般」→「通知」で切り替えます。オフにすると、アプリは投稿の通知を出しません (更新の知らせは出します)。設定はアプリに保存します (Linux / macOS は `~/.config/zoo2-desktop-tauri/notifications.json`、Windows は `%APPDATA%\zoo2-desktop-tauri\notifications.json`)。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。
+- **通知のオン・オフ**: Web 版の画面の「設定」→「一般」→「通知」で切り替えます。オフにすると、アプリは投稿の通知を出しません (更新の知らせは出します)。設定はアプリに保存します (Linux / macOS は `~/.config/zoo2-desktop-tauri/notifications.json`、Windows は `%APPDATA%\zoo2-desktop-tauri\config\notifications.json`)。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。
 - **通知のクリック**: Linux と Windows では、通知をクリックするとそのチャンネルを開きます。
 - **リンク**: メッセージ中のリンクなど、アプリの外のページは既定のブラウザーで開きます。Web 版 (`api_base_url` のサイト、`zli.chat` など) とログインのサイト (`account.zli.works` など) のほかは、開く前に「外部のサイトを開きます」と確かめます。
 - **暗号化 (E2EE)**: Web 版と同じく、「設定」の「暗号化」から使います。暗号化の設定、端末の失効、他のユーザーの検証などでログインし直すときは、既定のブラウザーが開きます。ブラウザーでパスキーを使ってログインし直すと、アプリに戻ります (ブラウザーのタブは閉じてかまいません)。解錠には、リカバリーキーを使ってください (アプリの中ではパスキーを使えないことがあります)。
@@ -191,7 +198,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
 
 ## 設定項目
 
-Linux / macOS は `~/.config/zoo2-desktop-tauri/config.toml`、Windows は `%APPDATA%\zoo2-desktop-tauri\config.toml` と環境変数から読み込みます。環境変数が優先されます。ふだんは何も書かなくて構いません。
+Linux / macOS は `~/.config/zoo2-desktop-tauri/config.toml`、Windows は `%APPDATA%\zoo2-desktop-tauri\config\config.toml` と環境変数から読み込みます。環境変数が優先されます。ふだんは何も書かなくて構いません。
 
 | `config.toml` | 環境変数 | 既定値 | 内容 |
 |---|---|---|---|
@@ -210,7 +217,7 @@ Linux / macOS は `~/.config/zoo2-desktop-tauri/config.toml`、Windows は `%APP
 GitHub Releases から入れたアプリは、自分で新しい版を確かめます。起動の少し後と、その後は 6 時間ごとに確かめます。
 
 1. 新しい版があると、裏でダウンロードし、署名を確かめておきます。
-2. 準備ができると、「zoo2 を更新できます」という通知が出て、トレイのメニューに「更新して再起動 (v<版>)」が増えます。
+2. 準備ができると、「zoo2 を更新できます」という通知が出て、macOS はトレイのメニューに「更新して再起動 (v<版>)」が増え、Linux と Windows はトレイメニューの「アップデートを確認…」が「更新して再起動 (v<版>)…」に変わります。
 3. 通知かメニューを押すと、新しい版に入れ替えて、アプリを再起動します。押すまでは、いまの版のまま動きます。
 
 macOS ではメニューバーの「zoo2」→「アップデートを確認…」、Linux と Windows ではトレイのメニューの「アップデートを確認…」からも更新できます。押すと更新のウィンドウが開き、その場で確かめます。新しい版があれば、ダウンロードの進み具合を出しながら取得し、入れ替えてアプリを再起動します。新しい版がないときは「zoo2 は最新です」と出して、少し後に閉じます。トレイや通知の「更新して再起動」を押したときも、同じウィンドウにインストールの様子を出します。準備ができた更新があるときは、この項目が「更新して再起動 (v<版>)…」に変わります。
@@ -222,7 +229,7 @@ macOS ではメニューバーの「zoo2」→「アップデートを確認…�
 | macOS | `zoo2.app` を置き換えます。「アプリケーション」に書き込めることが必要です |
 | Windows | Inno Setup のサイレント更新インストーラーを起動し、更新後にアプリを再起動します |
 
-設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え、Windows は `zoo2_<版>_x64-setup.exe` を実行)。
+設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え、Windows はタスクトレイのアイコンから「終了」を選んでアプリを終了してから `zoo2_<版>_x64-setup.exe` を実行)。
 
 CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) と、ソースから動かした場合は、自分では更新しません。
 
@@ -247,14 +254,14 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 | deb | `sudo apt remove zoo2` |
 | AppImage | ファイルを消す |
 | macOS | 「アプリケーション」の `zoo2.app` をゴミ箱に入れる |
-| Windows | Windows の「設定」→「アプリ」→「インストールされているアプリ」から `zoo2` をアンインストールする |
+| Windows | タスクトレイのアイコンから「終了」を選んでアプリを終了したあと、Windows の「設定」→「アプリ」→「インストールされているアプリ」から `zoo2` をアンインストールする |
 | `nix profile` | `nix profile remove zoo2-desktop-tauri` |
 | NixOS の flake | 設定から消して `nixos-rebuild switch` |
 
-設定とログインの状態は、アプリを消しても残ります（Windows のアンインストーラーでは、アンインストール完了時にこれらを一緒に削除するか確認ダイアログが出ます）。Linux・macOS や、Windows で残すを選んだあとに完全に消すときは、先にアプリからログアウトしてから、次のディレクトリを消してください。
+設定とログインの状態は、アプリを消しても残ります（Windows のアンインストーラーでは、完了時にこれらを一緒に削除するか確認ダイアログが出ます）。Linux・macOS で完全に消したい場合は、アンインストール前にアプリからログアウトしてから次のディレクトリを削除してください。Windows のアンインストール時に「いいえ（残す）」を選んだあとで削除したくなった場合は、再インストールせずにそのまま次のディレクトリを削除してください。
 
 - Linux / macOS: `~/.config/zoo2-desktop-tauri` (設定とトークン)、`~/.local/share/chat.zli.desktop` と `~/.cache/chat.zli.desktop` (画面のデータとキャッシュ)
-- Windows: `%APPDATA%\zoo2-desktop-tauri` (設定とトークン)、`%LOCALAPPDATA%\chat.zli.desktop` (画面のデータ、キャッシュ、更新の一時ファイル)
+- Windows: `%APPDATA%\zoo2-desktop-tauri` (`config\config.toml`、`tokens.json` などの設定とトークン)、`%LOCALAPPDATA%\chat.zli.desktop` (画面のデータ、キャッシュ、更新の一時ファイル)
 
 ## 困ったとき
 

@@ -125,6 +125,8 @@ jobs:
       - name: test
         working-directory: ./desktop-tauri/src-tauri
         run: cargo test --locked
+      - name: test updater verification script
+        run: node --test desktop-tauri/scripts/verify-tauri-updater.test.mjs
       - name: bundle (deb, AppImage)
         working-directory: ./desktop-tauri/src-tauri
         run: cargo tauri build --bundles deb,appimage -- --locked
@@ -291,21 +293,27 @@ jobs:
           if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
             $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           }
+          $probe = "#if Ver < EncodeVer(6, 5, 2)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
           $needInstall = $true
           if ($iscc -and (Test-Path $iscc)) {
-            $probe = "#if Ver < EncodeVer(6, 5, 2)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
             $probe | & $iscc /Q /O- - | Out-Null
             if ($LASTEXITCODE -eq 0) { $needInstall = $false }
           }
           if ($needInstall) {
             choco upgrade innosetup --yes --no-progress
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-            if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            $iscc = $null
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
               $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+            } else {
+              $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
             }
           }
           if (-not $iscc -or -not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          $probe | & $iscc /Q /O- - | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "ISCC.exe >= 6.5.2 is required (resolved: $iscc)"
+          }
           Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: build ui
         working-directory: ./desktop-tauri/ui
@@ -342,6 +350,43 @@ jobs:
           if (-not $version) { throw "Failed to read version from desktop-tauri/src-tauri/Cargo.toml" }
           iscc.exe "/DAppVersion=$version" desktop-tauri\installer\zoo2.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: verify updater signature and manifest format
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content desktop-tauri\src-tauri\Cargo.toml | Select-String '^version = "(.*)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+          $setupName = "zoo2_${version}_x64-setup.exe"
+          $setupSrc = Join-Path "desktop-tauri\src-tauri\target\release\bundle\inno" $setupName
+          if (-not (Test-Path $setupSrc)) { throw "Missing installer: $setupSrc" }
+          $work = Join-Path $env:RUNNER_TEMP "verify-updater"
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          try {
+            $setupCopy = Join-Path $work $setupName
+            Copy-Item $setupSrc $setupCopy
+            $keyFile = Join-Path $work "test.key"
+            cargo tauri signer generate -w $keyFile --ci --force -p "ci-verify"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo tauri signer sign -f $keyFile -p "ci-verify" $setupCopy
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $pubkey = (Get-Content -Raw "$keyFile.pub").Trim()
+            $sig = (Get-Content -Raw "$setupCopy.sig").Trim()
+            $manifestPath = Join-Path $work "latest.json"
+            $manifest = @{
+              version = $version
+              notes = "https://github.com/Zli-UoA/zoo2/releases/tag/desktop-tauri-v$version"
+              pub_date = "2026-01-01T00:00:00Z"
+              platforms = @{
+                "windows-x86_64" = @{
+                  url = "https://github.com/Zli-UoA/zoo2/releases/download/desktop-tauri-v$version/$setupName"
+                  signature = $sig
+                }
+              }
+            } | ConvertTo-Json -Depth 5
+            [System.IO.File]::WriteAllText($manifestPath, $manifest, [System.Text.UTF8Encoding]::new($false))
+            node desktop-tauri\scripts\verify-tauri-updater.mjs --manifest $manifestPath --dir $work --pubkey $pubkey --require windows-x86_64 --verify-files
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+          }
       - name: Upload bundles
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
