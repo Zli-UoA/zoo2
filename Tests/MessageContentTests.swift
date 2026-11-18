@@ -3,6 +3,106 @@ import SwiftUI
 import Testing
 @testable import Zoo
 
+@MainActor @Suite("画面外のメッセージ保持")
+struct MessageRenderCacheTests {
+    @Test("表示範囲の上下5件を同じ状態のまま保持し、それより遠い行を解放する")
+    func fiveNeighbors() {
+        let cache = MessageRenderCache()
+        let ids = (0..<30).map(String.init)
+        let original = Dictionary(uniqueKeysWithValues: ids.map { ($0, cache.state(for: $0)) })
+        cache.retain(visibleIDs: ["10", "11", "12"], orderedIDs: ids)
+        #expect(Set(cache.states.keys) == Set(ids[5...17]))
+        for id in ids[5...17] { #expect(cache.state(for: id) === original[id]) }
+        #expect(cache.state(for: "4") !== original["4"])
+        cache.retain(visibleIDs: ["11", "12", "13"], orderedIDs: ids)
+        #expect(Set(cache.states.keys) == Set(ids[6...18]).subtracting(["18"]))
+        #expect(cache.state(for: "12") === original["12"])
+    }
+
+    @Test("先頭・末尾で存在しない隣接行を作らない", arguments: [0, 9])
+    func ends(_ index: Int) {
+        let cache = MessageRenderCache()
+        let ids = (0..<10).map(String.init)
+        for id in ids { _ = cache.state(for: id) }
+        cache.retain(visibleIDs: [ids[index]], orderedIDs: ids)
+        let expected = index == 0 ? ids[0...5] : ids[4...9]
+        #expect(Set(cache.states.keys) == Set(expected))
+    }
+
+    @Test("一時的な空の可視範囲では状態を捨てず、削除されたメッセージは解放する")
+    func emptyVisibilityAndDeletion() {
+        let cache = MessageRenderCache()
+        let original = cache.state(for: "message")
+        cache.retain(visibleIDs: [], orderedIDs: ["message"])
+        #expect(cache.state(for: "message") === original)
+        cache.updateMessages([])
+        #expect(cache.states.isEmpty)
+    }
+
+    @Test("添付の公開状態と画像を保持し、添付が変更・削除された場合だけ作り直す")
+    func attachmentState() {
+        let message = MessageRenderState()
+        var attachment = MessageAttachment(id: "image", file_name: "画像.png", content_type: "image/png")
+        let original = message.attachment(attachment)
+        original.revealed = true
+        #expect(message.attachment(attachment) === original)
+        attachment.is_sensitive = true
+        let sensitive = message.attachment(attachment)
+        #expect(sensitive !== original)
+        #expect(!sensitive.revealed)
+        message.retainAttachments([])
+        #expect(message.attachment(attachment) !== sensitive)
+    }
+
+    @Test("画像とPDFは再表示しても取得・描画し直さず、明示した再試行では更新する", arguments: [false, true])
+    func reusesThumbnail(pdf: Bool) async throws {
+        let client = PreviewChatClient()
+        let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let attachment = MessageAttachment(id: pdf ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04",
+                                           file_name: pdf ? "確認資料.pdf" : "縦長画像.png",
+                                           content_type: pdf ? "application/pdf" : "image/png", is_sensitive: true)
+        let state = AttachmentRenderState(attachment: attachment)
+        await state.load(workspace: workspace)
+        #expect(state.url == nil)
+        state.revealed = true
+        await state.load(workspace: workspace)
+        let original = try #require(pdf ? state.pdfThumbnail : state.image)
+        #expect(max(original.size.width, original.size.height) <= 1200)
+        state.cancelLoad()
+        await state.load(workspace: workspace)
+        #expect((pdf ? state.pdfThumbnail : state.image) === original)
+        state.retryLoading()
+        await state.load(workspace: workspace)
+        #expect((pdf ? state.pdfThumbnail : state.image) !== original)
+        #expect(state.error == nil)
+    }
+
+    @Test("キャンセル済みの行タスクは通信を始めず、保持した本文画像も変更しない")
+    func cancelledCaller() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in
+            Issue.record("キャンセル済みの行から通信が開始されました")
+            return (500, [:], Data())
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: "you", user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let attachment = AttachmentRenderState(attachment: MessageAttachment(id: "attachment", file_name: "資料.txt", content_type: "text/plain"))
+        let message = MessageRenderState()
+        let url = try #require(URL(string: "https://example.org/stamp.png"))
+        let image = UIImage()
+        message.inlineImages[url] = image
+        await Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await attachment.load(workspace: workspace)
+            await message.loadInlineImages([])
+        }.value
+        #expect(attachment.url == nil && attachment.error == nil)
+        #expect(message.inlineImages[url] === image)
+    }
+}
+
 @Suite("メッセージ本文のリンクとスタンプ")
 struct MessageContentTests {
     @Test("日本語・改行・複数のURLを保ち、句読点をリンクに含めない")

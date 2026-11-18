@@ -1,6 +1,8 @@
+import CoreTransferable
 import Foundation
 import Synchronization
 import Testing
+import UniformTypeIdentifiers
 @testable import Zoo
 
 @MainActor
@@ -260,6 +262,107 @@ struct AttachmentUploadTests {
         store.shutdown()
         #expect(store.draftAttachments.isEmpty)
         #expect(remaining.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    @Test("写真・動画のファイル転送は元の形式と内容を保ち、提供元の削除後も送信できる", arguments: [
+        ("写真.jpg", "image/jpeg"), ("写真.heic", "image/heic"),
+        ("動画.mov", "video/quicktime"), ("動画.mp4", "video/mp4")
+    ])
+    func mediaTransfer(name: String, mimeType: String) async throws {
+        let source = try sourceFile(name: name)
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let provider = NSItemProvider()
+        let contentType = try #require(UTType(filenameExtension: source.pathExtension))
+        provider.registerFileRepresentation(forTypeIdentifier: contentType.identifier, fileOptions: [], visibility: .all) { completion in
+            completion(source, false, nil)
+            return nil
+        }
+        var attachment: DraftAttachment? = try await withCheckedThrowingContinuation { continuation in
+            _ = provider.loadTransferable(type: DraftAttachment.self) { result in
+                continuation.resume(with: result)
+            }
+        }
+        let copied = try #require(attachment?.file.url)
+        #expect(attachment?.fileName == name)
+        #expect(attachment?.contentType == mimeType)
+        #expect(attachment?.byteCount == Data("添付の本文".utf8).count)
+        try FileManager.default.removeItem(at: source)
+        #expect(try Data(contentsOf: copied) == Data("添付の本文".utf8))
+        attachment = nil
+        #expect(!FileManager.default.fileExists(atPath: copied.path))
+    }
+
+    @Test("メディア取得中は送信・追加を止め、完了時は選択したスレッドだけに追加する")
+    func mediaImportBusyState() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let source = try sourceFile(name: "写真.jpg")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        store.drafts["reply"] = "写真を添付します"
+        await store.importAttachments(count: 1, parentID: "reply") {
+            #expect(store.importingAttachments.contains("reply"))
+            #expect(!store.canSend(parentID: "reply"))
+            await store.importFiles([source], parentID: "reply")
+            #expect(store.draftAttachments.isEmpty)
+            return try await DraftAttachment.importing([source])
+        }
+        #expect(store.importingAttachments.isEmpty)
+        #expect(store.draftAttachments["reply"]?.count == 1)
+        #expect(store.draftAttachments["root"] == nil)
+        #expect(store.canSend(parentID: "reply"))
+    }
+
+    @Test("メディア取得の失敗・キャンセル・ログアウト後は既存の下書きへ追加しない", arguments: ["failure", "cancel", "logout"])
+    func interruptedMediaImport(kind: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let source = try sourceFile(name: "写真.jpg")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        await store.importFiles([source], parentID: nil)
+        let originalID = try #require(store.draftAttachments["root"]?.first?.id)
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        var copied: URL?
+        let task = Task {
+            await store.importAttachments(count: 1, parentID: nil) {
+                let files = try await DraftAttachment.importing([source])
+                copied = files.first?.file.url
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                if kind == "failure" { throw AttachmentImportError.photoUnavailable }
+                return files
+            }
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        if kind == "cancel" { task.cancel() }
+        if kind == "logout" { store.shutdown() }
+        release.continuation.yield(())
+        await task.value
+        #expect(store.importingAttachments.isEmpty)
+        #expect(store.draftAttachments["root"]?.map(\.id) ?? [] == (kind == "logout" ? [] : [originalID]))
+        #expect((store.sendErrors["root"] != nil) == (kind == "failure"))
+        #expect(!FileManager.default.fileExists(atPath: try #require(copied).path))
+    }
+
+    @Test("ファイルとメディアの合計が上限を超える場合はメディアの取得を始めない")
+    func mixedAttachmentLimit() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let source = try sourceFile()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        await store.importFiles(Array(repeating: source, count: 9), parentID: nil)
+        await store.importAttachments(count: 2, parentID: nil) {
+            Issue.record("上限を超えているため、メディアの取得は開始できません。")
+            return []
+        }
+        #expect(store.draftAttachments["root"]?.count == 9)
+        #expect(store.sendErrors["root"] == AttachmentImportError.tooMany.localizedDescription)
     }
 
     @Test("アップロード中にログアウト・アーカイブしたらメッセージを投稿しない", arguments: [false, true])

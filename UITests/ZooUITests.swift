@@ -92,6 +92,28 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testPhotoPickerCancellationPreservesDraft() {
+        let app = launchWorkspace(attachments: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let field = composer(app)
+        field.tap()
+        field.typeText("写真を選ぶ前の下書き")
+        app.buttons["composer-additions"].tap()
+        let photos = app.buttons["composer-attach-photos"]
+        XCTAssertTrue(photos.waitForExistence(timeout: 5))
+        photos.tap()
+        let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "キャンセル", "Close", "閉じる"])).firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        capture(app, name: "写真と動画の選択画面")
+        cancel.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(field.value as? String, "写真を選ぶ前の下書き")
+        XCTAssertTrue(app.buttons["添付を削除：添付確認.txt"].exists)
+        XCTAssertTrue(app.buttons["send-message"].isEnabled)
+        XCTAssertFalse(app.staticTexts["send-error"].exists)
+    }
+
+    @MainActor
     func testChannelCallInvitesAndCancellation() {
         let app = launchWorkspace(call: true, callInviteFailure: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -166,6 +188,81 @@ final class ZooUITests: XCTestCase {
         banner.tap()
         app.buttons["call-end"].tap()
         XCTAssertTrue(banner.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testChannelSectionsCollapseIndependentlyWithThreads() {
+        let app = launchWorkspace(threadDirectory: true, chatDetails: true)
+        let pinned = app.buttons["channel-section-pinned"]
+        let list = app.buttons["channel-section-list"]
+        let general = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        let development = app.buttons["channel-55555555-5555-4555-8555-555555555555"]
+        let thread = app.buttons["channel-thread-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+
+        pinned.tap()
+        XCTAssertTrue(general.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(thread.exists)
+        XCTAssertTrue(development.exists)
+        XCTAssertEqual(pinned.value as? String, "折り畳み中")
+
+        list.tap()
+        XCTAssertTrue(development.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(pinned.isHittable)
+        XCTAssertTrue(list.isHittable)
+        capture(app, name: "すべてのセクションを折り畳んだ一覧")
+
+        list.tap()
+        XCTAssertTrue(development.waitForExistence(timeout: 5))
+        development.tap()
+        let bar = app.navigationBars["開発"]
+        XCTAssertTrue(bar.waitForExistence(timeout: 5))
+        bar.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(pinned.waitForExistence(timeout: 5))
+        XCTAssertFalse(general.exists)
+        XCTAssertEqual(pinned.value as? String, "折り畳み中")
+
+        selectTab("DM", in: app)
+        selectTab("チャンネル", in: app)
+        XCTAssertEqual(pinned.value as? String, "折り畳み中")
+        pinned.tap()
+        XCTAssertTrue(general.waitForExistence(timeout: 5))
+        XCTAssertTrue(thread.waitForExistence(timeout: 5))
+        capture(app, name: "セクションを再び展開した一覧")
+    }
+
+    @MainActor
+    func testChannelSearchShowsCollapsedSectionsAndRestoresState() {
+        let app = launchWorkspace(chatDetails: true)
+        let pinned = app.buttons["channel-section-pinned"]
+        let list = app.buttons["channel-section-list"]
+        let general = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        let development = app.buttons["channel-55555555-5555-4555-8555-555555555555"]
+        pinned.tap()
+        list.tap()
+        XCTAssertTrue(general.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(development.exists)
+
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("一般")
+        XCTAssertTrue(general.waitForExistence(timeout: 5))
+        XCTAssertFalse(development.exists)
+        XCTAssertEqual(pinned.value as? String, "展開中")
+        XCTAssertFalse(pinned.isEnabled)
+        capture(app, name: "折り畳んだセクション内の検索結果")
+
+        let closeSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Close", "閉じる", "Cancel", "キャンセル"])).firstMatch
+        XCTAssertTrue(closeSearch.waitForExistence(timeout: 5))
+        closeSearch.tap()
+        XCTAssertTrue(general.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(development.exists)
+        XCTAssertEqual(pinned.value as? String, "折り畳み中")
+        XCTAssertEqual(list.value as? String, "折り畳み中")
+        XCTAssertTrue(pinned.isEnabled)
+        pinned.tap()
+        XCTAssertTrue(general.waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -367,13 +464,26 @@ final class ZooUITests: XCTestCase {
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let play = app.buttons["動画を再生：確認用.mp4"]
         XCTAssertTrue(play.waitForExistence(timeout: 10))
+        capture(app, name: "動画の先頭フレームと再生ボタン")
         play.tap()
-        XCTAssertTrue(app.navigationBars["確認用.mp4"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["attachment-video-player"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["添付を開けません"].exists)
-        capture(app, name: "添付動画の再生")
-        app.buttons["閉じる"].tap()
-        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        let player = app.descendants(matching: .any)["attachment-video-player"].firstMatch
+        XCTAssertTrue(player.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["channel-details"].exists)
+        XCTAssertFalse(app.navigationBars["確認用.mp4"].exists)
+        XCTAssertFalse(app.staticTexts["この動画を再生できません。再読み込みをお試しください。"].exists)
+        if !app.buttons["Fullscreen Button"].isHittable {
+            player.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
+        }
+        XCTAssertTrue(app.buttons["Fullscreen Button"].waitForExistence(timeout: 5))
+        capture(app, name: "チャンネル内の動画再生")
+        app.buttons["Fullscreen Button"].tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).tap()
+        XCTAssertTrue(app.buttons["Close Button"].waitForExistence(timeout: 5))
+        capture(app, name: "動画の全画面再生")
+        app.buttons["Close Button"].tap()
+        XCTAssertTrue(app.buttons["channel-details"].waitForExistence(timeout: 5))
+        XCTAssertTrue(player.waitForExistence(timeout: 5))
+
     }
 
     @MainActor
@@ -425,7 +535,8 @@ final class ZooUITests: XCTestCase {
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
                                  threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, attachments: Bool = false,
                                  pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,
-                                 tallImage: Bool = false, wrappedReactions: Bool = false) -> XCUIApplication {
+                                 tallImage: Bool = false, wrappedReactions: Bool = false, retainedMessages: Bool = false,
+                                 variedHistory: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -435,6 +546,8 @@ final class ZooUITests: XCTestCase {
         if video { app.launchArguments.append("--uitesting-video") }
         if tallImage { app.launchArguments.append("--uitesting-tall-image") }
         if wrappedReactions { app.launchArguments.append("--uitesting-wrapped-reactions") }
+        if retainedMessages { app.launchArguments.append("--uitesting-retained-messages") }
+        if variedHistory { app.launchArguments.append("--uitesting-varied-history") }
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if call { app.launchArguments.append("--uitesting-call") }
@@ -649,6 +762,73 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testNearbyOffscreenAttachmentKeepsItsLoadedState() {
+        let app = launchWorkspace(longHistory: true, retainedMessages: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let reveal = app.buttons["センシティブな添付を表示"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 10))
+        reveal.tap()
+        let preview = app.buttons["PDFを全画面で表示：確認資料.pdf"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        let list = app.scrollViews["message-list"]
+        let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 450)),
+                    withVelocity: .slow, thenHoldForDuration: 0.3)
+        if preview.isHittable || app.staticTexts["履歴 60"].isHittable {
+            let next = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.4))
+            next.press(forDuration: 0.05, thenDragTo: next.withOffset(CGVector(dx: 0, dy: 180)),
+                       withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+        XCTAssertFalse(preview.isHittable)
+        XCTAssertFalse(app.staticTexts["履歴 60"].isHittable)
+        XCTAssertTrue(app.staticTexts["履歴 57"].isHittable)
+        let jump = app.buttons["scroll-to-latest"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        jump.tap()
+        XCTAssertTrue(preview.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        XCTAssertFalse(reveal.exists)
+        XCTAssertFalse(app.staticTexts["保持した添付が再読み込みされました。"].exists)
+        capture(app, name: "画面外から戻っても読み込み済みの添付を保持")
+    }
+
+    @MainActor
+    func testBottomOverscrollKeepsLatestPosition() {
+        let app = launchWorkspace(longHistory: true)
+        assertBottomOverscrollKeepsPosition(app, latestText: "履歴 60")
+    }
+
+    @MainActor
+    func testVariedHistoryBottomOverscrollKeepsLatestPosition() {
+        let app = launchWorkspace(longHistory: true, variedHistory: true)
+        assertBottomOverscrollKeepsPosition(app, latestText: "履歴 60")
+    }
+
+    @MainActor
+    func testShortConversationBottomOverscrollKeepsPosition() {
+        let app = launchWorkspace()
+        assertBottomOverscrollKeepsPosition(app, latestText: "SwiftUI で、いつもの会話がもっと身近に。")
+    }
+
+    @MainActor
+    private func assertBottomOverscrollKeepsPosition(_ app: XCUIApplication, latestText: String) {
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let latest = app.staticTexts[latestText]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        XCTAssertTrue(latest.isHittable)
+        let originalY = latest.frame.minY
+        let list = app.scrollViews["message-list"]
+        for _ in 0..<3 {
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.8))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -280)),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+            XCTAssertTrue(latest.isHittable)
+            XCTAssertEqual(latest.frame.minY, originalY, accuracy: 2)
+            XCTAssertFalse(app.buttons["scroll-to-latest"].exists)
+        }
+        capture(app, name: "最下部での連続スクロール後も最新位置を維持")
+    }
+
+    @MainActor
     func testLongHistoryInitiallyShowsLatestMessage() {
         let app = launchWorkspace(longHistory: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -676,6 +856,7 @@ final class ZooUITests: XCTestCase {
         jump.tap()
         XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
         XCTAssertTrue(latest.isHittable)
+        XCTAssertEqual(latest.frame.minY, latestY, accuracy: 2)
     }
 
     @MainActor

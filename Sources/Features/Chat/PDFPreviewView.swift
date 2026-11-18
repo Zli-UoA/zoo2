@@ -34,19 +34,49 @@ enum PDFPreviewError: LocalizedError, Equatable {
 
 struct PDFPreviewView: UIViewRepresentable {
     let document: PDFDocument
+    var onDismiss: () -> Void
 
-    func makeUIView(context: Context) -> PDFView {
-        let view = PDFView()
-        view.displayMode = .singlePageContinuous
-        view.displayDirection = .vertical
-        view.autoScales = true
-        view.backgroundColor = .secondarySystemBackground
-        view.accessibilityIdentifier = "attachment-pdf-view"
-        view.document = document
-        return view
+    func makeUIView(context: Context) -> AttachmentPDFView {
+        AttachmentPDFView(document: document, onDismiss: onDismiss)
     }
 
-    func updateUIView(_ view: PDFView, context: Context) {
+    func updateUIView(_ view: AttachmentPDFView, context: Context) {
+        view.onDismiss = onDismiss
         if view.document !== document { view.document = document }
+    }
+}
+
+final class AttachmentPDFView: PDFView {
+    var onDismiss: () -> Void
+    private lazy var dismissGesture = AttachmentPreviewDismissGesture(view: self, canDismiss: { [weak self] in
+        self?.canDismissByDragging == true
+    }, onDismiss: { [weak self] in self?.onDismiss() })
+
+    init(document: PDFDocument, onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+        super.init(frame: .zero)
+        displayMode = .singlePageContinuous
+        displayDirection = .vertical
+        autoScales = true
+        backgroundColor = .secondarySystemBackground
+        accessibilityIdentifier = "attachment-pdf-view"
+        accessibilityHint = "ピンチで拡大縮小。拡大していない状態で、先頭から下へ強くスワイプすると閉じます。"
+        self.document = document
+        _ = dismissGesture
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    var canDismissByDragging: Bool {
+        guard scaleFactor <= scaleFactorForSizeToFit * 1.01 else { return false }
+        // PDFKitの非公開クラス名に依存せず、文書を保持するスクロール領域を探す。
+        var ancestor = documentView?.superview
+        while let view = ancestor, view !== self {
+            if let scrollView = view as? UIScrollView {
+                return !scrollView.isZooming && scrollView.contentOffset.y <= -scrollView.adjustedContentInset.top + 1
+            }
+            ancestor = view.superview
+        }
+        return false
     }
 }

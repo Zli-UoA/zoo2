@@ -106,6 +106,7 @@ final class PreviewChatClient: ChatClient {
     private var readPositions: [String: String] = [:]
     private var failedReadOnce = false
     private var pdfURLRequests = 0
+    private var videoURLRequests = 0
     private var failNextPin = ProcessInfo.processInfo.arguments.contains("--uitesting-pin-failure")
     private var pins = ChannelPins(pins: ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") ? [ChannelPin(channel_id: channelID, position: 0)] : [], version: 0)
     private var memberships: [ChannelMembership] = []
@@ -154,7 +155,8 @@ final class PreviewChatClient: ChatClient {
                 file_name: "縦長画像.png", content_type: "image/png")]
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-video") {
-            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "確認用.mp4", content_type: "video/mp4")]
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "確認用.mp4", content_type: "video/mp4",
+                is_sensitive: ProcessInfo.processInfo.arguments.contains("--uitesting-sensitive-video"))]
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-pdf") {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03",
@@ -171,6 +173,15 @@ final class PreviewChatClient: ChatClient {
                 Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: Self.channelID,
                         content: "履歴 \(index)", created_at: Date(timeIntervalSince1970: 1_795_000_000 + Double(index)).ISO8601Format(),
                         display_data: MessageDisplayData(reactions: []))
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-retained-messages"), !allMessages.isEmpty {
+            allMessages[allMessages.count - 1].display_data?.attachments = [MessageAttachment(
+                id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03", file_name: "確認資料.pdf", content_type: "application/pdf", is_sensitive: true)]
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-varied-history") {
+            for index in allMessages.indices.dropLast() {
+                allMessages[index].content += String(repeating: "\n高さの異なるメッセージのスクロール確認", count: index % 6)
             }
         }
     }
@@ -246,6 +257,7 @@ final class PreviewChatClient: ChatClient {
         return ChannelReadState(channel_id: channelID, has_unread: unread && readPositions[channelID] == nil, last_read_at: readPositions[channelID])
     }
     func attachmentData(from url: URL) async throws -> Data {
+        if url == Bundle.main.url(forResource: "PreviewVideo", withExtension: "mp4") { return try Data(contentsOf: url) }
         if url.host == "ui.test.invalid", let image = PreviewImage.data(for: url.path) { return image }
         guard url.host == "ui.test.invalid", ["/preview.pdf", "/invalid.pdf"].contains(url.path) else {
             throw ZooError.invalidResponse
@@ -257,14 +269,21 @@ final class PreviewChatClient: ChatClient {
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04" { return URL(string: serverURL + "/tall.png")! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03" {
             pdfURLRequests += 1
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-retained-messages"), pdfURLRequests > 1 {
+                throw ZooError.rejected(500, "保持した添付が再読み込みされました。")
+            }
             let failing = ProcessInfo.processInfo.arguments.contains("--uitesting-pdf-failure") && pdfURLRequests == 2
             return URL(string: serverURL + (failing ? "/invalid.pdf" : "/preview.pdf"))!
         }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02" {
+            videoURLRequests += 1
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-video-failure"), videoURLRequests == 2 {
+                throw ZooError.rejected(500, "動画の読み込みを再試行してください。")
+            }
             // 実際のAVPlayerを、外部通信も実ユーザーの動画も使わずに検証する。
-            let data = Data(base64Encoded: "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")!
-            let file = FileManager.default.temporaryDirectory.appending(path: "zoo-preview.mp4")
-            try data.write(to: file, options: .atomic)
+            guard let file = Bundle.main.url(forResource: "PreviewVideo", withExtension: "mp4") else {
+                throw ZooError.invalidResponse
+            }
             return file
         }
         return URL(string: serverURL + "/stamp.png")!

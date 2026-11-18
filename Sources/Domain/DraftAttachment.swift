@@ -1,7 +1,8 @@
+import CoreTransferable
 import Foundation
 import UniformTypeIdentifiers
 
-struct DraftAttachment: Identifiable, Sendable {
+struct DraftAttachment: Identifiable, Sendable, Transferable {
     static let maximumCount = 10
     static let maximumBytes = 50 * 1024 * 1024
 
@@ -10,6 +11,15 @@ struct DraftAttachment: Identifiable, Sendable {
     let contentType: String
     let byteCount: Int
     let file: AttachmentFile
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            try await importing([received.file])[0]
+        }
+        FileRepresentation(importedContentType: .movie) { received in
+            try await importing([received.file])[0]
+        }
+    }
 
     @concurrent
     static func importing(_ urls: [URL]) async throws -> [DraftAttachment] {
@@ -60,7 +70,7 @@ final class AttachmentFile: Sendable {
 }
 
 enum AttachmentImportError: LocalizedError {
-    case invalidFile, invalidName, unsupported, empty, tooLarge, tooMany
+    case invalidFile, invalidName, unsupported, empty, tooLarge, tooMany, photoUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -70,6 +80,7 @@ enum AttachmentImportError: LocalizedError {
         case .empty: "空のファイルは添付できません。"
         case .tooLarge: "添付できるファイルは1個あたり50MBまでです。"
         case .tooMany: "一度に添付できるファイルは10個までです。"
+        case .photoUnavailable: "写真や動画を読み込めませんでした。通信状態を確認して、もう一度選択してください。"
         }
     }
 }

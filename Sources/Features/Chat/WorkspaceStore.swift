@@ -23,6 +23,7 @@ final class WorkspaceStore {
     let inbox: InboxStore
     let threads: ChannelThreads
     let calls: CallStore
+    let videoPlayback = AttachmentVideoPlayback()
     let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
@@ -76,6 +77,7 @@ final class WorkspaceStore {
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
+        self.calls.onWillStart = { [weak self] in self?.videoPlayback.stop() }
         self.calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
@@ -251,6 +253,7 @@ final class WorkspaceStore {
             self?.emojisByKey[value].map { ":\($0.name):" } ?? ReactionEmoji.key(value)
         }
         store.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
+        store.onAccessRevoked = { [weak self] in self?.videoPlayback.stop(in: channel.id) }
         store.onRead = { [weak self] in self?.unread.remove(channel.id) }
         store.onReactionAdded = { [weak self] emoji in self?.recentEmojis.record(emoji) }
         conversations[channel.id] = store
@@ -379,7 +382,7 @@ final class WorkspaceStore {
         return await openMessage(channelID: channelID, messageID: messageID, requiredVisit: tabVisit)
     }
 
-    private func openMessage(channelID: String, messageID: String?, requiredVisit: UUID? = nil) async -> Bool {
+    func openMessage(channelID: String, messageID: String?, requiredVisit: UUID? = nil) async -> Bool {
         guard active else { return false }
         let epoch = UUID()
         destinationGeneration = epoch
@@ -412,6 +415,7 @@ final class WorkspaceStore {
         channelGeneration = UUID()
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
+        videoPlayback.stop()
         calls.shutdown()
         inbox.shutdown()
         threads.shutdown()

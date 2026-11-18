@@ -145,6 +145,8 @@ private struct MessageList: View {
     @State private var readStateLoaded = false
     @State private var readStateError = false
     @State private var readRetry = 0
+    @State private var renderCache = MessageRenderCache()
+    @State private var scrollPosition = ScrollPosition(idType: String.self)
 
     private var firstUnreadID: String? {
         parentID == nil ? MessageTimeline.firstUnread(in: messages, state: initialReadState, userID: store.userID) : nil
@@ -180,88 +182,98 @@ private struct MessageList: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if store.loading && messages.isEmpty {
-                        ProgressView("メッセージを読み込んでいます…")
-                            .frame(maxWidth: .infinity).padding(40)
-                    } else if messages.isEmpty && store.syncError == nil {
-                        ContentUnavailableView("会話を始めましょう", systemImage: "bubble.left.and.bubble.right",
-                                               description: Text("最初のメッセージを送ってみませんか。"))
-                    }
-                    if readStateError {
-                        HStack {
-                            Text("未読の位置を取得できませんでした。").font(.caption)
-                            Button("再読み込み") { readStateLoaded = false; positionedInitialMessages = false; readRetry += 1 }
-                        }.padding().accessibilityIdentifier("read-state-error")
-                    }
-                    if let error = store.actionError {
-                        Text(error).font(.callout).foregroundStyle(.red).padding()
-                    }
-                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                        VStack(spacing: 0) {
-                            if MessageTimeline.startsDay(message, after: index > 0 ? messages[index - 1] : nil), let date = message.date {
-                                timelineDivider(date.formatted(.dateTime.year().month().day().weekday().locale(Locale(identifier: "ja_JP"))), color: .primary)
-                                    .accessibilityIdentifier("date-divider-\(message.id)")
-                            }
-                            if firstUnreadID == message.id {
-                                timelineDivider("ここから未読", color: .red).accessibilityIdentifier("unread-divider")
-                            }
-                            messageRow(message)
-                        }.id(message.id)
-                    }
-                    Color.clear.frame(height: 1).id("conversation-bottom")
-                }.padding(.vertical, 8)
-            }
-            .accessibilityIdentifier(parentID == nil ? "message-list" : "thread-message-list")
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .scrollDismissesKeyboard(.interactively)
-            .onScrollGeometryChange(for: MessageScrollState.self) { geometry in
-                MessageScrollState(distanceToBottom: geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height)
-            } action: { _, state in
-                if isVisible {
-                    followingLatest = state.followingLatest
-                    showsLatestButton = state.showsLatestButton
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if store.loading && messages.isEmpty {
+                    ProgressView("メッセージを読み込んでいます…")
+                        .frame(maxWidth: .infinity).padding(40)
+                } else if messages.isEmpty && store.syncError == nil {
+                    ContentUnavailableView("会話を始めましょう", systemImage: "bubble.left.and.bubble.right",
+                                           description: Text("最初のメッセージを送ってみませんか。"))
                 }
-            }
-            .onChange(of: positionKey, initial: true) { _, _ in
-                guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
-                if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
-                    positionedInitialMessages = true
-                    proxy.scrollTo(focused, anchor: .center)
-                    store.focusedMessageID = nil
-                } else if !positionedInitialMessages, let firstUnreadID {
-                    positionedInitialMessages = true
-                    proxy.scrollTo(firstUnreadID, anchor: .top)
-                } else if !positionedInitialMessages || followingLatest {
-                    positionedInitialMessages = true
-                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                if readStateError {
+                    HStack {
+                        Text("未読の位置を取得できませんでした。").font(.caption)
+                        Button("再読み込み") { readStateLoaded = false; positionedInitialMessages = false; readRetry += 1 }
+                    }.padding().accessibilityIdentifier("read-state-error")
                 }
-            }
-            .onChange(of: scrollTarget, initial: true) { _, id in
-                if let id, messages.contains(where: { $0.id == id }) {
-                    positionedInitialMessages = true
-                    proxy.scrollTo(id, anchor: .center)
-                    store.focusedMessageID = nil
+                if let error = store.actionError {
+                    Text(error).font(.callout).foregroundStyle(.red).padding()
                 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if positionedInitialMessages, showsLatestButton, !messages.isEmpty {
-                    Button {
-                        store.focusedMessageID = nil
-                        if let latestID = messages.last?.id {
-                            withAnimation { proxy.scrollTo(latestID, anchor: .bottom) }
+                ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
+                    VStack(spacing: 0) {
+                        if MessageTimeline.startsDay(message, after: index > 0 ? messages[index - 1] : nil), let date = message.date {
+                            timelineDivider(date.formatted(.dateTime.year().month().day().weekday().locale(Locale(identifier: "ja_JP"))), color: .primary)
+                                .accessibilityIdentifier("date-divider-\(message.id)")
                         }
-                    } label: {
-                        Image(systemName: "arrow.down").frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(.glass).buttonBorderShape(.circle).padding()
-                    .accessibilityLabel("最新のメッセージ")
-                    .accessibilityIdentifier("scroll-to-latest")
+                        if firstUnreadID == message.id {
+                            timelineDivider("ここから未読", color: .red).accessibilityIdentifier("unread-divider")
+                        }
+                        messageRow(message)
+                    }.id(message.id)
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.vertical, 8)
+        }
+        .accessibilityIdentifier(parentID == nil ? "message-list" : "thread-message-list")
+        .scrollBounceBehavior(.basedOnSize)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .scrollPosition($scrollPosition)
+        .scrollDismissesKeyboard(.interactively)
+        .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { ids in
+            renderCache.retain(visibleIDs: ids, orderedIDs: messages.map(\.id))
+        }
+        .onChange(of: messages.map(\.id)) { _, ids in renderCache.updateMessages(ids) }
+        .onScrollGeometryChange(for: MessageScrollState.self) { geometry in
+            MessageScrollState(distanceToBottom: geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height)
+        } action: { _, state in
+            if isVisible {
+                followingLatest = state.followingLatest
+                showsLatestButton = state.showsLatestButton
+            }
+        }
+        .onChange(of: positionKey, initial: true) { _, _ in
+            guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
+            if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
+                positionedInitialMessages = true
+                scrollPosition.scrollTo(id: focused, anchor: .center)
+                store.focusedMessageID = nil
+            } else if !positionedInitialMessages, let firstUnreadID {
+                positionedInitialMessages = true
+                scrollPosition.scrollTo(id: firstUnreadID, anchor: .top)
+            } else if !positionedInitialMessages || followingLatest {
+                positionedInitialMessages = true
+                if parentID != nil, let last = messages.last {
+                    // 表示直後にキーボードが開くスレッドでは、実在する行を初期位置の基準にする。
+                    scrollPosition.scrollTo(id: last.id, anchor: .bottom)
+                } else {
+                    // 行や目印への移動では外側の余白が残るため、バウンドの着地点と同じ下端を指定する。
+                    scrollPosition.scrollTo(edge: .bottom)
                 }
             }
         }
+        .onChange(of: scrollTarget, initial: true) { _, id in
+            if let id, messages.contains(where: { $0.id == id }) {
+                positionedInitialMessages = true
+                scrollPosition.scrollTo(id: id, anchor: .center)
+                store.focusedMessageID = nil
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if positionedInitialMessages, showsLatestButton, !messages.isEmpty {
+                Button {
+                    store.focusedMessageID = nil
+                    withAnimation { scrollPosition.scrollTo(edge: .bottom) }
+                } label: {
+                    Image(systemName: "arrow.down").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.glass).buttonBorderShape(.circle).padding()
+                .accessibilityLabel("最新のメッセージ")
+                .accessibilityIdentifier("scroll-to-latest")
+            }
+        }
+        .onDisappear { renderCache.cancelLoads() }
         .task(id: readRetry) {
             guard parentID == nil, !readStateLoaded else { return }
             readStateError = false
@@ -321,6 +333,7 @@ private struct MessageList: View {
     }
 
     private func messageRow(_ message: Message) -> some View {
+        let renderState = renderCache.state(for: message.id)
         let person = workspace.people[message.user_id]
         let name = person?.name ?? "ユーザー"
         let showActions = {
@@ -347,17 +360,19 @@ private struct MessageList: View {
                         }
                         if message.updated_at != nil { Text("編集済み").font(.caption2).foregroundStyle(.secondary) }
                     }
+                    .contentShape(Rectangle())
+                    .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                     if !message.content.isEmpty || store.attachments(for: message).isEmpty {
-                        MessageContentView(message: message, workspace: workspace)
+                        MessageContentView(message: message, workspace: workspace, renderState: renderState)
                         .font(.body)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("message-content-\(message.id)")
                         .accessibilityAction(named: "メッセージの操作", showActions)
+                        .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                     }
-                    MessageAttachmentsView(attachments: store.attachments(for: message), workspace: workspace)
+                    MessageAttachmentsView(attachments: store.attachments(for: message), workspace: workspace, renderState: renderState,
+                                           channelID: store.channel.id, messageID: message.id, isVisible: isVisible)
                 }
-                .contentShape(Rectangle())
-                .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                 // スタンプの押下を本文の長押し判定から外し、メッセージ全体を暗くしない。
                 ReactionChips(store: store, workspace: workspace, message: message)
                 if parentID == nil {
