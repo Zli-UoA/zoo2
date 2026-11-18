@@ -689,3 +689,246 @@ async fn api_import_racing_slack_link_adds_the_linked_user_to_the_channel() -> a
     assert_eq!(memberships[0]["user_id"], bob);
     Ok(())
 }
+
+/// API 取り込みは、ZIP 取り込みと同じ `(team, Slack チャンネル)` 単位の advisory lock を、
+/// `slack_channels` の確認よりも前 (プレースホルダ作成よりも前) に取る。並行する ZIP
+/// 取り込みが対応を確定させたあとに解放されると、API 側は 409 になり、確定済みの対応を
+/// 上書きもプレースホルダの作成もしない。
+#[tokio::test]
+async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() -> anyhow::Result<()>
+{
+    let key = [11u8; 32];
+    let team = format!(
+        "TZIPLOCK{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "api_zip_lock_alice").await?;
+    link(
+        &state,
+        &key,
+        &alice,
+        &team,
+        "UA",
+        "xoxp-alice",
+        PRIVATE_SCOPES,
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UA',$2,true) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &alice],
+    )
+    .await?;
+    mock_channel(&slack, "GZIPRACE", "zip-race", "UA", true).await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.members"))
+        .and(query_param("channel", "GZIPRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "members": ["UA", "UU"], "response_metadata": {"next_cursor": ""},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "user": {"id": "UU", "name": "uma", "real_name": "Uma", "profile": {"display_name": "uma"}},
+        })))
+        .mount(&slack)
+        .await;
+
+    // A zoo channel that the racing ZIP import already committed as the target
+    // mapping for this Slack channel while holding the target lock.
+    let zip_target = uuid::Uuid::new_v4().to_string();
+    let result: anyhow::Result<()> = async {
+        sql(
+            &state,
+            "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$2,$3,true) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&zip_target, &format!("zip_target_{}", uuid::Uuid::new_v4().simple()), &alice],
+        )
+        .await?;
+        // Hold the exact advisory lock the ZIP importer's mapping transaction takes,
+        // and leave the mapping uncommitted until the API import is observed waiting.
+        let (mut holder, holder_driver) =
+            tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(holder_driver);
+        let holder_pid: i32 = holder
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let holder_tx = holder.transaction().await?;
+        holder_tx
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                &[&format!("slack-channel:{team}:GZIPRACE")],
+            )
+            .await?;
+
+        let import_app = app.clone();
+        let import_user = alice.clone();
+        let import_task = tokio::spawn(async move {
+            request(
+                &import_app,
+                "POST",
+                "/api/slack/private-channels/import",
+                &import_user,
+                Some(json!({"slack_channel_id": "GZIPRACE", "name": "zip-race"})),
+            )
+            .await
+        });
+        // 観測や統合に失敗したとき、取り込みが裏で動いたまま後片付けが走らない
+        // よう abort 用のハンドルを手元に残す。
+        let import_task_abort = import_task.abort_handle();
+        let inner: anyhow::Result<()> = async {
+            // The import must block on the target advisory lock itself (not on a
+            // users row or the mapping row): that is what serializes API and ZIP
+            // initial imports on the same target lock.
+            let (observer, observer_driver) =
+                tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(observer_driver);
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if import_task.is_finished() {
+                        anyhow::bail!(
+                            "the API import finished before waiting for the ZIP target lock"
+                        );
+                    }
+                    let waiting: bool = observer
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                             WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) \
+                             AND query LIKE '%pg_advisory_xact_lock%')",
+                            &[&holder_pid],
+                        )
+                        .await?
+                        .get(0);
+                    if waiting {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await??;
+
+            // While the import waits, the ZIP path commits its mapping under the same
+            // lock (the mapping insert is what the ZIP worker's first transaction
+            // does between the lock and its commit).
+            holder_tx
+                .execute(
+                    "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) \
+                     VALUES($1,'GZIPRACE',$2,'0')",
+                    &[&team, &zip_target],
+                )
+                .await?;
+            holder_tx.commit().await?;
+
+            let (status, body) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), import_task).await???;
+            anyhow::ensure!(
+                status == StatusCode::CONFLICT,
+                "the racing API import must be refused with 409, got {status}: {body}"
+            );
+            // The racing mapping stays exactly as the ZIP path committed it.
+            let mapping = sql(
+                &state,
+                "SELECT json_build_object('channel_id',channel_id,'last_ts',last_ts)::text \
+                 FROM slack_channels WHERE team_id=$1 AND slack_channel_id='GZIPRACE'",
+                &[&team],
+            )
+            .await?;
+            anyhow::ensure!(
+                mapping.first().is_some_and(|row| row["channel_id"] == zip_target.as_str()),
+                "the API import must not overwrite the committed ZIP mapping: {mapping:?}"
+            );
+            anyhow::ensure!(
+                mapping.first().is_some_and(|row| row["last_ts"] == "0"),
+                "the mapping must keep its sync cursor"
+            );
+            // The import refused before resolving members or creating a channel: no
+            // placeholder for UU and no deterministic import channel exist.
+            let member_placeholder = backend::slack::user_id(&team, "UU");
+            let import_channel = backend::slack::channel_id(&team, "GZIPRACE");
+            let leaked = sql(
+                &state,
+                "SELECT json_build_object('n', (SELECT count(*) FROM users WHERE id=$1) \
+                 + (SELECT count(*) FROM channels WHERE id=$2))::text",
+                &[&member_placeholder, &import_channel],
+            )
+            .await?;
+            anyhow::ensure!(
+                leaked.first().is_some_and(|row| row["n"].as_i64() == Some(0)),
+                "the refused import must not create placeholders or a channel: {leaked:?}"
+            );
+            Ok(())
+        }
+        .await;
+        // タイムアウトや失敗のときは後片付けの前に必ず止める (成功時は完了済み)。
+        if inner.is_err() {
+            import_task_abort.abort();
+        }
+        inner
+    }
+    .await;
+    // Clean up only the rows this test created, even after a failure: the
+    // mapping, the ZIP target channel, the Slack link rows, and the placeholder
+    // (if a failed import left one behind). Cleanup failures are collected so
+    // they cannot mask the actual test result.
+    let member_placeholder = backend::slack::user_id(&team, "UU");
+    let import_channel = backend::slack::channel_id(&team, "GZIPRACE");
+    let mut cleanup_errors: Vec<String> = Vec::new();
+    for (statement, params) in [
+        (
+            "DELETE FROM slack_channels WHERE team_id=$1",
+            vec![team.as_str()],
+        ),
+        (
+            "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
+            vec![zip_target.as_str(), import_channel.as_str()],
+        ),
+        (
+            // create_user joins the workspace default channels, and
+            // channel_user.user_id is ON DELETE RESTRICT: drop both users'
+            // memberships (including the default channels) before users.
+            "DELETE FROM channel_user WHERE user_id IN ($1,$2)",
+            vec![member_placeholder.as_str(), alice.as_str()],
+        ),
+        (
+            "DELETE FROM channels WHERE id IN ($1,$2)",
+            vec![zip_target.as_str(), import_channel.as_str()],
+        ),
+        (
+            "DELETE FROM slack_users WHERE team_id=$1",
+            vec![team.as_str()],
+        ),
+        (
+            "DELETE FROM users WHERE id IN ($1,$2)",
+            vec![member_placeholder.as_str(), alice.as_str()],
+        ),
+    ] {
+        if let Err(error) = sql(&state, statement, &params).await {
+            cleanup_errors.push(format!("{statement}: {error}"));
+        }
+    }
+    if cleanup_errors.is_empty() {
+        return result;
+    }
+    let cleanup_error = anyhow::anyhow!("cleanup failed: {}", cleanup_errors.join("; "));
+    match result {
+        Ok(()) => Err(cleanup_error),
+        Err(error) => Err(error.context(cleanup_error)),
+    }
+}

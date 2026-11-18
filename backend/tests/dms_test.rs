@@ -1387,3 +1387,328 @@ async fn test_concurrent_guest_transition_rejects_dm_creation() -> anyhow::Resul
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_concurrent_deactivation_rejects_dm_creation() -> anyhow::Result<()> {
+    let (app, state) = setup_app().await?;
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let bob_id = uuid::Uuid::new_v4().to_string();
+    let carol_id = uuid::Uuid::new_v4().to_string();
+    create_test_user(&state, &alice_id, "alice_deactivated_race").await?;
+    create_test_user(&state, &bob_id, "bob_deactivated_race").await?;
+    create_test_user(&state, &carol_id, "carol_deactivated_race").await?;
+
+    for (label, target_ids) in [
+        ("1on1", vec![bob_id.clone()]),
+        ("group", vec![bob_id.clone(), carol_id.clone()]),
+    ] {
+        let mut db = state.db.clone();
+        // 各ケースの最初に有効へ戻す（1on1 の後に group を同じユーザーで試すため）。
+        toasty::sql::statement("UPDATE users SET guest_kind = 'none' WHERE id = $1")
+            .bind(alice_id.as_str())
+            .exec(&mut db)
+            .await?;
+
+        // users 行をロックしつつ、まだ未コミットのまま無効化する。認証時の検査は
+        // この時点では通るため、users ロックの待ち後に再確認しないと作成が通ってしまう。
+        let mut blocker_db = state.db.clone();
+        let mut blocker = blocker_db.transaction().await?;
+        let pid_rows = backend::apps::query(
+            &mut blocker,
+            "SELECT json_build_object('pid', pg_backend_pid())::text",
+            &[],
+        )
+        .await?;
+        let blocker_pid = pid_rows[0]["pid"].as_i64().unwrap() as i32;
+
+        toasty::sql::statement("UPDATE users SET guest_kind = 'deactivated' WHERE id = $1")
+            .bind(alice_id.as_str())
+            .exec(&mut blocker)
+            .await?;
+
+        let dm_id = uuid::Uuid::new_v4().to_string();
+        let app_clone = app.clone();
+        let actor = alice_id.clone();
+        let dm_id_req = dm_id.clone();
+        let targets = target_ids.clone();
+        let handle = tokio::spawn(async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/dms")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &actor)
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "id": dm_id_req,
+                        "target_user_ids": targets,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap();
+            app_clone.oneshot(req).await.unwrap()
+        });
+
+        let mut waited = false;
+        let blocker_str = blocker_pid.to_string();
+        for _ in 0..400 {
+            // blocker のロックを待つ前に応答してしまったら並行性の前提が崩れている。
+            if handle.is_finished() {
+                anyhow::bail!(
+                    "{label} DM request returned before blocking on the users row lock held by {blocker_pid}"
+                );
+            }
+            let mut wait_tx = db.transaction().await?;
+            let rows = backend::apps::query(
+                &mut wait_tx,
+                "SELECT json_build_object('pid', a.pid)::text
+                 FROM pg_stat_activity a
+                 WHERE a.wait_event_type = 'Lock'
+                   AND $1::int = ANY(pg_blocking_pids(a.pid))
+                 LIMIT 1",
+                &[blocker_str.as_str()],
+            )
+            .await?;
+            wait_tx.commit().await?;
+            if !rows.is_empty() {
+                waited = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            waited,
+            "{label} DM request did not block on users row lock held by {blocker_pid}"
+        );
+
+        // 待ちのあいだに無効化を確定させる。
+        blocker.commit().await?;
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(15), handle)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("{label} DM request never finished after the blocker committed")
+            })??;
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "{label} DM must reject user who was deactivated while waiting on users lock"
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await?;
+        let json: Value = serde_json::from_slice(&body)?;
+        assert_eq!(
+            json["error"], "Account is deactivated",
+            "{label} deactivation must match the auth-time error"
+        );
+
+        let mut check_tx = db.transaction().await?;
+        let created = backend::apps::query(
+            &mut check_tx,
+            "SELECT json_build_object('id', id)::text FROM channels WHERE id = $1",
+            &[dm_id.as_str()],
+        )
+        .await?;
+        check_tx.commit().await?;
+        assert!(
+            created.is_empty(),
+            "{label} DM channel {dm_id} must not be created after concurrent deactivation"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.e2ee_encrypted_channels_enabled = true;
+    // 競合テストは blocker のトランザクションで 1 接続を保持したまま API 要求を出す。
+    let db = backend::db::init_db_with_pool(&config.database_url, 4).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let actor = uuid::Uuid::new_v4().to_string();
+    let target = uuid::Uuid::new_v4().to_string();
+    create_test_user(&state, &actor, "leave_race_actor").await?;
+    create_test_user(&state, &target, "leave_race_target").await?;
+
+    let dm_payload = json!({"target_user_ids": [&target], "encrypted": true});
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(dm_payload.to_string()))?;
+    let response = app.clone().oneshot(create).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let channel_id = serde_json::from_slice::<Value>(&body)?["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // 退出 (leave_channel の channels FOR UPDATE) と暗号化 DM の再オープン
+    // (メンバーロック後に取る channels FOR NO KEY UPDATE) を同じチャンネル行で
+    // 直列化する。まず blocker の FOR UPDATE で両方を止める。
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one(
+            "SELECT id FROM channels WHERE id = $1 FOR UPDATE",
+            &[&channel_id],
+        )
+        .await?;
+
+    let leave = {
+        let app = app.clone();
+        let path = format!("/api/channels/{channel_id}/leave");
+        let target = target.clone();
+        tokio::spawn(async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("X-Dev-User", &target)
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        })
+    };
+    let reopen = {
+        let app = app.clone();
+        let actor = actor.clone();
+        let payload = dm_payload.clone();
+        tokio::spawn(async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/api/dms")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &actor)
+                .body(Body::from(payload.to_string()))
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        })
+    };
+
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    // 両方がチャンネルの行で待つまで確認する。再オープンがロックなしで所属を
+    // 読んでいたら、blocker の解放を待たずに先へ進んでしまう。待ちの枝は
+    // 先に並んだ要求 (soft blocker) を直接待つこともあるため、blocker からの
+    // 再帰的な待ちの連鎖で探す。
+    let both_waiting = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let rows = observer
+                .query(
+                    "WITH RECURSIVE chain AS ( \
+                         SELECT pid, COALESCE(query, '') AS query, 0 AS depth \
+                         FROM pg_stat_activity WHERE pid = $1 \
+                         UNION ALL \
+                         SELECT a.pid, COALESCE(a.query, ''), c.depth + 1 \
+                         FROM pg_stat_activity a \
+                         JOIN chain c ON c.depth < 8 AND c.pid = ANY(pg_blocking_pids(a.pid)) \
+                     ) SELECT query FROM chain WHERE depth > 0",
+                    &[&blocker_pid],
+                )
+                .await?;
+            let queries: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+            let leave_waiting = queries.iter().any(|query| {
+                query.contains("channels")
+                    && query.contains("FOR UPDATE")
+                    && !query.contains("FOR NO KEY UPDATE")
+            });
+            let reopen_waiting = queries
+                .iter()
+                .any(|query| query.contains("channels") && query.contains("FOR NO KEY UPDATE"));
+            if leave_waiting && reopen_waiting {
+                break Ok::<(), anyhow::Error>(());
+            }
+            if leave.is_finished() || reopen.is_finished() {
+                break Err(anyhow::anyhow!(
+                    "leave/reopen finished before both waited on the channel row \
+                     (leave_waiting={leave_waiting}, reopen_waiting={reopen_waiting}): {queries:?}"
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    // タイムアウト (Elapsed) だけでなく、待機ループ自体のエラー (leave/reopen の
+    // 早期完了や observer.query の失敗) も同じ診断・ abort・ロールバック枝に流す。
+    let both_waiting = both_waiting
+        .map_err(anyhow::Error::from)
+        .and_then(|inner| inner);
+    if let Err(error) = both_waiting {
+        let sessions = observer
+            .query(
+                "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type, ''), query, pg_blocking_pids(pid)) \
+                 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+                &[],
+            )
+            .await
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row.get::<_, String>(0))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_else(|error| format!("session dump failed: {error}"));
+        leave.abort();
+        reopen.abort();
+        blocker.rollback().await?;
+        anyhow::bail!(
+            "leave and reopen never both waited on the channel row: {error:?}; sessions: {sessions}"
+        );
+    }
+
+    blocker.commit().await?;
+    let (leave_response, reopen_response) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            tokio::join!(leave, reopen)
+        })
+        .await
+        .map_err(|_| {
+            // どちらかが止まったままの場合はロック順が崩れている（デッドロック）。
+            anyhow::anyhow!("leave and reopen did not finish; the lock order deadlocked")
+        })?;
+    assert_eq!(
+        leave_response?.status(),
+        StatusCode::OK,
+        "the concurrent leave must complete cleanly"
+    );
+    assert_eq!(
+        reopen_response?.status(),
+        StatusCode::OK,
+        "the encrypted DM re-entry must complete cleanly"
+    );
+
+    // どちらが先に確定しても、最後の再オープンで両者とも所属に戻る。
+    let final_reopen = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(dm_payload.to_string()))?;
+    let response = app.clone().oneshot(final_reopen).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let members: i64 = observer
+        .query_one(
+            "SELECT count(*) FROM channel_user cu JOIN channels c ON c.id = cu.channel_id \
+             WHERE c.id = $1 AND cu.user_id IN ($2, $3) AND c.deleted_at IS NULL",
+            &[&channel_id, &actor, &target],
+        )
+        .await?
+        .get(0);
+    assert_eq!(
+        members, 2,
+        "the final reopen must restore both DM members after the leave race"
+    );
+    Ok(())
+}

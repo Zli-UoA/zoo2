@@ -23,7 +23,9 @@ use serde_json::{Value, json};
 use super::{
     export::{SlackChannel, SlackUser},
     sync::{self, Slack, SyncError},
-    worker::{Context, FilePolicy, create_channel, exec, suppress_app_events},
+    worker::{
+        Context, FilePolicy, create_channel, exec, lock_zip_target_advisory, suppress_app_events,
+    },
 };
 use crate::{apps::query, auth::AuthUser, error::AppError, state::AppState};
 
@@ -42,6 +44,13 @@ pub fn router() -> Router<AppState> {
 }
 
 /// API imports and ZIP imports must serialize placeholder creation in the same stable ID order.
+///
+/// Locking contract: when this returns, the calling transaction already holds the link lock,
+/// a per-placeholder advisory lock for every resolved Slack member, and a `users` row lock
+/// (`FOR NO KEY UPDATE`) for every resolved or created member Zoo ID **plus the creator**
+/// (`additional_user_ids`), all taken once in sorted ID order. Callers must not re-lock those
+/// rows with `lock_membership_users`. Callers must re-check the creator's guest state only
+/// after this returns, because that read is stable only once the users rows are locked.
 async fn resolve_members(
     ctx: &mut Context,
     tx: &mut toasty::Transaction<'_>,
@@ -717,6 +726,13 @@ async fn start(
 
         let mut tx = db.transaction().await?;
         suppress_app_events(&mut tx).await?;
+        // API 取り込みと ZIP 取り込み (最初の対応付けトランザクションも、日付ごとの保存
+        // トランザクションも) を、同じ Slack チャンネル単位の advisory lock で直列化する。
+        // この lock を `slack_channels` の確認とプレースホルダ作成 (`resolve_members`) の
+        // 前に取るので、並行する ZIP 取り込みが対応を確定させたあとに、この要求が別の
+        // 取り込み先を作って対応を上書きできない (ZIP 側の `ON CONFLICT DO UPDATE` も、
+        // この lock を待ってから対応を確認するので、API 側が確定させた対応を上書きしない)。
+        lock_zip_target_advisory(&mut tx, &link.team, &pick.slack_channel_id).await?;
         let already = !query(
             &mut tx,
             "SELECT json_build_object('ok',true)::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id=$2",
@@ -730,15 +746,13 @@ async fn start(
                 pick.slack_channel_id
             )));
         }
+        // resolve_members が全メンバーと作成者の users 行を (ID 順に) すでにロックして
+        // いるので、ここで lock_membership_users を呼び直さない (メンバーごとの無駄な
+        // ロック往復になる)。
         let imported_users = resolve_members(&mut ctx, &mut tx, &member_ids, &user.id).await?;
-        let mut membership_users: Vec<&str> = imported_users
-            .iter()
-            .map(|member| member.id.as_str())
-            .collect();
-        membership_users.push(user.id.as_str());
-        crate::routes::e2ee_channels::lock_membership_users(&mut tx, &membership_users).await?;
-        // Slack の応答を待つ間に種別が変わりうる。全参加者の users 行を固定してから
-        // 読み直し、作成者がゲストになった場合はチャンネルを書き込まない。
+        // Slack の応答を待つ間に種別が変わりうる。全参加者 (作成者を含む) の users 行は
+        // resolve_members がロック済みなので、ここで読み直した作成者の状態は固定される。
+        // 作成者がゲストになった場合はチャンネルを書き込まない。
         if crate::apps::events::guest(&mut tx, &user.id).await? {
             return Err(AppError::Forbidden(
                 "Guests cannot create channels by importing from Slack".into(),

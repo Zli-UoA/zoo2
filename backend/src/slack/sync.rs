@@ -1026,7 +1026,16 @@ async fn store(
     // the order stays advisory -> users -> mapping -> channel through message commit.
     super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
     let message_refs: Vec<&SlackMessage> = importable.to_vec();
-    resolve_message_users(&mut tx, ctx, &task.slack_channel_id, &message_refs).await?;
+    // A private Slack channel's message fallbacks must not become the placeholder's
+    // workspace-wide display name (same rule as the ZIP importer).
+    resolve_message_users(
+        &mut tx,
+        ctx,
+        &task.slack_channel_id,
+        slack_private,
+        &message_refs,
+    )
+    .await?;
     ensure_target_unchanged(
         &mut tx,
         &task.team_id,

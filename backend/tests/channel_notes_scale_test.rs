@@ -239,7 +239,8 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         ],
     )
     .await?;
-    let other_channels = (count / 100).max(100);
+    // 端数分のチャンネルも作る。切り捨てると、最後のノートが存在しないチャンネルを参照する。
+    let other_channels = count.div_ceil(100).max(100);
     tx.execute(
         "INSERT INTO channels(id,channel_name,created_user_id,is_private) \
          SELECT 'other-channel-'||lpad(n::text,9,'0'),'other_'||n,$1,false \
@@ -273,14 +274,18 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     // Probes bind the target ids as parameters, exactly like the production
     // statements: custom samples (concurrency 1) plan with the bound values and
     // generic samples (concurrency 8) plan without them.
-    let columns = "id,channel_id,title,content,position,deleted_at,version,created_user_id,created_at,updated_at";
-    let list =
-        format!("SELECT {columns} FROM channel_notes WHERE channel_id=$1 AND deleted_at IS NULL");
+    let list = "SELECT id, channel_id, title, content, position, version, created_user_id, \
+                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
+                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') \
+         FROM channel_notes \
+         WHERE channel_id = $1 AND deleted_at IS NULL \
+           AND (CASE WHEN $2 = '' THEN true ELSE (position, id) > ($2::integer, $3) END) \
+         ORDER BY position, id LIMIT $4::integer";
     measure(
         &url,
         "notes_list",
-        &list,
-        &[target_active.as_str()],
+        list,
+        &[target_active.as_str(), "", "", "50"],
         256.,
         &output,
         &mut metrics,
@@ -289,14 +294,14 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     measure(
         &url,
         "notes_list_empty",
-        &list,
-        &[target_empty.as_str()],
+        list,
+        &[target_empty.as_str(), "", "", "50"],
         256.,
         &output,
         &mut metrics,
     )
     .await?;
-    let list_deleted = "SELECT id, channel_id, title, content, version, created_user_id, \
+    let list_deleted = "SELECT id, channel_id, title, content, position, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                 to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                 to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
@@ -315,14 +320,13 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         &mut metrics,
     )
     .await?;
-    let show = format!(
-        "SELECT {columns} FROM channel_notes \
-         WHERE id=$1 AND channel_id=$2 AND deleted_at IS NULL"
-    );
+    let show = "SELECT id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at \
+         FROM channel_notes \
+         WHERE id=$1 AND channel_id=$2 AND deleted_at IS NULL";
     measure(
         &url,
         "notes_show",
-        &show,
+        show,
         &[active_note.as_str(), target_active.as_str()],
         256.,
         &output,

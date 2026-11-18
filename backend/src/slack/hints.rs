@@ -363,6 +363,14 @@ async fn apply(
             has("changed"),
             has("reaction"),
         );
+        // A private Slack channel's message fallbacks (`username`/`bot_profile.name`)
+        // must not become the placeholder's workspace-wide display name — the same
+        // rule as the ZIP importer's archive scan in `collect_archive_fallback_names`.
+        let fallbacks = if slack_private {
+            HashMap::new()
+        } else {
+            fallbacks
+        };
         resolve_users(&mut tx, ctx, &slack_ids, &fallbacks).await?;
     }
     super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
@@ -601,14 +609,10 @@ fn collect_apply_users(
         Some(row) if row["deleted"] == true => {}
         Some(_) => {
             if has_changed && !state.zoo_origin && message.is_importable() {
-                // insert_message は再構築した本文の投稿者も解決する。チャンネルをロックした
-                // 後に users 行をロックすると、users → channels の順でロックする変換と
-                // デッドロックになり得るため、既存メッセージでも投稿者を事前解決する。
-                let author = message.author().unwrap_or_default();
-                members.push(author.to_string());
-                if let Some((_, name)) = message_fallback_name(message) {
-                    fallbacks.insert(author.to_string(), name.to_string());
-                }
+                // edit() は edited か bot_id のない投稿では誰も解決せずに戻り、進む
+                // ときは render_message が本文のメンション先を解決する。投稿者は
+                // 既存メッセージの書き込み (edit と insert_reactions) では解決しない。
+                // recheck の collect_chunk_users と同じ集合にする。
                 let edited = message
                     .edited
                     .as_ref()

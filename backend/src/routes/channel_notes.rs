@@ -24,6 +24,8 @@ pub struct NoteResponse {
     pub channel_id: String,
     pub title: String,
     pub content: String,
+    /// 表示順。有効ノート一覧のページ継続カーソルにも使う。
+    pub position: i32,
     pub version: i32,
     pub created_user_id: String,
     pub created_at: String,
@@ -41,6 +43,7 @@ impl From<ChannelNote> for NoteResponse {
             channel_id: note.channel_id,
             title: note.title,
             content: note.content,
+            position: note.position,
             version: note.version,
             created_user_id: note.created_user_id,
             created_at: note.created_at.to_string(),
@@ -470,24 +473,110 @@ fn note_path(channel_id: &str, note_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct ActiveNotesQuery {
+    limit: Option<i64>,
+    /// `"<position> <id>"`。前ページの最後の項目から継続する。
+    after: Option<String>,
+}
+
 async fn list(
     State(state): State<AppState>,
     actor: AuthUser,
     Path(channel_id): Path<String>,
+    Query(query): Query<ActiveNotesQuery>,
 ) -> Result<Json<ApiResponse<Vec<NoteResponse>>>, AppError> {
+    // 本文を含むため、1 回の応答で全件を返さない。ページは SQL で制限し、
+    // (position, id) のカーソルで表示順を保ったまま続きを取得できる。
+    let limit = query.limit.unwrap_or(50).clamp(1, 200) as i32;
+    let (after_position, after_id) = match query.after.as_deref() {
+        None | Some("") => (String::new(), String::new()),
+        Some(cursor) => match cursor.split_once(' ') {
+            Some((position, id)) if !position.is_empty() && !id.is_empty() => {
+                if position.parse::<i32>().is_err() {
+                    return Err(AppError::BadRequest("Invalid note cursor".into()));
+                }
+                (position.to_string(), id.to_string())
+            }
+            _ => return Err(AppError::BadRequest("Invalid note cursor".into())),
+        },
+    };
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, false).await?;
-    let mut result = ChannelNote::filter(
-        ChannelNote::fields()
-            .channel_id()
-            .eq(channel_id.as_str())
-            .and(ChannelNote::fields().deleted_at().is_none()),
+    let rows = toasty::sql::query(
+        "SELECT id, channel_id, title, content, position, version, created_user_id, \
+                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
+                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') \
+         FROM channel_notes \
+         WHERE channel_id = $1 AND deleted_at IS NULL \
+           AND (CASE WHEN $2 = '' THEN true \
+                     ELSE (position, id) > ($2::integer, $3) END) \
+         ORDER BY position, id LIMIT $4",
     )
+    .bind(channel_id.as_str())
+    .bind(after_position.as_str())
+    .bind(after_id.as_str())
+    .bind(limit)
     .exec(&mut tx)
     .await?;
-    result.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-    let result = result.into_iter().map(NoteResponse::from).collect();
+    let result: Vec<NoteResponse> = rows
+        .into_iter()
+        .map(|row| {
+            let toasty::stmt::Value::Record(record) = row else {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected channel note row"
+                )));
+            };
+            let mut fields = record.fields.into_iter();
+            let (
+                Some(toasty::stmt::Value::String(id)),
+                Some(toasty::stmt::Value::String(channel_id)),
+                Some(toasty::stmt::Value::String(title)),
+                Some(toasty::stmt::Value::String(content)),
+                Some(toasty::stmt::Value::I32(position)),
+                Some(toasty::stmt::Value::I32(version)),
+                Some(toasty::stmt::Value::String(created_user_id)),
+                Some(toasty::stmt::Value::String(created_at)),
+                Some(toasty::stmt::Value::String(updated_at)),
+            ) = (
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+                fields.next(),
+            )
+            else {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected channel note columns"
+                )));
+            };
+            let created_at = created_at
+                .parse::<jiff::civil::DateTime>()
+                .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+                .to_string();
+            let updated_at = updated_at
+                .parse::<jiff::civil::DateTime>()
+                .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+                .to_string();
+            Ok(NoteResponse {
+                id,
+                channel_id,
+                title,
+                content,
+                position,
+                version,
+                created_user_id,
+                created_at,
+                updated_at,
+                deleted_at: None,
+            })
+        })
+        .collect::<Result<_, _>>()?;
     Ok(Json(ApiResponse::new(result, None::<String>)))
 }
 
@@ -536,7 +625,7 @@ async fn list_deleted(
     // statement snapshot. Separate SELECTs under READ COMMITTED can combine a
     // pre-delete body with a post-delete eligibility check.
     let rows = toasty::sql::query(
-        "SELECT id, channel_id, title, content, version, created_user_id, \
+        "SELECT id, channel_id, title, content, position, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                 to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
                 to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
@@ -567,12 +656,14 @@ async fn list_deleted(
                 Some(toasty::stmt::Value::String(channel_id)),
                 Some(toasty::stmt::Value::String(title)),
                 Some(toasty::stmt::Value::String(content)),
+                Some(toasty::stmt::Value::I32(position)),
                 Some(toasty::stmt::Value::I32(version)),
                 Some(toasty::stmt::Value::String(created_user_id)),
                 Some(toasty::stmt::Value::String(created_at)),
                 Some(toasty::stmt::Value::String(updated_at)),
                 Some(toasty::stmt::Value::String(deleted_at)),
             ) = (
+                fields.next(),
                 fields.next(),
                 fields.next(),
                 fields.next(),
@@ -605,6 +696,7 @@ async fn list_deleted(
                 channel_id,
                 title,
                 content,
+                position,
                 version,
                 created_user_id,
                 created_at,

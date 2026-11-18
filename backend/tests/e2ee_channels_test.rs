@@ -10,7 +10,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
+use backend::{config::Config, db::init_db_with_pool, routes::create_router, state::AppState};
 use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -20,6 +20,10 @@ use zoo_crypto::DeviceAccount;
 struct Env {
     app: Router,
     db: toasty::Db,
+    /// 観測用の独立接続を開くための URL。ロック待ちの観測にアプリのプールを
+    /// 使うと、競合する API 要求がプールの接続を使い切ったときに観測自体が
+    /// 止まってしまう。
+    database_url: String,
 }
 
 async fn env_with(enabled: bool) -> Env {
@@ -28,9 +32,18 @@ async fn env_with(enabled: bool) -> Env {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     config.e2ee_encrypted_channels_enabled = enabled;
-    let db = init_db(&config.database_url).await.unwrap();
+    // ロック競合のテストは、止めたトランザクション用の接続を保持したまま
+    // 競合する API 要求を並行して出す。環境の DB_MAX_POOL_SIZE がテストの
+    // 成立を決めないように、必要な接続数（保持 1 + 競合 2 + 余裕 1）を
+    // 明示する。観測はこのプールの外の独立接続で行う。
+    let database_url = config.database_url.clone();
+    let db = init_db_with_pool(&config.database_url, 4).await.unwrap();
     let app = create_router(AppState::new(db.clone(), config));
-    Env { app, db }
+    Env {
+        app,
+        db,
+        database_url,
+    }
 }
 
 async fn env() -> Env {
@@ -82,6 +95,17 @@ impl Env {
         statement.exec(&mut db).await
     }
 
+    /// ロック待ちの観測専用の独立した接続。アプリのプールの接続を競合する
+    /// API 要求と取り合わない。
+    async fn observer(&self) -> tokio_postgres::Client {
+        let (client, connection) =
+            tokio_postgres::connect(&self.database_url, tokio_postgres::NoTls)
+                .await
+                .expect("observer connection");
+        tokio::spawn(connection);
+        client
+    }
+
     async fn query(&self, sql: &str, params: &[&str]) -> Vec<Value> {
         let mut db = self.db.clone();
         let mut tx = db.transaction().await.unwrap();
@@ -111,6 +135,20 @@ impl Env {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        id
+    }
+
+    /// 既定チャンネルへ参加しないテストユーザーを作る。既定チャンネルがある環境では
+    /// `user()` の自動参加が非 DM 所属数の前提を壊すため、ゲスト系のテストで使う。
+    async fn user_without_default_channels(&self) -> String {
+        let id = Uuid::new_v4().to_string();
+        let user_name = format!("e2ee_{}", Uuid::new_v4().simple());
+        self.exec(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $2, 'E2EE')",
+            &[id.as_str(), user_name.as_str()],
+        )
+        .await
+        .expect("direct test user insert");
         id
     }
 
@@ -1059,99 +1097,155 @@ async fn recipients_are_paged_by_user_id_and_tied_to_the_epoch() {
 // ---------------------------------------------------------------------------
 // 競合（#357 のレビュー）
 
-/// `pattern` を含む文がロックを待つまで待つ。
+/// 観測が止まったときの診断用に、全セッションの待機状態を集める。
+async fn lock_observation_dump(observer: &tokio_postgres::Client) -> String {
+    observer
+        .query(
+            "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type, ''), query, pg_blocking_pids(pid)) \
+             FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+            &[],
+        )
+        .await
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_else(|error| format!("session dump failed: {error}"))
+}
+
+/// `pattern` を含む文がロックを待つまで待つ。観測はアプリのプールの外の
+/// 独立した接続で行い、タイムアウトで全体の時間を区切る。
 async fn wait_for_lock(env: &Env, pattern: &str) {
-    for _ in 0..100 {
-        let waiting = env
-            .query(
-                "SELECT json_build_object('n', count(*))::text FROM pg_stat_activity
-                 WHERE wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'
-                   AND query NOT LIKE '%pg_stat_activity%'",
-                &[pattern],
-            )
-            .await;
-        if waiting[0]["n"].as_i64().unwrap_or(0) > 0 {
-            return;
+    let observer = env.observer().await;
+    let waiting = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let row = observer
+                .query_one(
+                    "SELECT count(*)::int8 FROM pg_stat_activity
+                     WHERE wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'
+                       AND query NOT LIKE '%pg_stat_activity%'",
+                    &[&pattern],
+                )
+                .await
+                .unwrap();
+            if row.get::<_, i64>(0) > 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    })
+    .await;
+    if waiting.is_err() {
+        panic!(
+            "no statement waited on a lock within 10s: {pattern}; sessions: {}",
+            lock_observation_dump(&observer).await
+        );
     }
-    panic!("no statement waited on a lock: {pattern}");
 }
 
 async fn wait_for_dm_lock_blocked_by(env: &Env, blocker_pid: i32, member_id: &str) -> i32 {
-    let blocker = blocker_pid.to_string();
-    for _ in 0..100 {
-        let waiting = env
-            .query(
-                "SELECT json_build_object('pid', a.pid)::text
-                 FROM pg_stat_activity a
-                 WHERE a.wait_event_type = 'Lock'
-                   AND a.query LIKE '%INSERT INTO%'
-                   AND a.query NOT LIKE '%pg_stat_activity%'
-                   AND $1::int = ANY(pg_blocking_pids(a.pid))
-                   AND EXISTS (
-                       SELECT 1 FROM pg_locks l
-                       WHERE l.pid = a.pid
-                         AND l.locktype = 'advisory'
-                         AND l.classid = 3
-                         AND l.objid = hashtext($2)::oid
-                         AND l.granted
-                   )
-                 LIMIT 1",
-                &[&blocker, member_id],
-            )
-            .await;
-        if let Some(pid) = waiting.first().and_then(|row| row["pid"].as_i64()) {
-            return pid as i32;
+    let observer = env.observer().await;
+    let waiting = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let row = observer
+                .query_opt(
+                    "SELECT a.pid FROM pg_stat_activity a
+                     WHERE a.wait_event_type = 'Lock'
+                       AND a.query LIKE '%INSERT INTO%'
+                       AND a.query NOT LIKE '%pg_stat_activity%'
+                       AND $1 = ANY(pg_blocking_pids(a.pid))
+                       AND EXISTS (
+                           SELECT 1 FROM pg_locks l
+                           WHERE l.pid = a.pid
+                             AND l.locktype = 'advisory'
+                             AND l.classid = 3
+                             AND l.objid = hashtext($2)::oid
+                             AND l.granted
+                       )
+                     LIMIT 1",
+                    &[&blocker_pid, &member_id],
+                )
+                .await
+                .unwrap();
+            if let Some(row) = row {
+                return row.get::<_, i32>(0);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    })
+    .await;
+    match waiting {
+        Ok(pid) => pid,
+        Err(_) => panic!(
+            "DM session for member {member_id} did not wait on blocker {blocker_pid} within 10s; sessions: {}",
+            lock_observation_dump(&observer).await
+        ),
     }
-    panic!("DM session for member {member_id} did not wait on blocker {blocker_pid}");
 }
 
 async fn wait_for_lock_blocked_by(env: &Env, blocker_pid: i32, pattern: &str) -> i32 {
-    let blocker = blocker_pid.to_string();
-    for _ in 0..100 {
-        let waiting = env
-            .query(
-                "SELECT json_build_object('pid', pid)::text FROM pg_stat_activity
-                 WHERE wait_event_type = 'Lock'
-                   AND query LIKE '%' || $1 || '%'
-                   AND query NOT LIKE '%pg_stat_activity%'
-                   AND $2::int = ANY(pg_blocking_pids(pid))
-                 LIMIT 1",
-                &[pattern, &blocker],
-            )
-            .await;
-        if let Some(pid) = waiting.first().and_then(|row| row["pid"].as_i64()) {
-            return pid as i32;
+    let observer = env.observer().await;
+    let waiting = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let row = observer
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity
+                     WHERE wait_event_type = 'Lock'
+                       AND query LIKE '%' || $1 || '%'
+                       AND query NOT LIKE '%pg_stat_activity%'
+                       AND $2 = ANY(pg_blocking_pids(pid))
+                     LIMIT 1",
+                    &[&pattern, &blocker_pid],
+                )
+                .await
+                .unwrap();
+            if let Some(row) = row {
+                return row.get::<_, i32>(0);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    })
+    .await;
+    match waiting {
+        Ok(pid) => pid,
+        Err(_) => panic!(
+            "no statement waited on blocker {blocker_pid} with lock within 10s: {pattern}; sessions: {}",
+            lock_observation_dump(&observer).await
+        ),
     }
-    panic!("no statement waited on blocker {blocker_pid} with lock: {pattern}");
 }
 
 async fn wait_for_pid_blocked_by(env: &Env, waiter_pid: i32, blocker_pid: i32) {
-    let waiter = waiter_pid.to_string();
-    let blocker = blocker_pid.to_string();
-    for _ in 0..100 {
-        let waiting = env
-            .query(
-                "SELECT json_build_object('waiting', EXISTS (
-                     SELECT 1 FROM pg_stat_activity
-                     WHERE pid = $1::int
-                       AND wait_event_type = 'Lock'
-                       AND $2::int = ANY(pg_blocking_pids(pid))
-                 ))::text",
-                &[&waiter, &blocker],
-            )
-            .await;
-        if waiting[0]["waiting"].as_bool().unwrap_or(false) {
-            return;
+    let observer = env.observer().await;
+    let waiting = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let row = observer
+                .query_one(
+                    "SELECT EXISTS (
+                         SELECT 1 FROM pg_stat_activity
+                         WHERE pid = $1
+                           AND wait_event_type = 'Lock'
+                           AND $2 = ANY(pg_blocking_pids(pid))
+                     )",
+                    &[&waiter_pid, &blocker_pid],
+                )
+                .await
+                .unwrap();
+            if row.get::<_, bool>(0) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    })
+    .await;
+    if waiting.is_err() {
+        panic!(
+            "pid {waiter_pid} did not wait on blocker {blocker_pid} within 10s; sessions: {}",
+            lock_observation_dump(&observer).await
+        );
     }
-    panic!("pid {waiter_pid} did not wait on blocker {blocker_pid}");
 }
 
 #[tokio::test]
@@ -1297,7 +1391,9 @@ async fn member_additions_wait_for_a_device_deletion_bump() {
 async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> anyhow::Result<()> {
     let env = env().await;
     let alice = env.user().await;
-    let bob = env.user().await;
+    // 既定チャンネルへの自動参加があると、暗号化チャンネルへの追加が 2 件目の
+    // 非 DM 所属になって 23514 で拒否され、ロック順と無関係に失敗する。
+    let bob = env.user_without_default_channels().await;
     env.exec(
         "UPDATE users SET guest_kind = 'single' WHERE id = $1",
         &[&bob],
@@ -1428,7 +1524,9 @@ async fn plaintext_resends_return_the_stored_revision() {
 async fn guest_additions_lock_the_user_row_before_the_member_lock() {
     let env = env().await;
     let alice = env.user().await;
-    let guest = env.user().await;
+    // 既定チャンネルへの自動参加があると 'single' への更新も追加後の所属も
+    // 23514 で拒否され、ロック順と無関係に失敗する。
+    let guest = env.user_without_default_channels().await;
     env.exec(
         "UPDATE users SET guest_kind = 'single' WHERE id = $1",
         &[&guest],
@@ -1586,7 +1684,9 @@ async fn encrypted_dm_pins_guest_status_before_waiting_for_member_lock() -> anyh
     let env = env().await;
     let config = Config::from_env();
     let alice = env.user().await;
-    let bob = env.user().await;
+    // 既定チャンネルへの自動参加があると 'single' への更新が 23514 で拒否され、
+    // ロック順と無関係に失敗する。
+    let bob = env.user_without_default_channels().await;
     let mut blocker_db = env.db.clone();
     let mut blocker = blocker_db.transaction().await?;
     let blocker_pid = backend::apps::query(
@@ -1781,9 +1881,12 @@ async fn run_membership_race(env: &Env) -> anyhow::Result<()> {
         transition_was_waiting,
         "guest_kind transition must wait for the in-flight membership insert"
     );
-    assert!(
-        transition_result.is_err(),
-        "single guest transition must reject the second non-DM membership"
+    let transition_error = transition_result
+        .expect_err("single guest transition must reject the second non-DM membership");
+    assert_eq!(
+        transition_error.code().map(|code| code.code()),
+        Some("23514"),
+        "the rejection must be the single-channel membership limit, not a lock wait or timeout: {transition_error}"
     );
     assert!(
         guest_kind != "single" || membership_count <= 1,

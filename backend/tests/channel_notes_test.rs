@@ -3893,8 +3893,10 @@ async fn active_notes_per_channel_are_limited_on_create_and_restore() -> anyhow:
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(connection);
     let seed_prefix = format!("seed-{}-", Uuid::new_v4().simple());
+    // 既存の作成者と非暗号化チャンネルを参照するため、trigger と外部キーを有効なまま
+    // 挿入できる。session_replication_role はロールによっては設定できない。
     let seed = format!(
-        "BEGIN; SET LOCAL session_replication_role=replica; \
+        "BEGIN; \
          INSERT INTO channel_notes(id,channel_id,title,content,position,version,created_user_id,created_at,updated_at) \
          SELECT '{seed_prefix}'||n,'{channel}','title','content',n,1,'{owner}', \
            now() AT TIME ZONE 'UTC',now() AT TIME ZONE 'UTC' \
@@ -4068,5 +4070,225 @@ async fn deleted_notes_list_is_paginated_by_deleted_at_and_id() -> anyhow::Resul
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_notes_list_is_paginated_by_position_and_id() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_active_page_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let (client, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    let prefix = format!("active-page-{}-", Uuid::new_v4().simple());
+    client
+        .execute(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
+             SELECT $1 || lpad(n::text, 3, '0'), $2, 'title', 'content', n, 1, $3, \
+               now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC' \
+             FROM generate_series(0, 204) n",
+            &[&prefix, &channel, &owner],
+        )
+        .await?;
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page1 = body["data"].as_array().unwrap();
+    assert_eq!(page1.len(), 50, "the default page is 50 notes");
+    let last = page1.last().unwrap();
+    assert_eq!(
+        last["id"].as_str().unwrap(),
+        format!("{prefix}049"),
+        "items arrive in (position, id) order"
+    );
+    assert_eq!(
+        last["position"].as_i64(),
+        Some(49),
+        "each item carries its position so clients can build the next cursor"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=200"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page = body["data"].as_array().unwrap();
+    assert_eq!(page.len(), 200, "limit=200 caps the page at 200 notes");
+    assert_eq!(
+        page.last().unwrap()["id"].as_str().unwrap(),
+        format!("{prefix}199"),
+        "limit=200 stops at the 200th note in (position, id) order"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=250"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page = body["data"].as_array().unwrap();
+    assert_eq!(
+        page.len(),
+        200,
+        "limit=250 is clamped to the 200-note upper bound"
+    );
+    assert_eq!(
+        page.last().unwrap()["id"].as_str().unwrap(),
+        format!("{prefix}199"),
+        "the clamped page ends at the same 200th note"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=0"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        1,
+        "limit is clamped to at least 1"
+    );
+
+    // Walk every page with a non-default limit and the cursor built from the
+    // previous page's last item, and confirm the pages cover all notes exactly
+    // once in (position, id) order.
+    let mut seen: Vec<(i64, String)> = Vec::new();
+    let mut after = String::new();
+    loop {
+        let path = if after.is_empty() {
+            format!("{collection}?limit=37")
+        } else {
+            format!("{collection}?limit=37&after={after}")
+        };
+        let (status, body) = request(&app, "GET", &path, &owner, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let page = body["data"].as_array().unwrap().clone();
+        if page.is_empty() {
+            break;
+        }
+        let last = page.last().unwrap();
+        let last_position = last["position"].as_i64().unwrap().to_string();
+        let last_id = last["id"].as_str().unwrap().to_owned();
+        seen.extend(page.iter().map(|note| {
+            (
+                note["position"].as_i64().unwrap(),
+                note["id"].as_str().unwrap().to_owned(),
+            )
+        }));
+        after = format!("{last_position}%20{last_id}");
+        if page.len() < 37 {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 205, "every active note is covered exactly once");
+    assert_eq!(
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        seen.len(),
+        "pages never repeat an item"
+    );
+    let mut ordered = seen.clone();
+    ordered.sort();
+    assert_eq!(
+        seen, ordered,
+        "pages keep (position, id) order across requests"
+    );
+
+    // 同一 position のノートは id で順序を確定させる。直接 SQL はノートロック契約に
+    // 従って任意の position を書けるため、重複しても一覧の順序は一意に決まらないと
+    // ならない (ORDER BY position, id)。
+    let tie_channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": tie_channel,
+            "channel_name": format!("notes_active_tie_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    client
+        .execute(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
+             SELECT $1 || k, $2, 'title', 'content', p, 1, $3, \
+               now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC' \
+             FROM (VALUES ('tie-z', 5), ('tie-a', 5), ('tie-m', 5), ('tie-b', 7), ('tie-c', 7)) AS ties(k, p)",
+            &[&prefix, &tie_channel, &owner],
+        )
+        .await?;
+    let tie_collection = format!("/api/channels/{tie_channel}/notes");
+    let (status, body) = request(&app, "GET", &tie_collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let tie_order: Vec<(i64, String)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| {
+            (
+                note["position"].as_i64().unwrap(),
+                note["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let expected: Vec<(i64, String)> = [
+        ("tie-a", 5i64),
+        ("tie-m", 5),
+        ("tie-z", 5),
+        ("tie-b", 7),
+        ("tie-c", 7),
+    ]
+    .iter()
+    .map(|(id, position)| (*position, format!("{prefix}{id}")))
+    .collect();
+    assert_eq!(
+        tie_order, expected,
+        "duplicate positions are tie-broken by id in ORDER BY position, id"
+    );
+
+    for bad in ["not-a-cursor", "999%20", "%20999", "four%20id"] {
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?after={bad}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "after={bad}: {body}");
+    }
     Ok(())
 }
