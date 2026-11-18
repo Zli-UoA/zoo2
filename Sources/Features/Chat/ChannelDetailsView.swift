@@ -4,6 +4,9 @@ struct ChannelDetailsView: View {
     let channel: Channel
     let workspace: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
+    @State private var requestedPin: Bool?
+
+    private var pinned: Bool { workspace.pinnedChannelIDs.contains(channel.id) }
 
     var body: some View {
         NavigationStack {
@@ -16,10 +19,16 @@ struct ChannelDetailsView: View {
                     LabeledContent("種類", value: channel.is_dm ? "ダイレクトメッセージ" : channel.is_private ? "非公開チャンネル" : "公開チャンネル")
                     if channel.archive_at != nil { Label("アーカイブ済み", systemImage: "archivebox") }
                     if channel.encrypted == true { Label("暗号化された会話", systemImage: "lock.shield") }
-                }
-                Section("ピン留め") {
-                    ChannelPinButton(channel: channel, workspace: workspace)
-                    if workspace.updatingPin { ProgressView("保存中…") }
+                    Toggle("ピン留め", isOn: Binding(get: { requestedPin ?? pinned }, set: { value in
+                        requestedPin = value
+                        Task {
+                            await workspace.setChannelPinned(channel, pinned: value)
+                            requestedPin = nil
+                        }
+                    }))
+                    .disabled(requestedPin != nil || workspace.updatingPin || channel.deleted_at != nil || (!pinned && channel.archive_at != nil))
+                    .accessibilityIdentifier("channel-pin-toggle")
+                    if requestedPin != nil || workspace.updatingPin { ProgressView("保存中…") }
                     if let error = workspace.pinUpdateError {
                         Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
                     }
