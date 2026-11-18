@@ -54,6 +54,7 @@ final class ConversationStore {
         let ids = Set(messages.map(\.id))
         return messages.filter { $0.parent_id == nil || !ids.contains($0.parent_id!) }
     }
+    func message(id: String) -> Message? { messagesByID[id] }
     func replies(to id: String) -> [Message] { messages.filter { $0.parent_id == id } }
     func draftKey(_ parentID: String?) -> String { parentID ?? "root" }
     func validContent(_ text: String) -> Bool {

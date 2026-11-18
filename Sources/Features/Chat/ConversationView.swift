@@ -5,6 +5,7 @@ struct ConversationView: View {
     let workspace: WorkspaceStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var thread: ThreadTarget?
+    @State private var threadFocusRequest: UUID?
     @State private var retry = UUID()
 
     private struct ThreadTarget: Identifiable { let id: String }
@@ -31,7 +32,10 @@ struct ConversationView: View {
                     }.padding(12).background(.orange.opacity(0.12))
                 }
                 MessageList(store: store, workspace: workspace, parentID: nil,
-                            canMarkRead: thread == nil && store.focusedMessageID == nil) { thread = ThreadTarget(id: $0) }
+                            canMarkRead: thread == nil && store.focusedMessageID == nil) { id in
+                    threadFocusRequest = store.canPost ? UUID() : nil
+                    thread = ThreadTarget(id: id)
+                }
             }
         }
         .background(Color(.systemBackground))
@@ -63,11 +67,15 @@ struct ConversationView: View {
         }
         .onChange(of: store.focusedMessageID, initial: true) { _, id in openFocusedThread(id) }
         .onChange(of: store.messages.map(\.id)) { _, _ in openFocusedThread(store.focusedMessageID) }
-        .sheet(item: $thread) { target in
+        .sheet(item: $thread, onDismiss: { threadFocusRequest = nil }) { target in
             NavigationStack {
-                MessageList(store: store, workspace: workspace, parentID: target.id, canMarkRead: false) { _ in }
+                MessageList(store: store, workspace: workspace, parentID: target.id, canMarkRead: false) { _ in
+                    threadFocusRequest = UUID()
+                }
                     .navigationTitle("スレッド").navigationBarTitleDisplayMode(.inline)
-                    .safeAreaInset(edge: .bottom, spacing: 0) { ComposerView(store: store, parentID: target.id) }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        ComposerView(store: store, parentID: target.id, focusRequest: threadFocusRequest)
+                    }
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { thread = nil } } }
             }
         }
@@ -90,9 +98,8 @@ private struct MessageList: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var followingLatest = false
     @State private var positionedInitialMessages = false
-    @State private var deleting: Message?
-    @State private var editing: Message?
-    @State private var pickingReaction: Message?
+    @State private var selectedMessage: Message?
+    @State private var replyAfterDismiss: String?
 
     private var messages: [Message] {
         if let parentID { return store.messages.filter { $0.id == parentID || $0.parent_id == parentID } }
@@ -100,8 +107,22 @@ private struct MessageList: View {
     }
 
     private var readID: String? {
-        guard canMarkRead, parentID == nil, followingLatest, scenePhase == .active else { return nil }
+        guard canMarkRead, parentID == nil, followingLatest, scenePhase == .active,
+              selectedMessage == nil, replyAfterDismiss == nil else { return nil }
         return messages.last(where: { $0.parent_id == nil })?.id
+    }
+
+    private func canOpenThread(for message: Message) -> Bool {
+        store.canPost || (parentID == nil && !store.replies(to: message.id).isEmpty)
+    }
+
+    private func hasActions(for message: Message) -> Bool {
+        !message.content.isEmpty || canOpenThread(for: message)
+    }
+
+    private var selectedActionsAvailable: Bool {
+        guard let selectedMessage, let current = store.message(id: selectedMessage.id) else { return false }
+        return hasActions(for: current)
     }
 
     var body: some View {
@@ -160,27 +181,31 @@ private struct MessageList: View {
             }
         }
         .task(id: readID) { if let readID { await store.markRead(through: readID) } }
-        .confirmationDialog("メッセージを削除しますか？", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-            if let deleting {
-                Button("削除", role: .destructive) { Task { await store.delete(deleting) } }
+        .sensoryFeedback(.impact(weight: .light), trigger: selectedMessage != nil) { _, isPresented in
+            isPresented
+        }
+        .sheet(item: $selectedMessage, onDismiss: {
+            if let id = replyAfterDismiss, store.message(id: id) != nil { openThread(id) }
+            replyAfterDismiss = nil
+        }) { selected in
+            if let message = store.message(id: selected.id) {
+                MessageActionsView(store: store, workspace: workspace, message: message,
+                                   canOpenThread: canOpenThread(for: message)) {
+                    replyAfterDismiss = parentID ?? message.id
+                }
             }
         }
-        .sheet(item: $editing) { message in EditMessageView(store: store, message: message) }
-        .sheet(item: $pickingReaction) { message in
-            ReactionPicker(workspace: workspace) { emoji in
-                pickingReaction = nil
-                Task { await store.toggleReaction(messageID: message.id, emoji: emoji) }
-            }
-            .disabled(!store.canReact(to: message.id))
-            .onChange(of: store.canReact(to: message.id)) { _, allowed in
-                if !allowed { pickingReaction = nil }
-            }
+        .onChange(of: selectedActionsAvailable) { _, available in
+            if !available { selectedMessage = nil }
         }
     }
 
     private func messageRow(_ message: Message) -> some View {
         let person = workspace.people[message.user_id]
         let name = person?.name ?? "ユーザー"
+        let showActions = {
+            if hasActions(for: message) { selectedMessage = message }
+        }
         return HStack(alignment: .top, spacing: 12) {
             AvatarView(name: name, url: person?.avatarURL)
             VStack(alignment: .leading, spacing: 6) {
@@ -194,26 +219,16 @@ private struct MessageList: View {
                     if message.updated_at != nil { Text("編集済み").font(.caption2).foregroundStyle(.secondary) }
                 }
                 Text(message.content.isEmpty ? "添付ファイルまたはアプリのメッセージ" : message.content)
-                    .font(.body).textSelection(.enabled)
+                    .font(.body)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("message-content-\(message.id)")
-                HStack(spacing: 4) {
-                    if parentID == nil {
-                        let count = store.replies(to: message.id).count
-                        Button(count == 0 ? "返信" : "\(count) 件の返信", systemImage: "bubble.left") { openThread(message.id) }
-                            .font(.caption).buttonStyle(.plain).foregroundStyle(.tint)
-                            .frame(minHeight: 44, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .accessibilityIdentifier("reply-\(message.id)")
+                    .accessibilityAction(named: "メッセージの操作", showActions)
+                ReactionChips(store: store, workspace: workspace, message: message)
+                if parentID == nil {
+                    let count = store.replies(to: message.id).count
+                    if count > 0 {
+                        Text("\(count) 件の返信").font(.caption).foregroundStyle(.secondary)
                     }
-                    if store.canPost {
-                        Button("スタンプを追加", systemImage: "plus.bubble") { pickingReaction = message }
-                            .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.tint)
-                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                            .disabled(!store.canReact(to: message.id))
-                            .accessibilityIdentifier("add-reaction-\(message.id)")
-                    }
-                    ReactionChips(store: store, workspace: workspace, message: message)
                 }
                 if let error = store.reactionError(for: message.id) {
                     Text(error).font(.caption).foregroundStyle(.red)
@@ -222,13 +237,27 @@ private struct MessageList: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .background(store.focusedMessageID == message.id ? Color.accentColor.opacity(0.08) : .clear)
-        .contextMenu {
-            if parentID == nil { Button("スレッドで返信", systemImage: "arrowshape.turn.up.left") { openThread(message.id) } }
-            if store.canPost, message.user_id == store.userID {
-                Button("編集", systemImage: "pencil") { editing = message }
-                Button("削除", systemImage: "trash", role: .destructive) { deleting = message }
+        .contentShape(Rectangle())
+        .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), showActions: showActions))
+    }
+}
+
+private struct MessagePressFeedback: ViewModifier {
+    let isEnabled: Bool
+    let showActions: () -> Void
+    @State private var isPressing = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.black.opacity(colorScheme == .dark ? 0.32 : 0.12))
+                    .opacity(isEnabled && isPressing ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
-        }
+            .onLongPressGesture(perform: showActions, onPressingChanged: { isPressing = $0 })
     }
 }
 
@@ -255,6 +284,7 @@ struct AvatarView: View {
 private struct ComposerView: View {
     @Bindable var store: ConversationStore
     let parentID: String?
+    var focusRequest: UUID?
     @State private var submitting = false
     @FocusState private var focused: Bool
 
@@ -297,13 +327,16 @@ private struct ComposerView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .background(.bar)
+        .onChange(of: focusRequest, initial: true) { _, request in
+            if request != nil, store.canPost { focused = true }
+        }
         .task(id: submitting) {
             if submitting { await store.send(parentID: parentID); submitting = false }
         }
     }
 }
 
-private struct EditMessageView: View {
+struct EditMessageView: View {
     @Bindable var store: ConversationStore
     let message: Message
     @State private var content: String

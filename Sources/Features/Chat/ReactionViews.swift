@@ -41,7 +41,7 @@ struct ReactionChips: View {
     }
 }
 
-private struct ReactionGlyph: View {
+struct ReactionGlyph: View {
     let emoji: String
     let message: Message
     let workspace: WorkspaceStore

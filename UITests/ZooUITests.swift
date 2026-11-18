@@ -39,6 +39,13 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    private func openActions(for message: XCUIElement, in app: XCUIApplication) {
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        message.press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testNativeConversationSendsAndReplies() {
         let app = launchWorkspace(liveMessage: true)
         capture(app, name: "チャンネル一覧")
@@ -52,7 +59,8 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["日本語で送信テスト"].waitForExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, "メッセージを入力")
         capture(app, name: "ネイティブチャットと日本語入力")
-        app.buttons["reply-22222222-2222-4222-8222-222222222222"].tap()
+        openActions(for: app.staticTexts["こんにちは！ Zoo の iOS 版へようこそ。"], in: app)
+        app.buttons["message-action-reply"].tap()
         XCTAssertTrue(app.navigationBars["スレッド"].waitForExistence(timeout: 5))
         let reply = composer(app, reply: true)
         reply.tap()
@@ -61,7 +69,8 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["スレッドへの返信テスト"].waitForExistence(timeout: 5))
         capture(app, name: "スレッドへの返信")
         app.buttons["閉じる"].tap()
-        XCTAssertTrue(app.buttons["1 件の返信"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "1 件の返信"))
+            .firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["別の端末からの新着"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.navigationBars["スレッド"].exists)
         XCTAssertFalse(app.webViews.firstMatch.exists)
@@ -72,16 +81,25 @@ final class ZooUITests: XCTestCase {
         let app = launchWorkspace()
         let messageID = "22222222-2222-4222-8222-222222222222"
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let welcome = app.staticTexts["message-content-\(messageID)"]
         let thumbsUp = app.buttons.matching(identifier: "reaction-\(messageID)-👍")
         let otherOnly = thumbsUp.matching(NSPredicate(format: "value == %@", "1人")).firstMatch
         let includingMe = thumbsUp.matching(NSPredicate(format: "value == %@", "2人、自分も付けています")).firstMatch
         XCTAssertTrue(otherOnly.waitForExistence(timeout: 5))
-        otherOnly.tap()
+        XCTAssertFalse(app.buttons["reply-\(messageID)"].exists)
+        XCTAssertFalse(app.buttons["add-reaction-\(messageID)"].exists)
+        openActions(for: welcome, in: app)
+        XCTAssertTrue(app.buttons["message-action-reply"].exists)
+        XCTAssertFalse(app.buttons["message-action-edit"].exists)
+        XCTAssertFalse(app.buttons["message-action-delete"].exists)
+        capture(app, name: "長押しで開いたメッセージの操作")
+        app.buttons["message-action-quick-👍"].tap()
         XCTAssertTrue(includingMe.waitForExistence(timeout: 5))
         includingMe.tap()
         XCTAssertTrue(otherOnly.waitForExistence(timeout: 5))
 
-        app.buttons["add-reaction-\(messageID)"].tap()
+        openActions(for: welcome, in: app)
+        app.buttons["message-action-more-reactions"].tap()
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
@@ -95,7 +113,8 @@ final class ZooUITests: XCTestCase {
         custom.tap()
         XCTAssertTrue(custom.waitForNonExistence(timeout: 5))
 
-        app.buttons["add-reaction-\(messageID)"].tap()
+        openActions(for: welcome, in: app)
+        app.buttons["message-action-more-reactions"].tap()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         search.typeText("@zoo")
@@ -111,9 +130,9 @@ final class ZooUITests: XCTestCase {
     func testReplyCanReceiveAStampInItsThread() {
         let app = launchWorkspace()
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
-        let open = app.buttons["reply-22222222-2222-4222-8222-222222222222"]
-        XCTAssertTrue(open.waitForExistence(timeout: 5))
-        open.tap()
+        let welcome = app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"]
+        openActions(for: welcome, in: app)
+        app.buttons["message-action-reply"].tap()
         let input = composer(app, reply: true)
         input.tap()
         input.typeText("スタンプ用の返信")
@@ -123,7 +142,8 @@ final class ZooUITests: XCTestCase {
         let prefix = "message-content-"
         XCTAssertTrue(reply.identifier.hasPrefix(prefix))
         let messageID = reply.identifier.dropFirst(prefix.count)
-        app.buttons["add-reaction-\(messageID)"].tap()
+        openActions(for: reply, in: app)
+        app.buttons["message-action-more-reactions"].tap()
         let celebrate = app.buttons["pick-reaction-🎉"]
         XCTAssertTrue(celebrate.waitForExistence(timeout: 5))
         celebrate.tap()
@@ -132,7 +152,8 @@ final class ZooUITests: XCTestCase {
         XCTAssertEqual(chip.value as? String, "1人、自分も付けています")
         capture(app, name: "返信に付けたスタンプ")
         app.buttons["閉じる"].tap()
-        open.tap()
+        openActions(for: welcome, in: app)
+        app.buttons["message-action-reply"].tap()
         XCTAssertTrue(chip.waitForExistence(timeout: 5))
     }
 
@@ -143,25 +164,49 @@ final class ZooUITests: XCTestCase {
         let latest = app.staticTexts["履歴 60"]
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
         XCTAssertTrue(latest.isHittable)
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+        // カードの押下表示が出てから動かしても、長押しメニューを開く前ならスクロールできる。
+        start.press(forDuration: 0.25, thenDragTo: end)
+        XCTAssertFalse(latest.isHittable)
+        XCTAssertFalse(app.buttons["message-action-reply"].exists)
     }
 
     @MainActor
     func testEditOwnMessage() {
         let app = launchWorkspace()
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
-        let author = app.staticTexts["あなた"]
-        XCTAssertTrue(author.waitForExistence(timeout: 5))
-        author.press(forDuration: 1)
-        app.buttons["編集"].tap()
+        let message = app.staticTexts["message-content-66666666-6666-4666-8666-666666666666"]
+        openActions(for: message, in: app)
+        XCTAssertTrue(app.buttons["message-action-delete"].exists)
+        app.buttons["message-action-edit"].tap()
         let field = app.textFields["edit-message-input"]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("（編集確認）")
         app.buttons["save-message-edit"].tap()
-        let message = app.staticTexts["message-content-66666666-6666-4666-8666-666666666666"]
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertTrue(message.label.contains("編集確認"))
         XCTAssertTrue(app.staticTexts["編集済み"].exists)
+    }
+
+    @MainActor
+    func testLongPressDeletionRequiresConfirmation() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let message = app.staticTexts["message-content-66666666-6666-4666-8666-666666666666"]
+        openActions(for: message, in: app)
+        let remove = app.buttons["message-action-delete"]
+        remove.tap()
+        let dialog = app.alerts["メッセージを削除しますか？"]
+        let confirm = dialog.buttons["削除"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        dialog.buttons["キャンセル"].tap()
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        confirm.tap()
+        XCTAssertTrue(message.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"].exists)
     }
 
     @MainActor

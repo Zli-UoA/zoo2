@@ -35,6 +35,7 @@
 		CECE10939ABC3008116CB9A3 /* ReactionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9735CAB96A606BA5BE947D4C /* ReactionViews.swift */; };
 		EBA527080A5826BA1A5A33E5 /* PreviewChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A7E7F971B693C6723C53450 /* PreviewChatClient.swift */; };
 		F3624288C10B9A47EA6B22CB /* ReactionEmojiTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EAF718542356B731B86C80C /* ReactionEmojiTests.swift */; };
+		F45AF34081A8EA8F438CD18C /* MessageActionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 258E0881472B6BEFF7E2FBCD /* MessageActionsView.swift */; };
 		F5D85CCE34285260C4DF7809 /* ZooTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B645A73FF1D4ADD1E97AD470 /* ZooTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -58,6 +59,7 @@
 /* Begin PBXFileReference section */
 		05000AC84EE5E734A2AFE311 /* Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport.swift; sourceTree = "<group>"; };
 		1EECD0A3E9993C94D242F919 /* ReactionEmoji.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionEmoji.swift; sourceTree = "<group>"; };
+		258E0881472B6BEFF7E2FBCD /* MessageActionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageActionsView.swift; sourceTree = "<group>"; };
 		282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "emoji-kitchen.json"; sourceTree = "<group>"; };
 		2D8EDA8358A4697C4243F758 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		48CC24CCF9A14802AAA837EF /* ZooApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooApp.swift; sourceTree = "<group>"; };
@@ -114,6 +116,7 @@
 			children = (
 				9B63CA9B6C88E3CF73B1BB96 /* ConversationStore.swift */,
 				74D10B033D5C3D0C961760E1 /* ConversationView.swift */,
+				258E0881472B6BEFF7E2FBCD /* MessageActionsView.swift */,
 				9735CAB96A606BA5BE947D4C /* ReactionViews.swift */,
 				FBC906A0FC1D802E3166886F /* WorkspaceStore.swift */,
 				CC569C67B29AAED83605FB8B /* WorkspaceView.swift */,
@@ -389,6 +392,7 @@
 				AE3566FFBA774593FE0A9A94 /* ConversationStore.swift in Sources */,
 				BB53492E2C9E9D9B56158D8F /* ConversationView.swift in Sources */,
 				6294A116360D5449F2A4F0ED /* DeviceAuthorization.swift in Sources */,
+				F45AF34081A8EA8F438CD18C /* MessageActionsView.swift in Sources */,
 				C580295A0FA0732AD4F7B261 /* Models.swift in Sources */,
 				4F4D1850FA0057D0613FA47F /* NotificationController.swift in Sources */,
 				EBA527080A5826BA1A5A33E5 /* PreviewChatClient.swift in Sources */,
