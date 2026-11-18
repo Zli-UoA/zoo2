@@ -444,7 +444,7 @@ impl<'a> PushRecipient<'a> {
         // 現在の購読世代と閲覧権限を同じスナップショットで確認する。通話招待にはメッセージがない。
         let query = |registration: &str| {
             toasty::sql::query(format!(
-                "SELECT floor(extract(epoch FROM i.expires_at-statement_timestamp())*1000)::bigint
+                "SELECT i.expires_at, floor(extract(epoch FROM i.expires_at-clock_timestamp()))::bigint
                  FROM ({registration}) s LEFT JOIN call_invites i
                    ON i.id=$5::text::uuid AND i.channel_id=$2 AND i.invitee_id=s.user_id AND i.inviter_id=$6
                     AND i.status='pending'
@@ -480,7 +480,6 @@ impl<'a> PushRecipient<'a> {
             .bind(s.id.as_str())
             .bind(s.revocation_hash.as_str()),
         };
-        let started = std::time::Instant::now();
         let Some(row) = query.exec(db).await?.into_iter().next() else {
             return Ok(None);
         };
@@ -490,14 +489,19 @@ impl<'a> PushRecipient<'a> {
         let toasty::stmt::Value::Record(record) = row else {
             anyhow::bail!("通話招待の有効期限を取得できませんでした");
         };
-        let [toasty::stmt::Value::I64(millis)] = record.fields.as_slice() else {
-            anyhow::bail!("通話招待の残り時間を取得できませんでした");
+        let [
+            toasty::stmt::Value::Timestamp(expires_at),
+            toasty::stmt::Value::I64(db_seconds),
+        ] = record.fields.as_slice()
+        else {
+            anyhow::bail!("通話招待の有効期限を読み取れませんでした");
         };
-        // DB照会中に経過した分も差し引き、残り1秒未満の着信は送らない。
-        let remaining =
-            Duration::from_millis(u64::try_from(*millis)?).saturating_sub(started.elapsed());
-        let ttl = u64::from(max_ttl).min(remaining.as_secs()) as u32;
-        Ok((ttl > 0).then_some(ttl))
+        Ok(call_invite_ttl(
+            *expires_at,
+            jiff::Timestamp::now(),
+            *db_seconds,
+            max_ttl,
+        ))
     }
 
     pub(crate) async fn should_send(
@@ -680,6 +684,18 @@ fn call_invite_tag(invite_id: &str) -> String {
     format!("zoo-call-{invite_id}")
 }
 
+fn call_invite_ttl(
+    expires_at: jiff::Timestamp,
+    received_at: jiff::Timestamp,
+    db_seconds: i64,
+    max_ttl: u32,
+) -> Option<u32> {
+    // APIの時計が遅れていても、DBが計算した残り秒数を超えて着信を保持しない。
+    let remaining = expires_at.duration_since(received_at).as_secs();
+    let ttl = remaining.min(db_seconds).clamp(0, i64::from(max_ttl)) as u32;
+    (ttl > 0).then_some(ttl)
+}
+
 async fn deliver_call_invites(
     mut db: toasty::Db,
     invites: Vec<CallInvitePush>,
@@ -807,6 +823,29 @@ async fn send_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invite_ttl_counts_waiting_for_database_only_once() -> anyhow::Result<()> {
+        // 開始時点で残り4秒。接続待ち2秒と照会100msの後も、TTL 1秒で送信できる。
+        let expires_at = jiff::Timestamp::from_millisecond(4_000)?;
+        let received_at = jiff::Timestamp::from_millisecond(2_100)?;
+        assert_eq!(call_invite_ttl(expires_at, received_at, 2, 30), Some(1));
+        assert_eq!(
+            call_invite_ttl(expires_at, jiff::Timestamp::from_millisecond(3_001)?, 2, 30),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn slow_api_clock_keeps_ttl_within_database_remaining_seconds() -> anyhow::Result<()> {
+        let expires_at = jiff::Timestamp::from_second(10)?;
+        let received_at = jiff::Timestamp::from_second(5)?;
+        // APIでは5秒残っていても、DBでは残り2秒または1秒未満。
+        assert_eq!(call_invite_ttl(expires_at, received_at, 2, 30), Some(2));
+        assert_eq!(call_invite_ttl(expires_at, received_at, 0, 30), None);
+        Ok(())
+    }
     #[tokio::test]
     #[ignore = "マイグレーションを適用したPostgreSQLを使用"]
     async fn apns_and_other_transports_require_current_visibility() -> anyhow::Result<()> {

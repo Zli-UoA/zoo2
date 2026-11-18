@@ -172,22 +172,31 @@ impl FcmConfig {
             "https://fcm.googleapis.com/v1/projects/{}/messages:send",
             self.project_id
         );
+        self.send_with_refresh(client, TOKEN_URL, &url, &body, || {
+            let mut db = db.clone();
+            async move { recipient.can_receive(&mut db, device).await }
+        })
+        .await
+    }
+
+    async fn send_with_refresh<F>(
+        &self,
+        client: &reqwest::Client,
+        token_url: &str,
+        message_url: &str,
+        body: &Value,
+        can_receive: impl Fn() -> F,
+    ) -> anyhow::Result<bool>
+    where
+        F: Future<Output = anyhow::Result<bool>>,
+    {
         // 最終照会の間に期限を過ぎた場合だけ、一度更新してから端末の権限も再確認する。
         for _ in 0..2 {
-            let Some(access) = self
-                .access_token(client, TOKEN_URL, recipient.can_receive(db, device))
-                .await?
-            else {
+            let Some(access) = self.access_token(client, token_url, can_receive()).await? else {
                 return Ok(false);
             };
-            if let Some(unregistered) = post_message(
-                client,
-                &url,
-                &access,
-                &body,
-                recipient.can_receive(db, device),
-            )
-            .await?
+            if let Some(unregistered) =
+                post_message(client, message_url, &access, body, can_receive()).await?
             {
                 return Ok(unregistered);
             }
@@ -263,6 +272,20 @@ fn is_unregistered(error: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 本番と同じプロセス共有のOAuthキャッシュを使うテスト同士の入れ替えを防ぐ。
+    static OAUTH_TEST: Mutex<()> = Mutex::const_new(());
+
+    fn test_config() -> FcmConfig {
+        let rsa =
+            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+        FcmConfig {
+            project_id: "test".into(),
+            email: "test@example.com".into(),
+            key: EncodingKey::from_rsa_pem(&rsa.private_key_to_pem_pkcs8().unwrap()).unwrap(),
+            cache_key: uuid::Uuid::new_v4().as_bytes().to_vec(),
+        }
+    }
 
     fn test_access(value: &str) -> AccessToken {
         AccessToken {
@@ -387,6 +410,7 @@ mod tests {
     #[tokio::test]
     async fn denied_devices_skip_oauth_and_cached_tokens_skip_the_precheck() {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let _cache = OAUTH_TEST.lock().await;
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(
@@ -396,14 +420,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let rsa =
-            openssl::pkey::PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
-        let config = FcmConfig {
-            project_id: "test".into(),
-            email: "test@example.com".into(),
-            key: EncodingKey::from_rsa_pem(&rsa.private_key_to_pem_pkcs8().unwrap()).unwrap(),
-            cache_key: uuid::Uuid::new_v4().as_bytes().to_vec(),
-        };
+        let config = test_config();
         let client = super::super::push_client().unwrap();
         let url = server.uri();
         for permission in [Ok(false), Err(anyhow::anyhow!("照会失敗"))] {
@@ -456,28 +473,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn token_expiring_during_permission_check_is_never_sent() {
-        let server = wiremock::MockServer::start().await;
+    async fn send_retries_with_a_new_token_and_checks_permission_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_json, header, method, path},
+        };
+        let _cache = OAUTH_TEST.lock().await;
         let client = super::super::push_client().unwrap();
-        tokio::time::pause();
-        let access = test_access("old-token");
-        let result = post_message(&client, &server.uri(), &access, &json!({}), async {
-            tokio::time::advance(Duration::from_secs(65)).await;
-            Ok(true)
-        })
-        .await
-        .unwrap();
-        tokio::time::resume();
-        assert_eq!(result, None);
-        let refreshed = test_access("new-token");
-        assert_eq!(
-            post_message(&client, &server.uri(), &refreshed, &json!({}), async {
-                Ok(false)
-            })
-            .await
-            .unwrap(),
-            Some(false)
-        );
-        assert!(server.received_requests().await.unwrap().is_empty());
+        let body = json!({"message":{"token":"test-device","data":{"binding":"test-binding"}}});
+        for permitted in [true, false] {
+            let server = MockServer::start().await;
+            let token_url = format!("{}/token", server.uri());
+            let message_url = format!("{}/v1/projects/test/messages:send", server.uri());
+            for (priority, token, lifetime) in [(1, "old-token", 2), (2, "new-token", 3600)] {
+                Mock::given(method("POST"))
+                    .and(path("/token"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "access_token":token, "expires_in":lifetime
+                    })))
+                    .with_priority(priority)
+                    .up_to_n_times(1)
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .and(path("/v1/projects/test/messages:send"))
+                .and(header("authorization", "Bearer new-token"))
+                .and(body_json(&body))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(u64::from(permitted))
+                .mount(&server)
+                .await;
+            let checks = AtomicUsize::new(0);
+            let removed = test_config()
+                .send_with_refresh(&client, &token_url, &message_url, &body, || async {
+                    let check = checks.fetch_add(1, Ordering::Relaxed) + 1;
+                    if check == 2 {
+                        // 最初の送信直前の権限照会だけを進め、最初の認証トークンを期限切れにする。
+                        tokio::time::pause();
+                        tokio::time::advance(Duration::from_secs(3)).await;
+                        tokio::time::resume();
+                    }
+                    Ok(check != 4 || permitted)
+                })
+                .await
+                .unwrap();
+            assert!(!removed);
+            assert_eq!(checks.load(Ordering::Relaxed), 4);
+            server.verify().await;
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                2 + usize::from(permitted)
+            );
+        }
     }
 }
