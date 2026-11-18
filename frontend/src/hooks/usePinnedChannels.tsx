@@ -174,20 +174,21 @@ export function moveWithin(base: readonly string[], moved: string, targetIndex: 
 }
 
 /**
- * 並び替えの応答を待たずに表示へ反映する。アーカイブ中のピンは元のスロットに
- * 残し、有効なピンだけを `nextOrder` の順に当てはめる（サーバーの
- * `build_pin_order` と同じ考え方）。
+ * 並び替えの応答を待たずに表示へ反映する。`nextOrder` は表示中の有効なピンの
+ * 並びなので、含まれないピン（アーカイブ・非表示）は元のスロットに残し、
+ * 含まれるピンだけを `nextOrder` の順に当てはめる。チャンネル側の
+ * `archive_at` が変わっても、pin 行の古い `archived` に依存しない。
  */
 export function reorderPinsLocally(
   pins: readonly (UserPinnedChannelResponse | UserPinnedChannelRow)[],
   nextOrder: readonly string[],
 ): UserPinnedChannelResponse[] {
-  const active = sortPins(pins);
-  const byId = new Map(active.map((pin) => [pin.channel_id, pin]));
+  const sorted = sortPins(pins);
+  const activeIds = new Set(nextOrder);
+  const byId = new Map(sorted.map((pin) => [pin.channel_id, pin]));
   let nextIndex = 0;
-  const ordered = active.map((pin) => {
-    const archived = "archived" in pin && pin.archived === true;
-    if (archived) {
+  const ordered = sorted.map((pin) => {
+    if (!activeIds.has(pin.channel_id)) {
       return pin;
     }
     const channelId = nextOrder[nextIndex] ?? pin.channel_id;

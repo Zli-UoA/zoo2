@@ -126,6 +126,26 @@ describe("pure pin helpers", () => {
     expect(reorderPinsLocally(pins, ["c", "a"]).map((item) => item.position)).toEqual([0, 1, 2]);
   });
 
+  it("keeps a pin out of the visible order even when its archived flag is stale", () => {
+    // チャンネルが後からアーカイブされても pin 行の archived は古いまま。
+    // nextOrder に含まれないピンを有効扱いすると、b が重複する。
+    const pins = [pin("a", 0), pin("old", 1), pin("b", 2)];
+    expect(reorderPinsLocally(pins, ["b", "a"]).map((item) => item.channel_id)).toEqual([
+      "b",
+      "old",
+      "a",
+    ]);
+  });
+
+  it("moves a pin whose stale archived flag is true when it is visible again", () => {
+    const pins = [pin("a", 0), { ...pin("old", 1), archived: true }, pin("c", 2)];
+    expect(reorderPinsLocally(pins, ["c", "old", "a"]).map((item) => item.channel_id)).toEqual([
+      "c",
+      "old",
+      "a",
+    ]);
+  });
+
   it("recognizes only the documented conflict and limit bodies", () => {
     const cause = conflict(3, [pin("a", 0)]);
     expect(channelPinsConflict(cause)).toEqual({ version: 3, pins: [pin("a", 0)] });
