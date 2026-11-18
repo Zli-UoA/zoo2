@@ -134,6 +134,10 @@ SDPの適用前に届いたICE候補を保留し、重複Offerには保存済み
 アプリがバックグラウンドへ移動しても、開始済み通話のメディア、SSE、heartbeatを保持します。既存の `playAndRecord` / `voiceChat` 音声セッションに加え、`UIBackgroundModes` の `audio` を有効にしています。[Appleの音声セッション仕様](https://developer.apple.com/documentation/avfaudio/avaudiosession/category-swift.struct/playandrecord)に基づく設定です。
 認証トークンは `AfterFirstUnlockThisDeviceOnly` で保存し、旧項目も読み取り時に移行します。画面ロック中のトークン更新を可能にし、他端末へは移行しません。[AppleのKeychainアクセス条件](https://developer.apple.com/documentation/security/ksecattraccessibleafterfirstunlockthisdeviceonly)を参照してください。
 招待は `call_invites` shapeから取得します。DMの招待はサーバーが最初の入室時に作成します。
+チャンネル通話では、既存の `WorkspaceStore.loadMembers` で取得したメンバーから、自分・bot・無効なアカウント・参加済み・自分が呼び出し中の相手を除いて招待候補にします。`POST /api/channels/{id}/call/invites` に選択した `user_ids` を送り、同じ招待shapeから自分の発信状態も取得します。呼び出しの取り消しは `POST /api/call-invites/{id}/cancel` を使います。
+空き人数は通話の定員・参加者・自分の有効な呼び出しから計算し、ほかの発信者との競合はサーバーが最終判定します。一部だけ招待できた場合はAPIの返却件数を表示します。招待の送信・取り消しに失敗しても通話を切断せず、通話を終了・切り替えた後の応答は画面に反映しません。
+Shapeの遅延中も取り消せるよう、送信成功時の招待IDを最長30秒保持します。ShapeでそのIDを観測した時点で同期結果へ引き継ぎ、API応答前に観測・終了した招待は復活させません。
+取り消しに成功したIDは招待の期限まで記録し、遅れて届いた呼び出し中の行で表示を復活させないようにします。
 
 終了中の着信には対応していません。現在のサーバーのAPNsは通常の通知のみで、VoIP招待配信・PushKit登録がありません。
 携帯回線や異なるNAT間の接続品質にはサーバーのTURN設定が関わるため、配布前に実機2台とWebクライアント間で音声・ミュート・Bluetooth・切断を確認します。

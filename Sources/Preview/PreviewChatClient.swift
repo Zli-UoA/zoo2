@@ -60,6 +60,9 @@ final class PreviewChatClient: ChatClient {
     private var failNextPin = ProcessInfo.processInfo.arguments.contains("--uitesting-pin-failure")
     private var pins = ChannelPins(pins: ProcessInfo.processInfo.arguments.contains("--uitesting-chat-details") ? [ChannelPin(channel_id: channelID, position: 0)] : [], version: 0)
     private var memberships: [ChannelMembership] = []
+    private var callInvitations: [CallInvitation] = []
+    private var callInvitationsChanged: AsyncStream<[CallInvitation]>.Continuation?
+    private var failNextCallInvite = ProcessInfo.processInfo.arguments.contains("--uitesting-call-invite-failure")
     private var allChannels: [Channel] = [
         Channel(id: channelID, channel_name: "一般", description: "日々の話題やお知らせを共有しましょう。", is_private: false, is_dm: false),
         Channel(id: "55555555-5555-4555-8555-555555555555", channel_name: "開発", description: "ものづくりの相談はこちら。", is_private: false, is_dm: false),
@@ -122,12 +125,37 @@ final class PreviewChatClient: ChatClient {
         try await receive(.room(CallRoom(participants: [participant], max_participants: 6, ice_servers: [])))
         try await Task.sleep(for: .seconds(86_400))
     }
-    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {}
+    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {
+        if action == "leave" {
+            callInvitations.removeAll { $0.channel_id == channelID }
+            callInvitationsChanged?.yield(callInvitations)
+        }
+    }
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
-        receive([])
-        try await Task.sleep(for: .seconds(86_400))
+        let (stream, continuation) = AsyncStream<[CallInvitation]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        callInvitationsChanged = continuation
+        defer { continuation.finish(); callInvitationsChanged = nil }
+        receive(callInvitations)
+        for await invitations in stream { receive(invitations) }
     }
     func answerCallInvitation(id: String, accept: Bool) async throws {}
+    func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
+        if failNextCallInvite {
+            failNextCallInvite = false
+            throw URLError(.notConnectedToInternet)
+        }
+        let created = userIDs.map { id in
+            CallInvitation(id: UUID().uuidString.lowercased(), channel_id: channelID, inviter_id: currentUser.id,
+                           invitee_id: id, status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        }
+        callInvitations += created
+        callInvitationsChanged?.yield(callInvitations)
+        return created.map { CreatedCallInvitation(id: $0.id, invitee_id: $0.invitee_id) }
+    }
+    func cancelCallInvitation(id: String) async throws {
+        callInvitations.removeAll { $0.id == id }
+        callInvitationsChanged?.yield(callInvitations)
+    }
 
     func channelPins() async throws -> ChannelPins {
         pins

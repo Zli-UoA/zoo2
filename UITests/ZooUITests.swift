@@ -2,6 +2,56 @@ import XCTest
 
 final class ZooUITests: XCTestCase {
     @MainActor
+    func testChannelCallInvitesAndCancellation() {
+        let app = launchWorkspace(call: true, callInviteFailure: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        app.buttons["start-call"].tap()
+        let invite = app.buttons["call-invite"]
+        XCTAssertTrue(invite.waitForExistence(timeout: 5))
+        XCTAssertTrue(invite.wait(for: \.isEnabled, toEqual: true, timeout: 5))
+        invite.tap()
+        let member = app.buttons["call-invite-member-44444444-4444-4444-8444-444444444444"]
+        XCTAssertTrue(member.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["call-invite-member-33333333-3333-4333-8333-333333333333"].exists)
+        let send = app.buttons["call-send-invitations"]
+        XCTAssertFalse(send.isEnabled)
+        member.tap()
+        capture(app, name: "チャンネル通話の招待メンバー選択")
+        send.tap()
+        XCTAssertTrue(app.staticTexts["call-invite-error"].waitForExistence(timeout: 5))
+        XCTAssertEqual(member.value as? String, "選択済み")
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
+        let cancel = app.buttons["call-cancel-44444444-4444-4444-8444-444444444444"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["call-mute"].isEnabled)
+        capture(app, name: "通話への招待を送信した画面")
+        invite.tap()
+        XCTAssertTrue(app.buttons["call-send-invitations"].waitForExistence(timeout: 5))
+        XCTAssertFalse(member.exists)
+        app.buttons["call-invite-close"].tap()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        XCTAssertTrue(cancel.waitForNonExistence(timeout: 5))
+        app.buttons["call-end"].tap()
+    }
+
+    @MainActor
+    func testDMCallHasNoManualInvitation() {
+        let app = launchWorkspace(call: true)
+        selectTab("DM", in: app)
+        app.buttons["new-dm"].tap()
+        app.buttons["dm-recipient-44444444-4444-4444-8444-444444444444"].tap()
+        app.buttons["start-dm"].tap()
+        let start = app.buttons["start-call"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        XCTAssertTrue(app.buttons["call-mute"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["call-invite"].exists)
+        app.buttons["call-end"].tap()
+    }
+
+    @MainActor
     func testCallSurvivesBackgroundAndCanEndAfterReturning() {
         let app = launchWorkspace(call: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -222,7 +272,7 @@ final class ZooUITests: XCTestCase {
 
     @MainActor
     private func launchWorkspace(failingSend: Bool = false, liveMessage: Bool = false, longHistory: Bool = false,
-                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false) -> XCUIApplication {
+                                 threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, callInviteFailure: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -233,6 +283,7 @@ final class ZooUITests: XCTestCase {
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if call { app.launchArguments.append("--uitesting-call") }
+        if callInviteFailure { app.launchArguments.append("--uitesting-call-invite-failure") }
         if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
         app.launch()
