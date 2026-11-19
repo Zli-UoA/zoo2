@@ -80,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
     let slack_sync_worker =
         slack_workers.then(|| tokio::spawn(backend::slack::sync::worker(state.clone())));
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
+    let note_cleanup_worker = tokio::spawn(backend::routes::channel_notes::cleanup_worker(
+        state.db.clone(),
+    ));
     let emoji_worker = tokio::spawn(backend::emoji_service::worker(state.clone()));
     let thread_archive_worker = tokio::spawn(backend::routes::threads::worker(state.clone()));
     let e2ee_worker = tokio::spawn(backend::routes::e2ee::worker(state.clone()));
@@ -124,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
     emoji_worker.abort();
     e2ee_worker.abort();
     home_image_worker.abort();
+    note_cleanup_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();
     // 手放す処理は、合図を受けた時点で始まっている。残りの猶予の中で、終わるのを待つ

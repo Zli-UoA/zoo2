@@ -2,6 +2,7 @@ pub mod apns;
 pub mod attachments;
 pub mod bubble_chat;
 pub mod calls;
+pub mod channel_notes;
 pub mod channel_pins;
 pub mod channel_webhooks;
 pub mod channels;
@@ -101,6 +102,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::apps::events::router())
         .merge(crate::apps::resources::router())
         .merge(channel_webhooks::router())
+        .merge(channel_notes::router())
         .merge(channel_pins::router())
         .merge(users::router())
         .merge(channels::router())

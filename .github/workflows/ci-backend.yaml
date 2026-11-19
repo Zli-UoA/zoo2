@@ -314,12 +314,15 @@ jobs:
           psql_exec() {
             docker compose -f infra/db/compose.yml exec -T postgres psql -q -X -v ON_ERROR_STOP=1 -U root "$@"
           }
-          for db in atlas_dev from_migrations from_schema; do
+          for db in from_migrations from_schema; do
             psql_exec -d postgres -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db"
           done
 
-          atlas migrate validate --dir file://infra/db/migrations \
-            --dev-url "${DATABASE_URL%/*}/atlas_dev?search_path=public&sslmode=disable"
+          # `migrate validate --dev-url` replays statements without preserving
+          # the per-file transaction required by `-- atlas:txmode file` (for
+          # example, LOCK TABLE ... NOWAIT). Validate checksums here; the
+          # PostgreSQL replay below validates SQL with each file's txmode.
+          atlas migrate validate --dir file://infra/db/migrations
 
           # atlas schema diff は未ログインだと関数を含む schema.sql を読めないため、
           # マイグレーションと schema.sql をそれぞれ空のDBに適用し、pg_dump の結果を比較します。
@@ -347,7 +350,7 @@ jobs:
               '
           }
           schema_diff=$(diff -u <(dump_schema from_migrations) <(dump_schema from_schema)) || true
-          for db in atlas_dev from_migrations from_schema; do
+          for db in from_migrations from_schema; do
             psql_exec -d postgres -c "DROP DATABASE $db"
           done
           if [ -n "$schema_diff" ]; then

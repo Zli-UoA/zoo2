@@ -79,6 +79,69 @@ async fn sql(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Resu
     Ok(rows)
 }
 
+/// `pg_stat_activity` のロック待ちの観測に、アプリの DB プールとは別の独立した接続を使う。
+/// 同期タスクがプールの接続を持ったままロック待ちに入っても、観測側が同じプールで
+/// 接続を奪い合って止まらないようにする (接続・確認ともにタイムアウト付き)。
+async fn observe_connect(state: &AppState) -> anyhow::Result<tokio_postgres::Client> {
+    let (client, driver) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls),
+    )
+    .await??;
+    tokio::spawn(driver);
+    Ok(client)
+}
+
+/// 誰かが `pid` の持つロックを待っている状態になるまで待つ (1 回の確認・全体にタイムアウト)。
+async fn wait_blocked_on(
+    observer: &tokio_postgres::Client,
+    pid: i32,
+    rounds: usize,
+) -> anyhow::Result<bool> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        for _ in 0..rounds {
+            let waiting: bool = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                observer.query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                    &[&pid],
+                ),
+            )
+            .await??
+            .get(0);
+            if waiting {
+                return Ok(true);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Ok(false)
+    })
+    .await?
+}
+
+/// 失敗時のメッセージ用に、現在のロック待ちの一覧を取る (ベストエフォート・タイムアウト付き)。
+async fn dump_lock_waiters(observer: &tokio_postgres::Client) -> String {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        observer.query(
+            "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type,''), \
+             coalesce(wait_event,''), left(coalesce(query,''),120)) \
+             FROM pg_stat_activity WHERE wait_event_type='Lock'",
+            &[],
+        ),
+    )
+    .await
+    {
+        Ok(Ok(rows)) => rows
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        _ => "pg_stat_activity lock waiters unavailable".into(),
+    }
+}
+
 async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let response = app
@@ -748,5 +811,617 @@ async fn test_a_rate_limited_recheck_waits_for_retry_after() -> anyhow::Result<(
     .await?;
     drain(&f.state).await;
     assert_eq!(count_messages(&f.state, &f.channel).await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_recheck_with_mentioned_unlinked_user_waits_for_users_before_locking_channel()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    sql(
+        &f.state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+         FROM slack_user_links WHERE team_id=$4 \
+         RETURNING json_build_object('ok',true)::text",
+        &[
+            &backend::slack::message_id(&f.team, "C1", &f.ts_new),
+            &f.channel,
+            &f.ts_new,
+            &f.team,
+        ],
+    )
+    .await?;
+    sql(
+        &f.state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.channel],
+    )
+    .await?;
+
+    let ub_id = backend::slack::user_id(&f.team, "UB");
+    sql(
+        &f.state,
+        "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Old UB') \
+         RETURNING json_build_object('ok',true)::text",
+        &[
+            &ub_id,
+            &format!("slack_ub_{}", uuid::Uuid::new_v4().simple()),
+        ],
+    )
+    .await?;
+    sql(
+        &f.state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name,real_name,profile_source) \
+         VALUES($1,'UB',$2,false,'UB','','fallback') RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &ub_id],
+    )
+    .await?;
+
+    f.slack.reset().await;
+    mount_basics(&f).await;
+    let edited_ts = format!("{}.000000", now_secs() + 10);
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": &f.ts_new,
+                "user": "UA",
+                "text": "rechecked mentioning <@UB>",
+                "edited": {"user": "UA", "ts": &edited_ts},
+                "reactions": [{"name": "thumbsup", "users": ["UC"], "count": 1}]
+            }],
+            "has_more": false
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": false, "error": "user_not_found"})),
+        )
+        .mount(&f.slack)
+        .await;
+
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+
+    let mut conv_db = f.state.db.clone();
+    let mut conv_tx = conv_db.transaction().await?;
+    toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
+        .exec(&mut conv_tx)
+        .await?;
+    let conv_pid: i32 = query(
+        &mut conv_tx,
+        "SELECT json_build_object('pid',pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
+    // ロック待ちの観測はアプリの DB プールと別の独立した接続で行う (同期タスクが
+    // プールの接続を持ったまま待っても、観測側が止まらないように)。
+    let observer = observe_connect(&f.state).await?;
+    backend::routes::e2ee_channels::lock_membership_users(&mut conv_tx, &[ub_id.as_str()]).await?;
+
+    let sync_state = f.state.clone();
+    let sync_team = f.team.clone();
+    let sync_task =
+        tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
+
+    let blocked = wait_blocked_on(&observer, conv_pid, 200).await?;
+    assert!(
+        blocked,
+        "recheck::apply_chunk did not block on users before locking channel; lock waiters: {}",
+        dump_lock_waiters(&observer).await
+    );
+
+    // users のロックを取ったあとに channels を取る順序なら、この NOWAIT の確認は即座に通る。
+    // 逆 (channels を先に取る) になっていたら lock_not_available で即座に失敗する
+    toasty::sql::query("SELECT 1 FROM channels WHERE id=$1 FOR UPDATE NOWAIT")
+        .bind(f.channel.as_str())
+        .exec(&mut conv_tx)
+        .await?;
+    toasty::sql::statement("UPDATE channels SET encrypted=true WHERE id=$1")
+        .bind(f.channel.as_str())
+        .exec(&mut conv_tx)
+        .await?;
+    conv_tx.commit().await?;
+
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+    assert!(ran);
+    assert_eq!(
+        row(&f, &backend::slack::message_id(&f.team, "C1", &f.ts_new)).await["content"],
+        "before"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel_target()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+
+    // 1. apply_chunk で編集を適用する直前に slack_channels が別チャンネルへ再マッピングされた場合
+    {
+        let f = fixture(Some(SECRET), None).await?;
+        let owner = create_user(&f.app, "recheck_remap_owner1").await?;
+        let new_channel = create_channel(&f.app, &owner).await?;
+        let msg_id = backend::slack::message_id(&f.team, "C1", &f.ts_new);
+        sql(
+            &f.state,
+            "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+             SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+             (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+             FROM slack_user_links WHERE team_id=$4 \
+             RETURNING json_build_object('ok',true)::text",
+            &[&msg_id, &f.channel, &f.ts_new, &f.team],
+        )
+        .await?;
+
+        f.slack.reset().await;
+        mount_basics(&f).await;
+        let edited_ts = format!("{}.000000", now_secs() + 10);
+        Mock::given(method("GET"))
+            .and(path("/conversations.history"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [{
+                    "type": "message",
+                    "ts": &f.ts_new,
+                    "user": "UA",
+                    "text": "rechecked after remap",
+                    "edited": {"user": "UA", "ts": &edited_ts}
+                }],
+                "has_more": false
+            })))
+            .with_priority(1)
+            .mount(&f.slack)
+            .await;
+
+        sql(
+            &f.state,
+            "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+             WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&f.team],
+        )
+        .await?;
+
+        let mut remap_db = f.state.db.clone();
+        let mut remap_tx = remap_db.transaction().await?;
+        let remap_pid: i32 = query(
+            &mut remap_tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap() as i32;
+        // 観測はアプリの DB プールと別の独立した接続で行う。
+        let observer = observe_connect(&f.state).await?;
+        toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("slack-channel:{}:C1", f.team))
+            .exec(&mut remap_tx)
+            .await?;
+
+        let sync_state = f.state.clone();
+        let sync_team = f.team.clone();
+        let sync_task =
+            tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
+
+        let blocked = wait_blocked_on(&observer, remap_pid, 200).await?;
+        assert!(
+            blocked,
+            "recheck::apply_chunk did not wait on Slack-channel advisory lock; lock waiters: {}",
+            dump_lock_waiters(&observer).await
+        );
+
+        toasty::sql::statement(
+            "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1'",
+        )
+        .bind(f.team.as_str())
+        .bind(new_channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+        remap_tx.commit().await?;
+
+        let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+        assert!(ran);
+        assert_eq!(row(&f, &msg_id).await["content"], "before");
+        let sync_rows = sql(
+            &f.state,
+            "SELECT json_build_object('last_error',last_error)::text \
+             FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+            &[&f.team],
+        )
+        .await?;
+        assert!(
+            sync_rows[0]["last_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
+            "expected target change error, got {:?}",
+            sync_rows
+        );
+        // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
+        let minutes = retry_in_minutes(&f).await;
+        assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    }
+
+    // 2. run_inner の最終削除トランザクション直前に slack_channels が別チャンネルへ再マッピングされた場合
+    {
+        let f = fixture(Some(SECRET), None).await?;
+        let owner = create_user(&f.app, "recheck_remap_owner2").await?;
+        let new_channel = create_channel(&f.app, &owner).await?;
+        let msg_id = backend::slack::message_id(&f.team, "C1", &f.ts_new);
+        sql(
+            &f.state,
+            "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+             SELECT $1,user_id,$2,'keep me',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+             (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+             FROM slack_user_links WHERE team_id=$4 \
+             RETURNING json_build_object('ok',true)::text",
+            &[&msg_id, &f.channel, &f.ts_new, &f.team],
+        )
+        .await?;
+        sql(
+            &f.state,
+            "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+             VALUES($1,'C1',$2,$3,'slack') RETURNING json_build_object('ok',true)::text",
+            &[&f.team, &f.ts_new, &msg_id],
+        )
+        .await?;
+
+        f.slack.reset().await;
+        mount_basics(&f).await;
+        // 空の一覧を返すことで apply_chunk を通らず run_inner の最終削除トランザクションに直接入る
+        Mock::given(method("GET"))
+            .and(path("/conversations.history"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true,
+                "messages": [],
+                "has_more": false
+            })))
+            .with_priority(1)
+            .mount(&f.slack)
+            .await;
+
+        sql(
+            &f.state,
+            "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+             WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&f.team],
+        )
+        .await?;
+
+        let mut remap_db = f.state.db.clone();
+        let mut remap_tx = remap_db.transaction().await?;
+        let remap_pid: i32 = query(
+            &mut remap_tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap() as i32;
+        // 観測はアプリの DB プールと別の独立した接続で行う。
+        let observer = observe_connect(&f.state).await?;
+        toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("slack-channel:{}:C1", f.team))
+            .exec(&mut remap_tx)
+            .await?;
+
+        let sync_state = f.state.clone();
+        let sync_team = f.team.clone();
+        let sync_task =
+            tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
+
+        let blocked = wait_blocked_on(&observer, remap_pid, 200).await?;
+        assert!(
+            blocked,
+            "recheck::run_inner final tx did not wait on Slack-channel advisory lock; lock waiters: {}",
+            dump_lock_waiters(&observer).await
+        );
+
+        toasty::sql::statement(
+            "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C1'",
+        )
+        .bind(f.team.as_str())
+        .bind(new_channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+        remap_tx.commit().await?;
+
+        let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+        assert!(ran);
+        let msg = row(&f, &msg_id).await;
+        assert_eq!(msg["deleted"], false);
+        assert_eq!(msg["content"], "keep me");
+        let sync_rows = sql(
+            &f.state,
+            "SELECT json_build_object('last_error',last_error)::text \
+             FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+            &[&f.team],
+        )
+        .await?;
+        assert!(
+            sync_rows[0]["last_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Slack sync target changed or no longer exists")),
+            "expected target change error, got {:?}",
+            sync_rows
+        );
+        // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
+        let minutes = retry_in_minutes(&f).await;
+        assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    }
+
+    Ok(())
+}
+
+/// 非公開の Slack チャンネルの Zoo の取り込み先が、再確認の書き込み前に公開へ変わったら、
+/// recheck の反映を拒否する (claim の時点では非公開だったので、同期そのものは始まる)
+#[tokio::test]
+async fn test_recheck_rejects_a_private_slack_channel_whose_zoo_target_became_public()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    let ts = f.ts_new.clone();
+    let msg_id = backend::slack::message_id(&f.team, "C1", &ts);
+    sql(
+        &f.state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+         FROM slack_user_links WHERE team_id=$4 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&msg_id, &f.channel, &ts, &f.team],
+    )
+    .await?;
+
+    // claim の時点では Zoo の取り込み先は非公開。conversations.info も非公開を返す
+    sql(
+        &f.state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.channel],
+    )
+    .await?;
+    f.slack.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": true},
+        })))
+        .mount(&f.slack)
+        .await;
+    let edited_ts = format!("{}.000000", now_secs() + 10);
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": &ts,
+                "user": "UA",
+                "text": "rechecked after the zoo channel became public",
+                "edited": {"user": "UA", "ts": &edited_ts}
+            }],
+            "has_more": false
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=now()-interval '1 hour',not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+
+    // recheck::apply_chunk の Slack-channel advisory lock を先に取り、書き込みの直前で止める
+    let mut remap_db = f.state.db.clone();
+    let mut remap_tx = remap_db.transaction().await?;
+    let remap_pid: i32 = query(
+        &mut remap_tx,
+        "SELECT json_build_object('pid',pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
+    // 観測はアプリの DB プールと別の独立した接続で行う。
+    let observer = observe_connect(&f.state).await?;
+    toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("slack-channel:{}:C1", f.team))
+        .exec(&mut remap_tx)
+        .await?;
+
+    let sync_state = f.state.clone();
+    let sync_team = f.team.clone();
+    let sync_task =
+        tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
+
+    let blocked = wait_blocked_on(&observer, remap_pid, 200).await?;
+    assert!(
+        blocked,
+        "recheck::apply_chunk did not wait on the Slack-channel advisory lock; lock waiters: {}",
+        dump_lock_waiters(&observer).await
+    );
+
+    // 書き込みの前に、Zoo の取り込み先を公開へ変える
+    toasty::sql::statement("UPDATE channels SET is_private=false WHERE id=$1")
+        .bind(f.channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+    remap_tx.commit().await?;
+
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+    assert!(ran);
+    assert_eq!(row(&f, &msg_id).await["content"], "before");
+    let rechecked_rows = sql(
+        &f.state,
+        "SELECT json_build_object('old',rechecked_at < now()-interval '20 minutes')::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert_eq!(
+        rechecked_rows[0]["old"], true,
+        "recheck::run must record the failed recheck: {rechecked_rows:?}"
+    );
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert!(
+        sync_rows[0]["last_error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {:?}",
+        sync_rows
+    );
+    Ok(())
+}
+
+/// 履歴が空で `apply_chunk` が一度も走らなくても、再確認の最終トランザクションは
+/// 取り込み先の可視性を確かめてから「Slack にない投稿」の削除と `rechecked_at` の保存をする。
+/// claim の時点では非公開だった Slack チャンネルの取り込み先が公開へ変わっていたら、
+/// 削除も保存もしない (削除対象の候補が少なくても、公開先への書き込みを許さない)。
+#[tokio::test]
+async fn test_recheck_final_transaction_rejects_a_public_target_with_empty_history()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    let ts = f.ts_new.clone();
+    let msg_id = backend::slack::message_id(&f.team, "C1", &ts);
+    // 差分同期・イベントで取り込んだ投稿。履歴が空なので再確認の削除候補になる
+    sql(
+        &f.state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         SELECT $1,user_id,$2,'keep me',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+         FROM slack_user_links WHERE team_id=$4 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&msg_id, &f.channel, &ts, &f.team],
+    )
+    .await?;
+    sql(
+        &f.state,
+        "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+         VALUES($1,'C1',$2,$3,'slack') RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &ts, &msg_id],
+    )
+    .await?;
+
+    // claim の時点では Zoo の取り込み先は非公開。conversations.info も非公開を返す
+    sql(
+        &f.state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.channel],
+    )
+    .await?;
+    f.slack.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": true},
+        })))
+        .mount(&f.slack)
+        .await;
+    // 空の履歴を返すことで apply_chunk を通らず、最終トランザクションに直接入る
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [],
+            "has_more": false
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=NULL,not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+
+    // 再確認の最終トランザクションの Slack-channel advisory lock を先に取り、
+    // 書き込みの直前で止める (観測は独立した接続で行う)
+    let mut remap_db = f.state.db.clone();
+    let mut remap_tx = remap_db.transaction().await?;
+    let remap_pid: i32 = query(
+        &mut remap_tx,
+        "SELECT json_build_object('pid',pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
+    let observer = observe_connect(&f.state).await?;
+    toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("slack-channel:{}:C1", f.team))
+        .exec(&mut remap_tx)
+        .await?;
+
+    let sync_state = f.state.clone();
+    let sync_team = f.team.clone();
+    let sync_task =
+        tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
+
+    let blocked = wait_blocked_on(&observer, remap_pid, 200).await?;
+    assert!(
+        blocked,
+        "recheck::run_inner final tx did not wait on the Slack-channel advisory lock; lock waiters: {}",
+        dump_lock_waiters(&observer).await
+    );
+
+    // 最終トランザクションの前に、Zoo の取り込み先を公開へ変える
+    toasty::sql::statement("UPDATE channels SET is_private=false WHERE id=$1")
+        .bind(f.channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+    remap_tx.commit().await?;
+
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+    assert!(ran);
+    // 空の履歴で全候補が「消えた」ように見えても、公開先へは削除しない
+    let msg = row(&f, &msg_id).await;
+    assert_eq!(msg["deleted"], false, "{msg}");
+    assert_eq!(msg["content"], "keep me", "{msg}");
+    // 再確認は完了せず (成功なら rechecked_at が今になる)、5 分後の再試行に回る
+    let minutes = retry_in_minutes(&f).await;
+    assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    // 通常の同期の保存も同じ拒否で失敗する
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('last_error',last_error)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert!(
+        sync_rows[0]["last_error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {:?}",
+        sync_rows
+    );
     Ok(())
 }

@@ -5,6 +5,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use wiremock::{
@@ -58,6 +59,49 @@ async fn sql(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Resu
     Ok(rows)
 }
 
+async fn exec(
+    tx: &mut toasty::Transaction<'_>,
+    statement: &str,
+    params: &[&str],
+) -> anyhow::Result<()> {
+    let mut query = toasty::sql::statement(statement);
+    for param in params {
+        query = query.bind(*param);
+    }
+    query.exec(tx).await?;
+    Ok(())
+}
+
+async fn cleanup_statement(
+    state: &AppState,
+    statement: &str,
+    params: &[&str],
+) -> anyhow::Result<()> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    exec(&mut tx, statement, params).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn finish_test_result(
+    test_result: anyhow::Result<()>,
+    cleanup_errors: Vec<String>,
+) -> anyhow::Result<()> {
+    match (test_result, cleanup_errors.is_empty()) {
+        (Ok(()), true) => Ok(()),
+        (Err(test_error), true) => Err(test_error),
+        (Ok(()), false) => Err(anyhow::anyhow!(
+            "test succeeded, but cleanup failed: {}",
+            cleanup_errors.join("; ")
+        )),
+        (Err(test_error), false) => Err(anyhow::anyhow!(
+            "test failed: {test_error:#}; cleanup also failed: {}",
+            cleanup_errors.join("; ")
+        )),
+    }
+}
+
 async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let (status, _) = request(
@@ -91,7 +135,13 @@ fn build_zip(files: &[(String, Value)]) -> Vec<u8> {
 }
 
 /// ワーカーを回し、ジョブが目的の状態になるまで待つ
-async fn drive(state: &AppState, app: &Router, admin: &str, id: &str, until: &str) -> Value {
+async fn drive(
+    state: &AppState,
+    app: &Router,
+    admin: &str,
+    id: &str,
+    until: &str,
+) -> anyhow::Result<Value> {
     for _ in 0..200 {
         let (_, job) = request(
             app,
@@ -101,54 +151,272 @@ async fn drive(state: &AppState, app: &Router, admin: &str, id: &str, until: &st
             None,
         )
         .await
-        .unwrap();
+        .map_err(|error| anyhow::anyhow!("reading import job {id}: {error}"))?;
         if job["status"] == until {
-            return job;
+            return Ok(job);
         }
-        assert_ne!(job["status"], "failed", "import failed: {job}");
-        if !backend::slack::worker::run_once(state).await.unwrap() {
+        anyhow::ensure!(job["status"] != "failed", "import failed: {job}");
+        if !backend::slack::worker::run_once(state).await? {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
-    panic!("import {id} did not reach {until}");
+    anyhow::bail!("import {id} did not reach {until}");
+}
+
+async fn drive_checked(
+    state: &AppState,
+    app: &Router,
+    admin: &str,
+    id: &str,
+    until: &str,
+) -> anyhow::Result<Value> {
+    for _ in 0..200 {
+        let (_, job) = request(
+            app,
+            "GET",
+            &format!("/api/admin/slack-imports/{id}"),
+            admin,
+            None,
+        )
+        .await?;
+        if job["status"] == until {
+            return Ok(job);
+        }
+        anyhow::ensure!(job["status"] != "failed", "import failed: {job}");
+        if !backend::slack::worker::run_once(state).await? {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    anyhow::bail!("import {id} did not reach {until}")
 }
 
 /// ZIP を作ってアップロードし、解析まで進める
-async fn upload(state: &AppState, app: &Router, admin: &str, zip: &[u8]) -> Value {
-    let (status, created) = request(
-        app,
-        "POST",
-        "/api/admin/slack-imports",
-        admin,
-        Some(json!({"file_name": "export.zip", "file_size": zip.len()})),
-    )
-    .await
-    .unwrap();
-    assert_eq!(status, StatusCode::OK, "{created}");
-    let put = reqwest::Client::new()
-        .put(created["upload_url"].as_str().unwrap())
-        .header("content-type", "application/zip")
-        .body(zip.to_vec())
-        .send()
-        .await
-        .unwrap();
-    assert!(put.status().is_success(), "{:?}", put.text().await);
-    let id = created["import"]["id"].as_str().unwrap().to_string();
-    let (status, job) = request(
-        app,
-        "POST",
-        &format!("/api/admin/slack-imports/{id}/uploaded"),
-        admin,
-        None,
-    )
-    .await
-    .unwrap();
-    assert_eq!(status, StatusCode::OK, "{job}");
-    drive(state, app, admin, &id, "ready").await
+#[derive(Clone, Copy)]
+enum UploadCleanupFailure {
+    None,
+    DatabaseError,
+    S3Error,
+    DatabaseTimeout,
+    S3Timeout,
+    /// Tamper with the presigned URL so S3 rejects the `PUT`: the request fails
+    /// before the helper can know whether anything was stored, which is the
+    /// uncertain-storage-state path.
+    RejectPut,
+}
+
+async fn upload(state: &AppState, app: &Router, admin: &str, zip: &[u8]) -> anyhow::Result<Value> {
+    upload_with_cleanup_failure(state, app, admin, zip, UploadCleanupFailure::None).await
+}
+
+async fn upload_with_cleanup_failure(
+    state: &AppState,
+    app: &Router,
+    admin: &str,
+    zip: &[u8],
+    cleanup_failure: UploadCleanupFailure,
+) -> anyhow::Result<Value> {
+    let mut job_id = None;
+    // Whether the S3 `PUT` actually returned a success response. A failed or
+    // timed-out `PUT` leaves the storage state uncertain: the object may or may
+    // not exist (or appear later), so only a confirmed success may drive the
+    // immediate delete + absence check + job row deletion below.
+    let mut put_succeeded = false;
+    let result: anyhow::Result<Value> = async {
+        let (status, created) = request(
+            app,
+            "POST",
+            "/api/admin/slack-imports",
+            admin,
+            Some(json!({"file_name": "export.zip", "file_size": zip.len()})),
+        )
+        .await?;
+        anyhow::ensure!(
+            status == StatusCode::OK,
+            "upload creation failed: {created}"
+        );
+        let id = created["import"]["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("upload response has no job id: {created}"))?
+            .to_string();
+        job_id = Some(id.clone());
+        let put_url = created["upload_url"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("upload response has no upload URL: {created}"))?;
+        let put_url = if matches!(cleanup_failure, UploadCleanupFailure::RejectPut) {
+            // Break the presigned signature so S3 rejects the request.
+            format!("{put_url}&broken-signature=1")
+        } else {
+            put_url.to_string()
+        };
+        let put = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?
+            .put(put_url)
+            .header("content-type", "application/zip")
+            .body(zip.to_vec())
+            .send()
+            .await?;
+        anyhow::ensure!(
+            put.status().is_success(),
+            "ZIP upload failed: {}",
+            put.text().await.unwrap_or_default()
+        );
+        put_succeeded = true;
+        if !matches!(
+            cleanup_failure,
+            UploadCleanupFailure::None | UploadCleanupFailure::RejectPut
+        ) {
+            anyhow::bail!("injected upload failure after ZIP object creation");
+        }
+        let (status, job) = request(
+            app,
+            "POST",
+            &format!("/api/admin/slack-imports/{id}/uploaded"),
+            admin,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(status == StatusCode::OK, "upload completion failed: {job}");
+        let ready = drive_checked(state, app, admin, &id, "ready").await?;
+        anyhow::ensure!(
+            ready["id"].as_str() == Some(id.as_str()),
+            "ready upload response does not match created job {id}: {ready}"
+        );
+        Ok(ready)
+    }
+    .await;
+    if result.is_err()
+        && let Some(id) = job_id.as_deref()
+    {
+        let key = format!("slack-imports/{id}/export.zip");
+        if !put_succeeded {
+            // The `PUT` failed or timed out, so whether S3 stored the object is
+            // uncertain: a delete now cannot prove anything (and a timed-out
+            // request may still complete server-side afterwards). Keep the export
+            // job row — the durable pointer to the key — for deferred cleanup and
+            // report the recovery resources instead of attempting cleanup.
+            let upload_error = result
+                .as_ref()
+                .err()
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "unknown upload failure".to_string());
+            return Err(anyhow::anyhow!(
+                "upload failed ({upload_error}); PUT outcome uncertain, retained for deferred cleanup, recovery resources: job_id={id}, bucket={}, key={key}",
+                state.config.s3.bucket
+            ));
+        }
+        let mut cleanup_errors = Vec::new();
+        macro_rules! attempt_upload_cleanup {
+            ($label:expr, $future:expr) => {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), $future).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => cleanup_errors.push(format!("{}: {error:#}", $label)),
+                    Err(_) => cleanup_errors.push(format!("{}: timed out after 5s", $label)),
+                }
+            };
+        }
+        // An upload may be the only durable pointer to this ZIP. Keep the job until
+        // object removal is confirmed so failed/uncertain S3 cleanup stays recoverable.
+        match cleanup_failure {
+            UploadCleanupFailure::S3Error => {
+                attempt_upload_cleanup!("injected S3 cleanup failure", async {
+                    state
+                        .s3_client
+                        .delete_object()
+                        .bucket("invalid bucket name")
+                        .key(&key)
+                        .send()
+                        .await?;
+                    Ok::<(), anyhow::Error>(())
+                })
+            }
+            UploadCleanupFailure::S3Timeout => {
+                attempt_upload_cleanup!("injected S3 cleanup timeout", async {
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    Ok::<(), anyhow::Error>(())
+                })
+            }
+            _ => attempt_upload_cleanup!("delete uploaded ZIP object", async {
+                state
+                    .s3_client
+                    .delete_object()
+                    .bucket(&state.config.s3.bucket)
+                    .key(&key)
+                    .send()
+                    .await?;
+                Ok::<(), anyhow::Error>(())
+            }),
+        }
+        let object_removed = if cleanup_errors.is_empty() {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                assert_s3_object_exists(&state.s3_client, &state.config.s3.bucket, &key, false),
+            )
+            .await
+            {
+                Ok(Ok(())) => true,
+                Ok(Err(error)) => {
+                    cleanup_errors.push(format!(
+                        "verify uploaded ZIP object removal from bucket {} at key {key}: {error:#}",
+                        state.config.s3.bucket
+                    ));
+                    false
+                }
+                Err(_) => {
+                    cleanup_errors.push(format!("verify uploaded ZIP object removal from bucket {} at key {key}: timed out after 5s", state.config.s3.bucket));
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if object_removed {
+            match cleanup_failure {
+                UploadCleanupFailure::DatabaseError => attempt_upload_cleanup!(
+                    "injected database cleanup failure",
+                    cleanup_statement(state, "SELECT 1 / 0", &[])
+                ),
+                UploadCleanupFailure::DatabaseTimeout => {
+                    attempt_upload_cleanup!("injected database cleanup timeout", async {
+                        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                        Ok::<(), anyhow::Error>(())
+                    })
+                }
+                _ => {}
+            }
+            if !matches!(
+                cleanup_failure,
+                UploadCleanupFailure::DatabaseError | UploadCleanupFailure::DatabaseTimeout
+            ) {
+                attempt_upload_cleanup!("delete upload job", async {
+                    cleanup_statement(state, "DELETE FROM slack_import_jobs WHERE id=$1", &[id])
+                        .await
+                });
+            }
+        }
+        if !cleanup_errors.is_empty() {
+            let upload_error = result
+                .as_ref()
+                .err()
+                .map(|error| format!("{error:#}"))
+                .unwrap_or_else(|| "unknown upload failure".to_string());
+            return Err(anyhow::anyhow!(
+                "upload failed ({upload_error}); recovery resources: job_id={id}, bucket={}, key={key}; cleanup failed: {}",
+                state.config.s3.bucket,
+                cleanup_errors.join("; ")
+            ));
+        }
+    }
+    result
 }
 
 /// 保存したエクスポートから取り込みを始め、取り込みのジョブを返す
-async fn start(app: &Router, admin: &str, export: &str, mappings: Value) -> (StatusCode, Value) {
+async fn start(
+    app: &Router,
+    admin: &str,
+    export: &str,
+    mappings: Value,
+) -> anyhow::Result<(StatusCode, Value)> {
     request(
         app,
         "POST",
@@ -157,7 +425,6 @@ async fn start(app: &Router, admin: &str, export: &str, mappings: Value) -> (Sta
         Some(json!({ "mappings": mappings })),
     )
     .await
-    .unwrap()
 }
 
 #[tokio::test]
@@ -301,7 +568,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         ),
     ]);
 
-    let job = upload(&state, &app, &admin, &zip).await;
+    let job = upload(&state, &app, &admin, &zip).await?;
     assert_eq!(job["team_id"], team.as_str());
     assert_eq!(job["total_messages"], 6);
     let channels = job["analysis"]["channels"].as_array().unwrap();
@@ -331,11 +598,11 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
             {"slack_channel_id":"C2","action":"existing","channel_id":existing}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{started}");
     assert_eq!(started["source_id"], id.as_str());
     let run = started["id"].as_str().unwrap().to_string();
-    let done = drive(&state, &app, &admin, &run, "completed").await;
+    let done = drive(&state, &app, &admin, &run, "completed").await?;
     assert_eq!(done["processed_messages"], 6);
     assert_eq!(done["total_files"], 3);
     assert_eq!(done["processed_files"], 3);
@@ -383,7 +650,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    let done = drive(&state, &app, &admin, &run, "completed").await;
+    let done = drive(&state, &app, &admin, &run, "completed").await?;
     assert_eq!(done["failed_files"], 0, "{done}");
 
     let general = backend::slack::channel_id(&team, "C1");
@@ -470,17 +737,23 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         vec![json!({"name": "broken.txt"}), json!({"name": "notes.txt"})]
     );
     assert_eq!(attachments[0]["size"], 10);
-    let stored = state
-        .s3_client
-        .get_object()
-        .bucket(&config.s3.bucket)
-        .key(attachments[0]["key"].as_str().unwrap())
-        .send()
-        .await?
-        .body
-        .collect()
-        .await?
-        .into_bytes();
+    let stored = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        Ok::<_, anyhow::Error>(
+            state
+                .s3_client
+                .get_object()
+                .bucket(&config.s3.bucket)
+                .key(attachments[0]["key"].as_str().unwrap())
+                .send()
+                .await?
+                .body
+                .collect()
+                .await?
+                .into_bytes(),
+        )
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("S3 GetObject timed out after 10s"))??;
     assert_eq!(&stored[..], b"hello file");
 
     // 既存チャンネルにも取り込まれ、管理者の既読位置が最新になる
@@ -508,20 +781,13 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     assert_eq!(cursor[0]["ts"], "1704070500.000600");
 
     // エクスポートと ZIP は残り、続けて別のチャンネルも取り込める
-    let zip_exists = |key: String| {
-        let client = state.s3_client.clone();
-        let bucket = config.s3.bucket.clone();
-        async move {
-            client
-                .head_object()
-                .bucket(bucket)
-                .key(key)
-                .send()
-                .await
-                .is_ok()
-        }
-    };
-    assert!(zip_exists(format!("slack-imports/{id}/export.zip")).await);
+    assert_s3_object_exists(
+        &state.s3_client,
+        &config.s3.bucket,
+        &format!("slack-imports/{id}/export.zip"),
+        true,
+    )
+    .await?;
     let (_, export) = request(
         &app,
         "GET",
@@ -550,7 +816,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     }
 
     // 同じエクスポートをもう一度取り込んでも重複しない。新しい ZIP は古いエクスポートを置き換える
-    let again = upload(&state, &app, &admin, &zip).await;
+    let again = upload(&state, &app, &admin, &zip).await?;
     let (_, old) = request(
         &app,
         "GET",
@@ -560,14 +826,20 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(old["status"], "cancelled");
-    assert!(!zip_exists(format!("slack-imports/{id}/export.zip")).await);
+    assert_s3_object_exists(
+        &state.s3_client,
+        &config.s3.bucket,
+        &format!("slack-imports/{id}/export.zip"),
+        false,
+    )
+    .await?;
     let (status, _) = start(
         &app,
         &admin,
         &id,
         json!([{"slack_channel_id":"C1","action":"existing","channel_id":general}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::CONFLICT);
     let channels = again["analysis"]["channels"].as_array().unwrap();
     assert_eq!(channels[0]["existing_channel"]["id"], general.as_str());
@@ -594,10 +866,10 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
             {"slack_channel_id":"C2","action":"skip"}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK);
     let again_id = again_run["id"].as_str().unwrap().to_string();
-    let again_done = drive(&state, &app, &admin, &again_id, "completed").await;
+    let again_done = drive(&state, &app, &admin, &again_id, "completed").await?;
     // 取得に失敗していた添付は新しいジョブに引き継がれ、取得し直される
     let handed = sql(
         &state,
@@ -625,7 +897,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
             .await?;
         tx.commit().await?;
     }
-    let third = upload(&state, &app, &admin, &zip).await;
+    let third = upload(&state, &app, &admin, &zip).await?;
     let general_entry = &third["analysis"]["channels"][0];
     assert_eq!(general_entry["existing_channel"], Value::Null);
     assert_eq!(general_entry["deleted_channel"], general_name.as_str());
@@ -641,6 +913,2502 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and_reactions()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    ensure_bucket_exists(&state.s3_client, &state.config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_fallback_admin").await?;
+    let role_result: Result<(), toasty::Error> = async {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin"
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = role_result {
+        let mut cleanup_db = state.db.clone();
+        let mut cleanup_tx = cleanup_db.transaction().await?;
+        exec(
+            &mut cleanup_tx,
+            "DELETE FROM user_role WHERE user_id=$1",
+            &[&admin],
+        )
+        .await?;
+        exec(
+            &mut cleanup_tx,
+            "DELETE FROM channel_user WHERE user_id=$1",
+            &[&admin],
+        )
+        .await?;
+        exec(&mut cleanup_tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
+        cleanup_tx.commit().await?;
+        return Err(error.into());
+    }
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let channel_name = format!("fallback-{}", uuid::Uuid::new_v4().simple());
+    let mut run_id = None;
+    let mut export_id = None;
+    let test_result: anyhow::Result<()> = async {
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U-SEED","team_id":team,"name":"seed"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C-FALLBACK","name":"fallback","created":1704067200,"members":["U-FALLBACK"]} ]),
+        ),
+        (
+            "fallback/2024-01-01.json".into(),
+            json!([
+                {"ts":"1704070000.000100","user":"U-FALLBACK","username":"deploybot","bot_profile":{"name":"lower-priority"},"text":"posted"},
+                {"ts":"1704070050.000150","bot_id":"B-BOT","subtype":"bot_message","bot_profile":{"name":"profilebot"},"text":"bot posted"},
+                {"ts":"1704070100.000200","user":"U-OTHER","text":"<@U-FALLBACK>","reactions":[{"name":"+1","users":["U-FALLBACK"]}]}
+            ]),
+        ),
+    ]);
+    let job = upload(&state, &app, &admin, &zip).await?;
+    anyhow::ensure!(job["team_id"] == team.as_str(), "uploaded ZIP team mismatch");
+    let export = job["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("export job has no id: {job}"))?;
+    export_id = Some(export.to_string());
+    let (status, started) = start(&app, &admin, export, json!([{"slack_channel_id":"C-FALLBACK","action":"create","name":channel_name}])).await?;
+    anyhow::ensure!(status == StatusCode::OK, "failed to start import: {started}");
+    let run = started["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("import job has no id: {started}"))?;
+    run_id = Some(run.to_string());
+    let done = drive_checked(&state, &app, &admin, run, "completed").await?;
+    anyhow::ensure!(done["processed_messages"] == 3, "unexpected processed count: {done}");
+    let placeholder = backend::slack::user_id(&team, "U-FALLBACK");
+    let users = sql(&state, "SELECT json_build_object('user_name',user_name,'display_name',display_name)::text FROM users WHERE id=$1", &[&placeholder]).await?;
+    anyhow::ensure!(users.len() == 1, "expected one fallback placeholder");
+    let fallback_user_name = users[0]["user_name"].as_str().unwrap();
+    anyhow::ensure!(fallback_user_name.starts_with("slack-deploybot"), "unexpected fallback username: {fallback_user_name}");
+    anyhow::ensure!(users[0]["display_name"] == "deploybot", "unexpected fallback display name");
+    let bot_placeholder = backend::slack::user_id(&team, "B-BOT");
+    let bot_users = sql(&state, "SELECT json_build_object('user_name',user_name,'display_name',display_name)::text FROM users WHERE id=$1", &[&bot_placeholder]).await?;
+    anyhow::ensure!(bot_users.len() == 1, "expected one bot placeholder");
+    anyhow::ensure!(bot_users[0]["user_name"].as_str().unwrap().starts_with("slack-profilebot"), "unexpected bot username");
+    anyhow::ensure!(bot_users[0]["display_name"] == "profilebot", "unexpected bot display name");
+    let reactions = sql(
+        &state,
+        "SELECT json_build_object('count',count(*))::text FROM message_reactions WHERE user_id=$1",
+        &[&placeholder],
+    )
+    .await?;
+    anyhow::ensure!(reactions[0]["count"] == 1, "expected one imported reaction");
+    let other = backend::slack::user_id(&team, "U-OTHER");
+    let mention_pattern = format!("%{fallback_user_name}%");
+    let mentions = sql(&state, "SELECT json_build_object('content',content)::text FROM messages WHERE user_id=$1 AND content LIKE $2", &[&other, &mention_pattern]).await?;
+    anyhow::ensure!(mentions.len() == 1, "mention rendering must use the same resolved fallback");
+    Ok(())
+    }
+    .await;
+    // This integration test uses the shared backend test database. Remove every row
+    // committed by the import, including the message author U-OTHER, after asserting.
+    let mut cleanup_errors = Vec::new();
+    let fallback_user = backend::slack::user_id(&team, "U-FALLBACK");
+    let bot_user = backend::slack::user_id(&team, "B-BOT");
+    let other_user = backend::slack::user_id(&team, "U-OTHER");
+    let db_cleanup: anyhow::Result<()> = async {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        exec(&mut tx, "SET LOCAL zoo.suppress_app_events = 'on'", &[]).await?;
+        exec(
+            &mut tx,
+            "DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM channel_user WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM app_deliveries WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM slack_channels WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM channels WHERE channel_name=$1",
+            &[&channel_name],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM slack_users WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)",
+            &[&fallback_user, &bot_user, &other_user],
+        )
+        .await?;
+        exec(
+            &mut tx,
+            "DELETE FROM users WHERE id IN ($1,$2,$3)",
+            &[&fallback_user, &bot_user, &other_user],
+        )
+        .await?;
+        if let Some(run) = run_id.as_deref() {
+            exec(&mut tx, "DELETE FROM slack_import_jobs WHERE id=$1", &[run]).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = db_cleanup {
+        cleanup_errors.push(format!("clean up imported DB rows: {error:#}"));
+    }
+
+    let mut export_removed_or_absent = true;
+    if let Some(export) = export_id.as_deref() {
+        let key = format!("slack-imports/{export}/export.zip");
+        match delete_s3_object_and_confirm(&state, &state.config.s3.bucket, &key).await {
+            Ok(()) => {
+                if let Err(error) = cleanup_statement(
+                    &state,
+                    "DELETE FROM slack_import_jobs WHERE id=$1",
+                    &[export],
+                )
+                .await
+                {
+                    cleanup_errors.push(format!(
+                        "delete export job row after ZIP deletion (job_id={export}): {error:#}"
+                    ));
+                }
+            }
+            Err(error) => {
+                export_removed_or_absent = false;
+                cleanup_errors.push(format!(
+                    "retain export job row after unconfirmed ZIP deletion: {error:#}, recovery resources: job_id={export}, bucket={}, key={key}",
+                    state.config.s3.bucket
+                ));
+            }
+        }
+    }
+    if export_removed_or_absent {
+        let admin_cleanup: anyhow::Result<()> = async {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            exec(&mut tx, "DELETE FROM user_role WHERE user_id=$1", &[&admin]).await?;
+            exec(
+                &mut tx,
+                "DELETE FROM channel_user WHERE user_id=$1",
+                &[&admin],
+            )
+            .await?;
+            exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&admin]).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        if let Err(error) = admin_cleanup {
+            cleanup_errors.push(format!("delete admin cleanup user {admin}: {error:#}"));
+        }
+    }
+    finish_test_result(test_result, cleanup_errors)
+}
+
+#[derive(Clone, Copy)]
+enum ZipTargetRace {
+    Public,
+    Deleted,
+    Encrypted,
+    Remapped,
+}
+
+#[derive(Clone, Copy)]
+enum TestBodyFailure {
+    None,
+    Panic,
+    EmptyResult,
+}
+
+#[derive(Clone, Copy)]
+enum CleanupFailure {
+    None,
+    DatabaseError,
+    S3Error,
+    DatabaseTimeout,
+    S3Timeout,
+    JobDeleteError,
+}
+
+async fn run_private_zip_visibility_race(
+    change: ZipTargetRace,
+    inject_transient_failure: bool,
+    inject_worker_timeout: bool,
+    body_failure: TestBodyFailure,
+    cleanup_failure: CleanupFailure,
+    inject_update_lock_timeout: bool,
+) -> anyhow::Result<()> {
+    let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    let mut config = Config::from_env();
+    config.database_url = database_url.clone();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let admin = uuid::Uuid::new_v4().to_string();
+    let target = uuid::Uuid::new_v4().to_string();
+    let remapped_target = uuid::Uuid::new_v4().to_string();
+    let slack_member = backend::slack::user_id(&team, "U-PRIVATE");
+    let slack_late_author = backend::slack::user_id(&team, "U-LATE");
+    let channel_name = format!("private-race-{suffix}");
+    let function = format!("slack_import_gate_{suffix}");
+    let trigger = format!("slack_import_gate_trg_{suffix}");
+    let sequence = format!("slack_import_gate_seq_{suffix}");
+    let lock_key = uuid::Uuid::new_v4().as_u128() as i64;
+    let (connection, driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    connection
+        .query_one("SELECT pg_advisory_lock($1)", &[&lock_key])
+        .await?;
+
+    let mut export_id = None;
+    let mut run_id = None;
+    let mut worker_handle = None;
+    let caught_result = std::panic::AssertUnwindSafe(async {
+        {
+            let mut tx = db.clone();
+            let mut tx = tx.transaction().await?;
+            exec(&mut tx, "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,$2)", &[&admin, &format!("race-admin-{suffix}")]).await?;
+            exec(&mut tx, "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin')", &[&admin]).await?;
+            exec(&mut tx, "INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1,$2,$3,true,false)", &[&target, &channel_name, &admin]).await?;
+            exec(&mut tx, "INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1,$2,$3,true,false)", &[&remapped_target, &format!("{channel_name}-remapped"), &admin]).await?;
+            exec(&mut tx, "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())", &[&admin, &target]).await?;
+            tx.commit().await?;
+        }
+        let zip = build_zip(&[
+            ("users.json".into(), json!([{"id":"U-PRIVATE","team_id":team,"name":"private-user"}])),
+            ("channels.json".into(), json!([])),
+            ("groups.json".into(), json!([{"id":"C-PRIVATE","name":"private","created":1704067200,"members":["U-PRIVATE"]}])),
+            ("private/2024-01-01.json".into(), json!([{"ts":"1704070000.000100","user":"U-PRIVATE","text":"first private day"}])),
+            ("private/2024-01-02.json".into(), json!([{"ts":"1704156400.000100","user":"U-LATE","text":"second private day"}])),
+        ]);
+        let export = upload(&state, &app, &admin, &zip).await?;
+        let source_id = export["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing export id: {export}"))?.to_string();
+        export_id = Some(source_id.clone());
+        let (status, started) = start(&app, &admin, &source_id, json!([{"slack_channel_id":"C-PRIVATE","action":"existing","channel_id":target}])).await?;
+        anyhow::ensure!(status == StatusCode::OK, "cannot start import: {started}");
+        let run = started["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing run id: {started}"))?.to_string();
+        run_id = Some(run.clone());
+
+        // Pause the second day's placeholder insert while the target changes. The
+        // regression mode returns normally here, so only the save-transaction guard
+        // can reject the changed destination.
+        if inject_transient_failure {
+            connection.batch_execute(&format!("CREATE SEQUENCE {sequence}")).await?;
+        }
+        let failure = if inject_transient_failure {
+            format!("IF nextval('{sequence}') = 1 THEN RAISE EXCEPTION 'injected one-time transient Slack import failure'; END IF;")
+        } else {
+            String::new()
+        };
+        let gate = format!(
+            "CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '{slack_late_author}' THEN PERFORM pg_advisory_xact_lock({lock_key}); {failure} END IF; RETURN NEW; END $$; CREATE TRIGGER {trigger} BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION {function}()"
+        );
+        connection.batch_execute(&gate).await?;
+        let worker_state = state.clone();
+        worker_handle = Some(tokio::spawn(async move {
+            backend::slack::worker::run_once(&worker_state).await
+        }));
+
+        let mut waiting = false;
+        for _ in 0..300 {
+            let row = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                connection.query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND wait_event_type='Lock' AND query ILIKE '%INSERT INTO users%')",
+                    &[],
+                ),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for the ZIP worker test gate"))??;
+            if row.get::<_, bool>(0) {
+                waiting = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if !waiting {
+            let status = sql(
+                &state,
+                "SELECT json_build_object('status',status,'error',error)::text FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            )
+            .await?;
+            anyhow::bail!("ZIP import did not reach the gated placeholder insert; job={status:?}, worker_finished={}", worker_handle.as_ref().is_some_and(tokio::task::JoinHandle::is_finished));
+        }
+
+        match body_failure {
+            TestBodyFailure::None => {}
+            TestBodyFailure::Panic => panic!("injected ZIP test body panic"),
+            TestBodyFailure::EmptyResult => {
+                let empty: Vec<Value> = Vec::new();
+                empty
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("injected empty ZIP test result"))?;
+            }
+        }
+
+        if inject_worker_timeout {
+            let mut worker = worker_handle
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("ZIP worker handle missing"))?;
+            if tokio::time::timeout(std::time::Duration::from_millis(100), &mut worker)
+                .await
+                .is_ok()
+            {
+                anyhow::bail!("injected ZIP worker did not remain blocked on the test gate");
+            }
+            worker.abort();
+            match tokio::time::timeout(std::time::Duration::from_secs(5), worker).await {
+                Ok(Err(error)) if error.is_cancelled() => {}
+                Ok(Ok(_)) => anyhow::bail!("injected ZIP worker completed instead of timing out"),
+                Ok(Err(error)) => return Err(error.into()),
+                Err(_) => anyhow::bail!("injected ZIP worker did not stop after abort"),
+            }
+            anyhow::bail!("injected ZIP worker timeout while held at test gate");
+        }
+
+        if inject_update_lock_timeout {
+            connection.batch_execute("BEGIN").await?;
+            connection
+                .query_one(
+                    "SELECT id FROM channels WHERE id=$1 FOR UPDATE",
+                    &[&target],
+                )
+                .await?;
+        }
+
+        // Day one committed while the target was private. Pause resolution for day two,
+        // then make the selected target public or delete it before that day's save check.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut tx_db = state.db.clone();
+            let mut tx = tx_db.transaction().await?;
+            match change {
+                ZipTargetRace::Public => exec(&mut tx, "UPDATE channels SET is_private=false WHERE id=$1", &[&target]).await?,
+                ZipTargetRace::Deleted => exec(&mut tx, "UPDATE channels SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1", &[&target]).await?,
+                ZipTargetRace::Encrypted => exec(&mut tx, "UPDATE channels SET encrypted=true WHERE id=$1", &[&target]).await?,
+                ZipTargetRace::Remapped => exec(&mut tx, "UPDATE slack_channels SET channel_id=$3 WHERE team_id=$1 AND slack_channel_id=$2", &[&team, "C-PRIVATE", &remapped_target]).await?,
+            }
+            tx.commit().await?;
+            anyhow::Ok(())
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out after 5s changing the ZIP destination"))??;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connection.query_one("SELECT pg_advisory_unlock($1)", &[&lock_key]),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out after 5s releasing the ZIP test gate"))??;
+        let mut worker = worker_handle
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("ZIP worker handle missing"))?;
+        match tokio::time::timeout(std::time::Duration::from_secs(15), &mut worker).await {
+            Ok(joined) => {
+                joined??;
+            }
+            Err(_) => {
+                worker.abort();
+                match tokio::time::timeout(std::time::Duration::from_secs(5), worker)
+                    .await
+                    .map_err(|_| anyhow::anyhow!("ZIP worker did not stop after abort"))?
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => return Err(anyhow::anyhow!("ZIP worker failed after abort: {error}")),
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => return Err(error.into()),
+                }
+                anyhow::bail!("ZIP worker timed out after releasing the test gate");
+            }
+        }
+
+        let rows = sql(&state, "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1", &[&target]).await?;
+        anyhow::ensure!(rows[0]["n"] == 1, "later private ZIP data was saved after target state changed: {rows:?}");
+        let later = sql(&state, "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND content='second private day'", &[&target]).await?;
+        anyhow::ensure!(later[0]["n"] == 0, "second day's private content must not be saved: {later:?}");
+        let (_, job) = request(&app, "GET", &format!("/api/admin/slack-imports/{run}"), &admin, None).await?;
+        anyhow::ensure!(job["error"].is_string(), "changed target should stop the ZIP job with an error: {job}");
+
+        if !inject_transient_failure {
+            let state_after_guard = sql(
+                &state,
+                "SELECT json_build_object('status',status,'error',error,'lease_token',lease_token,'progress',import_progress)::text FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            ).await?;
+            let guarded = &state_after_guard[0];
+            anyhow::ensure!(guarded["lease_token"].is_null(), "guard rejection must release the worker lease: {guarded:?}");
+            let progress: serde_json::Map<String, Value> = serde_json::from_str(
+                guarded["progress"].as_str().ok_or_else(|| anyhow::anyhow!("missing progress after guard rejection: {guarded:?}"))?,
+            )?;
+            anyhow::ensure!(progress.get("C-PRIVATE").and_then(Value::as_str) == Some("private/2024-01-01.json"), "second day advanced import progress: {guarded:?}");
+            match change {
+                ZipTargetRace::Public => anyhow::ensure!(guarded["status"] == "failed" && guarded["error"].as_str().is_some_and(|e| e.contains("private channel")), "public target did not fail in the save guard: {guarded:?}"),
+                ZipTargetRace::Deleted => anyhow::ensure!(guarded["status"] == "failed" && guarded["error"].as_str().is_some_and(|e| e.contains("no longer exists")), "deleted target did not fail in the save guard: {guarded:?}"),
+                ZipTargetRace::Encrypted => anyhow::ensure!(guarded["status"] == "importing" && guarded["error"].as_str().is_some_and(|e| e.contains("E2EE_PLAINTEXT_FORBIDDEN")), "encrypted target did not fail in the save guard: {guarded:?}"),
+                ZipTargetRace::Remapped => anyhow::ensure!(guarded["status"] == "importing" && guarded["error"].as_str().is_some_and(|e| e.contains("no longer maps")), "remapped target did not fail in the save guard: {guarded:?}"),
+            }
+            let late_user = sql(&state, "SELECT json_build_object('n',count(*))::text FROM users WHERE id=$1", &[&slack_late_author]).await?;
+            anyhow::ensure!(late_user[0]["n"] == 0, "guard failure must roll back the second day's placeholder: {late_user:?}");
+            let late_messages = sql(&state, "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND content='second private day'", &[&target]).await?;
+            anyhow::ensure!(late_messages[0]["n"] == 0, "guard failure persisted second-day ZIP content: {late_messages:?}");
+            let remapped_messages = sql(&state, "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND content='second private day'", &[&remapped_target]).await?;
+            anyhow::ensure!(remapped_messages[0]["n"] == 0, "guard failure persisted second-day ZIP content in the remapped destination: {remapped_messages:?}");
+            return Ok(());
+        }
+
+        // The gate caused a real transient database error. Prove fail() left this job
+        // eligible for retry rather than mistaking the subsequent BadRequest for a retry.
+        let transient = sql(
+            &state,
+            "SELECT json_build_object('status',status,'attempts',attempts,'error',error,'lease_token',lease_token,'retry_scheduled',available_at>now(),'progress',import_progress)::text FROM slack_import_jobs WHERE id=$1",
+            &[&run],
+        ).await?;
+        anyhow::ensure!(transient[0]["status"] == "importing", "transient error must leave the import retryable: {transient:?}");
+        anyhow::ensure!(transient[0]["error"].as_str().is_some_and(|e| e.contains("injected one-time transient Slack import failure")), "expected the injected transient DB error: {transient:?}");
+        anyhow::ensure!(transient[0]["lease_token"].is_null(), "failed attempt must release its lease: {transient:?}");
+        anyhow::ensure!(transient[0]["retry_scheduled"] == true, "transient failure must schedule a future retry: {transient:?}");
+        let transient_attempts = transient[0]["attempts"].as_i64().ok_or_else(|| anyhow::anyhow!("missing attempts: {transient:?}"))?;
+        let transient_progress: serde_json::Map<String, Value> = serde_json::from_str(
+            transient[0]["progress"].as_str().ok_or_else(|| anyhow::anyhow!("missing import progress: {transient:?}"))?,
+        )?;
+        anyhow::ensure!(transient_progress.get("C-PRIVATE").and_then(Value::as_str) == Some("private/2024-01-01.json"), "first day should be committed before transient failure: {transient:?}");
+
+        // Make the transiently failed job eligible and prove run_once actually reacquires
+        // it. That attempt must then reject the changed target before saving day two.
+        let mut retry_db = state.db.clone();
+        let mut retry_tx = retry_db.transaction().await?;
+        exec(&mut retry_tx, "UPDATE slack_import_jobs SET available_at=now() WHERE id=$1", &[&run]).await?;
+        retry_tx.commit().await?;
+        let eligible = sql(&state, "SELECT json_build_object('eligible',status='importing' AND available_at<=now() AND lease_token IS NULL)::text FROM slack_import_jobs WHERE id=$1", &[&run]).await?;
+        anyhow::ensure!(eligible[0]["eligible"] == true, "transient job was not made eligible before run_once: {eligible:?}");
+        anyhow::ensure!(backend::slack::worker::run_once(&state).await?, "eligible transiently failed job was not reacquired");
+        let retried = sql(
+            &state,
+            "SELECT json_build_object('status',status,'attempts',attempts,'error',error,'finished_at',finished_at,'progress',import_progress)::text FROM slack_import_jobs WHERE id=$1",
+            &[&run],
+        ).await?;
+        anyhow::ensure!(retried[0]["attempts"] == transient_attempts + 1, "retry must increment attempts exactly once: before={transient_attempts}, after={retried:?}");
+        let retried_progress: serde_json::Map<String, Value> = serde_json::from_str(
+            retried[0]["progress"].as_str().ok_or_else(|| anyhow::anyhow!("missing retry progress: {retried:?}"))?,
+        )?;
+        anyhow::ensure!(retried_progress == transient_progress, "rejected second day must not advance import progress: {retried:?}");
+        match change {
+            ZipTargetRace::Public => {
+                anyhow::ensure!(retried[0]["status"] == "failed" && retried[0]["finished_at"].is_string(), "public-target BadRequest must permanently fail: {retried:?}");
+                anyhow::ensure!(retried[0]["error"].as_str().is_some_and(|e| e.contains("private channel")), "public target should be rejected as non-private: {retried:?}");
+            }
+            ZipTargetRace::Deleted => {
+                anyhow::ensure!(retried[0]["status"] == "failed" && retried[0]["finished_at"].is_string(), "deleted-target BadRequest must permanently fail: {retried:?}");
+                anyhow::ensure!(retried[0]["error"].as_str().is_some_and(|e| e.contains("deleted")), "deleted target should be rejected through its existing mapping: {retried:?}");
+            }
+            ZipTargetRace::Encrypted => {
+                // The guard returns a coded E2EE error, which the worker keeps retryable;
+                // record the real state rather than calling it a permanent BadRequest.
+                anyhow::ensure!(retried[0]["status"] == "importing" && retried[0]["finished_at"].is_null(), "encrypted-target guard should retain its actual retryable state: {retried:?}");
+                anyhow::ensure!(retried[0]["error"].as_str().is_some_and(|e| e.contains("E2EE_PLAINTEXT_FORBIDDEN")), "encrypted target should be rejected by the plaintext guard: {retried:?}");
+            }
+            ZipTargetRace::Remapped => {
+                anyhow::ensure!(retried[0]["status"] == "failed" && retried[0]["finished_at"].is_string(), "remapped-target BadRequest must permanently fail: {retried:?}");
+                anyhow::ensure!(retried[0]["error"].as_str().is_some_and(|e| e.contains("already imported")), "remapped target should be rejected by the existing-target guard: {retried:?}");
+            }
+        }
+        let actual_target = sql(
+            &state,
+            "SELECT json_build_object('private',is_private,'encrypted',encrypted,'deleted',deleted_at IS NOT NULL)::text FROM channels WHERE id=$1",
+            &[&target],
+        ).await?;
+        match change {
+            ZipTargetRace::Public => anyhow::ensure!(actual_target[0]["private"] == false && actual_target[0]["encrypted"] == false && actual_target[0]["deleted"] == false, "public case did not actually make the target public: {actual_target:?}"),
+            ZipTargetRace::Deleted => anyhow::ensure!(actual_target[0]["private"] == true && actual_target[0]["deleted"] == true, "deleted case did not actually delete the target: {actual_target:?}"),
+            ZipTargetRace::Encrypted => anyhow::ensure!(actual_target[0]["private"] == true && actual_target[0]["encrypted"] == true && actual_target[0]["deleted"] == false, "encrypted case did not actually encrypt the target: {actual_target:?}"),
+            ZipTargetRace::Remapped => {
+                anyhow::ensure!(actual_target[0]["private"] == true && actual_target[0]["encrypted"] == false && actual_target[0]["deleted"] == false, "remapped source target should remain a live plaintext private channel: {actual_target:?}");
+                let mapping = sql(&state, "SELECT json_build_object('channel_id',channel_id)::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id='C-PRIVATE'", &[&team]).await?;
+                anyhow::ensure!(mapping.len() == 1 && mapping[0]["channel_id"] == remapped_target, "Slack mapping was not actually remapped: {mapping:?}");
+            }
+        }
+        let retry_messages = sql(&state, "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1", &[&target]).await?;
+        anyhow::ensure!(retry_messages[0]["n"] == 1, "retry saved later private content: {retry_messages:?}");
+        let retry_later = sql(&state, "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND content='second private day'", &[&target]).await?;
+        anyhow::ensure!(retry_later[0]["n"] == 0, "retry saved the later private ZIP post: {retry_later:?}");
+        if matches!(change, ZipTargetRace::Public | ZipTargetRace::Deleted) {
+            let mut permanent_db = state.db.clone();
+            let mut permanent_tx = permanent_db.transaction().await?;
+            exec(&mut permanent_tx, "UPDATE slack_import_jobs SET available_at=now() WHERE id=$1", &[&run]).await?;
+            permanent_tx.commit().await?;
+            // Compare the row itself across the pass instead of relying solely on
+            // `run_once` returning false: the row must stay failed with the same
+            // attempts and no lease. (`run_once` returning false also assumes this
+            // job is the only claimable one in the disposable test database.)
+            let before = sql(
+                &state,
+                "SELECT json_build_object('status',status,'attempts',attempts,'lease_token',lease_token)::text FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            ).await?;
+            anyhow::ensure!(
+                before[0]["status"] == "failed" && before[0]["lease_token"].is_null(),
+                "the job must already be a permanently failed, lease-free row: {before:?}"
+            );
+            let claimed_again = backend::slack::worker::run_once(&state).await?;
+            anyhow::ensure!(
+                !claimed_again,
+                "permanently failed public/deleted job was claimed again"
+            );
+            let after = sql(
+                &state,
+                "SELECT json_build_object('status',status,'attempts',attempts,'lease_token',lease_token)::text FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            ).await?;
+            anyhow::ensure!(
+                after[0] == before[0],
+                "public/deleted job changed across a subsequent worker pass: before={:?}, after={:?}",
+                before[0],
+                after[0]
+            );
+        }
+        Ok(())
+    })
+    .catch_unwind()
+    .await;
+    let result = match caught_result {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!("test body panicked: {message}"))
+        }
+    };
+
+    let mut cleanup_errors = Vec::new();
+    macro_rules! attempt_cleanup {
+        ($label:expr, $future:expr) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), $future).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => cleanup_errors.push(format!("{}: {error:#}", $label)),
+                Err(_) => cleanup_errors.push(format!("{}: timed out after 5s", $label)),
+            }
+        };
+    }
+
+    if let Some(worker) = worker_handle {
+        worker.abort();
+        attempt_cleanup!("await aborted ZIP worker", async {
+            match worker.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(error)) => Err(anyhow::anyhow!("ZIP worker failed during cleanup: {error}")),
+                Err(error) if error.is_cancelled() => Ok(()),
+                Err(error) => Err(anyhow::Error::from(error)),
+            }
+        });
+    }
+    if inject_update_lock_timeout {
+        attempt_cleanup!("rollback target lock injection", async {
+            connection.batch_execute("ROLLBACK").await?;
+            Ok::<(), anyhow::Error>(())
+        });
+    }
+    attempt_cleanup!("release ZIP test gate", async {
+        connection
+            .query_one("SELECT pg_advisory_unlock($1)", &[&lock_key])
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    attempt_cleanup!("drop test trigger", async {
+        connection
+            .batch_execute(&format!("DROP TRIGGER IF EXISTS {trigger} ON users"))
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    attempt_cleanup!("drop test function", async {
+        connection
+            .batch_execute(&format!("DROP FUNCTION IF EXISTS {function}()"))
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    attempt_cleanup!("drop test sequence", async {
+        connection
+            .batch_execute(&format!("DROP SEQUENCE IF EXISTS {sequence}"))
+            .await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let mut export_object_removal_confirmed = false;
+    if let Some(export) = export_id.as_deref() {
+        // The import run and export job share the export's storage_key. Check and
+        // remove that one object before either database row is deleted.
+        let key = format!("slack-imports/{export}/export.zip");
+        let injection_error = match cleanup_failure {
+            CleanupFailure::S3Error => {
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    state
+                        .s3_client
+                        .delete_object()
+                        .bucket("invalid bucket name")
+                        .key(&key)
+                        .send(),
+                )
+                .await;
+                Some(match result {
+                    Ok(Err(error)) => format!("injected S3 cleanup failure: {error}"),
+                    Err(_) => "injected S3 cleanup failure: timed out after 5s".to_string(),
+                    Ok(Ok(_)) => "injected S3 cleanup failure did not fail".to_string(),
+                })
+            }
+            CleanupFailure::S3Timeout => {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    tokio::time::sleep(std::time::Duration::from_secs(6)),
+                )
+                .await
+                {
+                    Err(_) => Some("injected S3 cleanup timeout: timed out after 5s".to_string()),
+                    Ok(()) => {
+                        Some("injected S3 cleanup timeout injection did not time out".to_string())
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(injection_error) = injection_error {
+            cleanup_errors.push(format!(
+                "{injection_error}, recovery resources: job_id={export}, run_id={}, bucket={}, key={key}",
+                run_id.as_deref().unwrap_or("none"),
+                config.s3.bucket
+            ));
+        }
+        let injected_s3_failure = matches!(
+            cleanup_failure,
+            CleanupFailure::S3Error | CleanupFailure::S3Timeout
+        );
+        if injected_s3_failure {
+            attempt_cleanup!(format!("verify retained S3 object {key}"), async {
+                assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, true).await?;
+                let run = run_id.as_deref().unwrap_or("");
+                let rows = sql(&state, "SELECT json_build_object('n',count(*))::text FROM slack_import_jobs WHERE id IN ($1,$2)", &[export, run]).await?;
+                let expected_jobs = if run.is_empty() { 1 } else { 2 };
+                anyhow::ensure!(
+                    rows.first().and_then(|row| row["n"].as_i64()) == Some(expected_jobs),
+                    "export and import jobs must remain while their ZIP object exists: {rows:?}"
+                );
+                Ok::<(), anyhow::Error>(())
+            });
+            // Retry the same real RustFS object after proving the first failure left its
+            // database recovery pointer intact. A failed retry keeps the job recoverable.
+        }
+        let removal = delete_s3_object_and_confirm(&state, &config.s3.bucket, &key).await;
+        match removal {
+            Ok(()) => export_object_removal_confirmed = true,
+            Err(error) => cleanup_errors.push(format!(
+                "remove ZIP object: {error:#}, recovery resources: job_id={export}, run_id={}, bucket={}, key={key}",
+                run_id.as_deref().unwrap_or("none"), config.s3.bucket
+            )),
+        }
+    }
+    if matches!(cleanup_failure, CleanupFailure::DatabaseError) {
+        attempt_cleanup!(
+            "injected database cleanup failure",
+            cleanup_statement(&state, "SELECT 1 / 0", &[])
+        );
+    }
+    if matches!(cleanup_failure, CleanupFailure::DatabaseTimeout) {
+        attempt_cleanup!("injected database cleanup timeout", async {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            Ok::<(), anyhow::Error>(())
+        });
+    }
+    let mut cleanup_db: Vec<(&str, &str, Vec<String>)> = vec![
+        (
+            "delete imported messages",
+            "DELETE FROM messages WHERE channel_id IN ($1,$2)",
+            vec![target.clone(), remapped_target.clone()],
+        ),
+        (
+            "delete channel memberships",
+            "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
+            vec![target.clone(), remapped_target.clone()],
+        ),
+        (
+            "delete app deliveries",
+            "DELETE FROM app_deliveries WHERE channel_id IN ($1,$2)",
+            vec![target.clone(), remapped_target.clone()],
+        ),
+        (
+            "delete Slack channel mappings",
+            "DELETE FROM slack_channels WHERE team_id=$1",
+            vec![team.clone()],
+        ),
+        (
+            "delete Slack users",
+            "DELETE FROM slack_users WHERE team_id=$1",
+            vec![team.clone()],
+        ),
+    ];
+    if export_object_removal_confirmed && let Some(id) = run_id.as_deref() {
+        cleanup_db.push((
+            "delete import run",
+            "DELETE FROM slack_import_jobs WHERE id=$1",
+            vec![id.to_string()],
+        ));
+    }
+    if export_object_removal_confirmed && let Some(id) = export_id.as_deref() {
+        cleanup_db.push((
+            "delete export job",
+            "DELETE FROM slack_import_jobs WHERE id=$1",
+            vec![id.to_string()],
+        ));
+    }
+    cleanup_db.extend([
+        (
+            "delete target channel",
+            "DELETE FROM channels WHERE id=$1",
+            vec![target.clone()],
+        ),
+        (
+            "delete remapped channel",
+            "DELETE FROM channels WHERE id=$1",
+            vec![remapped_target.clone()],
+        ),
+        (
+            "delete admin role",
+            "DELETE FROM user_role WHERE user_id=$1",
+            vec![admin.clone()],
+        ),
+        (
+            "delete test user channel memberships",
+            "DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)",
+            vec![
+                admin.clone(),
+                slack_member.clone(),
+                slack_late_author.clone(),
+            ],
+        ),
+        (
+            "delete test users",
+            "DELETE FROM users WHERE id IN ($1,$2,$3)",
+            vec![
+                admin.clone(),
+                slack_member.clone(),
+                slack_late_author.clone(),
+            ],
+        ),
+    ]);
+    let delete_trigger = format!("slack_import_delete_failure_{suffix}");
+    let delete_function = format!("slack_import_delete_failure_fn_{suffix}");
+    let inject_job_delete_failure = matches!(cleanup_failure, CleanupFailure::JobDeleteError)
+        && export_object_removal_confirmed;
+    // Set only when the fault-injection DDL really is in place: the verification
+    // and recovery steps below depend on the trigger actually firing.
+    let mut job_delete_failure_injected = false;
+    if inject_job_delete_failure {
+        let export = export_id.as_deref().unwrap_or("").to_string();
+        // Bounded lock_timeout/statement_timeout plus a collected error, so a
+        // lock conflict or failure here cannot skip the normal fixture cleanup
+        // and `finish_test_result` below.
+        let ddl = async {
+            connection
+                .batch_execute("SET lock_timeout='2s'; SET statement_timeout='2s'")
+                .await?;
+            let created = connection
+                .batch_execute(&format!(
+                    "CREATE FUNCTION {delete_function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id = '{export}' THEN RAISE EXCEPTION 'injected job DELETE failure'; END IF; RETURN OLD; END $$; CREATE TRIGGER {delete_trigger} BEFORE DELETE ON slack_import_jobs FOR EACH ROW EXECUTE FUNCTION {delete_function}()"
+                ))
+                .await;
+            let _ = connection
+                .batch_execute("SET lock_timeout=0; SET statement_timeout=0")
+                .await;
+            created?;
+            Ok::<(), tokio_postgres::Error>(())
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(5), ddl).await {
+            Ok(Ok(())) => job_delete_failure_injected = true,
+            Ok(Err(error)) => {
+                cleanup_errors.push(format!("inject job DELETE failure trigger: {error:#}"))
+            }
+            Err(_) => cleanup_errors
+                .push("inject job DELETE failure trigger: timed out after 5s".to_string()),
+        }
+    }
+    for (label, statement, params) in cleanup_db {
+        let refs: Vec<&str> = params.iter().map(String::as_str).collect();
+        let recovery_label = if matches!(label, "delete import run" | "delete export job") {
+            format!(
+                "{label} (job_id={})",
+                params.first().map(String::as_str).unwrap_or("unknown")
+            )
+        } else {
+            label.to_string()
+        };
+        attempt_cleanup!(recovery_label, cleanup_statement(&state, statement, &refs));
+    }
+    if inject_job_delete_failure {
+        attempt_cleanup!("drop injected job DELETE trigger", async {
+            connection
+                .batch_execute(&format!(
+                    "DROP TRIGGER IF EXISTS {delete_trigger} ON slack_import_jobs"
+                ))
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        attempt_cleanup!("drop injected job DELETE function", async {
+            connection
+                .batch_execute(&format!("DROP FUNCTION IF EXISTS {delete_function}()"))
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        });
+    }
+    if job_delete_failure_injected {
+        attempt_cleanup!("verify failed job DELETE retained rows", async {
+            let export = export_id.as_deref().unwrap_or("").to_string();
+            let row = connection
+                .query_one(
+                    "SELECT count(*)::BIGINT FROM slack_import_jobs WHERE id=$1",
+                    &[&export],
+                )
+                .await?;
+            anyhow::ensure!(
+                row.get::<_, i64>(0) == 1,
+                "injected real job DELETE should leave the export row for recovery"
+            );
+            Ok::<(), anyhow::Error>(())
+        });
+        if let Some(id) = export_id.as_deref() {
+            attempt_cleanup!("retry failed job DELETE after removing injection", async {
+                let deleted = connection
+                    .execute("DELETE FROM slack_import_jobs WHERE id=$1", &[&id])
+                    .await?;
+                anyhow::ensure!(
+                    deleted == 1,
+                    "recovery DELETE removed {deleted} export rows instead of one"
+                );
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+        attempt_cleanup!(
+            "retry dependent test user cleanup after job DELETE recovery",
+            cleanup_statement(
+                &state,
+                "DELETE FROM channel_user WHERE user_id IN ($1,$2,$3)",
+                &[&admin, &slack_member, &slack_late_author]
+            )
+        );
+        attempt_cleanup!(
+            "retry dependent test user cleanup after job DELETE recovery",
+            cleanup_statement(
+                &state,
+                "DELETE FROM users WHERE id IN ($1,$2,$3)",
+                &[&admin, &slack_member, &slack_late_author]
+            )
+        );
+    }
+    attempt_cleanup!("verify database fixture cleanup", async {
+        let run = run_id.as_deref().unwrap_or("");
+        let export = export_id.as_deref().unwrap_or("");
+        let rows = sql(
+            &state,
+            "SELECT json_build_object('n', (SELECT count(*) FROM slack_import_jobs WHERE id IN ($1,$2)) + (SELECT count(*) FROM channels WHERE id IN ($3,$4)) + (SELECT count(*) FROM slack_channels WHERE team_id=$5) + (SELECT count(*) FROM slack_users WHERE team_id=$5) + (SELECT count(*) FROM users WHERE id IN ($6,$7,$8)) + (SELECT count(*) FROM messages WHERE channel_id IN ($3,$4)) + (SELECT count(*) FROM channel_user WHERE channel_id IN ($3,$4)) + (SELECT count(*) FROM pg_trigger WHERE tgname=$9) + (SELECT count(*) FROM pg_proc WHERE proname=$10) + (SELECT count(*) FROM pg_class WHERE relname=$11))::text",
+            &[run, export, &target, &remapped_target, &team, &admin, &slack_member, &slack_late_author, &trigger, &function, &sequence],
+        ).await?;
+        anyhow::ensure!(
+            rows.first().and_then(|row| row["n"].as_i64()) == Some(0),
+            "database fixture rows remain after cleanup: {rows:?}"
+        );
+        Ok::<(), anyhow::Error>(())
+    });
+    attempt_cleanup!("verify S3 fixture cleanup", async {
+        for id in [run_id.as_deref(), export_id.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            let key = format!("slack-imports/{id}/export.zip");
+            assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, false).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+    finish_test_result(result, cleanup_errors)
+}
+
+async fn list_slack_import_keys(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    timeout: std::time::Duration,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    let mut keys = std::collections::HashSet::new();
+    let mut token = None;
+    let mut seen_tokens = std::collections::HashSet::new();
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        anyhow::ensure!(!remaining.is_zero(), "S3 listing exceeded its deadline");
+        let page = tokio::time::timeout(
+            remaining,
+            client
+                .list_objects_v2()
+                .bucket(bucket)
+                .prefix("slack-imports/")
+                .set_continuation_token(token.clone())
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("S3 ListObjectsV2 exceeded its deadline"))??;
+        keys.extend(
+            page.contents()
+                .iter()
+                .filter_map(|object| object.key())
+                .map(str::to_owned),
+        );
+        if !page.is_truncated().unwrap_or(false) {
+            break;
+        }
+        let next = next_s3_continuation_token(
+            token.as_deref(),
+            &mut seen_tokens,
+            page.next_continuation_token(),
+        )?;
+        token = Some(next);
+    }
+    Ok(keys)
+}
+
+fn next_s3_continuation_token(
+    previous: Option<&str>,
+    seen: &mut std::collections::HashSet<String>,
+    next: Option<&str>,
+) -> anyhow::Result<String> {
+    let next =
+        next.ok_or_else(|| anyhow::anyhow!("truncated S3 listing lacks continuation token"))?;
+    anyhow::ensure!(
+        previous != Some(next) && seen.insert(next.to_owned()),
+        "S3 ListObjectsV2 continuation token did not advance"
+    );
+    Ok(next.to_owned())
+}
+
+#[test]
+fn s3_listing_rejects_repeated_continuation_tokens() {
+    let mut seen = std::collections::HashSet::new();
+    let first = next_s3_continuation_token(None, &mut seen, Some("page-1")).unwrap();
+    assert_eq!(first, "page-1");
+    let error = next_s3_continuation_token(Some("page-1"), &mut seen, Some("page-1"))
+        .expect_err("a repeated continuation token must stop pagination");
+    assert!(error.to_string().contains("token did not advance"));
+}
+
+#[tokio::test]
+async fn s3_listing_stops_when_the_endpoint_stalls() -> anyhow::Result<()> {
+    use aws_credential_types::Credentials;
+    use aws_sdk_s3::config::Region;
+    use tokio::io::AsyncReadExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 1024];
+        let _ = socket.read(&mut request).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    });
+    let s3_config = aws_sdk_s3::config::Builder::new()
+        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+        .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+        .region(Region::new("us-east-1"))
+        .endpoint_url(endpoint)
+        .force_path_style(true)
+        .build();
+    let client = aws_sdk_s3::Client::from_conf(s3_config);
+    let result = list_slack_import_keys(
+        &client,
+        "test-bucket",
+        std::time::Duration::from_millis(100),
+    )
+    .await;
+    server.abort();
+    anyhow::ensure!(
+        result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("exceeded its deadline")),
+        "a stalled S3 endpoint must fail within the listing deadline: {result:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn s3_foreign_writer_process_helper() -> anyhow::Result<()> {
+    let (Ok(bucket), Ok(key)) = (
+        std::env::var("SLACK_IMPORT_FOREIGN_WRITER_BUCKET"),
+        std::env::var("SLACK_IMPORT_FOREIGN_WRITER_KEY"),
+    ) else {
+        return Ok(());
+    };
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let config = Config::from_env();
+    let client = backend::storage::create_s3_client(&config.s3);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(aws_sdk_s3::primitives::ByteStream::from_static(
+                b"other process",
+            ))
+            .send(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("independent process RustFS write timed out"))??;
+    Ok(())
+}
+
+async fn stop_foreign_writer(child: &mut tokio::process::Child) -> anyhow::Result<()> {
+    let status = child.try_wait()?;
+    if status.is_none() {
+        child.start_kill().map_err(|error| {
+            anyhow::anyhow!("stopping timed-out independent RustFS writer: {error}")
+        })?;
+        match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_) => anyhow::bail!("independent RustFS writer did not exit after kill"),
+        }
+    } else {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn stopping_timed_out_writer_kills_child_and_confirms_exit() -> anyhow::Result<()> {
+    let mut child = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()?;
+    anyhow::ensure!(
+        child.try_wait()?.is_none(),
+        "writer fixture exited before timeout handling"
+    );
+    stop_foreign_writer(&mut child).await?;
+    anyhow::ensure!(
+        child.try_wait()?.is_some(),
+        "writer child still runs after stop confirmation"
+    );
+    Ok(())
+}
+
+async fn run_s3_pagination_fixture(
+    object_count: usize,
+    inject_body_panic: bool,
+) -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.s3.bucket = format!("slack-test-{}", uuid::Uuid::new_v4().simple());
+    let client = backend::storage::create_s3_client(&config.s3);
+    // CreateBucket may have reached RustFS even if the client times out; track its
+    // unique name before issuing the request so cleanup always attempts deletion.
+    let bucket_may_exist = true;
+    let run_id = uuid::Uuid::new_v4().simple().to_string();
+    let keys: Vec<_> = (0..object_count)
+        .map(|index| format!("slack-imports/{run_id}/{index:04}.zip"))
+        .collect();
+    let foreign_key = format!(
+        "slack-imports/{}/foreign.zip",
+        uuid::Uuid::new_v4().simple()
+    );
+    let mut writer: Option<tokio::process::Child> = None;
+    let caught = std::panic::AssertUnwindSafe(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.create_bucket().bucket(&config.s3.bucket).send(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("creating disposable RustFS bucket {} timed out", config.s3.bucket))??;
+        for key in &keys {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.put_object().bucket(&config.s3.bucket).key(key)
+                    .body(aws_sdk_s3::primitives::ByteStream::from_static(b"x")).send(),
+            ).await.map_err(|_| anyhow::anyhow!("writing disposable pagination fixture {key} timed out"))??;
+        }
+        let first_page_set = list_slack_import_keys(&client, &config.s3.bucket, std::time::Duration::from_secs(30)).await?;
+        anyhow::ensure!(first_page_set.len() == keys.len(), "expected {} fixture objects, got {}", keys.len(), first_page_set.len());
+        if inject_body_panic { panic!("injected pagination test body panic"); }
+        if object_count <= 1000 { return Ok(()); }
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), client.delete_object().bucket(&config.s3.bucket).key(&keys[0]).send())
+            .await.map_err(|_| anyhow::anyhow!("deleting tracked fixture object timed out"))??;
+        let executable = std::env::current_exe()?;
+        let child = tokio::process::Command::new(executable)
+            .args(["--exact", "s3_foreign_writer_process_helper", "--nocapture"])
+            .env("SLACK_IMPORT_FOREIGN_WRITER_BUCKET", &config.s3.bucket)
+            .env("SLACK_IMPORT_FOREIGN_WRITER_KEY", &foreign_key)
+            .env("S3_ENDPOINT", &config.s3.endpoint)
+            .env("S3_ACCESS_KEY_ID", &config.s3.access_key_id)
+            .env("S3_SECRET_ACCESS_KEY", &config.s3.secret_access_key)
+            .env("S3_REGION", &config.s3.region)
+            .env("S3_FORCE_PATH_STYLE", config.s3.force_path_style.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        writer = Some(child);
+        let writer_wait = tokio::time::timeout(std::time::Duration::from_secs(10), writer.as_mut().expect("writer just spawned").wait()).await;
+        let writer_error = match writer_wait {
+            Ok(Ok(status)) if status.success() => None,
+            Ok(Ok(status)) => Some(format!("independent RustFS writer exited unsuccessfully: {status}")),
+            Ok(Err(error)) => Some(format!("waiting for independent RustFS writer failed: {error}")),
+            Err(_) => {
+                let error = stop_foreign_writer(writer.as_mut().expect("writer just spawned")).await;
+                anyhow::bail!("independent RustFS writer process timed out; stop and exit confirmation: {error:?}");
+            }
+        };
+        if let Some(error) = writer_error { anyhow::bail!("{error}"); }
+        let after_foreign_write = list_slack_import_keys(&client, &config.s3.bucket, std::time::Duration::from_secs(30)).await?;
+        anyhow::ensure!(after_foreign_write.len() == keys.len() && after_foreign_write.contains(&foreign_key), "independent writer's object was not observed: {} objects", after_foreign_write.len());
+        anyhow::ensure!(first_page_set != after_foreign_write, "fixture must demonstrate why whole-bucket before/after comparison is unstable");
+        Ok(())
+    }).catch_unwind().await;
+    let mut test_result = match caught {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!("test body panicked: {message}"))
+        }
+    };
+    let mut cleanup_errors = Vec::new();
+    if let Some(child) = writer.as_mut()
+        && let Err(error) = stop_foreign_writer(child).await
+    {
+        cleanup_errors.push(format!("stop independent writer: {error:#}"));
+    }
+    let delete_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut delete_keys = keys.iter().chain(std::iter::once(&foreign_key));
+    while let Some(key) = delete_keys.next() {
+        let Some(remaining_budget) =
+            delete_deadline.checked_duration_since(tokio::time::Instant::now())
+        else {
+            let remaining_count = 1 + delete_keys.count();
+            cleanup_errors.push(format!(
+                "delete objects in disposable bucket {} exceeded 30s budget with {remaining_count} key(s) remaining (starting at {key})",
+                config.s3.bucket
+            ));
+            break;
+        };
+        if remaining_budget.is_zero() {
+            let remaining_count = 1 + delete_keys.count();
+            cleanup_errors.push(format!(
+                "delete objects in disposable bucket {} exceeded 30s budget with {remaining_count} key(s) remaining (starting at {key})",
+                config.s3.bucket
+            ));
+            break;
+        }
+        match tokio::time::timeout(
+            remaining_budget.min(std::time::Duration::from_secs(5)),
+            client
+                .delete_object()
+                .bucket(&config.s3.bucket)
+                .key(key)
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                cleanup_errors.push(format!("delete {key} in {}: {error}", config.s3.bucket))
+            }
+            Err(_) => {
+                if tokio::time::Instant::now() >= delete_deadline {
+                    let remaining_count = 1 + delete_keys.count();
+                    cleanup_errors.push(format!(
+                        "delete objects in disposable bucket {} timed out after 30s budget with {remaining_count} key(s) remaining (starting at {key})",
+                        config.s3.bucket
+                    ));
+                    break;
+                }
+                cleanup_errors.push(format!("delete {key} in {}: timed out", config.s3.bucket));
+            }
+        }
+    }
+    if bucket_may_exist {
+        let mut deleted = false;
+        for _ in 0..10 {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.delete_bucket().bucket(&config.s3.bucket).send(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    deleted = true;
+                    break;
+                }
+                Ok(Err(error)) => cleanup_errors.push(format!(
+                    "delete disposable bucket {}: {error}",
+                    config.s3.bucket
+                )),
+                Err(_) => cleanup_errors.push(format!(
+                    "delete disposable bucket {}: timed out",
+                    config.s3.bucket
+                )),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        if !deleted {
+            cleanup_errors.push(format!(
+                "disposable bucket may remain or be created after timeout: {}",
+                config.s3.bucket
+            ));
+        } else {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.head_bucket().bucket(&config.s3.bucket).send(),
+            )
+            .await
+            {
+                Err(_) => cleanup_errors.push(format!(
+                    "verify disposable bucket removal {} timed out",
+                    config.s3.bucket
+                )),
+                Ok(Ok(_)) => cleanup_errors.push(format!(
+                    "disposable bucket remains after cleanup: {}",
+                    config.s3.bucket
+                )),
+                Ok(Err(error))
+                    if error
+                        .raw_response()
+                        .is_some_and(|response| response.status().as_u16() == 404) => {}
+                Ok(Err(error)) => cleanup_errors.push(format!(
+                    "verify disposable bucket removal {}: {error}",
+                    config.s3.bucket
+                )),
+            }
+        }
+    }
+    test_result = finish_test_result(test_result, cleanup_errors);
+    test_result
+}
+
+#[ignore = "requires an explicitly configured disposable RustFS endpoint"]
+#[tokio::test]
+async fn s3_listing_handles_more_than_one_thousand_keys_and_an_independent_writer()
+-> anyhow::Result<()> {
+    run_s3_pagination_fixture(1_001, false).await
+}
+
+#[ignore = "requires an explicitly configured disposable RustFS endpoint"]
+#[tokio::test]
+async fn s3_pagination_body_panic_still_cleans_up_disposable_bucket() -> anyhow::Result<()> {
+    let error = run_s3_pagination_fixture(1, true)
+        .await
+        .expect_err("injected body panic must be reported");
+    anyhow::ensure!(
+        format!("{error:#}").contains("injected pagination test body panic"),
+        "unexpected body failure: {error:#}"
+    );
+    anyhow::ensure!(
+        !format!("{error:#}").contains("cleanup failed"),
+        "bucket cleanup failed after panic: {error:#}"
+    );
+    Ok(())
+}
+
+async fn assert_s3_object_exists(
+    client: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    expected: bool,
+) -> anyhow::Result<()> {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.head_object().bucket(bucket).key(key).send(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("S3 HeadObject timed out after 10s for {key}"))?;
+    match result {
+        Ok(_) if expected => Ok(()),
+        Ok(_) => anyhow::bail!("unexpected S3 object remains: {key}"),
+        Err(error)
+            if !expected
+                && error
+                    .raw_response()
+                    .is_some_and(|r| r.status().as_u16() == 404) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(anyhow::anyhow!("S3 HeadObject failed for {key}: {error}")),
+    }
+}
+
+async fn delete_s3_object_and_confirm(
+    state: &AppState,
+    bucket: &str,
+    key: &str,
+) -> anyhow::Result<()> {
+    let delete_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .s3_client
+            .delete_object()
+            .bucket(bucket)
+            .key(key)
+            .send(),
+    )
+    .await;
+    let delete_error = match delete_result {
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) => Some(format!("DeleteObject failed: {error}")),
+        Err(_) => Some("DeleteObject timed out after 5s".to_string()),
+    };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        assert_s3_object_exists(&state.s3_client, bucket, key, false),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => anyhow::bail!(
+            "{}, object removal was not confirmed: {error:#}",
+            delete_error.unwrap_or_else(|| "DeleteObject returned success".to_string())
+        ),
+        Err(_) => anyhow::bail!(
+            "{}, object removal verification timed out after 5s",
+            delete_error.unwrap_or_else(|| "DeleteObject returned success".to_string())
+        ),
+    }
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+#[tokio::test]
+async fn private_zip_import_stops_after_target_is_public_or_deleted() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Public,
+        true,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Deleted,
+        true,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Encrypted,
+        true,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Remapped,
+        true,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+#[tokio::test]
+async fn private_zip_save_guard_rejects_changed_targets_without_a_transient_database_error()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Public,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Deleted,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Encrypted,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    run_private_zip_visibility_race(
+        ZipTargetRace::Remapped,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_returns_request_construction_errors() {
+    let error = start(&Router::new(), "admin", "bad\nexport", json!([]))
+        .await
+        .expect_err("an invalid request URI must be returned to the caller");
+    assert!(error.to_string().contains("invalid uri"), "{error:#}");
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn private_zip_worker_timeout_aborts_worker_and_releases_test_gate() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    let error = run_private_zip_visibility_race(
+        ZipTargetRace::Public,
+        false,
+        true,
+        TestBodyFailure::None,
+        CleanupFailure::S3Error,
+        false,
+    )
+    .await
+    .expect_err("the deliberately blocked worker must time out");
+    anyhow::ensure!(
+        format!("{error:#}").contains("injected ZIP worker timeout"),
+        "expected the injected worker timeout, got: {error:#}"
+    );
+    anyhow::ensure!(
+        format!("{error:#}").contains("injected S3 cleanup failure")
+            && !format!("{error:#}").contains("injected database cleanup failure"),
+        "worker timeout and expected S3 cleanup error were not isolated: {error:#}"
+    );
+    let message = format!("{error:#}");
+    let cleanup_errors = message
+        .split_once("cleanup also failed: ")
+        .map(|(_, errors)| errors)
+        .ok_or_else(|| anyhow::anyhow!("cleanup error was not aggregated: {message}"))?;
+    let cleanup_errors: Vec<_> = cleanup_errors.split("; ").collect();
+    anyhow::ensure!(
+        cleanup_errors.len() == 1,
+        "unexpected cleanup error also reported: {cleanup_errors:?}"
+    );
+    anyhow::ensure!(
+        cleanup_errors
+            .iter()
+            .all(|error| error.starts_with("injected S3 cleanup failure")),
+        "unexpected cleanup error also reported: {cleanup_errors:?}"
+    );
+    anyhow::ensure!(
+        !message.contains("fixture rows remain") && !message.contains("fixture objects remain"),
+        "fixture residue after worker timeout: {message}"
+    );
+    Ok(())
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn private_zip_target_update_lock_timeout_still_aborts_worker_and_releases_gate()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    let error = run_private_zip_visibility_race(
+        ZipTargetRace::Public,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::None,
+        true,
+    )
+    .await
+    .expect_err("the injected row lock must time out the target update");
+    anyhow::ensure!(
+        format!("{error:#}").contains("timed out after 5s changing the ZIP destination"),
+        "expected the target update timeout, got: {error:#}"
+    );
+    anyhow::ensure!(
+        !format!("{error:#}").contains("cleanup also failed"),
+        "target update timeout cleanup failed: {error:#}"
+    );
+    Ok(())
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn private_zip_cleanup_errors_are_reported_and_remaining_cleanup_runs() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    let error = run_private_zip_visibility_race(
+        ZipTargetRace::Public,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::DatabaseError,
+        false,
+    )
+    .await
+    .expect_err("the deliberately failed cleanup operations must be reported");
+    let message = format!("{error:#}");
+    anyhow::ensure!(
+        !message.contains("injected S3 cleanup failure"),
+        "{message}"
+    );
+    anyhow::ensure!(
+        message.contains("injected database cleanup failure"),
+        "{message}"
+    );
+    anyhow::ensure!(
+        message.contains("test succeeded, but cleanup failed"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn private_zip_reports_real_job_delete_failure_and_recovers_rows() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    let error = run_private_zip_visibility_race(
+        ZipTargetRace::Public,
+        false,
+        false,
+        TestBodyFailure::None,
+        CleanupFailure::JobDeleteError,
+        false,
+    )
+    .await
+    .expect_err("the injected real slack_import_jobs DELETE failure must be reported");
+    let message = format!("{error:#}");
+    anyhow::ensure!(
+        message.contains("delete export job"),
+        "DELETE error not reported: {message}"
+    );
+    anyhow::ensure!(
+        message.contains("injected job DELETE failure"),
+        "actual SQL DELETE was not rejected by injection: {message}"
+    );
+    anyhow::ensure!(
+        message.contains("test succeeded, but cleanup failed"),
+        "cleanup failure was not surfaced: {message}"
+    );
+    anyhow::ensure!(
+        !message.contains("database fixture rows remain"),
+        "rows were not recovered after proving they remained: {message}"
+    );
+    // Distinguish the expected injected DELETE failure (and the dependent
+    // users-FK error that proves the export row was retained) from everything
+    // else: the recovery retry and the final absence verifications must all have
+    // succeeded, and any timeout among them fails the test.
+    let reported_cleanup = message
+        .split_once("cleanup failed: ")
+        .map(|(_, errors)| errors)
+        .ok_or_else(|| anyhow::anyhow!("cleanup errors were not aggregated: {message}"))?;
+    let reported_errors: Vec<&str> = reported_cleanup.split("; ").collect();
+    anyhow::ensure!(
+        reported_errors.len() == 2
+            && reported_errors[0].starts_with("delete export job")
+            && reported_errors[0].contains("injected job DELETE failure")
+            && reported_errors[1].starts_with("delete test users")
+            && reported_errors[1].contains("still referenced from table \"slack_import_jobs\""),
+        "the cleanup failures must be the injected job DELETE error and its dependent users FK error proving the export row was retained: {reported_errors:?}"
+    );
+    for unexpected in [
+        "retry failed job DELETE after removing injection",
+        "retry dependent test user cleanup after job DELETE recovery",
+        "verify failed job DELETE retained rows",
+        "verify database fixture cleanup",
+        "verify S3 fixture cleanup",
+    ] {
+        anyhow::ensure!(
+            !reported_errors
+                .iter()
+                .any(|error| error.contains(unexpected)),
+            "a recovery or verification step failed instead of the injected DELETE: {reported_errors:?}"
+        );
+    }
+    anyhow::ensure!(
+        !reported_errors
+            .iter()
+            .any(|error| error.contains("timed out")),
+        "a recovery or verification step timed out: {reported_errors:?}"
+    );
+    Ok(())
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn private_zip_body_panics_and_empty_results_still_clean_up() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    for (failure, expected) in [
+        (TestBodyFailure::Panic, "injected ZIP test body panic"),
+        (
+            TestBodyFailure::EmptyResult,
+            "injected empty ZIP test result",
+        ),
+    ] {
+        let error = run_private_zip_visibility_race(
+            ZipTargetRace::Public,
+            false,
+            false,
+            failure,
+            CleanupFailure::None,
+            false,
+        )
+        .await
+        .expect_err("the injected test body failure must be returned");
+        anyhow::ensure!(format!("{error:#}").contains(expected), "{error:#}");
+        anyhow::ensure!(
+            !format!("{error:#}").contains("cleanup also failed"),
+            "fixture cleanup failed after body failure: {error:#}"
+        );
+    }
+    Ok(())
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn private_zip_cleanup_errors_do_not_hide_other_cleanup_and_leave_no_fixtures()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    for (failure, expected) in [
+        (
+            CleanupFailure::DatabaseError,
+            "injected database cleanup failure",
+        ),
+        (CleanupFailure::S3Error, "injected S3 cleanup failure"),
+        (
+            CleanupFailure::DatabaseTimeout,
+            "injected database cleanup timeout: timed out after 5s",
+        ),
+        (
+            CleanupFailure::S3Timeout,
+            "injected S3 cleanup timeout: timed out after 5s",
+        ),
+    ] {
+        let error = run_private_zip_visibility_race(
+            ZipTargetRace::Public,
+            false,
+            false,
+            TestBodyFailure::None,
+            failure,
+            false,
+        )
+        .await
+        .expect_err("the injected cleanup failure must be reported");
+        let message = format!("{error:#}");
+        anyhow::ensure!(
+            message.contains(expected),
+            "expected {expected:?}: {message}"
+        );
+        if matches!(failure, CleanupFailure::S3Error | CleanupFailure::S3Timeout) {
+            anyhow::ensure!(
+                message.contains("recovery resources: job_id=")
+                    && message.contains("bucket=")
+                    && message.contains("key=slack-imports/"),
+                "an unconfirmed S3 deletion must keep its job and report the recovery location: {message}"
+            );
+        }
+        anyhow::ensure!(
+            message.contains("test succeeded, but cleanup failed"),
+            "{message}"
+        );
+        let expected_label = match failure {
+            CleanupFailure::DatabaseError | CleanupFailure::DatabaseTimeout => "database cleanup",
+            CleanupFailure::S3Error | CleanupFailure::S3Timeout => "S3 cleanup",
+            CleanupFailure::JobDeleteError => "job DELETE cleanup",
+            CleanupFailure::None => unreachable!(),
+        };
+        anyhow::ensure!(
+            !message.contains(if expected_label == "database cleanup" {
+                "injected S3 cleanup"
+            } else {
+                "injected database cleanup"
+            }),
+            "unexpected second cleanup failure was masked or injected: {message}"
+        );
+        let reported_cleanup = message
+            .split_once("cleanup failed: ")
+            .map(|(_, errors)| errors)
+            .ok_or_else(|| anyhow::anyhow!("cleanup errors were not aggregated: {message}"))?;
+        let reported_errors: Vec<_> = reported_cleanup.split("; ").collect();
+        let expected_count = 1;
+        anyhow::ensure!(
+            reported_errors.len() == expected_count,
+            "unexpected cleanup error also reported: {reported_errors:?}"
+        );
+        anyhow::ensure!(
+            reported_errors
+                .iter()
+                .all(|error| error.starts_with(expected)),
+            "unexpected cleanup error also reported: {reported_errors:?}"
+        );
+        anyhow::ensure!(
+            !message.contains("database fixture rows remain")
+                && !message.contains("S3 fixture objects remain"),
+            "injected cleanup error left fixture residue: {message}"
+        );
+    }
+    Ok(())
+}
+
+/// API 取り込みと ZIP 取り込みは、同じ `(team, Slack チャンネル)` 単位の advisory lock で
+/// 直列化する。開始の検証のあと・ワーカーの最初のトランザクションの前に、API 側が同じ
+/// Slack チャンネルの対応を確定させた場合、ワーカーはその対応を `ON CONFLICT DO UPDATE`
+/// で上書きせず、ジョブを失敗にして既存の対応を残す。
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn zip_worker_does_not_overwrite_a_mapping_committed_by_a_racing_api_import()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    let mut config = Config::from_env();
+    config.database_url = database_url;
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_zip_api_race_admin").await?;
+    {
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let team = format!("TZIPAPI{}", uuid::Uuid::new_v4().simple());
+    let channel_name = format!("zip_api_race_{}", uuid::Uuid::new_v4().simple());
+    let api_target = uuid::Uuid::new_v4().to_string();
+    let zip_target = backend::slack::channel_id(&team, "CRACE");
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"CRACE","name":"race","members":["U1"]}]),
+        ),
+        (
+            "race/2024-01-01.json".into(),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"hello"}]),
+        ),
+    ]);
+    // upload / start も結果ブロックの中で行い、start が失敗したときも後片付けが
+    // S3 オブジェクト・ export ジョブ・ admin などの行を確実に消せるようにする。
+    let mut export_id: Option<String> = None;
+    let mut run_id: Option<String> = None;
+
+    let mut cleanup_errors = Vec::new();
+    macro_rules! race_cleanup {
+        ($label:expr, $future:expr) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), $future).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => cleanup_errors.push(format!("{}: {error:#}", $label)),
+                Err(_) => cleanup_errors.push(format!("{}: timed out after 5s", $label)),
+            }
+        };
+    }
+    let result: anyhow::Result<()> = async {
+        let export = upload(&state, &app, &admin, &zip).await?;
+        let source_id = export["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing export id: {export}"))?
+            .to_string();
+        export_id = Some(source_id.clone());
+        let (status, started) = start(
+            &app,
+            &admin,
+            &source_id,
+            json!([{"slack_channel_id":"CRACE","action":"create","name":channel_name}]),
+        )
+        .await?;
+        anyhow::ensure!(status == StatusCode::OK, "cannot start import: {started}");
+        let run = started["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing run id: {started}"))?
+            .to_string();
+        run_id = Some(run.clone());
+
+        // Between the start validation and the worker's first transaction, an API
+        // import for the same team and Slack channel commits its own target mapping
+        // under the shared advisory lock (exactly what the fixed API path does).
+        let (status, created) = request(
+            &app,
+            "POST",
+            "/api/channels",
+            &admin,
+            Some(json!({
+                "id": api_target,
+                "channel_name": format!("api_race_{}", uuid::Uuid::new_v4().simple()),
+                "is_private": false,
+            })),
+        )
+        .await?;
+        anyhow::ensure!(
+            status == StatusCode::OK,
+            "cannot create the API import target: {created}"
+        );
+        {
+            let mut tx = db.transaction().await?;
+            toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("slack-channel:{team}:CRACE").as_str())
+                .exec(&mut tx)
+                .await?;
+            toasty::sql::statement(
+                "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) \
+                 VALUES($1,$2,$3,'0')",
+            )
+            .bind(team.as_str())
+            .bind("CRACE")
+            .bind(api_target.as_str())
+            .exec(&mut tx)
+            .await?;
+            tx.commit().await?;
+        }
+
+        // The worker revalidates the mapping under the same advisory lock and must
+        // fail the job instead of letting `ON CONFLICT DO UPDATE` overwrite it.
+        let mut failed = None;
+        for _ in 0..100 {
+            let rows = sql(
+                &state,
+                "SELECT json_build_object('status',status,'error',error)::text \
+                 FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            )
+            .await?;
+            if rows[0]["status"] == "failed" {
+                failed = Some(rows[0].clone());
+                break;
+            }
+            if !backend::slack::worker::run_once(&state).await? {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        let failed = failed.ok_or_else(|| anyhow::anyhow!("the racing import job did not fail"))?;
+        anyhow::ensure!(
+            failed["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("already imported into")),
+            "the worker should reject the changed mapping instead of overwriting it: {failed}"
+        );
+        let mapping = sql(
+            &state,
+            "SELECT json_build_object('channel_id',channel_id,'last_ts',last_ts)::text \
+             FROM slack_channels WHERE team_id=$1 AND slack_channel_id='CRACE'",
+            &[&team],
+        )
+        .await?;
+        anyhow::ensure!(
+            mapping[0]["channel_id"] == api_target.as_str() && mapping[0]["last_ts"] == "0",
+            "the API-committed mapping must remain untouched: {mapping:?}"
+        );
+        // The refused job must not have created or populated its own deterministic
+        // target. The API-created channel keeps its creator's membership, so only
+        // the job's target channel and its message/membership rows count.
+        let stray = sql(
+            &state,
+            "SELECT json_build_object('n', (SELECT count(*) FROM channels WHERE id=$1) \
+             + (SELECT count(*) FROM messages WHERE channel_id IN ($1,$2)) \
+             + (SELECT count(*) FROM channel_user WHERE channel_id=$1))::text",
+            &[&zip_target, &api_target],
+        )
+        .await?;
+        anyhow::ensure!(
+            stray[0]["n"] == 0,
+            "the refused job must not create or populate a channel: {stray:?}"
+        );
+        Ok(())
+    }
+    .await;
+    // The import run and export job share the export's storage key: confirm the
+    // object is gone before either job row is deleted. If the S3 removal fails
+    // or times out, keep both job rows and record the recovery resources.
+    let mut export_object_removal_confirmed = false;
+    if let Some(export) = export_id.as_deref() {
+        let key = format!("slack-imports/{export}/export.zip");
+        match delete_s3_object_and_confirm(&state, &config.s3.bucket, &key).await {
+            Ok(()) => export_object_removal_confirmed = true,
+            Err(error) => cleanup_errors.push(format!(
+                "remove export ZIP object: {error:#}, \
+                 recovery resources: job_id={export}, run_id={}, bucket={}, key={key}",
+                run_id.as_deref().unwrap_or("none"),
+                config.s3.bucket
+            )),
+        }
+    }
+    if export_object_removal_confirmed {
+        if let Some(run) = run_id.as_deref() {
+            race_cleanup!(
+                "delete import run",
+                cleanup_statement(&state, "DELETE FROM slack_import_jobs WHERE id=$1", &[run])
+            );
+        }
+        if let Some(export) = export_id.as_deref() {
+            race_cleanup!(
+                "delete export job",
+                cleanup_statement(
+                    &state,
+                    "DELETE FROM slack_import_jobs WHERE id=$1",
+                    &[export]
+                )
+            );
+        }
+    }
+    race_cleanup!(
+        "delete imported messages",
+        cleanup_statement(
+            &state,
+            "DELETE FROM messages WHERE channel_id IN ($1,$2)",
+            &[&zip_target, &api_target]
+        )
+    );
+    race_cleanup!(
+        "delete channel memberships",
+        cleanup_statement(
+            &state,
+            "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
+            &[&zip_target, &api_target]
+        )
+    );
+    race_cleanup!(
+        "delete Slack channel mapping",
+        cleanup_statement(
+            &state,
+            "DELETE FROM slack_channels WHERE team_id=$1",
+            &[&team]
+        )
+    );
+    race_cleanup!(
+        "delete app deliveries",
+        cleanup_statement(
+            &state,
+            "DELETE FROM app_deliveries WHERE channel_id IN ($1,$2)",
+            &[&zip_target, &api_target]
+        )
+    );
+    race_cleanup!(
+        "delete import destinations",
+        cleanup_statement(
+            &state,
+            "DELETE FROM channels WHERE id IN ($1,$2)",
+            &[&zip_target, &api_target]
+        )
+    );
+    race_cleanup!(
+        "delete Slack users",
+        cleanup_statement(&state, "DELETE FROM slack_users WHERE team_id=$1", &[&team])
+    );
+    let placeholder = backend::slack::user_id(&team, "U1");
+    race_cleanup!(
+        "delete imported placeholders",
+        cleanup_statement(&state, "DELETE FROM users WHERE id=$1", &[&placeholder])
+    );
+    race_cleanup!(
+        "delete admin role",
+        cleanup_statement(&state, "DELETE FROM user_role WHERE user_id=$1", &[&admin])
+    );
+    race_cleanup!(
+        "delete admin memberships",
+        cleanup_statement(
+            &state,
+            "DELETE FROM channel_user WHERE user_id=$1",
+            &[&admin]
+        )
+    );
+    race_cleanup!(
+        "delete admin user",
+        cleanup_statement(&state, "DELETE FROM users WHERE id=$1", &[&admin])
+    );
+    finish_test_result(result, cleanup_errors)
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn failed_upload_cleanup_aggregates_db_and_s3_errors_and_timeouts() -> anyhow::Result<()> {
+    run_failed_upload_cleanup_fixture(false).await
+}
+
+#[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL and RustFS"]
+#[tokio::test]
+async fn failed_upload_cleanup_catches_body_panic_and_cleans_disposable_bucket()
+-> anyhow::Result<()> {
+    run_failed_upload_cleanup_fixture(true).await
+}
+
+async fn run_failed_upload_cleanup_fixture(inject_body_panic: bool) -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+    config.s3.bucket = format!("slack-test-{}", uuid::Uuid::new_v4().simple());
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_upload_cleanup_admin").await?;
+    // Mark the bucket as potentially present before sending CreateBucket: a timeout only
+    // cancels the client wait and does not prove that RustFS stopped processing the request.
+    let mut bucket_may_exist = false;
+
+    let caught = std::panic::AssertUnwindSafe(async {
+        bucket_may_exist = true;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            state.s3_client.create_bucket().bucket(&config.s3.bucket).send(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("creating disposable upload cleanup bucket {} timed out", config.s3.bucket))??;
+        cleanup_statement(
+            &state,
+            "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin')",
+            &[&admin],
+        )
+        .await?;
+        let before_jobs = sql(
+            &state,
+            "SELECT json_build_object('n',count(*))::text FROM slack_import_jobs WHERE created_by=$1",
+            &[&admin],
+        )
+        .await?;
+        anyhow::ensure!(before_jobs.first().and_then(|row| row["n"].as_i64()) == Some(0), "unexpected pre-existing upload job: {before_jobs:?}");
+        for (failure, expected, unexpected, remaining_jobs, remaining_objects) in [
+            (UploadCleanupFailure::DatabaseError, "injected database cleanup failure", "injected S3 cleanup", 1, 0),
+            (UploadCleanupFailure::S3Error, "injected S3 cleanup failure", "injected database cleanup", 1, 1),
+            (UploadCleanupFailure::DatabaseTimeout, "injected database cleanup timeout: timed out after 5s", "injected S3 cleanup", 1, 0),
+            (UploadCleanupFailure::S3Timeout, "injected S3 cleanup timeout: timed out after 5s", "injected database cleanup", 1, 1),
+        ] {
+            let error = upload_with_cleanup_failure(
+                &state,
+                &app,
+                &admin,
+                &build_zip(&[]),
+                failure,
+            )
+            .await
+            .expect_err("injected upload failure must be returned");
+            let message = format!("{error:#}");
+            anyhow::ensure!(message.contains("injected upload failure after ZIP object creation"), "{message}");
+            anyhow::ensure!(message.contains(expected), "expected {expected:?}: {message}");
+            anyhow::ensure!(message.contains(&format!("bucket={}, key=slack-imports/", config.s3.bucket)), "recovery location missing: {message}");
+            anyhow::ensure!(!message.contains(unexpected), "unexpected second cleanup failure: {message}");
+            let reported_cleanup = message
+                .split_once("cleanup failed: ")
+                .map(|(_, errors)| errors)
+                .ok_or_else(|| anyhow::anyhow!("cleanup errors were not aggregated: {message}"))?;
+            anyhow::ensure!(reported_cleanup.split("; ").count() == 1, "unexpected cleanup error also reported: {reported_cleanup}");
+            let job_id = message.split_once("recovery resources: job_id=").and_then(|(_, tail)| tail.split_once(',').map(|(id, _)| id)).ok_or_else(|| anyhow::anyhow!("job recovery id missing: {message}"))?;
+            let rows = sql(&state, "SELECT json_build_object('n',count(*))::text FROM slack_import_jobs WHERE id=$1", &[job_id]).await?;
+            anyhow::ensure!(rows.first().and_then(|row| row["n"].as_i64()) == Some(remaining_jobs), "unexpected retained job state: {rows:?}");
+            let object_exists = assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &format!("slack-imports/{job_id}/export.zip"), remaining_objects == 1).await.is_ok();
+            anyhow::ensure!(object_exists, "unexpected retained ZIP object state for job {job_id}");
+            // The test owns these rows and objects; recover even intentionally failed cleanup here.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                state
+                    .s3_client
+                    .delete_object()
+                    .bucket(&config.s3.bucket)
+                    .key(format!("slack-imports/{job_id}/export.zip"))
+                    .send(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result?;
+                }
+                Err(_) => anyhow::bail!(
+                    "deleting the retained ZIP object for job {job_id} timed out after 5s"
+                ),
+            }
+            cleanup_statement(&state, "DELETE FROM slack_import_jobs WHERE id=$1", &[job_id]).await?;
+        }
+        // A rejected `PUT` never proved anything was stored, so the helper must keep
+        // the export job row for deferred cleanup and report the recovery resources
+        // instead of attempting the immediate delete + absence check + job deletion.
+        {
+            let error = upload_with_cleanup_failure(
+                &state,
+                &app,
+                &admin,
+                &build_zip(&[]),
+                UploadCleanupFailure::RejectPut,
+            )
+            .await
+            .expect_err("a rejected ZIP upload must be reported");
+            let message = format!("{error:#}");
+            anyhow::ensure!(
+                message.contains("ZIP upload failed"),
+                "the rejected PUT must be the reported failure: {message}"
+            );
+            anyhow::ensure!(
+                message.contains("PUT outcome uncertain"),
+                "uncertain storage state must be reported: {message}"
+            );
+            anyhow::ensure!(
+                message.contains("recovery resources: job_id=")
+                    && message.contains(&format!("bucket={}, key=slack-imports/", config.s3.bucket)),
+                "recovery location missing: {message}"
+            );
+            anyhow::ensure!(
+                !message.contains("cleanup failed"),
+                "no cleanup may run for an uncertain PUT outcome: {message}"
+            );
+            let job_id = message.split_once("recovery resources: job_id=").and_then(|(_, tail)| tail.split_once(',').map(|(id, _)| id)).ok_or_else(|| anyhow::anyhow!("job recovery id missing: {message}"))?;
+            let rows = sql(&state, "SELECT json_build_object('n',count(*))::text FROM slack_import_jobs WHERE id=$1", &[job_id]).await?;
+            anyhow::ensure!(
+                rows.first().and_then(|row| row["n"].as_i64()) == Some(1),
+                "the job row must remain as the deferred-cleanup pointer: {rows:?}"
+            );
+            let object_exists = assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &format!("slack-imports/{job_id}/export.zip"), false).await.is_ok();
+            anyhow::ensure!(
+                object_exists,
+                "a rejected presigned PUT must not store an object for job {job_id}"
+            );
+            // The outer fixture recovery still owns this row and (absent) object.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                state
+                    .s3_client
+                    .delete_object()
+                    .bucket(&config.s3.bucket)
+                    .key(format!("slack-imports/{job_id}/export.zip"))
+                    .send(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result?;
+                }
+                Err(_) => anyhow::bail!(
+                    "deleting the deferred-cleanup object for job {job_id} timed out after 5s"
+                ),
+            }
+            cleanup_statement(&state, "DELETE FROM slack_import_jobs WHERE id=$1", &[job_id]).await?;
+        }
+        let stranded_zip = build_zip(&[]);
+        let (status, created) = request(
+            &app,
+            "POST",
+            "/api/admin/slack-imports",
+            &admin,
+            Some(json!({"file_name":"stranded.zip","file_size":stranded_zip.len()})),
+        )
+        .await?;
+        anyhow::ensure!(status == StatusCode::OK, "stranded fixture job creation failed: {created}");
+        let stranded_id = created["import"]["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing stranded job id: {created}"))?;
+        let response = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?
+            .put(created["upload_url"].as_str().ok_or_else(|| anyhow::anyhow!("missing stranded upload URL: {created}"))?)
+            .header("content-type", "application/zip")
+            .body(stranded_zip)
+            .send()
+            .await?;
+        anyhow::ensure!(response.status().is_success(), "stranded ZIP upload failed: {}", response.text().await.unwrap_or_default());
+        if inject_body_panic {
+            panic!("injected upload cleanup test body panic after durable ZIP: job_id={stranded_id}");
+        }
+        anyhow::bail!("injected assertion after durable admin job and RustFS object: job_id={stranded_id}")
+    }).catch_unwind().await;
+    let test_result = match caught {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!("test body panicked: {message}"))
+        }
+    };
+
+    let mut cleanup_errors = Vec::new();
+    let jobs = match sql(
+        &state,
+        "SELECT json_build_object('id',id,'storage_key',storage_key)::text FROM slack_import_jobs WHERE created_by=$1 ORDER BY (source_id IS NULL),id",
+        &[&admin],
+    )
+    .await
+    {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            cleanup_errors.push(format!("list admin-owned upload jobs: {error:#}"));
+            Vec::new()
+        }
+    };
+    for job in jobs {
+        let Some(job_id) = job["id"].as_str() else {
+            cleanup_errors.push(format!("admin-owned upload job has no id: {job:?}"));
+            continue;
+        };
+        let Some(key) = job["storage_key"].as_str() else {
+            cleanup_errors.push(format!(
+                "admin-owned upload job {job_id} has no storage key"
+            ));
+            continue;
+        };
+        match delete_s3_object_and_confirm(&state, &config.s3.bucket, key).await {
+            Ok(()) => {}
+            Err(error) => {
+                cleanup_errors.push(format!(
+                    "retain admin-owned job after unconfirmed ZIP deletion: {error:#}, recovery resources: job_id={job_id}, bucket={}, key={key}",
+                    config.s3.bucket
+                ));
+                continue;
+            }
+        }
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cleanup_statement(&state, "DELETE FROM slack_import_jobs WHERE id=$1", &[job_id]),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => cleanup_errors.push(format!(
+                "delete admin-owned job {job_id} after confirmed object removal: {error:#}, bucket={}, key={key}",
+                config.s3.bucket
+            )),
+            Err(_) => cleanup_errors.push(format!(
+                "delete admin-owned job {job_id} after confirmed object removal: timed out after 5s, bucket={}, key={key}",
+                config.s3.bucket
+            )),
+        }
+    }
+    match list_slack_import_keys(
+        &state.s3_client,
+        &config.s3.bucket,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    {
+        Ok(keys) => {
+            for key in keys {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    delete_s3_object_and_confirm(&state, &config.s3.bucket, &key),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        cleanup_errors.push(format!("delete residual S3 key {key}: {error}"))
+                    }
+                    Err(_) => {
+                        cleanup_errors.push(format!("delete residual S3 key {key}: timed out"))
+                    }
+                }
+            }
+        }
+        Err(error) => cleanup_errors.push(format!("list disposable bucket for cleanup: {error:#}")),
+    }
+    for (label, statement) in [
+        (
+            "delete admin role",
+            "DELETE FROM user_role WHERE user_id=$1",
+        ),
+        (
+            "delete admin channel memberships",
+            "DELETE FROM channel_user WHERE user_id=$1",
+        ),
+        ("delete admin user", "DELETE FROM users WHERE id=$1"),
+    ] {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            cleanup_statement(&state, statement, &[&admin]),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => cleanup_errors.push(format!("{label}: {error:#}")),
+            Err(_) => cleanup_errors.push(format!("{label}: timed out after 5s")),
+        }
+    }
+    if bucket_may_exist {
+        // Retry because a timed-out CreateBucket request may still be completing server-side.
+        let mut deleted = false;
+        for _ in 0..10 {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                state
+                    .s3_client
+                    .delete_bucket()
+                    .bucket(&config.s3.bucket)
+                    .send(),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    deleted = true;
+                    break;
+                }
+                Ok(Err(error)) => cleanup_errors.push(format!(
+                    "delete disposable bucket {}: {error}",
+                    config.s3.bucket
+                )),
+                Err(_) => cleanup_errors.push(format!(
+                    "delete disposable bucket {}: timed out",
+                    config.s3.bucket
+                )),
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        if !deleted {
+            cleanup_errors.push(format!(
+                "disposable bucket may remain or be created after timeout: {}",
+                config.s3.bucket
+            ));
+        }
+    }
+    let result = finish_test_result(test_result, cleanup_errors);
+    let error = result.expect_err("the injected assertion must be returned after cleanup");
+    let message = format!("{error:#}");
+    let expected_body = if inject_body_panic {
+        "test body panicked: injected upload cleanup test body panic after durable ZIP"
+    } else {
+        "injected assertion after durable admin job and RustFS object"
+    };
+    anyhow::ensure!(message.contains(expected_body), "{message}");
+    anyhow::ensure!(
+        !message.contains("cleanup also failed"),
+        "fixture recovery failed: {message}"
+    );
+    let remaining_jobs = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM slack_import_jobs WHERE created_by=$1",
+        &[&admin],
+    )
+    .await?;
+    anyhow::ensure!(
+        remaining_jobs.first().and_then(|row| row["n"].as_i64()) == Some(0),
+        "admin-owned upload job remains: {remaining_jobs:?}"
+    );
+    let remaining_user = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM users WHERE id=$1",
+        &[&admin],
+    )
+    .await?;
+    anyhow::ensure!(
+        remaining_user.first().and_then(|row| row["n"].as_i64()) == Some(0),
+        "admin user remains after job cleanup: {remaining_user:?}"
+    );
+    let bucket = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .s3_client
+            .head_bucket()
+            .bucket(&config.s3.bucket)
+            .send(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "checking the disposable bucket {} timed out after 5s",
+            config.s3.bucket
+        ),
+    };
+    anyhow::ensure!(
+        bucket
+            .as_ref()
+            .err()
+            .and_then(|error| error.raw_response())
+            .is_some_and(|response| response.status().as_u16() == 404),
+        "disposable upload bucket was not confirmed absent after fixture cleanup: {} ({bucket:?})",
+        config.s3.bucket
+    );
     Ok(())
 }
 
@@ -823,7 +3591,7 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     ]);
 
     // 同じ Slack チャンネルを別々の取り込み先へ入れるジョブを、どちらも開始してしまう
-    let export = upload(&state, &app, &admin, &replies_only).await;
+    let export = upload(&state, &app, &admin, &replies_only).await?;
     // 同じ ZIP から何度取り込んでも、保存中の ZIP は一覧から押し出されない
     {
         let mut db = state.db.clone();
@@ -872,13 +3640,13 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         json!({"slack_channel_id":"C1","action":"create","name":format!("first-{suffix}")}),
         json!({"slack_channel_id":"C1","action":"existing","channel_id":other}),
     ] {
-        let (status, body) = start(&app, &admin, &export_id, json!([mapping])).await;
+        let (status, body) = start(&app, &admin, &export_id, json!([mapping])).await?;
         assert_eq!(status, StatusCode::OK, "{body}");
         runs.push(body["id"].as_str().unwrap().to_string());
     }
     let (first_id, second_id) = (runs[0].clone(), runs[1].clone());
     // 先に処理されたほうだけが成功し、もう一方は取り込み先が食い違うので失敗する
-    drive(&state, &app, &admin, &first_id, "completed").await;
+    drive(&state, &app, &admin, &first_id, "completed").await?;
     let mut failed = Value::Null;
     for _ in 0..100 {
         backend::slack::worker::run_once(&state).await?;
@@ -919,14 +3687,14 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     );
 
     // 親を含む ZIP を取り込み直すと、返信がスレッドに戻る
-    let again = upload(&state, &app, &admin, &both).await;
+    let again = upload(&state, &app, &admin, &both).await?;
     let (status, body) = start(
         &app,
         &admin,
         again["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"existing","channel_id":general}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
     drive(
         &state,
@@ -935,7 +3703,7 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         body["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let rows = sql(
         &state,
         "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",
@@ -1135,7 +3903,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             json!([{"ts":"1704160000.000600","user":"U1","text":"s"}]),
         ),
     ]);
-    let analyzed = upload(&state, &app, &admin, &first).await;
+    let analyzed = upload(&state, &app, &admin, &first).await?;
     let id = analyzed["id"].as_str().unwrap().to_string();
 
     // 非公開チャンネルを公開チャンネルとして作る・公開チャンネルへ入れる指定は拒否する
@@ -1177,7 +3945,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":true}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{started}");
     assert_eq!(started["total_messages"], 4);
     let run = started["id"].as_str().unwrap().to_string();
@@ -1191,7 +3959,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     )
     .await?;
     assert_eq!(status, StatusCode::CONFLICT);
-    let done = drive(&state, &app, &admin, &run, "completed").await;
+    let done = drive(&state, &app, &admin, &run, "completed").await?;
     assert_eq!(done["processed_messages"], 4);
 
     let message = |ts: &str| backend::slack::message_id(&team, "C1", ts);
@@ -1229,7 +3997,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
                     "replies":[{"user":"U2","ts":reply_ts}]}]),
         ),
     ]);
-    let again = upload(&state, &app, &admin, &parent_only).await;
+    let again = upload(&state, &app, &admin, &parent_only).await?;
     let general = backend::slack::channel_id(&team, "C1");
     let (status, body) = start(
         &app,
@@ -1240,7 +4008,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             {"slack_channel_id":"C2","action":"skip"}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
     drive(
         &state,
@@ -1249,7 +4017,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         body["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let rows = sql(
         &state,
         "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",
@@ -1279,7 +4047,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             json!([{"ts":"1704250000.000800","user":"U1","text":"still private"}]),
         ),
     ]);
-    let analyzed = upload(&state, &app, &admin, &turned_private).await;
+    let analyzed = upload(&state, &app, &admin, &turned_private).await?;
     let export = analyzed["id"].as_str().unwrap().to_string();
     let (status, body) = start(
         &app,
@@ -1290,7 +4058,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             {"slack_channel_id":"G1","action":"skip"}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let private_message = backend::slack::message_id(&team, "C1", "1704250000.000700");
     let rows = sql(
@@ -1312,7 +4080,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":true}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
     let run = body["id"].as_str().unwrap().to_string();
     sql(
@@ -1381,7 +4149,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             json!([{"ts":"1704340000.000900","user":"U1","text":"see <#C1|general> and <#G1|secret>"}]),
         ),
     ]);
-    let analyzed = upload(&state, &app, &admin, &later).await;
+    let analyzed = upload(&state, &app, &admin, &later).await?;
     let (status, body) = start(
         &app,
         &admin,
@@ -1391,7 +4159,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             {"slack_channel_id":"C2","action":"create","name":format!("random-{suffix}")}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
     drive(
         &state,
@@ -1400,7 +4168,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         body["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let rows = sql(
         &state,
         "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
@@ -1438,7 +4206,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             json!([{"ts":"1704430000.000200","user":"U1","text":"ping <#C4|quiet>"}]),
         ),
     ]);
-    let analyzed = upload(&state, &app, &admin, &quiet).await;
+    let analyzed = upload(&state, &app, &admin, &quiet).await?;
     let export_id = analyzed["id"].as_str().unwrap().to_string();
     for mappings in [
         json!([
@@ -1450,7 +4218,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             {"slack_channel_id":"C5","action":"create","name":format!("loud-{suffix}")}
         ]),
     ] {
-        let (status, body) = start(&app, &admin, &export_id, mappings).await;
+        let (status, body) = start(&app, &admin, &export_id, mappings).await?;
         assert_eq!(status, StatusCode::OK, "{body}");
         drive(
             &state,
@@ -1459,7 +4227,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
             body["id"].as_str().unwrap(),
             "completed",
         )
-        .await;
+        .await?;
     }
     let rows = sql(
         &state,
@@ -1531,21 +4299,11 @@ async fn test_slack_import_removes_zip_uploaded_after_cancel() -> anyhow::Result
         .send()
         .await?;
     assert!(put.status().is_success());
-    let exists = || async {
-        state
-            .s3_client
-            .head_object()
-            .bucket(&config.s3.bucket)
-            .key(&key)
-            .send()
-            .await
-            .is_ok()
-    };
-    assert!(exists().await);
+    assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, true).await?;
 
     // 署名付き URL の期限内は、まだ PUT が続いているかもしれないので消さない
     backend::slack::worker::cleanup(&state).await?;
-    assert!(exists().await);
+    assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, true).await?;
     // 期限と猶予を過ぎたら、もう一度だけ消す
     sql(
         &state,
@@ -1554,7 +4312,7 @@ async fn test_slack_import_removes_zip_uploaded_after_cancel() -> anyhow::Result
     )
     .await?;
     backend::slack::worker::cleanup(&state).await?;
-    assert!(!exists().await, "the late upload must be removed");
+    assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &key, false).await?;
     let job = sql(
         &state,
         "SELECT json_build_object('status',status,'key',storage_key)::text FROM slack_import_jobs WHERE id=$1",
@@ -1626,14 +4384,14 @@ async fn test_slack_import_names_files_skipped_while_fetching() -> anyhow::Resul
             ]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"create","name":format!("files-{suffix}")}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -1642,7 +4400,7 @@ async fn test_slack_import_names_files_skipped_while_fetching() -> anyhow::Resul
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let content = |ts: &'static str| {
         let (state, team) = (state.clone(), team.clone());
         async move {
@@ -1732,17 +4490,17 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
             ]),
         ),
     ]);
-    let export = upload(&no_token, &app, &admin, &zip).await;
+    let export = upload(&no_token, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"create","name":format!("refetch-{suffix}")}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     let run = run["id"].as_str().unwrap().to_string();
-    drive(&no_token, &app, &admin, &run, "completed").await;
+    drive(&no_token, &app, &admin, &run, "completed").await?;
     let content = |state: AppState, ts: &'static str| {
         let team = team.clone();
         async move {
@@ -1787,7 +4545,7 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
-    drive(&small_state, &app_small, &admin, &run, "completed").await;
+    drive(&small_state, &app_small, &admin, &run, "completed").await?;
     // 上限が原因のスキップは、再取得の対象として数える
     let (_, job) = request(
         &app_small,
@@ -1845,7 +4603,7 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
-    drive(&big_state, &app_big, &admin, &run, "completed").await;
+    drive(&big_state, &app_big, &admin, &run, "completed").await?;
     assert_eq!(content(big_state.clone(), "1704070000.000100").await, "");
     assert_eq!(content(big_state.clone(), "1704070000.000200").await, "");
     assert_eq!(content(big_state.clone(), "1704070000.000300").await, "");
@@ -1922,17 +4680,17 @@ async fn test_slack_import_same_name_files_keep_the_unfetched_name() -> anyhow::
             ]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"create","name":format!("samename-{suffix}")}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     let run = run["id"].as_str().unwrap().to_string();
-    drive(&state, &app, &admin, &run, "completed").await;
+    drive(&state, &app, &admin, &run, "completed").await?;
     let message = backend::slack::message_id(&team, "C1", "1704070000.000100");
     let body = |state: AppState| {
         let message = message.clone();
@@ -1966,7 +4724,7 @@ async fn test_slack_import_same_name_files_keep_the_unfetched_name() -> anyhow::
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "{fetched}");
-    drive(&small_state, &app_small, &admin, &run, "completed").await;
+    drive(&small_state, &app_small, &admin, &run, "completed").await?;
     assert_eq!(
         body(small_state.clone()).await,
         "image.png",
@@ -2046,7 +4804,7 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
             day("1704070000.000100"),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
@@ -2058,7 +4816,7 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
             {"slack_channel_id":"C4","action":"skip"}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2067,7 +4825,7 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let row = |name: String| {
         let state = state.clone();
         async move {
@@ -2132,7 +4890,7 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"existing","channel_id":before[0]["id"]}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{rerun}");
     drive(
         &state,
@@ -2141,7 +4899,7 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         rerun["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let after = stamp(format!("flag-keep-{suffix}")).await;
     assert_ne!(
         before[0]["at"], after[0]["at"],
@@ -2311,14 +5069,14 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
         {"ts": b, "user": "U1", "text": "B before it was deleted"},
         {"ts": c, "user": "U1", "text": "C"}
     ]));
-    let export = upload(&state, &app, &admin, &before).await;
+    let export = upload(&state, &app, &admin, &before).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"create","name":name}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2327,7 +5085,7 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let deleted = |ts: &'static str| {
         let state = state.clone();
         let id = backend::slack::message_id(&team, "C1", ts);
@@ -2356,7 +5114,7 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
          "deleted_by": "U1", "original": {"user": "U1", "type": "message", "ts": b, "text": "B before it was deleted"}},
         {"ts": c, "user": "U1", "text": "C"}
     ]));
-    let export = upload(&state, &app, &admin, &after).await;
+    let export = upload(&state, &app, &admin, &after).await?;
     // 解析のメッセージ数に、編集・削除の記録を含めない
     assert_eq!(
         export["analysis"]["channels"][0]["message_count"], 2,
@@ -2369,7 +5127,7 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"existing","channel_id":target}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2378,7 +5136,7 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     assert_eq!(
         deleted(a).await[0]["deleted"],
         false,
@@ -2427,6 +5185,7 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
     let app = create_router(state.clone());
     // Fresh test databases start in collecting mode. Exercise the production
     // thread constraints too, including BEFORE INSERT on an upserted reply.
+    // スレッド化のロールアウト後 (phase='ready') も、削除された親への返信は取り込みで残る (再取り込みも同じ)
     sql(
         &state,
         "UPDATE thread_rollout SET phase='ready' RETURNING json_build_object('ok',true)::text",
@@ -2490,12 +5249,12 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
             json!([{"ts": b, "user": "U1", "text": "B in another channel"}]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let mappings = json!([
         {"slack_channel_id":"C1","action":"create","name":name},
         {"slack_channel_id":"C2","action":"create","name":other}
     ]);
-    let (status, run) = start(&app, &admin, export["id"].as_str().unwrap(), mappings).await;
+    let (status, run) = start(&app, &admin, export["id"].as_str().unwrap(), mappings).await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2504,7 +5263,7 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let live = |channel: &'static str| {
         let state = state.clone();
         let channel_id = backend::slack::channel_id(&team, channel);
@@ -2566,7 +5325,7 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
             {"slack_channel_id":"C2","action":"existing","channel_id":backend::slack::channel_id(&team, "C2")}
         ]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2575,7 +5334,7 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     assert_eq!(live("C1").await, 3, "re-importing changes nothing");
     assert_eq!(row("C1", b).await[0]["deleted"], true);
     assert_eq!(row("C1", x).await[0]["deleted"], false);
@@ -2672,14 +5431,14 @@ async fn test_slack_import_follows_allowed_redirects_only() -> anyhow::Result<()
             ]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"create","name":format!("redir-{suffix}")}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2688,7 +5447,7 @@ async fn test_slack_import_follows_allowed_redirects_only() -> anyhow::Result<()
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     let status_of = |ts: &'static str| {
         let (state, team) = (state.clone(), team.clone());
         async move {
@@ -2760,7 +5519,7 @@ async fn test_slack_import_suggested_name_avoids_a_taken_prefixed_name() -> anyh
             json!([{"ts":"1704070000.000100","user":"U1","text":"hi"}]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let suggested = export["analysis"]["channels"][0]["suggested_name"]
         .as_str()
         .unwrap_or_default()
@@ -2818,7 +5577,7 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
             json!([{"ts":"1704070000.000100","user":"U1","text":"private history"}]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     // mallory が、決定的な ID のチャンネルを先に作り、alice を入れておく
     let foreign = backend::slack::channel_id(&team, "C7");
     let (status, _) = request(
@@ -2846,7 +5605,7 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C7","action":"create","name":format!("mine-{suffix}")}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     let run = run["id"].as_str().unwrap().to_string();
     let mut job = Value::Null;
@@ -2926,14 +5685,14 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
     let second = json!({"ts":"1704070100.000200","user":"U1","text":"second",
         "reactions":[{"name":"thumbsup","users":["U1"],"count":1}]});
 
-    let export = upload(&state, &app, &admin, &zip(json!([first]))).await;
+    let export = upload(&state, &app, &admin, &zip(json!([first]))).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C9","action":"create","name":name}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2942,7 +5701,7 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
 
     // 取り込み先に書ける人が、まだ取り込んでいない投稿の ID を先に使う
     let channel = backend::slack::channel_id(&team, "C9");
@@ -2973,14 +5732,14 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
         &admin,
         &zip(json!([first, second, parent, reply])),
     )
-    .await;
+    .await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C9","action":"create","name":name}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     drive(
         &state,
@@ -2989,7 +5748,7 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
 
     let rows = sql(
         &state,
@@ -3074,14 +5833,14 @@ async fn test_slack_import_labels_files_in_existing_nsfw_channel() -> anyhow::Re
             json!([{"ts":"1704070000.000100","user":"U1","text":"photo","files":[{"id":"F1","name":"photo.png","mimetype":"image/png","size":4,"url_private_download":format!("{}/files/F1/photo.png",files.uri())}]}]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"existing","channel_id":channel}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     let result = drive(
         &state,
@@ -3090,7 +5849,7 @@ async fn test_slack_import_labels_files_in_existing_nsfw_channel() -> anyhow::Re
         run["id"].as_str().unwrap(),
         "completed",
     )
-    .await;
+    .await?;
     assert_eq!(result["failed_files"], 0);
     let attachments = sql(&state, "SELECT json_build_object('is_sensitive',is_sensitive)::text FROM attachments WHERE channel_id=$1", &[&channel]).await?;
     assert_eq!(attachments, vec![json!({"is_sensitive":true})]);
@@ -3119,14 +5878,14 @@ async fn importing_job(
     for (day, messages) in days {
         files.push((format!("{name}/{day}.json"), messages.clone()));
     }
-    let export = upload(state, app, admin, &build_zip(&files)).await;
+    let export = upload(state, app, admin, &build_zip(&files)).await?;
     let (status, run) = start(
         app,
         admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"create","name":name}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     Ok(run["id"].as_str().unwrap().to_string())
 }
@@ -3227,7 +5986,7 @@ async fn test_slack_import_releases_the_job_on_shutdown() -> anyhow::Result<()> 
         &[&id],
     )
     .await?;
-    drive(&state, &app, &admin, &id, "completed").await;
+    drive(&state, &app, &admin, &id, "completed").await?;
     Ok(())
 }
 
@@ -3265,7 +6024,7 @@ async fn test_slack_import_resumes_after_the_completed_day_files() -> anyhow::Re
         &[&id, &progress],
     )
     .await?;
-    drive(&state, &app, &admin, &id, "completed").await;
+    drive(&state, &app, &admin, &id, "completed").await?;
 
     let target = backend::slack::channel_id(&team, "C1");
     let live = |ts: &'static str| {
@@ -3315,7 +6074,7 @@ async fn test_slack_reimport_does_not_inherit_the_resume_position() -> anyhow::R
     let d1 = "1704070000.000100";
     let days = [("2024-01-01", json!([{"ts":d1,"user":"U1","text":"day 1"}]))];
     let first = importing_job(&state, &app, &admin, &team, &name, &days).await?;
-    drive(&state, &app, &admin, &first, "completed").await;
+    drive(&state, &app, &admin, &first, "completed").await?;
     let message = backend::slack::message_id(&team, "C1", d1);
     sql(
         &state,
@@ -3341,14 +6100,14 @@ async fn test_slack_reimport_does_not_inherit_the_resume_position() -> anyhow::R
             (format!("{name}/2024-01-01.json"), days[0].1.clone()),
         ]),
     )
-    .await;
+    .await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"C1","action":"existing","channel_id":target}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     let second = run["id"].as_str().unwrap().to_string();
     assert_ne!(first, second);
@@ -3359,7 +6118,7 @@ async fn test_slack_reimport_does_not_inherit_the_resume_position() -> anyhow::R
     )
     .await?;
     assert!(progress[0]["p"].is_null(), "{}", progress[0]);
-    drive(&state, &app, &admin, &second, "completed").await;
+    drive(&state, &app, &admin, &second, "completed").await?;
     let n = sql(
         &state,
         "SELECT json_build_object('n',count(*))::text FROM messages WHERE id=$1",
@@ -3413,7 +6172,7 @@ async fn test_slack_import_rejects_encrypted_channels() -> anyhow::Result<()> {
             json!([{"ts":"1704160000.000600","user":"U1","text":"s"}]),
         ),
     ]);
-    let analyzed = upload(&state, &app, &admin, &zip).await;
+    let analyzed = upload(&state, &app, &admin, &zip).await?;
     let id = analyzed["id"].as_str().unwrap().to_string();
 
     let mut targets = Vec::new();
@@ -3440,7 +6199,7 @@ async fn test_slack_import_rejects_encrypted_channels() -> anyhow::Result<()> {
         &id,
         json!([{"slack_channel_id":"G1","action":"existing","channel_id":targets[0]}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["code"], "E2EE_PLAINTEXT_FORBIDDEN", "{body}");
 
@@ -3451,7 +6210,7 @@ async fn test_slack_import_rejects_encrypted_channels() -> anyhow::Result<()> {
         &id,
         json!([{"slack_channel_id":"G1","action":"existing","channel_id":targets[1]}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
     Ok(())
 }
@@ -3506,7 +6265,7 @@ async fn test_slack_import_same_name_hides_channels_the_admin_cannot_see() -> an
         ),
         ("groups.json".into(), json!([])),
     ]);
-    let analyzed = upload(&state, &app, &admin, &zip).await;
+    let analyzed = upload(&state, &app, &admin, &zip).await?;
     let id = analyzed["id"].as_str().unwrap().to_string();
 
     // (名前, 作る人, 非公開, 暗号化, 候補に ID が出るか)
@@ -3595,14 +6354,14 @@ async fn test_import_job_of_a_non_admin_fails_instead_of_running() -> anyhow::Re
             json!([{"ts":"1704070000.000100","user":"U1","text":"hello"}]),
         ),
     ]);
-    let export = upload(&state, &app, &admin, &zip).await;
+    let export = upload(&state, &app, &admin, &zip).await?;
     let (status, run) = start(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
         json!([{"slack_channel_id":"G1","action":"create","name":format!("kept-{suffix}")}]),
     )
-    .await;
+    .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
     let run = run["id"].as_str().unwrap().to_string();
     // ジョブの作成者が管理者でなくなった (または、廃止前にユーザーが作ったジョブ)

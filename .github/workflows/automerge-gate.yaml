@@ -26,6 +26,7 @@ on:
       - "Phone query budget"
       - "Message components query budget"
       - "OpenTofu R2"
+      - "Phone query budget"
       - "Read state and worker query budget"
       - "Validate Flux production status"
     types: [requested, in_progress, completed]

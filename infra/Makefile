@@ -25,7 +25,7 @@ migrate-diff:
 	atlas migrate diff --config file://db/atlas.hcl --env local $(name)
 
 migrate-validate:
-	atlas migrate validate --config file://db/atlas.hcl --env local
+	atlas migrate validate --dir file://db/migrations
 
 migrate-status:
 	atlas migrate status --config file://db/atlas.hcl --env local

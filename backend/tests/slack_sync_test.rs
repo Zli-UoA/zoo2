@@ -7,6 +7,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use base64::Engine;
+use futures_util::FutureExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use wiremock::{
@@ -60,11 +61,15 @@ async fn sql(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Resu
 
 async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
+    create_user_with_id(app, &id, name).await
+}
+
+async fn create_user_with_id(app: &Router, id: &str, name: &str) -> anyhow::Result<String> {
     let (status, _) = request(
         app,
         "POST",
         "/api/users",
-        &id,
+        id,
         Some(json!({
             "id": id,
             "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()),
@@ -72,12 +77,21 @@ async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
         })),
     )
     .await?;
-    assert_eq!(status, StatusCode::OK);
-    Ok(id)
+    anyhow::ensure!(status == StatusCode::OK, "create user returned {status}");
+    Ok(id.to_owned())
 }
 
 async fn create_channel(app: &Router, owner: &str, private: bool) -> anyhow::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
+    create_channel_with_id(app, &id, owner, private).await
+}
+
+async fn create_channel_with_id(
+    app: &Router,
+    id: &str,
+    owner: &str,
+    private: bool,
+) -> anyhow::Result<String> {
     let (status, _) = request(
         app,
         "POST",
@@ -90,8 +104,8 @@ async fn create_channel(app: &Router, owner: &str, private: bool) -> anyhow::Res
         })),
     )
     .await?;
-    assert_eq!(status, StatusCode::OK);
-    Ok(id)
+    anyhow::ensure!(status == StatusCode::OK, "create channel returned {status}");
+    Ok(id.to_owned())
 }
 
 async fn link(
@@ -148,6 +162,351 @@ async fn count_messages(state: &AppState, channel: &str) -> i64 {
     .unwrap()[0]["n"]
         .as_i64()
         .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly configured disposable SLACK_SYNC_TEST_DATABASE_URL"]
+async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let database_url = std::env::var("SLACK_SYNC_TEST_DATABASE_URL")?;
+    let (guard, guard_driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(guard_driver);
+    let database: String = guard
+        .query_one("SELECT current_database()", &[])
+        .await?
+        .get(0);
+    anyhow::ensure!(
+        database.starts_with("zoo2_notes_api_slack_sync_test_"),
+        "refusing database outside the dedicated Slack sync test namespace: {database}"
+    );
+
+    let key = [3u8; 32];
+    let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.database_url = database_url.clone();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state.clone());
+
+    let user = uuid::Uuid::new_v4().to_string();
+    let old_channel = uuid::Uuid::new_v4().to_string();
+    let new_channel = uuid::Uuid::new_v4().to_string();
+    let other_team = format!("TOTHER{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let other_user = uuid::Uuid::new_v4().to_string();
+    let other_channel = uuid::Uuid::new_v4().to_string();
+    let token_key = format!("slack-channel:{team}:C-RACE");
+    let gate_key = uuid::Uuid::new_v4().as_u128() as i64;
+    let trigger_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let function = format!("slack_sync_gate_{trigger_suffix}");
+    let trigger = format!("slack_sync_gate_trg_{trigger_suffix}");
+    let gate_table = format!("slack_sync_gate_seen_{trigger_suffix}");
+    let mut tasks = tokio::task::JoinSet::new();
+    let execution = async {
+        create_user_with_id(&app, &user, "sync_mapping_race").await?;
+        create_channel_with_id(&app, &old_channel, &user, false).await?;
+        create_channel_with_id(&app, &new_channel, &user, false).await?;
+        link(&state, &key, &user, &team, "U1", "xoxp-sync-race").await?;
+        create_user_with_id(&app, &other_user, "sync_mapping_other_workspace").await?;
+        create_channel_with_id(&app, &other_channel, &other_user, false).await?;
+        link(
+            &state,
+            &key,
+            &other_user,
+            &other_team,
+            "U1",
+            "xoxp-other-workspace",
+        )
+        .await?;
+        sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C-RACE',$2,'0') \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &old_channel],
+    ).await?;
+        sql(
+            &state,
+            "INSERT INTO slack_channel_syncs(team_id,slack_channel_id) VALUES($1,'C-RACE') \
+         RETURNING json_build_object('ok',true)::text",
+            &[&team],
+        )
+        .await?;
+        sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C-OTHER',$2,'0') \
+         RETURNING json_build_object('ok',true)::text",
+        &[&other_team, &other_channel],
+    ).await?;
+        sql(
+            &state,
+            "INSERT INTO slack_channel_syncs(team_id,slack_channel_id) VALUES($1,'C-OTHER') \
+         RETURNING json_build_object('ok',true)::text",
+            &[&other_team],
+        )
+        .await?;
+        guard.batch_execute(&format!(
+        "CREATE TABLE {gate_table}(seen boolean NOT NULL); \
+         CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+         IF NEW.channel_id = '{old_channel}' THEN INSERT INTO {gate_table} VALUES(true); \
+         PERFORM pg_advisory_xact_lock({gate_key}); END IF; RETURN NEW; END $$; \
+         CREATE TRIGGER {trigger} BEFORE INSERT ON messages FOR EACH ROW EXECUTE FUNCTION {function}()"
+    )).await?;
+
+        Mock::given(method("GET"))
+            .and(path("/conversations.info"))
+            .and(query_param("channel", "C-RACE"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "channel": {"id": "C-RACE", "is_private": false},
+            })))
+            .mount(&slack)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/conversations.history"))
+            .and(query_param("channel", "C-RACE"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "messages": [message("1800000000.000001", "U1", "saved during remap")],
+                "has_more": false,
+            })))
+            .mount(&slack)
+            .await;
+        // スレッド確認のモックも必要。これがないと保存のあとの conversations.replies が
+        // 404 になり、同期は「本文の保存には成功したが、キューは 404 のエラー状態」で
+        // 終わる。投稿の保存先が正しいことだけ確かめても、その状態は見えない
+        // (モックし忘れでもテストが通ってしまう) ので、ここでモックし、最後にキューの
+        // 帰りを確認する。
+        Mock::given(method("GET"))
+            .and(path("/conversations.replies"))
+            .and(query_param("channel", "C-RACE"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "messages": [], "has_more": false,
+            })))
+            .mount(&slack)
+            .await;
+
+        guard
+            .query_one("SELECT pg_advisory_lock($1)", &[&gate_key])
+            .await?;
+        let queue_before = sql(
+          &state,
+          "SELECT json_build_object('available_at',available_at,'attempts',attempts,'running',running,'lease_token',lease_token,'lease_until',lease_until,'last_error',last_error)::text \
+           FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C-OTHER'",
+          &[&other_team],
+      ).await?;
+        let inject_missing_lock =
+            std::env::var("SLACK_SYNC_TEST_INJECT_FAILURE").as_deref() == Ok("missing-lock");
+        if !inject_missing_lock {
+            let sync_state = state.clone();
+            let sync_team = team.clone();
+            tasks.spawn(async move {
+                while sync::run_once_for_team(&sync_state, &sync_team).await? {}
+                Ok::<(), anyhow::Error>(())
+            });
+        }
+        let lock_wait_limit = if inject_missing_lock {
+            std::time::Duration::from_secs(1)
+        } else {
+            std::time::Duration::from_secs(10)
+        };
+        tokio::time::timeout(lock_wait_limit, async {
+        loop {
+            let rows = sql(
+                &state,
+                "SELECT json_build_object('waiting',EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' \
+                 AND classid=(($1::bigint >> 32) & 4294967295)::oid AND objid=($1::bigint & 4294967295)::oid \
+                 AND NOT granted))::text",
+                &[&gate_key.to_string()],
+            ).await?;
+            if rows[0]["waiting"] == true { return anyhow::Ok(()); }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+      }).await??;
+
+        match std::env::var("SLACK_SYNC_TEST_INJECT_FAILURE").as_deref() {
+            Ok("panic") => panic!("injected panic after the sync reached the DB lock"),
+            Ok("timeout") => {
+                tokio::time::timeout(std::time::Duration::ZERO, std::future::pending::<()>())
+                    .await?;
+            }
+            _ => {}
+        }
+
+        let remap_url = database_url.clone();
+        let remap_team = team.clone();
+        let remap_target = new_channel.clone();
+        let remap_app = format!("slack_sync_remap_{}", uuid::Uuid::new_v4().simple());
+        let remap_app_for_task = remap_app.clone();
+        tasks.spawn(async move {
+        let (mut client, driver) =
+            tokio_postgres::connect(&remap_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        client.query("SELECT set_config('application_name',$1,false)", &[&remap_app_for_task]).await?;
+        let tx = client.transaction().await?;
+        tx.query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+            &[&token_key],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE slack_channels SET channel_id=$2 WHERE team_id=$1 AND slack_channel_id='C-RACE'",
+            &[&remap_team, &remap_target],
+        ).await?;
+        tx.commit().await?;
+        anyhow::Ok(())
+    });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let rows = sql(
+                &state,
+                "SELECT json_build_object('waiting',EXISTS(SELECT 1 FROM pg_stat_activity a WHERE a.application_name=$1 \
+                 AND a.wait_event_type='Lock' AND cardinality(pg_blocking_pids(a.pid))>0))::text",
+                &[&remap_app],
+            ).await?;
+            if rows[0]["waiting"] == true { return anyhow::Ok(()); }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await??;
+        guard
+            .query_one("SELECT pg_advisory_unlock($1)", &[&gate_key])
+            .await?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(result) = tasks.join_next().await {
+                result??;
+            }
+            anyhow::Ok(())
+        })
+        .await??;
+        let mapping = sql(
+        &state,
+        "SELECT json_build_object('channel_id',channel_id)::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id='C-RACE'",
+        &[&team],
+    ).await?;
+        anyhow::ensure!(mapping[0]["channel_id"] == new_channel);
+        anyhow::ensure!(count_messages(&state, &old_channel).await == 1);
+        anyhow::ensure!(count_messages(&state, &new_channel).await == 0);
+        // モックしたスレッド確認のあと、レースのチャンネルの同期は最後まで終わる
+        // (再マッピング後の取り直しで、新しい対応先に対して正常に完了する)。
+        // モックし忘れ (404) だと、ここは 404 のエラー状態のまま残る。
+        let race_outcome = sql(
+        &state,
+        "SELECT json_build_object('running',running,'attempts',attempts,'error',last_error,'synced',last_synced_at IS NOT NULL,'lease',lease_token IS NULL)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C-RACE'",
+        &[&team],
+    ).await?;
+        anyhow::ensure!(
+            race_outcome[0]["running"] == false
+                && race_outcome[0]["attempts"] == 0
+                && race_outcome[0]["error"].is_null()
+                && race_outcome[0]["synced"] == true
+                && race_outcome[0]["lease"] == true,
+            "the race channel's sync must finish cleanly; an unmocked thread fetch would leave the queue in an error state: {race_outcome:?}"
+        );
+        let queue_after = sql(
+        &state,
+        "SELECT json_build_object('available_at',available_at,'attempts',attempts,'running',running,'lease_token',lease_token,'lease_until',lease_until,'last_error',last_error)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C-OTHER'",
+        &[&other_team],
+    ).await?;
+        anyhow::ensure!(
+            queue_before == queue_after,
+            "other workspace queue was changed"
+        );
+        anyhow::Ok(())
+    };
+    let outcome = std::panic::AssertUnwindSafe(execution).catch_unwind().await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), tasks.shutdown()).await;
+    let cleanup = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let _ = guard.query_one("SELECT pg_advisory_unlock($1)", &[&gate_key]).await;
+        let statements = [
+            format!("DROP TRIGGER IF EXISTS {trigger} ON messages"),
+            format!("DROP FUNCTION IF EXISTS {function}()"),
+            format!("DROP TABLE IF EXISTS {gate_table}"),
+            format!("DELETE FROM slack_user_links WHERE user_id IN ('{user}','{other_user}')"),
+            format!("DELETE FROM slack_channels WHERE team_id IN ('{team}','{other_team}')"),
+            format!("DELETE FROM channel_user WHERE channel_id IN ('{old_channel}','{new_channel}','{other_channel}')"),
+            format!("DELETE FROM messages WHERE channel_id IN ('{old_channel}','{new_channel}','{other_channel}')"),
+            format!("DELETE FROM channels WHERE id IN ('{old_channel}','{new_channel}','{other_channel}')"),
+            format!("DELETE FROM channel_user WHERE user_id IN (SELECT user_id FROM slack_users WHERE team_id = '{team}' AND slack_user_id = 'U1' AND NOT linked)"),
+            format!("DELETE FROM channel_user WHERE user_id IN ('{user}','{other_user}')"),
+            format!("DELETE FROM users WHERE id IN (SELECT user_id FROM slack_users WHERE team_id = '{team}' AND slack_user_id = 'U1' AND NOT linked)"),
+            format!("DELETE FROM users WHERE id IN ('{user}','{other_user}')"),
+        ];
+        let mut first_error = None;
+        for statement in statements {
+            if let Err(error) = guard.batch_execute(&statement).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(anyhow::anyhow!(error));
+        }
+        Ok::<(), anyhow::Error>(())
+    }).await;
+    let residue = guard
+        .query_one(
+            "SELECT (SELECT count(*) FROM users WHERE id IN ($1,$2)) \
+         +(SELECT count(*) FROM channels WHERE id IN ($3,$4,$5)) \
+         +(SELECT count(*) FROM slack_channels WHERE team_id IN ($6,$7)) \
+         +(SELECT count(*) FROM slack_channel_syncs WHERE team_id IN ($6,$7)) \
+         +(SELECT count(*) FROM slack_users WHERE team_id = $6 AND slack_user_id = 'U1') \
+         +(SELECT count(*) FROM slack_user_links WHERE user_id IN ($1,$2)) \
+         +(SELECT count(*) FROM channel_user WHERE channel_id IN ($3,$4,$5)) \
+         +(SELECT count(*) FROM messages WHERE channel_id IN ($3,$4,$5)) \
+         +(SELECT count(*) FROM pg_trigger WHERE tgname=$8) \
+         +(SELECT count(*) FROM pg_proc WHERE proname=$9) \
+         +(SELECT count(*) FROM pg_class WHERE relname=$10)",
+            &[
+                &user,
+                &other_user,
+                &old_channel,
+                &new_channel,
+                &other_channel,
+                &team,
+                &other_team,
+                &trigger,
+                &function,
+                &gate_table,
+            ],
+        )
+        .await
+        .map(|row| row.get::<_, i64>(0));
+    let test_result: anyhow::Result<()> = match outcome {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!("slack sync race test panicked: {message}"))
+        }
+    };
+    let cleanup_result: anyhow::Result<()> = match cleanup {
+        Ok(inner) => inner,
+        Err(elapsed) => Err(anyhow::anyhow!("fixture cleanup timed out: {elapsed}")),
+    };
+    let residue_result: anyhow::Result<()> = match residue {
+        Ok(0) => Ok(()),
+        Ok(count) => Err(anyhow::anyhow!(
+            "test fixture residue remains after cleanup: {count}"
+        )),
+        Err(error) => Err(anyhow::anyhow!(
+            "checking the test fixture residue failed: {error}"
+        )),
+    };
+    // 本体の失敗・パニックを優先して報告する (後片付けの失敗に上書きされない)。
+    // 本体が成功していても、後片付け・残行の確認だけの失敗でテストは失敗する。
+    test_result?;
+    cleanup_result?;
+    residue_result?;
+    Ok(())
 }
 
 #[tokio::test]

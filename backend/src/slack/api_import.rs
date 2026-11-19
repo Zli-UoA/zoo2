@@ -23,7 +23,9 @@ use serde_json::{Value, json};
 use super::{
     export::{SlackChannel, SlackUser},
     sync::{self, Slack, SyncError},
-    worker::{Context, FilePolicy, create_channel, exec, suppress_app_events},
+    worker::{
+        Context, FilePolicy, create_channel, exec, lock_zip_target_advisory, suppress_app_events,
+    },
 };
 use crate::{apps::query, auth::AuthUser, error::AppError, state::AppState};
 
@@ -39,6 +41,323 @@ pub fn router() -> Router<AppState> {
         .route("/api/slack/private-channels", get(list))
         .route("/api/slack/private-channels/import", post(start))
         .layer(axum::middleware::map_response(crate::apps::no_store))
+}
+
+/// API imports and ZIP imports must serialize placeholder creation in the same stable ID order.
+///
+/// Locking contract: when this returns, the calling transaction already holds the link lock,
+/// a per-placeholder advisory lock for every resolved Slack member, and a `users` row lock
+/// (`FOR NO KEY UPDATE`) for every resolved or created member Zoo ID **plus the creator**
+/// (`additional_user_ids`), all taken once in sorted ID order. Callers must not re-lock those
+/// rows with `lock_membership_users`. Callers must re-check the creator's guest state only
+/// after this returns, because that read is stable only once the users rows are locked.
+async fn resolve_members(
+    ctx: &mut Context,
+    tx: &mut toasty::Transaction<'_>,
+    members: &[String],
+    creator_id: &str,
+) -> Result<Vec<super::worker::ZooUser>, AppError> {
+    super::worker::channel_users_with_additional_users(ctx, tx, members, &[creator_id]).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{collections::HashMap, time::Duration};
+
+    #[derive(Clone, Copy)]
+    enum Path {
+        Api,
+        Zip,
+    }
+
+    async fn resolve(
+        path: Path,
+        ctx: &mut Context,
+        tx: &mut toasty::Transaction<'_>,
+        members: &[String],
+    ) -> Result<Vec<super::super::worker::ZooUser>, AppError> {
+        match path {
+            Path::Api => super::resolve_members(ctx, tx, members, "").await,
+            Path::Zip => super::super::worker::channel_users(ctx, tx, members).await,
+        }
+    }
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn api_api_and_zip_api_imports_resolve_users_in_a_shared_stable_order()
+    -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(database.contains("test"), "refusing non-test database");
+        let db = crate::db::init_db(&database_url).await?;
+        let mut fixture_teams = Vec::new();
+        let test_result: anyhow::Result<()> = async {
+            for (case, paths) in [
+                ("api-api", [Path::Api, Path::Api]),
+                ("zip-api", [Path::Zip, Path::Api]),
+            ] {
+                let team = format!("TAPI{}", uuid::Uuid::new_v4().simple());
+                fixture_teams.push(team.clone());
+                let suffix = uuid::Uuid::new_v4().simple().to_string();
+                let mut members = [format!("U-A-{suffix}"), format!("U-B-{suffix}")];
+                members.sort_unstable_by_key(|id| super::super::user_id(&team, id));
+                let reverse = vec![members[1].clone(), members[0].clone()];
+                let forward = vec![members[0].clone(), members[1].clone()];
+                let gate = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+                let mut tasks = tokio::task::JoinSet::new();
+                for (index, path) in paths.into_iter().enumerate() {
+                    let mut task_db = db.clone();
+                    let task_team = team.clone();
+                    let task_gate = gate.clone();
+                    let task_members = if index == 0 {
+                        reverse.clone()
+                    } else {
+                        forward.clone()
+                    };
+                    tasks.spawn(async move {
+                        let mut tx = task_db.transaction().await?;
+                        toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
+                            .exec(&mut tx)
+                            .await?;
+                        let mut ctx = Context {
+                            team: task_team,
+                            users: HashMap::new(),
+                            profiles: HashMap::new(),
+                            fallback_names: HashMap::new(),
+                            channel_names: HashMap::new(),
+                            files: FilePolicy {
+                                token: false,
+                                max_size: 0,
+                                base_url: String::new(),
+                            },
+                            app_id: None,
+                        };
+                        task_gate.wait().await;
+                        let resolved = resolve(path, &mut ctx, &mut tx, &task_members)
+                            .await
+                            .map_err(|error| anyhow::anyhow!("{case}: {error:?}"))?;
+                        let mut ids = resolved.into_iter().map(|user| user.id).collect::<Vec<_>>();
+                        ids.sort_unstable();
+                        tx.commit().await?;
+                        Ok::<_, anyhow::Error>(ids)
+                    });
+                }
+                let mut results = Vec::new();
+                for _ in 0..2 {
+                    let completed = tokio::time::timeout(Duration::from_secs(5), tasks.join_next())
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("concurrent import task exited without a result")
+                        })?;
+                    results.push(completed??);
+                }
+                anyhow::ensure!(
+                    results[0] == results[1],
+                    "{case}: import user mappings diverged"
+                );
+                anyhow::ensure!(
+                    results[0].len() == 2,
+                    "{case}: both placeholders must be resolved"
+                );
+            }
+            Ok(())
+        }
+        .await;
+        // Teams are unique to this test. Delete imported Slack mappings and let the
+        // users FK cascade clean every placeholder, including after task errors/timeouts.
+        let mut cleanup_db = db.clone();
+        let mut cleanup = cleanup_db.transaction().await?;
+        for team in fixture_teams {
+            toasty::sql::statement(
+                "DELETE FROM users WHERE id IN (SELECT user_id FROM slack_users WHERE team_id=$1)",
+            )
+            .bind(team.as_str())
+            .exec(&mut cleanup)
+            .await?;
+        }
+        cleanup.commit().await?;
+        test_result
+    }
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn api_creator_lock_does_not_invert_member_order_against_e2ee() -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, guard_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(guard_driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(
+            database.contains("test"),
+            "refusing non-test database `{database}`"
+        );
+        let db = crate::db::init_db(&database_url).await?;
+        let team = format!("TORDER{}", uuid::Uuid::new_v4().simple());
+        let slack_id = format!(
+            "U{}",
+            uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .to_ascii_uppercase()
+        );
+        let member_id = super::super::user_id(&team, &slack_id);
+        let creator_id = format!(
+            "00000000-0000-0000-0000-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[20..]
+        );
+        anyhow::ensure!(
+            creator_id < member_id,
+            "fixture must put the creator before the member in lock order"
+        );
+        let setup: anyhow::Result<()> = async {
+            let mut setup_db = db.clone();
+            let mut tx = setup_db.transaction().await?;
+            toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Creator')")
+                .bind(creator_id.as_str())
+                .bind(format!("api_creator_{}", uuid::Uuid::new_v4().simple()))
+                .exec(&mut tx)
+                .await?;
+            toasty::sql::statement("INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Member','deactivated')")
+                .bind(member_id.as_str())
+                .bind(format!("api_member_{}", uuid::Uuid::new_v4().simple()))
+                .exec(&mut tx)
+                .await?;
+            toasty::sql::statement("INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name,real_name,profile_source) VALUES($1,$2,$3,false,$2,'','fallback')")
+                .bind(team.as_str())
+                .bind(slack_id.as_str())
+                .bind(member_id.as_str())
+                .exec(&mut tx)
+                .await?;
+            tx.commit().await?;
+            Ok(())
+        }.await;
+        if let Err(error) = setup {
+            cleanup_fixture(&db, &team, &creator_id).await?;
+            return Err(error);
+        }
+
+        let test_result: anyhow::Result<()> = async {
+            // Reproduce the previous API order: members first, creator afterward. E2EE
+            // already owns the lower-ID creator and then asks for the higher-ID member.
+            let (e2ee_connection, e2ee_driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(e2ee_driver);
+            let mut e2ee_connection = e2ee_connection;
+            let e2ee_tx = e2ee_connection.transaction().await?;
+            e2ee_tx.batch_execute("SET LOCAL deadlock_timeout='100ms'").await?;
+            e2ee_tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&creator_id]).await?;
+
+            let mut baseline_tasks = tokio::task::JoinSet::new();
+            let baseline_db = db.clone();
+            let baseline_team = team.clone();
+            let baseline_slack = slack_id.clone();
+            let baseline_creator = creator_id.clone();
+            let (member_locked_tx, member_locked_rx) = tokio::sync::oneshot::channel();
+            baseline_tasks.spawn(async move {
+                let mut db = baseline_db;
+                let mut tx = db.transaction().await?;
+                toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'").exec(&mut tx).await?;
+                let mut ctx = Context {
+                    team: baseline_team, users: HashMap::new(), profiles: HashMap::new(),
+                    fallback_names: HashMap::new(), channel_names: HashMap::new(),
+                    files: FilePolicy { token: false, max_size: 0, base_url: String::new() }, app_id: None,
+                };
+                let users = super::super::worker::channel_users(&mut ctx, &mut tx, std::slice::from_ref(&baseline_slack)).await?;
+                let _ = member_locked_tx.send(());
+                let ids = [users[0].id.as_str(), baseline_creator.as_str()];
+                crate::routes::e2ee_channels::lock_membership_users(&mut tx, &ids).await?;
+                tx.commit().await?;
+                Ok::<_, anyhow::Error>(())
+            });
+            tokio::time::timeout(Duration::from_secs(5), member_locked_rx).await??;
+            let e2ee_result = e2ee_tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&member_id]).await;
+            let reproduced = e2ee_result.as_ref().err().and_then(tokio_postgres::Error::code)
+                .is_some_and(|code| code == &tokio_postgres::error::SqlState::T_R_DEADLOCK_DETECTED);
+            let api_result = tokio::time::timeout(Duration::from_secs(5), baseline_tasks.join_next()).await?
+                .ok_or_else(|| anyhow::anyhow!("previous-order API task exited without a result"))?
+                .map_err(anyhow::Error::from)?;
+            let api_deadlocked = api_result.as_ref().is_err_and(|error| format!("{error:?}").contains("deadlock detected"));
+            anyhow::ensure!(reproduced || api_deadlocked, "previous API/E2EE lock order did not reproduce a PostgreSQL deadlock; e2ee={e2ee_result:?}, api={api_result:?}");
+            let _ = e2ee_tx.rollback().await;
+
+            // The fixed path includes the creator in the same sorted set. While E2EE
+            // owns the creator row, import must wait before locking the member row.
+            let (fixed_e2ee_connection, fixed_e2ee_driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+            tokio::spawn(fixed_e2ee_driver);
+            let mut fixed_e2ee_connection = fixed_e2ee_connection;
+            let fixed_e2ee_tx = fixed_e2ee_connection.transaction().await?;
+            fixed_e2ee_tx.batch_execute("SET LOCAL deadlock_timeout='100ms'").await?;
+            fixed_e2ee_tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&creator_id]).await?;
+            let fixed_e2ee_pid: i32 = fixed_e2ee_tx.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
+            let mut fixed_tasks = tokio::task::JoinSet::new();
+            let fixed_db = db.clone();
+            let fixed_team = team.clone();
+            let fixed_slack = slack_id.clone();
+            let fixed_creator = creator_id.clone();
+            let (pid_tx, pid_rx) = tokio::sync::oneshot::channel();
+            fixed_tasks.spawn(async move {
+                let mut db = fixed_db;
+                let mut tx = db.transaction().await?;
+                toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'").exec(&mut tx).await?;
+                let pid: i32 = query(&mut tx, "SELECT json_build_object('pid',pg_backend_pid())::text", &[]).await?[0]["pid"].as_i64().unwrap() as i32;
+                let _ = pid_tx.send(pid);
+                let mut ctx = Context {
+                    team: fixed_team, users: HashMap::new(), profiles: HashMap::new(),
+                    fallback_names: HashMap::new(), channel_names: HashMap::new(),
+                    files: FilePolicy { token: false, max_size: 0, base_url: String::new() }, app_id: None,
+                };
+                let resolved = super::resolve_members(&mut ctx, &mut tx, &[fixed_slack], &fixed_creator).await?;
+                tx.commit().await?;
+                Ok::<Vec<String>, anyhow::Error>(resolved.into_iter().map(|user| user.id).collect())
+            });
+            let api_pid = pid_rx.await?;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let waiting: bool = guard.query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                        &[&api_pid, &fixed_e2ee_pid],
+                    ).await?.get(0);
+                    if waiting { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok::<_, anyhow::Error>(())
+            }).await??;
+            fixed_e2ee_tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&member_id]).await?;
+            fixed_e2ee_tx.commit().await?;
+            let joined = tokio::time::timeout(Duration::from_secs(5), fixed_tasks.join_next()).await?
+                .ok_or_else(|| anyhow::anyhow!("fixed API task exited without a result"))?
+                .map_err(anyhow::Error::from)?;
+            let resolved = joined?;
+            anyhow::ensure!(resolved == vec![member_id], "fixed API import resolved the wrong member: {resolved:?}");
+            Ok(())
+        }.await;
+        cleanup_fixture(&db, &team, &creator_id).await?;
+        test_result
+    }
+
+    async fn cleanup_fixture(db: &toasty::Db, team: &str, creator_id: &str) -> anyhow::Result<()> {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("DELETE FROM users WHERE id=$1 OR id IN (SELECT user_id FROM slack_users WHERE team_id=$2)")
+            .bind(creator_id)
+            .bind(team)
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 struct Link {
@@ -93,9 +412,10 @@ fn map_sync(error: SyncError) -> AppError {
         SyncError::RateLimited(_) => AppError::RateLimited,
         // トークンが失効している・スコープが足りないなど。本人が連携し直せば直る
         SyncError::NoAccess(reason) => AppError::Forbidden(reason),
-        SyncError::InvalidCursor | SyncError::LeaseLost | SyncError::Failed(_) => {
-            AppError::BadGateway("Slack request failed".into())
-        }
+        SyncError::InvalidCursor
+        | SyncError::LeaseLost
+        | SyncError::TargetChanged
+        | SyncError::Failed(_) => AppError::BadGateway("Slack request failed".into()),
     }
 }
 
@@ -397,6 +717,7 @@ async fn start(
             team: link.team.clone(),
             users: HashMap::new(),
             profiles: HashMap::new(),
+            fallback_names: HashMap::new(),
             channel_names: HashMap::new(),
             files: FilePolicy::new(&s),
             app_id: s.config.slack.app_id.clone(),
@@ -405,12 +726,13 @@ async fn start(
 
         let mut tx = db.transaction().await?;
         suppress_app_events(&mut tx).await?;
-        // Slack の応答を待つ間に、単一チャンネルのゲストなどに変わったかもしれない。書き込みと同じトランザクションで確かめ直す
-        if crate::apps::events::guest(&mut tx, &user.id).await? {
-            return Err(AppError::Forbidden(
-                "Guests cannot create channels by importing from Slack".into(),
-            ));
-        }
+        // API 取り込みと ZIP 取り込み (最初の対応付けトランザクションも、日付ごとの保存
+        // トランザクションも) を、同じ Slack チャンネル単位の advisory lock で直列化する。
+        // この lock を `slack_channels` の確認とプレースホルダ作成 (`resolve_members`) の
+        // 前に取るので、並行する ZIP 取り込みが対応を確定させたあとに、この要求が別の
+        // 取り込み先を作って対応を上書きできない (ZIP 側の `ON CONFLICT DO UPDATE` も、
+        // この lock を待ってから対応を確認するので、API 側が確定させた対応を上書きしない)。
+        lock_zip_target_advisory(&mut tx, &link.team, &pick.slack_channel_id).await?;
         let already = !query(
             &mut tx,
             "SELECT json_build_object('ok',true)::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id=$2",
@@ -423,6 +745,18 @@ async fn start(
                 "Slack channel {} has already been imported",
                 pick.slack_channel_id
             )));
+        }
+        // resolve_members が全メンバーと作成者の users 行を (ID 順に) すでにロックして
+        // いるので、ここで lock_membership_users を呼び直さない (メンバーごとの無駄な
+        // ロック往復になる)。
+        let imported_users = resolve_members(&mut ctx, &mut tx, &member_ids, &user.id).await?;
+        // Slack の応答を待つ間に種別が変わりうる。全参加者 (作成者を含む) の users 行は
+        // resolve_members がロック済みなので、ここで読み直した作成者の状態は固定される。
+        // 作成者がゲストになった場合はチャンネルを書き込まない。
+        if crate::apps::events::guest(&mut tx, &user.id).await? {
+            return Err(AppError::Forbidden(
+                "Guests cannot create channels by importing from Slack".into(),
+            ));
         }
         // 新しい zoo チャンネルは常に非公開で、作成者は本人
         let (target, _) = create_channel(
@@ -454,8 +788,7 @@ async fn start(
             &[&target.0],
         )
         .await?;
-        for member in &member_ids {
-            let zoo_user = ctx.user(&mut tx, member, None).await?;
+        for zoo_user in &imported_users {
             // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
             // 未連携のプレースホルダは、連携時に本人へ移せるよう参加情報を残す (エクスポートの取り込みと同じ)
             exec(

@@ -13,6 +13,7 @@ class TriggerWorkBudgetTest(unittest.TestCase):
     def setUp(self):
         names = [
             "read_list", "read_single", "slack_wake_empty", "slack_due_empty",
+            "slack_wake_team_empty", "slack_due_team_empty",
             "display_row_empty", "display_scope_empty", "slack_wake_ready",
             "slack_due_ready", "display_row_ready", "display_scope_ready",
             "message_insert", "message_delete_latest",
@@ -63,6 +64,12 @@ class TriggerWorkBudgetTest(unittest.TestCase):
         result = self.compare()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("message_insert/nested: messages grows with history", result.stderr)
+
+    def test_team_scoped_claim_history_scan_fails(self):
+        self.large["slack_due_team_empty"]["relations"]["slack_channel_syncs"] = 67
+        result = self.compare()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("slack_due_team_empty: slack_channel_syncs grows with history", result.stderr)
 
     def test_missing_nested_capture_fails(self):
         del self.large["message_delete_latest"]["nested"]

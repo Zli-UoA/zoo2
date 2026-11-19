@@ -808,7 +808,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | --- | --- | --- | --- |
 | 409 | `E2EE_STALE_EPOCH` | 送信や編集の `epoch` が今の `membership_epoch` より小さい。または、`recipients` の続きのページの `epoch` が今の `membership_epoch` と違う | `current_epoch` |
 | 409 | `E2EE_ENCRYPTED_IMMUTABLE` | `PATCH /api/channels/{id}` でチャンネルの `encrypted` を変えようとした（false から true も、true から false も）、または暗号化チャンネルを公開にしようとした。【決定】（#367）false から true への切り替えは `POST /api/channels/{id}/encrypt` だけで行う（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | |
-| 409 | `E2EE_CONVERSION_BLOCKED` | 【決定】（#367）既存のチャンネルの暗号化（`POST /api/channels/{id}/encrypt`）を止めるものがある：許可のない App（Bot）か Webhook のユーザーがメンバーにいる（`apps`）、Incoming Webhook がある（`webhooks`）、1 対 1 の DM で同じ 2 人の暗号化 DM（`edm:` の名前）がすでにある（`encrypted_dm`） | `blockers`（左の名前の配列） |
+| 409 | `E2EE_CONVERSION_BLOCKED` | 【決定】（#367）既存のチャンネルの暗号化（`POST /api/channels/{id}/encrypt`）を止めるものがある：許可のない App（Bot）か Webhook のユーザーがメンバーにいる（`apps`）、Incoming Webhook がある（`webhooks`）、1 対 1 の DM で同じ 2 人の暗号化 DM（`edm:` の名前）がすでにある（`encrypted_dm`）、有効または24時間以内に削除された Channel Note がある（`channel_notes`） | `blockers`（左の名前の配列） |
 | 409 | `E2EE_LEGACY_IMMUTABLE` | 【決定】（#367）暗号化に切り替える前の平文のメッセージ（`epoch` と `ciphertext` のない行）を、切り替えたあとに編集しようとした（平文でも暗号文でも） | |
 | 409 | `E2EE_ENCRYPTED_MISMATCH` | 暗号化 DM の行が `encrypted = false` だった（不整合） | |
 | 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない。版の作成で `expected_current_version` が今の版と違う | `current_version` |
@@ -1905,7 +1905,7 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 ### API
 
 - 【決定】`POST /api/channels/{id}/encrypt`（本文なし）。応答は `{"data": <ChannelResponse>, "txid": ...}`。`channels.encrypted` を true にし、同じトランザクションで `membership_epoch` を 1 増やす（Shape で見ていた古い epoch のまま送信の準備を進めないため）。すでに暗号化されていれば何もせずに今の行を返す（`txid` は `null`。応答をなくした再送）。
-- 【決定】判定の順：チャンネルがない、削除済み、または非公開チャンネルと DM でメンバーでない（`channel_user` の実際の行で判定する。メンバーでないワークスペースの管理者と、退出した作成者も含む）なら 404。App（Bot）のトークンは 403 `E2EE_APPS_FORBIDDEN`。公開チャンネルは 400 `E2EE_PUBLIC_FORBIDDEN`。すでに暗号化されていれば 200。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false なら 403 `E2EE_DISABLED`。非公開チャンネルは、チャンネルを管理できる人（作成者かワークスペースの管理者で、メンバーであること）だけで、ほかのメンバーは 403。DM とグループ DM は、メンバーなら誰でも切り替えられる（DM には管理者がいないため）。アーカイブ済みは 400。メンバーが 200 人を超えれば 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `members`）。止めるものがあれば 409 `E2EE_CONVERSION_BLOCKED`（下の「App と Webhook」と「DM」）。
+- 【決定】判定の順：チャンネルがない、削除済み、または非公開チャンネルと DM でメンバーでない（`channel_user` の実際の行で判定する。メンバーでないワークスペースの管理者と、退出した作成者も含む）なら 404。App（Bot）のトークンは 403 `E2EE_APPS_FORBIDDEN`。公開チャンネルは 400 `E2EE_PUBLIC_FORBIDDEN`。すでに暗号化されていれば 200。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false なら 403 `E2EE_DISABLED`。非公開チャンネルは、チャンネルを管理できる人（作成者かワークスペースの管理者で、メンバーであること）だけで、ほかのメンバーは 403。DM とグループ DM は、メンバーなら誰でも切り替えられる（DM には管理者がいないため）。アーカイブ済みは 400。メンバーが 200 人を超えれば 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `members`）。止めるものがあれば 409 `E2EE_CONVERSION_BLOCKED`（App、Webhook、DM、または有効/復元可能なChannel Notes）。
 - 【決定】直前の再認証は求めない。鍵の操作ではなく、切り替えで読めるようになる人は増えない（読める人は、今のメンバーの検証済みの端末に限られる）ため。
 - 【決定】`PATCH /api/channels/{id}` の `encrypted` は、今までどおり 409 `E2EE_ENCRYPTED_IMMUTABLE`（[暗号化チャンネル](#暗号化チャンネル357)）。
 
