@@ -107,6 +107,8 @@ struct ConversationDirectory: View {
         !directMessages && workspace.selectedTab == .channels && (isSidebar || workspace.channelPath.isEmpty) && scenePhase == .active
     }
 
+    private var canReopenChannel: Bool { !isSidebar && !directMessages && workspace.resumableChannel != nil }
+
     private var visible: [Channel] {
         workspace.channels.filter {
             $0.is_dm == directMessages && $0.archive_at == nil && (workspace.joinedChannelIDs.contains($0.id) || workspace.pinnedChannelIDs.contains($0.id)) &&
@@ -154,6 +156,16 @@ struct ConversationDirectory: View {
                 Button("ピン留めを再読み込み") { Task { await workspace.loadPins() } }
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
+        }
+        .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { drag in
+            guard canReopenChannel, drag.translation.width < -80,
+                  abs(drag.translation.height) < abs(drag.translation.width) * 0.5 else { return }
+            withAnimation(.snappy) { workspace.reopenLastChannel() }
+        }, including: canReopenChannel ? .all : .subviews)
+        .accessibilityActions {
+            if canReopenChannel, let channel = workspace.resumableChannel {
+                Button("前のチャンネルを開く：\(workspace.name(for: channel))") { workspace.reopenLastChannel() }
+            }
         }
         .navigationTitle(directMessages ? "DM" : "チャンネル")
         .navigationBarTitleDisplayMode(isSidebar ? .inline : .large)
