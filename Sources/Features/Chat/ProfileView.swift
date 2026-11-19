@@ -69,7 +69,6 @@ struct ProfileView: View {
         .navigationBarTitleDisplayMode(.large)
         .navigationDestination(for: Destination.self) { _ in
             ProfileSettingsView(session: session, webSettings: server?.appending(path: "settings"))
-                .tint(AppDesign.settingsTint)
         }
         .task { await load() }
         .refreshable { await load() }

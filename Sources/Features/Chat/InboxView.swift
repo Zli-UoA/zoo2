@@ -106,9 +106,9 @@ private struct InboxCard: View {
         }.sorted { $0.emoji < $1.emoji }
     }
     private var channelTitle: String {
-        if let channel { return channel.is_dm ? workspace.name(for: channel) : "#\(channel.channel_name)" }
+        if let channel { return channel.is_dm ? workspace.name(for: channel) : channel.channel_name }
         if let name = entry.channelName {
-            return entry.kind == "dm" || name.hasPrefix("dm:") ? "ダイレクトメッセージ" : "#\(name)"
+            return entry.kind == "dm" || name.hasPrefix("dm:") ? "ダイレクトメッセージ" : name
         }
         return "チャンネルを利用できません"
     }

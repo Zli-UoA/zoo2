@@ -346,6 +346,9 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) { controller?.received(token: deviceToken) }
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        AppOrientation.supportedOrientations(in: window?.windowScene)
+    }
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { controller?.failed() }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         guard let notice = PushNotice(payload: notification.request.content.userInfo) else { return [] }

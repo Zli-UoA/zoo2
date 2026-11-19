@@ -52,6 +52,7 @@
 		8B63EFD9224ABEA01A76DF21 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB9A5B575F132C8A8A643AF0 /* PushRegistration.swift */; };
 		8C378AA23443EBE456EC05DA /* AttachmentSave.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D0C3443819D80D32A33C43 /* AttachmentSave.swift */; };
 		8C75A35589B0E91EB1042788 /* ComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D048720FCB5CC5E6D978017D /* ComposerView.swift */; };
+		8CB30A8B6C732AA7AFF96A90 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */; };
 		8E3428710962832BB747862C /* ZooUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEC94312E8CFE12AB23C0391 /* ZooUITests.swift */; };
 		96C7DF5DEA20135848135EA6 /* ReactionEmoji.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EECD0A3E9993C94D242F919 /* ReactionEmoji.swift */; };
 		99794E66037117E84CAA1F71 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB00E9CE7E9A70261228578 /* NotificationService.swift */; };
@@ -229,6 +230,7 @@
 		FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentTests.swift; sourceTree = "<group>"; };
 		FC689D03E4645DE16F8B4B81 /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
 		FF3F28894DBFC427AB91B2C6 /* MessageContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentView.swift; sourceTree = "<group>"; };
+		FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -463,6 +465,7 @@
 				0D12A552929A7154204E90F7 /* emoji-shortcodes.json */,
 				01F4605EEE99FB8A46EE593A /* IncomingCall.caf */,
 				48A7AE9F1620A0188FA8757C /* PreviewVideo.mp4 */,
+				FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */,
 				06C2582A361DB82A2A24585B /* WebRTC-LICENSE.txt */,
 			);
 			path = Resources;
@@ -615,6 +618,7 @@
 				3263A20A1D055056EC277DE4 /* Assets.xcassets in Resources */,
 				A5B3B2174411ED707B979BEF /* IncomingCall.caf in Resources */,
 				C60AE94239D392D3FFAACB49 /* PreviewVideo.mp4 in Resources */,
+				8CB30A8B6C732AA7AFF96A90 /* PrivacyInfo.xcprivacy in Resources */,
 				017E36C75CDB6F86DA0C29B5 /* WebRTC-LICENSE.txt in Resources */,
 				2B5E49E1F342B071682412A5 /* emoji-kitchen.json in Resources */,
 				739FFABA115543EED15A1D4F /* emoji-shortcodes.json in Resources */,
@@ -790,7 +794,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = F82XB5KFX2;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -852,7 +856,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = F82XB5KFX2;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

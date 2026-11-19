@@ -156,6 +156,7 @@ private struct ThreadAppearanceObserver: UIViewControllerRepresentable {
 private struct ThreadScrollLayout: Equatable {
     let contentHeight: CGFloat
     let viewportHeight: CGFloat
+    let followingLatest: Bool
     var fits: Bool { contentHeight > 0 && contentHeight <= viewportHeight }
     var bottomOffset: CGFloat { max(0, contentHeight - viewportHeight) }
 }
@@ -184,7 +185,7 @@ private struct MessageList: View {
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var contentFits = false
     @State private var threadFollowsLatest = true
-    @State private var threadUserScrolling = false
+    @State private var userScrolling = false
 
     private var positionKey: String {
         "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)"
@@ -266,22 +267,36 @@ private struct MessageList: View {
         .defaultScrollAnchor(parentID == nil ? .bottom : .top, for: .alignment)
         .scrollPosition($scrollPosition)
         .scrollDismissesKeyboard(.interactively)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
+            guard parentID == nil, isVisible, contentFits, !userScrolling else { return }
+            // キーボードの遷移中は安全領域が未確定なので、収まる会話は表示完了後にも末尾へ揃える。
+            scrollPosition.scrollTo(edge: .bottom)
+        }
         .onScrollPhaseChange { _, phase in
-            guard parentID != nil else { return }
             if phase == .tracking || phase == .interacting {
-                threadUserScrolling = true
-                threadFollowsLatest = false
-            } else if phase == .idle, threadUserScrolling {
-                threadUserScrolling = false
-                threadFollowsLatest = followingLatest
+                userScrolling = true
+                if parentID != nil { threadFollowsLatest = false }
+            } else if phase == .idle, userScrolling {
+                userScrolling = false
+                if parentID != nil { threadFollowsLatest = followingLatest }
             }
         }
         .onScrollGeometryChange(for: ThreadScrollLayout.self) { geometry in
-            ThreadScrollLayout(contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height)
+            let state = MessageScrollState(contentHeight: geometry.contentSize.height, offsetY: geometry.contentOffset.y,
+                                           topInset: geometry.contentInsets.top, viewportHeight: geometry.containerSize.height)
+            return ThreadScrollLayout(contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
+                                      followingLatest: state.followingLatest)
         } action: { previous, layout in
             contentFits = layout.fits
-            guard parentID != nil, isVisible, !store.loading, !threadUserScrolling,
+            guard isVisible, !store.loading, !userScrolling,
                   previous.contentHeight != layout.contentHeight || previous.viewportHeight != layout.viewportHeight else { return }
+            if parentID == nil {
+                // 入力欄が広がっても最新投稿が隠れないよう、短い会話と末尾を表示中の会話を表示領域に合わせる。
+                if layout.fits || previous.fits || previous.followingLatest, let latest = messages.last {
+                    scrollPosition.scrollTo(id: latest.id, anchor: .bottom)
+                }
+                return
+            }
             if layout.fits {
                 threadFollowsLatest = true
                 // 全文が収まるスレッドでは、末尾への位置合わせで親投稿の上に余白を残さない。

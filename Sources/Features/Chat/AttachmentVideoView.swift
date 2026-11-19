@@ -128,6 +128,7 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
 
     func stop() {
         stopped = true
+        AppOrientation.endAttachment(id)
         rateObservation = nil
         loadTask?.cancel()
         loadTask = nil
@@ -216,8 +217,13 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
     func playerViewController(_ playerViewController: AVPlayerViewController,
                               willBeginFullScreenPresentationWithAnimationCoordinator coordinator: any UIViewControllerTransitionCoordinator) {
         fullScreenActive = true
+        AppOrientation.beginAttachment(id, in: playerViewController.view.window?.windowScene)
         coordinator.animate(alongsideTransition: nil) { [weak self] context in
-            if context.isCancelled { self?.fullScreenActive = false; self?.pauseIfInvisible() }
+            if context.isCancelled, let self {
+                self.fullScreenActive = false
+                AppOrientation.endAttachment(self.id)
+                self.pauseIfInvisible()
+            }
         }
     }
 
@@ -227,6 +233,7 @@ final class AttachmentVideoSession: NSObject, @MainActor AVPlayerViewControllerD
         coordinator.animate(alongsideTransition: nil) { [weak self] context in
             guard let self, !context.isCancelled else { return }
             self.fullScreenActive = false
+            AppOrientation.endAttachment(self.id)
             if wasPlaying, self.inlineVisible { self.player.play() }
             self.pauseIfInvisible()
         }

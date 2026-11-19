@@ -261,6 +261,7 @@ private struct AttachmentView: View {
         }
         .fullScreenCover(isPresented: $fullScreenExpanded) {
             AttachmentPreview(attachments: isInGallery ? imageGallery : [state], selectedID: attachment.id, workspace: workspace)
+                .background { AttachmentOrientation().frame(width: 0, height: 0) }
         }
     }
 

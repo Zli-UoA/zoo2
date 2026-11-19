@@ -10,6 +10,8 @@ final class CallStore {
     private let permission: @MainActor () async -> Bool
     private(set) var channel: Channel?
     private(set) var participants: [CallParticipant] = []
+    private(set) var activeChannelIDs: Set<String> = []
+    private var activeCallsGeneration = UUID()
     private(set) var ready = false
     private(set) var muted = false
     private(set) var speakerEnabled = false
@@ -47,6 +49,33 @@ final class CallStore {
          makeMedia: @escaping @MainActor () -> any CallMedia = { NativeCallMedia() },
          permission: @escaping @MainActor () async -> Bool = { await AVAudioApplication.requestRecordPermission() }) {
         self.client = client; self.userID = userID; self.makeMedia = makeMedia; self.permission = permission
+    }
+
+    func hasActiveCall(in channelID: String) -> Bool {
+        activeChannelIDs.contains(channelID) || (ready && channel?.id == channelID)
+    }
+
+    func refreshActiveCalls() async {
+        guard active, !Task.isCancelled else { return }
+        let generation = UUID()
+        activeCallsGeneration = generation
+        do {
+            let calls = try await client.activeCalls()
+            try Task.checkCancellation()
+            guard active, activeCallsGeneration == generation else { return }
+            activeChannelIDs = Set(calls.filter { $0.participant_count > 0 }.map(\.channel_id))
+        } catch {
+            guard active, !Task.isCancelled, activeCallsGeneration == generation else { return }
+            activeChannelIDs = []
+            if case ZooError.expiredSession = error { onExpiredSession?() }
+        }
+    }
+
+    func runActiveCalls() async {
+        while active, !Task.isCancelled {
+            await refreshActiveCalls()
+            do { try await Task.sleep(for: .seconds(10)) } catch { return }
+        }
     }
 
     @discardableResult
@@ -334,6 +363,7 @@ final class CallStore {
 
     func shutdown() {
         active = false; finish(); invitations = []; outgoingInvitations = []; cancelledInvitationExpirations = [:]
+        activeChannelIDs = []
         error = nil; showingCall = false
     }
 }
