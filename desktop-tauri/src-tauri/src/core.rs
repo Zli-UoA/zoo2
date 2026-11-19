@@ -818,13 +818,18 @@ impl Core {
             )
         })?
         .map_err(to_ipc)?;
-        let (login, auto_open_url) = prepare_verified_device_login(
+        let authorized_at = Instant::now();
+        let authorized_unix = token::now();
+        let (login, auto_open_url, remaining_expires_in) = prepare_verified_device_login(
             self.no_redirect_http.as_ref(),
             &authorization,
             &oidc.issuer,
-            token::now() + authorization.expires_in as i64,
+            authorized_at,
+            authorized_unix,
         )
         .await?;
+        let mut authorization = authorization;
+        authorization.expires_in = remaining_expires_in;
 
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
@@ -1335,28 +1340,29 @@ async fn verify_login_redirect_chain(
     Err("リダイレクト回数が上限を超えました".to_string())
 }
 
-/// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin` と自動起動対象 URL を返す。
-/// - `verification_uri` が `issuer` と同一オリジンの HTTPS（開発用ループバックのみ HTTP）でなければ拒否する。
-/// - リダイレクト安全性が確認できない外部カスタム `issuer` では、ブラウザー自動起動を抑止し、
-///   手動リンクでもクエリに `user_code` を含めないよう `verification_uri_complete` を落とす。
-/// - 確認済み `issuer` でも、自動起動および `verification_uri_complete` の採用前に `GET` でリダイレクト先を検証する。
+/// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin`・自動起動対象 URL・残りの有効秒数を返す。
+/// - `verification_uri` が `issuer` と別オリジン（または非ループバック HTTP）の場合や、
+///   リダイレクト安全性が未確認の外部カスタム `issuer` では、ログイン自体は失敗させず
+///   ユーザーコードと手動リンク表示へフォールバックし、ブラウザー自動起動と `verification_uri_complete` を抑止する。
+/// - 確認済み `issuer` かつ同一オリジンの場合のみ、自動起動および `verification_uri_complete` の採用前に
+///   `GET` でリダイレクト先を検証する。
+/// - 事前検証完了時点で認可コードの有効期限が切れていた場合は、`LoggingIn` 遷移やブラウザー自動起動へ進まず
+///   タイムアウトエラーを返す。
 async fn prepare_verified_device_login(
     no_redirect_http: Option<&reqwest::Client>,
     authorization: &DeviceAuthorization,
     issuer: &str,
-    expires_at: i64,
-) -> Result<(DeviceLogin, Option<String>), IpcError> {
-    if !is_same_issuer_origin(&authorization.verification_uri, issuer) {
-        return Err(IpcError::new(
-            ErrorCode::Internal,
-            "認証サーバーが不正な確認 URL を返しました",
-        ));
-    }
-
+    authorized_at: Instant,
+    authorized_unix: i64,
+) -> Result<(DeviceLogin, Option<String>, u64), IpcError> {
     let mut verification_uri_complete = None;
     let mut auto_open_url = None;
 
-    if !is_confirmed_login_issuer(issuer) {
+    if !is_same_issuer_origin(&authorization.verification_uri, issuer) {
+        eprintln!(
+            "ログイン確認 URL のスキームまたはオリジンが issuer と一致しないため、コード付き URL とブラウザー自動起動を抑止します"
+        );
+    } else if !is_confirmed_login_issuer(issuer) {
         eprintln!(
             "リダイレクト挙動が未確認のカスタム issuer のため、コード付き URL とブラウザー自動起動を抑止します"
         );
@@ -1394,21 +1400,37 @@ async fn prepare_verified_device_login(
         );
     }
 
+    let expires_at = authorized_unix.saturating_add(authorization.expires_in as i64);
+    let elapsed = authorized_at.elapsed();
+    let Some(remaining) = Duration::from_secs(authorization.expires_in).checked_sub(elapsed) else {
+        return Err(IpcError::new(
+            ErrorCode::Timeout,
+            "コードの有効期限が切れました。もう一度ログインしてください",
+        ));
+    };
+    let remaining_secs = remaining.as_secs();
+    if remaining_secs == 0 || token::now() >= expires_at {
+        return Err(IpcError::new(
+            ErrorCode::Timeout,
+            "コードの有効期限が切れました。もう一度ログインしてください",
+        ));
+    }
+
     let login = DeviceLogin {
         user_code: authorization.user_code.clone(),
         verification_uri: authorization.verification_uri.clone(),
         verification_uri_complete,
         expires_at,
     };
-    Ok((login, auto_open_url))
+    Ok((login, auto_open_url, remaining_secs))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserLaunchGate, DeviceAuthorization, build_no_redirect_http_client,
+        BrowserLaunchGate, DeviceAuthorization, ErrorCode, Instant, build_no_redirect_http_client,
         is_confirmed_login_issuer, is_same_issuer_origin, prepare_verified_device_login,
-        resolve_and_validate_redirect, verify_login_redirect_chain,
+        resolve_and_validate_redirect, token, verify_login_redirect_chain,
     };
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1608,6 +1630,7 @@ mod tests {
         );
 
         // 1) 確認済み issuer + GET リダイレクト検証通過時は verification_uri_complete と自動起動 URL を保持する
+        let now_unix = token::now();
         let ok_auth = DeviceAuthorization {
             device_code: "dev-ok".to_string(),
             user_code: "OK".to_string(),
@@ -1616,10 +1639,15 @@ mod tests {
             expires_in: 600,
             interval: Some(5),
         };
-        let (ok_login, ok_auto_open) =
-            prepare_verified_device_login(Some(&client), &ok_auth, &local_issuer, 1234)
-                .await
-                .unwrap();
+        let (ok_login, ok_auto_open, ok_remaining) = prepare_verified_device_login(
+            Some(&client),
+            &ok_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             ok_login.verification_uri_complete.as_deref(),
             Some(format!("http://{addr}/device?user_code=OK").as_str())
@@ -1628,6 +1656,7 @@ mod tests {
             ok_auto_open.as_deref(),
             Some(format!("http://{addr}/device?user_code=OK").as_str())
         );
+        assert!(ok_remaining > 0 && ok_remaining <= 600);
 
         // 2) GET でダウングレードが発生するコード付き URL は、UI 向け verification_uri_complete から除外し自動起動も抑止する
         let downgrade_auth = DeviceAuthorization {
@@ -1640,10 +1669,15 @@ mod tests {
             expires_in: 600,
             interval: Some(5),
         };
-        let (downgrade_login, downgrade_auto_open) =
-            prepare_verified_device_login(Some(&client), &downgrade_auth, &local_issuer, 1234)
-                .await
-                .unwrap();
+        let (downgrade_login, downgrade_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &downgrade_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
         assert!(downgrade_login.verification_uri_complete.is_none());
         assert!(downgrade_auto_open.is_none());
 
@@ -1659,11 +1693,12 @@ mod tests {
             expires_in: 600,
             interval: Some(5),
         };
-        let (unconfirmed_login, unconfirmed_auto_open) = prepare_verified_device_login(
+        let (unconfirmed_login, unconfirmed_auto_open, _) = prepare_verified_device_login(
             Some(&client),
             &unconfirmed_auth,
             unconfirmed_issuer,
-            1234,
+            Instant::now(),
+            now_unix,
         )
         .await
         .unwrap();
@@ -1674,20 +1709,61 @@ mod tests {
         assert!(unconfirmed_login.verification_uri_complete.is_none());
         assert!(unconfirmed_auto_open.is_none());
 
-        // 4) verification_uri 自体が非 HTTPS または別オリジンならエラーとして拒否する
-        let bad_base_auth = DeviceAuthorization {
-            device_code: "dev-bad".to_string(),
-            user_code: "BAD".to_string(),
-            verification_uri: "http://custom-idp.example/device".to_string(),
-            verification_uri_complete: None,
+        // 4) 別オリジンの verification_uri を返す IdP でもログインは失敗させず、手動リンクのみ表示して自動起動と verification_uri_complete を抑止する
+        let cross_origin_auth = DeviceAuthorization {
+            device_code: "dev-cross".to_string(),
+            user_code: "CROSS123".to_string(),
+            verification_uri: "https://login.custom-idp.example/device".to_string(),
+            verification_uri_complete: Some(
+                "https://login.custom-idp.example/device?user_code=CROSS123".to_string(),
+            ),
             expires_in: 600,
             interval: Some(5),
         };
-        assert!(
-            prepare_verified_device_login(Some(&client), &bad_base_auth, unconfirmed_issuer, 1234)
-                .await
-                .is_err()
+        let (cross_login, cross_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &cross_origin_auth,
+            unconfirmed_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cross_login.user_code, "CROSS123");
+        assert_eq!(
+            cross_login.verification_uri,
+            "https://login.custom-idp.example/device"
         );
+        assert!(cross_login.verification_uri_complete.is_none());
+        assert!(cross_auto_open.is_none());
+
+        // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返し、残り秒数は経過分を差し引く
+        let deducted_start = Instant::now() - std::time::Duration::from_secs(12);
+        let (_, _, deducted_remaining) = prepare_verified_device_login(
+            Some(&client),
+            &ok_auth,
+            &local_issuer,
+            deducted_start,
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert!(
+            deducted_remaining <= 588,
+            "remaining_secs should deduct elapsed time: {deducted_remaining}"
+        );
+
+        let expired_start = Instant::now() - std::time::Duration::from_secs(600);
+        let expired_err = prepare_verified_device_login(
+            Some(&client),
+            &ok_auth,
+            &local_issuer,
+            expired_start,
+            now_unix - 600,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(expired_err.code, ErrorCode::Timeout);
 
         stop.store(true, Ordering::SeqCst);
         let _ = server.join();
