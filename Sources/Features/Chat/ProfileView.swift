@@ -69,6 +69,7 @@ struct ProfileView: View {
         .navigationBarTitleDisplayMode(.large)
         .navigationDestination(for: Destination.self) { _ in
             ProfileSettingsView(session: session, webSettings: server?.appending(path: "settings"))
+                .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
         }
         .task { await load() }
         .refreshable { await load() }
