@@ -31,7 +31,7 @@ struct ConversationView: View {
             if parentID == nil, let description = store.channel.description, !description.isEmpty {
                 Text(description).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal).padding(.bottom, 8)
+                    .padding(.horizontal, AppDesign.horizontalInset).padding(.bottom, AppDesign.spacing)
             }
             if store.channel.encrypted == true {
                 ContentUnavailableView("暗号化された会話", systemImage: "lock.shield",
@@ -399,7 +399,7 @@ private struct MessageList: View {
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1)
             Rectangle().fill(color.opacity(0.6)).frame(height: 1)
-        }.foregroundStyle(color).padding(.horizontal, 16).padding(.vertical, 10)
+        }.foregroundStyle(color).padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
             .accessibilityElement(children: .combine)
     }
 
@@ -421,12 +421,12 @@ private struct MessageList: View {
                     .accessibilityIdentifier("thread-empty-state")
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 12)
+        .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
     }
 
     private func messageRow(_ message: Message) -> some View {
-        let horizontalPadding: CGFloat = 16
-        let avatarSpacing: CGFloat = 12
+        let horizontalPadding = AppDesign.horizontalInset
+        let avatarSpacing = AppDesign.spacing
         let attachments = store.attachments(for: message)
         let renderState = renderCache.state(for: message.id)
         let hasFullWidthImages = attachments.filter(\.isImage).count > 1 || attachments.contains {
@@ -491,8 +491,8 @@ private struct MessageList: View {
                 }
             }
         }
-        .padding(.horizontal, horizontalPadding).padding(.vertical, 12)
-        .background(store.focusedMessageID == message.id ? Color.accentColor.opacity(0.08) : .clear)
+        .padding(.horizontal, horizontalPadding).padding(.vertical, AppDesign.spacing)
+        .background(store.focusedMessageID == message.id ? AppDesign.tint.opacity(0.08) : .clear)
         .contentShape(Rectangle())
         .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), isPressing: pressingMessageID == message.id))
     }
@@ -609,14 +609,14 @@ struct EditMessageView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            AppList {
                 TextField("メッセージ", text: $content, axis: .vertical).lineLimit(5...15)
                     .accessibilityIdentifier("edit-message-input")
                 if let error = store.actionError { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("メッセージを編集").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { saving = true }.disabled(saving || !store.validContent(content))
                         .keyboardShortcut("s", modifiers: .command)

@@ -234,7 +234,7 @@ final class ZooUITests: XCTestCase {
     @MainActor
     func testChannelSearchShowsCollapsedSectionsAndRestoresState() {
         let app = launchWorkspace(chatDetails: true)
-        let searchButton = app.buttons["search-conversations"]
+        let searchButton = app.buttons["search-conversation"]
         let search = app.textFields["conversation-search-input"]
         let additions = app.buttons["new-conversation"]
         XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
@@ -285,7 +285,7 @@ final class ZooUITests: XCTestCase {
     @MainActor
     func testChannelSearchSupportsAccessibilityTextSize() {
         let app = launchWorkspace(chatDetails: true, largeText: true)
-        app.buttons["search-conversations"].tap()
+        app.buttons["search-conversation"].tap()
         let search = app.textFields["conversation-search-input"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
@@ -298,7 +298,7 @@ final class ZooUITests: XCTestCase {
         capture(app, name: "文字を拡大したチャンネル検索")
         closeSearch.tap()
         XCTAssertTrue(search.waitForNonExistence(timeout: 5))
-        app.buttons["search-conversations"].tap()
+        app.buttons["search-conversation"].tap()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         closeSearch.tap()
@@ -309,7 +309,7 @@ final class ZooUITests: XCTestCase {
     func testDirectMessageSearchUsesSharedDirectorySearch() {
         let app = launchWorkspace()
         selectTab("DM", in: app)
-        let searchButton = app.buttons["search-conversations"]
+        let searchButton = app.buttons["search-conversation"]
         let search = app.textFields["conversation-search-input"]
         let create = app.buttons["new-dm"]
         XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
@@ -357,6 +357,59 @@ final class ZooUITests: XCTestCase {
         selectTab("チャンネル", in: app)
         XCTAssertFalse(search.exists)
         XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testSharedSearchInDiscoveryAndRecipientPicker() {
+        let app = launchWorkspace(dark: true)
+        app.buttons["new-conversation"].tap()
+        app.buttons["チャンネルを探す"].tap()
+        let channel = app.buttons["browse-channel-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 5))
+        let discovery = app.textFields["channel-browser-search-input"]
+        XCTAssertFalse(discovery.exists)
+        app.buttons["search-channel-browser"].tap()
+        XCTAssertTrue(discovery.waitForExistence(timeout: 5))
+        discovery.typeText("該当なし")
+        XCTAssertTrue(channel.waitForNonExistence(timeout: 5))
+        app.buttons["clear-channel-browser-search"].tap()
+        discovery.typeText("雑談")
+        XCTAssertTrue(channel.waitForExistence(timeout: 5))
+        capture(app, name: "ダーク表示のチャンネル検索")
+        app.buttons["close-channel-browser-search"].tap()
+        XCTAssertTrue(discovery.waitForNonExistence(timeout: 5))
+        app.buttons["閉じる"].tap()
+
+        selectTab("DM", in: app)
+        capture(app, name: "チャンネルと揃えたDM一覧")
+        app.buttons["new-dm"].tap()
+        let sakura = app.buttons["dm-recipient-44444444-4444-4444-8444-444444444444"]
+        let aoi = app.buttons["dm-recipient-99999999-9999-4999-8999-999999999999"]
+        XCTAssertTrue(sakura.waitForExistence(timeout: 5))
+        app.buttons["search-people"].tap()
+        let people = app.textFields["people-search-input"]
+        XCTAssertTrue(people.waitForExistence(timeout: 5))
+        people.typeText("さくら")
+        XCTAssertTrue(aoi.waitForNonExistence(timeout: 5))
+        sakura.tap()
+        app.buttons["clear-people-search"].tap()
+        people.typeText("あおい")
+        XCTAssertTrue(aoi.waitForExistence(timeout: 5))
+        XCTAssertTrue(sakura.exists)
+        XCTAssertTrue(sakura.isSelected)
+        capture(app, name: "共通検索と選択状態を保つDMの宛先一覧")
+        app.buttons["close-people-search"].tap()
+        XCTAssertTrue(people.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(sakura.isSelected)
+        app.buttons["閉じる"].tap()
+
+        selectTab("プロフィール", in: app)
+        XCTAssertTrue(app.buttons["profile-edit"].waitForExistence(timeout: 5))
+        capture(app, name: "ダーク表示のプロフィール")
+        app.buttons["workspace-settings"].tap()
+        XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["logout"].exists)
+        capture(app, name: "既存の表示を維持した設定画面")
     }
 
     @MainActor
@@ -777,7 +830,8 @@ final class ZooUITests: XCTestCase {
 
         openActions(for: welcome, in: app)
         app.buttons["message-action-more-reactions"].tap()
-        let search = app.searchFields.firstMatch
+        app.buttons["search-reaction"].tap()
+        let search = app.textFields["reaction-search-input"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         search.typeText("hana")
@@ -792,6 +846,7 @@ final class ZooUITests: XCTestCase {
 
         openActions(for: welcome, in: app)
         app.buttons["message-action-more-reactions"].tap()
+        app.buttons["search-reaction"].tap()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         search.typeText("@zoo")
@@ -1242,6 +1297,7 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(mention.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["承認"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["inbox-read-all"].waitForNonExistence(timeout: 5))
+        capture(app, name: "共通の余白と区切り線に揃えた通知一覧")
         mention.tap()
         XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"].exists)
@@ -1254,6 +1310,7 @@ final class ZooUITests: XCTestCase {
         selectTab("プロフィール", in: app)
         let edit = app.buttons["profile-edit"]
         XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        capture(app, name: "共通の一覧表示に揃えたプロフィール")
         edit.tap()
         let name = app.textFields["profile-name"]
         name.tap()

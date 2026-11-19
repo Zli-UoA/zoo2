@@ -14,6 +14,8 @@ enum AppearancePreference: String {
 }
 
 struct ProfileView: View {
+    private enum Destination: Hashable { case settings }
+
     let workspace: WorkspaceStore
     let session: AppSession
     @State private var profile: PublicProfile?
@@ -25,11 +27,11 @@ struct ProfileView: View {
     private var server: URL? { try? ConnectionSettings.secureURL(workspace.client.serverURL) }
 
     var body: some View {
-        List {
+        AppList {
             Section("アカウント") {
-                HStack(spacing: 12) {
+                HStack(spacing: AppDesign.spacing) {
                     AvatarView(name: user.name, url: user.avatarURL)
-                    VStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(user.name).font(.headline)
                         Text("@\(user.user_name)").foregroundStyle(.secondary)
                     }
@@ -56,13 +58,14 @@ struct ProfileView: View {
                 }
             }
             Section {
-                NavigationLink {
-                    ProfileSettingsView(session: session, webSettings: server?.appending(path: "settings"))
-                } label: {
+                NavigationLink(value: Destination.settings) {
                     Label("設定", systemImage: "gearshape")
                 }
                 .accessibilityIdentifier("workspace-settings")
             }
+        }
+        .navigationDestination(for: Destination.self) { _ in
+            ProfileSettingsView(session: session, webSettings: server?.appending(path: "settings"))
         }
         .task { await load() }
         .refreshable { await load() }
@@ -109,7 +112,7 @@ private struct ProfileEditor: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            AppList {
                 Section {
                     TextField("表示名", text: $draft.display_name, prompt: Text(draft.default_display_name))
                         .accessibilityIdentifier("profile-name")
@@ -127,7 +130,7 @@ private struct ProfileEditor: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("キャンセル") { dismiss() }.disabled(saving)
+                    AppCloseButton { dismiss() }.disabled(saving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") { saving = true }

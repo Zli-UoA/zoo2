@@ -89,7 +89,7 @@ struct ComposerView: View {
                     .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
             }
         }
-        .padding(.horizontal, expanded ? 8 : 16).padding(.vertical, 8)
+        .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
         .sheet(isPresented: $showingEmoji, onDismiss: { focused = true }) {
             ReactionPicker(workspace: workspace) { value in
                 insert(value, replacing: emojiInsertionRange)
@@ -188,7 +188,7 @@ struct ComposerView: View {
             }
             .frame(width: 40, height: 40)
             .foregroundStyle(canSend ? .white : Color.secondary)
-            .background(canSend ? Color(red: 0.16, green: 0.49, blue: 0.35) : .clear, in: Circle())
+            .background(canSend ? AppDesign.tint : .clear, in: Circle())
         }
         .buttonStyle(.plain).disabled(!canSend)
         .accessibilityLabel("送信").accessibilityIdentifier(parentID == nil ? "send-message" : "send-reply")

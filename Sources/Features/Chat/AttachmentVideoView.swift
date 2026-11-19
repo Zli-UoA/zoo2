@@ -273,7 +273,7 @@ struct AttachmentVideoView: View {
                         .id(session.id)
                         .aspectRatio(aspectRatio, contentMode: .fit)
                         .frame(maxHeight: 320)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
                         .onScrollVisibilityChange(threshold: 0.01) { session.setInlineVisible($0, ownerID: ownerID) }
                     if session.loading { ProgressView("動画を読み込み中…") }
                     if let error = session.error {
@@ -300,7 +300,7 @@ struct AttachmentVideoView: View {
                         }
                         .aspectRatio(aspectRatio, contentMode: .fit)
                         .frame(maxHeight: 320)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
                 }
                 .buttonStyle(.plain)
                 .disabled(workspace.calls.channel != nil)

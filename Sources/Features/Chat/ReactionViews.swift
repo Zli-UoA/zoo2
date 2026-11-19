@@ -19,9 +19,9 @@ struct ReactionChips: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8).padding(.vertical, 4)
-                    .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                    .background(selected ? Color.accentColor.opacity(0.12) : Color(.secondarySystemBackground), in: Capsule())
-                    .overlay { Capsule().strokeBorder(selected ? Color.accentColor : Color(.separator), lineWidth: 1) }
+                    .foregroundStyle(.primary)
+                    .background(selected ? AppDesign.tint.opacity(0.12) : Color(.secondarySystemBackground), in: Capsule())
+                    .overlay { Capsule().strokeBorder(selected ? AppDesign.tint : Color(.separator), lineWidth: 1) }
                     .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in
                         switch value {
@@ -105,7 +105,7 @@ private struct ReactionPeopleView: View {
     private var ids: [String] { store.reactionUserIDs(messageID: message.id, emoji: emoji) }
 
     var body: some View {
-        List {
+        AppList {
             HStack {
                 ReactionGlyph(emoji: emoji, message: message, workspace: workspace)
                 Text("\(ids.count)人がリアクションしました")
@@ -270,14 +270,14 @@ struct ReactionPicker: View {
         let custom = custom
         let accounts = accounts
         NavigationStack {
-            List {
+            AppList {
                 if query.isEmpty {
                     Picker("スタンプの種類", selection: $category) {
                         ForEach(Category.allCases, id: \.self) { category in
                             Text(category.rawValue).tag(category)
                         }
                     }.pickerStyle(.segmented)
-                        .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
+                        .listRowInsets(AppDesign.rowInsets).listRowBackground(Color.clear)
                 }
                 if !standard.isEmpty {
                     Section("絵文字") {
@@ -297,7 +297,7 @@ struct ReactionPicker: View {
                     Section("ワークスペースのスタンプ") {
                         ForEach(custom) { emoji in
                             Button { select(":\(emoji.name):") } label: {
-                                HStack(spacing: 12) {
+                                HStack(spacing: AppDesign.spacing) {
                                     AsyncImage(url: emoji.imageURL) { phase in
                                         if let image = phase.image { image.resizable().scaledToFit() }
                                         else { Image(systemName: "face.smiling").foregroundStyle(.secondary) }
@@ -314,9 +314,9 @@ struct ReactionPicker: View {
                     Section("アカウントのスタンプ") {
                         ForEach(accounts) { account in
                             Button { select(":@\(account.username):") } label: {
-                                HStack(spacing: 12) {
+                                HStack(spacing: AppDesign.spacing) {
                                     AccountStamp(account: account, username: account.username, size: 32)
-                                    VStack(alignment: .leading) {
+                                    VStack(alignment: .leading, spacing: 2) {
                                         if !account.display_name.isEmpty { Text(account.display_name).foregroundStyle(.primary) }
                                         Text("@\(account.username)").font(.caption).foregroundStyle(.secondary)
                                     }
@@ -348,10 +348,8 @@ struct ReactionPicker: View {
                 }
             }
             .navigationTitle("スタンプを追加").navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: "絵文字を入力、または名前で検索")
-            .textInputAutocapitalization(.never).autocorrectionDisabled()
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
+            .appSearch(text: $search, prompt: "絵文字を入力、または名前で検索", identifier: "reaction")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
