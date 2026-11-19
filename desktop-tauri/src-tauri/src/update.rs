@@ -68,12 +68,13 @@ enum InnoExitState<T> {
     WaitingForExit { attempt_id: String, ready: T },
     /// `ExitRequested` が終了を確定済み。
     CommittedToExit,
-    /// 試行 `attempt_id` が中止済み。`cancel_pending_exit` が true のときは
-    /// キュー済みの `app.exit(0)` を `prevent_exit()` で 1 回取り消す。
+    /// 試行 `attempt_id` が中止済み。`cancel_pending_exit` と `cleanup_pending` の
+    /// 両方が完了するまで `installing` を維持し、後続試行への上書きと誤終了を防ぐ。
     Aborted {
         attempt_id: String,
         detail: Option<String>,
         cancel_pending_exit: bool,
+        cleanup_pending: bool,
     },
 }
 
@@ -82,6 +83,13 @@ enum InnoAbortResult<T> {
     AbortedWaiting(T),
     DeferredToInProgress,
     NotMatching,
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, PartialEq, Eq)]
+struct ExitRequestOutcome {
+    prevent_exit: bool,
+    release_installing: bool,
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -95,6 +103,7 @@ impl<T> InnoExitState<T> {
             attempt_id: aborted_id,
             detail,
             cancel_pending_exit: false,
+            ..
         } = self
             && aborted_id == &attempt_id
         {
@@ -123,6 +132,7 @@ impl<T> InnoExitState<T> {
                     attempt_id,
                     detail: None,
                     cancel_pending_exit: true,
+                    cleanup_pending: true,
                 };
                 InnoAbortResult::AbortedWaiting(ready)
             }
@@ -132,11 +142,34 @@ impl<T> InnoExitState<T> {
                     attempt_id,
                     detail: Some(detail.to_string()),
                     cancel_pending_exit: false,
+                    cleanup_pending: false,
                 };
                 InnoAbortResult::DeferredToInProgress
             }
             _ => InnoAbortResult::NotMatching,
         }
+    }
+
+    /// 復元とエラー表示の完了を記録し、予約終了の取り消しも済んでいれば `installing` 解除可 (`true`) を返す。
+    fn finish_abort_cleanup(&mut self, attempt_id: Option<&str>) -> bool {
+        let Some(target) = attempt_id else {
+            return false;
+        };
+        if let Self::Aborted {
+            attempt_id: cur,
+            cancel_pending_exit,
+            cleanup_pending,
+            ..
+        } = self
+            && cur == target
+        {
+            *cleanup_pending = false;
+            if !*cancel_pending_exit {
+                *self = Self::Idle;
+                return true;
+            }
+        }
+        false
     }
 
     fn clear_attempt(&mut self, attempt_id: &str) {
@@ -153,33 +186,54 @@ impl<T> InnoExitState<T> {
         }
     }
 
-    /// `ExitRequested` 到達時に呼び、取り消すべき予約終了であれば `true` (`prevent_exit`) を返す。
-    fn on_exit_requested(&mut self) -> bool {
+    /// `ExitRequested` 到達時に呼び、予約終了を取り消すべきか、および `installing` を解除できるかを返す。
+    fn on_exit_requested(&mut self) -> ExitRequestOutcome {
         match self {
             Self::Aborted {
                 cancel_pending_exit: true,
+                cleanup_pending,
                 ..
             } => {
-                *self = Self::Idle;
-                true
+                let release_installing = !*cleanup_pending;
+                if release_installing {
+                    *self = Self::Idle;
+                } else if let Self::Aborted {
+                    cancel_pending_exit,
+                    ..
+                } = self
+                {
+                    *cancel_pending_exit = false;
+                }
+                ExitRequestOutcome {
+                    prevent_exit: true,
+                    release_installing,
+                }
             }
             Self::WaitingForExit { .. } => {
                 *self = Self::CommittedToExit;
-                false
+                ExitRequestOutcome {
+                    prevent_exit: false,
+                    release_installing: false,
+                }
             }
-            _ => false,
+            _ => ExitRequestOutcome {
+                prevent_exit: false,
+                release_installing: false,
+            },
         }
     }
 
     fn prepare_manual_exit(&mut self) {
-        if matches!(
-            self,
-            Self::Aborted {
-                cancel_pending_exit: true,
-                ..
+        if let Self::Aborted {
+            cancel_pending_exit,
+            cleanup_pending,
+            ..
+        } = self
+        {
+            *cancel_pending_exit = false;
+            if !*cleanup_pending {
+                *self = Self::Idle;
             }
-        ) {
-            *self = Self::Idle;
         }
     }
 }
@@ -973,7 +1027,13 @@ pub fn on_exit_requested(app: &AppHandle, code: Option<i32>, api: &tauri::ExitRe
     let Some(updates) = app.try_state::<Updates>() else {
         return;
     };
-    if lock(&updates.inno_exit).on_exit_requested() {
+    let mut installing = lock(&updates.installing);
+    let outcome = lock(&updates.inno_exit).on_exit_requested();
+    if outcome.release_installing {
+        *installing = false;
+    }
+    drop(installing);
+    if outcome.prevent_exit {
         api.prevent_exit();
     }
 }
@@ -983,17 +1043,21 @@ pub fn show_inno_failure(app: &AppHandle, failure: &InnoFailure) {
     if let Some(updates) = app.try_state::<Updates>() {
         let (is_installing, abort_res) = {
             let installing = lock(&updates.installing);
-            let abort_res =
-                lock(&updates.inno_exit).abort_if_matching(failure.attempt_id.as_deref(), &failure.detail);
+            let abort_res = lock(&updates.inno_exit)
+                .abort_if_matching(failure.attempt_id.as_deref(), &failure.detail);
             (*installing, abort_res)
         };
         match abort_res {
             InnoAbortResult::AbortedWaiting(pending) => {
-                // 進行中だった当該試行の中止確定: 復元とエラー表示を終えてから installing を解除する。
+                // 進行中だった当該試行の中止確定: 復元・表示完了と予約済み app.exit(0) の取り消しの
+                // 両方が終わるまで installing を維持し、後続試行による Aborted 上書きを防ぐ。
                 restore_ready_on_failure(app, pending);
                 updater_window::open(app);
                 show_result(app, "更新できませんでした", &failure.detail, true);
-                *lock(&updates.installing) = false;
+                let mut installing = lock(&updates.installing);
+                if lock(&updates.inno_exit).finish_abort_cleanup(failure.attempt_id.as_deref()) {
+                    *installing = false;
+                }
             }
             InnoAbortResult::DeferredToInProgress => {
                 // 同一試行の arm_exit 側で app.exit(0) をスキップし復元・表示する。
@@ -1994,8 +2058,9 @@ Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyCont
         assert_eq!(
             take_inno_failure(["--update-failed", "-2", "--update-attempt", "42-2"]),
             Some(InnoFailure {
-                detail: "アプリの終了待機がタイムアウトしたため更新を中止しました。再度お試しください"
-                    .to_string(),
+                detail:
+                    "アプリの終了待機がタイムアウトしたため更新を中止しました。再度お試しください"
+                        .to_string(),
                 attempt_id: Some("42-2".to_string()),
             })
         );
@@ -2017,7 +2082,7 @@ Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyCont
 
     #[test]
     fn inno_exit_state_prevents_queued_exit_after_matching_timeout_and_ignores_other_attempts() {
-        // 1) タイムアウト通知が ExitRequested より先に届いた場合、候補を復元し、後続のキュー済み終了を取り消す。
+        // 1a) 復元・表示が先に完了し、その後にキュー済み ExitRequested が到着したタイミングで初めて installing を解除する。
         let mut state: InnoExitState<&str> = InnoExitState::default();
         state.begin_attempt("attempt-a".to_string());
         assert!(state.arm_exit("attempt-a".to_string(), "v0.2.13").is_ok());
@@ -2029,14 +2094,51 @@ Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyCont
             state.abort_if_matching(Some("attempt-a"), "timeout"),
             InnoAbortResult::AbortedWaiting("v0.2.13")
         ));
-        // キュー済み app.exit(0) は 1 回だけ prevent_exit() され、以降の通常終了は妨げない。
-        assert!(state.on_exit_requested());
-        assert!(!state.on_exit_requested());
+        // 復元・表示が終わっても、キュー済み app.exit(0) を取り消すまでは再試行 (installing 解除) を許さない。
+        assert!(!state.finish_abort_cleanup(Some("attempt-a")));
+        assert_eq!(
+            state.on_exit_requested(),
+            ExitRequestOutcome {
+                prevent_exit: true,
+                release_installing: true,
+            }
+        );
+        // 2 回目以降の通常終了は妨げない。
+        assert_eq!(
+            state.on_exit_requested(),
+            ExitRequestOutcome {
+                prevent_exit: false,
+                release_installing: false,
+            }
+        );
+
+        // 1b) 逆に ExitRequested が復元・表示より先に到着した場合は、復元・表示完了時に installing を解除する。
+        state.begin_attempt("attempt-a2".to_string());
+        assert!(state.arm_exit("attempt-a2".to_string(), "v0.2.13").is_ok());
+        assert!(matches!(
+            state.abort_if_matching(Some("attempt-a2"), "timeout"),
+            InnoAbortResult::AbortedWaiting("v0.2.13")
+        ));
+        assert_eq!(
+            state.on_exit_requested(),
+            ExitRequestOutcome {
+                prevent_exit: true,
+                release_installing: false,
+            }
+        );
+        assert!(state.finish_abort_cleanup(Some("attempt-a2")));
+        assert!(matches!(state, InnoExitState::Idle));
 
         // 2) ExitRequested が先に終了を確定した場合、終了は抑止されず後発の失敗通知でも覆らない。
         state.begin_attempt("attempt-b".to_string());
         assert!(state.arm_exit("attempt-b".to_string(), "v0.2.14").is_ok());
-        assert!(!state.on_exit_requested());
+        assert_eq!(
+            state.on_exit_requested(),
+            ExitRequestOutcome {
+                prevent_exit: false,
+                release_installing: false,
+            }
+        );
         assert!(matches!(
             state.abort_if_matching(Some("attempt-b"), "late"),
             InnoAbortResult::NotMatching
@@ -2061,7 +2163,13 @@ Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyCont
             InnoAbortResult::AbortedWaiting("v0.2.16")
         ));
         state.prepare_manual_exit();
-        assert!(!state.on_exit_requested());
+        assert_eq!(
+            state.on_exit_requested(),
+            ExitRequestOutcome {
+                prevent_exit: false,
+                release_installing: false,
+            }
+        );
 
         // 5) 配置失敗時は clear_attempt で Idle へ戻る。
         state.begin_attempt("attempt-e".to_string());

@@ -1310,11 +1310,12 @@ async fn verify_login_redirect_chain(
     let mut current = url::Url::parse(url)
         .map_err(|err| format!("ログイン URL を解釈できませんでした: {err}"))?;
     for hop in 0..=MAX_LOGIN_REDIRECT_HOPS {
-        let mut res = client
-            .head(current.clone())
-            .send()
-            .await
-            .map_err(|err| format!("ログイン URL の事前確認に失敗しました: {}", err.without_url()))?;
+        let mut res = client.head(current.clone()).send().await.map_err(|err| {
+            format!(
+                "ログイン URL の事前確認に失敗しました: {}",
+                err.without_url()
+            )
+        })?;
         if matches!(
             res.status(),
             reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
@@ -1446,10 +1447,18 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     continue;
                 };
+                // Windows では nonblocking なリスナーから accept したソケットも nonblocking を継承する。
+                let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut req_bytes = Vec::new();
                 let mut buf = [0u8; 2048];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
+                while !req_bytes.windows(4).any(|w| w == b"\r\n\r\n") && req_bytes.len() < 8192 {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req_bytes.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let req = String::from_utf8_lossy(&req_bytes);
                 let first_line = req.lines().next().unwrap_or("");
                 let mut parts = first_line.split_whitespace();
                 let method = parts.next().unwrap_or("");
