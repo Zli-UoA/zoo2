@@ -80,6 +80,8 @@ struct ComposerView: View {
                 .padding(expanded ? 8 : 4)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: expanded ? 24 : 28))
                 .overlay(alignment: .top) { mentionPanel }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(parentID == nil ? "message-composer" : "reply-composer")
                 if draft.wrappedValue.unicodeScalars.count > 40_000 {
                     Text("メッセージは 40,000 文字以内で入力してください。").font(.caption).foregroundStyle(.red)
                 }

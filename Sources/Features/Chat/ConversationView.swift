@@ -171,7 +171,7 @@ private struct MessageList: View {
     @State private var readRetry = 0
     @State private var renderCache = MessageRenderCache()
     @State private var scrollPosition = ScrollPosition(idType: String.self)
-    @State private var threadContentFits = false
+    @State private var contentFits = false
     @State private var threadFollowsLatest = true
     @State private var threadUserScrolling = false
 
@@ -255,7 +255,7 @@ private struct MessageList: View {
         .accessibilityIdentifier(parentID == nil ? "message-list" : "thread-message-list")
         .scrollBounceBehavior(.basedOnSize)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(parentID == nil ? nil : .top, for: .alignment)
+        .defaultScrollAnchor(parentID == nil ? .bottom : .top, for: .alignment)
         .scrollPosition($scrollPosition)
         .scrollDismissesKeyboard(.interactively)
         .onScrollPhaseChange { _, phase in
@@ -271,7 +271,7 @@ private struct MessageList: View {
         .onScrollGeometryChange(for: ThreadScrollLayout.self) { geometry in
             ThreadScrollLayout(contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height)
         } action: { previous, layout in
-            threadContentFits = layout.fits
+            contentFits = layout.fits
             guard parentID != nil, isVisible, !store.loading, !threadUserScrolling,
                   previous.contentHeight != layout.contentHeight || previous.viewportHeight != layout.viewportHeight else { return }
             if layout.fits {
@@ -291,7 +291,7 @@ private struct MessageList: View {
             let topInset = parentID == nil ? 0 : geometry.contentInsets.top
             return MessageScrollState(distanceToBottom: geometry.contentSize.height - geometry.contentOffset.y - topInset - geometry.containerSize.height)
         } action: { _, state in
-            // 画面遷移中の初回通知も保持し、未読位置で最新ボタンが出ない状態を防ぐ。
+            // 画面遷移中の初回通知も保持し、移動先に応じて最新ボタンを表示する。
             followingLatest = state.followingLatest
             showsLatestButton = state.showsLatestButton
         }
@@ -302,14 +302,14 @@ private struct MessageList: View {
                 positionedInitialMessages = true
                 scrollPosition.scrollTo(id: focused, anchor: .center)
                 store.focusedMessageID = nil
-            } else if !positionedInitialMessages, let firstUnreadID {
-                positionedInitialMessages = true
-                scrollPosition.scrollTo(id: firstUnreadID, anchor: .top)
             } else if !positionedInitialMessages || followingLatest {
                 threadFollowsLatest = true
                 let openingReplyComposer = !positionedInitialMessages && focusComposerOnAppear
                 positionedInitialMessages = true
-                if parentID != nil && threadContentFits && !openingReplyComposer {
+                if parentID == nil && contentFits {
+                    // 全文が収まる場合は行への位置合わせで過剰に移動せず、入力欄との重なりを防ぐ。
+                    scrollPosition.scrollTo(edge: .bottom)
+                } else if parentID != nil && contentFits && !openingReplyComposer {
                     scrollPosition.scrollTo(edge: .top)
                 } else if parentID != nil && !openingReplyComposer {
                     scrollPosition.scrollTo(edge: .bottom)

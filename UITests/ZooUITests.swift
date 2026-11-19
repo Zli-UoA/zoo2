@@ -990,22 +990,19 @@ final class ZooUITests: XCTestCase {
         let app = launchWorkspace(longHistory: true, chatDetails: true, variedHistory: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let latest = app.staticTexts["履歴 60"]
-        XCTAssertTrue(app.descendants(matching: .any)["unread-divider"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        assertLatestAboveComposer(latest, in: app)
         let list = app.scrollViews["message-list"]
         let jump = app.buttons["scroll-to-latest"]
-        for attempt in 0..<2 {
-            if attempt > 0 {
-                for _ in 0..<4 { list.swipeDown(velocity: .fast) }
-            }
+        for _ in 0..<2 {
+            for _ in 0..<4 { list.swipeDown(velocity: .fast) }
             XCTAssertFalse(latest.isHittable)
             XCTAssertTrue(jump.waitForExistence(timeout: 5))
             jump.tap()
             XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
             XCTAssertTrue(latest.isHittable)
             let latestY = latest.frame.minY
-            let bottomGap = composer(app).frame.minY - latest.frame.maxY
-            XCTAssertGreaterThanOrEqual(bottomGap, 0)
-            XCTAssertLessThan(bottomGap, 60, "最新の投稿と入力欄の間に大きな空白を残さない")
+            assertLatestAboveComposer(latest, in: app)
             let previous = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "履歴 59\n")).firstMatch
             XCTAssertTrue(previous.isHittable)
             XCTAssertLessThanOrEqual(previous.frame.maxY, latest.frame.minY, "隣り合う投稿の本文を重ねない")
@@ -1036,11 +1033,51 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testShortConversationKeepsLatestAboveResizingComposer() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let latest = app.staticTexts["SwiftUI で、いつもの会話がもっと身近に。"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        assertLatestAboveComposer(latest, in: app)
+        capture(app, name: "短い会話も最新投稿を入力欄の直上に配置")
+        let field = composer(app)
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        assertLatestAboveComposer(latest, in: app)
+        field.typeText("一行目\n二行目\n三行目")
+        assertLatestAboveComposer(latest, in: app)
+        capture(app, name: "入力欄が広がっても最新投稿との間隔を維持")
+        app.buttons["dismiss-composer-keyboard"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        assertLatestAboveComposer(latest, in: app)
+    }
+
+    @MainActor
+    func testUnreadLongConversationInitiallyShowsLatestAboveComposer() {
+        let app = launchWorkspace(longHistory: true, chatDetails: true, variedHistory: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let latest = app.staticTexts["履歴 60"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        assertLatestAboveComposer(latest, in: app)
+        XCTAssertFalse(app.buttons["scroll-to-latest"].exists)
+        capture(app, name: "未読がある長い会話も最新投稿から表示")
+    }
+
+    @MainActor
+    private func assertLatestAboveComposer(_ latest: XCUIElement, in app: XCUIApplication,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(latest.isHittable, file: file, line: line)
+        let bottomGap = app.otherElements["message-composer"].frame.minY - latest.frame.maxY
+        XCTAssertGreaterThanOrEqual(bottomGap, 0, file: file, line: line)
+        XCTAssertLessThan(bottomGap, 60, "最新の投稿を入力欄の直上に揃える", file: file, line: line)
+    }
+
+    @MainActor
     private func assertBottomOverscrollKeepsPosition(_ app: XCUIApplication, latestText: String) {
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let latest = app.staticTexts[latestText]
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
-        XCTAssertTrue(latest.isHittable)
+        assertLatestAboveComposer(latest, in: app)
         let originalY = latest.frame.minY
         let list = app.scrollViews["message-list"]
         for _ in 0..<3 {
