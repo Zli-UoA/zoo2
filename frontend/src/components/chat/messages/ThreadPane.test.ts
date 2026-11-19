@@ -1,6 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+// このテストは静的マークアップの内容を確認するもの。狭幅のダイアログは
+// Portal を使うため SSR では何も出ないので、インラインのサイドペインを描画する。
+// ダイアログの挙動は ThreadPane.browser.test.tsx で実ブラウザーで確認する。
+vi.mock("../../layout/useMediaQuery", () => ({ useMediaQuery: () => true }));
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import type { FeedMessage } from "./messageFormat";

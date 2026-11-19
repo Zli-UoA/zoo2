@@ -368,6 +368,7 @@
         "Loading",
         "Error",
         "Mobile",
+        "MobileDialog",
         "Completions",
         "AppCard",
         "RootLoadError",
