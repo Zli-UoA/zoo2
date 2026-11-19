@@ -5,10 +5,16 @@ struct ChannelDetailsView: View {
     let workspace: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
     @State private var requestedPin: Bool?
+    @State private var editing = false
+    @State private var confirmingArchive = false
+    @State private var archiving = false
+    @State private var error: String?
 
     private var pinned: Bool { workspace.pinnedChannelIDs.contains(channel.id) }
+    private var currentChannel: Channel { workspace.channels.first { $0.id == channel.id } ?? channel }
 
     var body: some View {
+        let channel = currentChannel
         NavigationStack {
             AppForm {
                 Section("会話について") {
@@ -33,6 +39,16 @@ struct ChannelDetailsView: View {
                         Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
                     }
                 }
+                if channel.canManage(by: workspace.user) {
+                    Section("チャンネルの管理") {
+                        Button("名前と説明を編集", systemImage: "pencil") { editing = true }
+                            .accessibilityIdentifier("edit-channel")
+                        Button("チャンネルをアーカイブ", systemImage: "archivebox", role: .destructive) { confirmingArchive = true }
+                            .accessibilityIdentifier("archive-channel")
+                    }
+                    .disabled(workspace.updatingChannels.contains(channel.id))
+                }
+                if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("channel-management-error") }
                 Section("メンバー") {
                     if let error = workspace.memberErrors[channel.id] {
                         Text(error).foregroundStyle(.secondary)
@@ -44,8 +60,91 @@ struct ChannelDetailsView: View {
                 }
             }
             .navigationTitle("チャンネル詳細").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() }.disabled(archiving) } }
             .task { await workspace.loadMembers(channelID: channel.id) }
+            .sheet(isPresented: $editing) { ChannelEditor(channel: currentChannel, workspace: workspace) }
+            .confirmationDialog("このチャンネルをアーカイブしますか？", isPresented: $confirmingArchive, titleVisibility: .visible) {
+                Button("アーカイブ", role: .destructive) { archiving = true }
+            } message: {
+                Text("新しい投稿と通話を停止します。過去のメッセージは引き続き閲覧できます。")
+            }
+            .task(id: archiving) {
+                guard archiving else { return }
+                defer { archiving = false }
+                do {
+                    try await workspace.archiveChannel(channel)
+                    dismiss()
+                } catch {
+                    if !Task.isCancelled { self.error = error.localizedDescription }
+                    if case ZooError.expiredSession = error { workspace.report(error) }
+                }
+            }
+            .interactiveDismissDisabled(archiving)
+        }
+    }
+}
+
+private struct ChannelEditor: View {
+    let channel: Channel
+    let workspace: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var description: String
+    @State private var saving = false
+    @State private var error: String?
+
+    init(channel: Channel, workspace: WorkspaceStore) {
+        self.channel = channel
+        self.workspace = workspace
+        _name = State(initialValue: channel.channel_name)
+        _description = State(initialValue: channel.description ?? "")
+    }
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var valid: Bool {
+        let name = trimmedName
+        let unchangedName = name == channel.channel_name
+        let validName = !name.isEmpty && name.unicodeScalars.count <= 80 &&
+            !["all", "channel", "everyone", "here", "general"].contains(name) &&
+            name.range(of: #"\A[\p{L}\p{M}\p{N}_-]+\z"#, options: .regularExpression) != nil
+        return (unchangedName || validName) && description.unicodeScalars.count <= 250 &&
+            (name != channel.channel_name || description != (channel.description ?? ""))
+    }
+
+    var body: some View {
+        NavigationStack {
+            AppForm {
+                Section {
+                    TextField("チャンネル名", text: $name).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .accessibilityIdentifier("edit-channel-name")
+                    TextField("説明", text: $description, axis: .vertical).lineLimit(3...6)
+                        .accessibilityIdentifier("edit-channel-description")
+                } footer: {
+                    Text("名前は80文字以内の文字・数字・ハイフン・アンダースコア、説明は250文字以内で入力してください。")
+                }
+                if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("channel-edit-error") }
+            }
+            .disabled(saving)
+            .navigationTitle("チャンネルを編集").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { saving = true }.disabled(!valid || saving)
+                        .accessibilityIdentifier("save-channel")
+                }
+            }
+            .task(id: saving) {
+                guard saving else { return }
+                defer { saving = false }
+                do {
+                    try await workspace.updateChannel(channel, name: trimmedName, description: description)
+                    dismiss()
+                } catch {
+                    if !Task.isCancelled { self.error = error.localizedDescription }
+                    if case ZooError.expiredSession = error { workspace.report(error) }
+                }
+            }
+            .interactiveDismissDisabled(saving)
         }
     }
 }
