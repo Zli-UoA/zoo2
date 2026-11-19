@@ -59,6 +59,16 @@ import {
   type UndecryptableReason,
 } from "../../../lib/e2ee/messageDecryption";
 
+/**
+ * タッチ端末ではアイコンや文字の見た目を変えずにヒットエリアだけを 44×44px へ広げる。
+ * `(hover: none)` はマウスを使わない環境を表し、デスクトップのレイアウトには影響しない。
+ */
+const touchHitArea = "[@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11";
+
+/** 枠や背景を持つチップは見た目を変えず、透明な疑似要素で当たり判定だけを広げる。 */
+const touchChipHitArea =
+  "[@media(hover:none)]:after:absolute [@media(hover:none)]:after:inset-x-0 [@media(hover:none)]:after:-inset-y-3 [@media(hover:none)]:after:content-['']";
+
 export interface MessageRowProps {
   item: MessageItem;
   isOwn: boolean;
@@ -271,7 +281,10 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
   return (
     <button
       type="button"
-      className="mt-1 flex w-fit items-center gap-1 rounded-full border border-brand/30 bg-brand-muted/50 px-2 py-0.5 text-xs font-medium text-brand-muted-foreground transition-colors outline-none hover:bg-brand-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+      className={cn(
+        "relative mt-1 flex w-fit items-center gap-1 rounded-full border border-brand/30 bg-brand-muted/50 px-2 py-0.5 text-xs font-medium text-brand-muted-foreground transition-colors outline-none hover:bg-brand-muted focus-visible:ring-2 focus-visible:ring-ring/50",
+        touchChipHitArea,
+      )}
       onClick={onOpen}
       aria-label={t("threads.openWithCount", { count })}
     >
@@ -386,6 +399,7 @@ export function MessageRow({
     <Button
       variant="ghost"
       size="icon-xs"
+      className={touchHitArea}
       aria-label={t("threads.open")}
       title={t("threads.open")}
       onClick={onOpenThread}
@@ -663,6 +677,7 @@ export function MessageRow({
                   <Button
                     variant="ghost"
                     size="icon-xs"
+                    className={touchHitArea}
                     aria-label={t("reactions.add")}
                     title={t("reactions.add")}
                     disabled={!canReact}
@@ -698,6 +713,7 @@ export function MessageRow({
               <Button
                 variant="ghost"
                 size="icon-xs"
+                className={touchHitArea}
                 aria-label={t("reactions.add")}
                 title={t("reactions.add")}
                 disabled={!canReact}
@@ -711,6 +727,7 @@ export function MessageRow({
                   <Button
                     variant="ghost"
                     size="icon-xs"
+                    className={touchHitArea}
                     aria-label={t("messages.edit")}
                     title={t("messages.edit")}
                     onClick={onStartEdit}
@@ -725,7 +742,10 @@ export function MessageRow({
                   size="icon-xs"
                   aria-label={t("messages.delete")}
                   title={t("messages.delete")}
-                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  className={cn(
+                    "text-destructive hover:bg-destructive/10 hover:text-destructive",
+                    touchHitArea,
+                  )}
                   onClick={onRequestDelete}
                 >
                   <TrashIcon />
@@ -737,10 +757,13 @@ export function MessageRow({
               <DropdownMenuTrigger
                 aria-label={t("messages.more")}
                 title={t("messages.more")}
-                className={buttonVariants({
-                  variant: "ghost",
-                  size: "icon-xs",
-                })}
+                className={cn(
+                  buttonVariants({
+                    variant: "ghost",
+                    size: "icon-xs",
+                  }),
+                  touchHitArea,
+                )}
               >
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
@@ -762,26 +785,34 @@ export function MessageRow({
                   <BotIcon />
                   {t("apps.messageActions")}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={!canReact} onClick={onPickReaction}>
+                <DropdownMenuItem
+                  className={touchHitArea}
+                  disabled={!canReact}
+                  onClick={onPickReaction}
+                >
                   <SmilePlusIcon />
                   {t("reactions.add")}
                 </DropdownMenuItem>
                 {onOpenThread ? (
-                  <DropdownMenuItem onClick={onOpenThread}>
+                  <DropdownMenuItem className={touchHitArea} onClick={onOpenThread}>
                     <MessageSquarePlusIcon />
                     {t("threads.open")}
                   </DropdownMenuItem>
                 ) : null}
                 {canEdit ? (
                   <>
-                    <DropdownMenuItem onClick={onStartEdit}>
+                    <DropdownMenuItem className={touchHitArea} onClick={onStartEdit}>
                       <PencilIcon />
                       {t("messages.edit")}
                     </DropdownMenuItem>
                   </>
                 ) : null}
                 {canDelete ? (
-                  <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
+                  <DropdownMenuItem
+                    className={touchHitArea}
+                    variant="destructive"
+                    onClick={onRequestDelete}
+                  >
                     <TrashIcon />
                     {t("messages.delete")}
                   </DropdownMenuItem>

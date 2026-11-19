@@ -2,8 +2,8 @@ import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
-import { describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser/context";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageRow, type MessageRowProps } from "./MessageRow";
@@ -28,6 +28,25 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
 }
 
 function noop() {}
+
+function expectHitArea(button: HTMLElement) {
+  expect(button.className).toContain("[@media(hover:none)]:min-h-11");
+  expect(button.className).toContain("[@media(hover:none)]:min-w-11");
+}
+
+/** CSS の `(hover: hover)` を無効にしてタッチ端末のメディアクエリを実際に効かせる。 */
+async function emulateTouch() {
+  await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+}
+
+function expectChipHitArea(button: HTMLElement) {
+  expect(button.className).toContain("[@media(hover:none)]:after:absolute");
+  expect(button.className).toContain("relative");
+}
+
+afterEach(async () => {
+  await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: false });
+});
 
 function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
   const element = (overrides: Partial<MessageRowProps>) => (
@@ -59,6 +78,60 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("keeps touch hit areas on the primary message actions", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [
+        { emoji: "👍", count: 1, ownId: null, userIds: ["u1"], userNames: { u1: "Alice" } },
+      ],
+      canReact: true,
+      replyCount: 1,
+      onOpenThread: () => {},
+    });
+    // アイコンの見た目は変えず、(hover: none) のときだけ 44×44px の当たり判定を足す。
+    expectChipHitArea(screen.getByRole("button", { name: "1 件の返信（スレッドを開く）" }));
+    expectHitArea(screen.getByRole("button", { name: "スレッドを開く" }));
+    for (const button of screen.getAllByRole("button", { name: "リアクションを追加" })) {
+      expectHitArea(button);
+    }
+    expectHitArea(screen.getByRole("button", { name: "その他の操作" }));
+  });
+
+  it("measures touch targets in a real (hover: none) environment", async () => {
+    await page.viewport(390, 844);
+    await emulateTouch();
+    renderRow(buildItem(), true, {
+      canReact: true,
+      canDelete: true,
+      replyCount: 1,
+      onOpenThread: () => {},
+    });
+
+    // 返信チップは見た目の高さを保ったまま、疑似要素だけで当たり判定を広げる。
+    const chip = screen.getByRole("button", { name: "1 件の返信（スレッドを開く）" });
+    expect(chip.getBoundingClientRect().height).toBeLessThan(30);
+    expect(parseFloat(getComputedStyle(chip, "::after").height)).toBeGreaterThanOrEqual(44);
+
+    // タッチでは長押しでメニューが開き、操作はメニュー項目から行う。
+    fireEvent.pointerDown(screen.getByText("hello"), {
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: 10,
+      clientY: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    for (const name of ["リアクションを追加", "スレッドを開く", "編集", "削除"]) {
+      const item = await screen.findByRole("menuitem", { name });
+      // メニューは出現アニメーションで一時的に scale されるため、落ち着くまで待つ。
+      await waitFor(() => {
+        const { width, height } = item.getBoundingClientRect();
+        expect(width).toBeGreaterThanOrEqual(44);
+        expect(height).toBeGreaterThanOrEqual(44);
+      });
+    }
+  });
+
   it("closes the list when its last reaction disappears and stays closed if it returns", async () => {
     await page.viewport(390, 844);
     const reaction = {
