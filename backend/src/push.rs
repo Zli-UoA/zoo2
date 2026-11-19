@@ -587,6 +587,7 @@ pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
     if invites.is_empty() {
         return;
     }
+    crate::apns::dispatch_call_invites(db.clone(), invites.clone());
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, false).await.is_err() {
             tracing::warn!("Web Push call invite delivery failed");

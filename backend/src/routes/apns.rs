@@ -23,6 +23,7 @@ pub fn router() -> Router<AppState> {
 
 async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
     Ok(Json(json!({
+        "voip": true,
         "sandbox": ApnsConfig::from_env("sandbox").map_err(AppError::Internal)?.is_some(),
         "production": ApnsConfig::from_env("production").map_err(AppError::Internal)?.is_some(),
     })))
@@ -30,6 +31,8 @@ async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
 
 #[derive(Deserialize)]
 struct Registration {
+    #[serde(default)]
+    kind: crate::apns::PushKind,
     device_token: String,
     environment: String,
     revocation_secret: String,
@@ -54,7 +57,9 @@ async fn subscribe(
             "iPhoneへの通知が設定されていません".into(),
         ));
     }
-    let id = digest(&format!("{}:{}", body.environment, body.device_token));
+    let id = body
+        .kind
+        .registration_id(&body.environment, &body.device_token);
     let secret_hash = digest(&body.revocation_secret);
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
