@@ -8,6 +8,15 @@ use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 const MIGRATION: &str =
     include_str!("../../../infra/db/migrations/20261129010003_scope_apns_registration_by_kind.sql");
 
+pub fn migration_statements() -> (&'static str, &'static str) {
+    // CONCURRENTLYとDOブロックを別の文として実行し、DO内部のセミコロンでは分割しない。
+    MIGRATION.split_at(
+        MIGRATION
+            .find("DO $$")
+            .expect("制約切り替えのDO文が必要です"),
+    )
+}
+
 async fn connect(url: &str) -> anyhow::Result<Client> {
     let (client, connection) = tokio_postgres::connect(url, NoTls).await?;
     tokio::spawn(connection);
@@ -134,19 +143,45 @@ async fn api_measure(config: Config, workers: usize) -> anyhow::Result<Value> {
 async fn migrate_with_writes(url: &str) -> anyhow::Result<Value> {
     let ddl = connect(url).await?;
     let writer = connect(url).await?;
+    let (create, _) = migration_statements();
+    let at = Instant::now();
+    ddl.batch_execute(create).await?;
+    let build_without_barrier = milliseconds(at);
+    ddl.batch_execute("DROP INDEX CONCURRENTLY apns_subscriptions_token_environment_kind_key")
+        .await?;
+    let reader = connect(url).await?;
+    let reader_pid: i32 = reader
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let ddl_pid: i32 = ddl.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
+    reader
+        .batch_execute(
+            "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT id FROM apns_subscriptions LIMIT 1",
+        )
+        .await?;
     let build = async {
-        let mut times = Vec::new();
-        for statement in MIGRATION.split(';').take(1) {
-            let at = Instant::now();
-            ddl.batch_execute(statement).await?;
-            times.push(milliseconds(at));
-        }
-        Ok::<_, anyhow::Error>(times)
+        let at = Instant::now();
+        ddl.batch_execute(create).await?;
+        Ok::<_, anyhow::Error>(milliseconds(at))
     };
     let writes = async {
+        // 古いスナップショットで有効化直前に停止させ、速い環境でも更新と構築の重なりを保証する。
+        let at = Instant::now();
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while !waiting_for_snapshot(&writer, ddl_pid, reader_pid).await? {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        let before_wait = milliseconds(at);
+        let ready: bool = writer.query_one("SELECT indisready AND NOT indisvalid FROM pg_index WHERE indexrelid='apns_subscriptions_token_environment_kind_key'::regclass",&[]).await?.get(0);
+        assert!(ready);
+        let held = Instant::now();
         let mut times = Vec::new();
-        // 規模ごとに更新回数をそろえ、HOTチェーンの長さを比較条件に混ぜない。
         for _ in 0..30 {
+            assert!(waiting_for_snapshot(&writer, ddl_pid, reader_pid).await?);
             let at = Instant::now();
             writer
                 .execute(
@@ -155,16 +190,29 @@ async fn migrate_with_writes(url: &str) -> anyhow::Result<Value> {
                 )
                 .await?;
             times.push(milliseconds(at));
-            tokio::task::yield_now().await;
         }
-        Ok::<_, anyhow::Error>(times)
+        assert!(waiting_for_snapshot(&writer, ddl_pid, reader_pid).await?);
+        reader.batch_execute("COMMIT").await?;
+        Ok::<_, anyhow::Error>(
+            json!({"有効化待機前ms":before_wait,"有効化待機中の保持ms":milliseconds(held),"有効化待機中の更新ms":times,"段階":"waiting for old snapshots"}),
+        )
     };
-    let (ddl_ms, writes_ms) = tokio::try_join!(build, writes)?;
-    assert!(!writes_ms.is_empty());
-    let drop = measure_constraint_lock(url, &ddl, &writer).await?;
-    let valid:bool=ddl.query_one("SELECT indisvalid FROM pg_index WHERE indexrelid='apns_subscriptions_token_environment_kind_key'::regclass",&[]).await?.get(0);
+    let (controlled_ms, writes) = tokio::try_join!(build, writes)?;
+    let valid: bool = ddl.query_one("SELECT indisvalid FROM pg_index WHERE indexrelid='apns_subscriptions_token_environment_kind_key'::regclass",&[]).await?.get(0);
     assert!(valid);
-    Ok(json!({"索引構築ms":ddl_ms,"並行更新ms":writes_ms,"制約削除ロック":drop}))
+    let timeout = measure_constraint_lock(url, &ddl, &writer, false).await?;
+    let drop = measure_constraint_lock(url, &ddl, &writer, true).await?;
+    Ok(
+        json!({"非注入の索引構築ms":build_without_barrier,"保持ありの索引構築ms":controlled_ms,"有効化前の並行更新":writes,"制約削除の待機上限":timeout,"制約削除ロック":drop}),
+    )
+}
+
+async fn waiting_for_snapshot(
+    client: &Client,
+    ddl_pid: i32,
+    reader_pid: i32,
+) -> anyhow::Result<bool> {
+    Ok(client.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_progress_create_index WHERE pid=$1 AND phase='waiting for old snapshots' AND current_locker_pid=$2::integer)",&[&ddl_pid,&reader_pid]).await?.get(0))
 }
 
 async fn wait_for_lock(client: &Client, pid: i32, mode: &str) -> anyhow::Result<()> {
@@ -182,6 +230,7 @@ async fn measure_constraint_lock(
     url: &str,
     ddl: &Client,
     writer: &Client,
+    release: bool,
 ) -> anyhow::Result<Value> {
     let observer = connect(url).await?;
     let queued = connect(url).await?;
@@ -190,6 +239,7 @@ async fn measure_constraint_lock(
         .query_one("SELECT pg_backend_pid()", &[])
         .await?
         .get(0);
+    let original_timeout: String = ddl.query_one("SHOW lock_timeout", &[]).await?.get(0);
     let sql = "UPDATE apns_subscriptions SET created_at=clock_timestamp() WHERE id=$1";
     writer.batch_execute("BEGIN").await?;
     writer
@@ -198,28 +248,49 @@ async fn measure_constraint_lock(
     // 更新のロックを保持し、DDLと後着の更新が待機列に入ったことをpg_locksで確認する。
     let at = Instant::now();
     let mut drop = std::pin::pin!(async {
-        ddl.batch_execute(MIGRATION.split(';').nth(1).unwrap())
-            .await?;
-        Ok::<_, anyhow::Error>(milliseconds(at))
+        let result = ddl.batch_execute(migration_statements().1).await;
+        (result, milliseconds(at))
     });
     tokio::select! {
-        result = &mut drop => { result?; anyhow::bail!("更新中にDDLが排他ロック待ちなしで完了しました"); }
+        result = &mut drop => { result.0?; anyhow::bail!("更新中にDDLが排他ロック待ちなしで完了しました"); }
         result = wait_for_lock(&observer,ddl_pid,"AccessExclusiveLock") => { result?; }
     }
     let mut update = std::pin::pin!(async {
-        queued
+        let result = queued
             .execute(sql, &[&digest(&format!("sandbox:{}", digest("2")))])
-            .await?;
-        Ok::<_, anyhow::Error>(milliseconds(at))
+            .await;
+        (result, milliseconds(at))
     });
     tokio::select! {
-        result = &mut drop => { result?; anyhow::bail!("更新の解放前にDDLが完了しました"); }
-        result = &mut update => { result?; anyhow::bail!("DDL待機中に後着の更新が完了しました"); }
+        result = &mut drop => { result.0?; anyhow::bail!("更新の解放前にDDLが完了しました"); }
+        result = &mut update => { result.0?; anyhow::bail!("DDL待機中に後着の更新が完了しました"); }
         result = wait_for_lock(&observer,write_pid,"RowExclusiveLock") => { result?; }
     }
     let injected_wait = milliseconds(at);
-    writer.batch_execute("COMMIT").await?;
-    let (ddl_ms, update_ms) = tokio::try_join!(drop, update)?;
+    if release {
+        writer.batch_execute("COMMIT").await?;
+    }
+    let ((result, ddl_ms), (updated, update_ms)) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(drop, update)
+        })
+        .await?;
+    assert_eq!(updated?, 1);
+    let restored: String = ddl.query_one("SHOW lock_timeout", &[]).await?.get(0);
+    assert_eq!(original_timeout, restored);
+    if !release {
+        assert_eq!(
+            result.unwrap_err().code(),
+            Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE)
+        );
+        let protected: bool = ddl.query_one("SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='apns_subscriptions'::regclass AND conname='apns_subscriptions_device_token_environment_key')",&[]).await?.get(0);
+        assert!(protected);
+        writer.batch_execute("COMMIT").await?;
+        return Ok(
+            json!({"上限で待機解除ms":ddl_ms,"後着更新完了ms":update_ms,"設定復元":true,"旧制約を保持":protected}),
+        );
+    }
+    result?;
     Ok(
         json!({"DDL待機を確認":true,"後着更新の待機を確認":true,"意図的なロック保持ms":injected_wait,
         "DDL完了ms":ddl_ms,"後着更新完了ms":update_ms,"保持終了後DDLms":ddl_ms-injected_wait,"保持終了後更新ms":update_ms-injected_wait}),
@@ -231,7 +302,7 @@ async fn check_failed_build(url: &str) -> anyhow::Result<Value> {
     // 故障注入だけに時間制限を使い、性能の判定には使わない。
     client.batch_execute("SET statement_timeout='40ms'").await?;
     let error = client
-        .batch_execute(MIGRATION.split(';').next().unwrap())
+        .batch_execute(migration_statements().0)
         .await
         .unwrap_err();
     assert_eq!(
@@ -244,7 +315,7 @@ async fn check_failed_build(url: &str) -> anyhow::Result<Value> {
     assert!(invalid && protected);
     // 無効な索引が残ったままでは、同じマイグレーションを再実行できない。
     let error = client
-        .batch_execute(MIGRATION.split(';').next().unwrap())
+        .batch_execute(migration_statements().0)
         .await
         .unwrap_err();
     assert_eq!(

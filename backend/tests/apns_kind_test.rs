@@ -142,13 +142,9 @@ async fn check_registration(config: backend::config::Config) -> anyhow::Result<(
         .iter()
         .map(|r| r.get(0))
         .collect();
-    for statement in
-        include_str!("../../infra/db/migrations/20261129010003_scope_apns_registration_by_kind.sql")
-            .split(';')
-    {
-        if !statement.trim().is_empty() {
-            client.batch_execute(statement).await?;
-        }
+    let (create, drop) = budget::migration_statements();
+    for statement in [create, drop] {
+        client.batch_execute(statement).await?;
     }
     let after: Vec<String> = client
         .query(snapshot, &[])

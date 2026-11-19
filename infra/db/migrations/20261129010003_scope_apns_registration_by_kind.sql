@@ -8,4 +8,10 @@ CREATE UNIQUE INDEX CONCURRENTLY "apns_subscriptions_token_environment_kind_key"
 );
 
 -- 索引構築に失敗した場合は、この文に到達せず元の制約が残る。
-ALTER TABLE "apns_subscriptions" DROP CONSTRAINT "apns_subscriptions_device_token_environment_key";
+-- 再開時にも待機上限を適用し、成功・失敗のどちらでも接続設定を残さない。
+DO $$
+BEGIN
+  SET LOCAL lock_timeout = '2s';
+  ALTER TABLE "apns_subscriptions" DROP CONSTRAINT "apns_subscriptions_device_token_environment_key";
+END
+$$;
