@@ -129,6 +129,24 @@ describe("ThreadPane のダイアログ挙動", () => {
     expect(screen.getByRole("textbox", { name: "返信を送信" })).toHaveValue("下書きの途中");
   });
 
+  it("moves focus back into the dialog when switching from wide to narrow again", async () => {
+    await page.viewport(390, 844);
+    render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "スレッドを開く" });
+    await userEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "スレッド" });
+
+    // 広幅にして背後のトリガーへフォーカスを移してから、狭幅へ戻す。
+    await page.viewport(1280, 900);
+    await waitFor(() => expect(dialog).toHaveAttribute("role", "complementary"));
+    trigger.focus();
+    expect(dialog.contains(document.activeElement)).toBe(false);
+
+    await page.viewport(390, 844);
+    await waitFor(() => expect(dialog).toHaveAttribute("role", "dialog"));
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+  });
+
   it("広幅ではインラインのサイドペインのままダイアログにならない", async () => {
     await page.viewport(1280, 900);
     render(<Harness />);

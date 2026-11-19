@@ -145,7 +145,6 @@ export function ThreadPane({
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   const paneRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
-  const initialFocusDoneRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -213,9 +212,11 @@ export function ThreadPane({
   }, []);
 
   useEffect(() => {
-    if (initialFocusDoneRef.current || isWidePane) return;
-    initialFocusDoneRef.current = true;
-    paneRef.current?.focus();
+    if (isWidePane) return;
+    // 広幅から狭幅へ戻ったとき、フォーカスが背後に残っていたらペイン内へ移す。
+    // すでにペイン内にある場合はユーザーのフォーカス位置を維持する。
+    const pane = paneRef.current;
+    if (pane && !pane.contains(document.activeElement)) pane.focus();
   }, [isWidePane]);
 
   function handlePaneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
