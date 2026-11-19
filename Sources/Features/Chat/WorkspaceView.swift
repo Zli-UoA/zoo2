@@ -5,25 +5,14 @@ struct WorkspaceView: View {
     @Bindable var workspace: WorkspaceStore
     let session: AppSession
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     var body: some View {
-        TabView(selection: $workspace.selectedTab) {
-            Tab("チャンネル", systemImage: "number", value: WorkspaceTab.channels) {
-                chatStack(path: $workspace.channelPath, directMessages: false)
-            }
-            Tab("DM", systemImage: "bubble.left.and.bubble.right.fill", value: WorkspaceTab.directMessages) {
-                chatStack(path: $workspace.dmPath, directMessages: true)
-            }
-            Tab("通知", systemImage: "bell.fill", value: WorkspaceTab.notifications) {
-                NavigationStack {
-                    InboxView(store: workspace.inbox, workspace: workspace,
-                              isActive: workspace.selectedTab == .notifications && scenePhase == .active,
-                              openChat: workspace.openInboxMessage)
-                }
-            }
-            .badge(workspace.inbox.unreadCount)
-            Tab("プロフィール", systemImage: "person.crop.circle.fill", value: WorkspaceTab.profile) {
-                NavigationStack { ProfileView(workspace: workspace, session: session) }
+        Group {
+            if UIDevice.current.userInterfaceIdiom == .pad, horizontalSizeClass == .regular {
+                TabletWorkspaceView(workspace: workspace, session: session)
+            } else {
+                compactTabs
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
@@ -50,23 +39,55 @@ struct WorkspaceView: View {
         }
     }
 
+    private var compactTabs: some View {
+        TabView(selection: $workspace.selectedTab) {
+            Tab("チャンネル", systemImage: "number", value: WorkspaceTab.channels) {
+                chatStack(path: $workspace.channelPath, directMessages: false)
+            }
+            Tab("DM", systemImage: "bubble.left.and.bubble.right.fill", value: WorkspaceTab.directMessages) {
+                chatStack(path: $workspace.dmPath, directMessages: true)
+            }
+            Tab("通知", systemImage: "bell.fill", value: WorkspaceTab.notifications) {
+                NavigationStack {
+                    InboxView(store: workspace.inbox, workspace: workspace,
+                              isActive: workspace.selectedTab == .notifications && scenePhase == .active,
+                              openChat: workspace.openInboxMessage)
+                }
+            }
+            .badge(workspace.inbox.unreadCount)
+            Tab("プロフィール", systemImage: "person.crop.circle.fill", value: WorkspaceTab.profile) {
+                NavigationStack { ProfileView(workspace: workspace, session: session) }
+            }
+        }
+    }
+
     private func chatStack(path: Binding<[ChatRoute]>, directMessages: Bool) -> some View {
         NavigationStack(path: path) {
             ConversationDirectory(workspace: workspace, directMessages: directMessages)
                 .navigationDestination(for: ChatRoute.self) { route in
-                    if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
-                        ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
-                    } else {
-                        ContentUnavailableView("会話を表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
-                    }
+                    ConversationDestination(workspace: workspace, route: route)
                 }
         }
     }
 }
 
-private struct ConversationDirectory: View {
+struct ConversationDestination: View {
+    let workspace: WorkspaceStore
+    let route: ChatRoute
+
+    var body: some View {
+        if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
+            ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
+        } else {
+            ContentUnavailableView("会話を表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+        }
+    }
+}
+
+struct ConversationDirectory: View {
     let workspace: WorkspaceStore
     let directMessages: Bool
+    var isSidebar = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var search = ""
     @State private var unreadOnly = false
@@ -76,7 +97,7 @@ private struct ConversationDirectory: View {
     @State private var listExpanded = true
 
     private var showsThreadIndex: Bool {
-        !directMessages && workspace.selectedTab == .channels && workspace.channelPath.isEmpty && scenePhase == .active
+        !directMessages && workspace.selectedTab == .channels && (isSidebar || workspace.channelPath.isEmpty) && scenePhase == .active
     }
 
     private var visible: [Channel] {
@@ -128,7 +149,7 @@ private struct ConversationDirectory: View {
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
         .navigationTitle(directMessages ? "DM" : "チャンネル")
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(isSidebar ? .inline : .large)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 if let error = workspace.pinUpdateError {
@@ -200,71 +221,86 @@ private struct ConversationDirectory: View {
         }
     }
 
+    @ViewBuilder
+    private func channelLink(_ channel: Channel) -> some View {
+        if isSidebar {
+            Button { workspace.addAndOpen(channel, joined: false) } label: {
+                channelLabel(channel).contentShape(Rectangle())
+            }
+                .buttonStyle(.plain)
+                .listRowBackground(workspace.path.first?.channelID == channel.id ? Color.accentColor.opacity(0.12) : nil)
+                .accessibilityAddTraits(workspace.path.first?.channelID == channel.id ? .isSelected : [])
+        } else {
+            NavigationLink(value: ChatRoute.channel(channel.id)) { channelLabel(channel) }
+        }
+    }
+
+    private func channelLabel(_ channel: Channel) -> some View {
+        HStack(spacing: 12) {
+            if let peer = workspace.directMessagePeer(for: channel) {
+                AvatarView(name: peer.name, url: peer.avatarURL)
+            } else {
+                Image(systemName: channel.symbol)
+                    .font(.body.weight(.medium)).foregroundStyle(.secondary)
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    .frame(width: AvatarView.size, height: AvatarView.size)
+                    .background(Color(.secondarySystemBackground), in: Circle())
+            }
+            let title = HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(workspace.name(for: channel))
+                    .fontWeight(workspace.unread.contains(channel.id) ? .semibold : .regular)
+                if directMessages, channel.encrypted == true {
+                    Image(systemName: "lock.shield")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize()
+                        .accessibilityLabel("暗号化された会話")
+                }
+            }
+            let description = channel.description ?? ""
+            let labels = VStack(alignment: .leading, spacing: 2) {
+                title
+                if !directMessages || !description.isEmpty {
+                    Text(description).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(1, reservesSpace: true)
+                        .accessibilityHidden(description.isEmpty)
+                }
+            }
+            if !directMessages && description.isEmpty {
+                // 説明の有無で行の高さが変わらないよう、2段分の寸法を残す。
+                labels.hidden().overlay(alignment: .leading) { title }
+            } else {
+                labels
+            }
+            Spacer(minLength: 4)
+            if workspace.calls.hasActiveCall(in: channel.id) {
+                Image(systemName: "headphones")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .fixedSize()
+                    .accessibilityLabel("通話中")
+                    .accessibilityIdentifier("channel-active-call-\(channel.id)")
+            }
+            if workspace.unread.contains(channel.id) {
+                Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
+            }
+        }
+    }
+
     private func channelRows(_ channels: [Channel]) -> some View {
         ForEach(channels) { channel in
-                NavigationLink(value: ChatRoute.channel(channel.id)) {
-                    HStack(spacing: 12) {
-                        if let peer = workspace.directMessagePeer(for: channel) {
-                            AvatarView(name: peer.name, url: peer.avatarURL)
-                        } else {
-                            Image(systemName: channel.symbol)
-                                .font(.body.weight(.medium)).foregroundStyle(.secondary)
-                                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                                .frame(width: AvatarView.size, height: AvatarView.size)
-                                .background(Color(.secondarySystemBackground), in: Circle())
-                        }
-                        let title = HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text(workspace.name(for: channel))
-                                .fontWeight(workspace.unread.contains(channel.id) ? .semibold : .regular)
-                            if directMessages, channel.encrypted == true {
-                                Image(systemName: "lock.shield")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                    .fixedSize()
-                                    .accessibilityLabel("暗号化された会話")
-                            }
-                        }
-                        let description = channel.description ?? ""
-                        let labels = VStack(alignment: .leading, spacing: 2) {
-                            title
-                            if !directMessages || !description.isEmpty {
-                                Text(description).font(.subheadline).foregroundStyle(.secondary)
-                                    .lineLimit(1, reservesSpace: true)
-                                    .accessibilityHidden(description.isEmpty)
-                            }
-                        }
-                        if !directMessages && description.isEmpty {
-                            // 説明の有無で行の高さが変わらないよう、2段分の寸法を残す。
-                            labels.hidden().overlay(alignment: .leading) { title }
-                        } else {
-                            labels
-                        }
-                        Spacer(minLength: 4)
-                        if workspace.calls.hasActiveCall(in: channel.id) {
-                            Image(systemName: "headphones")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.green)
-                                .fixedSize()
-                                .accessibilityLabel("通話中")
-                                .accessibilityIdentifier("channel-active-call-\(channel.id)")
-                        }
-                        if workspace.unread.contains(channel.id) {
-                            Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
-                        }
-                    }
-                }
+            channelLink(channel)
                 .listRowInsets(EdgeInsets(top: directMessages ? 10 : 8, leading: 12,
                                          bottom: directMessages ? 10 : 8, trailing: 12))
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .contextMenu { ChannelPinButton(channel: channel, workspace: workspace) }
                 .accessibilityHint("長押しでピン留めを変更できます")
-                if !directMessages, channel.encrypted != true {
-                    ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
-                        workspace.openListedThread(parentID, in: channel)
-                    }
+            if !directMessages, channel.encrypted != true {
+                ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
+                    workspace.openListedThread(parentID, in: channel)
                 }
             }
+        }
     }
-
 }
 
 private struct ChannelBrowser: View {
