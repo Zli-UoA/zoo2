@@ -62,7 +62,10 @@ private struct ConversationDirectory: View {
     let workspace: WorkspaceStore
     let directMessages: Bool
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var search = ""
+    @State private var searchPresented = false
+    @FocusState private var searchFocused: Bool
     @State private var unreadOnly = false
     @State private var creating = false
     @State private var browsing = false
@@ -118,16 +121,21 @@ private struct ConversationDirectory: View {
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
+        .modifier(ConversationDirectoryListStyle(directMessages: directMessages))
+        .listSectionSpacing(8)
+        .contentMargins(.top, 8, for: .scrollContent)
+        .environment(\.defaultMinListRowHeight, 44)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let error = workspace.pinUpdateError {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.caption).foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                    .background(.regularMaterial)
+            VStack(spacing: 0) {
+                if searchPresented { directorySearch }
+                if let error = workspace.pinUpdateError {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                        .background(.regularMaterial)
+                }
             }
         }
-        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: directMessages ? "DMを検索" : "チャンネルを検索")
         .refreshable {
             await workspace.refresh()
             await workspace.loadPins()
@@ -140,7 +148,12 @@ private struct ConversationDirectory: View {
                     unreadOnly.toggle()
                 }.accessibilityValue(unreadOnly ? "有効" : "無効")
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button("検索", systemImage: "magnifyingglass") {
+                    searchPresented = true
+                    searchFocused = true
+                }
+                .accessibilityIdentifier("search-conversations")
                 if directMessages {
                     Button("新しいDM", systemImage: "square.and.pencil") { creating = true }
                         .accessibilityIdentifier("new-dm")
@@ -157,6 +170,48 @@ private struct ConversationDirectory: View {
             else { CreateChannelView(workspace: workspace) }
         }
         .sheet(isPresented: $browsing) { ChannelBrowser(workspace: workspace) }
+    }
+
+    private var directorySearch: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return GlassEffectContainer(spacing: 8) {
+            layout {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 17))
+                        .foregroundStyle(.secondary).accessibilityHidden(true)
+                    TextField(directMessages ? "DMを検索" : "チャンネルを検索", text: $search)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .submitLabel(.search).focused($searchFocused)
+                        .accessibilityIdentifier("conversation-search-input")
+                    if !search.isEmpty {
+                        Button { search = "" } label: {
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 17)).foregroundStyle(.secondary)
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("検索語を消去")
+                        .accessibilityIdentifier("clear-conversation-search")
+                    }
+                }
+                .padding(.horizontal, 12).frame(minHeight: 44)
+                .glassEffect(.regular, in: Capsule())
+                Button {
+                    searchFocused = false
+                    search = ""
+                    searchPresented = false
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 17, weight: .semibold))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .glassEffect(.regular.interactive(), in: Circle())
+                .accessibilityLabel("検索を閉じる")
+                .accessibilityIdentifier("close-conversation-search")
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .task { searchFocused = true }
     }
 
     private func channelSection(_ title: LocalizedStringKey, id: String, channels: [Channel],
@@ -181,32 +236,45 @@ private struct ConversationDirectory: View {
             .disabled(!search.isEmpty)
             .accessibilityValue(expanded ? "展開中" : "折り畳み中")
             .accessibilityIdentifier("channel-section-\(id)")
+            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
         }
     }
 
     private func channelRows(_ channels: [Channel]) -> some View {
         ForEach(channels) { channel in
                 NavigationLink(value: ChatRoute.channel(channel.id)) {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 8) {
                         if let peer = workspace.directMessagePeer(for: channel) {
                             AvatarView(name: peer.name, url: peer.avatarURL)
                         } else {
-                            Image(systemName: channel.symbol).font(.title3).foregroundStyle(.tint)
-                                .frame(width: 32, height: 38)
+                            Image(systemName: channel.symbol).font(.body).foregroundStyle(.tint)
+                                .frame(minWidth: 24, minHeight: 28)
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(workspace.name(for: channel))
-                                .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
-                            if let description = channel.description, !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        let title = Text(workspace.name(for: channel))
+                            .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
+                        let description = channel.description ?? ""
+                        let labels = VStack(alignment: .leading, spacing: 2) {
+                            title
+                            if !directMessages || !description.isEmpty {
+                                Text(description).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1, reservesSpace: true)
+                                    .accessibilityHidden(description.isEmpty)
                             }
+                        }
+                        if !directMessages && description.isEmpty {
+                            // 説明の有無で行の高さが変わらないよう、2段分の寸法を残す。
+                            labels.hidden().overlay(alignment: .leading) { title }
+                        } else {
+                            labels
                         }
                         Spacer(minLength: 4)
                         if workspace.unread.contains(channel.id) {
                             Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
                         }
-                    }.padding(.vertical, 3)
+                    }
                 }
+                .listRowInsets(EdgeInsets(top: directMessages ? 2 : 8, leading: 12,
+                                         bottom: directMessages ? 2 : 8, trailing: 12))
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .contextMenu { ChannelPinButton(channel: channel, workspace: workspace) }
                 .accessibilityHint("長押しでピン留めを変更できます")
@@ -218,6 +286,19 @@ private struct ConversationDirectory: View {
             }
     }
 
+}
+
+private struct ConversationDirectoryListStyle: ViewModifier {
+    let directMessages: Bool
+
+    func body(content: Content) -> some View {
+        if directMessages {
+            content.listStyle(.insetGrouped)
+        } else {
+            content.listStyle(.plain)
+                .contentMargins(.horizontal, 0, for: .scrollContent)
+        }
+    }
 }
 
 private struct ChannelBrowser: View {
