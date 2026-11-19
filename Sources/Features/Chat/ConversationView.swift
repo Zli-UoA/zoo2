@@ -174,9 +174,6 @@ private struct MessageList: View {
     @State private var threadFollowsLatest = true
     @State private var threadUserScrolling = false
 
-    private var firstUnreadID: String? {
-        parentID == nil ? MessageTimeline.firstUnread(in: messages, state: initialReadState, userID: store.userID) : nil
-    }
     private var positionKey: String {
         "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)"
     }
@@ -210,6 +207,10 @@ private struct MessageList: View {
     }
 
     var body: some View {
+        let messages = self.messages
+        let messageIDs = messages.map(\.id)
+        let firstUnreadID = parentID == nil
+            ? MessageTimeline.firstUnread(in: messages, state: initialReadState, userID: store.userID) : nil
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if store.loading && messages.isEmpty {
@@ -282,9 +283,9 @@ private struct MessageList: View {
             }
         }
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { ids in
-            renderCache.retain(visibleIDs: ids, orderedIDs: messages.map(\.id))
+            renderCache.retain(visibleIDs: ids, orderedIDs: messageIDs)
         }
-        .onChange(of: messages.map(\.id)) { _, ids in renderCache.updateMessages(ids) }
+        .onChange(of: messageIDs) { _, ids in renderCache.updateMessages(ids) }
         .onScrollGeometryChange(for: MessageScrollState.self) { geometry in
             let topInset = parentID == nil ? 0 : geometry.contentInsets.top
             return MessageScrollState(distanceToBottom: geometry.contentSize.height - geometry.contentOffset.y - topInset - geometry.containerSize.height)

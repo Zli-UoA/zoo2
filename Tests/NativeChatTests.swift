@@ -1,6 +1,8 @@
 import Foundation
+import Observation
 import Synchronization
 import Testing
+import XCTest
 @testable import Zoo
 
 @Suite("Electric の差分同期")
@@ -86,6 +88,193 @@ final class ChatHarness {
 
     func stub(_ handler: @escaping StubProtocol.Handler) { StubProtocol.install(handler, id: id) }
     func close() { api.auth.logout(); api.transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: id) }
+}
+
+@MainActor
+private final class ConversationHistoryHarness {
+    static let channelID = "11111111-1111-4111-8111-111111111111"
+    let store: ConversationStore
+    private let harness: ChatHarness
+    private let requests = AsyncStream<Void>.makeStream()
+    private let responses = AsyncStream<Data>.makeStream()
+    private var run: Task<Void, Never>?
+
+    init() throws {
+        harness = try ChatHarness()
+        store = ConversationStore(channel: Channel(id: Self.channelID, channel_name: "履歴検証", is_private: false, is_dm: false),
+                                  client: harness.client, userID: "33333333-3333-4333-8333-333333333333")
+        let requests = requests.continuation
+        let responses = responses.stream
+        let reads = Mutex(0)
+        harness.stub { _ in
+            requests.yield(())
+            var iterator = responses.makeAsyncIterator()
+            guard let data = await iterator.next() else { throw CancellationError() }
+            let offset = reads.withLock { $0 += 1; return $0 }
+            return (200, ["electric-handle": "history", "electric-offset": "0_\(offset)"], data)
+        }
+    }
+
+    func start() async {
+        run = Task { await store.run() }
+        var iterator = requests.stream.makeAsyncIterator()
+        _ = await iterator.next()
+    }
+
+    func receive(_ events: [JSONValue]) async throws {
+        responses.continuation.yield(try JSONEncoder().encode(events))
+        // 次の要求はストアへの反映後に始まるため、固定時間の待機を使わず検証できる。
+        var iterator = requests.stream.makeAsyncIterator()
+        _ = await iterator.next()
+    }
+
+    static func insert(_ message: Message) throws -> JSONValue {
+        .object(["key": .string(message.id), "headers": .object(["operation": .string("insert")]),
+                 "value": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(message))])
+    }
+
+    static let ready = JSONValue.object(["headers": .object(["control": .string("up-to-date")])])
+
+    func close() {
+        run?.cancel()
+        responses.continuation.finish()
+        requests.continuation.finish()
+        harness.close()
+    }
+}
+
+@MainActor
+final class ConversationPerformanceTests: XCTestCase {
+    func testLargeHistoryLookups() async throws {
+        let harness = try ConversationHistoryHarness()
+        defer { harness.close() }
+        let messages = (0..<5_000).map { index in
+            Message(id: "message-\(index)", user_id: "user", channel_id: ConversationHistoryHarness.channelID,
+                    content: "長い履歴の投稿 \(index)", created_at: "2026-11-18T09:00:00Z",
+                    parent_id: index.isMultiple(of: 5) ? nil : "message-\(index / 5 * 5)")
+        }
+        await harness.start()
+        try await harness.receive(messages.map { try ConversationHistoryHarness.insert($0) } + [ConversationHistoryHarness.ready])
+        XCTAssertEqual(harness.store.messages.count, 5_000)
+        var count = 0
+        measure(metrics: [XCTClockMetric()]) {
+            for _ in 0..<100 {
+                count += harness.store.roots.count
+                count += harness.store.replies(to: "message-0").count
+            }
+        }
+        XCTAssertGreaterThan(count, 0)
+    }
+}
+
+@MainActor
+@Suite("会話履歴の更新と索引", .timeLimit(.minutes(1)))
+struct ConversationHistoryTests {
+    private func message(_ id: String, date: String = "2026-11-18T09:00:00Z", parent: String? = nil) -> Message {
+        Message(id: id, user_id: "user", channel_id: ConversationHistoryHarness.channelID,
+                content: id, created_at: date, parent_id: parent)
+    }
+
+    @Test("親の到着・返信の編集・削除をチャンネルとスレッドの両方に反映する")
+    func remoteUpdates() async throws {
+        let harness = try ConversationHistoryHarness()
+        defer { harness.close() }
+        let store = harness.store
+        var reply = message("reply", date: "2026-11-18T09:01:00Z", parent: "parent")
+        await harness.start()
+        try await harness.receive([ConversationHistoryHarness.insert(reply), ConversationHistoryHarness.ready])
+        #expect(store.roots.map(\.id) == ["reply"])
+        #expect(store.replies(to: "parent") == [reply])
+
+        try await harness.receive([ConversationHistoryHarness.insert(message("parent"))])
+        #expect(store.roots.map(\.id) == ["parent"])
+        #expect(store.replies(to: "parent") == [reply])
+
+        reply.content = "編集後の返信"
+        reply.updated_at = "2026-11-18T09:02:00Z"
+        try await harness.receive([.object(["key": .string("reply"), "headers": .object(["operation": .string("update")]),
+                                           "value": .object(["content": .string(reply.content), "updated_at": .string(reply.updated_at!)])])])
+        #expect(store.replies(to: "parent") == [reply])
+        #expect(store.message(id: "reply") == reply)
+
+        for id in ["parent", "reply"] {
+            try await harness.receive([.object(["key": .string(id), "headers": .object(["operation": .string("delete")])])])
+            #expect(store.message(id: id) == nil)
+            #expect(store.roots == (id == "parent" ? [reply] : []))
+        }
+        #expect(store.replies(to: "parent").isEmpty)
+    }
+
+    @Test("日時順と同時刻のID順を保ち、再同期時には古い索引を破棄する")
+    func orderingAndReset() async throws {
+        let harness = try ConversationHistoryHarness()
+        defer { harness.close() }
+        let store = harness.store
+        let parent = message("a", date: "2026-11-18T18:00:00+09:00")
+        let reply = message("reply", parent: "a")
+        var deleted = message("deleted")
+        deleted.deleted_at = "2026-11-18T09:01:00Z"
+        var foreign = message("foreign")
+        foreign.channel_id = "別のチャンネル"
+        let rows = [message("late", date: "2026-11-18 09:00:00.123456"), message("b"), parent,
+                    message("invalid", date: "日時不明"), reply, deleted, foreign]
+        await harness.start()
+        try await harness.receive(rows.map { try ConversationHistoryHarness.insert($0) } + [ConversationHistoryHarness.ready])
+        #expect(store.messages.map(\.id) == ["invalid", "a", "b", "reply", "late"])
+        #expect(store.roots.map(\.id) == ["invalid", "a", "b", "late"])
+
+        let changed = Mutex(false)
+        withObservationTracking {
+            _ = store.messages
+            _ = store.roots
+            _ = store.replies(to: "a")
+        } onChange: { changed.withLock { $0 = true } }
+        try await harness.receive([ConversationHistoryHarness.ready])
+        #expect(!changed.withLock { $0 })
+
+        try await harness.receive([.object(["headers": .object(["control": .string("must-refetch")])])])
+        #expect(store.messages.isEmpty)
+        #expect(store.roots.isEmpty)
+        #expect(store.replies(to: "a").isEmpty)
+        #expect(store.message(id: "a") == nil)
+        #expect(store.loading)
+        try await harness.receive([ConversationHistoryHarness.insert(reply), ConversationHistoryHarness.ready])
+        #expect(store.roots == [reply])
+        #expect(store.replies(to: "a") == [reply])
+    }
+
+    @Test("送信・編集・親の削除と会話終了を索引に反映する", arguments: [false, true])
+    func localUpdates(encrypted: Bool) async throws {
+        let client = PreviewChatClient()
+        let channel = Channel(id: PreviewChatClient.channelID, channel_name: "一般", is_private: false, is_dm: false)
+        let store = ConversationStore(channel: channel, client: client, userID: client.currentUser.id)
+        store.drafts["root"] = "親投稿"
+        await store.send()
+        let parent = try #require(store.roots.first)
+        store.drafts[parent.id] = "返信"
+        await store.send(parentID: parent.id)
+        let reply = try #require(store.replies(to: parent.id).first)
+        #expect(await store.edit(parent, content: "親投稿を編集"))
+        #expect(store.roots.first?.content == "親投稿を編集")
+        #expect(await store.edit(reply, content: "返信を編集"))
+        let editedReply = try #require(store.replies(to: parent.id).first)
+        #expect(editedReply.content == "返信を編集")
+        await store.delete(parent)
+        #expect(store.roots == [editedReply])
+        #expect(store.message(id: parent.id) == nil)
+
+        if encrypted {
+            var changed = channel
+            changed.encrypted = true
+            store.update(changed)
+        } else {
+            store.shutdown()
+        }
+        #expect(store.messages.isEmpty)
+        #expect(store.roots.isEmpty)
+        #expect(store.replies(to: parent.id).isEmpty)
+        #expect(store.message(id: reply.id) == nil)
+    }
 }
 
 @MainActor
