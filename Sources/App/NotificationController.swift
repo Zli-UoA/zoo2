@@ -3,51 +3,6 @@ import Observation
 import UIKit
 import UserNotifications
 
-struct PushDestination: Equatable, Sendable {
-    let userID: String
-    let channelID: String
-    let messageID: String?
-    init?(payload: [AnyHashable: Any]) {
-        guard payload["type"] as? String != "push_test",
-              let user = payload["user_id"] as? String, UUID(uuidString: user) != nil,
-              let channel = payload["channel_id"] as? String, UUID(uuidString: channel) != nil else { return nil }
-        let message = payload["message_id"] as? String
-        guard message == nil || UUID(uuidString: message!) != nil else { return nil }
-        userID = user; channelID = channel; messageID = message
-    }
-}
-
-enum PushNotice: Equatable, Sendable {
-    case message(PushDestination)
-    case test(userID: String, id: UUID)
-
-    init?(payload: [AnyHashable: Any]) {
-        if payload["type"] as? String == "push_test" {
-            guard let user = payload["user_id"] as? String, UUID(uuidString: user) != nil,
-                  let id = payload["test_id"] as? String, let testID = UUID(uuidString: id) else { return nil }
-            self = .test(userID: user, id: testID)
-        } else {
-            guard let destination = PushDestination(payload: payload) else { return nil }
-            self = .message(destination)
-        }
-    }
-
-    var userID: String {
-        switch self {
-        case .message(let destination): destination.userID
-        case .test(let userID, _): userID
-        }
-    }
-}
-
-@MainActor
-protocol NotificationPreviewKeyStorage {
-    func load() throws -> NotificationPreviewKey?
-    func save(_ key: NotificationPreviewKey?) throws
-}
-
-extension NotificationPreviewKeyStore: NotificationPreviewKeyStorage {}
-
 @Observable @MainActor
 final class NotificationController {
     private(set) var status = "通知は無効です"
@@ -319,59 +274,6 @@ final class NotificationController {
             await standard.value; await voip.value
             guard epoch == generation, revision == registrationGeneration else { return }
             if let voipError { reportSyncError(voipError) }
-        }
-    }
-}
-
-@MainActor
-final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    let session = AppSession.shared
-    var controller: NotificationController?
-    let systemCalls = SystemCallController()
-    private var pendingMessageTap: PushDestination?
-    private var pendingTest: PushNotice?
-    func bind(_ controller: NotificationController) {
-        self.controller = controller
-        if let pendingMessageTap { controller.opened(.message(pendingMessageTap)); self.pendingMessageTap = nil }
-        if let pendingTest { _ = controller.receive(pendingTest); self.pendingTest = nil }
-    }
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        UNUserNotificationCenter.current().delegate = self
-        if !AppSession.isUITesting {
-            ZooShortcuts.updateAppShortcutParameters()
-            bind(session.notifications)
-            systemCalls.bind(session)
-            systemCalls.setForeground(application.applicationState == .active)
-            systemCalls.start()
-        }
-        return true
-    }
-    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) { controller?.received(token: deviceToken) }
-    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        AppOrientation.supportedOrientations(in: window?.windowScene)
-    }
-    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { controller?.failed() }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        guard let notice = PushNotice(payload: notification.request.content.userInfo) else { return [] }
-        return await presentationOptions(for: notice)
-    }
-    func presentationOptions(for notice: PushNotice) -> UNNotificationPresentationOptions {
-        guard let controller else {
-            if case .test = notice { pendingTest = notice }
-            return []
-        }
-        return controller.receive(notice) ? [.banner, .sound] : []
-    }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let target = PushNotice(payload: response.notification.request.content.userInfo) else { return }
-        await MainActor.run {
-            if let controller { controller.opened(target) }
-            else {
-                switch target {
-                case .message(let destination): pendingMessageTap = destination
-                case .test: pendingTest = target
-                }
-            }
         }
     }
 }
