@@ -27,7 +27,7 @@ final class ZooUITests: XCTestCase {
         capture(app, name: "添付PDFの拡大とページ移動")
         app.buttons["閉じる"].tap()
         XCTAssertTrue(open.waitForExistence(timeout: 5))
-        waitForPortrait(app)
+        waitForConversationOrientation(app)
     }
 
     @MainActor
@@ -721,7 +721,7 @@ final class ZooUITests: XCTestCase {
         viewport.swipeLeft()
         XCTAssertEqual(image.frame.minX, fitted.minX, accuracy: 1)
         capture(app, name: "縦長画像の全体表示")
-        viewport.pinch(withScale: 2, velocity: 1)
+        image.pinch(withScale: UIDevice.current.userInterfaceIdiom == .pad ? 4 : 2, velocity: 1)
         XCTAssertGreaterThan(image.frame.width, fitted.width * 1.3)
         XCTAssertTrue(app.buttons["閉じる"].isHittable)
         capture(app, name: "画像をピンチで拡大")
@@ -738,7 +738,7 @@ final class ZooUITests: XCTestCase {
         capture(app, name: "添付画像だけを横向きで表示")
         app.buttons["閉じる"].tap()
         XCTAssertTrue(viewport.waitForNonExistence(timeout: 5))
-        waitForPortrait(app)
+        waitForConversationOrientation(app)
     }
 
     @MainActor
@@ -768,7 +768,8 @@ final class ZooUITests: XCTestCase {
         let player = app.descendants(matching: .any)["attachment-video-player"].firstMatch
         XCTAssertTrue(player.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["channel-details"].exists)
-        assertStaysPortraitWhenDeviceRotates(app)
+        if UIDevice.current.userInterfaceIdiom == .pad { rotateToLandscape(app) }
+        else { assertStaysPortraitWhenDeviceRotates(app) }
         XCTAssertFalse(app.navigationBars["確認用.mp4"].exists)
         XCTAssertFalse(app.staticTexts["この動画を再生できません。再読み込みをお試しください。"].exists)
         if !app.buttons["Fullscreen Button"].isHittable {
@@ -785,11 +786,12 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(app.buttons["channel-details"].waitForExistence(timeout: 5))
         capture(app, name: "動画の全画面表示を閉じた会話")
         XCTAssertTrue(player.waitForExistence(timeout: 5))
-        waitForPortrait(app)
+        waitForConversationOrientation(app)
     }
 
     @MainActor
     func testVideoPictureInPictureRestoresPortrait() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "縦向き固定はiPhoneのみ")
         try XCTSkipUnless(AVPictureInPictureController.isPictureInPictureSupported(), "PiP非対応環境では実機で確認する")
         defer { XCUIDevice.shared.orientation = .portrait }
         let app = launchWorkspace(video: true)
@@ -891,7 +893,8 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
-    func testWelcomeStaysPortraitWhenDeviceRotates() {
+    func testWelcomeStaysPortraitWhenDeviceRotates() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "縦向き固定はiPhoneのみ")
         defer { XCUIDevice.shared.orientation = .portrait }
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
@@ -907,14 +910,21 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
-    func testConversationStaysPortraitWhenDeviceRotates() {
+    func testConversationStaysPortraitWhenDeviceRotates() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "縦向き固定はiPhoneのみ")
         defer { XCUIDevice.shared.orientation = .portrait }
         let app = launchWorkspace(dark: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let field = composer(app)
         field.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
-        field.typeText("横向きの下書き\n2行目\n3行目\n4行目\n5行目\n6行目")
+        let draft = "横向きの下書き\n2行目\n3行目\n4行目\n5行目\n6行目"
+        // 複数行入力への切り替え完了を待ち、改行の入力順を保つ。
+        for (index, line) in draft.split(separator: "\n").enumerated() {
+            if index > 0 { field.typeText("\n") }
+            field.typeText(String(line))
+        }
+        XCTAssertEqual(field.value as? String, draft)
         assertStaysPortraitWhenDeviceRotates(app)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         let list = app.scrollViews["message-list"]
@@ -936,8 +946,63 @@ final class ZooUITests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.2)).tap()
         XCTAssertTrue(attachmentAction.waitForNonExistence(timeout: 5))
         send.tap()
-        XCTAssertTrue(list.staticTexts["横向きの下書き\n2行目\n3行目\n4行目\n5行目\n6行目"].waitForExistence(timeout: 5))
+        XCTAssertTrue(list.staticTexts[draft].waitForExistence(timeout: 5))
         XCTAssertFalse(send.isEnabled)
+    }
+
+    @MainActor
+    private func waitForConversationOrientation(_ app: XCUIApplication) {
+        if UIDevice.current.userInterfaceIdiom == .pad { rotateToLandscape(app) }
+        else { waitForPortrait(app) }
+    }
+
+    @MainActor
+    func testIPadWelcomeSupportsRotation() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "iPadで回転を確認する")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+        let login = app.buttons["login"]
+        XCTAssertTrue(login.waitForExistence(timeout: 5))
+        rotateToLandscape(app)
+        XCTAssertTrue(login.isHittable)
+        XCTAssertTrue(app.frame.contains(login.frame))
+        capture(app, name: "iPadの横向きログイン画面")
+        XCUIDevice.shared.orientation = .portraitUpsideDown
+        waitForPortrait(app)
+        XCTAssertTrue(login.isHittable)
+        capture(app, name: "iPadの上下逆向きログイン画面")
+    }
+
+    @MainActor
+    func testIPadConversationPreservesDraftAcrossRotationAndTabs() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "iPadで入力と回転を確認する")
+        defer { XCUIDevice.shared.orientation = .portrait }
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let field = composer(app)
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("iPadの下書き\n回転後も入力を続けます")
+        rotateToLandscape(app)
+        XCTAssertTrue((field.value as? String)?.contains("iPadの下書き") == true)
+        let send = app.buttons["send-message"]
+        XCTAssertTrue(send.isHittable)
+        XCTAssertTrue(app.frame.contains(send.frame))
+        XCTAssertGreaterThan(app.scrollViews["message-list"].frame.height, 44)
+        capture(app, name: "iPadの横向き入力画面")
+        selectTab("DM", in: app, dismissingKeyboard: true)
+        XCTAssertTrue(app.buttons["new-dm"].waitForExistence(timeout: 5))
+        selectTab("チャンネル", in: app)
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue((field.value as? String)?.contains("iPadの下書き") == true)
+        XCUIDevice.shared.orientation = .portrait
+        waitForPortrait(app)
+        send.tap()
+        XCTAssertTrue(app.staticTexts["iPadの下書き\n回転後も入力を続けます"].waitForExistence(timeout: 5))
+        XCTAssertFalse(send.isEnabled)
+        capture(app, name: "iPadの縦向き送信後")
     }
 
     @MainActor
@@ -1048,10 +1113,19 @@ final class ZooUITests: XCTestCase {
             XCTAssertTrue(dismiss.wait(for: \.isHittable, toEqual: true, timeout: 5))
             dismiss.tap()
         }
-        let tab = app.tabBars.buttons[title]
+        let tab = tabButton(title, in: app)
         XCTAssertTrue(tab.wait(for: \.isHittable, toEqual: true, timeout: 5))
         tab.tap()
         XCTAssertTrue(tab.wait(for: \.isSelected, toEqual: true, timeout: 5))
+    }
+
+    @MainActor
+    private func tabButton(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        // iPadの上部タブはTabBarとして公開されないため、ボタンから取得する。
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            return app.buttons.matching(NSPredicate(format: "label == %@ AND identifier != 'BackButton'", title)).firstMatch
+        }
+        return app.tabBars.buttons[title]
     }
 
     @MainActor
@@ -1746,7 +1820,7 @@ final class ZooUITests: XCTestCase {
         mention.tap()
         XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"].exists)
-        XCTAssertTrue(app.tabBars.buttons["チャンネル"].isSelected)
+        XCTAssertTrue(tabButton("チャンネル", in: app).isSelected)
     }
 
     @MainActor

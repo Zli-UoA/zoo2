@@ -329,7 +329,7 @@ private struct MessageList: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
-            guard parentID == nil, isVisible, contentFits, !userScrolling else { return }
+            guard parentID == nil, isVisible, contentFits, !userScrolling, !messages.isEmpty else { return }
             // キーボードの遷移中は安全領域が未確定なので、収まる会話は表示完了後にも末尾へ揃える。
             scrollPosition.scrollTo(edge: .bottom)
         }
@@ -356,7 +356,9 @@ private struct MessageList: View {
                   previous.topInset != layout.topInset || previous.bottomInset != layout.bottomInset else { return }
             if parentID == nil {
                 // 入力欄が広がっても最新投稿が隠れないよう、短い会話と末尾を表示中の会話を表示領域に合わせる。
-                if layout.fits || previous.fits || previous.followingLatest || followsLatestIntent, let latest = messages.last {
+                if layout.fits, !messages.isEmpty {
+                    scrollPosition.scrollTo(edge: .bottom)
+                } else if previous.fits || previous.followingLatest || followsLatestIntent, let latest = messages.last {
                     scrollPosition.scrollTo(id: latest.id, anchor: .bottom)
                 }
                 return
@@ -421,7 +423,7 @@ private struct MessageList: View {
                 let openingReplyComposer = !positionedInitialMessages && focusComposerOnAppear
                 positionedInitialMessages = true
                 if parentID == nil && contentFits {
-                    // 全文が収まる場合は行への位置合わせで過剰に移動せず、入力欄との重なりを防ぐ。
+                    // 短い履歴は下揃えの余白があるため、行の座標を使わず画面端へ合わせる。
                     scrollPosition.scrollTo(edge: .bottom)
                 } else if parentID != nil && contentFits && !openingReplyComposer {
                     scrollPosition.scrollTo(edge: .top)

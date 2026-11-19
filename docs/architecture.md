@@ -2,7 +2,8 @@
 
 ## ネイティブ画面と状態
 
-ログイン後は SwiftUI の `TabView` にチャンネル、DM、通知、プロフィールを配置し、それぞれに `NavigationStack` を持たせます。
+iPhoneと幅の狭いiPadでは、SwiftUIの `TabView` にチャンネル、DM、通知、プロフィールを配置し、それぞれに `NavigationStack` を持たせます。
+iPadの通常幅では `TabletWorkspaceView` が左端に切り替えボタン、その右に会話一覧と本文を並べます。`NavigationSplitView` の詳細列でスレッドを開くため、返信中も一覧から別の会話へ移動できます。画面構成を切り替えても、選択中の会話と下書きは共通のStoreに保持します。
 `AppSession` が認証と通知を管理し、認証後に `WorkspaceStore` を作成します。
 `WorkspaceStore` はチャンネル、ユーザー、未読、画面遷移、チャンネル別の `ConversationStore` を保持します。
 `ConversationStore` は履歴、スレッド、下書き、送信・同期状態を管理します。

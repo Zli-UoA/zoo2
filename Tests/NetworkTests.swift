@@ -222,7 +222,7 @@ struct NetworkTests {
         #expect(controller.receive(.test(userID: user, id: testID)))
         release.continuation.yield(())
         await send.value
-        #expect(controller.testStatus == "このiPhoneでテスト通知を受信しました。")
+        #expect(controller.testStatus == "この端末でテスト通知を受信しました。")
 
         let second = Task { await controller.sendTest() }
         let nextID = try #require(await iterator.next())
@@ -235,7 +235,7 @@ struct NetworkTests {
         restarted.connect(api: api, userID: user)
         #expect(previewKeys.load() == previewKey)
         #expect(restarted.destination == nil)
-        #expect(restarted.testStatus == "このiPhoneでテスト通知を受信しました。")
+        #expect(restarted.testStatus == "この端末でテスト通知を受信しました。")
 
         stub { _ in
             requests.withLock { $0 += 1 }
@@ -393,7 +393,7 @@ struct NetworkTests {
         delegate.bind(controller)
         #expect(controller.testStatus == nil)
         controller.connect(api: api, userID: user)
-        #expect(controller.testStatus == "このiPhoneでテスト通知を受信しました。")
+        #expect(controller.testStatus == "この端末でテスト通知を受信しました。")
 
         UserDefaults.standard.set(pending, forKey: attemptKey)
         let restored = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
@@ -405,7 +405,7 @@ struct NetworkTests {
         await restored.checkDeliveredTest { [unrelated, .test(userID: user, id: UUID())] }
         #expect(restored.testStatus == nil)
         await restored.checkDeliveredTest { [unrelated, matching] }
-        #expect(restored.testStatus == "このiPhoneでテスト通知を受信しました。")
+        #expect(restored.testStatus == "この端末でテスト通知を受信しました。")
         await restored.checkDeliveredTest {
             Issue.record("受信確認済みのテストで配信済み通知を再取得しました。")
             return []

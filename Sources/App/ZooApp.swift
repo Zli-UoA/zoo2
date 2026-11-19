@@ -35,7 +35,7 @@ enum AppOrientation {
     private static var attachmentScenes: [UUID: UIWindowScene] = [:]
 
     static func supportedOrientations(in scene: UIWindowScene?) -> UIInterfaceOrientationMask {
-        guard UIDevice.current.userInterfaceIdiom == .phone else { return .allButUpsideDown }
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return .all }
         return attachmentScenes.values.contains { $0 === scene } ? .allButUpsideDown : .portrait
     }
 
@@ -129,7 +129,7 @@ private struct RootView: View {
         VStack(spacing: 24) {
             Image(systemName: "pawprint.fill").font(.system(size: 64)).foregroundStyle(.tint)
             Text("ようこそ Zoo へ").font(.largeTitle.bold())
-            Text("いつもの会話を、iPhone で。")
+            Text("いつもの会話を、手元で。")
         }
     }
 

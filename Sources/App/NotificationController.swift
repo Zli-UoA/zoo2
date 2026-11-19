@@ -54,7 +54,7 @@ final class NotificationController {
     private(set) var enabled = false
     private(set) var registrationFailed = false
     private(set) var sendingTest = false
-    var testStatus: String? { testAttempt?.received == true ? "このiPhoneでテスト通知を受信しました。" : testFeedback }
+    var testStatus: String? { testAttempt?.received == true ? "この端末でテスト通知を受信しました。" : testFeedback }
     var destination: PushDestination?
     private let registration: PushRegistration
     private let voipRegistration: PushRegistration
