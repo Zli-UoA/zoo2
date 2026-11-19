@@ -256,10 +256,14 @@ CREATE TABLE apns_subscriptions (
   environment text NOT NULL CHECK (environment IN ('sandbox', 'production')),
   revocation_hash text NOT NULL,
   created_at timestamp(3) NOT NULL,
-  last_test_at timestamptz,
-  UNIQUE (device_token, environment)
+  last_test_at timestamptz
 );
 CREATE INDEX idx_apns_subscriptions_user_id ON apns_subscriptions (user_id);
+-- 既存のIDから用途を判定し、旧サーバーの書き込みや解除情報も維持する。
+CREATE UNIQUE INDEX apns_subscriptions_token_environment_kind_key ON apns_subscriptions (
+  device_token, environment,
+  (id = encode(sha256(('voip:' || environment || ':' || device_token)::bytea), 'hex'))
+);
 
 -- 遅れて届いた登録要求で、ログアウト済みの端末に通知が再開されるのを防ぐ。
 CREATE TABLE apns_revocations (
