@@ -1314,15 +1314,17 @@ async fn verify_login_redirect_chain(
             .head(current.clone())
             .send()
             .await
-            .map_err(|err| format!("ログイン URL の事前確認に失敗しました: {err}"))?;
+            .map_err(|err| format!("ログイン URL の事前確認に失敗しました: {}", err.without_url()))?;
         if matches!(
             res.status(),
             reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
         ) {
-            res =
-                client.get(current.clone()).send().await.map_err(|err| {
-                    format!("ログイン URL の事前確認 (GET) に失敗しました: {err}")
-                })?;
+            res = client.get(current.clone()).send().await.map_err(|err| {
+                format!(
+                    "ログイン URL の事前確認 (GET) に失敗しました: {}",
+                    err.without_url()
+                )
+            })?;
         }
         let status = res.status();
         if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
@@ -1522,6 +1524,19 @@ mod tests {
 
         stop.store(true, Ordering::SeqCst);
         let _ = server.join();
+
+        // 通信エラー時のログ用エラー文字列に user_code 付き URL が含まれないことを確認する。
+        let net_err = verify_login_redirect_chain(
+            &client,
+            &format!("http://{addr}/device?user_code=SECRET-CODE-999"),
+            &local_issuer,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            !net_err.contains("SECRET-CODE-999"),
+            "error leaked user_code: {net_err}"
+        );
     }
 
     #[test]

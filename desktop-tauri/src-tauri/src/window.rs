@@ -373,7 +373,10 @@ pub fn create_tray(app: &App) -> tauri::Result<()> {
             }
             #[cfg(not(target_os = "macos"))]
             crate::update::CHECK_MENU_ID => crate::update::check_now(app),
-            "quit" => app.exit(0),
+            "quit" => {
+                crate::update::prepare_manual_exit(app);
+                app.exit(0);
+            }
             #[cfg(target_os = "macos")]
             crate::update::MENU_ID => crate::update::install_and_restart(app),
             _ => {}

@@ -57,15 +57,142 @@ pub struct TrayMenu(pub Menu<Wry>);
 /// 更新の準備ができたら、文言を変える。
 pub struct CheckMenuItem(pub MenuItem<tauri::Wry>);
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Default)]
+enum InnoExitState<T> {
+    #[default]
+    Idle,
+    /// 試行 `attempt_id` の配置・監視ハンドシェイク中。
+    InProgress { attempt_id: String },
+    /// 試行 `attempt_id` が `ARMED` を受け取り、`app.exit(0)` による終了確定を待機中。
+    WaitingForExit { attempt_id: String, ready: T },
+    /// `ExitRequested` が終了を確定済み。
+    CommittedToExit,
+    /// 試行 `attempt_id` が中止済み。`cancel_pending_exit` が true のときは
+    /// キュー済みの `app.exit(0)` を `prevent_exit()` で 1 回取り消す。
+    Aborted {
+        attempt_id: String,
+        detail: Option<String>,
+        cancel_pending_exit: bool,
+    },
+}
+
+#[cfg(any(target_os = "windows", test))]
+enum InnoAbortResult<T> {
+    AbortedWaiting(T),
+    DeferredToInProgress,
+    NotMatching,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl<T> InnoExitState<T> {
+    fn begin_attempt(&mut self, attempt_id: String) {
+        *self = Self::InProgress { attempt_id };
+    }
+
+    fn arm_exit(&mut self, attempt_id: String, ready: T) -> Result<(), (T, String)> {
+        if let Self::Aborted {
+            attempt_id: aborted_id,
+            detail,
+            cancel_pending_exit: false,
+        } = self
+            && aborted_id == &attempt_id
+        {
+            let msg = detail
+                .take()
+                .unwrap_or_else(|| "更新を中止しました。再度お試しください".to_string());
+            *self = Self::Idle;
+            return Err((ready, msg));
+        }
+        *self = Self::WaitingForExit { attempt_id, ready };
+        Ok(())
+    }
+
+    fn abort_if_matching(&mut self, attempt_id: Option<&str>, detail: &str) -> InnoAbortResult<T> {
+        let Some(target) = attempt_id else {
+            return InnoAbortResult::NotMatching;
+        };
+        match self {
+            Self::WaitingForExit {
+                attempt_id: cur, ..
+            } if cur == target => {
+                let Self::WaitingForExit { attempt_id, ready } = std::mem::take(self) else {
+                    unreachable!();
+                };
+                *self = Self::Aborted {
+                    attempt_id,
+                    detail: None,
+                    cancel_pending_exit: true,
+                };
+                InnoAbortResult::AbortedWaiting(ready)
+            }
+            Self::InProgress { attempt_id: cur } if cur == target => {
+                let attempt_id = cur.clone();
+                *self = Self::Aborted {
+                    attempt_id,
+                    detail: Some(detail.to_string()),
+                    cancel_pending_exit: false,
+                };
+                InnoAbortResult::DeferredToInProgress
+            }
+            _ => InnoAbortResult::NotMatching,
+        }
+    }
+
+    fn clear_attempt(&mut self, attempt_id: &str) {
+        match self {
+            Self::InProgress { attempt_id: cur }
+            | Self::Aborted {
+                attempt_id: cur,
+                cancel_pending_exit: false,
+                ..
+            } if cur == attempt_id => {
+                *self = Self::Idle;
+            }
+            _ => {}
+        }
+    }
+
+    /// `ExitRequested` 到達時に呼び、取り消すべき予約終了であれば `true` (`prevent_exit`) を返す。
+    fn on_exit_requested(&mut self) -> bool {
+        match self {
+            Self::Aborted {
+                cancel_pending_exit: true,
+                ..
+            } => {
+                *self = Self::Idle;
+                true
+            }
+            Self::WaitingForExit { .. } => {
+                *self = Self::CommittedToExit;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn prepare_manual_exit(&mut self) {
+        if matches!(
+            self,
+            Self::Aborted {
+                cancel_pending_exit: true,
+                ..
+            }
+        ) {
+            *self = Self::Idle;
+        }
+    }
+}
+
 #[derive(Default)]
 struct Updates {
     /// 取得して署名を確かめた更新。
     ready: Mutex<Option<Ready>>,
     /// インストーラーの配置や起動を進めている最中か (同時実行で同じ一時ファイルを壊さないため)。
     installing: Mutex<bool>,
-    /// Windows Inno Setup 起動直後の終了待ちで自プロセスが残った場合に復元する候補。
+    /// Windows Inno Setup 起動前後の試行状態と終了確定／中止の排他遷移。
     #[cfg(target_os = "windows")]
-    pending_exit_ready: Mutex<Option<Ready>>,
+    inno_exit: Mutex<InnoExitState<Ready>>,
     /// macOS のトレイへ足したメニューの項目。新しい版が続けて出たら、文言だけ変える。
     #[cfg(target_os = "macos")]
     item: Mutex<Option<MenuItem<Wry>>>,
@@ -86,8 +213,8 @@ pub fn spawn(app: &AppHandle, check_updates: bool) {
     #[cfg(target_os = "windows")]
     {
         cleanup_old_inno_installers(app);
-        if let Some(detail) = take_inno_failure_message(std::env::args_os().skip(1)) {
-            show_inno_failure(app, &detail);
+        if let Some(failure) = take_inno_failure(std::env::args_os().skip(1)) {
+            show_inno_failure(app, &failure);
         }
     }
 
@@ -663,12 +790,20 @@ pub fn install_and_restart(app: &AppHandle) {
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         if bundle_type().is_none() {
-            match install_inno_setup(&app, &ready) {
+            let attempt_id = next_inno_attempt_id(std::process::id());
+            lock(&app.state::<Updates>().inno_exit).begin_attempt(attempt_id.clone());
+            match install_inno_setup(&app, &ready, &attempt_id) {
                 Ok(()) => {
-                    *lock(&app.state::<Updates>().pending_exit_ready) = Some(ready);
-                    app.exit(0);
+                    let armed = lock(&app.state::<Updates>().inno_exit).arm_exit(attempt_id, ready);
+                    match armed {
+                        Ok(()) => app.exit(0),
+                        Err((ready, detail)) => finish_failed_install(&app, ready, &detail),
+                    }
                 }
-                Err(err) => finish_failed_install(&app, ready, &err.to_string()),
+                Err(err) => {
+                    lock(&app.state::<Updates>().inno_exit).clear_attempt(&attempt_id);
+                    finish_failed_install(&app, ready, &err.to_string());
+                }
             }
             return;
         }
@@ -779,20 +914,30 @@ fn should_keep_existing_version(existing: &str, failed: &str) -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
-pub fn take_inno_failure_message<I, S>(args: I) -> Option<String>
+#[derive(Debug, PartialEq, Eq)]
+pub struct InnoFailure {
+    pub detail: String,
+    pub attempt_id: Option<String>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub fn take_inno_failure<I, S>(args: I) -> Option<InnoFailure>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
+    let mut detail = None;
+    let mut attempt_id = None;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
-        if arg.as_ref() == "--update-failed" {
+        let os = arg.as_ref();
+        if os == "--update-failed" && detail.is_none() {
             let code = iter.next().and_then(|s| {
                 s.as_ref()
                     .to_str()
                     .and_then(|t| t.trim().parse::<i32>().ok())
             });
-            return Some(match code {
+            detail = Some(match code {
                 Some(-2) => {
                     "アプリの終了待機がタイムアウトしたため更新を中止しました。再度お試しください"
                         .to_string()
@@ -800,24 +945,71 @@ where
                 Some(-1) | None => "インストーラーを起動または実行できませんでした".to_string(),
                 Some(code) => format!("インストーラーが終了しました (コード {code})"),
             });
+        } else if os == "--update-attempt" && attempt_id.is_none() {
+            attempt_id = iter
+                .next()
+                .and_then(|s| s.as_ref().to_str().map(str::trim).map(str::to_string))
+                .filter(|s| !s.is_empty());
         }
     }
-    None
+    detail.map(|detail| InnoFailure { detail, attempt_id })
+}
+
+/// トレイの「終了」など利用者の明示終了前に、取り消し済み更新の終了抑止状態を解除する。
+pub fn prepare_manual_exit(app: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    if let Some(updates) = app.try_state::<Updates>() {
+        lock(&updates.inno_exit).prepare_manual_exit();
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
 }
 
 #[cfg(target_os = "windows")]
-pub fn show_inno_failure(app: &AppHandle, detail: &str) {
+pub fn on_exit_requested(app: &AppHandle, code: Option<i32>, api: &tauri::ExitRequestApi) {
+    if code.is_none() {
+        return;
+    }
+    let Some(updates) = app.try_state::<Updates>() else {
+        return;
+    };
+    if lock(&updates.inno_exit).on_exit_requested() {
+        api.prevent_exit();
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn show_inno_failure(app: &AppHandle, failure: &InnoFailure) {
     if let Some(updates) = app.try_state::<Updates>() {
-        if let Some(pending) = lock(&updates.pending_exit_ready).take() {
-            restore_ready_on_failure(app, pending);
+        let (is_installing, abort_res) = {
+            let installing = lock(&updates.installing);
+            let abort_res =
+                lock(&updates.inno_exit).abort_if_matching(failure.attempt_id.as_deref(), &failure.detail);
+            (*installing, abort_res)
+        };
+        match abort_res {
+            InnoAbortResult::AbortedWaiting(pending) => {
+                // 進行中だった当該試行の中止確定: 復元とエラー表示を終えてから installing を解除する。
+                restore_ready_on_failure(app, pending);
+                updater_window::open(app);
+                show_result(app, "更新できませんでした", &failure.detail, true);
+                *lock(&updates.installing) = false;
+            }
+            InnoAbortResult::DeferredToInProgress => {
+                // 同一試行の arm_exit 側で app.exit(0) をスキップし復元・表示する。
+            }
+            InnoAbortResult::NotMatching if is_installing => {
+                // 別試行のインストールが進行中のため、古い通知で installing ガードや画面を壊さない。
+            }
+            InnoAbortResult::NotMatching => {
+                updater_window::open(app);
+                show_result(app, "更新できませんでした", &failure.detail, true);
+            }
         }
-        updater_window::open(app);
-        show_result(app, "更新できませんでした", detail, true);
-        *lock(&updates.installing) = false;
         return;
     }
     updater_window::open(app);
-    show_result(app, "更新できませんでした", detail, true);
+    show_result(app, "更新できませんでした", &failure.detail, true);
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -949,23 +1141,33 @@ fn updater_part_path(installer_path: &std::path::Path) -> std::path::PathBuf {
 #[cfg(any(target_os = "windows", test))]
 static INNO_INSTALL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[cfg(any(target_os = "windows", test))]
+fn next_inno_attempt_id(pid: u32) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = INNO_INSTALL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{pid}-{stamp}-{seq}")
+}
+
 /// 試行ごとに一意な配置先 (`.exe` / `.part` / `.lock`) を確保して `.part` へ書き出す。
 /// 前回の掃除失敗で古い `.exe` が残っていても、今回の配置だけを `ARMED` で確実に識別できる。
 #[cfg(any(target_os = "windows", test))]
 fn write_unique_inno_part(
     dir: &std::path::Path,
     version: &str,
-    pid: u32,
+    attempt_id: &str,
     bytes: &[u8],
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), String> {
     use std::io::Write;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    for _ in 0..64 {
-        let seq = INNO_INSTALL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let installer_path = dir.join(format!("zoo2-updater-{version}-{pid}-{stamp}-{seq}.exe"));
+    for retry in 0..64u32 {
+        let name = if retry == 0 {
+            format!("zoo2-updater-{version}-{attempt_id}.exe")
+        } else {
+            format!("zoo2-updater-{version}-{attempt_id}-{retry}.exe")
+        };
+        let installer_path = dir.join(name);
         let part_path = updater_part_path(&installer_path);
         let lock_path = updater_lock_path(&installer_path);
         if installer_path.exists() || lock_path.exists() {
@@ -998,6 +1200,7 @@ $installer = $env:ZOO2_UPDATER_INSTALLER\n\
 $exe = $env:ZOO2_UPDATER_EXE\n\
 $argsLine = $env:ZOO2_UPDATER_ARGS\n\
 $lockPath = $env:ZOO2_UPDATER_LOCK\n\
+$attemptId = $env:ZOO2_UPDATER_ATTEMPT\n\
 $oldPid = 0\n\
 [void][int]::TryParse($env:ZOO2_UPDATER_PID, [ref]$oldPid)\n\
 $waitMs = 15000\n\
@@ -1046,7 +1249,9 @@ try {\n\
   if ($lockPath) { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }\n\
 }\n\
 if ($relaunchOnFailure -and $code -ne 0 -and $exe -and (Test-Path -LiteralPath $exe)) {\n\
-  Start-Process -FilePath $exe -ArgumentList @('--update-failed', [string]$code)\n\
+  $relaunchArgs = @('--update-failed', [string]$code)\n\
+  if ($attemptId) { $relaunchArgs += @('--update-attempt', $attemptId) }\n\
+  Start-Process -FilePath $exe -ArgumentList $relaunchArgs\n\
 }\n";
 
 #[cfg(any(target_os = "windows", test))]
@@ -1123,6 +1328,7 @@ struct WatcherConfig<'a> {
     script: &'a str,
     old_pid: u32,
     wait_ms: Option<u32>,
+    attempt_id: Option<&'a str>,
     installer_path: &'a std::path::Path,
     exe_path: &'a std::path::Path,
     args_line: &'a str,
@@ -1163,6 +1369,9 @@ fn spawn_locked_powershell_watcher(
     if let Some(wait_ms) = config.wait_ms {
         cmd.env("ZOO2_UPDATER_WAIT_MS", wait_ms.to_string());
     }
+    if let Some(attempt_id) = config.attempt_id {
+        cmd.env("ZOO2_UPDATER_ATTEMPT", attempt_id);
+    }
     let mut child = cmd
         .spawn()
         .map_err(|err| format!("インストーラーを起動できませんでした ({err})"))?;
@@ -1196,7 +1405,7 @@ fn spawn_locked_powershell_watcher(
 }
 
 #[cfg(target_os = "windows")]
-fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
+fn install_inno_setup(app: &AppHandle, ready: &Ready, attempt_id: &str) -> Result<(), String> {
     ready
         .update
         .verify(&ready.bytes)
@@ -1221,7 +1430,7 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
         })
         .collect();
     let (installer_path, part_path, lock_path) =
-        write_unique_inno_part(&dir, &version, std::process::id(), &ready.bytes)?;
+        write_unique_inno_part(&dir, &version, attempt_id, &ready.bytes)?;
 
     let args = inno_installer_args(install_dir, std::process::id());
     // 1) "LOCKED": 清掃競合を防ぐ排他ロック確保を確認してから .exe へ改名する。
@@ -1230,6 +1439,7 @@ fn install_inno_setup(app: &AppHandle, ready: &Ready) -> Result<(), String> {
         script: INNO_WATCHER_SCRIPT,
         old_pid: std::process::id(),
         wait_ms: None,
+        attempt_id: Some(attempt_id),
         installer_path: &installer_path,
         exe_path: &exe,
         args_line: &args,
@@ -1377,20 +1587,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let (exe1, part1, lock1) = write_unique_inno_part(&dir, "0.2.12", 4242, b"first").unwrap();
+        let id1 = next_inno_attempt_id(4242);
+        let (exe1, part1, lock1) = write_unique_inno_part(&dir, "0.2.12", &id1, b"first").unwrap();
         assert!(part1.is_file());
         assert!(!exe1.exists());
         assert!(!lock1.exists());
         // 前回試行の .exe が削除失敗で残っている状況を模擬する。
         std::fs::rename(&part1, &exe1).unwrap();
 
-        let (exe2, part2, lock2) = write_unique_inno_part(&dir, "0.2.12", 4242, b"second").unwrap();
+        let id2 = next_inno_attempt_id(4242);
+        assert_ne!(id1, id2);
+        let (exe2, part2, lock2) = write_unique_inno_part(&dir, "0.2.12", &id2, b"second").unwrap();
         assert_ne!(exe1, exe2);
         assert_ne!(part1, part2);
         assert_ne!(lock1, lock2);
         assert!(exe1.is_file());
         assert!(!exe2.exists());
         assert_eq!(std::fs::read(&part2).unwrap(), b"second");
+
+        // 同じ attempt_id でも既存の .exe が残っていれば別パスを確保する。
+        let (exe3, part3, _) = write_unique_inno_part(&dir, "0.2.12", &id1, b"third").unwrap();
+        assert_ne!(exe1, exe3);
+        assert_eq!(std::fs::read(&part3).unwrap(), b"third");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1403,6 +1621,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         // Start-Process が扱う実体と同じ GUI .exe スタブを 1 回だけ生成し、各テストパスへ複製して検証する。
+        // マーカーは一時ファイルへ書き切って閉じてから原子的にリネームし、exists() 直後の空読み取りを防ぐ。
         let stub_exe = root.join("zoo2-stub.exe");
         let build_stub = "\
 $ErrorActionPreference = 'Stop'\n\
@@ -1417,7 +1636,9 @@ public class Zoo2Stub {\n\
         string self = Assembly.GetExecutingAssembly().Location;\n\
         string[] cfg = File.ReadAllLines(self + \".cfg\", Encoding.UTF8);\n\
         if (!string.IsNullOrEmpty(cfg[0])) {\n\
-            File.WriteAllText(cfg[0], Environment.CommandLine, Encoding.UTF8);\n\
+            string tmp = cfg[0] + \".tmp\";\n\
+            File.WriteAllText(tmp, Environment.CommandLine, Encoding.UTF8);\n\
+            File.Move(tmp, cfg[0]);\n\
         }\n\
         if (cfg[1].StartsWith(\"sleep:\")) {\n\
             Thread.Sleep(int.Parse(cfg[1].Substring(6)));\n\
@@ -1477,6 +1698,7 @@ Add-Type -TypeDefinition $src -OutputAssembly $env:ZOO2_STUB_OUT -OutputType Win
                 script: INNO_WATCHER_SCRIPT,
                 old_pid: 0,
                 wait_ms: None,
+                attempt_id: Some("case-attempt"),
                 installer_path: &installer_exe,
                 exe_path: &fake_exe,
                 args_line: "/SILENT /DIR=\"C:\\zoo2\"",
@@ -1556,6 +1778,7 @@ Add-Type -TypeDefinition $src -OutputAssembly $env:ZOO2_STUB_OUT -OutputType Win
                 script: INNO_WATCHER_SCRIPT,
                 old_pid: old_child.id(),
                 wait_ms: Some(300),
+                attempt_id: Some("timeout-attempt-1"),
                 installer_path: &installer_exe,
                 exe_path: &fake_exe,
                 args_line: "/SILENT",
@@ -1585,7 +1808,8 @@ Add-Type -TypeDefinition $src -OutputAssembly $env:ZOO2_STUB_OUT -OutputType Win
             let relaunch_args = std::fs::read_to_string(&relaunch_marker)
                 .expect("timeout should invoke exe with --update-failed -2");
             assert!(
-                relaunch_args.contains("--update-failed -2"),
+                relaunch_args.contains("--update-failed -2")
+                    && relaunch_args.contains("--update-attempt timeout-attempt-1"),
                 "unexpected timeout relaunch args: {relaunch_args}"
             );
         }
@@ -1622,6 +1846,7 @@ Add-Type -TypeDefinition $src -OutputAssembly $env:ZOO2_STUB_OUT -OutputType Win
                 script: INNO_WATCHER_SCRIPT,
                 old_pid: old_child.id(),
                 wait_ms: Some(5000),
+                attempt_id: Some("exit-attempt-1"),
                 installer_path: &installer_exe,
                 exe_path: &fake_exe,
                 args_line: "/SILENT",
@@ -1672,6 +1897,7 @@ Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyCont
             script: hold_script,
             old_pid: 0,
             wait_ms: None,
+            attempt_id: None,
             installer_path: &active_installer,
             exe_path: &active_installer,
             args_line: &ready_flag.to_string_lossy(),
@@ -1756,23 +1982,90 @@ Remove-Item -LiteralPath $env:ZOO2_UPDATER_LOCK -Force -ErrorAction SilentlyCont
     }
 
     #[test]
-    fn take_inno_failure_message_parses_exit_codes() {
-        assert_eq!(take_inno_failure_message(["--other", "1"]), None);
+    fn take_inno_failure_parses_exit_codes_and_attempt_id() {
+        assert_eq!(take_inno_failure(["--other", "1"]), None);
         assert_eq!(
-            take_inno_failure_message(["--update-failed", "5"]).as_deref(),
-            Some("インストーラーが終了しました (コード 5)")
+            take_inno_failure(["--update-failed", "5", "--update-attempt", "42-1"]),
+            Some(InnoFailure {
+                detail: "インストーラーが終了しました (コード 5)".to_string(),
+                attempt_id: Some("42-1".to_string()),
+            })
         );
         assert_eq!(
-            take_inno_failure_message(["--update-failed", "-2"]).as_deref(),
-            Some("アプリの終了待機がタイムアウトしたため更新を中止しました。再度お試しください")
+            take_inno_failure(["--update-failed", "-2", "--update-attempt", "42-2"]),
+            Some(InnoFailure {
+                detail: "アプリの終了待機がタイムアウトしたため更新を中止しました。再度お試しください"
+                    .to_string(),
+                attempt_id: Some("42-2".to_string()),
+            })
         );
         assert_eq!(
-            take_inno_failure_message(["--update-failed", "-1"]).as_deref(),
-            Some("インストーラーを起動または実行できませんでした")
+            take_inno_failure(["--update-failed", "-1"]),
+            Some(InnoFailure {
+                detail: "インストーラーを起動または実行できませんでした".to_string(),
+                attempt_id: None,
+            })
         );
         assert_eq!(
-            take_inno_failure_message(["--update-failed"]).as_deref(),
-            Some("インストーラーを起動または実行できませんでした")
+            take_inno_failure(["--update-failed"]),
+            Some(InnoFailure {
+                detail: "インストーラーを起動または実行できませんでした".to_string(),
+                attempt_id: None,
+            })
         );
+    }
+
+    #[test]
+    fn inno_exit_state_prevents_queued_exit_after_matching_timeout_and_ignores_other_attempts() {
+        // 1) タイムアウト通知が ExitRequested より先に届いた場合、候補を復元し、後続のキュー済み終了を取り消す。
+        let mut state: InnoExitState<&str> = InnoExitState::default();
+        state.begin_attempt("attempt-a".to_string());
+        assert!(state.arm_exit("attempt-a".to_string(), "v0.2.13").is_ok());
+        assert!(matches!(
+            state.abort_if_matching(Some("attempt-other"), "stale"),
+            InnoAbortResult::NotMatching
+        ));
+        assert!(matches!(
+            state.abort_if_matching(Some("attempt-a"), "timeout"),
+            InnoAbortResult::AbortedWaiting("v0.2.13")
+        ));
+        // キュー済み app.exit(0) は 1 回だけ prevent_exit() され、以降の通常終了は妨げない。
+        assert!(state.on_exit_requested());
+        assert!(!state.on_exit_requested());
+
+        // 2) ExitRequested が先に終了を確定した場合、終了は抑止されず後発の失敗通知でも覆らない。
+        state.begin_attempt("attempt-b".to_string());
+        assert!(state.arm_exit("attempt-b".to_string(), "v0.2.14").is_ok());
+        assert!(!state.on_exit_requested());
+        assert!(matches!(
+            state.abort_if_matching(Some("attempt-b"), "late"),
+            InnoAbortResult::NotMatching
+        ));
+
+        // 3) arm_exit より前に当該試行の中止が届いていた場合、app.exit(0) 前に Err で差し戻す。
+        state.begin_attempt("attempt-c".to_string());
+        assert!(matches!(
+            state.abort_if_matching(Some("attempt-c"), "timeout"),
+            InnoAbortResult::DeferredToInProgress
+        ));
+        assert_eq!(
+            state.arm_exit("attempt-c".to_string(), "v0.2.15"),
+            Err(("v0.2.15", "timeout".to_string()))
+        );
+
+        // 4) 中止済み予約終了が残っていても、明示的な手動終了 (Quit) は妨げない。
+        state.begin_attempt("attempt-d".to_string());
+        assert!(state.arm_exit("attempt-d".to_string(), "v0.2.16").is_ok());
+        assert!(matches!(
+            state.abort_if_matching(Some("attempt-d"), "timeout"),
+            InnoAbortResult::AbortedWaiting("v0.2.16")
+        ));
+        state.prepare_manual_exit();
+        assert!(!state.on_exit_requested());
+
+        // 5) 配置失敗時は clear_attempt で Idle へ戻る。
+        state.begin_attempt("attempt-e".to_string());
+        state.clear_attempt("attempt-e");
+        assert!(matches!(state, InnoExitState::Idle));
     }
 }
