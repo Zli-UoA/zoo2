@@ -1164,6 +1164,12 @@ async fn test_call_invite_lifecycle_and_permissions() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK);
     let id = body["invites"][0]["id"].as_str().unwrap().to_string();
     assert_eq!(body["invites"][0]["invitee_id"], bob.as_str());
+    let pending_path = format!("/api/call-invites/{id}");
+    let (status, state) = request(&w.app, &bob, "GET", &pending_path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["pending"], true);
+    let (_, state) = request(&w.app, &carol, "GET", &pending_path, None).await?;
+    assert_eq!(state["pending"], false);
     let (status, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["invites"].as_array().unwrap().len(), 0);
@@ -1222,6 +1228,8 @@ async fn test_call_invite_lifecycle_and_permissions() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(invite_status(&mut w.db, &id).await?, "declined");
+    let (_, state) = request(&w.app, &bob, "GET", &pending_path, None).await?;
+    assert_eq!(state["pending"], false);
     let (status, _) = request(
         &w.app,
         &bob,

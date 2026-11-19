@@ -23,6 +23,28 @@ use crate::{
 /// 入室まで時間がかかっても、別の人に席を取られないようにする。
 pub const ACCEPTED_SEAT_HOLD_SECONDS: u32 = 60;
 
+pub(crate) const PENDING_INVITATION_SQL: &str = "SELECT i.id::text FROM call_invites i
+ JOIN users u ON u.id=i.invitee_id AND NOT u.is_deactivated
+ JOIN channels c ON c.id=i.channel_id AND c.deleted_at IS NULL AND c.archive_at IS NULL AND NOT c.encrypted
+ WHERE i.id=$1::uuid AND i.invitee_id=$2 AND i.status='pending' AND i.expires_at>clock_timestamp()
+   AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
+       SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))";
+
+// Pushと初回Shapeの順序が逆転した場合だけ、宛先本人が有効な招待かを照合する。
+pub async fn pending(
+    State(state): State<AppState>,
+    actor: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut db = state.db.clone();
+    let rows = toasty::sql::query(PENDING_INVITATION_SQL)
+        .bind(id.to_string())
+        .bind(actor.id)
+        .exec(&mut db)
+        .await?;
+    Ok(Json(serde_json::json!({"pending": !rows.is_empty()})))
+}
+
 /// 席を予約している招待の条件（招待の別名は `i`）。呼び出し中、または応答してから日が浅くて、
 /// まだ入室していない人。入室済みの人は、在室の人数に数えるので、ここでは数えない。
 pub fn reserved_seat_condition() -> String {
