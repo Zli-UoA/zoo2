@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as RealtimeRouteImport } from './routes/realtime'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
+import { Route as ShellSplatRouteImport } from './routes/_shell.$'
 import { Route as ShellAppsAuthorizeRouteImport } from './routes/_shell.apps-authorize'
 import { Route as ShellBubbleRouteImport } from './routes/_shell.bubble'
 import { Route as ShellHomeRouteImport } from './routes/_shell.home'
@@ -36,6 +37,11 @@ const RealtimeRoute = RealtimeRouteImport.update({
 const ShellIndexRoute = ShellIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellSplatRoute = ShellSplatRouteImport.update({
+  id: '/$',
+  path: '/$',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellAppsAuthorizeRoute = ShellAppsAuthorizeRouteImport.update({
@@ -97,6 +103,7 @@ const ShellHomeUsersActorIdRoute = ShellHomeUsersActorIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/realtime': typeof RealtimeRoute
+  '/$': typeof ShellSplatRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
   '/home': typeof ShellHomeRoute
@@ -111,6 +118,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/realtime': typeof RealtimeRoute
+  '/$': typeof ShellSplatRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
   '/home': typeof ShellHomeRoute
@@ -128,6 +136,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
   '/realtime': typeof RealtimeRoute
+  '/_shell/$': typeof ShellSplatRoute
   '/_shell/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/_shell/bubble': typeof ShellBubbleRoute
   '/_shell/home': typeof ShellHomeRoute
@@ -146,6 +155,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/realtime'
+    | '/$'
     | '/apps-authorize'
     | '/bubble'
     | '/home'
@@ -160,6 +170,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/realtime'
+    | '/$'
     | '/apps-authorize'
     | '/bubble'
     | '/home'
@@ -176,6 +187,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_shell'
     | '/realtime'
+    | '/_shell/$'
     | '/_shell/apps-authorize'
     | '/_shell/bubble'
     | '/_shell/home'
@@ -217,6 +229,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof ShellIndexRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/$': {
+      id: '/_shell/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof ShellSplatRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/apps-authorize': {
@@ -300,6 +319,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface ShellRouteChildren {
+  ShellSplatRoute: typeof ShellSplatRoute
   ShellAppsAuthorizeRoute: typeof ShellAppsAuthorizeRoute
   ShellBubbleRoute: typeof ShellBubbleRoute
   ShellHomeRoute: typeof ShellHomeRoute
@@ -314,6 +334,7 @@ interface ShellRouteChildren {
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellSplatRoute: ShellSplatRoute,
   ShellAppsAuthorizeRoute: ShellAppsAuthorizeRoute,
   ShellBubbleRoute: ShellBubbleRoute,
   ShellHomeRoute: ShellHomeRoute,

@@ -1,4 +1,11 @@
 {
+  "a11y": {
+    "skipToContent": "跳到主要内容"
+  },
+  "notFoundPage": {
+    "title": "找不到页面",
+    "description": "你访问的页面可能已移动或不存在。"
+  },
   "nav": {
     "main": "主导航"
   },

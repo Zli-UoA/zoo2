@@ -1,4 +1,11 @@
 {
+  "a11y": {
+    "skipToContent": "跳去主要內容"
+  },
+  "notFoundPage": {
+    "title": "搵唔到頁面",
+    "description": "你要搵嘅頁面可能已經搬咗或者唔存在。"
+  },
   "nav": {
     "main": "主要導覽"
   },

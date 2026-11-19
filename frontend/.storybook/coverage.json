@@ -405,6 +405,10 @@
       "states": ["Default", "Open", "SelectControl"]
     },
     {
+      "file": "src/components/layout/NotFoundScreen.stories.tsx",
+      "states": ["Default", "Mobile"]
+    },
+    {
       "file": "src/components/layout/AppShell.stories.tsx",
       "states": [
         "Welcome",
@@ -1206,6 +1210,10 @@
     {
       "file": "src/components/layout/AppShell.tsx",
       "story": "src/components/layout/AppShell.stories.tsx"
+    },
+    {
+      "file": "src/components/layout/NotFoundScreen.tsx",
+      "story": "src/components/layout/NotFoundScreen.stories.tsx"
     },
     {
       "file": "src/components/layout/LeftRail.tsx",
