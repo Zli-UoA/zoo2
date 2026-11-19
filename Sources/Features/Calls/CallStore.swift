@@ -142,6 +142,24 @@ final class CallStore {
         return connection
     }
 
+    func startAndWait(channel: Channel) async throws {
+        guard start(channel: channel) != nil, let requestedSession = sessionID else {
+            throw ZooError.auth("別の通話や着信を終了してから、もう一度お試しください。")
+        }
+        do {
+            while sessionID == requestedSession, !ready {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            try Task.checkCancellation()
+            guard sessionID == requestedSession, ready else {
+                throw ZooError.auth(error ?? "通話を開始できませんでした。")
+            }
+        } catch {
+            if sessionID == requestedSession { finish() }
+            throw error
+        }
+    }
+
     private func receive(_ event: CallEvent, session: String) async throws {
         guard sessionID == session else { throw CancellationError() }
         switch event {

@@ -15,6 +15,12 @@ UI の状態は `@MainActor` と `@Observable` で管理し、データを `Send
 ログアウトではワークスペースと下書きを破棄し、遅れて届いた応答を適用しません。
 WebView、WebPage、JavaScript ブリッジ、Web 側からの準備完了通知には依存しません。
 
+## SiriとApp Intents
+
+`Features/Intents` の `ZooShortcuts` がDM送信と音声通話を登録し、`ShortcutActions` が既存の `ChatClient` と `CallStore` を呼び出します。App Intentと通常画面は `AppSession.shared` を共有し、前面実行・端末認証・システム確認後に操作します。
+宛先IDにはサーバーとアカウントを含め、実行前にRESTでメンバーを再検証します。確認中のログアウトは以前のWorkspaceの停止で検出します。Siriからの送信は既存の入力中の下書きを変更しません。通話は入室完了まで待ち、キャンセル時はその操作で始めた接続を終了します。
+起動・ログイン・ログアウトとメンバー一覧の変更時に `updateAppShortcutParameters()` を呼び、未ログイン時は候補を空にします。動的な宛先付きフレーズの更新方法は[AppleのApp Shortcuts解説](https://developer.apple.com/videos/play/wwdc2023/10102/)に基づいています。
+
 ## 通信
 
 `NativeChatClient` は既存の `APIClient` と認証トークン更新処理を使います。

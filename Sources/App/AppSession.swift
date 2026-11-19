@@ -3,6 +3,7 @@ import Observation
 
 @Observable @MainActor
 final class AppSession {
+    static let shared = configured()
     private(set) var userID: String?
     private(set) var workspace: WorkspaceStore?
     var connecting: Bool { connection != nil }
@@ -41,6 +42,9 @@ final class AppSession {
             session.workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil, calls: calls)
             if let workspace = session.workspace, ProcessInfo.processInfo.arguments.contains("--uitesting-attachments") {
                 Task { await client.prepareAttachmentDraft(in: workspace) }
+            }
+            if let workspace = session.workspace {
+                client.runShortcutPreview(in: workspace)
             }
             return session
         }
@@ -113,6 +117,7 @@ final class AppSession {
                 try await installWorkspace(user, cache: syncCache, epoch: epoch)
             }
             validatedSession = true
+            if !Self.isUITesting { ZooShortcuts.updateAppShortcutParameters() }
             await notifications.resume()
             await deliverDestination()
         } catch {
@@ -143,6 +148,9 @@ final class AppSession {
             self?.logout()
             self?.error = ZooError.expiredSession.localizedDescription
         }
+        workspace.onPeopleChanged = {
+            if !Self.isUITesting { ZooShortcuts.updateAppShortcutParameters() }
+        }
         self.workspace = workspace
         systemCalls?.connect(workspace)
         notifications.connect(api: api, userID: user.id)
@@ -163,6 +171,7 @@ final class AppSession {
         workspace = nil
         userID = nil
         validatedSession = false
+        if !Self.isUITesting { ZooShortcuts.updateAppShortcutParameters() }
         notifications.logout()
         authentication.logout()
         if let syncSession { cacheCleanup = syncSession.close() }
@@ -191,6 +200,16 @@ final class AppSession {
     func prepareForIncomingCall() async -> WorkspaceStore? {
         if let connection { await connection.task.value }
         else if workspace == nil { await resume() }
+        return workspace
+    }
+
+    func prepareForShortcut() async throws -> WorkspaceStore {
+        if let connection { await connection.task.value }
+        else { await resume() }
+        try Task.checkCancellation()
+        guard validatedSession, let workspace else {
+            throw ZooError.auth("Zooを開いてログインと接続を確認してください。")
+        }
         return workspace
     }
 

@@ -28,6 +28,7 @@ final class WorkspaceStore {
     let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
+    @ObservationIgnored var onPeopleChanged: (() -> Void)?
     private(set) var unread: Set<String> = []
     private(set) var joinedChannelIDs: Set<String> = []
     private(set) var pinnedChannelIDs: [String] = []
@@ -82,7 +83,7 @@ final class WorkspaceStore {
     }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var conversations: [String: ConversationStore] = [:]
-    private var active = true
+    private(set) var active = true
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
@@ -151,8 +152,10 @@ final class WorkspaceStore {
             }.sorted {
                 $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending
             }
+            let previousPeople = self.people
             self.people = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
             self.people.merge(resolvedAuthors) { current, _ in current }
+            if self.people != previousPeople { onPeopleChanged?() }
             // 取得開始後に確定した既読を、遅れて届く一覧の未読状態で巻き戻さない。
             unread = Set(states.filter(\.has_unread).map(\.channel_id)).subtracting(readDuringRefresh)
             joinedChannelIDs = Set(states.map(\.channel_id))

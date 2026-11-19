@@ -255,6 +255,22 @@ final class PreviewChatClient: ChatClient {
         receive([])
         try await Task.sleep(for: .seconds(86_400))
     }
+
+    func runShortcutPreview(in workspace: WorkspaceStore) {
+        let send = ProcessInfo.processInfo.arguments.contains("--uitesting-shortcut-send")
+        let call = ProcessInfo.processInfo.arguments.contains("--uitesting-shortcut-call")
+        guard send || call else { return }
+        Task {
+            do {
+                let actions = ShortcutActions(workspace: workspace)
+                guard let target = try await actions.recipients().first(where: { $0.personID == colleague.id }) else {
+                    throw ZooError.invalidResponse
+                }
+                if send { try await actions.send("ショートカットからの送信", to: target) }
+                else { try await actions.call(target) }
+            } catch { workspace.report(error) }
+        }
+    }
     func activeCalls() async throws -> [ActiveCallSummary] {
         ProcessInfo.processInfo.arguments.contains("--uitesting-active-calls")
             ? [ActiveCallSummary(channel_id: Self.channelID, participant_count: 2)] : []
