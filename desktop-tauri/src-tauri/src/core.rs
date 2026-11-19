@@ -24,7 +24,7 @@ use zoo2_client_core::{
     api::ApiClient,
     auth::{
         self,
-        device::{self, Poller},
+        device::{self, DeviceAuthorization, Poller},
         reauth::{LoopbackReauth, REAUTH_HTTP_TIMEOUT, REAUTH_TIMEOUT, ReauthError},
         token::{self, StoredTokens, TokenManager},
     },
@@ -818,19 +818,19 @@ impl Core {
             )
         })?
         .map_err(to_ipc)?;
-        let login = DeviceLogin {
-            user_code: authorization.user_code.clone(),
-            verification_uri: authorization.verification_uri.clone(),
-            verification_uri_complete: authorization.verification_uri_complete.clone(),
-            expires_at: token::now() + authorization.expires_in as i64,
-        };
+        let (login, auto_open_url) = prepare_verified_device_login(
+            self.no_redirect_http.as_ref(),
+            &authorization,
+            &oidc.issuer,
+            token::now() + authorization.expires_in as i64,
+        )
+        .await?;
 
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return Err(IpcError::new(ErrorCode::Internal, "ログインを中止しました"));
         }
         let core = self.clone();
-        let issuer = oidc.issuer.clone();
         let (config, oidc) = (config.clone(), oidc.clone());
         inner.login_task = Some(tokio::spawn(async move {
             let result = async {
@@ -869,12 +869,7 @@ impl Core {
                 }
             }
         }));
-        let url = login
-            .verification_uri_complete
-            .clone()
-            .unwrap_or_else(|| login.verification_uri.clone());
-        let can_auto_open = is_same_issuer_origin(&url, &issuer);
-        if can_auto_open {
+        if auto_open_url.is_some() {
             // 状態遷移・通知前にゲートを有効化し、直後の cancel_login と順序を揃える。
             self.browser_launch.arm(generation);
         }
@@ -886,27 +881,11 @@ impl Core {
         );
         drop(inner);
         // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
-        // 非ループバック HTTP・IdP 以外のオリジン・リダイレクト先逸脱は自動で開かず、中止済みなら実行時にも抑止する。
-        if can_auto_open {
+        // 確認済みオリジンかつ GET リダイレクト先検証を通過した URL のみ自動で開き、中止済みなら実行時にも抑止する。
+        if let Some(url) = auto_open_url {
             let gate = self.browser_launch.clone();
             let app = self.app.clone();
-            let client = self.no_redirect_http.clone();
             tauri::async_runtime::spawn(async move {
-                if !gate.is_active(generation) {
-                    return;
-                }
-                let Some(client) = client else {
-                    eprintln!(
-                        "リダイレクト検証クライアントを初期化できないため、ブラウザー自動起動をスキップします"
-                    );
-                    return;
-                };
-                if let Err(err) = verify_login_redirect_chain(&client, &url, &issuer).await {
-                    eprintln!(
-                        "ログイン URL のリダイレクト先検証に失敗したため、自動では開きません: {err}"
-                    );
-                    return;
-                }
                 if !gate.is_active(generation) {
                     return;
                 }
@@ -922,8 +901,6 @@ impl Core {
                     eprintln!("ログイン URL をブラウザーで開く処理が失敗しました: {err}");
                 }
             });
-        } else {
-            eprintln!("ログイン URL のスキームまたはオリジンが不正なため、自動では開きません");
         }
         Ok(login)
     }
@@ -1280,6 +1257,22 @@ fn is_same_issuer_origin(url: &str, issuer: &str) -> bool {
     }
 }
 
+/// 未認証時・認証後の承認画面遷移まで含めて `http://` や外部オリジンへリダイレクトしないことが
+/// IdP 実装 (`Zli-UoA/AuthZ`)・実機で確認済みの `issuer` オリジン（公式 AuthZ または開発用ループバック）かを返す。
+const CONFIRMED_OIDC_ISSUER_ORIGIN: &str = "https://account.zli.works";
+
+fn is_confirmed_login_issuer(issuer: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(issuer) else {
+        return false;
+    };
+    if let Ok(confirmed) = url::Url::parse(CONFIRMED_OIDC_ISSUER_ORIGIN)
+        && parsed.origin() == confirmed.origin()
+    {
+        return true;
+    }
+    matches!(parsed.scheme(), "http" | "https") && is_loopback_host(&parsed)
+}
+
 fn resolve_and_validate_redirect(
     current: &url::Url,
     location: &str,
@@ -1297,8 +1290,9 @@ fn resolve_and_validate_redirect(
     Ok(next)
 }
 
-/// ブラウザー自動起動前に、`Location` リダイレクトを最大 `MAX_LOGIN_REDIRECT_HOPS` 回まで手動追跡し、
-/// すべての遷移先が IdP と同一オリジンの HTTPS（開発用ループバックのみ HTTP）に留まることを確認する。
+/// ブラウザー自動起動およびコード付き URL 採用の前に、`GET` リクエストの `Location` リダイレクトを
+/// 最大 `MAX_LOGIN_REDIRECT_HOPS` 回まで手動追跡し、すべての遷移先が IdP と同一オリジンの
+/// HTTPS（開発用ループバックのみ HTTP）に留まることを確認する。
 async fn verify_login_redirect_chain(
     client: &reqwest::Client,
     url: &str,
@@ -1310,23 +1304,12 @@ async fn verify_login_redirect_chain(
     let mut current = url::Url::parse(url)
         .map_err(|err| format!("ログイン URL を解釈できませんでした: {err}"))?;
     for hop in 0..=MAX_LOGIN_REDIRECT_HOPS {
-        let mut res = client.head(current.clone()).send().await.map_err(|err| {
+        let res = client.get(current.clone()).send().await.map_err(|err| {
             format!(
-                "ログイン URL の事前確認に失敗しました: {}",
+                "ログイン URL の事前確認 (GET) に失敗しました: {}",
                 err.without_url()
             )
         })?;
-        if matches!(
-            res.status(),
-            reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
-        ) {
-            res = client.get(current.clone()).send().await.map_err(|err| {
-                format!(
-                    "ログイン URL の事前確認 (GET) に失敗しました: {}",
-                    err.without_url()
-                )
-            })?;
-        }
         let status = res.status();
         if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
             if hop == MAX_LOGIN_REDIRECT_HOPS {
@@ -1352,10 +1335,79 @@ async fn verify_login_redirect_chain(
     Err("リダイレクト回数が上限を超えました".to_string())
 }
 
+/// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin` と自動起動対象 URL を返す。
+/// - `verification_uri` が `issuer` と同一オリジンの HTTPS（開発用ループバックのみ HTTP）でなければ拒否する。
+/// - リダイレクト安全性が確認できない外部カスタム `issuer` では、ブラウザー自動起動を抑止し、
+///   手動リンクでもクエリに `user_code` を含めないよう `verification_uri_complete` を落とす。
+/// - 確認済み `issuer` でも、自動起動および `verification_uri_complete` の採用前に `GET` でリダイレクト先を検証する。
+async fn prepare_verified_device_login(
+    no_redirect_http: Option<&reqwest::Client>,
+    authorization: &DeviceAuthorization,
+    issuer: &str,
+    expires_at: i64,
+) -> Result<(DeviceLogin, Option<String>), IpcError> {
+    if !is_same_issuer_origin(&authorization.verification_uri, issuer) {
+        return Err(IpcError::new(
+            ErrorCode::Internal,
+            "認証サーバーが不正な確認 URL を返しました",
+        ));
+    }
+
+    let mut verification_uri_complete = None;
+    let mut auto_open_url = None;
+
+    if !is_confirmed_login_issuer(issuer) {
+        eprintln!(
+            "リダイレクト挙動が未確認のカスタム issuer のため、コード付き URL とブラウザー自動起動を抑止します"
+        );
+    } else if let Some(client) = no_redirect_http {
+        match authorization.verification_uri_complete.as_deref() {
+            Some(complete) => match verify_login_redirect_chain(client, complete, issuer).await {
+                Ok(()) => {
+                    verification_uri_complete = Some(complete.to_string());
+                    auto_open_url = Some(complete.to_string());
+                }
+                Err(err) => {
+                    eprintln!(
+                        "コード付きログイン URL のリダイレクト先検証に失敗したため、コード付き URL と自動起動を抑止します: {err}"
+                    );
+                }
+            },
+            None => {
+                match verify_login_redirect_chain(client, &authorization.verification_uri, issuer)
+                    .await
+                {
+                    Ok(()) => {
+                        auto_open_url = Some(authorization.verification_uri.clone());
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "ログイン URL のリダイレクト先検証に失敗したため、自動では開きません: {err}"
+                        );
+                    }
+                }
+            }
+        }
+    } else {
+        eprintln!(
+            "リダイレクト検証クライアントを初期化できないため、コード付き URL とブラウザー自動起動をスキップします"
+        );
+    }
+
+    let login = DeviceLogin {
+        user_code: authorization.user_code.clone(),
+        verification_uri: authorization.verification_uri.clone(),
+        verification_uri_complete,
+        expires_at,
+    };
+    Ok((login, auto_open_url))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserLaunchGate, build_no_redirect_http_client, is_same_issuer_origin,
+        BrowserLaunchGate, DeviceAuthorization, build_no_redirect_http_client,
+        is_confirmed_login_issuer, is_same_issuer_origin, prepare_verified_device_login,
         resolve_and_validate_redirect, verify_login_redirect_chain,
     };
     use std::io::{Read, Write};
@@ -1416,6 +1468,22 @@ mod tests {
             "not a url",
             "https://account.zli.works"
         ));
+
+        assert!(is_confirmed_login_issuer(
+            "https://account.zli.works/api/auth"
+        ));
+        assert!(is_confirmed_login_issuer("http://127.0.0.1:8080/api/auth"));
+        assert!(is_confirmed_login_issuer("http://localhost:8080/api/auth"));
+        assert!(is_confirmed_login_issuer("https://[::1]:8443/api/auth"));
+        assert!(!is_confirmed_login_issuer(
+            "https://custom-idp.example/api/auth"
+        ));
+        assert!(!is_confirmed_login_issuer(
+            "http://account.zli.works/api/auth"
+        ));
+        assert!(!is_confirmed_login_issuer(
+            "https://account.zli.works:8443/api/auth"
+        ));
     }
 
     #[tokio::test]
@@ -1464,17 +1532,21 @@ mod tests {
                 let method = parts.next().unwrap_or("");
                 let path = parts.next().unwrap_or("/");
                 let resp = match (method, path) {
-                    (_, "/device?user_code=OK") => {
+                    ("GET", "/device") => {
                         "HTTP/1.1 303 See Other\r\nLocation: /login?next=%2Fdevice\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     }
-                    (_, "/login?next=%2Fdevice") => {
+                    ("GET", "/device?user_code=OK") => {
+                        "HTTP/1.1 303 See Other\r\nLocation: /login?next=%2Fdevice\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("GET", "/login?next=%2Fdevice") => {
                         "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     }
-                    ("HEAD", "/head-405") => {
-                        "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    }
-                    ("GET", "/head-405") => {
+                    // HEAD では 200 を返すが GET では http:// へダウングレードするケースも GET 検査で拒否する。
+                    ("HEAD", "/get-only-downgrade?user_code=LEAK") => {
                         "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("GET", "/get-only-downgrade?user_code=LEAK") => {
+                        "HTTP/1.1 302 Found\r\nLocation: http://account.zli.works/login?user_code=LEAK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     }
                     (_, "/downgrade") => {
                         "HTTP/1.1 302 Found\r\nLocation: http://account.zli.works/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
@@ -1503,9 +1575,13 @@ mod tests {
             .is_ok()
         );
         assert!(
-            verify_login_redirect_chain(&client, &format!("http://{addr}/head-405"), &local_issuer)
-                .await
-                .is_ok()
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/get-only-downgrade?user_code=LEAK"),
+                &local_issuer
+            )
+            .await
+            .is_err()
         );
         assert!(
             verify_login_redirect_chain(
@@ -1527,6 +1603,88 @@ mod tests {
         );
         assert!(
             verify_login_redirect_chain(&client, &format!("http://{addr}/loop"), &local_issuer)
+                .await
+                .is_err()
+        );
+
+        // 1) 確認済み issuer + GET リダイレクト検証通過時は verification_uri_complete と自動起動 URL を保持する
+        let ok_auth = DeviceAuthorization {
+            device_code: "dev-ok".to_string(),
+            user_code: "OK".to_string(),
+            verification_uri: format!("http://{addr}/device"),
+            verification_uri_complete: Some(format!("http://{addr}/device?user_code=OK")),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (ok_login, ok_auto_open) =
+            prepare_verified_device_login(Some(&client), &ok_auth, &local_issuer, 1234)
+                .await
+                .unwrap();
+        assert_eq!(
+            ok_login.verification_uri_complete.as_deref(),
+            Some(format!("http://{addr}/device?user_code=OK").as_str())
+        );
+        assert_eq!(
+            ok_auto_open.as_deref(),
+            Some(format!("http://{addr}/device?user_code=OK").as_str())
+        );
+
+        // 2) GET でダウングレードが発生するコード付き URL は、UI 向け verification_uri_complete から除外し自動起動も抑止する
+        let downgrade_auth = DeviceAuthorization {
+            device_code: "dev-downgrade".to_string(),
+            user_code: "LEAK".to_string(),
+            verification_uri: format!("http://{addr}/device"),
+            verification_uri_complete: Some(format!(
+                "http://{addr}/get-only-downgrade?user_code=LEAK"
+            )),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (downgrade_login, downgrade_auto_open) =
+            prepare_verified_device_login(Some(&client), &downgrade_auth, &local_issuer, 1234)
+                .await
+                .unwrap();
+        assert!(downgrade_login.verification_uri_complete.is_none());
+        assert!(downgrade_auto_open.is_none());
+
+        // 3) リダイレクト挙動が未確認の外部カスタム issuer では、自動起動を抑止し verification_uri_complete も落とす
+        let unconfirmed_issuer = "https://custom-idp.example/api/auth";
+        let unconfirmed_auth = DeviceAuthorization {
+            device_code: "dev-custom".to_string(),
+            user_code: "CUSTOM12".to_string(),
+            verification_uri: "https://custom-idp.example/device".to_string(),
+            verification_uri_complete: Some(
+                "https://custom-idp.example/device?user_code=CUSTOM12".to_string(),
+            ),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (unconfirmed_login, unconfirmed_auto_open) = prepare_verified_device_login(
+            Some(&client),
+            &unconfirmed_auth,
+            unconfirmed_issuer,
+            1234,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            unconfirmed_login.verification_uri,
+            "https://custom-idp.example/device"
+        );
+        assert!(unconfirmed_login.verification_uri_complete.is_none());
+        assert!(unconfirmed_auto_open.is_none());
+
+        // 4) verification_uri 自体が非 HTTPS または別オリジンならエラーとして拒否する
+        let bad_base_auth = DeviceAuthorization {
+            device_code: "dev-bad".to_string(),
+            user_code: "BAD".to_string(),
+            verification_uri: "http://custom-idp.example/device".to_string(),
+            verification_uri_complete: None,
+            expires_in: 600,
+            interval: Some(5),
+        };
+        assert!(
+            prepare_verified_device_login(Some(&client), &bad_base_auth, unconfirmed_issuer, 1234)
                 .await
                 .is_err()
         );
