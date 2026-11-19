@@ -1423,8 +1423,30 @@ where
     }
 }
 
-/// `verification_uri` 自体に IdP が `user_code`（クエリ・フラグメント・パス）を含めて返した場合でも、
-/// 手動リンクの `verification_uri` から `user_code` を確実に除去してコードなし URL に正規化する。
+fn percent_decode_once(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `verification_uri` 自体に IdP が `user_code`（クエリ・フラグメント・パス、パーセント符号化を含む）を
+/// 含めて返した場合でも、手動リンクの `verification_uri` から `user_code` を確実に除去してコードなし URL に正規化する。
 fn strip_user_code_from_verification_uri(uri: &str, user_code: &str) -> String {
     let code_trimmed = user_code.trim();
     let code_lower = code_trimmed.to_ascii_lowercase();
@@ -1433,26 +1455,37 @@ fn strip_user_code_from_verification_uri(uri: &str, user_code: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    let contains_code = |s: &str| -> bool {
-        if !code_lower.is_empty() && s.to_ascii_lowercase().contains(&code_lower) {
+    let matches_raw_or_compact = |candidate: &str| -> bool {
+        if !code_lower.is_empty() && candidate.to_ascii_lowercase().contains(&code_lower) {
             return true;
         }
         if !code_compact.is_empty() {
-            let s_compact: String = s
+            let candidate_compact: String = candidate
                 .chars()
                 .filter(|c| c.is_ascii_alphanumeric())
                 .map(|c| c.to_ascii_lowercase())
                 .collect();
-            if s_compact.contains(&code_compact) {
+            if candidate_compact.contains(&code_compact) {
                 return true;
             }
         }
         false
     };
+    let contains_code = |s: &str| -> bool {
+        if matches_raw_or_compact(s) {
+            return true;
+        }
+        let decoded1 = percent_decode_once(s);
+        if matches_raw_or_compact(&decoded1) {
+            return true;
+        }
+        let decoded2 = percent_decode_once(&decoded1);
+        matches_raw_or_compact(&decoded2)
+    };
 
     let Ok(mut parsed) = url::Url::parse(uri) else {
         return if !code_trimmed.is_empty() && contains_code(uri) {
-            uri.replace(code_trimmed, "")
+            percent_decode_once(uri).replace(code_trimmed, "")
         } else {
             uri.to_string()
         };
@@ -1480,18 +1513,28 @@ fn strip_user_code_from_verification_uri(uri: &str, user_code: &str) -> String {
             parsed.set_query(Some(&query));
         }
     }
-    if let Some(fragment) = parsed.fragment()
-        && (fragment.to_ascii_lowercase().contains("user_code") || contains_code(fragment))
-    {
-        parsed.set_fragment(None);
+    if let Some(fragment) = parsed.fragment() {
+        let decoded_fragment = percent_decode_once(&percent_decode_once(fragment));
+        if fragment.to_ascii_lowercase().contains("user_code")
+            || decoded_fragment.to_ascii_lowercase().contains("user_code")
+            || contains_code(fragment)
+        {
+            parsed.set_fragment(None);
+        }
     }
-    if contains_code(parsed.path())
-        && let Some(mut segments) = parsed.path_segments().map(|s| {
-            s.filter(|seg| !contains_code(seg))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-    {
+    let filtered_segments = parsed.path_segments().and_then(|segments| {
+        let mut kept = Vec::new();
+        let mut removed = false;
+        for seg in segments {
+            if contains_code(seg) {
+                removed = true;
+            } else {
+                kept.push(seg.to_string());
+            }
+        }
+        removed.then_some(kept)
+    });
+    if let Some(mut segments) = filtered_segments {
         if segments.is_empty() {
             segments.push(String::new());
         }
@@ -1918,6 +1961,34 @@ mod tests {
                 "CROSS-123"
             ),
             "https://login.custom-idp.example/device"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/device/CROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/device"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "http://custom-idp.example/device/%43ROSS-123",
+                "CROSS-123"
+            ),
+            "http://custom-idp.example/device"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/tenant%20a/device/%43ROSS-123?lang=ja&user_code=CROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/tenant%20a/device?lang=ja"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/device?lang=ja#%43ROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/device?lang=ja"
         );
 
         // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返し、
