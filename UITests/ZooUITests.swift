@@ -1042,6 +1042,34 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testLeftSwipeReopensPreviousChannelWithDraft() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "1列表示の一覧でスワイプを確認する")
+        let app = launchWorkspace()
+        let general = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        let section = app.buttons["channel-section-list"]
+        section.tap()
+        XCTAssertTrue(general.waitForNonExistence(timeout: 5))
+        section.tap()
+        XCTAssertTrue(general.waitForExistence(timeout: 5))
+        general.tap()
+        let field = composer(app)
+        field.tap()
+        field.typeText("一覧から戻って続ける下書き")
+        app.buttons["dismiss-composer-keyboard"].tap()
+        app.navigationBars.buttons["BackButton"].tap()
+        XCTAssertTrue(general.waitForExistence(timeout: 5))
+        general.swipeRight()
+        XCTAssertTrue(general.isHittable)
+        XCTAssertFalse(field.exists)
+        general.swipeUp()
+        XCTAssertFalse(field.exists)
+        app.collectionViews.firstMatch.swipeLeft()
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(field.value as? String, "一覧から戻って続ける下書き")
+        XCTAssertTrue(app.buttons["channel-details"].isHittable)
+    }
+
+    @MainActor
     func testWelcomeHasAccessibleLogin() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]

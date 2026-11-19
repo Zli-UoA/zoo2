@@ -23,7 +23,7 @@ struct CallBanner: View {
                 .buttonStyle(.plain)
                 .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, 4)
                 .accessibilityIdentifier("active-call")
-            } else {
+            } else if !calls.invitations.isEmpty {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     if let invite = calls.invitations.first(where: {
                         (ZooDate.parse($0.expires_at) ?? .distantPast) > context.date &&

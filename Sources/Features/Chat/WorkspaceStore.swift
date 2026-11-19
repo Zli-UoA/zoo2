@@ -54,8 +54,22 @@ final class WorkspaceStore {
         didSet { if oldValue != selectedTab { tabVisit = UUID() } }
     }
     @ObservationIgnored private var tabVisit = UUID()
-    var channelPath: [ChatRoute] = []
+    var channelPath: [ChatRoute] = [] {
+        didSet { if let channelID = channelPath.first?.channelID { lastChannelID = channelID } }
+    }
     var dmPath: [ChatRoute] = []
+    private var lastChannelID: String?
+
+    var resumableChannel: Channel? {
+        guard active, selectedTab == .channels, channelPath.isEmpty, let lastChannelID,
+              conversations[lastChannelID]?.blocked != true else { return nil }
+        return channels.first { $0.id == lastChannelID && !$0.is_dm && $0.deleted_at == nil && $0.archive_at == nil }
+    }
+
+    func reopenLastChannel() {
+        guard let channel = resumableChannel else { return }
+        channelPath = [.channel(channel.id)]
+    }
 
     var path: [ChatRoute] {
         switch selectedTab {
@@ -128,6 +142,7 @@ final class WorkspaceStore {
             let visibleIDs = Set(self.channels.map(\.id))
             channelPath.removeAll { !visibleIDs.contains($0.channelID) }
             dmPath.removeAll { !visibleIDs.contains($0.channelID) }
+            if let lastChannelID, !visibleIDs.contains(lastChannelID) { self.lastChannelID = nil }
             for (id, conversation) in conversations {
                 if let channel = self.channels.first(where: { $0.id == id }) { conversation.update(channel) }
                 else {
@@ -454,6 +469,7 @@ final class WorkspaceStore {
         joinedChannelIDs = []
         channelPath = []
         dmPath = []
+        lastChannelID = nil
         selectedTab = .channels
     }
 }
