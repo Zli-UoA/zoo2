@@ -120,6 +120,10 @@ final class InboxStore {
         render()
     }
 
+    func revokeChannel(_ id: String) {
+        receiveChannel(channelRows.filter { $0.channel_id != id })
+    }
+
     private func refreshFederation() async {
         guard active, !Task.isCancelled else { return }
         guard !fetching else { refreshRequested = true; return }

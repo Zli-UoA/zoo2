@@ -66,6 +66,30 @@ struct ChannelReadState: Codable, Sendable {
     let last_read_at: String?
 }
 
+extension Channel {
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        channel_name = try values.decode(String.self, forKey: .channel_name)
+        description = try values.decodeIfPresent(String.self, forKey: .description)
+        archive_at = try values.decodeIfPresent(String.self, forKey: .archive_at)
+        deleted_at = try values.decodeIfPresent(String.self, forKey: .deleted_at)
+        func flag(_ key: CodingKeys) throws -> Bool? {
+            guard let raw = try values.decodeIfPresent(JSONValue.self, forKey: key) else { return nil }
+            switch raw {
+            case .bool(let value): return value
+            case .string("true"), .string("t"): return true
+            case .string("false"), .string("f"): return false
+            default: throw ZooError.invalidResponse
+            }
+        }
+        guard let privateFlag = try flag(.is_private), let dmFlag = try flag(.is_dm) else { throw ZooError.invalidResponse }
+        is_private = privateFlag
+        is_dm = dmFlag
+        encrypted = try flag(.encrypted)
+    }
+}
+
 struct ChannelMembership: Decodable, Sendable {
     let channel_id: String
     let user_id: String

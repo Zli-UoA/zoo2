@@ -983,12 +983,13 @@ final class ZooUITests: XCTestCase {
                                  pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,
                                  tallImage: Bool = false, wrappedReactions: Bool = false, retainedMessages: Bool = false,
                                  variedHistory: Bool = false, longThread: Bool = false, largeText: Bool = false,
-                                 shortThread: Bool = false, readSaveRetry: Bool = false, activeCalls: Bool = false) -> XCUIApplication {
+                                 shortThread: Bool = false, readSaveRetry: Bool = false, activeCalls: Bool = false, pagedHistory: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
         if liveMessage { app.launchArguments.append("--uitesting-live-message") }
         if longHistory { app.launchArguments.append("--uitesting-long-history") }
+        if pagedHistory { app.launchArguments.append("--uitesting-paged-history") }
         if dark { app.launchArguments += ["-zoo.appearance", "dark"] }
         if video { app.launchArguments.append("--uitesting-video") }
         if tallImage { app.launchArguments.append("--uitesting-tall-image") }
@@ -1372,6 +1373,55 @@ final class ZooUITests: XCTestCase {
             XCTAssertFalse(app.buttons["scroll-to-latest"].exists)
         }
         capture(app, name: "最下部での連続スクロール後も最新位置を維持")
+    }
+
+    @MainActor
+    func testScrollingLoadsOlderMessagesWithoutButton() {
+        let app = launchWorkspace(longHistory: true, pagedHistory: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        assertScrollLoadsHistory(app, listID: "message-list", prefix: "履歴 ")
+    }
+
+    @MainActor
+    func testScrollingLoadsOlderThreadRepliesWithoutButton() {
+        let app = launchWorkspace(longThread: true, pagedHistory: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let link = app.buttons["thread-replies-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        XCTAssertEqual(link.label, "60 件の返信")
+        link.tap()
+        assertScrollLoadsHistory(app, listID: "thread-message-list", prefix: "スレッドの返信 ")
+    }
+
+    @MainActor
+    private func assertScrollLoadsHistory(_ app: XCUIApplication, listID: String, prefix: String) {
+        let list = app.scrollViews[listID]
+        let latest = list.staticTexts[prefix + "60"]
+        XCTAssertTrue(latest.wait(for: \.isHittable, toEqual: true, timeout: 10))
+        XCTAssertFalse(app.buttons["load-older-messages"].exists)
+        XCTAssertFalse(list.staticTexts[prefix + "1"].exists)
+        let loading = app.descendants(matching: .any)["loading-older-messages"].firstMatch
+        XCTAssertFalse(loading.exists)
+        for _ in 0..<18 {
+            if loading.exists { break }
+            list.swipeDown(velocity: .slow)
+        }
+        XCTAssertTrue(loading.waitForExistence(timeout: 2))
+        guard let candidate = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", prefix))
+            .allElementsBoundByIndex.first(where: { $0.isHittable && $0.frame.minY > list.frame.minY + 20 }) else {
+            XCTFail("追加取得前に表示中のメッセージを取得できません")
+            return
+        }
+        // 履歴の追加で配列の添字が変わるため、同じ投稿の識別子を基準に検証する。
+        let anchor = list.staticTexts[candidate.identifier]
+        let originalY = anchor.frame.minY
+        XCTAssertTrue(loading.waitForNonExistence(timeout: 8))
+        XCTAssertTrue(anchor.isHittable)
+        XCTAssertEqual(anchor.frame.minY, originalY, accuracy: 4, "追加取得でも読んでいた位置を維持する")
+        for _ in 0..<8 where !list.staticTexts[prefix + "1"].isHittable { list.swipeDown(velocity: .slow) }
+        XCTAssertTrue(list.staticTexts[prefix + "1"].isHittable)
+        XCTAssertFalse(loading.exists)
+        capture(app, name: "スクロールによる過去のメッセージ取得")
     }
 
     @MainActor

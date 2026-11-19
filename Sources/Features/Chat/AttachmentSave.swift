@@ -8,12 +8,9 @@ struct DownloadedAttachment: Identifiable, Sendable {
     private let directory: AttachmentFile
 
     @MainActor
-    static func download(_ attachment: MessageAttachment, client: any ChatClient) async throws -> Self {
+    static func download(_ attachment: MessageAttachment, client: any ChatClient, channelID: String? = nil) async throws -> Self {
         try Task.checkCancellation()
-        // 一覧の署名付きURLは失効しうるため、保存するたびに取得し直す。
-        let url = try await client.attachmentURL(id: attachment.id)
-        try Task.checkCancellation()
-        let data = try await client.attachmentData(from: url)
+        let data = try await client.attachmentData(attachment, channelID: channelID, reload: false)
         return try await write(data, attachment: attachment)
     }
 
@@ -77,7 +74,7 @@ final class AttachmentSaveState {
     var notice: Notice?
     @ObservationIgnored private(set) var task: Task<Void, Never>?
 
-    func save(_ destination: Destination, attachment: MessageAttachment, workspace: WorkspaceStore) {
+    func save(_ destination: Destination, attachment: MessageAttachment, workspace: WorkspaceStore, channelID: String? = nil) {
         guard !isSaving, exportedFile == nil else { return }
         isSaving = true
         presentsFileExport = destination == .files
@@ -88,7 +85,7 @@ final class AttachmentSaveState {
             defer { isSaving = false; task = nil }
             do {
                 if destination == .photos { try await AttachmentPhotoLibrary.authorize() }
-                let file = try await DownloadedAttachment.download(attachment, client: client)
+                let file = try await DownloadedAttachment.download(attachment, client: client, channelID: channelID)
                 try Task.checkCancellation()
                 if destination == .photos {
                     try await AttachmentPhotoLibrary.save(file, attachment: attachment)
@@ -120,6 +117,7 @@ struct AttachmentSaveModifier: ViewModifier {
     let attachment: MessageAttachment
     let workspace: WorkspaceStore
     @Bindable var state: AttachmentSaveState
+    var channelID: String? = nil
     var isAvailable = true
     private var isMedia: Bool { attachment.isImage || attachment.isVideo }
 
@@ -127,13 +125,13 @@ struct AttachmentSaveModifier: ViewModifier {
         content
             .contextMenu {
                 if isAvailable {
-                    Button { state.save(isMedia ? .photos : .files, attachment: attachment, workspace: workspace) } label: {
+                    Button { state.save(isMedia ? .photos : .files, attachment: attachment, workspace: workspace, channelID: channelID) } label: {
                         Label("保存", systemImage: "square.and.arrow.down")
                     }
                     .disabled(state.isSaving)
                     .accessibilityIdentifier("attachment-save")
                     if isMedia {
-                        Button { state.save(.files, attachment: attachment, workspace: workspace) } label: {
+                        Button { state.save(.files, attachment: attachment, workspace: workspace, channelID: channelID) } label: {
                             Label("ファイルに保存", systemImage: "folder")
                         }
                         .disabled(state.isSaving)
@@ -155,7 +153,7 @@ struct AttachmentSaveModifier: ViewModifier {
                             if let notice = state.notice {
                                 Text(notice.title).font(.headline)
                                 Text(notice.message)
-                                Button("再試行") { state.save(.files, attachment: attachment, workspace: workspace) }
+                                Button("再試行") { state.save(.files, attachment: attachment, workspace: workspace, channelID: channelID) }
                             } else {
                                 ProgressView("保存の準備中…")
                             }

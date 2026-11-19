@@ -339,6 +339,13 @@ private struct ConversationSync: ViewModifier {
         let parentID: String?
     }
 
+    private struct MessageScope: Equatable {
+        let channelID: String
+        let requestID: UUID
+        let parentID: String?
+        let focusID: String?
+    }
+
     private var typingScope: TypingScope? {
         guard let store = activeConversation, store.canPost, let route = workspace.path.last else { return nil }
         switch route {
@@ -355,6 +362,11 @@ private struct ConversationSync: ViewModifier {
         return workspace.conversation(for: channel)
     }
 
+    private var feedParentID: String? {
+        if case .thread(_, let parent, _) = workspace.path.last { return parent }
+        return nil
+    }
+
     func body(content: Content) -> some View {
         let store = activeConversation
         let readable = store.flatMap { !$0.blocked && $0.channel.encrypted != true ? $0 : nil }
@@ -363,11 +375,17 @@ private struct ConversationSync: ViewModifier {
         let authors = readable.map { Authors(channelID: $0.channel.id, ids: Set($0.messages.map(\.user_id))) }
         let needsEmojiCatalog = scenePhase == .active && (store != nil || workspace.selectedTab == .notifications)
         let typing = typingScope
+        let messageScope = readable.map { MessageScope(channelID: $0.channel.id, requestID: $0.syncRequest,
+                                                       parentID: feedParentID, focusID: $0.focusedMessageID) }
         content
             .task(id: typing) {
                 if let typing, let store { await store.typing.run(parentID: typing.parentID) }
             }
-            .task(id: readable?.syncRequest) { await readable?.run() }
+            .task(id: messageScope) {
+                guard let readable, let messageScope else { return }
+                readable.selectFeed(parentID: messageScope.parentID)
+                await readable.run()
+            }
             .task(id: readable?.channel.id) { if let readable { await workspace.loadMembers(channelID: readable.channel.id) } }
             .task(id: attachments?.syncRequest) { await attachments?.runAttachments() }
             .task(id: reactions?.syncRequest) { await reactions?.runReactions() }

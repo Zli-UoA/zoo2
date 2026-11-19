@@ -30,30 +30,34 @@ final class AttachmentRenderState {
         retry += 1
     }
 
-    func load(workspace: WorkspaceStore) async {
+    func load(workspace: WorkspaceStore, channelID: String) async {
         guard !Task.isCancelled else { return }
-        guard attachment.isImage || attachment.is_sensitive != true || revealed, url == nil, error == nil else { return }
+        guard attachment.isImage || attachment.is_sensitive != true || revealed,
+              url == nil, image == nil, pdfThumbnail == nil, error == nil else { return }
         if let loadTask { await loadTask.value; return }
         let request = UUID()
         generation = request
         let attachment = attachment
         let client = workspace.client
+        let reload = retry > 0
         // 近くの行が画面外になっても処理を継続し、保持範囲から外れた時だけキャンセルする。
         let task = Task { [weak self, weak workspace] in
             guard self?.generation == request else { return }
             do {
-                let result = try await client.attachmentURL(id: attachment.id)
-                try Task.checkCancellation()
+                var result: URL?
                 var thumbnail: UIImage?
                 if attachment.isPDF {
-                    let data = try await client.attachmentData(from: result)
+                    let data = try await client.attachmentData(attachment, channelID: channelID, reload: reload)
                     thumbnail = try await AttachmentPDF.thumbnail(data)
                 } else if attachment.isImage {
-                    let data = try await client.attachmentData(from: result)
+                    let data = try await client.attachmentData(attachment, channelID: channelID, reload: reload)
                     thumbnail = try await AttachmentThumbnail.image(data)
-                } else if attachment.isVideo {
-                    // 先頭フレームを取得できなくても、再生ボタンは利用できるようにする。
-                    thumbnail = try? await AttachmentVideoThumbnail.image(from: result)
+                } else {
+                    result = try await client.attachmentURL(id: attachment.id)
+                    if attachment.isVideo, let result {
+                        // 先頭フレームを取得できなくても、再生ボタンは利用できるようにする。
+                        thumbnail = try? await AttachmentVideoThumbnail.image(from: result)
+                    }
                 }
                 try Task.checkCancellation()
                 guard let self, self.generation == request else { return }
@@ -219,7 +223,7 @@ private struct AttachmentView: View {
                 AttachmentVideoView(attachment: attachment, workspace: workspace, channelID: channelID, messageID: messageID,
                                     isVisible: isVisible, thumbnail: state.videoThumbnail)
                 Text(attachment.file_name).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            } else if state.url != nil {
+            } else if state.url != nil || state.pdfThumbnail != nil {
                 if attachment.isPDF {
                     if let pdfThumbnail = state.pdfThumbnail {
                         Button { fullScreenExpanded = true } label: {
@@ -241,9 +245,10 @@ private struct AttachmentView: View {
         }
         .accessibilityIdentifier(attachment.isVideo && isVisible && workspace.videoPlayback.session?.attachmentID == attachment.id
                                  ? "attachment-video-player" : "attachment-\(attachment.id)")
-        .modifier(AttachmentSaveModifier(attachment: attachment, workspace: workspace, state: state.saveState, isAvailable: !hidden))
+        .modifier(AttachmentSaveModifier(attachment: attachment, workspace: workspace, state: state.saveState,
+                                         channelID: channelID, isAvailable: !hidden))
         .task(id: "\(state.id)-\(attachment.isImage ? false : hidden)-\(state.retry)") {
-            await state.load(workspace: workspace)
+            await state.load(workspace: workspace, channelID: channelID)
         }
         .task(id: opening) {
             guard opening else { return }
@@ -260,7 +265,8 @@ private struct AttachmentView: View {
             }
         }
         .fullScreenCover(isPresented: $fullScreenExpanded) {
-            AttachmentPreview(attachments: isInGallery ? imageGallery : [state], selectedID: attachment.id, workspace: workspace)
+            AttachmentPreview(attachments: isInGallery ? imageGallery : [state], selectedID: attachment.id,
+                              workspace: workspace, channelID: channelID)
                 .background { AttachmentOrientation().frame(width: 0, height: 0) }
         }
     }
@@ -295,15 +301,17 @@ private struct AttachmentView: View {
 private struct AttachmentPreview: View {
     let attachments: [AttachmentRenderState]
     let workspace: WorkspaceStore
+    let channelID: String
     private let initialID: String
     @Environment(\.dismiss) private var dismiss
     @State private var selectedID: String?
     @State private var isZoomed = false
     @State private var positionedInitially = false
 
-    init(attachments: [AttachmentRenderState], selectedID: String, workspace: WorkspaceStore) {
+    init(attachments: [AttachmentRenderState], selectedID: String, workspace: WorkspaceStore, channelID: String) {
         self.attachments = attachments
         self.workspace = workspace
+        self.channelID = channelID
         initialID = selectedID
         _selectedID = State(initialValue: selectedID)
     }
@@ -317,7 +325,8 @@ private struct AttachmentPreview: View {
                             ScrollView(.horizontal) {
                                 LazyHStack(spacing: 0) {
                                     ForEach(attachments, id: \.attachment.id) { state in
-                                        AttachmentPreviewPage(state: state, workspace: workspace, isSelected: selectedID == state.attachment.id,
+                                        AttachmentPreviewPage(state: state, workspace: workspace, channelID: channelID,
+                                                              isSelected: selectedID == state.attachment.id,
                                                               onDismiss: { dismiss() }, onZoomChanged: { zoomed in
                                             if selectedID == state.attachment.id { isZoomed = zoomed }
                                         })
@@ -341,7 +350,7 @@ private struct AttachmentPreview: View {
                         }
                     }
                 } else if let state = attachments.first {
-                    AttachmentPreviewPage(state: state, workspace: workspace, isSelected: true, onDismiss: { dismiss() })
+                    AttachmentPreviewPage(state: state, workspace: workspace, channelID: channelID, isSelected: true, onDismiss: { dismiss() })
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -363,6 +372,7 @@ private struct AttachmentPreview: View {
 private struct AttachmentPreviewPage: View {
     @Bindable var state: AttachmentRenderState
     let workspace: WorkspaceStore
+    let channelID: String
     let isSelected: Bool
     let onDismiss: () -> Void
     var onZoomChanged: (Bool) -> Void = { _ in }
@@ -371,6 +381,7 @@ private struct AttachmentPreviewPage: View {
     @State private var pdf: PDFDocument?
     @State private var error: String?
     @State private var retry = 0
+    @State private var completedRetry = 0
 
     private var attachment: MessageAttachment { state.attachment }
     private var hidden: Bool { attachment.is_sensitive == true && !state.revealed }
@@ -416,20 +427,17 @@ private struct AttachmentPreviewPage: View {
             } else { ProgressView("読み込み中…") }
         }
         .modifier(AttachmentSaveModifier(attachment: attachment, workspace: workspace, state: saveState,
-                                         isAvailable: isSelected && !hidden))
+                                         channelID: channelID, isAvailable: isSelected && !hidden))
         .task(id: LoadKey(canLoad: isSelected && (!hidden || attachment.isImage), retry: retry)) {
             pdf = nil; image = nil; error = nil
             guard isSelected, !hidden || attachment.isImage else { return }
             do {
-                let result = try await workspace.client.attachmentURL(id: attachment.id)
+                let data = try await workspace.client.attachmentData(attachment, channelID: channelID, reload: retry > completedRetry)
                 try Task.checkCancellation()
+                completedRetry = retry
                 if attachment.isPDF {
-                    let data = try await workspace.client.attachmentData(from: result)
-                    try Task.checkCancellation()
                     pdf = try AttachmentPDF.decode(data)
                 } else {
-                    let data = try await workspace.client.attachmentData(from: result)
-                    try Task.checkCancellation()
                     if let decoded = UIImage(data: data) { image = decoded }
                     else { error = "画像を読み込めませんでした。再読み込みをお試しください。" }
                 }
