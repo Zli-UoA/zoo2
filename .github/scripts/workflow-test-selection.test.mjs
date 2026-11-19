@@ -61,8 +61,9 @@ test('CI-only changes are narrowed per workflow; application changes never use t
   assert.equal(workflowJobs('ci-backend', [{ status: 'D', path }]), null);
 });
 
-test('Tauri Linux-only edits do not select macOS; frontend proxy-only edits need no Wasm', () => {
-  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['check'])).desktopTauri, { check: true, macos: false });
+test('Tauri Linux-only edits do not select macOS or Windows; frontend proxy-only edits need no Wasm', () => {
+  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['check'])).desktopTauri, { check: true, macos: false, windows: false });
+  assert.deepEqual(restrictWorkflow({}, 'ci-desktop-tauri', new Set(['windows'])).desktopTauri, { check: false, macos: false, windows: true });
   const plan = restrictWorkflow({ frontend: {} }, 'ci-frontend', new Set(['proxy', 'runner', 'test-selection']));
   assert.equal(plan.frontend.proxy, true);
   assert.equal(plan.frontend.browser, false);

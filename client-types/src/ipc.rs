@@ -137,6 +137,8 @@ pub struct DeviceLogin {
     pub user_code: String,
     pub verification_uri: String,
     pub verification_uri_complete: Option<String>,
+    /// ブラウザーを自動で開く対象かどうか。実際に開けたかどうかは表さない。
+    pub auto_open: bool,
     /// UNIX 秒。これを過ぎたらやり直す。
     pub expires_at: i64,
 }

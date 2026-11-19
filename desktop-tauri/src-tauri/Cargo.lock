@@ -5914,7 +5914,7 @@ dependencies = [
 
 [[package]]
 name = "zoo2-desktop-tauri"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "jiff",
@@ -5931,6 +5931,7 @@ dependencies = [
  "tokio",
  "url",
  "webkit2gtk",
+ "windows",
  "zoo2-client-core",
  "zoo2-client-types",
 ]

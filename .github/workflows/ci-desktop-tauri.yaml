@@ -125,6 +125,8 @@ jobs:
       - name: test
         working-directory: ./desktop-tauri/src-tauri
         run: cargo test --locked
+      - name: test updater verification script
+        run: node --test desktop-tauri/scripts/verify-tauri-updater.test.mjs
       - name: bundle (deb, AppImage)
         working-directory: ./desktop-tauri/src-tauri
         run: cargo tauri build --bundles deb,appimage -- --locked
@@ -214,4 +216,181 @@ jobs:
         with:
           name: zoo2-desktop-tauri-macos
           path: desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 7
+
+  # Windows でもビルドと Inno Setup インストーラー生成ができることを確かめる。
+  windows:
+    if: fromJSON(needs.test-selection.outputs.desktopTauri).windows
+    needs: test-selection
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $channel = (Get-Content rust-toolchain.toml | Select-String '^channel = "(.*)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+          if (-not $channel) { throw "Failed to read toolchain channel from rust-toolchain.toml" }
+          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy
+          targets: wasm32-unknown-unknown
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # キャッシュの保存は main だけにする。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: |
+            desktop-tauri/src-tauri
+            desktop-tauri/ui
+            client-core
+      # cargo install は毎回ソースからビルドして数分かかるので、版ごとにバイナリーをキャッシュする。
+      - name: Restore cargo tools
+        id: cargo-tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.cargo-tools
+          key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-0.2.129-tauri-cli-2.11.4
+      - name: Install trunk, wasm-bindgen and tauri-cli
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $trunkBin = Join-Path $env:USERPROFILE ".local\trunk\bin"
+          New-Item -ItemType Directory -Force -Path $trunkBin | Out-Null
+          $trunkBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $trunkZip = Join-Path $env:RUNNER_TEMP "trunk.zip"
+          Invoke-WebRequest -Uri "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-pc-windows-msvc.zip" -OutFile $trunkZip
+          $actualHash = (Get-FileHash -Algorithm SHA256 $trunkZip).Hash.ToLowerInvariant()
+          $expectedHash = "cd6ac15b9daff0365e5695036791ef2ce3c63f61c014f5a8c532363266e4569c"
+          if ($actualHash -ne $expectedHash) {
+            throw "trunk SHA-256 mismatch: expected $expectedHash, got $actualHash"
+          }
+          Expand-Archive -Path $trunkZip -DestinationPath $trunkBin -Force
+          $cargoTools = Join-Path $env:USERPROFILE ".cargo-tools"
+          $cargoToolsBin = Join-Path $cargoTools "bin"
+          $cargoToolsBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          if ('${{ steps.cargo-tools.outputs.cache-hit }}' -ne 'true') {
+            cargo install --locked --root $cargoTools wasm-bindgen-cli --version 0.2.129
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo install --locked --root $cargoTools tauri-cli --version 2.11.4
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Install Inno Setup
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+          if (-not $iscc -and (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          $probe = "#if Ver < EncodeVer(6, 5, 2)`n#error old`n#endif`n[Setup]`nAppName=t`nAppVersion=1.0`nDefaultDirName={autopf}\t"
+          $needInstall = $true
+          if ($iscc -and (Test-Path $iscc)) {
+            $probe | & $iscc /Q /O- - | Out-Null
+            if ($LASTEXITCODE -eq 0) { $needInstall = $false }
+          }
+          if ($needInstall) {
+            choco upgrade innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $iscc = $null
+            if (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+              $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+            } else {
+              $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+            }
+          }
+          if (-not $iscc -or -not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          $probe | & $iscc /Q /O- - | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "ISCC.exe >= 6.5.2 is required (resolved: $iscc)"
+          }
+          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: build ui
+        working-directory: ./desktop-tauri/ui
+        run: |
+          $ErrorActionPreference = 'Stop'
+          trunk build --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Windows でだけ使う (または使わない) コードの警告とテストを拾う。
+      - name: lint check
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo clippy --all-targets --locked --manifest-path client-core/Cargo.toml -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --all-targets --locked --manifest-path desktop-tauri/src-tauri/Cargo.toml -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: test
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --locked --manifest-path client-core/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path desktop-tauri/src-tauri/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: bundle (Inno Setup)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location desktop-tauri\src-tauri
+          try {
+            cargo tauri build --no-bundle -- --locked
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Pop-Location
+          }
+          $version = (Get-Content desktop-tauri\src-tauri\Cargo.toml | Select-String '^version = "(.*)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+          if (-not $version) { throw "Failed to read version from desktop-tauri/src-tauri/Cargo.toml" }
+          iscc.exe "/DAppVersion=$version" desktop-tauri\installer\zoo2.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: verify updater signature and manifest format
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content desktop-tauri\src-tauri\Cargo.toml | Select-String '^version = "(.*)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+          $setupName = "zoo2_${version}_x64-setup.exe"
+          $setupSrc = Join-Path "desktop-tauri\src-tauri\target\release\bundle\inno" $setupName
+          if (-not (Test-Path $setupSrc)) { throw "Missing installer: $setupSrc" }
+          $work = Join-Path $env:RUNNER_TEMP "verify-updater"
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+          try {
+            $setupCopy = Join-Path $work $setupName
+            Copy-Item $setupSrc $setupCopy
+            $keyFile = Join-Path $work "test.key"
+            cargo tauri signer generate -w $keyFile --ci --force -p "ci-verify"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo tauri signer sign -f $keyFile -p "ci-verify" $setupCopy
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $pubkey = (Get-Content -Raw "$keyFile.pub").Trim()
+            $sig = (Get-Content -Raw "$setupCopy.sig").Trim()
+            $manifestPath = Join-Path $work "latest.json"
+            $manifest = @{
+              version = $version
+              notes = "https://github.com/Zli-UoA/zoo2/releases/tag/desktop-tauri-v$version"
+              pub_date = "2026-01-01T00:00:00Z"
+              platforms = @{
+                "windows-x86_64" = @{
+                  url = "https://github.com/Zli-UoA/zoo2/releases/download/desktop-tauri-v$version/$setupName"
+                  signature = $sig
+                }
+              }
+            } | ConvertTo-Json -Depth 5
+            [System.IO.File]::WriteAllText($manifestPath, $manifest, [System.Text.UTF8Encoding]::new($false))
+            node desktop-tauri\scripts\verify-tauri-updater.mjs --manifest $manifestPath --dir $work --pubkey $pubkey --require windows-x86_64 --verify-files
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+          }
+      - name: Upload bundles
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: zoo2-desktop-tauri-windows
+          path: desktop-tauri/src-tauri/target/release/bundle/inno/*.exe
+          if-no-files-found: error
           retention-days: 7

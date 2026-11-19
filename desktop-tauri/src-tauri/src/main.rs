@@ -1,4 +1,4 @@
-// release ビルドの Windows でコンソールを出さない (今は Windows を配布しないが、ひな形どおり)。
+// release ビルドの Windows でコンソールを出さない。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {

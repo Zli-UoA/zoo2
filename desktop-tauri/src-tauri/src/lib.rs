@@ -54,7 +54,13 @@ pub fn run() {
     };
     tauri::Builder::default()
         // 単一インスタンスは最初に登録する (2 つ目のプロセスを、他の初期化より前に止めるため)。
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            #[cfg(not(target_os = "windows"))]
+            let _ = &args;
+            #[cfg(target_os = "windows")]
+            if let Some(failure) = update::take_inno_failure(args.into_iter().skip(1)) {
+                update::show_inno_failure(app, &failure);
+            }
             window::show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -88,6 +94,8 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             toast::request_permission_macos();
+            #[cfg(target_os = "windows")]
+            toast::ensure_windows_aumid(app.handle());
             // 設定を読めないときは確かめる (直した版を届けられるように)。
             let check_updates = !matches!(&config, Ok(config) if !config.check_updates);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));
@@ -104,7 +112,14 @@ pub fn run() {
         .on_window_event(window::on_window_event)
         .build(tauri::generate_context!())
         .expect("Tauri の初期化に失敗しました")
-        .run(|_app, _event| {});
+        .run(|app, event| {
+            #[cfg(target_os = "windows")]
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                update::on_exit_requested(app, code, &api);
+            }
+            #[cfg(not(target_os = "windows"))]
+            let _ = (app, event);
+        });
 }
 
 #[cfg(test)]
