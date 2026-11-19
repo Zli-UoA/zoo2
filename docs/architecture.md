@@ -1,5 +1,27 @@
 # アプリの構成
 
+## ディレクトリと責務
+
+| 配置 | 責務 |
+| --- | --- |
+| `Sources/App` | 起動、認証セッション、OS通知・CallKit、画面のルートと回転制御 |
+| `Sources/Domain` | ユーザー・会話・メッセージなどの値、表示判定、本文や通知の解析 |
+| `Sources/Data/Authentication` | 認証、トークンの保存と更新 |
+| `Sources/Data/Networking` | クライアントの契約、REST・Electric・SSEの通信と応答形式 |
+| `Sources/Data/Sync` | SwiftDataモデル、キャッシュactor、失効を管理する同期セッション、履歴同期、添付のディスク保存 |
+| `Sources/Data/Notifications` | プッシュ登録と通知プレビュー鍵の保存契約 |
+| `Sources/Features/Workspace` | タブ・iPadの画面構成、会話のルーティング、ワークスペースの状態と同期の開始・停止 |
+| `Sources/Features/Channels` | チャンネル一覧・検索・作成・詳細・編集、DMの宛先選択、スレッド一覧 |
+| `Sources/Features/Conversation` | 会話・返信の画面、スクロール位置、入力欄、メッセージ操作と会話の状態 |
+| `Sources/Features/Attachments` | 添付の読み込み状態、画像・PDFの閲覧、動画再生と保存 |
+| `Sources/Features/Reactions` | スタンプの表示・選択と最近使ったスタンプ |
+| `Sources/Features/Inbox`、`Profile`、`Calls`、`Intents` | 通知一覧、プロフィール、音声通話、Siriの各画面・操作と状態 |
+| `Sources/Features/Shared` | 各画面で共用するデザインとアバター |
+| `Sources/Preview` | DEBUGでだけ使う模擬クライアント、画像・PDF、通知ストレージ、通話メディア |
+
+画面構成、一覧、作成シートを別ファイルに置き、メッセージのスクロール制御は `MessageList` に集約します。状態を所有するStoreは保持し、分割のために内部状態を別のStoreへ複製しません。
+SwiftDataのモデル名・プロパティはファイル分割で変更しません。新しいSwiftファイルは `project.yml` のソースディレクトリからXcodeGenでプロジェクトに登録します。
+
 ## ネイティブ画面と状態
 
 iPhoneと幅の狭いiPadでは、SwiftUIの `TabView` にチャンネル、DM、通知、プロフィールを配置し、それぞれに `NavigationStack` を持たせます。
