@@ -537,6 +537,110 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testMessageCardWhitespaceOpensActions() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let message = app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"]
+        let reaction = app.buttons["reaction-22222222-2222-4222-8222-222222222222-👍"]
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
+        XCTAssertTrue(reaction.waitForExistence(timeout: 5))
+        let author = app.staticTexts["さくら"].firstMatch
+        let points = [
+            CGPoint(x: app.frame.minX + 5, y: message.frame.midY),
+            CGPoint(x: app.frame.maxX - 5, y: message.frame.midY),
+            CGPoint(x: message.frame.minX - 6, y: message.frame.midY),
+            CGPoint(x: message.frame.midX, y: author.frame.minY - 4),
+            CGPoint(x: message.frame.midX, y: message.frame.minY - 3),
+            CGPoint(x: message.frame.midX, y: reaction.frame.maxY + 4)
+        ]
+        for point in points {
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: point.x, dy: point.y)).press(forDuration: 0.8)
+            XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5), "余白の長押し位置：\(point)")
+            XCTAssertTrue(app.buttons["message-action-reply"].exists)
+            XCTAssertFalse(app.buttons["message-action-edit"].exists)
+            app.buttons["message-action-copy"].tap()
+            XCTAssertTrue(app.buttons["message-action-copy"].waitForNonExistence(timeout: 5))
+        }
+    }
+
+    @MainActor
+    func testImageWhitespaceOpensActionsWithoutInterceptingImage() {
+        let app = launchWorkspace(tallImage: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let image = app.buttons["画像を拡大：縦長画像.png"]
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        for x in [app.frame.minX + 5, (image.frame.maxX + app.frame.maxX) / 2] {
+            app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: x, dy: image.frame.midY)).press(forDuration: 0.8)
+            XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["message-action-reply"].exists)
+            XCTAssertFalse(app.buttons["attachment-save"].exists)
+            app.buttons["message-action-copy"].tap()
+            XCTAssertTrue(app.buttons["message-action-copy"].waitForNonExistence(timeout: 5))
+        }
+        image.tap()
+        XCTAssertTrue(app.navigationBars["縦長画像.png"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["message-action-more-reactions"].exists)
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        image.press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["attachment-save"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["message-action-more-reactions"].exists)
+    }
+
+    @MainActor
+    func testImageGalleryWhitespaceOpensActions() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-multiple-images"]
+        app.launch()
+        let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 10))
+        channel.tap()
+        let image = app.buttons["画像を拡大：さくら.png"]
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        for _ in 0..<4 where !image.isHittable { app.scrollViews["message-list"].swipeDown() }
+        for x in [image.frame.minX - 8, image.frame.maxX + 4] {
+            app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: x, dy: image.frame.midY)).press(forDuration: 0.8)
+            XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["message-action-reply"].exists)
+            XCTAssertFalse(app.buttons["attachment-save"].exists)
+            app.scrollViews.containing(.button, identifier: "message-action-reply").firstMatch.swipeDown()
+            XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForNonExistence(timeout: 5))
+        }
+        let gallery = app.scrollViews["message-images-22222222-2222-4222-8222-222222222222"]
+        gallery.swipeLeft()
+        XCTAssertFalse(app.buttons["message-action-more-reactions"].exists)
+        gallery.swipeRight()
+        image.tap()
+        XCTAssertTrue(app.navigationBars["さくら.png"].waitForExistence(timeout: 5))
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        image.press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["attachment-save"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["message-action-more-reactions"].exists)
+    }
+
+    @MainActor
+    func testShortImageGalleryTrailingWhitespaceOpensActions() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-multiple-images", "--uitesting-short-image-gallery"]
+        app.launch()
+        let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 10))
+        channel.tap()
+        let image = app.buttons["画像を拡大：縦長画像.png"]
+        XCTAssertTrue(image.waitForExistence(timeout: 5))
+        XCTAssertLessThan(image.frame.maxX, app.frame.maxX - 20)
+        app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: (image.frame.maxX + app.frame.maxX) / 2, dy: image.frame.midY))
+            .press(forDuration: 0.8)
+        XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["message-action-reply"].exists)
+        XCTAssertFalse(app.buttons["attachment-save"].exists)
+    }
+
+    @MainActor
     func testReactionLongPressShowsPeopleWithoutToggling() {
         let app = launchWorkspace()
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()

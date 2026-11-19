@@ -61,6 +61,7 @@ private final class FakeCallClient: CallClient {
         }
     }
     func answerCallInvitation(id: String, accept: Bool) async throws { accepted = accept }
+    func isCallInvitationPending(id: String) async throws -> Bool { true }
     func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
         inviteRequests.append((channelID, userIDs))
         await beforeInviteResult?()
@@ -344,6 +345,39 @@ struct CallStoreTests {
         #expect(store.error != nil)
         #expect(!client.observed && !client.accepted && !media.started)
         #expect(store.channel == nil)
+    }
+
+    @Test("暗号化チャンネルでも着信に応答して通話へ参加できる")
+    func encryptedInvitation() async throws {
+        var encrypted = channel
+        encrypted.is_private = true
+        encrypted.encrypted = true
+        #expect(!encrypted.canPost)
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { true })
+        defer { store.shutdown() }
+        let delivered = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        client.delivered = { delivered.continuation.yield(()); delivered.continuation.finish() }
+        _ = try #require(store.start(channel: encrypted, invitationID: "invite", systemAudio: true))
+        for await _ in delivered.stream { }
+        #expect(client.accepted && client.observed)
+        #expect(store.ready && media.started)
+        #expect(store.channel?.id == encrypted.id)
+    }
+
+    @Test("削除・アーカイブ済みのチャンネルでは着信に応答しない", arguments: [true, false])
+    func unavailableChannelInvitation(archived: Bool) {
+        var unavailable = channel
+        unavailable.encrypted = true
+        if archived { unavailable.archive_at = "2026-11-19T00:00:00Z" }
+        else { unavailable.deleted_at = "2026-11-19T00:00:00Z" }
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true })
+        defer { store.shutdown() }
+        #expect(store.start(channel: unavailable, invitationID: "invite") == nil)
+        #expect(!client.accepted && !client.observed)
     }
 
     @Test("切断後にメディアを残さず終了し、再入室できる")

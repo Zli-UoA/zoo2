@@ -110,6 +110,8 @@ struct MessageAttachmentsView: View {
     let messageID: String
     let isVisible: Bool
     let galleryOutsets: EdgeInsets
+    let showMessageActions: () -> Void
+    let messagePressingChanged: (Bool) -> Void
 
     var body: some View {
         let images = attachments.filter(\.isImage)
@@ -127,9 +129,24 @@ struct MessageAttachmentsView: View {
                                     .containerRelativeFrame(.horizontal) { width, _ in min(240 * aspectRatio, width) }
                                     .background(.quaternary, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
                                     .clipShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
+                                    // クリップだけでは画像間の余白まで操作領域がはみ出すため、表示枠に限定する。
+                                    .contentShape(Rectangle())
                             }
                         }
                         .scrollTargetLayout()
+                        .background {
+                            // 画像列が短い場合の右側も含め、スクロール領域内の余白で長押しを受け取る。
+                            GeometryReader { geometry in
+                                Color.clear
+                                    .containerRelativeFrame(.horizontal) { width, _ in
+                                        max(width, geometry.size.width) + galleryOutsets.leading
+                                    }
+                                    .contentShape(Rectangle())
+                                    .onLongPressGesture(perform: showMessageActions, onPressingChanged: messagePressingChanged)
+                                    .offset(x: -galleryOutsets.leading)
+                                    .accessibilityHidden(true)
+                            }
+                        }
                     }
                     .scrollTargetBehavior(.viewAligned)
                     .scrollIndicators(.hidden)

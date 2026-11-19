@@ -7,6 +7,7 @@ struct ConversationView: View {
     @FocusState private var composerFocused: Bool
     @State private var showingDetails = false
     @State private var didRequestInitialFocus = false
+    @State private var navigationContentWidth: CGFloat?
 
     private var parentID: String? {
         if case .thread(_, let parent, _) = route { return parent }
@@ -55,6 +56,7 @@ struct ConversationView: View {
                 }
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { navigationContentWidth = $0 }
         .background(Color(.systemBackground))
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
@@ -67,7 +69,16 @@ struct ConversationView: View {
                             Text(workspace.name(for: store.channel)).font(.headline).lineLimit(1)
                             Image(systemName: "chevron.down").font(.caption2)
                         }
+                        .padding(.horizontal, 16)
+                        // タイトル欄自身は内容幅へ縮むため、本文の安全領域内の幅から左右のボタンと余白を引く。
+                        .frame(width: navigationContentWidth.map { width in
+                            max(0, width - 2 * (AppDesign.minimumControlSize + 16 + 12))
+                        })
+                        .frame(height: AppDesign.minimumControlSize)
+                        .contentShape(Capsule())
                     }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Capsule())
                     .foregroundStyle(.primary)
                     .tint(.primary)
                     .accessibilityLabel("\(workspace.name(for: store.channel))の詳細")
@@ -83,7 +94,7 @@ struct ConversationView: View {
                     }
                 }
             }
-            if parentID == nil, store.canPost, !composerFocused {
+            if parentID == nil, store.canCall, !composerFocused {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("音声通話", systemImage: "headphones") {
                         if workspace.calls.channel == nil { workspace.calls.start(channel: store.channel) }
@@ -214,10 +225,7 @@ private struct MessageList: View {
             ? MessageTimeline.firstUnread(in: messages, state: initialReadState, userID: store.userID) : nil
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if store.loading && messages.isEmpty {
-                    ProgressView("メッセージを読み込んでいます…")
-                        .frame(maxWidth: .infinity).padding(40)
-                } else if messages.isEmpty && store.syncError == nil {
+                if !store.loading && messages.isEmpty && store.syncError == nil {
                     ContentUnavailableView("会話を始めましょう", systemImage: "bubble.left.and.bubble.right",
                                            description: Text("最初のメッセージを送ってみませんか。"))
                 }
@@ -325,6 +333,12 @@ private struct MessageList: View {
                 positionedInitialMessages = true
                 scrollPosition.scrollTo(id: id, anchor: .center)
                 store.focusedMessageID = nil
+            }
+        }
+        .overlay(alignment: .center) {
+            if store.loading && messages.isEmpty {
+                ProgressView("メッセージを読み込んでいます…")
+                    .padding(40)
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -481,7 +495,8 @@ private struct MessageList: View {
                     MessageAttachmentsView(attachments: attachments, workspace: workspace, renderState: renderState,
                                            channelID: store.channel.id, messageID: message.id, isVisible: isVisible,
                                            galleryOutsets: EdgeInsets(top: 0, leading: horizontalPadding + AvatarView.size + avatarSpacing,
-                                                                     bottom: 0, trailing: horizontalPadding))
+                                                                     bottom: 0, trailing: horizontalPadding),
+                                           showMessageActions: showActions, messagePressingChanged: pressingChanged)
                 }
                 // スタンプの押下を本文の長押し判定から外し、メッセージ全体を暗くしない。
                 ReactionChips(store: store, workspace: workspace, message: message)
@@ -500,8 +515,15 @@ private struct MessageList: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, horizontalPadding).padding(.vertical, AppDesign.spacing)
-        .background(store.focusedMessageID == message.id ? AppDesign.tint.opacity(0.08) : .clear)
+        .background {
+            // 余白でだけ長押しを受け取り、添付やスタンプ固有の操作を優先する。
+            (store.focusedMessageID == message.id ? AppDesign.tint.opacity(0.08) : .clear)
+                .contentShape(Rectangle())
+                .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
+                .accessibilityHidden(true)
+        }
         .contentShape(Rectangle())
         .modifier(MessagePressFeedback(isEnabled: hasActions(for: message), isPressing: pressingMessageID == message.id))
     }

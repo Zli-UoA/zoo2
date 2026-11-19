@@ -7,6 +7,7 @@ import SwiftUI
 final class ConversationStore {
     private(set) var channel: Channel
     let userID: String
+    let typing: TypingStore
     private let client: any ChatClient
     private(set) var messages: [Message] = [] {
         didSet { indexMessages() }
@@ -64,9 +65,12 @@ final class ConversationStore {
         self.channel = channel
         self.client = client
         self.userID = userID
+        typing = TypingStore(client: client, channelID: channel.id, userID: userID)
+        typing.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
     var canPost: Bool { active && !blocked && channel.canPost }
+    var canCall: Bool { active && !blocked && channel.canCall }
     func message(id: String) -> Message? { messagesByID[id] }
     var focusedThreadID: String? {
         guard let focusedMessageID, let parent = messagesByID[focusedMessageID]?.parent_id,
@@ -173,6 +177,7 @@ final class ConversationStore {
             clearDraftAttachments()
         }
         self.channel = channel
+        if !canPost { typing.stop() }
         if channel.encrypted == true {
             onAccessRevoked?()
             messages = []; remoteMessages = []; localWrites = [:]
@@ -227,6 +232,7 @@ final class ConversationStore {
     }
 
     private func revokeAccess() {
+        typing.stop()
         onAccessRevoked?()
         accessGeneration = UUID()
         clearAttachments()
@@ -279,6 +285,7 @@ final class ConversationStore {
         let key = draftKey(parentID)
         let content = drafts[key] ?? ""
         guard canSend(parentID: parentID) else { return }
+        typing.activity(false, parentID: parentID)
         let attachments = draftAttachments[key] ?? []
         let attachmentIDs = attachments.map(\.id)
         let epoch = accessGeneration
@@ -440,6 +447,7 @@ final class ConversationStore {
 
     func shutdown() {
         active = false
+        typing.stop()
         onAccessRevoked?()
         clearAttachments()
         clearDraftAttachments()

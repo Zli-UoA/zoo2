@@ -25,12 +25,18 @@ struct CallBanner: View {
                 .accessibilityIdentifier("active-call")
             } else {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    if let invite = calls.invitations.first(where: { (ZooDate.parse($0.expires_at) ?? .distantPast) > context.date }) {
+                    if let invite = calls.invitations.first(where: {
+                        (ZooDate.parse($0.expires_at) ?? .distantPast) > context.date &&
+                        (workspace.systemCalls?.incomingInvitationID == nil || UUID(uuidString: $0.id) == workspace.systemCalls?.incomingInvitationID)
+                    }) {
                         HStack(spacing: AppDesign.spacing) {
                             Label("\(workspace.people[invite.inviter_id]?.name ?? "メンバー")から通話", systemImage: "phone.fill")
                             Spacer()
-                            Button("辞退") { Task { await calls.decline(invite) } }.buttonStyle(.glass)
-                            Button("応答") {
+                            Button("拒否") {
+                                if workspace.systemCalls?.decline(invite) != true { Task { await calls.decline(invite) } }
+                            }.buttonStyle(.glass).accessibilityIdentifier("incoming-call-decline")
+                            Button("参加") {
+                                if workspace.systemCalls?.answer(invite) == true { return }
                                 Task {
                                     do {
                                         let channel = try await workspace.client.channel(id: invite.channel_id)
@@ -38,7 +44,7 @@ struct CallBanner: View {
                                         calls.start(channel: channel, invitationID: invite.id)
                                     } catch { workspace.report(error) }
                                 }
-                            }.buttonStyle(.glassProminent)
+                            }.buttonStyle(.glassProminent).accessibilityIdentifier("incoming-call-answer")
                         }
                         .font(.callout).padding(AppDesign.horizontalInset)
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))

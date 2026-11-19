@@ -51,7 +51,7 @@ targets:
       properties:
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
         NSPhotoLibraryAddUsageDescription: アップロードされた画像や動画を写真に保存します。
-        UIBackgroundModes: [audio]
+        UIBackgroundModes: [audio, voip]
         APNSEnvironment: $(APNS_ENVIRONMENT)
         ZooPreviewKeychainGroup: $(AppIdentifierPrefix)works.zli.zoo.preview
         NSAppTransportSecurity:

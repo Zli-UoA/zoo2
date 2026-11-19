@@ -98,6 +98,23 @@ final class PreviewCallMedia: CallMedia {
 
 @MainActor
 final class PreviewChatClient: ChatClient {
+    private var typingStartedAt: [String: ContinuousClock.Instant] = [:]
+
+    func typingUsers(channelID: String, parentID: String?) async throws -> [TypingUser] {
+        guard channelID == Self.channelID else { return [] }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-typing-transition") {
+            guard let parentID else { return [] }
+            let start = typingStartedAt[parentID] ?? .now
+            typingStartedAt[parentID] = start
+            let elapsed = start.duration(to: .now)
+            guard elapsed >= .seconds(2), elapsed < .seconds(7) else { return [] }
+        } else if !ProcessInfo.processInfo.arguments.contains("--uitesting-typing") { return [] }
+        let person = parentID == nil ? colleague : otherColleague
+        return [TypingUser(id: person.id, display_name: person.name)]
+    }
+
+    func setTyping(channelID: String, parentID: String?, sessionID: UUID, active: Bool) async throws {}
+
     let serverURL = "https://ui.test.invalid"
     static let channelID = "11111111-1111-4111-8111-111111111111"
     static let messageID = "22222222-2222-4222-8222-222222222222"
@@ -131,6 +148,11 @@ final class PreviewChatClient: ChatClient {
 
     init(failNextSend: Bool = ProcessInfo.processInfo.arguments.contains("--uitesting-send-failure")) {
         self.failNextSend = failNextSend
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-incoming-call") {
+            callInvitations = [CallInvitation(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa001", channel_id: Self.channelID,
+                inviter_id: colleague.id, invitee_id: currentUser.id, status: "pending",
+                expires_at: Date.now.addingTimeInterval(30).ISO8601Format())]
+        }
         allChannels.append(Channel(id: discoverableID, channel_name: "雑談", is_private: false, is_dm: false))
         if failNextPin {
             allChannels += (1...30).map { Channel(id: UUID().uuidString.lowercased(), channel_name: "開発\($0)", is_private: false, is_dm: false) }
@@ -171,6 +193,10 @@ final class PreviewChatClient: ChatClient {
                 MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06", file_name: "横長画像.png", content_type: "image/png"),
                 MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa05", file_name: "センシティブ画像.png", content_type: "image/png", is_sensitive: true)
             ]
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-short-image-gallery") {
+                let images = allMessages[0].display_data?.attachments.filter(\.isImage) ?? []
+                allMessages[0].display_data?.attachments = Array(images.prefix(2))
+            }
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-video") {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "確認用.mp4", content_type: "video/mp4",
@@ -242,6 +268,9 @@ final class PreviewChatClient: ChatClient {
         for await invitations in stream { receive(invitations) }
     }
     func answerCallInvitation(id: String, accept: Bool) async throws {}
+    func isCallInvitationPending(id: String) async throws -> Bool {
+        callInvitations.contains { $0.id == id && $0.status == "pending" }
+    }
     func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
         if failNextCallInvite {
             failNextCallInvite = false

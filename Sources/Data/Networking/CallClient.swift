@@ -6,11 +6,19 @@ protocol CallClient {
     func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws
     func answerCallInvitation(id: String, accept: Bool) async throws
+    func isCallInvitationPending(id: String) async throws -> Bool
     func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation]
     func cancelCallInvitation(id: String) async throws
 }
 
 extension NativeChatClient {
+    func isCallInvitationPending(id: String) async throws -> Bool {
+        guard UUID(uuidString: id) != nil else { throw ZooError.invalidResponse }
+        struct Response: Decodable { let pending: Bool }
+        let data = try await api.data("api/call-invites/\(id)")
+        return try JSONDecoder().decode(Response.self, from: data).pending
+    }
+
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
         guard UUID(uuidString: channelID) != nil, UUID(uuidString: sessionID) != nil else { throw ZooError.invalidResponse }
         var request = try await api.request("api/channels/\(channelID)/call/stream", query: ["session_id": sessionID])
@@ -45,7 +53,9 @@ extension NativeChatClient {
     }
 
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
-        try await ShapeStream(api: api).observe("api/shapes/call_invites", query: [:], as: CallInvitation.self) { receive($0 ?? []) }
+        try await ShapeStream(api: api).observe("api/shapes/call_invites", query: [:], as: CallInvitation.self) {
+            if let values = $0 { receive(values) }
+        }
     }
 
     func answerCallInvitation(id: String, accept: Bool) async throws {
