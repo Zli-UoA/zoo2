@@ -311,12 +311,14 @@ fn Login(state: Option<SessionState>) -> impl IntoView {
                     </span>
                 </button>
             </div>
-            <p class="auth-hint">"ボタンを押すと既定のブラウザーが自動で開きます。"</p>
+            <p class="auth-hint">"ボタンを押すと、通常は既定のブラウザーが自動で開きます。開かない場合は、次の画面から手動で開けます。"</p>
         }
         .into_any(),
         Some(SessionState::LoggingIn { login }) => {
             let has_complete = login.verification_uri_complete.is_some();
-            let lead = if has_complete {
+            let lead = if !login.auto_open {
+                "下の「ブラウザーで開く」を押し、表示された画面に確認コードを入力して承認してください。"
+            } else if has_complete {
                 "開いたブラウザーの画面に表示されているコードが一致しているか確かめて承認してください。"
             } else {
                 "開いたブラウザーの画面に下の確認コードを入力して承認してください。"

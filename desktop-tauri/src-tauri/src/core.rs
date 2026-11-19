@@ -1632,6 +1632,7 @@ async fn prepare_verified_device_login(
         user_code: authorization.user_code.clone(),
         verification_uri: sanitized_verification_uri,
         verification_uri_complete,
+        auto_open: auto_open_url.is_some(),
         expires_at,
     };
     Ok((login, auto_open_url, deadline))
@@ -1871,7 +1872,33 @@ mod tests {
             ok_auto_open.as_deref(),
             Some(format!("http://{addr}/device?user_code=OK").as_str())
         );
+        assert!(ok_login.auto_open);
         assert_eq!(ok_deadline, ok_started + Duration::from_secs(600));
+
+        // 1b) verification_uri_complete がなくても、確認済み issuer + GET 検証通過なら verification_uri を自動で開く
+        let no_complete_auth = DeviceAuthorization {
+            device_code: "dev-no-complete".to_string(),
+            user_code: "NOCOMP".to_string(),
+            verification_uri: format!("http://{addr}/device"),
+            verification_uri_complete: None,
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (no_complete_login, no_complete_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &no_complete_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert!(no_complete_login.verification_uri_complete.is_none());
+        assert!(no_complete_login.auto_open);
+        assert_eq!(
+            no_complete_auto_open.as_deref(),
+            Some(format!("http://{addr}/device").as_str())
+        );
 
         // 2) GET でダウングレードが発生するコード付き URL は、UI 向け verification_uri_complete から除外し自動起動も抑止する
         let downgrade_auth = DeviceAuthorization {
@@ -1894,6 +1921,7 @@ mod tests {
         .await
         .unwrap();
         assert!(downgrade_login.verification_uri_complete.is_none());
+        assert!(!downgrade_login.auto_open);
         assert!(downgrade_auto_open.is_none());
 
         // 3) リダイレクト挙動が未確認の外部カスタム issuer では、自動起動を抑止し verification_uri_complete も落とす
@@ -1922,6 +1950,7 @@ mod tests {
             "https://custom-idp.example/device"
         );
         assert!(unconfirmed_login.verification_uri_complete.is_none());
+        assert!(!unconfirmed_login.auto_open);
         assert!(unconfirmed_auto_open.is_none());
 
         // 4) 別オリジンの verification_uri を返す IdP でもログインは失敗させず、手動リンクのみ表示して自動起動と verification_uri_complete を抑止する。
@@ -1954,6 +1983,7 @@ mod tests {
         );
         assert!(!cross_login.verification_uri.contains("CROSS"));
         assert!(cross_login.verification_uri_complete.is_none());
+        assert!(!cross_login.auto_open);
         assert!(cross_auto_open.is_none());
         assert_eq!(
             strip_user_code_from_verification_uri(
