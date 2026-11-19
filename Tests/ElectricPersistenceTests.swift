@@ -422,6 +422,69 @@ struct PersistentSyncIntegrationTests {
         #expect(!values.contains { $0["offset"] == "-1" })
     }
 
+    @Test("保存済みの100件に続く50件を要求し、オフライン・重複・別スレッドの追加取得を止める")
+    func storePaginationResumesLoadedWindow() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        var state = MessageSyncState()
+        state.shape.handle = "h"; state.shape.offset = "100_0"; state.shape.isLive = true
+        _ = try state.addSnapshot(subsetData(Array(51...150)), response: syncResponse())
+        state.windows["root"] = MessageWindow(parentID: nil, limit: 100, hasMore: true,
+                                               oldestDate: "2026-11-19 10:00:00", oldestID: syncRow(51)["id"]?.text)
+        try await sync.store(state, key: "messages-v1:" + syncChannel, channelID: syncChannel)
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        let ready = AsyncStream<Void>.makeStream()
+        let firstRequest = Mutex(true)
+        let subsets = Mutex(0)
+        harness.stub { request in
+            let query = Dictionary((URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, new in new })
+            if firstRequest.withLock({ value in defer { value = false }; return value }) {
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+            }
+            if query["subset__where"] != nil {
+                subsets.withLock { $0 += 1 }
+                return (200, ["electric-handle": "h", "electric-offset": "100_0"], try subsetData(Array(1...50)))
+            }
+            if query["live"] == "true" {
+                ready.continuation.yield(())
+                try await Task.sleep(for: .seconds(60))
+            }
+            return (200, ["electric-handle": "h", "electric-offset": "100_0", "electric-up-to-date": "true"], Data("[]".utf8))
+        }
+        let store = ConversationStore(channel: Channel(id: syncChannel, channel_name: "履歴", is_private: false, is_dm: false),
+                                      client: NativeChatClient(api: harness.api, sync: sync), userID: syncUser.id)
+        var run = Task { await store.run() }
+        defer { run.cancel() }
+        for await _ in started.stream { break }
+        #expect(store.showingCachedMessages)
+        let initialRequest = store.syncRequest
+        store.loadOlder(parentID: nil)
+        #expect(store.syncRequest == initialRequest)
+        release.continuation.yield(())
+        var iterator = ready.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(!store.showingCachedMessages && store.messages.count == 100)
+        #expect(store.historyRevision == 0)
+        store.loadOlder(parentID: "別スレッド")
+        #expect(store.syncRequest == initialRequest)
+        store.loadOlder(parentID: nil)
+        #expect(store.loadingOlder && store.syncRequest != initialRequest)
+        let nextRequest = store.syncRequest
+        store.loadOlder(parentID: nil)
+        #expect(store.syncRequest == nextRequest)
+        run.cancel()
+        await run.value
+        run = Task { await store.run() }
+        _ = await iterator.next()
+        #expect(store.messages.count == 150)
+        #expect(store.historyRevision == 1)
+        #expect(!store.loadingOlder)
+        #expect(subsets.withLock { $0 } == 1)
+    }
+
     @Test("保存したログイン状態があれば通信なしでワークスペースを復元する")
     func offlineLaunch() async throws {
         let harness = try ChatHarness()

@@ -158,7 +158,39 @@ private struct ThreadScrollLayout: Equatable {
     let viewportHeight: CGFloat
     let followingLatest: Bool
     var fits: Bool { contentHeight > 0 && contentHeight <= viewportHeight }
-    var bottomOffset: CGFloat { max(0, contentHeight - viewportHeight) }
+    let topInset: CGFloat
+    let bottomInset: CGFloat
+}
+
+@MainActor
+private final class MessageViewport {
+    var bounds = CGRect.zero
+    var frames: [String: CGRect] = [:]
+    var visibleIDs: Set<String> = []
+    var pendingRevision: Int?
+    var pendingAnchor: (id: String, point: UnitPoint)?
+
+    func anchor(in ids: [String], excluding parentID: String?) -> (id: String, point: UnitPoint)? {
+        for id in ids where id != parentID && visibleIDs.contains(id) {
+            guard let frame = frames[id], frame.intersects(bounds) else { continue }
+            let available = bounds.height - frame.height
+            guard abs(available) > 1 else { continue }
+            return (id, UnitPoint(x: 0, y: (frame.minY - bounds.minY) / available))
+        }
+        return nil
+    }
+}
+
+private enum MessageTimelineItem: Identifiable {
+    case message(Message)
+    case divider(id: String, title: String, unread: Bool)
+
+    var id: String {
+        switch self {
+        case .message(let message): message.id
+        case .divider(let id, _, _): id
+        }
+    }
 }
 
 private struct MessageList: View {
@@ -184,8 +216,9 @@ private struct MessageList: View {
     @State private var renderCache = MessageRenderCache()
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var contentFits = false
-    @State private var threadFollowsLatest = true
+    @State private var followsLatestIntent = true
     @State private var userScrolling = false
+    @State private var viewport = MessageViewport()
 
     private var positionKey: String {
         "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)"
@@ -219,6 +252,26 @@ private struct MessageList: View {
         return hasActions(for: current)
     }
 
+    private func updateHistoryAnchor() {
+        // 取得結果の描画通知が先に届いても、追加前の位置を上書きしない。
+        guard viewport.pendingRevision == store.historyRevision else { return }
+        viewport.pendingAnchor = viewport.anchor(in: messages.map(\.id), excluding: parentID)
+    }
+
+    private func timeline(_ messages: [Message], firstUnreadID: String?) -> [MessageTimelineItem] {
+        var items: [MessageTimelineItem] = []
+        for (index, message) in messages.enumerated() {
+            if message.id != parentID,
+               MessageTimeline.startsDay(message, after: index > 0 ? messages[index - 1] : nil), let date = message.date {
+                items.append(.divider(id: "date-divider-" + message.id,
+                                      title: date.formatted(.dateTime.year().month().day().weekday().locale(Locale(identifier: "ja_JP"))), unread: false))
+            }
+            if firstUnreadID == message.id { items.append(.divider(id: "unread-divider", title: "ここから未読", unread: true)) }
+            items.append(.message(message))
+        }
+        return items
+    }
+
     var body: some View {
         let messages = self.messages
         let messageIDs = messages.map(\.id)
@@ -229,15 +282,6 @@ private struct MessageList: View {
                 if store.showingCachedMessages {
                     Label("保存済みのメッセージを表示しています", systemImage: "internaldrive")
                         .font(.caption).foregroundStyle(.secondary).padding(8)
-                }
-                if store.hasOlder(parentID: parentID) {
-                    Button {
-                        store.loadOlder(parentID: parentID)
-                    } label: {
-                        if store.loadingOlder { ProgressView() } else { Text("以前のメッセージを読み込む") }
-                    }
-                    .disabled(store.loadingOlder || store.showingCachedMessages)
-                    .padding(8).accessibilityIdentifier("load-older-messages")
                 }
                 if !store.loading && messages.isEmpty && store.syncError == nil {
                     ContentUnavailableView("会話を始めましょう", systemImage: "bubble.left.and.bubble.right",
@@ -252,33 +296,37 @@ private struct MessageList: View {
                 if let error = store.actionError {
                     Text(error).font(.callout).foregroundStyle(.red).padding()
                 }
-                ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                    VStack(spacing: 0) {
-                        if message.id != parentID,
-                           MessageTimeline.startsDay(message, after: index > 0 ? messages[index - 1] : nil), let date = message.date {
-                            timelineDivider(date.formatted(.dateTime.year().month().day().weekday().locale(Locale(identifier: "ja_JP"))), color: .primary)
-                                .accessibilityIdentifier("date-divider-\(message.id)")
+                ForEach(timeline(messages, firstUnreadID: firstUnreadID)) { item in
+                    switch item {
+                    case .divider(let id, let title, let unread):
+                        timelineDivider(title, color: unread ? .red : .primary).accessibilityIdentifier(id)
+                    case .message(let message):
+                        VStack(spacing: 0) {
+                            messageRow(message)
+                            if message.id == parentID { threadRepliesDivider }
                         }
-                        if firstUnreadID == message.id {
-                            timelineDivider("ここから未読", color: .red).accessibilityIdentifier("unread-divider")
+                        .padding(.bottom, message.id == messages.last?.id ? 8 : 0)
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                            viewport.frames[message.id] = frame
+                            updateHistoryAnchor()
                         }
-                        messageRow(message)
-                        if message.id == parentID {
-                            threadRepliesDivider
-                        }
+                        .id(message.id)
                     }
-                    .padding(.bottom, index == messages.count - 1 ? 8 : 0)
-                    .id(message.id)
                 }
             }
             .scrollTargetLayout()
             .padding(.top, 8)
         }
         .accessibilityIdentifier(parentID == nil ? "message-list" : "thread-message-list")
-        .scrollBounceBehavior(.basedOnSize)
+        .scrollBounceBehavior(store.hasOlder(parentID: parentID) ? .always : .basedOnSize)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(parentID == nil ? .bottom : .top, for: .alignment)
         .scrollPosition($scrollPosition)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+            // このフレームはすでにナビゲーションと入力欄の安全領域を除いている。
+            viewport.bounds = $0
+            updateHistoryAnchor()
+        }
         .scrollDismissesKeyboard(.interactively)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
             guard parentID == nil, isVisible, contentFits, !userScrolling else { return }
@@ -288,41 +336,71 @@ private struct MessageList: View {
         .onScrollPhaseChange { _, phase in
             if phase == .tracking || phase == .interacting {
                 userScrolling = true
-                if parentID != nil { threadFollowsLatest = false }
+                followsLatestIntent = false
             } else if phase == .idle, userScrolling {
                 userScrolling = false
-                if parentID != nil { threadFollowsLatest = followingLatest }
+                followsLatestIntent = followingLatest
+                updateHistoryAnchor()
             }
         }
         .onScrollGeometryChange(for: ThreadScrollLayout.self) { geometry in
             let state = MessageScrollState(contentHeight: geometry.contentSize.height, offsetY: geometry.contentOffset.y,
                                            topInset: geometry.contentInsets.top, viewportHeight: geometry.containerSize.height)
             return ThreadScrollLayout(contentHeight: geometry.contentSize.height, viewportHeight: geometry.containerSize.height,
-                                      followingLatest: state.followingLatest)
+                                      followingLatest: state.followingLatest,
+                                      topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { previous, layout in
             contentFits = layout.fits
             guard isVisible, !store.loading, !userScrolling,
-                  previous.contentHeight != layout.contentHeight || previous.viewportHeight != layout.viewportHeight else { return }
+                  previous.contentHeight != layout.contentHeight || previous.viewportHeight != layout.viewportHeight ||
+                  previous.topInset != layout.topInset || previous.bottomInset != layout.bottomInset else { return }
             if parentID == nil {
                 // 入力欄が広がっても最新投稿が隠れないよう、短い会話と末尾を表示中の会話を表示領域に合わせる。
-                if layout.fits || previous.fits || previous.followingLatest, let latest = messages.last {
+                if layout.fits || previous.fits || previous.followingLatest || followsLatestIntent, let latest = messages.last {
                     scrollPosition.scrollTo(id: latest.id, anchor: .bottom)
                 }
                 return
             }
             if layout.fits {
-                threadFollowsLatest = true
+                followsLatestIntent = true
                 // 全文が収まるスレッドでは、末尾への位置合わせで親投稿の上に余白を残さない。
                 scrollPosition.scrollTo(edge: .top)
-            } else if previous.fits || threadFollowsLatest {
-                // キーボードの遷移中は末尾アンカーの余白が未確定なので、実際の表示領域から位置を求める。
-                scrollPosition.scrollTo(y: layout.bottomOffset)
+            } else if previous.fits || followsLatestIntent, let latest = messages.last {
+                // 入力欄の安全領域と遅延計測が確定しても、最新の行を基準に位置を合わせる。
+                scrollPosition.scrollTo(id: latest.id, anchor: .bottom)
             }
         }
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.01) { ids in
+            viewport.visibleIDs = Set(ids)
+            viewport.frames = viewport.frames.filter { viewport.visibleIDs.contains($0.key) }
+            updateHistoryAnchor()
             renderCache.retain(visibleIDs: ids, orderedIDs: messageIDs)
         }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top
+        } action: { previous, offset in
+            guard isVisible, positionedInitialMessages, userScrolling, offset < previous else { return }
+            // スレッドでは親投稿が長くても、最古の返信に近づいた時点で続きを取得する。
+            let nearOldest = messages.lazy.filter { $0.id != parentID }.prefix(3)
+                .contains { viewport.visibleIDs.contains($0.id) }
+            if (offset < 240 || nearOldest), !store.loadingOlder {
+                store.loadOlder(parentID: parentID)
+                if store.loadingOlder {
+                    viewport.pendingRevision = store.historyRevision
+                    updateHistoryAnchor()
+                }
+            }
+        }
         .onChange(of: messageIDs) { _, ids in renderCache.updateMessages(ids) }
+        .onChange(of: store.historyRevision) { _, revision in
+            guard let pending = viewport.pendingRevision, pending != revision else { return }
+            if isVisible, let anchor = viewport.pendingAnchor, messageIDs.contains(anchor.id) {
+                // 最古投稿が同時に削除されても、読んでいた投稿があれば同じ位置へ戻す。
+                scrollPosition.scrollTo(id: anchor.id, anchor: anchor.point)
+            }
+            viewport.pendingRevision = nil
+            viewport.pendingAnchor = nil
+        }
         .onScrollGeometryChange(for: MessageScrollState.self) { geometry in
             MessageScrollState(contentHeight: geometry.contentSize.height, offsetY: geometry.contentOffset.y,
                                topInset: geometry.contentInsets.top, viewportHeight: geometry.containerSize.height)
@@ -334,12 +412,12 @@ private struct MessageList: View {
         .onChange(of: positionKey, initial: true) { _, _ in
             guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
             if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
-                threadFollowsLatest = false
+                followsLatestIntent = false
                 positionedInitialMessages = true
                 scrollPosition.scrollTo(id: focused, anchor: .center)
                 store.focusedMessageID = nil
             } else if !positionedInitialMessages || followingLatest {
-                threadFollowsLatest = true
+                followsLatestIntent = true
                 let openingReplyComposer = !positionedInitialMessages && focusComposerOnAppear
                 positionedInitialMessages = true
                 if parentID == nil && contentFits {
@@ -347,8 +425,6 @@ private struct MessageList: View {
                     scrollPosition.scrollTo(edge: .bottom)
                 } else if parentID != nil && contentFits && !openingReplyComposer {
                     scrollPosition.scrollTo(edge: .top)
-                } else if parentID != nil && !openingReplyComposer {
-                    scrollPosition.scrollTo(edge: .bottom)
                 } else if let last = messages.last {
                     // キーボードを開く遷移中は、実在する行を基準にして空白へスクロールしない。
                     scrollPosition.scrollTo(id: last.id, anchor: .bottom)
@@ -356,8 +432,9 @@ private struct MessageList: View {
             }
         }
         .onChange(of: scrollTarget, initial: true) { _, id in
+            if id != nil { viewport.pendingRevision = nil; viewport.pendingAnchor = nil }
             if let id, messages.contains(where: { $0.id == id }) {
-                threadFollowsLatest = false
+                followsLatestIntent = false
                 positionedInitialMessages = true
                 scrollPosition.scrollTo(id: id, anchor: .center)
                 store.focusedMessageID = nil
@@ -373,7 +450,9 @@ private struct MessageList: View {
             if positionedInitialMessages, showsLatestButton, !messages.isEmpty {
                 Button {
                     guard let last = messages.last else { return }
-                    threadFollowsLatest = true
+                    viewport.pendingRevision = nil
+                    viewport.pendingAnchor = nil
+                    followsLatestIntent = true
                     store.focusedMessageID = nil
                     // 長文の遅延計測中に行の高さと位置がアニメーションして重なるのを避ける。
                     scrollPosition.scrollTo(id: last.id, anchor: .bottom)
@@ -385,7 +464,20 @@ private struct MessageList: View {
                 .accessibilityIdentifier("scroll-to-latest")
             }
         }
-        .onDisappear { renderCache.cancelLoads() }
+        .onDisappear {
+            renderCache.cancelLoads()
+            viewport.pendingRevision = nil
+            viewport.pendingAnchor = nil
+        }
+        .overlay(alignment: .top) {
+            if isVisible, store.loadingOlder {
+                ProgressView("以前のメッセージを読み込んでいます…")
+                    .font(.caption).padding(8)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("loading-older-messages")
+            }
+        }
         .overlay(alignment: .top) {
             if parentID == nil, let error = store.readError {
                 Text(error).font(.caption).padding(8)

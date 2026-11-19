@@ -21,6 +21,8 @@ final class ConversationStore {
     private(set) var syncRequest = UUID()
     private(set) var showingCachedMessages = false
     private(set) var loadingOlder = false
+    private(set) var historyRevision = 0
+    private var pendingHistoryKey: String?
     private var feedRequest = MessageFeedRequest()
     private var pageLimits: [String: Int] = [:]
     private var morePages: [String: Bool] = [:]
@@ -206,6 +208,12 @@ final class ConversationStore {
                     guard self.active, !Task.isCancelled, self.streamGeneration == epoch else { return }
                     self.showingCachedMessages = update.fromCache
                     self.morePages[request.key] = update.hasMore
+                    self.pageLimits[request.key] = max(self.pageLimits[request.key] ?? 50, update.loadedLimit)
+                    if !update.fromCache, update.messages != nil, self.pendingHistoryKey == request.key,
+                       request == self.feedRequest {
+                        self.historyRevision += 1
+                        self.pendingHistoryKey = nil
+                    }
                     if !update.fromCache { self.loadingOlder = false }
                     if let snapshot = update.messages {
                         self.apply(snapshot)
@@ -239,15 +247,18 @@ final class ConversationStore {
     func selectFeed(parentID: String?) {
         let request = MessageFeedRequest(parentID: parentID, limit: pageLimits[parentID ?? "root"] ?? 50, focusID: focusedMessageID)
         guard request != feedRequest else { return }
+        if request.parentID != feedRequest.parentID { loadingOlder = false; pendingHistoryKey = nil }
         feedRequest = request
     }
 
     func hasOlder(parentID: String?) -> Bool { morePages[parentID ?? "root"] ?? false }
 
     func loadOlder(parentID: String?) {
-        guard !loadingOlder, hasOlder(parentID: parentID), !showingCachedMessages else { return }
+        guard active, !blocked, !loading, !loadingOlder, !showingCachedMessages, syncError == nil,
+              feedRequest.parentID == parentID, hasOlder(parentID: parentID) else { return }
         loadingOlder = true
         let key = parentID ?? "root"
+        pendingHistoryKey = key
         pageLimits[key] = (pageLimits[key] ?? 50) + 50
         feedRequest = MessageFeedRequest(parentID: parentID, limit: pageLimits[key]!, focusID: focusedMessageID)
         syncRequest = UUID()

@@ -213,7 +213,8 @@ final class PreviewChatClient: ChatClient {
                                        created_at: "2026-11-18T09:02:00Z", parent_id: Self.messageID))
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-long-thread") || ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") {
-            let count = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") ? 4 : 30
+            let count = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") ? 4
+                : ProcessInfo.processInfo.arguments.contains("--uitesting-paged-history") ? 60 : 30
             allMessages += (1...count).map { index in
                 Message(id: "preview-thread-reply-\(index)",
                         user_id: [colleague.id, currentUser.id, otherColleague.id][index % 3],
@@ -227,6 +228,14 @@ final class PreviewChatClient: ChatClient {
                 Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: Self.channelID,
                         content: "履歴 \(index)", created_at: Date(timeIntervalSince1970: 1_795_000_000 + Double(index)).ISO8601Format(),
                         display_data: MessageDisplayData(reactions: []))
+            }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-paged-history") {
+            for index in allMessages.indices where allMessages[index].parent_id == nil {
+                let id = allMessages[index].id
+                let count = allMessages.filter { $0.parent_id == id }.count
+                if allMessages[index].display_data == nil { allMessages[index].display_data = MessageDisplayData() }
+                allMessages[index].display_data?.reply_count = count
             }
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-retained-messages"), !allMessages.isEmpty {
@@ -406,6 +415,29 @@ final class PreviewChatClient: ChatClient {
     func removeReaction(messageID: String, emoji: String) async throws {
         guard let index = allMessages.firstIndex(where: { $0.id == messageID }) else { throw ZooError.invalidResponse }
         allMessages[index].display_data?.reactions?.removeAll { $0.user_id == currentUser.id && $0.emoji == emoji }
+    }
+
+    private var historyLimits: [String: Int] = [:]
+
+    func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
+        guard ProcessInfo.processInfo.arguments.contains("--uitesting-paged-history") else {
+            try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
+            return
+        }
+        if request.limit > 50 { try await Task.sleep(for: .seconds(4)) }
+        historyLimits[request.key] = request.limit
+        try await observeMessages(channelID: channelID) { rows in
+            let rows = rows ?? []
+            var selected = Set<String>()
+            for (key, limit) in self.historyLimits {
+                let parent = key == "root" ? nil : key
+                selected.formUnion(rows.filter { $0.parent_id == parent }.suffix(limit).map(\.id))
+                if let parent { selected.insert(parent) }
+            }
+            let count = rows.filter { $0.parent_id == request.parentID }.count
+            receive(MessageFeedSnapshot(messages: rows.filter { selected.contains($0.id) },
+                                        hasMore: count > request.limit, loadedLimit: request.limit))
+        }
     }
 
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws {

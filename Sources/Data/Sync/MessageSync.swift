@@ -11,6 +11,7 @@ struct MessageFeedSnapshot: Sendable {
     let messages: [Message]?
     var fromCache = false
     var hasMore = false
+    var loadedLimit = 0
 }
 
 struct MessageWindow: Codable, Sendable {
@@ -162,7 +163,8 @@ struct MessageSync {
             let messages = try await decodeShapeRows(state.shape.rows, as: Message.self)
             try sync.check(channelID: channelID, channelVersion: version)
             receive(MessageFeedSnapshot(messages: messages, fromCache: true,
-                                        hasMore: state.windows[request.key]?.hasMore ?? true))
+                                        hasMore: state.windows[request.key]?.hasMore ?? true,
+                                        loadedLimit: state.windows[request.key]?.limit ?? 0))
         }
         state.shape.isLive = false
         var sseFailures = 0
@@ -205,7 +207,8 @@ struct MessageSync {
                         }
                         state = next
                         if messages != nil || state.shape.offset == "now" {
-                            receive(MessageFeedSnapshot(messages: messages, hasMore: state.windows[request.key]?.hasMore ?? true))
+                            receive(MessageFeedSnapshot(messages: messages, hasMore: state.windows[request.key]?.hasMore ?? true,
+                                                        loadedLimit: state.windows[request.key]?.limit ?? 0))
                         }
                     }
                 } catch where useSSE && isSSETransportFailure(error) && !Task.isCancelled {
