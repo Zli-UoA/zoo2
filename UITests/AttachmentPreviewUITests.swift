@@ -66,6 +66,10 @@ final class AttachmentPreviewUITests: XCTestCase {
         XCTAssertTrue(image.waitForExistence(timeout: 5))
         viewport.swipeDown()
         XCTAssertTrue(app.navigationBars["横長画像.png"].waitForNonExistence(timeout: 5))
+        let messageList = app.scrollViews["message-list"]
+        // PDFの読み込みで本文が高くなるため、横操作の前に画像列の上端を表示する。
+        for _ in 0..<4 where thumbnails.frame.minY < messageList.frame.minY { messageList.swipeDown() }
+        XCTAssertGreaterThanOrEqual(thumbnails.frame.minY, messageList.frame.minY)
         let wide = app.buttons["画像を拡大：横長画像.png"]
         for _ in 0..<3 where !wide.isHittable { thumbnails.swipeLeft() }
         XCTAssertTrue(wide.isHittable)
