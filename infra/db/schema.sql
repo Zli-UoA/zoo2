@@ -1044,7 +1044,7 @@ END $$;
 CREATE TRIGGER app_guest_rules BEFORE INSERT OR UPDATE OF guest_kind ON users FOR EACH ROW EXECUTE FUNCTION app_guest_rules();
 CREATE FUNCTION app_guest_membership_rules() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single') THEN PERFORM 1 FROM users WHERE id=NEW.user_id FOR UPDATE;END IF;
+ IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single') THEN PERFORM 1 FROM users WHERE id=NEW.user_id FOR NO KEY UPDATE;END IF;
  IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single')
  AND EXISTS(SELECT 1 FROM channels WHERE id=NEW.channel_id AND NOT is_dm)
  AND EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.user_id=NEW.user_id AND cu.channel_id<>NEW.channel_id AND NOT c.is_dm AND c.deleted_at IS NULL) THEN RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='Single-channel guests can join only one channel';END IF;
@@ -3124,6 +3124,7 @@ CREATE TRIGGER channels_encrypted_reject_notes BEFORE UPDATE OF encrypted ON cha
 
 -- DBへ直接書く経路も含め、暗号化チャンネルに平文ノートを作らせない。暗号化列のUPDATEが取る
 -- NO KEY UPDATEとも競合するFOR SHAREを使う。ノートAPIも先に同じチャンネルをFOR SHAREする。
+-- 直接SQLでchannel_notesを更新・削除する経路も、先に同じchannels行をFOR SHAREして同じロック順を保つこと。
 CREATE FUNCTION e2ee_reject_plaintext_channel_notes() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE enc boolean;
 BEGIN

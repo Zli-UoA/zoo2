@@ -29,8 +29,9 @@ use super::{
     export::{SlackMessage, SlackReaction},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
     worker::{
-        Context, insert_message, insert_reactions, lock_zip_target_advisory, mapped,
-        message_fallback_name, render_message, resolve_users, suppress_app_events,
+        Context, allow_deleted_thread_parent, insert_message, insert_reactions,
+        lock_zip_target_advisory, mapped, message_fallback_name, render_message, resolve_users,
+        suppress_app_events,
     },
 };
 use crate::{apps::query, error::AppError};
@@ -354,7 +355,7 @@ async fn apply(
     lock_zip_target_advisory(&mut tx, team, slack_channel).await?;
     if let Some(message) = &message {
         let pre_state = load_message_state(&mut tx, team, slack_channel, zoo_channel, ts).await?;
-        let (slack_ids, fallbacks) = collect_apply_users(
+        let (slack_ids, _fallbacks) = collect_apply_users(
             ctx.app_id.as_deref(),
             message,
             full_reactions.as_deref(),
@@ -363,15 +364,13 @@ async fn apply(
             has("changed"),
             has("reaction"),
         );
-        // A private Slack channel's message fallbacks (`username`/`bot_profile.name`)
-        // must not become the placeholder's workspace-wide display name — the same
-        // rule as the ZIP importer's archive scan in `collect_archive_fallback_names`.
-        let fallbacks = if slack_private {
-            HashMap::new()
-        } else {
-            fallbacks
-        };
-        resolve_users(&mut tx, ctx, &slack_ids, &fallbacks).await?;
+        // `hints::fetch_message` fetches via `conversations.history`/`conversations.replies`,
+        // which do not carry channel visibility at fetch time. `slack_private` comes from
+        // `conversations.info` at sync start, so a channel privatized before the fetch could
+        // leak a private `username`/`bot_profile.name` into workspace-wide `users.display_name`.
+        // Suppress message-derived fallbacks here just like `sync::store` does.
+        let empty_fallbacks = HashMap::new();
+        resolve_users(&mut tx, ctx, &slack_ids, &empty_fallbacks).await?;
     }
     super::sync::ensure_target_unchanged(&mut tx, team, slack_channel, zoo_channel).await?;
     // 長くかかっても、リースを持ち続ける。失っていたら (別の台が同期を始めた) 何も書かない
@@ -390,6 +389,10 @@ async fn apply(
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     // 同期の途中で取り込み先が公開に変わったら、非公開の Slack チャンネルの内容を書かない
     super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
+    // 保存のトランザクションで 1 回だけ、削除済みの親への返信を許可する。このあとの
+    // `insert_message` が、範囲外のスレッドの返信の挿入と、既存返信のスレッドへの再接続の
+    // 両方を行う (`zoo.slack_import` の設定はトランザクションの終わりで自動的に戻る)。
+    allow_deleted_thread_parent(&mut tx).await?;
     let MessageState {
         id,
         zoo_origin,
@@ -915,7 +918,98 @@ mod tests {
             .mount(&mock)
             .await;
 
+        // `apply` は失敗してもキャッシュを掃除しない (`process` が掃除する)。なので `apply` を
+        // 直接呼ぶと、暗号化の拒否が起きた時点で `UB` が事前解決済み (`ctx.users` にある) かを
+        // 観測できる。ここが `true` でなければ、あとの `process` の掃除の検証は空振りになる。
         let mut slack = Slack::single(&state, key, &owner, &enc)?;
+        let mut ctx = Context {
+            team: team.clone(),
+            users: HashMap::from([(
+                "UA".to_string(),
+                super::super::worker::ZooUser {
+                    id: owner.clone(),
+                    user_name: "owner".to_string(),
+                },
+            )]),
+            profiles: HashMap::new(),
+            fallback_names: HashMap::new(),
+            channel_names: HashMap::new(),
+            files: super::super::worker::FilePolicy {
+                token: false,
+                max_size: 0,
+                base_url: String::new(),
+            },
+            app_id: None,
+        };
+        let group_rows = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('ts',message_ts,'kind',kind,'user',slack_user_id,'reaction',reaction,\
+             'thread_ts',thread_ts,'updated_at',updated_at)::text FROM slack_message_hints WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        let group: Vec<Row> = group_rows
+            .iter()
+            .map(|r| Row {
+                ts: text(r, "ts"),
+                kind: text(r, "kind"),
+                user: text(r, "user"),
+                reaction: text(r, "reaction"),
+                thread_ts: text(r, "thread_ts"),
+                updated_at: text(r, "updated_at"),
+            })
+            .collect();
+        let group_refs: Vec<&Row> = group.iter().collect();
+        let applied = apply(
+            &mut slack,
+            &mut ctx,
+            &team,
+            "C1",
+            &channel,
+            true,
+            &lease_token,
+            reply_ts,
+            &group_refs,
+            &mut db,
+        )
+        .await;
+        match &applied {
+            Err(SyncError::Failed(error)) => anyhow::ensure!(
+                error.contains("E2EE_PLAINTEXT_FORBIDDEN"),
+                "apply must fail with the encryption refusal, got {error:?}"
+            ),
+            Err(SyncError::NoAccess(error)) => {
+                anyhow::bail!("apply failed before the refusal with NoAccess: {error}")
+            }
+            Err(SyncError::RateLimited(secs)) => {
+                anyhow::bail!("apply failed before the refusal with RateLimited({secs})")
+            }
+            Err(SyncError::InvalidCursor) => {
+                anyhow::bail!("apply failed before the refusal with InvalidCursor")
+            }
+            Err(SyncError::LeaseLost) => anyhow::bail!("apply lost its lease before the refusal"),
+            Err(SyncError::TargetChanged) => {
+                anyhow::bail!("apply failed before the refusal with TargetChanged")
+            }
+            Ok(()) => anyhow::bail!("apply unexpectedly succeeded against an encrypted channel"),
+        }
+        assert!(
+            ctx.users.contains_key("UB"),
+            "the reply author UB must be pre-resolved before the encryption refusal; \
+             otherwise the later eviction assertions pass vacuously"
+        );
+        let placeholders = query(
+            &mut db.transaction().await?,
+            "SELECT json_build_object('n',count(*))::text FROM slack_users WHERE team_id=$1 AND slack_user_id='UB'",
+            &[&team],
+        )
+        .await?;
+        assert_eq!(
+            placeholders[0]["n"], 0,
+            "the refused apply must roll the pre-resolved placeholder back"
+        );
+
+        // `process` は、失敗した `apply` の中で作った利用者をキャッシュから外し、DB にも残さない。
         let mut ctx = Context {
             team: team.clone(),
             users: HashMap::from([(
@@ -961,7 +1055,20 @@ mod tests {
             &[&team],
         )
         .await?;
-        assert_eq!(placeholders[0]["n"], 0);
+        assert_eq!(
+            placeholders[0]["n"], 0,
+            "failed apply must not leave the pre-resolved placeholder in the database"
+        );
+        let attempts = query(
+            &mut tx,
+            "SELECT json_build_object('attempts',attempts)::text FROM slack_message_hints WHERE team_id=$1",
+            &[&team],
+        )
+        .await?;
+        assert_eq!(
+            attempts[0]["attempts"], 1,
+            "the refused apply must bump the hint for a later retry"
+        );
         query(
             &mut tx,
             "DELETE FROM slack_message_hints WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",

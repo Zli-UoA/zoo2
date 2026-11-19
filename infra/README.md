@@ -185,10 +185,10 @@ POSTGRES_PASSWORD=staging-test-password \
     logs --no-color migrate
   ```
 
-  `20261129020002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
+  `20261129020002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、対象インデックスだけを削除してください。
 
   1. `migrate status` とログで停止箇所が `20261129020002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
-  2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`indisvalid` が `false` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。`indisvalid = true`、別スキーマ、別名、または対象 migration 以外の失敗なら削除しない。
+  2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`table_name` が `channel_notes` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。別スキーマ、別名、別テーブル、または対象 migration 以外の失敗なら削除しない。`indisvalid` は真偽どちらもあり得る (下記 3 を参照)。
 
      ```bash
      docker compose --project-directory . -f infra/compose.stack.yaml \
@@ -206,17 +206,21 @@ POSTGRES_PASSWORD=staging-test-password \
        AND idx.relname = 'idx_channel_notes_expired';
      ```
 
-  3. `indisvalid = false` かつ `table_name = 'channel_notes'` の行を確認した場合に限り、migration が止まっていて他の apply がない状態で、同じDBに対して次を実行する。`CONCURRENTLY` はトランザクション外で実行する必要がある。
+  3. 行の `indisvalid` で分岐する。いずれの場合も、`migrate status` で `20261129020002` が未記録 (pending) であることと、他の apply が動いていないことを先に確認する。
+     - `indisvalid = false` (INVALID): `CREATE INDEX CONCURRENTLY` が中断・キャンセルされた場合。無効なインデックスは再実行の妨げになるため削除する。
+     - `indisvalid = true` (有効): `CREATE INDEX` 自体は完了したが、文ごとに進むこの migration で Atlas が記録の前に停止した場合 (コンテナの強制終了など)。この場合、再実行は同名インデックスの作成で失敗するため、有効でも同じく削除する。`migrate status` が `20261129020002` を適用済みと報告するなら、そのインデックスは完了した migration の成果物なので削除しない。
+
+     `CONCURRENTLY` はトランザクション外で実行する必要があるため、削除も `DROP INDEX CONCURRENTLY` を使う。
 
      ```sql
      DROP INDEX CONCURRENTLY public.idx_channel_notes_expired;
      ```
 
-  4. 再度照会して対象が存在しないことを確認し、migration コンテナを作り直して Atlas を再実行する。適用が完了したら通常の Compose 起動を行う。
+  4. 再度照会して対象が存在しないことを確認し、migration コンテナを作り直して Atlas を再実行する。適用が完了したら通常の Compose 起動を行う。Atlas の再実行が失敗したまま後続サービスを起動しないように、2 つのコマンドは `&&` でつなぐ。
 
      ```bash
      docker compose --project-directory . -f infra/compose.stack.yaml \
-       up --force-recreate --exit-code-from migrate migrate
+       up --force-recreate --exit-code-from migrate migrate && \
      docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
      ```
 
@@ -253,8 +257,11 @@ POSTGRES_PASSWORD=staging-test-password \
 
 ### Slack ゲスト所属トリガーの適用順序
 
-`20261129020001_guest_membership_no_key_update.sql` は空の移行で、常時 `users` をロックする
-`app_guest_membership_rules()` は `infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql`
+`20261129020001_guest_membership_no_key_update.sql` は、条件付き single ゲスト検査の
+`users` ロックを `FOR NO KEY UPDATE` に弱めた `app_guest_membership_rules()` を適用します。
+`FOR UPDATE` は `channel_user` 挿入が外部キー検証で取る `users` 行の KEY SHARE とも競合するため、
+協調書き込み経路による同じユーザーへの所属挿入まで止め得ました。常時 `users` をロックする版は
+`infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql`
 に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
 advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
 「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック
@@ -297,6 +304,27 @@ docker compose --project-directory . -f infra/compose.stack.yaml   run --rm --no
 `CREATE OR REPLACE` で冪等なため、canonical 側での再適用は安全です。移行が済んだら
 `atlas_schema_revisions_deferred` スキーマも削除できます。
 
+follow-up ファイルは、適用済み DB の履歴を壊さないために次の条件をすべて満たすこと。
+
+1. **未適用 DB では 1 回だけ適用、適用済み DB では安全な no-op になること。**
+   ファイルの中身は deferred 版と同じ `CREATE OR REPLACE FUNCTION` (同じ関数定義) で、
+   版番号だけ canonical の最新版より後に振る。`CREATE OR REPLACE` は既存の定義を同じ内容で
+   上書きするため、deferred migration を適用済みの DB では実質的な変更なしに
+   canonical 側の適用記録だけが追加され、未適用の DB では関数が 1 回適用される。
+   適用記録を進めるために Atlas は 1 文でも実行する必要があるため、コメントだけの空ファイルにはしない。
+2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261129020009` 記録を
+   削除・無効化しないこと。** follow-up の移動や再ハッシュでこのリビジョン表を触らない。
+   全環境で canonical 版の適用が記録されるまで `atlas_schema_revisions_deferred` はそのまま残し、
+   収束を確認してからスキーマごと削除する (その時点で再適用の痕跡としては不要になる)。
+   削除を先に行うと、canonical 版の適用がまだの環境で deferred 版の適用状態が分からなくなる。
+3. **適用済みと未適用の両方の使い捨て DB で検証すること。** (a) deferred migration を
+   `--revisions-schema atlas_schema_revisions_deferred --allow-dirty` で適用した DB と
+   (b) 何も適用していない空の DB の両方に canonical follow-up を適用し、
+   それぞれで `atlas migrate apply` が成功すること、`pg_get_functiondef` の結果が
+   `infra/db/schema.sql` と一致すること、`migrate status` が follow-up を適用済みとして
+   報告すること、(a) では `atlas_schema_revisions_deferred.atlas_schema_revisions` に
+   `20261129020009` が記録されたまま残ることを確認する。
+
   `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 
   `55000` を解消する手順は次のとおりです。対象は読み取り専用の照会で特定します。`deleted_at IS NULL` が有効ノート、それ以外は復元期限内の削除済みノートです。
@@ -313,12 +341,13 @@ docker compose --project-directory . -f infra/compose.stack.yaml   run --rm --no
   ```
 
   1. 上の照会結果を `\copy (… ) TO 'blocked-notes.tsv'` などで退避し、内容を確認・保存します。ノートは平文のため、暗号化済みチャンネルには移せません。
-  2. 退避を確認したノートを削除します。可能なら対象チャンネルの参加者が API の `DELETE /api/channels/{channel_id}/notes/{note_id}` を使ってください。直接 SQL で行う場合は、ノートロック契約に従い、同じトランザクションで最初の関連読み取りより前にチャンネルの advisory lock を取ります。
+  2. 退避を確認したノートを削除します。可能なら対象チャンネルの参加者が API の `DELETE /api/channels/{channel_id}/notes/{note_id}` を使ってください。直接 SQL で行う場合は、ノートロック契約に従い、同じトランザクションで最初の関連読み取りより前にチャンネルの advisory lock を取り、続けて `channels` を `FOR SHARE` でロックしてから `channel_notes` を更新・削除します。
 
      ```sql
      BEGIN;
      SELECT '{}'::text FROM pg_advisory_xact_lock(
        hashtextextended('channel-notes:' || '<channel_id>', 0));
+     SELECT 1 FROM channels WHERE id = '<channel_id>' FOR SHARE;
      DELETE FROM channel_notes WHERE id = '<note_id>' AND channel_id = '<channel_id>';
      COMMIT;
      ```

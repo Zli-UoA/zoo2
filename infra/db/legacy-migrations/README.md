@@ -52,7 +52,10 @@ build_legacy /tmp/zoo2-notes-legacy-case1 20261123000001
 build_legacy /tmp/zoo2-notes-legacy-case2 20261126010000
 ```
 
-Apply the legacy history to the matching URL, then apply the canonical history:
+Apply the legacy history to the matching URL, then apply the canonical history.
+Set `NOTES_CASE1_URL`, `NOTES_CASE2_URL`, and `NOTES_CASE3_URL` to the matching
+databases on the disposable PostgreSQL instance **before** running the applies;
+the commands below read them:
 
 ```sh
 atlas migrate apply --dir file:///tmp/zoo2-notes-legacy-case1 --url "$NOTES_CASE1_URL"
@@ -62,10 +65,9 @@ atlas migrate apply --dir file://infra/db/migrations --url "$NOTES_CASE2_URL"
 atlas migrate apply --dir file://infra/db/migrations --url "$NOTES_CASE3_URL"
 ```
 
-Set NOTES_CASE1_URL, NOTES_CASE2_URL, and NOTES_CASE3_URL to the matching
-databases on the disposable PostgreSQL instance. Set NOTES_SCHEMA_DEV1_URL,
-NOTES_SCHEMA_DEV2_URL, and NOTES_SCHEMA_DEV3_URL to three separate empty dev
-databases on the same instance. The migrations applied were:
+Set NOTES_SCHEMA_DEV1_URL, NOTES_SCHEMA_DEV2_URL, and NOTES_SCHEMA_DEV3_URL to
+three separate empty dev databases on the same instance; the schema comparison
+below uses them. The migrations applied were:
 
 1. **Old expiry only:** copy the old expiry SQL from this directory into the
    temporary directory and remove migrations newer than

@@ -997,6 +997,17 @@ async fn test_dm_access_control_and_privacy() -> anyhow::Result<()> {
     create_test_user(&state, &alice_id, "alice").await?;
     create_test_user(&state, &bob_id, "bob").await?;
     create_test_user(&state, &charlie_id, "charlie").await?;
+    // Dev Auth の要求自体は users 行なしでも通るが、メンバー追加は作成者の users 行を
+    // ロックして無効化を再確認するため、実在する管理者の行を与える（再実行に備えて冪等）。
+    let mut db = state.db.clone();
+    toasty::sql::statement(
+        "INSERT INTO users (id, user_name, display_name) VALUES ($1, $2, 'Admin') \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(admin_id)
+    .bind(format!("admin_{}", uuid::Uuid::new_v4().simple()))
+    .exec(&mut db)
+    .await?;
 
     // Alice と Bob の DM を作成
     let dm_payload = json!({
@@ -1550,7 +1561,8 @@ async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyho
 
     // 退出 (leave_channel の channels FOR UPDATE) と暗号化 DM の再オープン
     // (メンバーロック後に取る channels FOR NO KEY UPDATE) を同じチャンネル行で
-    // 直列化する。まず blocker の FOR UPDATE で両方を止める。
+    // 直列化する。まず blocker の FOR UPDATE で止め、退出が待ち行列の先頭に並ん
+    // だことを確認してから再オープンを出す。
     let (mut blocker_connection, blocker_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(blocker_driver);
@@ -1580,6 +1592,78 @@ async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyho
             app.oneshot(request).await.unwrap()
         })
     };
+    let (observer, observer_driver) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls),
+    )
+    .await??;
+    tokio::spawn(observer_driver);
+    // 待ちの枝は先に並んだ要求 (soft blocker) を直接待つこともあるため、blocker か
+    // らの再帰的な待ちの連鎖で探す。
+    let chain = "WITH RECURSIVE chain AS ( \
+         SELECT pid, COALESCE(query, '') AS query, 0 AS depth \
+         FROM pg_stat_activity WHERE pid = $1 \
+         UNION ALL \
+         SELECT a.pid, COALESCE(a.query, ''), c.depth + 1 \
+         FROM pg_stat_activity a \
+         JOIN chain c ON c.depth < 8 AND c.pid = ANY(pg_blocking_pids(a.pid)) \
+     ) SELECT query FROM chain WHERE depth > 0";
+    // 退出が blocker の channels FOR UPDATE で待つまで確認する。待つ前に応答して
+    // しまったら並行性の前提が崩れている。
+    let leave_waiting = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let rows = observer.query(chain, &[&blocker_pid]).await?;
+            let queries: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+            let waiting = queries.iter().any(|query| {
+                query.contains("channels")
+                    && query.contains("FOR UPDATE")
+                    && !query.contains("FOR NO KEY UPDATE")
+            });
+            if waiting {
+                break Ok::<(), anyhow::Error>(());
+            }
+            if leave.is_finished() {
+                break Err(anyhow::anyhow!(
+                    "leave finished before waiting on the channel row: {queries:?}"
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    // タイムアウト (Elapsed) だけでなく、待機ループ自体のエラー (leave の早期完了や
+    // observer.query の失敗) も同じ診断・abort・ロールバック枝に流す。
+    let leave_waiting = leave_waiting
+        .map_err(anyhow::Error::from)
+        .and_then(|inner| inner);
+    if let Err(error) = leave_waiting {
+        let sessions = match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            observer.query(
+                "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type, ''), query, pg_blocking_pids(pid)) \
+                 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
+                &[],
+            ),
+        )
+        .await
+        {
+            Ok(Ok(rows)) => rows
+                .iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join("; "),
+            Ok(Err(error)) => format!("session dump failed: {error}"),
+            Err(_) => "session dump timed out after 3s".to_string(),
+        };
+        leave.abort();
+        blocker.rollback().await?;
+        anyhow::bail!(
+            "leave never waited on the blocker's channel row: {error:?}; sessions: {sessions}"
+        );
+    }
+
+    // 退出が待ち行列の先頭に並んだことを確認してから再オープンを出す。この順序で、
+    // 再オープンの所属の読み取りは必ず退出の確定より後になる。
     let reopen = {
         let app = app.clone();
         let actor = actor.clone();
@@ -1595,45 +1679,22 @@ async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyho
             app.oneshot(request).await.unwrap()
         })
     };
-
-    let (observer, observer_driver) =
-        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
-    tokio::spawn(observer_driver);
-    // 両方がチャンネルの行で待つまで確認する。再オープンがロックなしで所属を
-    // 読んでいたら、blocker の解放を待たずに先へ進んでしまう。待ちの枝は
-    // 先に並んだ要求 (soft blocker) を直接待つこともあるため、blocker からの
-    // 再帰的な待ちの連鎖で探す。
-    let both_waiting = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    // 再オープンも、blocker からの再帰的な待ちの連鎖の中でチャンネルの行
+    // (FOR NO KEY UPDATE) を待つまで確認する。ロックなしで所属を読んでいたら、
+    // blocker の解放を待たずに先へ進んでしまう。
+    let reopen_waiting = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let rows = observer
-                .query(
-                    "WITH RECURSIVE chain AS ( \
-                         SELECT pid, COALESCE(query, '') AS query, 0 AS depth \
-                         FROM pg_stat_activity WHERE pid = $1 \
-                         UNION ALL \
-                         SELECT a.pid, COALESCE(a.query, ''), c.depth + 1 \
-                         FROM pg_stat_activity a \
-                         JOIN chain c ON c.depth < 8 AND c.pid = ANY(pg_blocking_pids(a.pid)) \
-                     ) SELECT query FROM chain WHERE depth > 0",
-                    &[&blocker_pid],
-                )
-                .await?;
+            let rows = observer.query(chain, &[&blocker_pid]).await?;
             let queries: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
-            let leave_waiting = queries.iter().any(|query| {
-                query.contains("channels")
-                    && query.contains("FOR UPDATE")
-                    && !query.contains("FOR NO KEY UPDATE")
-            });
-            let reopen_waiting = queries
+            let waiting = queries
                 .iter()
                 .any(|query| query.contains("channels") && query.contains("FOR NO KEY UPDATE"));
-            if leave_waiting && reopen_waiting {
+            if waiting {
                 break Ok::<(), anyhow::Error>(());
             }
             if leave.is_finished() || reopen.is_finished() {
                 break Err(anyhow::anyhow!(
-                    "leave/reopen finished before both waited on the channel row \
-                     (leave_waiting={leave_waiting}, reopen_waiting={reopen_waiting}): {queries:?}"
+                    "leave/reopen finished before reopen waited on the channel row: {queries:?}"
                 ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1641,30 +1702,34 @@ async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyho
     })
     .await;
     // タイムアウト (Elapsed) だけでなく、待機ループ自体のエラー (leave/reopen の
-    // 早期完了や observer.query の失敗) も同じ診断・ abort・ロールバック枝に流す。
-    let both_waiting = both_waiting
+    // 早期完了や observer.query の失敗) も同じ診断・abort・ロールバック枝に流す。
+    let reopen_waiting = reopen_waiting
         .map_err(anyhow::Error::from)
         .and_then(|inner| inner);
-    if let Err(error) = both_waiting {
-        let sessions = observer
-            .query(
+    if let Err(error) = reopen_waiting {
+        let sessions = match tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            observer.query(
                 "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type, ''), query, pg_blocking_pids(pid)) \
                  FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
                 &[],
-            )
-            .await
-            .map(|rows| {
-                rows.iter()
-                    .map(|row| row.get::<_, String>(0))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
-            .unwrap_or_else(|error| format!("session dump failed: {error}"));
+            ),
+        )
+        .await
+        {
+            Ok(Ok(rows)) => rows
+                .iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join("; "),
+            Ok(Err(error)) => format!("session dump failed: {error}"),
+            Err(_) => "session dump timed out after 3s".to_string(),
+        };
         leave.abort();
         reopen.abort();
         blocker.rollback().await?;
         anyhow::bail!(
-            "leave and reopen never both waited on the channel row: {error:?}; sessions: {sessions}"
+            "reopen never waited on the channel row behind leave: {error:?}; sessions: {sessions}"
         );
     }
 
@@ -1689,15 +1754,9 @@ async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyho
         "the encrypted DM re-entry must complete cleanly"
     );
 
-    // どちらが先に確定しても、最後の再オープンで両者とも所属に戻る。
-    let final_reopen = Request::builder()
-        .method("POST")
-        .uri("/api/dms")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &actor)
-        .body(Body::from(dm_payload.to_string()))?;
-    let response = app.clone().oneshot(final_reopen).await?;
-    assert_eq!(response.status(), StatusCode::OK);
+    // 退出が先に確定しているので、その後でチャンネルの行を取った再オープンは
+    // 所属を読み直して抜けた target を戻す。修復の再オープンなしで、両者が
+    // 所属に戻っていなければならない。
     let members: i64 = observer
         .query_one(
             "SELECT count(*) FROM channel_user cu JOIN channels c ON c.id = cu.channel_id \
@@ -1708,7 +1767,7 @@ async fn encrypted_dm_reentry_serializes_with_concurrent_member_leave() -> anyho
         .get(0);
     assert_eq!(
         members, 2,
-        "the final reopen must restore both DM members after the leave race"
+        "the serialized leave and reopen alone must restore both DM members"
     );
     Ok(())
 }

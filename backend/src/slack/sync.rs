@@ -1005,6 +1005,19 @@ pub(super) async fn ensure_private_target(
 }
 
 /// 1 ページ分の投稿と途中経過を、同じトランザクションで保存する
+///
+/// ## メッセージ由来の名前を使わない (TOCTOU 対策)
+///
+/// `conversations.history` / `conversations.replies` のページは、ページを取った時点の
+/// チャンネルの可視性 (公開・非公開) を返さない。`conversations.info` を同期の最初に 1 回
+/// (またはページごとに) 確かめても、「ページを取る時点」と「保存する時点」の間にチャンネルが
+/// 非公開へ切り替わる競合が残る (`ensure_private_target` は保存のトランザクション内で
+/// 確かめるので、それより前のページ取得は保護できない)。そこで差分同期では、
+/// `username`・`bot_profile.name` といったメッセージ由来の fallback 名を
+/// **一切**プレースホルダのワークスペース全体の表示名 (`users.display_name`) に使わない
+/// (`resolve_message_users` に `true` を渡して抑制する)。名前は `lookup_profiles` の
+/// `users.info` (ワークスペース全体の Slack プロフィール) だけで補い、引けなければ
+/// Slack ID の既定の名前のままにする。
 async fn store(
     slack: &mut Slack,
     ctx: &mut Context,
@@ -1025,17 +1038,18 @@ async fn store(
     // Take it before resolving users, then pin the mapping row before any channel row so
     // the order stays advisory -> users -> mapping -> channel through message commit.
     super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
-    let message_refs: Vec<&SlackMessage> = importable.to_vec();
-    // A private Slack channel's message fallbacks must not become the placeholder's
-    // workspace-wide display name (same rule as the ZIP importer).
-    resolve_message_users(
-        &mut tx,
-        ctx,
-        &task.slack_channel_id,
-        slack_private,
-        &message_refs,
-    )
-    .await?;
+    // 空のページ (スレッドの `thread_not_found` での保存など) では誰も解決しない。
+    // `resolve_message_users` はワークスペース全体の `slack-link` ロックを取るので、
+    // 何も取り込まない保存のために全域のロックを取らない。
+    if !importable.is_empty() {
+        // 差分同期は、メッセージ由来の fallback 名をワークスペース全体の表示名に
+        // 使わない (上のドキュメントコメントどおり、ページは可視性を運ばない)。
+        resolve_message_users(&mut tx, ctx, &task.slack_channel_id, true, &importable).await?;
+        // 保存のトランザクションで 1 回だけ、削除済みの親への返信を許可する
+        // (このあとの投稿ループの `insert_message` が、返信の挿入と既存返信の
+        // スレッドへの再接続の両方を行う)。
+        super::worker::allow_deleted_thread_parent(&mut tx).await?;
+    }
     ensure_target_unchanged(
         &mut tx,
         &task.team_id,

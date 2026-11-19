@@ -96,12 +96,15 @@ impl Env {
     }
 
     /// ロック待ちの観測専用の独立した接続。アプリのプールの接続を競合する
-    /// API 要求と取り合わない。
+    /// API 要求と取り合わない。接続が止まらないように 5 秒で区切る。
     async fn observer(&self) -> tokio_postgres::Client {
-        let (client, connection) =
-            tokio_postgres::connect(&self.database_url, tokio_postgres::NoTls)
-                .await
-                .expect("observer connection");
+        let (client, connection) = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio_postgres::connect(&self.database_url, tokio_postgres::NoTls),
+        )
+        .await
+        .expect("observer connection timed out after 5s")
+        .expect("observer connection");
         tokio::spawn(connection);
         client
     }
@@ -1097,22 +1100,29 @@ async fn recipients_are_paged_by_user_id_and_tied_to_the_epoch() {
 // ---------------------------------------------------------------------------
 // 競合（#357 のレビュー）
 
-/// 観測が止まったときの診断用に、全セッションの待機状態を集める。
+/// 観測が止まったときの診断用に、全セッションの待機状態を集める。DB 側が止まって
+/// いてもこの採取自体が報告を止めないように、3 秒で区切る。
 async fn lock_observation_dump(observer: &tokio_postgres::Client) -> String {
-    observer
-        .query(
+    match tokio::time::timeout(
+        Duration::from_secs(3),
+        observer.query(
             "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type, ''), query, pg_blocking_pids(pid)) \
              FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()",
             &[],
-        )
-        .await
-        .map(|rows| {
-            rows.iter()
-                .map(|row| row.get::<_, String>(0))
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
-        .unwrap_or_else(|error| format!("session dump failed: {error}"))
+        ),
+    )
+    .await
+    {
+        Ok(rows) => rows
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row.get::<_, String>(0))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .unwrap_or_else(|error| format!("session dump failed: {error}")),
+        Err(_) => "session dump timed out after 3s".to_string(),
+    }
 }
 
 /// `pattern` を含む文がロックを待つまで待つ。観測はアプリのプールの外の
@@ -1565,6 +1575,131 @@ async fn guest_additions_lock_the_user_row_before_the_member_lock() {
 
     let (status, body) = add.await.unwrap();
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn member_additions_recheck_deactivation_after_waiting_for_users_lock() -> anyhow::Result<()>
+{
+    let env = env().await;
+    let first = env.user().await;
+    let second = env.user().await;
+
+    // (1) 対象の users 行のロックで待つ。追加は作成者と対象を ID 順でロックするので、
+    // 対象が先になるように役割を選ぶ。待っているあいだに作成者が別接続で無効化されて
+    // も、ロック後の再確認で 403 にしなければ追加が通ってしまう。
+    let (target, creator) = if first < second {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    let channel = env.plain_channel(creator, &[]).await;
+
+    // 対象の users 行を未コミットのまま持つ（対象の行を書く並行処理なら何でもよい）。
+    let mut blocker_db = env.db.clone();
+    let mut blocker = blocker_db.transaction().await?;
+    let blocker_pid = backend::apps::query(
+        &mut blocker,
+        "SELECT json_build_object('pid', pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
+    toasty::sql::statement("UPDATE users SET display_name = 'blocked' WHERE id = $1")
+        .bind(target.as_str())
+        .exec(&mut blocker)
+        .await?;
+
+    let add = {
+        let app = env.app.clone();
+        let (creator, path) = (creator.clone(), format!("/api/channels/{channel}/users"));
+        let body = json!({"user_id": target});
+        tokio::spawn(async move { request(&app, "POST", &path, &creator, body).await })
+    };
+    wait_for_lock_blocked_by(&env, blocker_pid, "users WHERE id = $1 FOR NO KEY UPDATE").await;
+    assert!(
+        !add.is_finished(),
+        "the addition must still wait on the target's users row"
+    );
+
+    // 待ちのあいだに、別の接続で作成者を無効化して確定させる。
+    env.exec(
+        "UPDATE users SET guest_kind = 'deactivated' WHERE id = $1",
+        &[creator],
+    )
+    .await?;
+    blocker.commit().await?;
+
+    let (status, body) = tokio::time::timeout(Duration::from_secs(15), add)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("the addition never finished after the blocker committed")
+        })??;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "Account is deactivated", "{body}");
+    assert!(
+        !env.query(
+            "SELECT json_build_object('exists', EXISTS (SELECT 1 FROM channel_user WHERE channel_id = $1 AND user_id = $2))::text",
+            &[&channel, target],
+        )
+        .await[0]["exists"]
+            .as_bool()
+            .unwrap_or(true),
+        "a member addition must not commit after the creator was deactivated while waiting"
+    );
+
+    // (2) 作成者の users 行のロックで待つ（ID 順で対象が先でも、作成者の行で必ず待つ）。
+    // 未コミットの無効化そのものがブロックになる。dms.rs と同じく、コミット後に 403 にする。
+    let creator = env.user().await;
+    let target = env.user().await;
+    let channel = env.plain_channel(&creator, &[]).await;
+
+    let mut blocker_db = env.db.clone();
+    let mut blocker = blocker_db.transaction().await?;
+    let blocker_pid = backend::apps::query(
+        &mut blocker,
+        "SELECT json_build_object('pid', pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap() as i32;
+    toasty::sql::statement("UPDATE users SET guest_kind = 'deactivated' WHERE id = $1")
+        .bind(creator.as_str())
+        .exec(&mut blocker)
+        .await?;
+
+    let add = {
+        let app = env.app.clone();
+        let (creator, path) = (creator.clone(), format!("/api/channels/{channel}/users"));
+        let body = json!({"user_id": target});
+        tokio::spawn(async move { request(&app, "POST", &path, &creator, body).await })
+    };
+    wait_for_lock_blocked_by(&env, blocker_pid, "users WHERE id = $1 FOR NO KEY UPDATE").await;
+    assert!(
+        !add.is_finished(),
+        "the addition must still wait on the creator's users row"
+    );
+    blocker.commit().await?;
+
+    let (status, body) = tokio::time::timeout(Duration::from_secs(15), add)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("the addition never finished after the deactivation committed")
+        })??;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "Account is deactivated", "{body}");
+    assert!(
+        !env.query(
+            "SELECT json_build_object('exists', EXISTS (SELECT 1 FROM channel_user WHERE channel_id = $1 AND user_id = $2))::text",
+            &[&channel, &target],
+        )
+        .await[0]["exists"]
+            .as_bool()
+            .unwrap_or(true),
+        "a member addition must not commit after the creator was deactivated while waiting"
+    );
+    Ok(())
 }
 
 #[tokio::test]

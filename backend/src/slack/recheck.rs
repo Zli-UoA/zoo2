@@ -200,6 +200,10 @@ async fn run_inner(
     }
     // 最後の `apply_chunk` のあとに暗号化へ切り替わっていたら (#367)、Slack にない投稿の削除もしない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
+    // 履歴が空で `apply_chunk` が 1 度も走らなかったときも、削除の前に取り込み先の可視性を確かめる。
+    // claim の時点では非公開だった Slack チャンネルの内容を、公開へ変わった取り込み先の確認なしに
+    // 消したり書いたりしない (apply_chunk と同じ拒否条件)。
+    super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
     if complete && intact {
         let present: HashSet<&str> = messages.iter().map(|m| m.ts.as_str()).collect();
         let candidates = query(

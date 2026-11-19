@@ -278,9 +278,46 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
     let other_tasks = (count / 10) as i32;
     client.execute("INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) SELECT $1,'O'||n,$2,NULL FROM generate_series(0,$3::integer-1)n", &[&other_team,&channels[0],&other_tasks]).await?;
     client.execute("INSERT INTO slack_channel_syncs(team_id,slack_channel_id,available_at) SELECT $1,'O'||n,'2020-01-02' FROM generate_series(0,$2::integer-1)n", &[&other_team,&other_tasks]).await?;
+    // The scaled mature wakes use their own team. `other_team` carries
+    // 'analyzing' import jobs from the fixture and keeps last_ts NULL, so its
+    // rows can never be claimed. This team has no import job and a non-NULL
+    // last_ts, and its syncs sort before the fixture's due rows, so the global
+    // wake claim provably takes one of the scaled rows.
+    let other_wakes_team = format!("{team}-other-wakes-team");
+    client.execute("INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) SELECT $1,'W'||n,$2,'2025-01-01' FROM generate_series(0,$3::integer-1)n", &[&other_wakes_team,&channels[0],&other_tasks]).await?;
+    client.execute("INSERT INTO slack_channel_syncs(team_id,slack_channel_id,available_at) SELECT $1,'W'||n,'2019-01-01' FROM generate_series(0,$2::integer-1)n", &[&other_wakes_team,&other_tasks]).await?;
+    client.execute("INSERT INTO slack_channel_wakes(team_id,slack_channel_id,first_at) SELECT $1,'W'||n,now()-interval '10 seconds' FROM generate_series(0,$2::integer-1)n", &[&other_wakes_team,&other_tasks]).await?;
     client
-        .batch_execute("ANALYZE slack_channel_syncs; ANALYZE slack_channels")
+        .batch_execute(
+            "ANALYZE slack_channel_wakes; ANALYZE slack_channel_syncs; ANALYZE slack_channels",
+        )
         .await?;
+    // Before measuring, prove the scaled wakes are genuinely claimable: the
+    // global claim (team="") takes one of them, and a team with no rows claims
+    // nothing. Roll back so the leases never change the measured plans.
+    client.batch_execute("BEGIN").await?;
+    let token = uuid::Uuid::new_v4().to_string();
+    let empty_team = String::new();
+    let global_row = client
+        .query_opt(&claim_sql(true, false), &[&token, &empty_team])
+        .await?;
+    let claimed = global_row
+        .map(|row| serde_json::from_str::<Value>(&row.get::<_, String>(0)).unwrap())
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        claimed["team_id"],
+        json!(other_wakes_team),
+        "the global claim must take a mature wake from the scaled team"
+    );
+    let absent_team = format!("{team}-team-absent");
+    let absent = client
+        .query_opt(&claim_sql(true, true), &[&token, &absent_team])
+        .await?;
+    assert!(
+        absent.is_none(),
+        "a team with no wake rows must claim nothing"
+    );
+    client.batch_execute("ROLLBACK").await?;
     for (name, sql) in [
         ("slack_wake_team_empty", claim_sql(true, true)),
         ("slack_due_team_empty", claim_sql(false, true)),

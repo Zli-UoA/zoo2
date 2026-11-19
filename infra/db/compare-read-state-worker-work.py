@@ -5,7 +5,31 @@ import sys
 from pathlib import Path
 small = json.loads((Path(sys.argv[1]) / 'work.json').read_text())
 large = json.loads((Path(sys.argv[2]) / 'work.json').read_text())
-assert small.keys() == large.keys() and len(small) == 14, 'missing query conditions'
+
+# The exact 14 measured query conditions written by
+# backend/tests/read_state_worker_scale_test.rs. Both scales must report the
+# same complete set so a skipped or renamed condition cannot silently pass.
+EXPECTED_CONDITIONS = frozenset({
+    'read_list', 'read_single',
+    'slack_wake_empty', 'slack_due_empty',
+    'slack_wake_ready', 'slack_due_ready',
+    'slack_wake_team_empty', 'slack_due_team_empty',
+    'display_row_empty', 'display_scope_empty',
+    'display_row_ready', 'display_scope_ready',
+    'message_insert', 'message_delete_latest',
+})
+
+
+def condition_diff(label, conditions):
+    missing = sorted(EXPECTED_CONDITIONS - conditions)
+    unexpected = sorted(conditions - EXPECTED_CONDITIONS)
+    return f'{label} work.json conditions: missing {missing}, unexpected {unexpected}'
+
+
+small_conditions = frozenset(small)
+large_conditions = frozenset(large)
+assert small_conditions == EXPECTED_CONDITIONS, condition_diff('small', small_conditions)
+assert large_conditions == EXPECTED_CONDITIONS, condition_diff('large', large_conditions)
 
 
 # Static lookup tables are seeded with a fixed number of rows and never grow
@@ -35,7 +59,10 @@ for name, before in sorted(small.items()):
     after = large[name]
     compare(name, before, after)
     if name in ('message_insert', 'message_delete_latest'):
-        assert 'nested' in before and 'nested' in after, name + ': missing trigger plans'
+        assert 'nested' in before, name + ': missing trigger plans'
+        assert 'nested' in after, name + ': missing trigger plans'
         compare(name + '/nested', before['nested'], after['nested'])
         a, b = before['nested']['statements'], after['nested']['statements']
-        assert 0 < a <= 128 and 0 < b <= 128 and b <= 2 * a + 16, name + ': unbounded trigger statements'
+        assert 0 < a <= 128, name + ': unbounded trigger statements'
+        assert 0 < b <= 128, name + ': unbounded trigger statements'
+        assert b <= 2 * a + 16, name + ': unbounded trigger statements'

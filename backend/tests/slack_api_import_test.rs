@@ -779,7 +779,7 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
 
         let import_app = app.clone();
         let import_user = alice.clone();
-        let import_task = tokio::spawn(async move {
+        let mut import_task = tokio::spawn(async move {
             request(
                 &import_app,
                 "POST",
@@ -789,9 +789,6 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
             )
             .await
         });
-        // 観測や統合に失敗したとき、取り込みが裏で動いたまま後片付けが走らない
-        // よう abort 用のハンドルを手元に残す。
-        let import_task_abort = import_task.abort_handle();
         let inner: anyhow::Result<()> = async {
             // The import must block on the target advisory lock itself (not on a
             // users row or the mapping row): that is what serializes API and ZIP
@@ -836,8 +833,28 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
                 .await?;
             holder_tx.commit().await?;
 
-            let (status, body) =
-                tokio::time::timeout(std::time::Duration::from_secs(10), import_task).await???;
+            // Keep the handle instead of moving it into the timeout: on a timeout the
+            // import must be aborted and awaited to completion, or it stays alive in
+            // the background holding locks while the fixture cleanup deletes rows.
+            let (status, body) = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                &mut import_task,
+            )
+            .await
+            {
+                Ok(joined) => joined??,
+                Err(_) => {
+                    import_task.abort();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        &mut import_task,
+                    )
+                    .await;
+                    anyhow::bail!(
+                        "the API import did not finish within 10s after the ZIP target lock was released"
+                    );
+                }
+            };
             anyhow::ensure!(
                 status == StatusCode::CONFLICT,
                 "the racing API import must be refused with 409, got {status}: {body}"
@@ -876,9 +893,13 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
             Ok(())
         }
         .await;
-        // タイムアウトや失敗のときは後片付けの前に必ず止める (成功時は完了済み)。
-        if inner.is_err() {
-            import_task_abort.abort();
+        // 観測や統合に失敗したときは、後片付けの前に必ず止めて終わるまで待つ
+        // (成功時は完了済み。JoinHandle は完了後に再び待つと panic するので、
+        // まだ動いているときだけ abort して待つ)。
+        if inner.is_err() && !import_task.is_finished() {
+            import_task.abort();
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), &mut import_task).await;
         }
         inner
     }
@@ -889,46 +910,64 @@ async fn api_import_waits_for_the_zip_target_lock_before_checking_the_mapping() 
     // they cannot mask the actual test result.
     let member_placeholder = backend::slack::user_id(&team, "UU");
     let import_channel = backend::slack::channel_id(&team, "GZIPRACE");
-    let mut cleanup_errors: Vec<String> = Vec::new();
-    for (statement, params) in [
-        (
-            "DELETE FROM slack_channels WHERE team_id=$1",
-            vec![team.as_str()],
-        ),
-        (
-            "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
-            vec![zip_target.as_str(), import_channel.as_str()],
-        ),
-        (
-            // create_user joins the workspace default channels, and
-            // channel_user.user_id is ON DELETE RESTRICT: drop both users'
-            // memberships (including the default channels) before users.
-            "DELETE FROM channel_user WHERE user_id IN ($1,$2)",
-            vec![member_placeholder.as_str(), alice.as_str()],
-        ),
-        (
-            "DELETE FROM channels WHERE id IN ($1,$2)",
-            vec![zip_target.as_str(), import_channel.as_str()],
-        ),
-        (
-            "DELETE FROM slack_users WHERE team_id=$1",
-            vec![team.as_str()],
-        ),
-        (
-            "DELETE FROM users WHERE id IN ($1,$2)",
-            vec![member_placeholder.as_str(), alice.as_str()],
-        ),
-    ] {
-        if let Err(error) = sql(&state, statement, &params).await {
-            cleanup_errors.push(format!("{statement}: {error}"));
+    let cleanup_result: anyhow::Result<()> = async {
+        let mut cleanup_db = state.db.clone();
+        let mut tx = cleanup_db.transaction().await?;
+        // Take the same Slack-channel target lock the import path uses. An import
+        // transaction that outlived the abort (blocked on this very lock) then
+        // waits for this cleanup to commit instead of recreating rows after it.
+        toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("slack-channel:{team}:GZIPRACE"))
+            .exec(&mut tx)
+            .await?;
+        for (statement, params) in [
+            (
+                "DELETE FROM slack_channels WHERE team_id=$1",
+                vec![team.as_str()],
+            ),
+            (
+                "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
+                vec![zip_target.as_str(), import_channel.as_str()],
+            ),
+            (
+                // create_user joins the workspace default channels, and
+                // channel_user.user_id is ON DELETE RESTRICT: drop both users'
+                // memberships (including the default channels) before users.
+                "DELETE FROM channel_user WHERE user_id IN ($1,$2)",
+                vec![member_placeholder.as_str(), alice.as_str()],
+            ),
+            (
+                "DELETE FROM channels WHERE id IN ($1,$2)",
+                vec![zip_target.as_str(), import_channel.as_str()],
+            ),
+            (
+                "DELETE FROM slack_users WHERE team_id=$1",
+                vec![team.as_str()],
+            ),
+            (
+                "DELETE FROM users WHERE id IN ($1,$2)",
+                vec![member_placeholder.as_str(), alice.as_str()],
+            ),
+        ] {
+            let mut query = toasty::sql::statement(statement);
+            for param in params {
+                query = query.bind(param);
+            }
+            query.exec(&mut tx).await?;
         }
+        tx.commit().await?;
+        Ok(())
     }
-    if cleanup_errors.is_empty() {
-        return result;
-    }
-    let cleanup_error = anyhow::anyhow!("cleanup failed: {}", cleanup_errors.join("; "));
-    match result {
-        Ok(()) => Err(cleanup_error),
-        Err(error) => Err(error.context(cleanup_error)),
-    }
+    .await;
+    let result = match (result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(test), Ok(())) => Err(test),
+        (Ok(()), Err(cleanup)) => Err(anyhow::anyhow!(
+            "test succeeded, but cleanup failed: {cleanup:#}"
+        )),
+        (Err(test), Err(cleanup)) => Err(anyhow::anyhow!(
+            "test failed: {test:#}; cleanup also failed: {cleanup:#}"
+        )),
+    };
+    result
 }

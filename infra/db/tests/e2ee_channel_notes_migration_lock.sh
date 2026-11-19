@@ -173,9 +173,17 @@ if [[ "$version_rows" == t ]]; then
 fi
 
 # The failed deploy leaves this migration pending. A later deployment reruns
-# Atlas after the writer commits and installs both guards.
+# Atlas after the writer commits and installs both guards. Surface the retry's
+# output and exit code when it fails; with plain `set -e` the redirect would
+# hide retry.out and lose the status.
+retry_status=0
 PGAPPNAME="${migration_app}_retry" atlas migrate apply --dir "$atlas_dir" --url "$NOTES_TEST_DATABASE_URL" \
-  --to-version "$target_version" >"$tmp_dir/retry.out" 2>&1
+  --to-version "$target_version" >"$tmp_dir/retry.out" 2>&1 || retry_status=$?
+if [[ "$retry_status" -ne 0 ]]; then
+  cat "$tmp_dir/retry.out" >&2
+  echo "the retry migration apply failed with exit code $retry_status" >&2
+  exit "$retry_status"
+fi
 psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
   "SELECT count(*) = 2 FROM pg_trigger WHERE tgname IN ('channels_encrypted_reject_notes', 'channel_notes_e2ee_reject_plaintext')" | rg -q '^t$'
 echo "Atlas deploy failed fast with 55P03 without recording the migration, then applied it successfully on retry"

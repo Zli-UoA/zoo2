@@ -277,6 +277,19 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
             })))
             .mount(&slack)
             .await;
+        // スレッド確認のモックも必要。これがないと保存のあとの conversations.replies が
+        // 404 になり、同期は「本文の保存には成功したが、キューは 404 のエラー状態」で
+        // 終わる。投稿の保存先が正しいことだけ確かめても、その状態は見えない
+        // (モックし忘れでもテストが通ってしまう) ので、ここでモックし、最後にキューの
+        // 帰りを確認する。
+        Mock::given(method("GET"))
+            .and(path("/conversations.replies"))
+            .and(query_param("channel", "C-RACE"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true, "messages": [], "has_more": false,
+            })))
+            .mount(&slack)
+            .await;
 
         guard
             .query_one("SELECT pg_advisory_lock($1)", &[&gate_key])
@@ -378,6 +391,23 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
         anyhow::ensure!(mapping[0]["channel_id"] == new_channel);
         anyhow::ensure!(count_messages(&state, &old_channel).await == 1);
         anyhow::ensure!(count_messages(&state, &new_channel).await == 0);
+        // モックしたスレッド確認のあと、レースのチャンネルの同期は最後まで終わる
+        // (再マッピング後の取り直しで、新しい対応先に対して正常に完了する)。
+        // モックし忘れ (404) だと、ここは 404 のエラー状態のまま残る。
+        let race_outcome = sql(
+        &state,
+        "SELECT json_build_object('running',running,'attempts',attempts,'error',last_error,'synced',last_synced_at IS NOT NULL,'lease',lease_token IS NULL)::text \
+         FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C-RACE'",
+        &[&team],
+    ).await?;
+        anyhow::ensure!(
+            race_outcome[0]["running"] == false
+                && race_outcome[0]["attempts"] == 0
+                && race_outcome[0]["error"].is_null()
+                && race_outcome[0]["synced"] == true
+                && race_outcome[0]["lease"] == true,
+            "the race channel's sync must finish cleanly; an unmocked thread fetch would leave the queue in an error state: {race_outcome:?}"
+        );
         let queue_after = sql(
         &state,
         "SELECT json_build_object('available_at',available_at,'attempts',attempts,'running',running,'lease_token',lease_token,'lease_until',lease_until,'last_error',last_error)::text \
@@ -419,13 +449,7 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
         }
         Ok::<(), anyhow::Error>(())
     }).await;
-    if let Err(cleanup_error) = cleanup {
-        return Err(anyhow::anyhow!(
-            "fixture cleanup timed out: {cleanup_error}"
-        ));
-    }
-    cleanup??;
-    let residue: i64 = guard
+    let residue = guard
         .query_one(
             "SELECT (SELECT count(*) FROM users WHERE id IN ($1,$2)) \
          +(SELECT count(*) FROM channels WHERE id IN ($3,$4,$5)) \
@@ -451,16 +475,37 @@ async fn slack_sync_holds_mapping_until_message_save_commits() -> anyhow::Result
                 &gate_table,
             ],
         )
-        .await?
-        .get(0);
-    anyhow::ensure!(
-        residue == 0,
-        "test fixture residue remains after cleanup: {residue}"
-    );
-    match outcome {
-        Ok(result) => result?,
-        Err(_) => anyhow::bail!("slack sync race test panicked; fixture cleanup completed"),
-    }
+        .await
+        .map(|row| row.get::<_, i64>(0));
+    let test_result: anyhow::Result<()> = match outcome {
+        Ok(result) => result,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!("slack sync race test panicked: {message}"))
+        }
+    };
+    let cleanup_result: anyhow::Result<()> = match cleanup {
+        Ok(inner) => inner,
+        Err(elapsed) => Err(anyhow::anyhow!("fixture cleanup timed out: {elapsed}")),
+    };
+    let residue_result: anyhow::Result<()> = match residue {
+        Ok(0) => Ok(()),
+        Ok(count) => Err(anyhow::anyhow!(
+            "test fixture residue remains after cleanup: {count}"
+        )),
+        Err(error) => Err(anyhow::anyhow!(
+            "checking the test fixture residue failed: {error}"
+        )),
+    };
+    // 本体の失敗・パニックを優先して報告する (後片付けの失敗に上書きされない)。
+    // 本体が成功していても、後片付け・残行の確認だけの失敗でテストは失敗する。
+    test_result?;
+    cleanup_result?;
+    residue_result?;
     Ok(())
 }
 

@@ -52,6 +52,23 @@ impl From<ChannelNote> for NoteResponse {
     }
 }
 
+/// 有効ノート一覧の項目。本文は含まず、取得 API (`GET /notes/{id}`) で別途読む。
+/// `order_token` はチャンネルの有効ノート全体の `(position, id)` に対するハッシュで、
+/// 追加・削除・復元・並べ替えのいずれでも変化する。ページ継続カーソルに使う。
+#[derive(Debug, Serialize)]
+pub struct NoteSummaryResponse {
+    pub id: String,
+    pub channel_id: String,
+    pub title: String,
+    /// 表示順。有効ノート一覧のページ継続カーソルにも使う。
+    pub position: i32,
+    pub version: i32,
+    pub created_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub order_token: String,
+}
+
 #[derive(Deserialize)]
 pub struct NoteInput {
     title: String,
@@ -445,6 +462,50 @@ async fn ensure_note_capacity(
     Ok(())
 }
 
+/// 有効ノートの `position` を `(position, id)` 順の連番 `0, 1, 2, ...` に詰め直す。
+/// ノートロック契約に従う直接 SQL は任意の `position` を書けるため、
+/// `MAX(position)` が `i32::MAX` に達すると作成 (`+ 1`) や復元の位置ずらしが
+/// integer オーバーフローで 500 になる。詰め直しは相対順序を変えないため、
+/// 並び替え結果と一覧の表示順は保たれたまま、以後の挿入・ずらしの余地を作る。
+/// 戻り値は詰め直した行数 (= 新しい末尾位置)。
+async fn compact_active_note_positions(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<i32, AppError> {
+    let rows = toasty::sql::query(
+        "WITH compacted AS (\
+             SELECT id, (ROW_NUMBER() OVER (ORDER BY position, id) - 1)::int AS position \
+             FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL\
+         ) \
+         UPDATE channel_notes SET position = compacted.position \
+         FROM compacted WHERE channel_notes.id = compacted.id \
+         RETURNING compacted.position",
+    )
+    .bind(channel_id)
+    .exec(tx)
+    .await?;
+    // 行数 = 連番の個数 = 新しい末尾位置 + 1。上限 500 件のため i32 に収まる。
+    // position 列は integer だが、::int を付けない window 関数の結果は bigint で
+    // 返り得るため、両方の表現を受け付ける。
+    let count = rows
+        .into_iter()
+        .map(|row| match row {
+            toasty::stmt::Value::Record(record) => match record.fields.into_iter().next() {
+                Some(toasty::stmt::Value::I32(position)) => Ok(position),
+                Some(toasty::stmt::Value::I64(position)) => Ok(position as i32),
+                other => Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected compacted channel note position: {other:?}"
+                ))),
+            },
+            other => Err(AppError::Internal(anyhow::anyhow!(
+                "Unexpected compacted channel note row: {other:?}"
+            ))),
+        })
+        .collect::<Result<Vec<i32>, _>>()?
+        .len() as i32;
+    Ok(count)
+}
+
 fn validate(input: &NoteInput) -> Result<(), AppError> {
     let title = input.title.trim();
     if title.is_empty() || title.chars().count() > 200 {
@@ -476,8 +537,37 @@ fn note_path(channel_id: &str, note_id: &str) -> Result<(), AppError> {
 #[derive(Deserialize)]
 struct ActiveNotesQuery {
     limit: Option<i64>,
-    /// `"<position> <id>"`。前ページの最後の項目から継続する。
+    /// `"<order_token> <position> <id>"`。前ページの最後の項目から継続する。
     after: Option<String>,
+}
+
+/// 有効ノート一覧のページ継続カーソルを検証する。戻り値は
+/// `(前ページ取得時の order_token, position, id)`。トークンは最初のページでは不要で、
+/// 指定された場合のみ並び替え・追加・削除・復元の競合検出に使う。
+///
+/// 直接 SQL はノートロック契約に従えば任意の text id を書けるため、区切りの空白が
+/// 存在する限り `id` は空文字 (`""`) を許す (`after = "<token> <position> "`)。
+/// 区切りそのものの欠落、空トークン、空 position、不正な position は 400 にする。
+fn parse_active_after(after: Option<&str>) -> Result<(Option<String>, String, String), AppError> {
+    match after {
+        None | Some("") => Ok((None, String::new(), String::new())),
+        Some(cursor) => {
+            let Some((token, rest)) = cursor.split_once(' ') else {
+                return Err(AppError::BadRequest("Invalid note cursor".into()));
+            };
+            let Some((position, id)) = rest.split_once(' ') else {
+                return Err(AppError::BadRequest("Invalid note cursor".into()));
+            };
+            if token.is_empty() || position.is_empty() || position.parse::<i32>().is_err() {
+                return Err(AppError::BadRequest("Invalid note cursor".into()));
+            }
+            Ok((
+                Some(token.to_string()),
+                position.to_string(),
+                id.to_string(),
+            ))
+        }
+    }
 }
 
 async fn list(
@@ -485,34 +575,34 @@ async fn list(
     actor: AuthUser,
     Path(channel_id): Path<String>,
     Query(query): Query<ActiveNotesQuery>,
-) -> Result<Json<ApiResponse<Vec<NoteResponse>>>, AppError> {
-    // 本文を含むため、1 回の応答で全件を返さない。ページは SQL で制限し、
-    // (position, id) のカーソルで表示順を保ったまま続きを取得できる。
+) -> Result<Json<ApiResponse<Vec<NoteSummaryResponse>>>, AppError> {
+    // 一覧は本文を返さない (取得 API で本文を別途読む)。それでも 1 回の応答で全件は
+    // 返さず、ページは SQL で制限し、(position, id) のカーソルで表示順を保ったまま
+    // 続きを取得できる。order_token は同じ文で有効ノート全体から計算し、継続ページで
+    // 前ページ取得時の並び・構成と比較する (Read COMMITTED では別文の比較になり得る
+    // 競合を、1 文のスナップショットに収める)。
     let limit = query.limit.unwrap_or(50).clamp(1, 200) as i32;
-    let (after_position, after_id) = match query.after.as_deref() {
-        None | Some("") => (String::new(), String::new()),
-        Some(cursor) => match cursor.split_once(' ') {
-            Some((position, id)) if !position.is_empty() && !id.is_empty() => {
-                if position.parse::<i32>().is_err() {
-                    return Err(AppError::BadRequest("Invalid note cursor".into()));
-                }
-                (position.to_string(), id.to_string())
-            }
-            _ => return Err(AppError::BadRequest("Invalid note cursor".into())),
-        },
-    };
+    let (cursor_token, after_position, after_id) = parse_active_after(query.after.as_deref())?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, false).await?;
     let rows = toasty::sql::query(
-        "SELECT id, channel_id, title, content, position, version, created_user_id, \
-                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
-                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') \
-         FROM channel_notes \
-         WHERE channel_id = $1 AND deleted_at IS NULL \
-           AND (CASE WHEN $2 = '' THEN true \
-                     ELSE (position, id) > ($2::integer, $3) END) \
-         ORDER BY position, id LIMIT $4",
+        "WITH ordering AS (\
+             SELECT md5(COALESCE(string_agg(position::text || ':' || encode(convert_to(id, 'UTF8'), 'hex'), ',' ORDER BY position, id), '')) AS order_token \
+             FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL\
+         ), page AS (\
+             SELECT id, channel_id, title, position, version, created_user_id, \
+                    to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS') AS created_at, \
+                    to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') AS updated_at \
+             FROM channel_notes \
+             WHERE channel_id = $1 AND deleted_at IS NULL \
+               AND (CASE WHEN $2 = '' THEN true \
+                         ELSE (position, id) > ($2::integer, $3) END) \
+             ORDER BY position, id LIMIT $4\
+         ) \
+         SELECT page.id, page.channel_id, page.title, page.position, page.version, \
+                page.created_user_id, page.created_at, page.updated_at, ordering.order_token \
+         FROM ordering LEFT JOIN page ON true",
     )
     .bind(channel_id.as_str())
     .bind(after_position.as_str())
@@ -520,63 +610,87 @@ async fn list(
     .bind(limit)
     .exec(&mut tx)
     .await?;
-    let result: Vec<NoteResponse> = rows
-        .into_iter()
-        .map(|row| {
-            let toasty::stmt::Value::Record(record) = row else {
+    // ordering は集約 1 行なので、LEFT JOIN は必ず 1 行以上を返す。ページが空の
+    // 場合は note 列だけ NULL の行が 1 行来るため、どのページでも現在の
+    // order_token を比較できる。
+    let mut result = Vec::new();
+    let mut current_token = String::new();
+    for row in rows {
+        let toasty::stmt::Value::Record(record) = row else {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Unexpected channel note row"
+            )));
+        };
+        let mut fields = record.fields.into_iter();
+        let id = fields.next();
+        let channel_id = fields.next();
+        let title = fields.next();
+        let position = fields.next();
+        let version = fields.next();
+        let created_user_id = fields.next();
+        let created_at = fields.next();
+        let updated_at = fields.next();
+        let order_token = fields.next();
+        match order_token {
+            Some(toasty::stmt::Value::String(token)) => current_token = token,
+            _ => {
                 return Err(AppError::Internal(anyhow::anyhow!(
-                    "Unexpected channel note row"
+                    "Unexpected channel note order token"
                 )));
-            };
-            let mut fields = record.fields.into_iter();
-            let (
-                Some(toasty::stmt::Value::String(id)),
-                Some(toasty::stmt::Value::String(channel_id)),
-                Some(toasty::stmt::Value::String(title)),
-                Some(toasty::stmt::Value::String(content)),
-                Some(toasty::stmt::Value::I32(position)),
-                Some(toasty::stmt::Value::I32(version)),
-                Some(toasty::stmt::Value::String(created_user_id)),
-                Some(toasty::stmt::Value::String(created_at)),
-                Some(toasty::stmt::Value::String(updated_at)),
-            ) = (
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-            )
-            else {
-                return Err(AppError::Internal(anyhow::anyhow!(
-                    "Unexpected channel note columns"
-                )));
-            };
-            let created_at = created_at
-                .parse::<jiff::civil::DateTime>()
-                .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
-                .to_string();
-            let updated_at = updated_at
-                .parse::<jiff::civil::DateTime>()
-                .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
-                .to_string();
-            Ok(NoteResponse {
-                id,
-                channel_id,
-                title,
-                content,
-                position,
-                version,
-                created_user_id,
-                created_at,
-                updated_at,
-                deleted_at: None,
-            })
-        })
-        .collect::<Result<_, _>>()?;
+            }
+        }
+        let (
+            Some(toasty::stmt::Value::String(id)),
+            Some(toasty::stmt::Value::String(channel_id)),
+            Some(toasty::stmt::Value::String(title)),
+            Some(toasty::stmt::Value::I32(position)),
+            Some(toasty::stmt::Value::I32(version)),
+            Some(toasty::stmt::Value::String(created_user_id)),
+            Some(toasty::stmt::Value::String(created_at)),
+            Some(toasty::stmt::Value::String(updated_at)),
+        ) = (
+            id,
+            channel_id,
+            title,
+            position,
+            version,
+            created_user_id,
+            created_at,
+            updated_at,
+        )
+        else {
+            // ページ末尾の空ページ行。次ページはない。
+            continue;
+        };
+        let created_at = created_at
+            .parse::<jiff::civil::DateTime>()
+            .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+            .to_string();
+        let updated_at = updated_at
+            .parse::<jiff::civil::DateTime>()
+            .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
+            .to_string();
+        result.push(NoteSummaryResponse {
+            id,
+            channel_id,
+            title,
+            position,
+            version,
+            created_user_id,
+            created_at,
+            updated_at,
+            order_token: current_token.clone(),
+        });
+    }
+    if let Some(expected) = cursor_token
+        && expected != current_token
+    {
+        // 前ページ取得後に並び・構成が変わった。位置カーソルだけでは新しい並びの
+        // 続きを安全に特定できないため、最初のページからの再読み込みを要求する。
+        return Err(AppError::Conflict(
+            "Note order changed; reload from the first page".into(),
+        ));
+    }
     Ok(Json(ApiResponse::new(result, None::<String>)))
 }
 
@@ -585,6 +699,23 @@ struct DeletedNotesQuery {
     limit: Option<i64>,
     /// `"<deleted_at> <id>"`。前ページの最後の項目から継続する。
     after: Option<String>,
+}
+
+/// 削除済み一覧のカーソル `deleted_at` 部分の形式検証。API はこの一覧の `deleted_at` を
+/// UTC の `YYYY-MM-DDTHH:MM:SS.mmm` (23 文字、ミリ秒固定) で返すため、カーソルも同じ
+/// 形式に限る。文字単位の検証のあと jiff で実在する日時か確認し、不正なら SQL の前に
+/// 400 を返す (キャスト失敗を 500 にしない)。
+fn is_deleted_at_cursor_datetime(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 23
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            4 | 7 => *byte == b'-',
+            10 => *byte == b'T',
+            13 | 16 => *byte == b':',
+            19 => *byte == b'.',
+            _ => byte.is_ascii_digit(),
+        })
+        && jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M:%S%.3f", value).is_ok()
 }
 
 async fn list_deleted(
@@ -597,7 +728,11 @@ async fn list_deleted(
     let (after_deleted_at, after_id) = match query.after.as_deref() {
         None | Some("") => (String::new(), String::new()),
         Some(cursor) => match cursor.split_once(' ') {
-            Some((deleted_at, id)) if !deleted_at.is_empty() && !id.is_empty() => {
+            // 区切りの空白があれば id は空文字を許す。直接 SQL が空 id を書き得るため。
+            Some((deleted_at, id)) if !deleted_at.is_empty() => {
+                if !is_deleted_at_cursor_datetime(deleted_at) {
+                    return Err(AppError::BadRequest("Invalid deleted note cursor".into()));
+                }
                 (deleted_at.to_string(), id.to_string())
             }
             _ => return Err(AppError::BadRequest("Invalid deleted note cursor".into())),
@@ -687,10 +822,9 @@ async fn list_deleted(
                 .parse::<jiff::civil::DateTime>()
                 .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
                 .to_string();
-            let deleted_at = deleted_at
-                .parse::<jiff::civil::DateTime>()
-                .map_err(|error| AppError::Internal(anyhow::anyhow!(error)))?
-                .to_string();
+            // deleted_at はページ継続カーソルの素材で、ミリ秒 3 桁固定の正規形を
+            // そのまま返す (jiff の表示整形は末尾の 0 を落とし、カーソル検証が
+            // 受け付ける形式と一致しなくなる)。
             Ok(NoteResponse {
                 id,
                 channel_id,
@@ -751,22 +885,36 @@ async fn reorder(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, true).await?;
-    let mut active = ChannelNote::filter(
-        ChannelNote::fields()
-            .channel_id()
-            .eq(channel_id.as_str())
-            .and(ChannelNote::fields().deleted_at().is_none()),
+    // 現在順序は一覧と同じ SQL の ORDER BY position, id で読む。Rust のソートは
+    // コードポイント順で、DB の照合順序 (大文字・小文字の順など) と異なり得るため、
+    // クライアントが一覧から組み立てた expected_note_ids と一致しなくなる。
+    let rows = toasty::sql::query(
+        "SELECT id FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL \
+         ORDER BY position, id",
     )
+    .bind(channel_id.as_str())
     .exec(&mut tx)
     .await?;
-    active.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-    let active_order: Vec<_> = active.iter().map(|note| note.id.clone()).collect();
+    let active_order: Vec<String> = rows
+        .into_iter()
+        .map(|row| match row {
+            toasty::stmt::Value::Record(record) => match record.fields.into_iter().next() {
+                Some(toasty::stmt::Value::String(id)) => Ok(id),
+                other => Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected channel note id: {other:?}"
+                ))),
+            },
+            other => Err(AppError::Internal(anyhow::anyhow!(
+                "Unexpected channel note row: {other:?}"
+            ))),
+        })
+        .collect::<Result<_, _>>()?;
     if active_order != input.expected_note_ids {
         return Err(AppError::Conflict(
             "Note order changed; reload before reordering".into(),
         ));
     }
-    let mut active_ids: Vec<_> = active.into_iter().map(|note| note.id).collect();
+    let mut active_ids = active_order.clone();
     active_ids.sort();
     let mut requested = input.note_ids.clone();
     requested.sort();
@@ -825,14 +973,47 @@ async fn restore(
             "Unexpected restored channel note position"
         )));
     };
-    toasty::sql::query(
-        "UPDATE channel_notes SET position = position + 1          WHERE channel_id = $1 AND deleted_at IS NULL AND position >= $2 AND id <> $3",
+    // 位置ずらし (`position + 1`) で i32 を溢れさせる行があるか確認する。復元対象
+    // 自身はずらしの対象外 (`id <> $3`) なので、復元位置以降の `i32::MAX` 行だけが
+    // 該当する。あれば全有効ノート (復元済みノートを含む) を連番に詰め直す。
+    // `(position, id)` 順に振り直すため復元ノートの相対位置は保たれ、ずらしも不要になる。
+    let overflow_rows = toasty::sql::query(
+        "SELECT EXISTS (SELECT 1 FROM channel_notes \
+          WHERE channel_id = $1 AND deleted_at IS NULL \
+            AND position >= $2 AND id <> $3 AND position = 2147483647)",
     )
     .bind(channel_id.as_str())
     .bind(*restored_position)
     .bind(note_id.as_str())
     .exec(&mut tx)
     .await?;
+    let position_overflow = match overflow_rows.first() {
+        Some(toasty::stmt::Value::Record(record)) => match record.fields.first() {
+            Some(toasty::stmt::Value::Bool(overflow)) => *overflow,
+            _ => {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected channel note position overflow check"
+                )));
+            }
+        },
+        _ => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Missing channel note position overflow check"
+            )));
+        }
+    };
+    if position_overflow {
+        compact_active_note_positions(&mut tx, &channel_id).await?;
+    } else {
+        toasty::sql::query(
+            "UPDATE channel_notes SET position = position + 1          WHERE channel_id = $1 AND deleted_at IS NULL AND position >= $2 AND id <> $3",
+        )
+        .bind(channel_id.as_str())
+        .bind(*restored_position)
+        .bind(note_id.as_str())
+        .exec(&mut tx)
+        .await?;
+    }
     let note = find(&mut tx, &channel_id, &note_id).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
@@ -852,14 +1033,34 @@ async fn create(
     ensure_note_capacity(&mut tx, &channel_id).await?;
     let id = Uuid::new_v4().to_string();
     let now = crate::models::now_utc_millis();
-    let rows = toasty::sql::query("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL")
-        .bind(channel_id.as_str()).exec(&mut tx).await?;
-    let position = match rows.first() {
+    // `+ 1` を SQL で行うと MAX(position) = i32::MAX のとき integer オーバーフローに
+    // なるため、最大値をそのまま読んで Rust で判定する。直接 SQL が i32::MAX 近辺の
+    // position を書いていた場合は、先に (position, id) 順の連番へ詰め直して相対順序を
+    // 保ったまま新しい末尾位置を作る。
+    let rows = toasty::sql::query(
+        "SELECT COALESCE(MAX(position), -1) AS position FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(channel_id.as_str())
+    .exec(&mut tx)
+    .await?;
+    let max_position = match rows.first() {
         Some(toasty::stmt::Value::Record(record)) => match record.fields.first() {
             Some(toasty::stmt::Value::I32(value)) => *value,
-            _ => 0,
+            _ => {
+                return Err(AppError::Internal(anyhow::anyhow!(
+                    "Unexpected channel note max position"
+                )));
+            }
         },
-        _ => 0,
+        _ => {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Missing channel note max position"
+            )));
+        }
+    };
+    let position = match max_position.checked_add(1) {
+        Some(next) => next,
+        None => compact_active_note_positions(&mut tx, &channel_id).await?,
     };
     let note = toasty::create!(ChannelNote {
         id: id.as_str(),

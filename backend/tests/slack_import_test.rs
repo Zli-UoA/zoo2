@@ -1478,9 +1478,35 @@ async fn run_private_zip_visibility_race(
             let mut permanent_tx = permanent_db.transaction().await?;
             exec(&mut permanent_tx, "UPDATE slack_import_jobs SET available_at=now() WHERE id=$1", &[&run]).await?;
             permanent_tx.commit().await?;
-            anyhow::ensure!(!backend::slack::worker::run_once(&state).await?, "permanently failed public/deleted job was claimed again");
-            let unchanged = sql(&state, "SELECT json_build_object('status',status,'attempts',attempts)::text FROM slack_import_jobs WHERE id=$1", &[&run]).await?;
-            anyhow::ensure!(unchanged[0]["status"] == "failed" && unchanged[0]["attempts"] == transient_attempts + 1, "public/deleted job changed after a subsequent worker pass: {unchanged:?}");
+            // Compare the row itself across the pass instead of relying solely on
+            // `run_once` returning false: the row must stay failed with the same
+            // attempts and no lease. (`run_once` returning false also assumes this
+            // job is the only claimable one in the disposable test database.)
+            let before = sql(
+                &state,
+                "SELECT json_build_object('status',status,'attempts',attempts,'lease_token',lease_token)::text FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            ).await?;
+            anyhow::ensure!(
+                before[0]["status"] == "failed" && before[0]["lease_token"].is_null(),
+                "the job must already be a permanently failed, lease-free row: {before:?}"
+            );
+            let claimed_again = backend::slack::worker::run_once(&state).await?;
+            anyhow::ensure!(
+                !claimed_again,
+                "permanently failed public/deleted job was claimed again"
+            );
+            let after = sql(
+                &state,
+                "SELECT json_build_object('status',status,'attempts',attempts,'lease_token',lease_token)::text FROM slack_import_jobs WHERE id=$1",
+                &[&run],
+            ).await?;
+            anyhow::ensure!(
+                after[0] == before[0],
+                "public/deleted job changed across a subsequent worker pass: before={:?}, after={:?}",
+                before[0],
+                after[0]
+            );
         }
         Ok(())
     })
@@ -3068,7 +3094,24 @@ async fn run_failed_upload_cleanup_fixture(inject_body_panic: bool) -> anyhow::R
             let object_exists = assert_s3_object_exists(&state.s3_client, &config.s3.bucket, &format!("slack-imports/{job_id}/export.zip"), remaining_objects == 1).await.is_ok();
             anyhow::ensure!(object_exists, "unexpected retained ZIP object state for job {job_id}");
             // The test owns these rows and objects; recover even intentionally failed cleanup here.
-            state.s3_client.delete_object().bucket(&config.s3.bucket).key(format!("slack-imports/{job_id}/export.zip")).send().await?;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                state
+                    .s3_client
+                    .delete_object()
+                    .bucket(&config.s3.bucket)
+                    .key(format!("slack-imports/{job_id}/export.zip"))
+                    .send(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result?;
+                }
+                Err(_) => anyhow::bail!(
+                    "deleting the retained ZIP object for job {job_id} timed out after 5s"
+                ),
+            }
             cleanup_statement(&state, "DELETE FROM slack_import_jobs WHERE id=$1", &[job_id]).await?;
         }
         // A rejected `PUT` never proved anything was stored, so the helper must keep
@@ -3114,7 +3157,24 @@ async fn run_failed_upload_cleanup_fixture(inject_body_panic: bool) -> anyhow::R
                 "a rejected presigned PUT must not store an object for job {job_id}"
             );
             // The outer fixture recovery still owns this row and (absent) object.
-            state.s3_client.delete_object().bucket(&config.s3.bucket).key(format!("slack-imports/{job_id}/export.zip")).send().await?;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                state
+                    .s3_client
+                    .delete_object()
+                    .bucket(&config.s3.bucket)
+                    .key(format!("slack-imports/{job_id}/export.zip"))
+                    .send(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result?;
+                }
+                Err(_) => anyhow::bail!(
+                    "deleting the deferred-cleanup object for job {job_id} timed out after 5s"
+                ),
+            }
             cleanup_statement(&state, "DELETE FROM slack_import_jobs WHERE id=$1", &[job_id]).await?;
         }
         let stranded_zip = build_zip(&[]);
@@ -3324,12 +3384,22 @@ async fn run_failed_upload_cleanup_fixture(inject_body_panic: bool) -> anyhow::R
         remaining_user.first().and_then(|row| row["n"].as_i64()) == Some(0),
         "admin user remains after job cleanup: {remaining_user:?}"
     );
-    let bucket = state
-        .s3_client
-        .head_bucket()
-        .bucket(&config.s3.bucket)
-        .send()
-        .await;
+    let bucket = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state
+            .s3_client
+            .head_bucket()
+            .bucket(&config.s3.bucket)
+            .send(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "checking the disposable bucket {} timed out after 5s",
+            config.s3.bucket
+        ),
+    };
     anyhow::ensure!(
         bucket
             .as_ref()

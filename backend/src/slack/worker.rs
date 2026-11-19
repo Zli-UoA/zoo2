@@ -905,6 +905,56 @@ struct StoredPlaceholder<'a> {
     profile_source: &'a str,
 }
 
+fn profile_display_name(profile: Option<&SlackUser>) -> Option<&str> {
+    profile.and_then(|p| {
+        [
+            p.profile.display_name.as_str(),
+            p.profile.real_name.as_str(),
+            p.real_name.as_str(),
+            p.name.as_str(),
+        ]
+        .into_iter()
+        .find(|value| !value.trim().is_empty())
+    })
+}
+
+/// What a later archive entry (or a `users.info` profile) contributes at the
+/// identity level: any non-empty `name` / `display_name` / `real_name` / avatar.
+/// A sparse entry (`{"id":"U1"}` with everything blank) contributes nothing.
+fn profile_contributes_identity(profile: Option<&SlackUser>) -> bool {
+    profile.is_some_and(|p| {
+        !p.name.trim().is_empty()
+            || !p.profile.display_name.trim().is_empty()
+            || !p.profile.real_name.trim().is_empty()
+            || !p.real_name.trim().is_empty()
+            || p.profile.image_72.starts_with("https://")
+    })
+}
+
+/// Whether a profile contributes anything at all: identity fields or the bot
+/// flag. This is what allows a refresh: a sparse entry must not, by itself,
+/// let a message `fallback_name` overwrite a stored placeholder.
+fn profile_contributes(profile: Option<&SlackUser>) -> bool {
+    profile_contributes_identity(profile) || profile.is_some_and(|p| p.is_bot)
+}
+
+/// The `profile_source` recorded when a placeholder is first created: only a
+/// profile that actually supplied a name/avatar counts as `"profile"`. A sparse
+/// entry (even `is_bot` with all names blank) did not supply the name, so the
+/// row records the fallback (or `"unknown"` when even that is absent).
+fn initial_profile_source(
+    profile: Option<&SlackUser>,
+    fallback_name: Option<&str>,
+) -> &'static str {
+    if profile_contributes_identity(profile) {
+        "profile"
+    } else if fallback_name.is_some() {
+        "fallback"
+    } else {
+        "unknown"
+    }
+}
+
 /// Merge a later `users.json` profile (or message fallback name) into an
 /// existing unlinked placeholder row. Later entries can be sparse (only `id`,
 /// with blank `name`/`real_name`/`display_name`/`image_72`): blank fields are
@@ -919,16 +969,7 @@ fn merged_placeholder_refresh<'a>(
     // The same candidate order as `SlackUser::display_name`, but strict: an
     // entry whose fields are all blank contributes no display name at all
     // (`display_name()` would fall back to the raw Slack ID instead).
-    let profile_display = profile.and_then(|p| {
-        [
-            p.profile.display_name.as_str(),
-            p.profile.real_name.as_str(),
-            p.real_name.as_str(),
-            p.name.as_str(),
-        ]
-        .into_iter()
-        .find(|value| !value.trim().is_empty())
-    });
+    let profile_display = profile_display_name(profile);
     let profile_name = profile
         .map(|p| p.name.as_str())
         .filter(|name| !name.trim().is_empty());
@@ -938,6 +979,26 @@ fn merged_placeholder_refresh<'a>(
     let profile_avatar = profile
         .map(|p| p.profile.image_72.as_str())
         .filter(|url| url.starts_with("https://"));
+    let is_bot =
+        stored.is_bot || profile.is_some_and(|p| p.is_bot) || stored.slack_id.starts_with('B');
+    // An entry without identity fields (sparse `{"id":"U1"}` or bot-flag-only
+    // `{"id":"U1","is_bot":true}`) must not let a message fallback overwrite a
+    // `"profile"`-sourced row's workspace-wide identity values or downgrade its
+    // `profile_source`; it may only propagate `is_bot`.
+    if stored.profile_source == "profile" && !profile_contributes_identity(profile) {
+        return PlaceholderRefresh {
+            handle: if stored.name.is_empty() {
+                stored.slack_id
+            } else {
+                stored.name
+            },
+            display: stored.display_name.to_string(),
+            real_name: stored.real_name,
+            avatar: stored.avatar_url,
+            is_bot,
+            profile_source: stored.profile_source,
+        };
+    }
     let handle = profile_name
         .or(fallback_name)
         .filter(|name| !name.is_empty())
@@ -952,14 +1013,7 @@ fn merged_placeholder_refresh<'a>(
     };
     let real_name = profile_real_name.unwrap_or(stored.real_name);
     let avatar = profile_avatar.unwrap_or(stored.avatar_url);
-    let is_bot =
-        stored.is_bot || profile.is_some_and(|p| p.is_bot) || stored.slack_id.starts_with('B');
-    let profile_contributes = profile_name.is_some()
-        || profile_display.is_some()
-        || profile_real_name.is_some()
-        || profile_avatar.is_some()
-        || profile.is_some_and(|p| p.is_bot);
-    let profile_source = if profile_contributes {
+    let profile_source = if profile_contributes_identity(profile) {
         "profile"
     } else if fallback_name.is_some() {
         "fallback"
@@ -984,6 +1038,7 @@ async fn ensure_user(
     profile: Option<&SlackUser>,
     fallback_name: Option<&str>,
 ) -> Result<ZooUser, AppError> {
+    let fallback_name = fallback_name.filter(|name| !name.is_empty());
     if let Some(found) = query(
         tx,
         "SELECT json_build_object('id',u.id,'user_name',u.user_name,'linked',s.linked,'name',s.name,'real_name',s.real_name,'profile_source',s.profile_source,'display_name',u.display_name,'is_bot',u.is_bot,'avatar_url',u.avatar_url)::text FROM slack_users s \
@@ -998,12 +1053,14 @@ async fn ensure_user(
         // Keep it stable across later ZIP imports: the mention token has no stored identity,
         // so rewriting it after the token becomes reusable could alter an unrelated user's
         // mention. Preserve the later fallback in display_name and Slack metadata.
-        let fallback_name = fallback_name.filter(|name| !name.is_empty());
         let source = found["profile_source"].as_str().unwrap_or("unknown");
         let generic_legacy_row = source == "unknown"
             && found["name"].as_str() == Some(slack_id)
             && found["real_name"].as_str().unwrap_or_default().is_empty();
-        let should_refresh = profile.is_some()
+        // A sparse entry (blank name/display/real_name/avatar, not even the bot
+        // flag) must not, by itself, let a message fallback overwrite a stored
+        // placeholder. Only a profile that really contributes something does.
+        let should_refresh = profile_contributes(profile)
             || (fallback_name.is_some() && (source == "fallback" || generic_legacy_row));
         if found["linked"] == false && should_refresh {
             let id = found["id"].as_str().unwrap_or_default();
@@ -1062,11 +1119,10 @@ async fn ensure_user(
     let id = super::user_id(team, slack_id);
     let handle = profile
         .map(|p| p.name.as_str())
-        .filter(|n| !n.is_empty())
+        .filter(|n| !n.trim().is_empty())
         .or(fallback_name)
         .unwrap_or(slack_id);
-    let display = profile
-        .map(SlackUser::display_name)
+    let display = profile_display_name(profile)
         .or(fallback_name)
         .unwrap_or(slack_id);
     let display = sanitize_for_display_name(display, handle);
@@ -1116,6 +1172,9 @@ async fn ensure_user(
     )
     .await?;
     let real_name = profile.map(|p| p.real_name.as_str()).unwrap_or("");
+    // `profile_source` records what actually supplied the name/fields. A sparse
+    // profile (blank name/display/real_name/avatar — even with `is_bot`) did not
+    // supply them, so the row keeps the fallback or `"unknown"` instead.
     exec(
         tx,
         "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name,real_name,profile_source) \
@@ -1126,7 +1185,7 @@ async fn ensure_user(
             &id,
             handle,
             real_name,
-            if profile.is_some() { "profile" } else if fallback_name.is_some() { "fallback" } else { "unknown" },
+            initial_profile_source(profile, fallback_name),
         ],
     )
     .await?;
@@ -1461,6 +1520,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 &importable_messages,
             )
             .await?;
+            // 保存のトランザクションで 1 回だけ、削除済みの親への返信を許可する
+            // (このあとの投稿ループの `insert_message` が、返信の挿入と既存返信の
+            // スレッドへの再接続の両方を行う)。
+            allow_deleted_thread_parent(&mut tx).await?;
             // Keep the stable Slack-channel lock before user rows and the target channel.
             // Revalidate the mapping and privacy/deletion/encryption state in every save
             // transaction so a mid-import visibility change cannot leak private history.
@@ -1841,15 +1904,20 @@ pub(super) async fn insert_reactions(
 /// day file in one transaction; resolving IDs one at a time lets two imports
 /// create the same placeholders in opposite orders and deadlock.
 ///
-/// `slack_channel_is_private` keeps private-channel message fallbacks
+/// `suppress_message_fallbacks` keeps message-derived fallbacks
 /// (`username`/`bot_profile.name`) out of the resolution: those names would
 /// otherwise become the workspace-wide placeholder display name and could leak
-/// into public channels that mention the same Slack user.
+/// into public channels that mention the same Slack user. The ZIP importer
+/// passes the archive's channel privacy flag (a private channel's fallbacks
+/// must never reach the workspace-wide names that public mentions also resolve
+/// against); the API sync (`sync::store`) always passes `true` because
+/// `conversations.history` / `conversations.replies` pages do not carry the
+/// channel's visibility at page-fetch time (see `sync::store`).
 pub(super) async fn resolve_message_users(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     slack_channel: &str,
-    slack_channel_is_private: bool,
+    suppress_message_fallbacks: bool,
     messages: &[&SlackMessage],
 ) -> Result<(), AppError> {
     // Serialize the mapping snapshot and profile writes with link/reconcile. This
@@ -1878,9 +1946,11 @@ pub(super) async fn resolve_message_users(
         members.push(author.to_string());
         // An archive profile takes precedence in ensure_user. When it is absent, preserve
         // the same fallback order used by insert_message: username, then bot_profile.name.
-        // Private channels never contribute: their fallbacks must not reach the
+        // Suppressed fallbacks never contribute: a name gleaned from a channel whose
+        // visibility the page fetch could not confirm must not reach the
         // workspace-wide placeholder names that public mentions also resolve against.
-        if !slack_channel_is_private && let Some((priority, name)) = message_fallback_name(message)
+        if !suppress_message_fallbacks
+            && let Some((priority, name)) = message_fallback_name(message)
         {
             let replace = fallbacks
                 .get(author)
@@ -2110,6 +2180,25 @@ pub(super) async fn id_taken_by_other(
     .is_empty())
 }
 
+/// 取り込みの間だけ、削除済みの親への返信を許可する (`zoo.slack_import` の設定)。
+/// スレッド化のトリガーは通常、削除済みの親への返信を拒否する。取り込みでは、ZIP の日付ファイルが
+/// 区切られたせいで返信だけが先に入ることや、削除済みの親があとから見つかることがあるため、
+/// 保存のトランザクションごとに 1 回だけ許可を与える (`set_config` の `true` はトランザクション
+/// 内だけなので、コミット・ロールバックで自動的に戻る)。投稿 1 件ごとに呼ぶと同じトランザクションで
+/// 何度も同じ設定文が走るので、返信の挿入と既存返信のスレッドへの再接続を含む保存トランザクションの
+/// 呼び出し元 (ZIP の日付トランザクション・`sync::store`・`hints::apply`) が 1 回だけ呼ぶこと。
+pub(super) async fn allow_deleted_thread_parent(
+    tx: &mut toasty::Transaction<'_>,
+) -> Result<(), AppError> {
+    one(
+        tx,
+        "SELECT json_build_object('ok',set_config('zoo.slack_import','on',true))::text",
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
@@ -2173,14 +2262,9 @@ pub(super) async fn insert_message(
         components,
         filled,
     } = render_message(tx, ctx, message).await?;
-    // Slack の履歴には、削除済みの親への返信も含まれる。スレッド化のトリガーは通常、削除済みの親への返信を
-    // 拒否するので、取り込みの間だけ許可する (再取り込みや、後から見つかった返信も削除された親のスレッドに残る)。
-    one(
-        tx,
-        "SELECT json_build_object('ok',set_config('zoo.slack_import','on',true))::text",
-        &[],
-    )
-    .await?;
+    // 削除済みの親への返信の許可 (`zoo.slack_import`) は、この保存トランザクションの呼び出し元が
+    // トランザクションごとに 1 回 `allow_deleted_thread_parent` で与えておく。ここでは投稿ごとに
+    // `set_config` しない (同じトランザクションで何度も同じ設定文が走るのを避けるため)。
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
     // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
@@ -3323,6 +3407,69 @@ mod tests {
             (Err(test), Err(cleanup)) => Err(anyhow::anyhow!(
                 "test failed: {test:#}; cleanup also failed: {cleanup:#}"
             )),
+        }
+    }
+
+    /// Lock observation must not borrow connections from the app DB pool: the
+    /// task under test can hold pool connections while waiting on row locks,
+    /// and a pool-bound observer could then starve on the same pool instead of
+    /// reporting the wait. Connect independently, outside the pool.
+    async fn observe_connect(database_url: &str) -> anyhow::Result<tokio_postgres::Client> {
+        let (client, driver) = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio_postgres::connect(database_url, tokio_postgres::NoTls),
+        )
+        .await??;
+        tokio::spawn(driver);
+        Ok(client)
+    }
+
+    /// Wait (bounded per poll) until some session blocks on a lock held by
+    /// `pid`. Returns false when the rounds are exhausted.
+    async fn wait_blocked_on(
+        observer: &tokio_postgres::Client,
+        pid: i32,
+        rounds: usize,
+    ) -> anyhow::Result<bool> {
+        for _ in 0..rounds {
+            let waiting: bool = tokio::time::timeout(
+                Duration::from_secs(5),
+                observer.query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                    &[&pid],
+                ),
+            )
+            .await??
+            .get(0);
+            if waiting {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok(false)
+    }
+
+    /// A best-effort, time-bounded dump of the current lock waiters for test
+    /// failure messages.
+    async fn dump_lock_waiters(observer: &tokio_postgres::Client) -> String {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            observer.query(
+                "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type,''), \
+                 coalesce(wait_event,''), left(coalesce(query,''),120)) \
+                 FROM pg_stat_activity WHERE wait_event_type='Lock'",
+                &[],
+            ),
+        )
+        .await
+        {
+            Ok(Ok(rows)) => rows
+                .iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            _ => "pg_stat_activity lock waiters unavailable".into(),
         }
     }
 
@@ -4557,7 +4704,7 @@ mod tests {
         dotenvy::from_filename("../.env").ok();
         let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
         let mut config = crate::config::Config::from_env();
-        config.database_url = database_url;
+        config.database_url = database_url.clone();
         let mut db = crate::db::init_db(&config.database_url).await?;
         let creator = uuid::Uuid::new_v4().to_string();
         let existing = uuid::Uuid::new_v4().to_string();
@@ -4599,6 +4746,18 @@ mod tests {
             .bind(creator.as_str())
             .exec(&mut note_tx)
             .await?;
+        // The lock observation below polls from an independent connection
+        // (not the app pool) so a pool-bound observer cannot starve while the
+        // worker holds its own pool connection waiting on this row.
+        let note_pid: i32 = query(
+            &mut note_tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap() as i32;
+        let observer = observe_connect(&database_url).await?;
 
         let import_db = db.clone();
         let import_creator = creator.clone();
@@ -4636,51 +4795,52 @@ mod tests {
             Ok::<_, AppError>(())
         });
         started_rx.await?;
-        let mut waiting_for_creator = false;
-        for _ in 0..100 {
-            let mut monitor_db = db.clone();
-            let mut monitor_tx = monitor_db.transaction().await?;
-            let rows = query(
-                &mut monitor_tx,
-                "SELECT json_build_object('waiting',EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%FROM users WHERE id = $1 FOR NO KEY UPDATE%'))::text",
-                &[],
-            )
-            .await?;
-            monitor_tx.commit().await?;
-            if rows.first().is_some_and(|row| row["waiting"] == true) {
-                waiting_for_creator = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let waiting_for_creator = tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_blocked_on(&observer, note_pid, 200),
+        )
+        .await??;
         assert!(
             waiting_for_creator,
-            "the worker did not wait for the creator row before updating channels"
+            "the worker did not wait for the creator row before updating channels; lock waiters: {}",
+            dump_lock_waiters(&observer).await
         );
-        toasty::sql::query("SELECT id FROM channels WHERE id=$1 FOR UPDATE")
-            .bind(existing.as_str())
-            .exec(&mut note_tx)
-            .await?;
-        note_tx.commit().await?;
-        tokio::time::timeout(Duration::from_secs(5), worker).await???;
-
-        let mut tx = db.transaction().await?;
-        toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1")
-            .bind(creator.as_str())
-            .exec(&mut tx)
-            .await?;
-        for channel in [&existing, &created] {
-            toasty::sql::statement("DELETE FROM channels WHERE id=$1")
-                .bind(channel.as_str())
+        let test_result: anyhow::Result<()> = async {
+            if let Err(err) =
+                toasty::sql::query("SELECT id FROM channels WHERE id=$1 FOR UPDATE NOWAIT")
+                    .bind(existing.as_str())
+                    .exec(&mut note_tx)
+                    .await
+            {
+                let _ = note_tx.rollback().await;
+                return Err(err.into());
+            }
+            note_tx.commit().await?;
+            tokio::time::timeout(Duration::from_secs(5), worker).await???;
+            Ok(())
+        }
+        .await;
+        let cleanup_result: anyhow::Result<()> = async {
+            let mut tx = db.transaction().await?;
+            toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1")
+                .bind(creator.as_str())
                 .exec(&mut tx)
                 .await?;
+            for channel in [&existing, &created] {
+                toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+                    .bind(channel.as_str())
+                    .exec(&mut tx)
+                    .await?;
+            }
+            toasty::sql::statement("DELETE FROM users WHERE id=$1")
+                .bind(creator.as_str())
+                .exec(&mut tx)
+                .await?;
+            tx.commit().await?;
+            Ok(())
         }
-        toasty::sql::statement("DELETE FROM users WHERE id=$1")
-            .bind(creator.as_str())
-            .exec(&mut tx)
-            .await?;
-        tx.commit().await?;
-        Ok(())
+        .await;
+        finish_with_cleanup(test_result, cleanup_result)
     }
 
     #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
@@ -4690,7 +4850,7 @@ mod tests {
         dotenvy::from_filename("../.env").ok();
         let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
         let mut config = crate::config::Config::from_env();
-        config.database_url = database_url;
+        config.database_url = database_url.clone();
         let mut db = crate::db::init_db(&config.database_url).await?;
         let team = format!("TLOCKP{}", uuid::Uuid::new_v4().simple());
         let slack_member = format!(
@@ -4770,6 +4930,18 @@ mod tests {
                 .bind(member.as_str())
                 .exec(&mut note_tx)
                 .await?;
+            // The lock observation below polls from an independent connection
+            // (not the app pool): the import holds its own pool connection while
+            // waiting on this row, and a pool-bound observer could starve.
+            let note_pid: i32 = query(
+                &mut note_tx,
+                "SELECT json_build_object('pid',pg_backend_pid())::text",
+                &[],
+            )
+            .await?[0]["pid"]
+                .as_i64()
+                .unwrap() as i32;
+            let observer = observe_connect(&database_url).await?;
 
             let import_db = db.clone();
             let import_team = team.clone();
@@ -4810,25 +4982,20 @@ mod tests {
                 Ok::<_, AppError>(())
             }));
             started_rx.await?;
-            let mut waiting_for_member = false;
-            for _ in 0..100 {
-                let mut monitor_db = db.clone();
-                let mut monitor_tx = monitor_db.transaction().await?;
-                let rows = query(
-                    &mut monitor_tx,
-                    "SELECT json_build_object('waiting',EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%FROM users WHERE id = $1 FOR NO KEY UPDATE%'))::text",
-                    &[],
-                )
-                .await?;
-                monitor_tx.commit().await?;
-                if rows.first().is_some_and(|row| row["waiting"] == true) {
-                    waiting_for_member = true;
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            anyhow::ensure!(waiting_for_member, "ZIP import did not lock members first");
-            toasty::sql::query("SELECT id FROM channels WHERE id=$1 FOR SHARE")
+            let waiting_for_member =
+                tokio::time::timeout(Duration::from_secs(10), wait_blocked_on(&observer, note_pid, 200))
+                    .await??;
+            anyhow::ensure!(
+                waiting_for_member,
+                "ZIP import did not lock members first; lock waiters: {}",
+                dump_lock_waiters(&observer).await
+            );
+            // The import is (correctly) still waiting on the member's users row, so
+            // the target channel row must be free. `FOR UPDATE NOWAIT` makes a
+            // reversed lock order (the channel row before the member lock) fail
+            // immediately with `lock_not_available` instead of deadlocking against
+            // the blocked import.
+            toasty::sql::query("SELECT 1 FROM channels WHERE id=$1 FOR UPDATE NOWAIT")
                 .bind(channel.as_str())
                 .exec(&mut note_tx)
                 .await?;
@@ -4993,6 +5160,100 @@ mod tests {
         assert_eq!(merged.handle, "U1");
         assert_eq!(merged.display, "");
         assert_eq!(merged.profile_source, "unknown");
+    }
+
+    #[test]
+    fn sparse_profiles_do_not_enable_fallback_overwrites_of_profile_rows() {
+        // `profile.is_some()` alone must not let a sparse entry carry a message
+        // fallback into a `"profile"`-sourced row (#6043): neither the merge nor
+        // the source downgrade may happen.
+        let sparse = slack_user_profile(serde_json::json!({"id":"U1"}));
+        let profile_row = stored_placeholder(
+            "U1",
+            "profile-handle",
+            "Profile Display",
+            "Profile Real",
+            "https://avatars.example/profile.png",
+            false,
+            "profile",
+        );
+        let merged =
+            merged_placeholder_refresh(&profile_row, Some(&sparse), Some("leaked-fallback"));
+        assert_eq!(merged.handle, "profile-handle");
+        assert_eq!(merged.display, "Profile Display");
+        assert_eq!(merged.real_name, "Profile Real");
+        assert_eq!(merged.avatar, "https://avatars.example/profile.png");
+        assert_eq!(merged.profile_source, "profile");
+
+        // A bot-only entry (every name blank) propagates its bot flag, while
+        // preserving the `"profile"`-sourced row's identity fields and source.
+        let bot_only = slack_user_profile(serde_json::json!({"id":"U1","is_bot":true}));
+        let merged =
+            merged_placeholder_refresh(&profile_row, Some(&bot_only), Some("bot-fallback"));
+        assert!(
+            merged.is_bot,
+            "a later bot profile must still set the bot flag"
+        );
+        assert_eq!(merged.handle, "profile-handle");
+        assert_eq!(merged.display, "Profile Display");
+        assert_eq!(merged.real_name, "Profile Real");
+        assert_eq!(merged.avatar, "https://avatars.example/profile.png");
+        assert_eq!(merged.profile_source, "profile");
+
+        // A real profile still replaces the fallback as before.
+        let renamed = slack_user_profile(serde_json::json!({
+            "id":"U1","name":"renamed","real_name":"Renamed Real",
+            "profile":{"display_name":"Renamed","image_72":"https://avatars.example/renamed.png"}
+        }));
+        let merged =
+            merged_placeholder_refresh(&profile_row, Some(&renamed), Some("leaked-fallback"));
+        assert_eq!(merged.handle, "renamed");
+        assert_eq!(merged.display, "Renamed");
+        assert_eq!(merged.real_name, "Renamed Real");
+        assert_eq!(merged.avatar, "https://avatars.example/renamed.png");
+        assert_eq!(merged.profile_source, "profile");
+    }
+
+    #[test]
+    fn initial_profile_source_records_what_supplied_the_name() {
+        // A profile with real name/display/avatar data is the source (#6047).
+        let full = slack_user_profile(serde_json::json!({
+            "id":"U1","name":"handle","real_name":"Real","profile":{"display_name":"Display"}
+        }));
+        assert_eq!(initial_profile_source(Some(&full), None), "profile");
+        assert_eq!(
+            initial_profile_source(Some(&full), Some("fallback")),
+            "profile"
+        );
+
+        // A sparse entry supplied nothing: without a fallback the row is
+        // `unknown`, with one it is `fallback` — never `profile`.
+        let sparse = slack_user_profile(serde_json::json!({"id":"U1"}));
+        assert_eq!(initial_profile_source(Some(&sparse), None), "unknown");
+        assert_eq!(
+            initial_profile_source(Some(&sparse), Some("fallback")),
+            "fallback"
+        );
+
+        // A bot flag with all names blank did not supply the name either.
+        let bot_only = slack_user_profile(serde_json::json!({"id":"U1","is_bot":true}));
+        assert_eq!(initial_profile_source(Some(&bot_only), None), "unknown");
+        assert_eq!(
+            initial_profile_source(Some(&bot_only), Some("fallback")),
+            "fallback"
+        );
+
+        // An avatar alone is real profile data.
+        let avatar_only = slack_user_profile(serde_json::json!({
+            "id":"U1","profile":{"image_72":"https://avatars.example/u1.png"}
+        }));
+        assert_eq!(
+            initial_profile_source(Some(&avatar_only), Some("fallback")),
+            "profile"
+        );
+
+        assert_eq!(initial_profile_source(None, None), "unknown");
+        assert_eq!(initial_profile_source(None, Some("fallback")), "fallback");
     }
 
     #[test]
@@ -5215,6 +5476,233 @@ mod tests {
             )
             .await?;
             exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&user_id]).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        finish_with_cleanup(test_result, cleanup_result)
+    }
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn sparse_profile_with_fallback_cannot_downgrade_a_profile_placeholder()
+    -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(
+            database.contains("test") || database.contains("rereview"),
+            "refusing non-test database `{database}`"
+        );
+        let mut db = crate::db::init_db(&database_url).await?;
+        let team = format!("TDOWNGRADE{}", uuid::Uuid::new_v4().simple());
+        let slack_id = format!(
+            "U{}",
+            uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .to_ascii_uppercase()
+        );
+        let user_id = super::super::user_id(&team, &slack_id);
+        let test_result: anyhow::Result<()> = async {
+            // 1. Create the placeholder from a real profile (source: "profile").
+            let full = slack_user_profile(serde_json::json!({
+                "id": slack_id, "name": "profile-handle", "real_name": "Profile Real",
+                "profile": {"display_name": "Profile Display", "image_72": "https://avatars.example/profile.png"}
+            }));
+            let mut ctx = Context {
+                team: team.clone(),
+                users: HashMap::new(),
+                profiles: HashMap::from([(slack_id.clone(), full)]),
+                fallback_names: HashMap::new(),
+                channel_names: HashMap::new(),
+                files: FilePolicy {
+                    token: false,
+                    max_size: 0,
+                    base_url: String::new(),
+                },
+                app_id: None,
+            };
+            {
+                let mut tx = db.transaction().await?;
+                ctx.user(&mut tx, &slack_id, None).await?;
+                tx.commit().await?;
+            }
+            let stored = query(
+                &mut db.transaction().await?,
+                "SELECT json_build_object('display',u.display_name,'name',s.name,'real',s.real_name,'source',s.profile_source)::text \
+                 FROM users u JOIN slack_users s ON s.user_id=u.id WHERE u.id=$1",
+                &[&user_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                stored[0]["display"] == "Profile Display"
+                    && stored[0]["name"] == "profile-handle"
+                    && stored[0]["real"] == "Profile Real"
+                    && stored[0]["source"] == "profile",
+                "the first full profile must populate the placeholder: {}",
+                stored[0]
+            );
+
+            // 2. Re-import with a sparse entry plus a message fallback name
+            //    (#6043): the sparse entry must not let the fallback overwrite
+            //    the stored profile values or downgrade the source.
+            let sparse = slack_user_profile(serde_json::json!({"id": slack_id}));
+            let mut ctx = Context {
+                team: team.clone(),
+                users: HashMap::new(),
+                profiles: HashMap::from([(slack_id.clone(), sparse)]),
+                fallback_names: HashMap::new(),
+                channel_names: HashMap::new(),
+                files: FilePolicy {
+                    token: false,
+                    max_size: 0,
+                    base_url: String::new(),
+                },
+                app_id: None,
+            };
+            {
+                let mut tx = db.transaction().await?;
+                ctx.user(&mut tx, &slack_id, Some("leaked-fallback")).await?;
+                tx.commit().await?;
+            }
+            let after = query(
+                &mut db.transaction().await?,
+                "SELECT json_build_object('display',u.display_name,'name',s.name,'real',s.real_name,'source',s.profile_source)::text \
+                 FROM users u JOIN slack_users s ON s.user_id=u.id WHERE u.id=$1",
+                &[&user_id],
+            )
+            .await?;
+            anyhow::ensure!(
+                after[0] == stored[0],
+                "a sparse entry must not carry a message fallback into a profile-sourced row: before={}, after={}",
+                stored[0],
+                after[0]
+            );
+            Ok(())
+        }
+        .await;
+        let cleanup_result: anyhow::Result<()> = async {
+            let mut cleanup_db = db.clone();
+            let mut tx = cleanup_db.transaction().await?;
+            exec(
+                &mut tx,
+                "DELETE FROM slack_users WHERE team_id=$1",
+                &[&team],
+            )
+            .await?;
+            exec(&mut tx, "DELETE FROM users WHERE id=$1", &[&user_id]).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        finish_with_cleanup(test_result, cleanup_result)
+    }
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn initial_creation_with_an_empty_profile_records_unknown_or_fallback()
+    -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(
+            database.contains("test") || database.contains("rereview"),
+            "refusing non-test database `{database}`"
+        );
+        let mut db = crate::db::init_db(&database_url).await?;
+        let team = format!("TEMPTY{}", uuid::Uuid::new_v4().simple());
+        let suffix = uuid::Uuid::new_v4()
+            .simple()
+            .to_string()
+            .to_ascii_uppercase();
+        let empty_id = format!("UEMPTY{suffix}");
+        let bot_id = format!("UBOT{suffix}");
+        let empty_user = super::super::user_id(&team, &empty_id);
+        let bot_user = super::super::user_id(&team, &bot_id);
+        let test_result: anyhow::Result<()> = async {
+            // #6047: a profile with only an id supplied no name, so the initial
+            // row records "unknown", not "profile".
+            let empty = slack_user_profile(serde_json::json!({"id": empty_id}));
+            // A bot flag without any name is not identity data either.
+            let bot_only = slack_user_profile(serde_json::json!({"id": bot_id, "is_bot": true}));
+            let mut ctx = Context {
+                team: team.clone(),
+                users: HashMap::new(),
+                profiles: HashMap::from([(empty_id.clone(), empty), (bot_id.clone(), bot_only)]),
+                fallback_names: HashMap::new(),
+                channel_names: HashMap::new(),
+                files: FilePolicy {
+                    token: false,
+                    max_size: 0,
+                    base_url: String::new(),
+                },
+                app_id: None,
+            };
+            {
+                let mut tx = db.transaction().await?;
+                ctx.user(&mut tx, &empty_id, None).await?;
+                ctx.user(&mut tx, &bot_id, Some("bot-fallback")).await?;
+                tx.commit().await?;
+            }
+            let rows = query(
+                &mut db.transaction().await?,
+                "SELECT json_build_object('slack',s.slack_user_id,'source',s.profile_source,'name',s.name,'display',u.display_name,'bot',u.is_bot)::text \
+                 FROM slack_users s JOIN users u ON u.id=s.user_id WHERE s.team_id=$1",
+                &[&team],
+            )
+            .await?;
+            let by_slack = |rows: &[serde_json::Value], slack: &str| {
+                rows.iter()
+                    .find(|row| row["slack"] == slack)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            let empty_row = by_slack(&rows, &empty_id);
+            anyhow::ensure!(
+                empty_row["source"] == "unknown"
+                    && empty_row["name"] == empty_id
+                    && empty_row["display"] == empty_id,
+                "an empty profile must record `unknown` with the Slack id as the name: {empty_row:?}"
+            );
+            let bot_row = by_slack(&rows, &bot_id);
+            anyhow::ensure!(
+                bot_row["source"] == "fallback"
+                    && bot_row["name"] == "bot-fallback"
+                    && bot_row["display"] == "bot-fallback"
+                    && bot_row["bot"] == true,
+                "a bot flag without names must not claim `profile`; the fallback supplied the name: {bot_row:?}"
+            );
+            Ok(())
+        }
+        .await;
+        let cleanup_result: anyhow::Result<()> = async {
+            let mut cleanup_db = db.clone();
+            let mut tx = cleanup_db.transaction().await?;
+            exec(
+                &mut tx,
+                "DELETE FROM slack_users WHERE team_id=$1",
+                &[&team],
+            )
+            .await?;
+            exec(
+                &mut tx,
+                "DELETE FROM users WHERE id IN ($1,$2)",
+                &[&empty_user, &bot_user],
+            )
+            .await?;
             tx.commit().await?;
             Ok(())
         }

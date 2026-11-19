@@ -92,6 +92,27 @@ BEGIN
       IF state <> '23514' THEN RAISE; END IF;
     END;
 
+    -- A tombstone inside the 24-hour restore window still blocks encryption,
+    -- on its own channel; one past the window does not.
+    INSERT INTO channels (id, channel_name, created_user_id, is_private, encrypted)
+      VALUES ('notes-regression-recent-deleted-channel', 'notes-regression-recent-deleted-channel', 'notes-regression-user', true, false),
+             ('notes-regression-stale-deleted-channel', 'notes-regression-stale-deleted-channel', 'notes-regression-user', true, false);
+    INSERT INTO channel_notes (id, channel_id, title, content, created_user_id)
+      VALUES ('notes-regression-recent-deleted-note', 'notes-regression-recent-deleted-channel', 'Plaintext', 'deleted 23h ago', 'notes-regression-user'),
+             ('notes-regression-stale-deleted-note', 'notes-regression-stale-deleted-channel', 'Plaintext', 'deleted 25h ago', 'notes-regression-user');
+    UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '23 hours'
+      WHERE id = 'notes-regression-recent-deleted-note';
+    UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours'
+      WHERE id = 'notes-regression-stale-deleted-note';
+    BEGIN
+      UPDATE channels SET encrypted = true WHERE id = 'notes-regression-recent-deleted-channel';
+      RAISE EXCEPTION 'channel with a restorable deleted note unexpectedly encrypted';
+    EXCEPTION WHEN check_violation THEN
+      GET STACKED DIAGNOSTICS state = RETURNED_SQLSTATE;
+      IF state <> '23514' THEN RAISE; END IF;
+    END;
+    UPDATE channels SET encrypted = true WHERE id = 'notes-regression-stale-deleted-channel';
+
     UPDATE channels SET encrypted = true WHERE id = 'notes-regression-branch';
     BEGIN
       INSERT INTO channel_notes (id, channel_id, title, content, created_user_id)

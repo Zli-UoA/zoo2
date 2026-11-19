@@ -79,6 +79,69 @@ async fn sql(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Resu
     Ok(rows)
 }
 
+/// `pg_stat_activity` のロック待ちの観測に、アプリの DB プールとは別の独立した接続を使う。
+/// 同期タスクがプールの接続を持ったままロック待ちに入っても、観測側が同じプールで
+/// 接続を奪い合って止まらないようにする (接続・確認ともにタイムアウト付き)。
+async fn observe_connect(state: &AppState) -> anyhow::Result<tokio_postgres::Client> {
+    let (client, driver) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls),
+    )
+    .await??;
+    tokio::spawn(driver);
+    Ok(client)
+}
+
+/// 誰かが `pid` の持つロックを待っている状態になるまで待つ (1 回の確認・全体にタイムアウト)。
+async fn wait_blocked_on(
+    observer: &tokio_postgres::Client,
+    pid: i32,
+    rounds: usize,
+) -> anyhow::Result<bool> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        for _ in 0..rounds {
+            let waiting: bool = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                observer.query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                    &[&pid],
+                ),
+            )
+            .await??
+            .get(0);
+            if waiting {
+                return Ok(true);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Ok(false)
+    })
+    .await?
+}
+
+/// 失敗時のメッセージ用に、現在のロック待ちの一覧を取る (ベストエフォート・タイムアウト付き)。
+async fn dump_lock_waiters(observer: &tokio_postgres::Client) -> String {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        observer.query(
+            "SELECT format('%s|%s|%s|%s', pid, coalesce(wait_event_type,''), \
+             coalesce(wait_event,''), left(coalesce(query,''),120)) \
+             FROM pg_stat_activity WHERE wait_event_type='Lock'",
+            &[],
+        ),
+    )
+    .await
+    {
+        Ok(Ok(rows)) => rows
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        _ => "pg_stat_activity lock waiters unavailable".into(),
+    }
+}
+
 async fn create_user(app: &Router, name: &str) -> anyhow::Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let response = app
@@ -1103,15 +1166,17 @@ async fn test_hints_reply_with_fallback_user_waits_for_users_before_locking_chan
     toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
         .exec(&mut conv_tx)
         .await?;
-    let pid = query(
+    let conv_pid: i32 = query(
         &mut conv_tx,
         "SELECT json_build_object('pid',pg_backend_pid())::text",
         &[],
     )
     .await?[0]["pid"]
         .as_i64()
-        .unwrap()
-        .to_string();
+        .unwrap() as i32;
+    // ロック待ちの観測はアプリの DB プールと別の独立した接続で行う (同期タスクが
+    // プールの接続を持ったまま待っても、観測側が止まらないように)。
+    let observer = observe_connect(&f.state).await?;
     backend::routes::e2ee_channels::lock_membership_users(&mut conv_tx, &[ub_id.as_str()]).await?;
 
     let sync_state = f.state.clone();
@@ -1120,30 +1185,17 @@ async fn test_hints_reply_with_fallback_user_waits_for_users_before_locking_chan
         tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
     // hints::apply が channels を取る前に users のロック待ちに入ることを確認する
-    let mut blocked = false;
-    for _ in 0..200 {
-        let rows = sql(
-            &f.state,
-            "SELECT json_build_object('blocked',EXISTS(\
-             SELECT 1 FROM pg_stat_activity \
-             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
-             ))::text",
-            &[&pid],
-        )
-        .await?;
-        if rows[0]["blocked"] == true {
-            blocked = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let blocked = wait_blocked_on(&observer, conv_pid, 200).await?;
     assert!(
         blocked,
-        "hints::apply did not block on users before locking channel"
+        "hints::apply did not block on users before locking channel; lock waiters: {}",
+        dump_lock_waiters(&observer).await
     );
 
-    // まだ channels はロックされていないため、users -> channels FOR UPDATE が 40P01 にならず完了する
-    toasty::sql::query("SELECT id FROM channels WHERE id=$1 FOR UPDATE")
+    // まだ channels はロックされていないため、users -> channels FOR UPDATE が 40P01 にならず完了する。
+    // `FOR UPDATE NOWAIT` なので、順序が逆 (channels を先に取る) になっていたら、ここで
+    // 即座に lock_not_available になり、デッドロックを待たずに失敗する
+    toasty::sql::query("SELECT 1 FROM channels WHERE id=$1 FOR UPDATE NOWAIT")
         .bind(f.channel.as_str())
         .exec(&mut conv_tx)
         .await?;
@@ -1344,15 +1396,16 @@ async fn test_hints_edit_reaction_and_zoo_origin_preresolve_unlinked_users() -> 
     toasty::sql::statement("SET LOCAL deadlock_timeout='100ms'")
         .exec(&mut conv_tx)
         .await?;
-    let pid = query(
+    let conv_pid: i32 = query(
         &mut conv_tx,
         "SELECT json_build_object('pid',pg_backend_pid())::text",
         &[],
     )
     .await?[0]["pid"]
         .as_i64()
-        .unwrap()
-        .to_string();
+        .unwrap() as i32;
+    // ロック待ちの観測も独立した接続で行う (上のテストと同じ理由)。
+    let observer = observe_connect(&f.state).await?;
     backend::routes::e2ee_channels::lock_membership_users(&mut conv_tx, &[uc_id.as_str()]).await?;
 
     let sync_state = f.state.clone();
@@ -1360,29 +1413,16 @@ async fn test_hints_edit_reaction_and_zoo_origin_preresolve_unlinked_users() -> 
     let sync_task =
         tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
-    let mut blocked = false;
-    for _ in 0..200 {
-        let rows = sql(
-            &f.state,
-            "SELECT json_build_object('blocked',EXISTS(\
-             SELECT 1 FROM pg_stat_activity \
-             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
-             ))::text",
-            &[&pid],
-        )
-        .await?;
-        if rows[0]["blocked"] == true {
-            blocked = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let blocked = wait_blocked_on(&observer, conv_pid, 200).await?;
     assert!(
         blocked,
-        "hints::apply did not block on truncated reaction user before locking channel"
+        "hints::apply did not block on truncated reaction user before locking channel; lock waiters: {}",
+        dump_lock_waiters(&observer).await
     );
 
-    toasty::sql::query("SELECT id FROM channels WHERE id=$1 FOR UPDATE")
+    // users のロックを取ったあとに channels を取る順序なら、この NOWAIT の確認は即座に通る。
+    // 逆 (channels を先に取る) になっていたら lock_not_available で即座に失敗する
+    toasty::sql::query("SELECT 1 FROM channels WHERE id=$1 FOR UPDATE NOWAIT")
         .bind(f.channel.as_str())
         .exec(&mut conv_tx)
         .await?;
@@ -1442,15 +1482,16 @@ async fn test_hints_rejects_remapped_slack_channel_target() -> anyhow::Result<()
 
     let mut remap_db = f.state.db.clone();
     let mut remap_tx = remap_db.transaction().await?;
-    let pid = query(
+    let remap_pid: i32 = query(
         &mut remap_tx,
         "SELECT json_build_object('pid',pg_backend_pid())::text",
         &[],
     )
     .await?[0]["pid"]
         .as_i64()
-        .unwrap()
-        .to_string();
+        .unwrap() as i32;
+    // 観測は独立した接続で行う (アプリのプールを使わない)。
+    let observer = observe_connect(&f.state).await?;
     toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("slack-channel:{}:C1", f.team))
         .exec(&mut remap_tx)
@@ -1461,26 +1502,11 @@ async fn test_hints_rejects_remapped_slack_channel_target() -> anyhow::Result<()
     let sync_task =
         tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
-    let mut blocked = false;
-    for _ in 0..200 {
-        let rows = sql(
-            &f.state,
-            "SELECT json_build_object('blocked',EXISTS(\
-             SELECT 1 FROM pg_stat_activity \
-             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
-             ))::text",
-            &[&pid],
-        )
-        .await?;
-        if rows[0]["blocked"] == true {
-            blocked = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let blocked = wait_blocked_on(&observer, remap_pid, 200).await?;
     assert!(
         blocked,
-        "hints::apply did not wait on Slack-channel advisory lock before updating"
+        "hints::apply did not wait on Slack-channel advisory lock before updating; lock waiters: {}",
+        dump_lock_waiters(&observer).await
     );
 
     toasty::sql::statement(
@@ -1580,15 +1606,16 @@ async fn test_hints_rejects_a_private_slack_channel_whose_zoo_target_became_publ
     // hints::apply の Slack-channel advisory lock を先に取り、書き込みの直前で止める
     let mut remap_db = f.state.db.clone();
     let mut remap_tx = remap_db.transaction().await?;
-    let pid = query(
+    let remap_pid: i32 = query(
         &mut remap_tx,
         "SELECT json_build_object('pid',pg_backend_pid())::text",
         &[],
     )
     .await?[0]["pid"]
         .as_i64()
-        .unwrap()
-        .to_string();
+        .unwrap() as i32;
+    // 観測は独立した接続で行う (アプリのプールを使わない)。
+    let observer = observe_connect(&f.state).await?;
     toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("slack-channel:{}:C1", f.team))
         .exec(&mut remap_tx)
@@ -1599,26 +1626,11 @@ async fn test_hints_rejects_a_private_slack_channel_whose_zoo_target_became_publ
     let sync_task =
         tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
-    let mut blocked = false;
-    for _ in 0..200 {
-        let rows = sql(
-            &f.state,
-            "SELECT json_build_object('blocked',EXISTS(\
-             SELECT 1 FROM pg_stat_activity \
-             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
-             ))::text",
-            &[&pid],
-        )
-        .await?;
-        if rows[0]["blocked"] == true {
-            blocked = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let blocked = wait_blocked_on(&observer, remap_pid, 200).await?;
     assert!(
         blocked,
-        "hints::apply did not wait on the Slack-channel advisory lock"
+        "hints::apply did not wait on the Slack-channel advisory lock; lock waiters: {}",
+        dump_lock_waiters(&observer).await
     );
 
     // 書き込みの前に、Zoo の取り込み先を公開へ変える

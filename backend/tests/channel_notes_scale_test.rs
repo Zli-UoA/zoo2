@@ -271,16 +271,31 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     let active_note = format!("note-{target_active}-0");
     let deleted_note = format!("note-{target_deleted}-0");
     let mut metrics = serde_json::Map::new();
+    // Deep-page conditions are recorded separately from the 13 cross-scale
+    // conditions in work.json: compare-channel-notes-work.py pins the
+    // work.json condition set, and the deep probes are additionally checked
+    // here by the same absolute bounds at both scales and both plan modes.
+    let mut deep_metrics = serde_json::Map::new();
     // Probes bind the target ids as parameters, exactly like the production
     // statements: custom samples (concurrency 1) plan with the bound values and
     // generic samples (concurrency 8) plan without them.
-    let list = "SELECT id, channel_id, title, content, position, version, created_user_id, \
-                to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
-                to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') \
-         FROM channel_notes \
-         WHERE channel_id = $1 AND deleted_at IS NULL \
-           AND (CASE WHEN $2 = '' THEN true ELSE (position, id) > ($2::integer, $3) END) \
-         ORDER BY position, id LIMIT $4::integer";
+    // The active list returns metadata only; the ordering CTE computes the
+    // channel-wide order token in the same statement (K <= 500 active notes).
+    let list = "WITH ordering AS (\
+            SELECT md5(COALESCE(string_agg(position::text || ':' || encode(convert_to(id, 'UTF8'), 'hex'), ',' ORDER BY position, id), '')) AS order_token \
+            FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL\
+        ), page AS (\
+            SELECT id, channel_id, title, position, version, created_user_id, \
+                   to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS') AS created_at, \
+                   to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') AS updated_at \
+            FROM channel_notes \
+            WHERE channel_id = $1 AND deleted_at IS NULL \
+              AND (CASE WHEN $2 = '' THEN true ELSE (position, id) > ($2::integer, $3) END) \
+            ORDER BY position, id LIMIT $4::integer\
+        ) \
+        SELECT page.id, page.channel_id, page.title, page.position, page.version, \
+               page.created_user_id, page.created_at, page.updated_at, ordering.order_token \
+        FROM ordering LEFT JOIN page ON true";
     measure(
         &url,
         "notes_list",
@@ -301,6 +316,19 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         &mut metrics,
     )
     .await?;
+    // A deep page continues near the end of the channel's active notes with a
+    // non-empty after cursor ((position, id) of the 41st of 50 notes).
+    let active_note_40 = format!("note-{target_active}-40");
+    measure(
+        &url,
+        "notes_list_deep",
+        list,
+        &[target_active.as_str(), "40", active_note_40.as_str(), "10"],
+        256.,
+        &output,
+        &mut deep_metrics,
+    )
+    .await?;
     let list_deleted = "SELECT id, channel_id, title, content, position, version, created_user_id, \
                 to_char(created_at, 'YYYY-MM-DD') || 'T' || to_char(created_at, 'HH24:MI:SS.MS'), \
                 to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS'), \
@@ -318,6 +346,33 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
         256.,
         &output,
         &mut metrics,
+    )
+    .await?;
+    // The deleted-list deep page continues after the 46th of the 50 in-window
+    // tombstones. The cursor datetime is read from the fixture itself so the
+    // probe binds the exact millisecond text the API would emit.
+    let deleted_note_45 = format!("note-{target_deleted}-45");
+    let deep_deleted_at: String = client
+        .query_one(
+            "SELECT to_char(deleted_at, 'YYYY-MM-DD') || 'T' || to_char(deleted_at, 'HH24:MI:SS.MS') \
+             FROM channel_notes WHERE channel_id = $1 AND id = $2",
+            &[&target_deleted, &deleted_note_45],
+        )
+        .await?
+        .get(0);
+    measure(
+        &url,
+        "notes_list_deleted_deep",
+        list_deleted,
+        &[
+            target_deleted.as_str(),
+            deep_deleted_at.as_str(),
+            deleted_note_45.as_str(),
+            "10",
+        ],
+        256.,
+        &output,
+        &mut deep_metrics,
     )
     .await?;
     let show = "SELECT id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at \
@@ -464,6 +519,13 @@ async fn channel_notes_work_is_bounded_by_channel_notes_not_history() -> anyhow:
     .await?;
     if let Some(dir) = &output {
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
+        // The deep-page conditions keep the cross-scale condition set of
+        // work.json unchanged; their numbers live here for the performance
+        // record and the same absolute bounds already ran at both scales.
+        std::fs::write(
+            dir.join("deep.json"),
+            serde_json::to_vec_pretty(&deep_metrics)?,
+        )?;
     }
     Ok(())
 }

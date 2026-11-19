@@ -648,6 +648,24 @@ pub(crate) async fn join_channel(
     )))
 }
 
+/// users 行をロックしたあとの無効化の再確認。認証時の検査（`active_user`）とは別
+/// トランザクションのため、ロック待ちの間に無効化が確定した場合にここで 403 にする。
+/// 無効化は users 行の UPDATE なので、`lock_membership_users` が取った行ロックと直列になる。
+/// dms.rs の `ensure_actor_not_deactivated` と同じ挙動。
+async fn ensure_actor_not_deactivated(
+    tx: &mut toasty::Transaction<'_>,
+    auth_user_id: &str,
+) -> Result<(), AppError> {
+    let rows = toasty::sql::query("SELECT id FROM users WHERE id = $1 AND NOT is_deactivated")
+        .bind(auth_user_id)
+        .exec(&mut *tx)
+        .await?;
+    if rows.is_empty() {
+        return Err(AppError::Forbidden("Account is deactivated".into()));
+    }
+    Ok(())
+}
+
 async fn add_channel_user(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -675,8 +693,17 @@ async fn add_channel_user(
     .first()
     .is_some_and(|row| row["encrypted"] == true);
     // The insert trigger locks users before channel foreign-key checks. Lock
-    // here too so this API keeps the same users → channels order.
-    e2ee_channels::lock_membership_users(&mut tx, &[payload.user_id.as_str()]).await?;
+    // both the actor and the target here too, in stable ID order, so this API
+    // keeps the same users → channels order. Taking the actor's row also makes
+    // the deactivation re-check below wait for in-flight deactivations.
+    e2ee_channels::lock_membership_users(
+        &mut tx,
+        &[auth_user.id.as_str(), payload.user_id.as_str()],
+    )
+    .await?;
+    // users 行をロックした直後に、待機中に無効化が確定していたら 403 にする
+    // （dms.rs の `ensure_actor_not_deactivated` と同じ挙動）。
+    ensure_actor_not_deactivated(&mut tx, auth_user.id.as_str()).await?;
     if encrypted {
         e2ee_channels::lock_members(&mut tx, &[payload.user_id.as_str()]).await?;
     }

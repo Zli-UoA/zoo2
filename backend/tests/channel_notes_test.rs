@@ -11,7 +11,12 @@ use uuid::Uuid;
 const E2EE_NOTES_MIGRATION: &str =
     include_str!("../../infra/db/migrations/20261129020003_e2ee_channel_notes.sql");
 
-use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
+use backend::{
+    config::Config,
+    db::{init_db, init_db_with_pool},
+    routes::create_router,
+    state::AppState,
+};
 
 static CLEANUP_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -301,7 +306,9 @@ async fn channel_note_api_writes_and_cascade_are_independent_across_channels() -
 {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let db = init_db(&config.database_url).await?;
+    // 1 つの接続が blocked write で占有される間も、別チャンネルの書き込みや observer が
+    // それぞれ専用接続を取れるように固定サイズのプールを使う (環境変数の既定に左右されない)。
+    let db = init_db_with_pool(&config.database_url, 4).await?;
     let app = create_router(AppState::new(db, config.clone()));
     let owner = Uuid::new_v4().to_string();
     create_user(&app, &owner).await;
@@ -716,7 +723,9 @@ async fn channel_note_creation_serializes_with_channel_encryption() -> anyhow::R
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     config.e2ee_encrypted_channels_enabled = true;
-    let db = init_db(&config.database_url).await?;
+    // blocked write の待機で 1 接続が占有される間も、暗号化要求と後続のノート書き込みが
+    // 専用接続を取れるように固定サイズのプールを使う。
+    let db = init_db_with_pool(&config.database_url, 4).await?;
     let app = create_router(AppState::new(db, config.clone()));
     let owner = Uuid::new_v4().to_string();
     create_user(&app, &owner).await;
@@ -3265,13 +3274,18 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
     let (timestamp_connection, timestamp_driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(timestamp_driver);
-    let deleted_updated_at: String = timestamp_connection
+    // `updated_at::text` は DateStyle 表示に依存するため、API と同じ to_char 形式で
+    // 読んで jiff の正規化 (末尾の 0 落とし) を通す。
+    let deleted_updated_at_raw: String = timestamp_connection
         .query_one(
-            "SELECT replace(updated_at::text, ' ', 'T') FROM channel_notes WHERE id = $1",
+            "SELECT to_char(updated_at, 'YYYY-MM-DD') || 'T' || to_char(updated_at, 'HH24:MI:SS.MS') FROM channel_notes WHERE id = $1",
             &[&note_id],
         )
         .await?
         .get(0);
+    let deleted_updated_at = deleted_updated_at_raw
+        .parse::<jiff::civil::DateTime>()?
+        .to_string();
     assert_eq!(
         request(&app, "GET", &collection, &member, Value::Null)
             .await
@@ -4061,15 +4075,50 @@ async fn deleted_notes_list_is_paginated_by_deleted_at_and_id() -> anyhow::Resul
         "the second page starts at the first note after the cursor"
     );
 
+    // カーソルの deleted_at は API が出力するミリ秒固定形式に限る。SQL キャストの
+    // 失敗 (500) ではなく、SQL の前に 400 として拒否する。
+    for bad in [
+        "not-a-cursor",
+        "%20id",
+        "2026-11-19%20id",
+        // 23 文字だが実在しない日時。
+        "2026-13-01T00:00:00.000%20id",
+        "2026-02-30T00:00:00.000%20id",
+        "2026-11-19T24:00:00.000%20id",
+        "2026-11-19T10:61:00.000%20id",
+        // 形式の違い (ミリ秒欠落・区切り文字・数字でない文字)。
+        "2026-11-19T10:00:00%20id",
+        "2026-11-19T10:00:00.12%20id",
+        "20261119T100000000%20id",
+        "2026-11-19X10:00:00.000%20id",
+        "2026-aa-19T10:00:00.000%20id",
+        "2026-11-19T10:00:00.00a%20id",
+        "9999-99-99T99:99:99.999%20id",
+    ] {
+        let (status, body) = request(
+            &app,
+            "GET",
+            &format!("{collection}?after={bad}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "after={bad}: {body}");
+    }
+    // 空ページを返すだけの未来点のカーソルは 400 ではなく 200 で完了する。
     let (status, body) = request(
         &app,
         "GET",
-        &format!("{collection}?after=not-a-cursor"),
+        &format!("{collection}?after=2999-01-01T00:00:00.000%20zzz"),
         &owner,
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["data"].as_array().unwrap().is_empty(),
+        "a valid cursor past every deleted note returns an empty page: {body}"
+    );
     Ok(())
 }
 
@@ -4126,6 +4175,33 @@ async fn active_notes_list_is_paginated_by_position_and_id() -> anyhow::Result<(
         Some(49),
         "each item carries its position so clients can build the next cursor"
     );
+    // 一覧は本文を返さない。本文は取得 API で別途読む。
+    for item in page1 {
+        assert!(
+            item.get("content").is_none(),
+            "the active list must omit content: {item}"
+        );
+        assert!(
+            item["order_token"]
+                .as_str()
+                .is_some_and(|token| !token.is_empty()),
+            "each item carries the channel-wide order token: {item}"
+        );
+    }
+    let order_token = page1[0]["order_token"].as_str().unwrap().to_owned();
+    let (status, item) = request(
+        &app,
+        "GET",
+        &format!("{collection}/{}", page1[0]["id"].as_str().unwrap()),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{item}");
+    assert_eq!(
+        item["data"]["content"], "content",
+        "the single-note API still returns content"
+    );
 
     let (status, body) = request(
         &app,
@@ -4181,11 +4257,23 @@ async fn active_notes_list_is_paginated_by_position_and_id() -> anyhow::Result<(
     );
 
     // Walk every page with a non-default limit and the cursor built from the
+    // Walk every page with a non-default limit and the cursor built from the
     // previous page's last item, and confirm the pages cover all notes exactly
-    // once in (position, id) order.
+    // once in (position, id) order. The cursor is
+    // "<order_token> <position> <id>", so an unchanged order lets the walk
+    // continue while a concurrent mutation would return 409.
     let mut seen: Vec<(i64, String)> = Vec::new();
     let mut after = String::new();
+    // 205 notes at limit=37 take 6 pages (5 full + one of 20). Refuse to loop
+    // further: an unbounded walk hides a cursor that never advances.
+    let expected_max_pages = 7;
+    let mut pages = 0usize;
     loop {
+        pages += 1;
+        assert!(
+            pages <= expected_max_pages,
+            "the cursor walk needed more than {expected_max_pages} pages for 205 notes"
+        );
         let path = if after.is_empty() {
             format!("{collection}?limit=37")
         } else {
@@ -4200,13 +4288,18 @@ async fn active_notes_list_is_paginated_by_position_and_id() -> anyhow::Result<(
         let last = page.last().unwrap();
         let last_position = last["position"].as_i64().unwrap().to_string();
         let last_id = last["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            last["order_token"].as_str(),
+            Some(order_token.as_str()),
+            "the order token stays stable while the channel is unchanged"
+        );
         seen.extend(page.iter().map(|note| {
             (
                 note["position"].as_i64().unwrap(),
                 note["id"].as_str().unwrap().to_owned(),
             )
         }));
-        after = format!("{last_position}%20{last_id}");
+        after = format!("{order_token}%20{last_position}%20{last_id}");
         if page.len() < 37 {
             break;
         }
@@ -4279,7 +4372,16 @@ async fn active_notes_list_is_paginated_by_position_and_id() -> anyhow::Result<(
         "duplicate positions are tie-broken by id in ORDER BY position, id"
     );
 
-    for bad in ["not-a-cursor", "999%20", "%20999", "four%20id"] {
+    for bad in [
+        "not-a-cursor",
+        "999%20",
+        "%20999",
+        "four%20id",
+        // 3 部形式になっていても、position が数値でない・id 区切りが欠けたものは 400。
+        "d41d8cd98f00b204e9800998ecf8427e%20abc%20id",
+        "d41d8cd98f00b204e9800998ecf8427e%20999",
+        "%20%20",
+    ] {
         let (status, body) = request(
             &app,
             "GET",
@@ -4290,5 +4392,638 @@ async fn active_notes_list_is_paginated_by_position_and_id() -> anyhow::Result<(
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "after={bad}: {body}");
     }
+    // 整形式だが現在の並びと一致しないトークンは 400 ではなく 409 で再読み込みを促す。
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?after=d41d8cd98f00b204e9800998ecf8427e%2050%20x"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a well-formed but stale order token must return 409: {body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn active_notes_pagination_returns_409_when_order_changes_mid_walk() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_walk_conflict_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let mut ids = Vec::new();
+    for title in ["A", "B", "C", "D"] {
+        let note = request(
+            &app,
+            "POST",
+            &collection,
+            &owner,
+            json!({"title":title,"content":""}),
+        )
+        .await;
+        assert_eq!(note.0, StatusCode::OK, "{}", note.1);
+        ids.push(note.1["data"]["id"].as_str().unwrap().to_owned());
+    }
+    // 最初のページと継続カーソルを取る。
+    let cursor_after_page = |limit: usize| {
+        let app = app.clone();
+        let owner = owner.clone();
+        let collection = collection.clone();
+        async move {
+            let (status, body) = request(
+                &app,
+                "GET",
+                &format!("{collection}?limit={limit}"),
+                &owner,
+                Value::Null,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let page = body["data"].as_array().unwrap().clone();
+            assert_eq!(page.len(), limit);
+            let last = page.last().unwrap();
+            let token = last["order_token"].as_str().unwrap().to_owned();
+            let position = last["position"].as_i64().unwrap().to_string();
+            let id = last["id"].as_str().unwrap().to_owned();
+            format!("{token}%20{position}%20{id}")
+        }
+    };
+    let stale = cursor_after_page(2).await;
+
+    // 並べ替えがあれば order_token が変わるため、古いカーソルの継続は 409 になる。
+    let mut rotated = ids.clone();
+    rotated.rotate_left(1);
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("{collection}/order"),
+        &owner,
+        json!({"expected_note_ids":ids,"note_ids":rotated}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=2&after={stale}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "continuing with a pre-reorder cursor must return 409: {body}"
+    );
+
+    // 追加も構成 (と order_token) を変える。
+    let stale = cursor_after_page(2).await;
+    let added = request(
+        &app,
+        "POST",
+        &collection,
+        &owner,
+        json!({"title":"E","content":""}),
+    )
+    .await;
+    assert_eq!(added.0, StatusCode::OK, "{}", added.1);
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=2&after={stale}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "continuing with a pre-add cursor must return 409: {body}"
+    );
+    let added_id = added.1["data"]["id"].as_str().unwrap().to_owned();
+
+    // 削除も同様。復元も位置ずらしで並びを変えるため、以降の古いカーソルは 409 になる。
+    let stale = cursor_after_page(2).await;
+    let (status, body) = request(
+        &app,
+        "DELETE",
+        &format!("{collection}/{}", ids[3]),
+        &owner,
+        json!({"version":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=2&after={stale}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "continuing with a pre-delete cursor must return 409: {body}"
+    );
+
+    let stale = cursor_after_page(2).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("{collection}/{}/restore", ids[3]),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=2&after={stale}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "continuing with a pre-restore cursor must return 409: {body}"
+    );
+
+    // 変更後の現在順から作ったカーソルは継続できる。
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=200"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let final_page = body["data"].as_array().unwrap();
+    assert_eq!(final_page.len(), 5, "{body}");
+    assert!(
+        final_page.iter().any(|note| note["id"] == added_id),
+        "the added note is part of the final order: {body}"
+    );
+    let fresh = cursor_after_page(2).await;
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=2&after={fresh}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        2,
+        "a cursor built after the mutations continues normally: {body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_id_notes_continue_across_page_boundaries() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_empty_id_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let (mut client, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    // 直接 SQL はノートロック契約に従う限り任意の text id (空文字を含む) を書ける。
+    // 空の id をページ境界に置き、カーソル "<token> <position> " (末尾の空白と空 id)
+    // で次ページに継続できることを確認する。
+    client
+        .batch_execute(&format!(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
+             VALUES ('', '{channel}', 'empty', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('z', '{channel}', 'z', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('m', '{channel}', 'm', 'body', 1, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+        ))
+        .await?;
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page = body["data"].as_array().unwrap();
+    assert_eq!(page.len(), 3, "{body}");
+    assert_eq!(page[0]["id"], "", "the empty id sorts first at position 0");
+    assert_eq!(page[1]["id"], "z");
+    assert_eq!(page[2]["id"], "m");
+    let token = page[0]["order_token"].as_str().unwrap().to_owned();
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=1"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "");
+
+    // カーソル "<token> 0 " の id 部分は空文字。区切りはあるため 400 ではなく継続する。
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=1&after={token}%200%20"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"].as_array().unwrap()[0]["id"],
+        "z",
+        "the empty-id cursor continues at the next id at the same position: {body}"
+    );
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=1&after={token}%200%20z"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "m");
+    // id 区切りそのものが欠けたカーソルは 400。
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{collection}?limit=1&after={token}%200"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // 削除済み一覧も同じ扱いにする。id は主キーで空文字は DB 全体に 1 つしか置けない
+    // ため、このノートを削除済みへ移して再利用し、同じ deleted_at の 2 件を追加する。
+    // 1 つの batch_execute は単一トランザクションで実行されるため、3 件の deleted_at
+    // (now() 基準) が一致し、(deleted_at, id) 順は id の比較で決まる。
+    client
+        .batch_execute(&format!(
+            "UPDATE channel_notes SET deleted_at = now() AT TIME ZONE 'UTC' - interval '1 hour', version = version + 1, updated_at = now() AT TIME ZONE 'UTC' \
+               WHERE id = '' AND channel_id = '{channel}'; \
+             INSERT INTO channel_notes (id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at) \
+             VALUES ('dm', '{channel}', 'dm', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('dz', '{channel}', 'dz', 'body', 0, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+        ))
+        .await?;
+    let deleted_collection = format!("{collection}/deleted");
+    let (status, body) = request(&app, "GET", &deleted_collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page = body["data"].as_array().unwrap();
+    assert_eq!(page.len(), 3, "{body}");
+    assert_eq!(page[0]["id"], "");
+    assert_eq!(page[1]["id"], "dm");
+    assert_eq!(page[2]["id"], "dz");
+    let deleted_at = page[0]["deleted_at"].as_str().unwrap().to_owned();
+    assert_eq!(
+        deleted_at.len(),
+        23,
+        "the deleted list emits the fixed millisecond deleted_at used by cursors"
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{deleted_collection}?limit=1"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "");
+    // カーソル "<deleted_at> " (空 id) で次ページに継続する。
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{deleted_collection}?limit=1&after={deleted_at}%20"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"].as_array().unwrap()[0]["id"],
+        "dm",
+        "the empty-id deleted cursor continues at the next id: {body}"
+    );
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{deleted_collection}?limit=1&after={deleted_at}%20dm"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"].as_array().unwrap()[0]["id"], "dz");
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("{deleted_collection}?limit=1&after={deleted_at}"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a deleted cursor without the id separator is rejected: {body}"
+    );
+
+    // 空の id は DB 全体で一意なため、後続のテスト実行のために片付ける。
+    let cleanup = client.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_user WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn extreme_positions_are_compacted_on_create_and_restore() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let (client, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+
+    // 作成: MAX(position) = i32::MAX のとき、+1 は integer オーバーフローになる。
+    // (position, id) 順の連番へ詰め直してから末尾へ追加するため、相対順序は保たれる。
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_max_pos_create_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    let low_id = format!("max-pos-create-low-{}", Uuid::new_v4().simple());
+    let high_id = format!("max-pos-create-high-{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
+             VALUES ('{low_id}', '{channel}', 'low', 'body', 2147483646, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('{high_id}', '{channel}', 'high', 'body', 2147483647, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+        ))
+        .await?;
+    let collection = format!("/api/channels/{channel}/notes");
+    let appended = request(
+        &app,
+        "POST",
+        &collection,
+        &owner,
+        json!({"title":"appended","content":"body"}),
+    )
+    .await;
+    assert_eq!(appended.0, StatusCode::OK, "{}", appended.1);
+    let appended_id = appended.1["data"]["id"].as_str().unwrap().to_owned();
+    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order: Vec<(i64, String)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| {
+            (
+                note["position"].as_i64().unwrap(),
+                note["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            (0, low_id.clone()),
+            (1, high_id.clone()),
+            (2, appended_id.clone()),
+        ],
+        "create compacts extreme positions to 0..2 preserving relative order: {body}"
+    );
+
+    // 復元: 位置ずらし (position + 1) が i32::MAX 行に当たるときも連番へ詰め直す。
+    // 復元ノートを含む全体を (position, id) 順に振り直すため、復元ノートの相対位置も保たれる。
+    let restore_channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": restore_channel,
+            "channel_name": format!("notes_max_pos_restore_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    let first_id = format!("max-pos-restore-first-{}", Uuid::new_v4().simple());
+    let middle_id = format!("max-pos-restore-middle-{}", Uuid::new_v4().simple());
+    let last_id = format!("max-pos-restore-last-{}", Uuid::new_v4().simple());
+    client
+        .batch_execute(&format!(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, deleted_at, version, created_user_id, created_at, updated_at) \
+             VALUES ('{first_id}', '{restore_channel}', 'first', 'body', 0, NULL, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('{middle_id}', '{restore_channel}', 'middle', 'body', 1, now() AT TIME ZONE 'UTC' - interval '1 hour', 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('{last_id}', '{restore_channel}', 'last', 'body', 2147483647, NULL, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+        ))
+        .await?;
+    let restore_collection = format!("/api/channels/{restore_channel}/notes");
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("{restore_collection}/{middle_id}/restore"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", body);
+    assert_eq!(
+        body["data"]["position"], 1,
+        "the restored note keeps its rank between its neighbors: {body}"
+    );
+    let (status, body) = request(&app, "GET", &restore_collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let order: Vec<(i64, String)> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| {
+            (
+                note["position"].as_i64().unwrap(),
+                note["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec![(0, first_id), (1, middle_id), (2, last_id)],
+        "restore compacts the whole active set (restored note included) preserving relative order: {body}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_and_reorder_use_the_same_id_collation_for_position_ties() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_collation_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    // 'a' と 'Z' はコードポイント順 ('Z' < 'a') と一部の照合順序 ('a' < 'Z') で
+    // 逆順になる。並べ替えの現在順序は一覧と同じ SQL の ORDER BY position, id で
+    // 決めるため、クライアントは一覧の並びをそのまま expected_note_ids に使える。
+    // id は DB 全体で一意のため、uuid の接尾辞で衝突を避ける。
+    let lower_id = format!("a-{}", Uuid::new_v4().simple());
+    let upper_id = format!("Z-{}", Uuid::new_v4().simple());
+    let (client, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    client
+        .batch_execute(&format!(
+            "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at) \
+             VALUES ('{lower_id}', '{channel}', 'lower', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC'), \
+                    ('{upper_id}', '{channel}', 'upper', 'body', 0, 1, '{owner}', now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC');"
+        ))
+        .await?;
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        listed
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        listed.len(),
+        "{body}"
+    );
+    let mut reversed = listed.clone();
+    reversed.reverse();
+
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("{collection}/order"),
+        &owner,
+        json!({"expected_note_ids":listed,"note_ids":reversed}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "reorder must accept the list's (position, id) order as expected_note_ids: {body}"
+    );
+    let (status, body) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        after.first(),
+        listed.last(),
+        "the reorder applied the reversed list order: {body}"
+    );
     Ok(())
 }
