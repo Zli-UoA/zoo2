@@ -19,7 +19,7 @@ const CALL_PAYLOAD_SQL: &str = "WITH device AS MATERIALIZED (
  JOIN device s ON s.user_id=i.invitee_id AND s.revocation_hash=$3
  JOIN users u ON u.id=i.invitee_id AND NOT u.is_deactivated
  JOIN users actor ON actor.id=i.inviter_id AND NOT actor.is_deactivated
- JOIN channels c ON c.id=i.channel_id AND c.deleted_at IS NULL AND c.archive_at IS NULL AND NOT c.encrypted
+ JOIN channels c ON c.id=i.channel_id AND c.deleted_at IS NULL AND c.archive_at IS NULL
  WHERE i.id=$1::uuid AND i.status='pending' AND i.expires_at>clock_timestamp()
    AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
        SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))
@@ -110,15 +110,12 @@ async fn deliver_device(
         return;
     };
     let result: Result<DeliveryOutcome, AppError> = async {
-        let request = client
-            .post(endpoint(&sub.environment, &sub.device_token)?)
-            .version(reqwest::Version::HTTP_2)
-            .bearer_auth(config.authorization().await?)
-            .header("apns-topic", "works.zli.zoo.voip")
-            .header("apns-push-type", "voip")
-            .header("apns-priority", "10")
-            // オフライン中の着信を後から鳴らさない。取消通知はVoIPとして送らない。
-            .header("apns-expiration", "0");
+        let request = call_request(
+            client,
+            &sub.environment,
+            &sub.device_token,
+            &config.authorization().await?,
+        )?;
         send_if_allowed(request, call_payload(&mut db, &sub, &invite)).await
     }
     .await;
@@ -133,10 +130,55 @@ async fn deliver_device(
     }
 }
 
+fn call_request(
+    client: &reqwest::Client,
+    environment: &str,
+    token: &str,
+    authorization: &str,
+) -> anyhow::Result<reqwest::RequestBuilder> {
+    Ok(client
+        .post(endpoint(environment, token)?)
+        .version(reqwest::Version::HTTP_2)
+        .bearer_auth(authorization)
+        .header("apns-topic", "works.zli.zoo.voip")
+        .header("apns-push-type", "voip")
+        .header("apns-priority", "10")
+        // オフライン中の着信を後から鳴らさない。取消通知はVoIPとして送らない。
+        .header("apns-expiration", "0"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn voip_request_preserves_delivery_contract() -> anyhow::Result<()> {
+        let client = client()?;
+        for (environment, host) in [
+            ("sandbox", "api.sandbox.push.apple.com"),
+            ("production", "api.push.apple.com"),
+        ] {
+            let request =
+                call_request(&client, environment, "aabb", "dummy-authorization")?.build()?;
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(request.version(), reqwest::Version::HTTP_2);
+            assert_eq!(
+                request.url().as_str(),
+                format!("https://{host}/3/device/aabb")
+            );
+            for (name, value) in [
+                ("apns-topic", "works.zli.zoo.voip"),
+                ("apns-push-type", "voip"),
+                ("apns-priority", "10"),
+                ("apns-expiration", "0"),
+                ("authorization", "Bearer dummy-authorization"),
+            ] {
+                assert_eq!(request.headers()[name], value);
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     #[ignore = "検証用PostgreSQLで遅い端末が他の着信を止めないことを確認"]
@@ -274,6 +316,28 @@ mod tests {
         assert_eq!(payload["caller_name"], "発信者");
         assert_eq!(payload["type"], "call_invite");
         assert!(payload["expires_at"].as_str().unwrap().ends_with('Z'));
+        // チャンネルの暗号化はメッセージ本文の設定であり、通話招待を抑制しない。
+        toasty::sql::statement("UPDATE channels SET encrypted=true WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert_eq!(
+            call_payload(&mut tx, &sub, &invite).await?,
+            Some(payload.clone())
+        );
+        toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
+            .bind(user.as_str())
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        assert!(call_payload(&mut tx, &sub, &invite).await?.is_none());
+        toasty::sql::statement(
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+        )
+        .bind(user.as_str())
+        .bind(channel.as_str())
+        .exec(&mut tx)
+        .await?;
         let mut wrong = sub.clone();
         wrong.revocation_hash = digest("別の解除情報");
         assert!(call_payload(&mut tx, &wrong, &invite).await?.is_none());

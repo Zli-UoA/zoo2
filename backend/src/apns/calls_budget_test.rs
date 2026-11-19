@@ -134,7 +134,7 @@ async fn run_budget(url: &str, schema: &str) -> anyhow::Result<()> {
             CREATE TABLE user_event_settings(user_id text PRIMARY KEY,dnd_until timestamptz);
             INSERT INTO users(id,user_name,display_name,is_deactivated,is_guest) SELECT 'u'||n,'利用者','発信者',false,false FROM generate_series(1,{total}) n;
             INSERT INTO user_identities(id,user_id,iss,sub) SELECT 'i'||n,'u'||n,'https://incoming.example.invalid','u'||n FROM generate_series(1,{total}) n;
-            INSERT INTO channels SELECT 'c'||n,NULL,NULL,false,true,true FROM generate_series(1,{total}) n;
+            INSERT INTO channels SELECT 'c'||n,NULL,NULL,n%2=1,true,true FROM generate_series(1,{total}) n;
             INSERT INTO apns_subscriptions SELECT 's'||n,CASE WHEN n<=20 THEN 'u1' ELSE 'u'||(n-19) END,'token'||n,'sandbox','secret',now() FROM generate_series(1,{total}) n;
             INSERT INTO call_invites SELECT md5(n::text)::uuid,'c'||n,'u2',CASE WHEN n=1 THEN 'u1' ELSE 'u2' END,CASE WHEN n=1 THEN 'pending' ELSE 'cancelled' END,now()+interval '1 hour' FROM generate_series(1,{total}) n;
             INSERT INTO channel_user SELECT 'u'||n,'c'||n FROM generate_series(1,{total}) n;

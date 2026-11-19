@@ -25,7 +25,7 @@ pub const ACCEPTED_SEAT_HOLD_SECONDS: u32 = 60;
 
 pub(crate) const PENDING_INVITATION_SQL: &str = "SELECT i.id::text FROM call_invites i
  JOIN users u ON u.id=i.invitee_id AND NOT u.is_deactivated
- JOIN channels c ON c.id=i.channel_id AND c.deleted_at IS NULL AND c.archive_at IS NULL AND NOT c.encrypted
+ JOIN channels c ON c.id=i.channel_id AND c.deleted_at IS NULL AND c.archive_at IS NULL
  WHERE i.id=$1::uuid AND i.invitee_id=$2 AND i.status='pending' AND i.expires_at>clock_timestamp()
    AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(
        SELECT 1 FROM channel_user WHERE user_id=u.id AND channel_id=c.id))";

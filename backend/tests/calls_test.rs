@@ -1145,6 +1145,41 @@ async fn invite(
 }
 
 #[tokio::test]
+async fn test_call_invite_encrypted_channel_permissions() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol, channel) = (
+        w.alice.clone(),
+        w.bob.clone(),
+        w.carol.clone(),
+        w.private_ch.clone(),
+    );
+    toasty::sql::statement("UPDATE channels SET encrypted=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut w.db)
+        .await?;
+    put_presence(&mut w.db, &channel, &alice).await?;
+    let (status, body) = invite(&w, &alice, &channel, &[&bob]).await?;
+    assert_eq!(status, StatusCode::OK);
+    let path = format!(
+        "/api/call-invites/{}",
+        body["invites"][0]["id"].as_str().unwrap()
+    );
+    let (status, body) = request(&w.app, &bob, "GET", &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pending"], true);
+    let (_, body) = request(&w.app, &carol, "GET", &path, None).await?;
+    assert_eq!(body["pending"], false);
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2")
+        .bind(channel.as_str())
+        .bind(bob.as_str())
+        .exec(&mut w.db)
+        .await?;
+    let (_, body) = request(&w.app, &bob, "GET", &path, None).await?;
+    assert_eq!(body["pending"], false);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_call_invite_lifecycle_and_permissions() -> anyhow::Result<()> {
     let mut w = invite_world().await?;
     let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
