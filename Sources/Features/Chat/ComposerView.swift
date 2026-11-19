@@ -175,6 +175,17 @@ struct ComposerView: View {
                                 Text(attachment.fileName).lineLimit(1)
                                 Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.byteCount), countStyle: .file))
                                     .foregroundStyle(.secondary)
+                                Toggle(isOn: Binding(get: {
+                                    store.draftAttachments[key]?.first(where: { $0.id == attachment.id })?.isSensitive ?? false
+                                }, set: {
+                                    store.setAttachmentSensitive(attachment.id, sensitive: $0, parentID: parentID)
+                                })) {
+                                    Label("センシティブ", systemImage: "eye.slash")
+                                }
+                                .toggleStyle(.button).disabled(attachmentsBusy)
+                                .accessibilityLabel("センシティブな添付：\(attachment.fileName)")
+                                .accessibilityValue(attachment.isSensitive ? "オン" : "オフ")
+                                .accessibilityIdentifier("draft-sensitive-\(attachment.fileName)")
                             }.font(.caption)
                             Button { store.removeAttachment(attachment.id, parentID: parentID) } label: {
                                 Image(systemName: "xmark.circle.fill").frame(width: 32, height: 32)
@@ -185,6 +196,7 @@ struct ComposerView: View {
                         .padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 6)
                         .frame(maxWidth: 260)
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("draft-attachment-\(attachment.fileName)")
                     }
                 }

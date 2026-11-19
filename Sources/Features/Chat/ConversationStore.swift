@@ -65,6 +65,7 @@ final class ConversationStore {
         let id: String
         let content: String
         let attachmentIDs: [UUID]
+        let sensitiveAttachmentIDs: [UUID]
         var messageAttempted = false
     }
 
@@ -167,6 +168,13 @@ final class ConversationStore {
         draftAttachments[key]?.removeAll { $0.id == id }
         uploadedAttachmentIDs[id] = nil
         sendErrors[key] = nil
+    }
+
+    func setAttachmentSensitive(_ id: UUID, sensitive: Bool, parentID: String?) {
+        let key = draftKey(parentID)
+        guard canPost, !sending.contains(key), !importingAttachments.contains(key),
+              let index = draftAttachments[key]?.firstIndex(where: { $0.id == id }) else { return }
+        draftAttachments[key]?[index].isSensitive = sensitive
     }
 
     private func clearDraftAttachments() {
@@ -327,15 +335,19 @@ final class ConversationStore {
         typing.activity(false, parentID: parentID)
         let attachments = draftAttachments[key] ?? []
         let attachmentIDs = attachments.map(\.id)
+        let sensitiveAttachmentIDs = attachments.filter(\.isSensitive).map(\.id)
         let epoch = accessGeneration
         let previous = pendingSends[key]
-        let matching = previous.flatMap { $0.content == content && $0.attachmentIDs == attachmentIDs ? $0 : nil }
+        let matching = previous.flatMap {
+            $0.content == content && $0.attachmentIDs == attachmentIDs && $0.sensitiveAttachmentIDs == sensitiveAttachmentIDs ? $0 : nil
+        }
         if matching == nil, let previous, previous.messageAttempted {
             // 応答が失われた投稿に紐付いている可能性があるため、別の投稿では添付も作り直す。
             for id in previous.attachmentIDs { uploadedAttachmentIDs[id] = nil }
         }
         let pending = matching
-            ?? PendingSend(id: UUID().uuidString.lowercased(), content: content, attachmentIDs: attachmentIDs)
+            ?? PendingSend(id: UUID().uuidString.lowercased(), content: content, attachmentIDs: attachmentIDs,
+                           sensitiveAttachmentIDs: sensitiveAttachmentIDs)
         pendingSends[key] = pending
         sending.insert(key)
         sendErrors[key] = nil
@@ -360,7 +372,10 @@ final class ConversationStore {
             uploadStatus[key] = attachments.isEmpty ? nil : "メッセージを送信中…"
             pendingSends[key]?.messageAttempted = true
             var message = try await client.send(id: pending.id, channelID: channel.id, content: content,
-                                                parentID: parentID, attachmentIDs: uploaded.map(\.id))
+                                                parentID: parentID, attachmentIDs: uploaded.map(\.id),
+                                                sensitiveAttachmentIDs: zip(attachments, uploaded).compactMap { draft, uploaded in
+                                                    draft.isSensitive ? uploaded.id : nil
+                                                })
             try Task.checkCancellation()
             guard active, !blocked, epoch == accessGeneration, channel.encrypted != true else { return }
             if !uploaded.isEmpty, message.display_data?.attachments.isEmpty != false {

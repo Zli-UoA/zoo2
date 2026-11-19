@@ -11,6 +11,7 @@ struct DraftAttachment: Identifiable, Sendable, Transferable {
     let contentType: String
     let byteCount: Int
     let file: AttachmentFile
+    var isSensitive = false
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(importedContentType: .image) { received in

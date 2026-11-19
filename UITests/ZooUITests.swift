@@ -62,13 +62,21 @@ final class ZooUITests: XCTestCase {
         XCTAssertFalse(remove.exists)
         let remaining = app.buttons["添付を削除：削除確認.txt"]
         XCTAssertTrue(remaining.isHittable)
+        let sensitive = app.descendants(matching: .any)["draft-sensitive-削除確認.txt"].firstMatch
+        XCTAssertEqual(sensitive.value as? String, "オフ")
+        sensitive.tap()
+        XCTAssertEqual(sensitive.value as? String, "オン")
         let send = app.buttons["send-message"]
         XCTAssertTrue(send.isEnabled)
         send.tap()
         XCTAssertTrue(app.staticTexts["send-error"].waitForExistence(timeout: 5))
         XCTAssertTrue(remaining.exists)
+        XCTAssertEqual(sensitive.value as? String, "オン")
         send.tap()
         XCTAssertTrue(remaining.waitForNonExistence(timeout: 5))
+        let reveal = app.buttons["センシティブな添付を表示"]
+        XCTAssertTrue(reveal.waitForExistence(timeout: 5))
+        reveal.tap()
         XCTAssertTrue(app.staticTexts["削除確認.txt"].waitForExistence(timeout: 5))
         XCTAssertFalse(send.isEnabled)
         capture(app, name: "本文なしの添付投稿を再送した会話")
