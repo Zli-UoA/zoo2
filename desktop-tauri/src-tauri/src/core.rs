@@ -820,7 +820,7 @@ impl Core {
         .map_err(to_ipc)?;
         let authorized_at = Instant::now();
         let authorized_unix = token::now();
-        let (login, auto_open_url, remaining_expires_in) = prepare_verified_device_login(
+        let (login, auto_open_url, deadline) = prepare_verified_device_login(
             self.no_redirect_http.as_ref(),
             &authorization,
             &oidc.issuer,
@@ -828,20 +828,30 @@ impl Core {
             authorized_unix,
         )
         .await?;
-        let mut authorization = authorization;
-        authorization.expires_in = remaining_expires_in;
+        let expires_at = login.expires_at;
 
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return Err(IpcError::new(ErrorCode::Internal, "ログインを中止しました"));
         }
+        // inner.lock().await の待機中に有効期限が切れた場合は LoggingIn への遷移やポーリング・ブラウザー起動へ進まない。
+        ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())?;
         let core = self.clone();
         let (config, oidc) = (config.clone(), oidc.clone());
         inner.login_task = Some(tokio::spawn(async move {
             let result = async {
-                let response = Poller::default()
-                    .poll(&core.http, &discovery, &oidc, &authorization)
-                    .await?;
+                let (http, discovery_ref, oidc_ref) = (&core.http, &discovery, &oidc);
+                let response = poll_device_authorization_until(
+                    deadline,
+                    expires_at,
+                    &authorization,
+                    |bounded| async move {
+                        Poller::default()
+                            .poll(http, discovery_ref, oidc_ref, &bounded)
+                            .await
+                    },
+                )
+                .await?;
                 let tokens = StoredTokens::new(&oidc, &config.api_base_url, response, token::now());
                 let path = core.token_path()?;
                 token::save(&path, &tokens)?;
@@ -886,7 +896,7 @@ impl Core {
         );
         drop(inner);
         // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
-        // 確認済みオリジンかつ GET リダイレクト先検証を通過した URL のみ自動で開き、中止済みなら実行時にも抑止する。
+        // 確認済みオリジンかつ GET リダイレクト先検証を通過した URL のみ自動で開き、中止済みまたは期限切れなら実行時にも抑止する。
         if let Some(url) = auto_open_url {
             let gate = self.browser_launch.clone();
             let app = self.app.clone();
@@ -894,8 +904,29 @@ impl Core {
                 if !gate.is_active(generation) {
                     return;
                 }
+                if ensure_device_login_not_expired(
+                    deadline,
+                    expires_at,
+                    Instant::now(),
+                    token::now(),
+                )
+                .is_err()
+                {
+                    gate.cancel(generation);
+                    return;
+                }
                 if let Err(err) = tokio::task::spawn_blocking(move || {
                     gate.launch_if_active(generation, || {
+                        if ensure_device_login_not_expired(
+                            deadline,
+                            expires_at,
+                            Instant::now(),
+                            token::now(),
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
                         if let Err(err) = open_in_browser(&app, &url) {
                             eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
                         }
@@ -1340,7 +1371,59 @@ async fn verify_login_redirect_chain(
     Err("リダイレクト回数が上限を超えました".to_string())
 }
 
-/// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin`・自動起動対象 URL・残りの有効秒数を返す。
+/// 認可応答の受信時刻 (`authorized_at`) を基準に定めた `deadline` / `expires_at` がまだ有効かを確認し、
+/// 残りの有効期間 (`Duration`) を返す。
+fn ensure_device_login_not_expired(
+    deadline: Instant,
+    expires_at: i64,
+    now_instant: Instant,
+    now_unix: i64,
+) -> Result<Duration, IpcError> {
+    let Some(remaining) = deadline.checked_duration_since(now_instant) else {
+        return Err(IpcError::new(
+            ErrorCode::Timeout,
+            "コードの有効期限が切れました。もう一度ログインしてください",
+        ));
+    };
+    if remaining.is_zero() || now_unix >= expires_at {
+        return Err(IpcError::new(
+            ErrorCode::Timeout,
+            "コードの有効期限が切れました。もう一度ログインしてください",
+        ));
+    }
+    Ok(remaining)
+}
+
+/// 認可応答の受信時刻 (`authorized_at`) を基準にした `deadline` / `expires_at` の範囲内でのみポーリングを行う。
+/// ロック待ちやタスク実行待ちでポーリング開始が遅れた分も `deadline` から差し引き、
+/// 開始時点で期限切れなら即座に終了し、ポーリング中も `timeout_at(deadline)` で期限超過を防ぐ。
+async fn poll_device_authorization_until<F, Fut, T>(
+    deadline: Instant,
+    expires_at: i64,
+    authorization: &DeviceAuthorization,
+    poll_fn: F,
+) -> Result<T>
+where
+    F: FnOnce(DeviceAuthorization) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let remaining =
+        ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())
+            .map_err(|err| anyhow!(err.message))?;
+    let mut bounded = authorization.clone();
+    // 秒単位の切り上げで最低 1 秒を与えつつ、外側の timeout_at(deadline) で実際の期限時刻を厳密に強制する。
+    let remaining_secs = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+    bounded.expires_in = remaining_secs.max(1);
+    let tokio_deadline = tokio::time::Instant::from_std(deadline);
+    match tokio::time::timeout_at(tokio_deadline, poll_fn(bounded)).await {
+        Ok(res) => res,
+        Err(_) => Err(anyhow!(
+            "コードの有効期限が切れました。もう一度ログインしてください"
+        )),
+    }
+}
+
+/// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin`・自動起動対象 URL・`authorized_at` 基準の `deadline` を返す。
 /// - `verification_uri` が `issuer` と別オリジン（または非ループバック HTTP）の場合や、
 ///   リダイレクト安全性が未確認の外部カスタム `issuer` では、ログイン自体は失敗させず
 ///   ユーザーコードと手動リンク表示へフォールバックし、ブラウザー自動起動と `verification_uri_complete` を抑止する。
@@ -1354,7 +1437,7 @@ async fn prepare_verified_device_login(
     issuer: &str,
     authorized_at: Instant,
     authorized_unix: i64,
-) -> Result<(DeviceLogin, Option<String>, u64), IpcError> {
+) -> Result<(DeviceLogin, Option<String>, Instant), IpcError> {
     let mut verification_uri_complete = None;
     let mut auto_open_url = None;
 
@@ -1400,21 +1483,9 @@ async fn prepare_verified_device_login(
         );
     }
 
+    let deadline = authorized_at + Duration::from_secs(authorization.expires_in);
     let expires_at = authorized_unix.saturating_add(authorization.expires_in as i64);
-    let elapsed = authorized_at.elapsed();
-    let Some(remaining) = Duration::from_secs(authorization.expires_in).checked_sub(elapsed) else {
-        return Err(IpcError::new(
-            ErrorCode::Timeout,
-            "コードの有効期限が切れました。もう一度ログインしてください",
-        ));
-    };
-    let remaining_secs = remaining.as_secs();
-    if remaining_secs == 0 || token::now() >= expires_at {
-        return Err(IpcError::new(
-            ErrorCode::Timeout,
-            "コードの有効期限が切れました。もう一度ログインしてください",
-        ));
-    }
+    ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())?;
 
     let login = DeviceLogin {
         user_code: authorization.user_code.clone(),
@@ -1422,14 +1493,15 @@ async fn prepare_verified_device_login(
         verification_uri_complete,
         expires_at,
     };
-    Ok((login, auto_open_url, remaining_secs))
+    Ok((login, auto_open_url, deadline))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BrowserLaunchGate, DeviceAuthorization, ErrorCode, Instant, build_no_redirect_http_client,
-        is_confirmed_login_issuer, is_same_issuer_origin, prepare_verified_device_login,
+        BrowserLaunchGate, DeviceAuthorization, Duration, ErrorCode, Instant,
+        build_no_redirect_http_client, ensure_device_login_not_expired, is_confirmed_login_issuer,
+        is_same_issuer_origin, poll_device_authorization_until, prepare_verified_device_login,
         resolve_and_validate_redirect, token, verify_login_redirect_chain,
     };
     use std::io::{Read, Write};
@@ -1631,6 +1703,7 @@ mod tests {
 
         // 1) 確認済み issuer + GET リダイレクト検証通過時は verification_uri_complete と自動起動 URL を保持する
         let now_unix = token::now();
+        let ok_started = Instant::now();
         let ok_auth = DeviceAuthorization {
             device_code: "dev-ok".to_string(),
             user_code: "OK".to_string(),
@@ -1639,11 +1712,11 @@ mod tests {
             expires_in: 600,
             interval: Some(5),
         };
-        let (ok_login, ok_auto_open, ok_remaining) = prepare_verified_device_login(
+        let (ok_login, ok_auto_open, ok_deadline) = prepare_verified_device_login(
             Some(&client),
             &ok_auth,
             &local_issuer,
-            Instant::now(),
+            ok_started,
             now_unix,
         )
         .await
@@ -1656,7 +1729,7 @@ mod tests {
             ok_auto_open.as_deref(),
             Some(format!("http://{addr}/device?user_code=OK").as_str())
         );
-        assert!(ok_remaining > 0 && ok_remaining <= 600);
+        assert_eq!(ok_deadline, ok_started + Duration::from_secs(600));
 
         // 2) GET でダウングレードが発生するコード付き URL は、UI 向け verification_uri_complete から除外し自動起動も抑止する
         let downgrade_auth = DeviceAuthorization {
@@ -1737,23 +1810,8 @@ mod tests {
         assert!(cross_login.verification_uri_complete.is_none());
         assert!(cross_auto_open.is_none());
 
-        // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返し、残り秒数は経過分を差し引く
-        let deducted_start = Instant::now() - std::time::Duration::from_secs(12);
-        let (_, _, deducted_remaining) = prepare_verified_device_login(
-            Some(&client),
-            &ok_auth,
-            &local_issuer,
-            deducted_start,
-            now_unix,
-        )
-        .await
-        .unwrap();
-        assert!(
-            deducted_remaining <= 588,
-            "remaining_secs should deduct elapsed time: {deducted_remaining}"
-        );
-
-        let expired_start = Instant::now() - std::time::Duration::from_secs(600);
+        // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返す
+        let expired_start = Instant::now() - Duration::from_secs(600);
         let expired_err = prepare_verified_device_login(
             Some(&client),
             &ok_auth,
@@ -1779,6 +1837,118 @@ mod tests {
         assert!(
             !net_err.contains("SECRET-CODE-999"),
             "error leaked user_code: {net_err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_login_deadline_blocks_expired_transition_launch_and_poller_after_lock_or_task_wait()
+     {
+        let auth = DeviceAuthorization {
+            device_code: "dev-short".to_string(),
+            user_code: "SHORT1".to_string(),
+            verification_uri: "https://account.zli.works/device".to_string(),
+            verification_uri_complete: Some(
+                "https://account.zli.works/device?user_code=SHORT1".to_string(),
+            ),
+            expires_in: 10,
+            interval: Some(1),
+        };
+        let authorized_at = Instant::now();
+        let authorized_unix = token::now();
+        let deadline = authorized_at + Duration::from_secs(auth.expires_in);
+        let expires_at = authorized_unix + auth.expires_in as i64;
+
+        // 1) inner.lock().await のロック待ちやブラウザー起動タスク待機中に期限に達した場合、
+        //    LoggingIn 遷移およびブラウザー起動の直前チェックが Timeout で阻止する
+        let after_lock_wait = deadline + Duration::from_millis(1);
+        let lock_wait_err = ensure_device_login_not_expired(
+            deadline,
+            expires_at,
+            after_lock_wait,
+            authorized_unix + 10,
+        )
+        .unwrap_err();
+        assert_eq!(lock_wait_err.code, ErrorCode::Timeout);
+
+        let gate = BrowserLaunchGate::default();
+        gate.arm(42);
+        let launched = Arc::new(AtomicUsize::new(0));
+        let launched_check = launched.clone();
+        gate.launch_if_active(42, || {
+            if ensure_device_login_not_expired(
+                deadline,
+                expires_at,
+                after_lock_wait,
+                authorized_unix + 10,
+            )
+            .is_err()
+            {
+                return;
+            }
+            launched_check.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(launched.load(Ordering::SeqCst), 0);
+
+        // 2) タスク実行待ちの間に期限が切れた場合、Poller::poll 自体を呼ばずに即座に期限切れエラーを返す
+        let expired_deadline = Instant::now() - Duration::from_millis(10);
+        let poll_calls = Arc::new(AtomicUsize::new(0));
+        let poll_calls_check = poll_calls.clone();
+        let expired_poll = poll_device_authorization_until(
+            expired_deadline,
+            token::now() - 1,
+            &auth,
+            |_| async move {
+                poll_calls_check.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(expired_poll.is_err());
+        assert_eq!(
+            poll_calls.load(Ordering::SeqCst),
+            0,
+            "Poller must not start when deadline expired during lock/task wait"
+        );
+
+        // 3) ロック待ち・タスク実行待ちで開始が遅れた場合、authorized_at 基準の残り時間だけが Poller に渡り、
+        //    deadline 到達時点で timeout_at により打ち切られる（待機時間分だけ期限が延びない）
+        let delayed_authorized_at = Instant::now() - Duration::from_secs(8);
+        let delayed_deadline = delayed_authorized_at + Duration::from_secs(10);
+        let observed_expires_in = Arc::new(AtomicUsize::new(0));
+        let observed_clone = observed_expires_in.clone();
+        let res = poll_device_authorization_until(
+            delayed_deadline,
+            token::now() + 2,
+            &auth,
+            |bounded| async move {
+                observed_clone.store(bounded.expires_in as usize, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(res.is_ok());
+        let passed_secs = observed_expires_in.load(Ordering::SeqCst);
+        assert!(
+            (1..=2).contains(&passed_secs),
+            "bounded.expires_in should reflect remaining time after 8s delay, got {passed_secs}"
+        );
+
+        let tight_start = Instant::now();
+        let tight_deadline = tight_start + Duration::from_millis(60);
+        let timed_out = poll_device_authorization_until(
+            tight_deadline,
+            token::now() + 5,
+            &auth,
+            |_| async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(timed_out.is_err());
+        assert!(
+            tight_start.elapsed() < Duration::from_millis(350),
+            "poll_device_authorization_until must stop at deadline without extending lifetime"
         );
     }
 
