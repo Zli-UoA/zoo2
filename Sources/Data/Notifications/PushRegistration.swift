@@ -10,9 +10,12 @@ struct PushReceipt: Codable, Equatable {
     let secret: String
     var createdAt: Int64 = Int64(Date().timeIntervalSince1970)
     var revocationPending: Bool?
-    var id: String { Self.digest("\(environment):\(token)") }
+    var kind: PushKind? = nil
+    var id: String { Self.digest((kind == .voip ? "voip:" : "") + "\(environment):\(token)") }
     static func digest(_ value: String) -> String { SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined() }
 }
+
+enum PushKind: String, Codable { case alert, voip }
 
 @MainActor
 protocol PushReceiptStore {
@@ -22,9 +25,10 @@ protocol PushReceiptStore {
 
 @MainActor
 struct KeychainPushReceiptStore: PushReceiptStore {
+    var service = "works.zli.zoo.push"
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "works.zli.zoo.push", kSecAttrAccount as String: "registration"]
+         kSecAttrService as String: service, kSecAttrAccount as String: "registration"]
     }
     func load() throws -> PushReceipt? {
         var request = query
@@ -67,11 +71,15 @@ struct LivePushBackend: PushBackend {
     var server: String { api?.settings.server ?? "" }
     func subscribe(_ receipt: PushReceipt) async throws {
         guard let api else { throw ZooError.expiredSession }
-        struct Configuration: Decodable, Sendable { let sandbox: Bool; let production: Bool }
+        struct Configuration: Decodable, Sendable { let sandbox: Bool; let production: Bool; let voip: Bool? }
         let config: Configuration = try await api.get("api/push/apns/config")
         guard receipt.environment == "sandbox" ? config.sandbox : config.production else { throw ZooError.auth("サーバーのプッシュ通知設定が完了していません。") }
+        guard receipt.kind != .voip || config.voip == true else {
+            throw ZooError.auth("サーバーの通話通知対応を待っています。")
+        }
         let data = try await api.data("api/push/apns/subscriptions", method: "POST", body: [
             "device_token": .string(receipt.token), "environment": .string(receipt.environment),
+            "kind": .string((receipt.kind ?? .alert).rawValue),
             "revocation_secret": .string(receipt.secret), "created_at": .number(Double(receipt.createdAt))])
         struct Response: Decodable { let id: String }
         guard try JSONDecoder().decode(Response.self, from: data).id == receipt.id else { throw ZooError.invalidResponse }
@@ -101,8 +109,11 @@ struct LivePushBackend: PushBackend {
 @MainActor
 final class PushRegistration {
     private let store: any PushReceiptStore
+    private let kind: PushKind
     private var tail: Task<Void, Never>?
-    init(store: any PushReceiptStore = KeychainPushReceiptStore()) { self.store = store }
+    init(store: any PushReceiptStore = KeychainPushReceiptStore(), kind: PushKind = .alert) {
+        self.store = store; self.kind = kind
+    }
 
     // 中断を挟む処理も直列化し、進行中の登録が終わってからログアウトに伴う解除を行う。
     @discardableResult
@@ -145,7 +156,7 @@ final class PushRegistration {
             var bytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw ZooError.invalidResponse }
             receipt = PushReceipt(server: backend.server, account: account, token: token, environment: environment,
-                                  secret: bytes.map { String(format: "%02x", $0) }.joined())
+                                  secret: bytes.map { String(format: "%02x", $0) }.joined(), kind: kind)
             // HTTP 応答が失われても解除や再試行ができるよう、送信前に登録情報を永続化する。
             try store.save(receipt)
         }

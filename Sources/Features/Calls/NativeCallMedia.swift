@@ -14,6 +14,7 @@ protocol CallMedia: AnyObject {
 
 @MainActor
 final class NativeCallMedia: NSObject, CallMedia {
+    var systemAudio = false
     private final class Peer {
         let connection: RTCPeerConnection
         var candidates: [CallSignal.Candidate] = []
@@ -42,14 +43,16 @@ final class NativeCallMedia: NSObject, CallMedia {
         generation = UUID()
         iceServers = room.ice_servers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         let audio = RTCAudioSession.sharedInstance()
+        if !systemAudio { audio.useManualAudio = false }
         audio.lockForConfiguration()
         defer { audio.unlockForConfiguration() }
         let configuration = RTCAudioSessionConfiguration.webRTC()
         configuration.category = AVAudioSession.Category.playAndRecord.rawValue
         configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
         configuration.categoryOptions = [.allowBluetoothHFP]
-        try audio.setConfiguration(configuration, active: true)
-        audioActive = true
+        if systemAudio { try audio.setConfiguration(configuration) }
+        else { try audio.setConfiguration(configuration, active: true) }
+        audioActive = !systemAudio
         track = factory.audioTrack(withTrackId: "zoo-audio")
     }
 

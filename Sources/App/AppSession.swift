@@ -9,6 +9,7 @@ final class AppSession {
     private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
     var error: String?
     let notifications: NotificationController
+    @ObservationIgnored weak var systemCalls: SystemCallController?
     private let authentication: Authentication
     private let api: APIClient
     private var connection: (task: Task<Void, Never>, interactive: Bool)?
@@ -101,6 +102,7 @@ final class AppSession {
                 self?.error = ZooError.expiredSession.localizedDescription
             }
             self.workspace = workspace
+            systemCalls?.connect(workspace)
             notifications.connect(api: api, userID: user.id)
             await notifications.resume()
             await deliverDestination()
@@ -124,6 +126,7 @@ final class AppSession {
 
     func logout() {
         cancelConnection()
+        systemCalls?.disconnect()
         workspace?.shutdown()
         workspace = nil
         userID = nil
@@ -145,6 +148,12 @@ final class AppSession {
         }
         await notifications.resume()
         await deliverDestination()
+    }
+
+    func prepareForIncomingCall() async -> WorkspaceStore? {
+        if let connection { await connection.task.value }
+        else if workspace == nil { await resume() }
+        return workspace
     }
 
     func deliverDestination() async {

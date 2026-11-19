@@ -26,8 +26,13 @@ final class CallStore {
     private(set) var maxParticipants = 6
     var error: String?
     var showingCall = false
+    @ObservationIgnored var canStart: ((Bool) -> Bool)?
     @ObservationIgnored var onWillStart: (() -> Void)?
     @ObservationIgnored var onExpiredSession: (() -> Void)?
+    @ObservationIgnored var onInvitationsChanged: (([CallInvitation]) -> Void)?
+    @ObservationIgnored var onReady: (() -> Void)?
+    @ObservationIgnored var onFinished: (() -> Void)?
+    @ObservationIgnored var onMutedChanged: ((Bool) -> Void)?
     @ObservationIgnored private var media: (any CallMedia)?
     @ObservationIgnored private var connection: Task<Void, Never>?
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
@@ -45,8 +50,8 @@ final class CallStore {
     }
 
     @discardableResult
-    func start(channel: Channel, invitationID: String? = nil) -> Task<Void, Never>? {
-        guard active, self.channel == nil, channel.canPost else { return nil }
+    func start(channel: Channel, invitationID: String? = nil, systemAudio: Bool = false) -> Task<Void, Never>? {
+        guard active, self.channel == nil, channel.canCall, canStart?(systemAudio) != false else { return nil }
         onWillStart?()
         let session = UUID().uuidString.lowercased()
         self.channel = channel; sessionID = session
@@ -71,6 +76,7 @@ final class CallStore {
                     if case .room(let room) = event {
                         guard !ready, room.participants.count <= 6 else { throw ZooError.invalidResponse }
                         let engine = makeMedia()
+                        (engine as? NativeCallMedia)?.systemAudio = systemAudio
                         media = engine
                         prepareSignals(channelID: channel.id, session: session)
                         try engine.start(sessionID: session, room: room) { [weak self] target, signal in
@@ -91,6 +97,7 @@ final class CallStore {
                         for pending in early { try await receive(pending, session: session) }
                         early = []
                         startHeartbeat(channelID: channel.id, session: session)
+                        onReady?()
                     } else if ready { try await receive(event, session: session) }
                     else {
                         guard early.count < 256 else { throw ZooError.invalidResponse }
@@ -171,6 +178,7 @@ final class CallStore {
     func toggleMute() {
         guard ready, !changingMute, let channel, let session = sessionID else { return }
         muted.toggle(); media?.mute(muted); changingMute = true
+        onMutedChanged?(muted)
         let value = muted
         mutation = Task { [weak self] in
             guard let self else { return }
@@ -202,6 +210,7 @@ final class CallStore {
         inviting = false; cancellingInvitations = []; invitationError = nil; invitationNotice = nil
         submittedInvitations = []; invitationsSeenWhileSending = []
         if let oldChannel, let oldSession {
+            onFinished?()
             let client = client
             Task { try? await client.callCommand(channelID: oldChannel, action: "leave", body: ["session_id": .string(oldSession)]) }
         }
@@ -220,6 +229,7 @@ final class CallStore {
                 try await client.observeCallInvitations { [weak self] values in
                     guard let self, active, !Task.isCancelled else { return }
                     invitations = values.filter { $0.invitee_id == userID && $0.status == "pending" }
+                    onInvitationsChanged?(invitations)
                     cancelledInvitationExpirations = cancelledInvitationExpirations.filter { $0.value > .now }
                     outgoingInvitations = values.filter {
                         $0.inviter_id == userID && $0.status == "pending" && cancelledInvitationExpirations[$0.id] == nil

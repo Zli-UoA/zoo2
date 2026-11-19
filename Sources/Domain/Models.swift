@@ -56,6 +56,7 @@ struct Channel: Codable, Identifiable, Hashable, Sendable {
     var encrypted: Bool?
 
     var canPost: Bool { archive_at == nil && deleted_at == nil && encrypted != true }
+    var canCall: Bool { archive_at == nil && deleted_at == nil }
     var symbol: String { encrypted == true ? "lock.shield" : is_dm ? "bubble.left.and.bubble.right" : is_private ? "lock" : "number" }
 }
 

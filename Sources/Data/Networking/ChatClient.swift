@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-protocol ChatClient: InboxClient, CallClient {
+protocol ChatClient: InboxClient, CallClient, TypingClient {
     var accountProfileURL: URL? { get }
     func publicProfile() async throws -> PublicProfile
     func updatePublicProfile(name: String, summary: String) async throws -> PublicProfile

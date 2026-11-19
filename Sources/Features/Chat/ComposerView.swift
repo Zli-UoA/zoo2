@@ -18,7 +18,10 @@ struct ComposerView: View {
 
     private var key: String { store.draftKey(parentID) }
     private var draft: Binding<String> {
-        Binding(get: { store.drafts[key] ?? "" }, set: { store.drafts[key] = $0 })
+        Binding(get: { store.drafts[key] ?? "" }, set: {
+            store.drafts[key] = $0
+            store.typing.activity(store.canPost && !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, parentID: parentID)
+        })
     }
     private var expanded: Bool { focused }
     private var placeholder: String {
@@ -55,6 +58,12 @@ struct ComposerView: View {
             }
             if store.canPost {
                 attachmentDrafts
+                if let indicator = store.typing.indicator(parentID: parentID) {
+                    Text(indicator)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("typing-indicator")
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .center, spacing: 8) {
                         if !expanded { additionSpace }
@@ -92,6 +101,9 @@ struct ComposerView: View {
             }
         }
         .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
+        .onChange(of: focused) { _, focused in
+            if !focused { store.typing.activity(false, parentID: parentID) }
+        }
         .sheet(isPresented: $showingEmoji, onDismiss: { focused = true }) {
             ReactionPicker(workspace: workspace) { value in
                 insert(value, replacing: emojiInsertionRange)

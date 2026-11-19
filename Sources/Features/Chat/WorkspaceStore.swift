@@ -23,6 +23,7 @@ final class WorkspaceStore {
     let inbox: InboxStore
     let threads: ChannelThreads
     let calls: CallStore
+    @ObservationIgnored weak var systemCalls: SystemCallController?
     let videoPlayback = AttachmentVideoPlayback()
     let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []

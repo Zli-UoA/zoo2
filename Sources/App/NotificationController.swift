@@ -57,6 +57,8 @@ final class NotificationController {
     var testStatus: String? { testAttempt?.received == true ? "このiPhoneでテスト通知を受信しました。" : testFeedback }
     var destination: PushDestination?
     private let registration: PushRegistration
+    private let voipRegistration: PushRegistration
+    private var voipToken: String?
     private let receiptStore: any PushReceiptStore
     private let previewKeys: any NotificationPreviewKeyStorage
     private let transport: HTTPTransport
@@ -77,11 +79,13 @@ final class NotificationController {
     private var testPreferenceKey: String { "zoo.push.test." + (account ?? "") }
     private var generation = UUID()
     private let environment = Bundle.main.object(forInfoDictionaryKey: "APNSEnvironment") as? String == "production" ? "production" : "sandbox"
-    init(transport: HTTPTransport, receiptStore: any PushReceiptStore, previewKeys: any NotificationPreviewKeyStorage) {
+    init(transport: HTTPTransport, receiptStore: any PushReceiptStore, previewKeys: any NotificationPreviewKeyStorage,
+         voipStore: any PushReceiptStore = KeychainPushReceiptStore(service: "works.zli.zoo.voip")) {
         self.transport = transport
         self.receiptStore = receiptStore
         self.previewKeys = previewKeys
         registration = PushRegistration(store: receiptStore)
+        voipRegistration = PushRegistration(store: voipStore, kind: .voip)
     }
 
     func connect(api: APIClient, userID: String) {
@@ -157,6 +161,12 @@ final class NotificationController {
         registeredReceipt = nil
         registrationFailed = true
         status = "通知を登録できませんでした。実機で接続を確認し、再試行してください。"
+    }
+    @discardableResult
+    func receivedVoIPToken(_ data: Data?) -> Task<Void, Never>? {
+        voipToken = data?.map { String(format: "%02x", $0) }.joined()
+        guard api != nil else { return nil }
+        return synchronize(allowRegistration: enabled && !authorizationDenied)
     }
     private func saveTestAttempt(_ attempt: TestAttempt?) {
         testAttempt = attempt
@@ -279,7 +289,7 @@ final class NotificationController {
         let epoch = generation
         let desired = allowRegistration ? account : nil
         let backend = LivePushBackend(api: api, transport: transport)
-        return registration.update(backend: backend, account: desired, token: token, environment: environment) { [weak self] result in
+        let standard = registration.update(backend: backend, account: desired, token: token, environment: environment) { [weak self] result in
             guard let self, epoch == self.generation, revision == self.registrationGeneration else { return }
             do {
                 let receipt = try result.get()
@@ -300,12 +310,24 @@ final class NotificationController {
                 self.reportSyncError(error)
             }
         }
+        var voipError: Error?
+        let voip = voipRegistration.update(backend: backend, account: voipToken == nil ? nil : desired,
+                                           token: voipToken, environment: environment) { result in
+            if case .failure(let error) = result { voipError = error }
+        }
+        return Task {
+            await standard.value; await voip.value
+            guard epoch == generation, revision == registrationGeneration else { return }
+            if let voipError { reportSyncError(voipError) }
+        }
     }
 }
 
 @MainActor
 final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    let session = AppSession.configured()
     var controller: NotificationController?
+    let systemCalls = SystemCallController()
     private var pendingMessageTap: PushDestination?
     private var pendingTest: PushNotice?
     func bind(_ controller: NotificationController) {
@@ -315,6 +337,12 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
     }
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        if !AppSession.isUITesting {
+            bind(session.notifications)
+            systemCalls.bind(session)
+            systemCalls.setForeground(application.applicationState == .active)
+            systemCalls.start()
+        }
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) { controller?.received(token: deviceToken) }
