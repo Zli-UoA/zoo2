@@ -1,5 +1,6 @@
 use super::*;
 use crate::push::CallInvitePush;
+use futures_util::{StreamExt, stream};
 
 #[cfg(test)]
 #[path = "calls_budget_test.rs"]
@@ -47,7 +48,7 @@ async fn call_payload(
     Ok(Some(serde_json::from_str(body)?))
 }
 
-pub(crate) fn dispatch_call_invites(mut db: toasty::Db, invites: Vec<CallInvitePush>) {
+pub(crate) fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
     tokio::spawn(async move {
         let result: anyhow::Result<()> = async {
             let configs = delivery_configs()?;
@@ -55,14 +56,10 @@ pub(crate) fn dispatch_call_invites(mut db: toasty::Db, invites: Vec<CallInviteP
                 return Ok(());
             }
             let client = client()?;
-            for invite in invites {
-                if deliver_call(&client, &configs, &mut db, &invite)
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("iPhoneへの着信を送信できませんでした");
-                }
-            }
+            deliver_calls(db, invites, |db, sub, invite| {
+                deliver_device(&client, &configs, db, sub, invite)
+            })
+            .await;
             Ok(())
         }
         .await;
@@ -72,53 +69,149 @@ pub(crate) fn dispatch_call_invites(mut db: toasty::Db, invites: Vec<CallInviteP
     });
 }
 
-async fn deliver_call(
+async fn deliver_calls<F, Fut>(db: toasty::Db, invites: Vec<CallInvitePush>, send: F)
+where
+    F: Fn(toasty::Db, ApnsSubscription, String) -> Fut + Clone,
+    Fut: Future<Output = ()>,
+{
+    // 1回の招待は最大5人・各20登録。遅い端末が他の宛先の30秒期限を消費しないようにする。
+    stream::iter(invites)
+        .for_each_concurrent(crate::routes::calls::MAX_CALL_PARTICIPANTS - 1, |invite| {
+            let mut db = db.clone();
+            let send = send.clone();
+            async move {
+                let subscriptions = ApnsSubscription::filter(
+                    ApnsSubscription::fields()
+                        .user_id()
+                        .eq(invite.invitee_id.as_str()),
+                )
+                .exec(&mut db)
+                .await;
+                let Ok(subscriptions) = subscriptions else {
+                    tracing::warn!("iPhoneの着信先を取得できませんでした");
+                    return;
+                };
+                stream::iter(subscriptions.into_iter().filter(is_voip))
+                    .for_each_concurrent(20, |sub| send(db.clone(), sub, invite.id.clone()))
+                    .await;
+            }
+        })
+        .await;
+}
+
+async fn deliver_device(
     client: &reqwest::Client,
     configs: &[(&str, ApnsConfig)],
-    db: &mut toasty::Db,
-    invite: &CallInvitePush,
-) -> anyhow::Result<()> {
-    // 既存のuser_id索引と登録時の20件制限を使い、全端末や全招待を走査しない。
-    let subscriptions = ApnsSubscription::filter(
-        ApnsSubscription::fields()
-            .user_id()
-            .eq(invite.invitee_id.as_str()),
-    )
-    .exec(db)
-    .await?;
-    for sub in subscriptions.into_iter().filter(is_voip) {
-        let Some((_, config)) = configs.iter().find(|(name, _)| *name == sub.environment) else {
-            continue;
-        };
-        let result: Result<DeliveryOutcome, AppError> = async {
-            let request = client
-                .post(endpoint(&sub.environment, &sub.device_token)?)
-                .version(reqwest::Version::HTTP_2)
-                .bearer_auth(config.authorization().await?)
-                .header("apns-topic", "works.zli.zoo.voip")
-                .header("apns-push-type", "voip")
-                .header("apns-priority", "10")
-                // オフライン中の着信を後から鳴らさない。取消通知はVoIPとして送らない。
-                .header("apns-expiration", "0");
-            send_if_allowed(request, call_payload(db, &sub, &invite.id)).await
-        }
-        .await;
-        match result {
-            Ok(DeliveryOutcome::Invalid(at)) => {
-                if delete_invalid(db, &sub, at).await.is_err() {
-                    tracing::warn!("失効したVoIP通知登録を削除できませんでした");
-                }
-            }
-            Ok(_) => {}
-            Err(_) => tracing::warn!("端末へVoIP通知を配信できませんでした"),
-        }
+    mut db: toasty::Db,
+    sub: ApnsSubscription,
+    invite: String,
+) {
+    let Some((_, config)) = configs.iter().find(|(name, _)| *name == sub.environment) else {
+        return;
+    };
+    let result: Result<DeliveryOutcome, AppError> = async {
+        let request = client
+            .post(endpoint(&sub.environment, &sub.device_token)?)
+            .version(reqwest::Version::HTTP_2)
+            .bearer_auth(config.authorization().await?)
+            .header("apns-topic", "works.zli.zoo.voip")
+            .header("apns-push-type", "voip")
+            .header("apns-priority", "10")
+            // オフライン中の着信を後から鳴らさない。取消通知はVoIPとして送らない。
+            .header("apns-expiration", "0");
+        send_if_allowed(request, call_payload(&mut db, &sub, &invite)).await
     }
-    Ok(())
+    .await;
+    match result {
+        Ok(DeliveryOutcome::Invalid(at)) => {
+            if delete_invalid(&mut db, &sub, at).await.is_err() {
+                tracing::warn!("失効したVoIP通知登録を削除できませんでした");
+            }
+        }
+        Ok(_) => {}
+        Err(_) => tracing::warn!("端末へVoIP通知を配信できませんでした"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    #[ignore = "検証用PostgreSQLで遅い端末が他の着信を止めないことを確認"]
+    async fn slow_devices_do_not_block_other_invitees() -> anyhow::Result<()> {
+        let mut db = crate::db::init_db(&crate::config::Config::from_env().database_url).await?;
+        let users = [
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        ];
+        let mut tx = db.transaction().await?;
+        for user in &users {
+            toasty::sql::statement(
+                "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'着信テスト')",
+            )
+            .bind(user.as_str())
+            .exec(&mut tx)
+            .await?;
+            for _ in 0..2 {
+                let token = digest(&uuid::Uuid::new_v4().to_string());
+                ApnsSubscription::create()
+                    .id(PushKind::Voip.registration_id("sandbox", &token))
+                    .user_id(user.as_str())
+                    .device_token(token)
+                    .environment("sandbox")
+                    .revocation_hash(digest(user))
+                    .created_at(crate::models::now_utc_millis())
+                    .exec(&mut tx)
+                    .await?;
+            }
+        }
+        tx.commit().await?;
+        let invites = users
+            .iter()
+            .map(|user| CallInvitePush {
+                id: uuid::Uuid::new_v4().to_string(),
+                invitee_id: user.clone(),
+                channel_id: String::new(),
+                inviter_id: String::new(),
+            })
+            .collect();
+        let (started, mut received) = tokio::sync::mpsc::channel(4);
+        let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let delivery = deliver_calls(db.clone(), invites, |_, sub, _| {
+            let started = started.clone();
+            let release = release.clone();
+            async move {
+                started.send(sub.user_id).await.unwrap();
+                release.acquire().await.unwrap().forget();
+            }
+        });
+        let observe = async {
+            let result = tokio::time::timeout(Duration::from_secs(5), async {
+                let mut targets = Vec::new();
+                for _ in 0..4 {
+                    targets.push(received.recv().await.unwrap());
+                }
+                for user in &users {
+                    anyhow::ensure!(targets.iter().filter(|id| *id == user).count() == 2);
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await;
+            // 失敗時も待機中の配信を解放し、テストの登録を回収できるようにする。
+            release.add_permits(4);
+            result?
+        };
+        let (_, result) = tokio::join!(delivery, observe);
+        for user in &users {
+            toasty::sql::statement("DELETE FROM users WHERE id=$1")
+                .bind(user.as_str())
+                .exec(&mut db)
+                .await?;
+        }
+        result
+    }
 
     #[test]
     fn registration_kind_preserves_alert_identity() {

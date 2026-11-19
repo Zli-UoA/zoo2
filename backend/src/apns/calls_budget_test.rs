@@ -1,8 +1,12 @@
 use super::CALL_PAYLOAD_SQL;
 use crate::call_invites::PENDING_INVITATION_SQL;
+use futures_util::{FutureExt, future::try_join_all};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Instant};
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
+
+#[path = "calls_api_budget_test.rs"]
+mod api;
 
 async fn connect(url: &str, schema: &str) -> anyhow::Result<Client> {
     let (client, connection) = tokio_postgres::connect(url, NoTls).await?;
@@ -36,7 +40,7 @@ async fn measure(url: String, schema: String, workers: usize) -> anyhow::Result<
     for worker in 0..workers {
         let url = url.clone();
         let schema = schema.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.push(async move {
             let at = Instant::now();
             let client = connect(&url, &schema).await?;
             let connection_ms = at.elapsed().as_secs_f64() * 1000.0;
@@ -77,11 +81,11 @@ async fn measure(url: String, schema: String, workers: usize) -> anyhow::Result<
                 client.batch_execute("DEALLOCATE incoming; DEALLOCATE pending; DEALLOCATE devices").await?;
             }
             Ok::<_, anyhow::Error>(samples)
-        }));
+        });
     }
     let mut samples = Vec::new();
-    for task in tasks {
-        samples.extend(task.await??);
+    for result in try_join_all(tasks).await? {
+        samples.extend(result);
     }
     Ok(samples)
 }
@@ -95,29 +99,52 @@ async fn incoming_call_query_budget() -> anyhow::Result<()> {
     admin
         .batch_execute(&format!("CREATE SCHEMA {schema}"))
         .await?;
-    let client = connect(&url, &schema).await?;
+    let result = std::panic::AssertUnwindSafe(run_budget(&url, &schema))
+        .catch_unwind()
+        .await;
+    // 途中のSQL・測定・保存・assertの失敗でも、この実行専用のschemaだけを回収する。
+    let cleanup = admin
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await;
+    if let Err(error) = &cleanup {
+        eprintln!("測定用schemaの回収に失敗しました: {schema}: {error}");
+    }
+    match result {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+    cleanup?;
+    Ok(())
+}
+
+async fn run_budget(url: &str, schema: &str) -> anyhow::Result<()> {
+    let machine = std::env::var("ZOO_CALL_BUDGET_MACHINE")?;
+    let client = connect(url, schema).await?;
     let mut results = Vec::new();
     for total in [300_000, 1_000_000] {
         // 本番と同じ検索列・型・一意性・索引を再現する。測定は読み取りだけで副作用はない。
         client.batch_execute(&format!("
-            CREATE TABLE users(id text PRIMARY KEY,user_name text,display_name text,is_deactivated bool,is_guest bool);
+            CREATE TABLE users(id text PRIMARY KEY,user_name text,display_name text,is_deactivated bool,is_guest bool,is_bot bool DEFAULT false,created_at timestamp DEFAULT now(),updated_at timestamp);
+            CREATE TABLE user_identities(id text PRIMARY KEY,user_id text,iss text,sub text,created_at timestamp DEFAULT now(),updated_at timestamp,UNIQUE(iss,sub));
             CREATE TABLE channels(id text PRIMARY KEY,deleted_at timestamp,archive_at timestamp,encrypted bool,is_private bool,is_dm bool);
             CREATE TABLE apns_subscriptions(id text PRIMARY KEY,user_id text,device_token text,environment text,revocation_hash text,created_at timestamp);
             CREATE INDEX idx_apns_subscriptions_user_id ON apns_subscriptions(user_id);
             CREATE TABLE call_invites(id uuid PRIMARY KEY,channel_id text,inviter_id text,invitee_id text,status text,expires_at timestamptz);
             CREATE TABLE channel_user(user_id text,channel_id text,PRIMARY KEY(user_id,channel_id));
             CREATE TABLE user_event_settings(user_id text PRIMARY KEY,dnd_until timestamptz);
-            INSERT INTO users SELECT 'u'||n,'利用者','発信者',false,false FROM generate_series(1,{total}) n;
+            INSERT INTO users(id,user_name,display_name,is_deactivated,is_guest) SELECT 'u'||n,'利用者','発信者',false,false FROM generate_series(1,{total}) n;
+            INSERT INTO user_identities(id,user_id,iss,sub) SELECT 'i'||n,'u'||n,'https://incoming.example.invalid','u'||n FROM generate_series(1,{total}) n;
             INSERT INTO channels SELECT 'c'||n,NULL,NULL,false,true,true FROM generate_series(1,{total}) n;
             INSERT INTO apns_subscriptions SELECT 's'||n,CASE WHEN n<=20 THEN 'u1' ELSE 'u'||(n-19) END,'token'||n,'sandbox','secret',now() FROM generate_series(1,{total}) n;
             INSERT INTO call_invites SELECT md5(n::text)::uuid,'c'||n,'u2',CASE WHEN n=1 THEN 'u1' ELSE 'u2' END,CASE WHEN n=1 THEN 'pending' ELSE 'cancelled' END,now()+interval '1 hour' FROM generate_series(1,{total}) n;
             INSERT INTO channel_user SELECT 'u'||n,'c'||n FROM generate_series(1,{total}) n;
             INSERT INTO user_event_settings SELECT 'u'||n,NULL FROM generate_series(1,{total}) n;
             ANALYZE;" )).await?;
-        let mut samples = measure(url.clone(), schema.clone(), 1).await?;
-        samples.extend(measure(url.clone(), schema.clone(), 8).await?);
-        results.push(json!({"件数":total,"測定":samples}));
-        client.batch_execute("DROP TABLE user_event_settings,channel_user,call_invites,apns_subscriptions,channels,users").await?;
+        let mut samples = measure(url.to_owned(), schema.to_owned(), 1).await?;
+        samples.extend(measure(url.to_owned(), schema.to_owned(), 8).await?);
+        let api = api::measure(url, schema).await?;
+        results.push(json!({"件数":total,"測定":samples,"API":api}));
+        client.batch_execute("DROP TABLE user_event_settings,channel_user,call_invites,apns_subscriptions,channels,user_identities,users").await?;
     }
     for (small, large) in results[0]["測定"]
         .as_array()
@@ -130,17 +157,18 @@ async fn incoming_call_query_budget() -> anyhow::Result<()> {
             "履歴量に比例して論理ブロックが増加しました"
         );
     }
-    let version = admin
+    let version = client
         .query_one("SHOW server_version", &[])
         .await?
         .get::<_, String>(0);
     let output = std::env::var("ZOO_CALL_BUDGET_OUTPUT")?;
+    let settings: String = client.query_one("SELECT json_object_agg(name,json_build_object('値',setting,'単位',unit))::text FROM pg_settings WHERE name IN ('shared_buffers','work_mem','effective_cache_size','max_connections','random_page_cost','effective_io_concurrency','jit','default_statistics_target','max_parallel_workers_per_gather','plan_cache_mode')", &[]).await?.get(0);
     std::fs::write(
         output,
-        serde_json::to_vec(&json!({"PostgreSQL":version,"結果":results}))?,
+        serde_json::to_vec(
+            &json!({"PostgreSQL":version,"機器":machine,"設定":serde_json::from_str::<Value>(&settings)?,
+            "統計":"各規模のfixture投入後にANALYZE", "キャッシュ":"OS・DBキャッシュは強制破棄せず、初回も計測に含める", "結果":results}),
+        )?,
     )?;
-    admin
-        .batch_execute(&format!("DROP SCHEMA {schema}"))
-        .await?;
     Ok(())
 }
