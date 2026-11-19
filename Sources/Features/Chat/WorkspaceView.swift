@@ -40,6 +40,9 @@ struct WorkspaceView: View {
         }
         .modifier(ConversationSync(workspace: workspace))
         .task(id: scenePhase) {
+            if scenePhase == .active { await workspace.calls.runActiveCalls() }
+        }
+        .task(id: scenePhase) {
             if scenePhase == .active { await workspace.run() }
         }
         .task(id: scenePhase) {
@@ -95,17 +98,20 @@ private struct ConversationDirectory: View {
             if !workspace.hasLoaded && workspace.loading {
                 ProgressView("読み込み中…")
             } else if channels.isEmpty {
-                if !search.isEmpty { ContentUnavailableView.search(text: search) }
-                else if unreadOnly { ContentUnavailableView("未読の会話はありません", systemImage: "checkmark.circle") }
-                else if directMessages {
-                    ContentUnavailableView {
-                        Label("DMはまだありません", systemImage: "bubble.left.and.bubble.right")
-                    } actions: { Button("DMを始める") { creating = true } }
-                } else {
-                    ContentUnavailableView {
-                        Label("参加中のチャンネルはありません", systemImage: "number")
-                    } actions: { Button("チャンネルを探す") { browsing = true } }
+                Group {
+                    if !search.isEmpty { ContentUnavailableView.search(text: search) }
+                    else if unreadOnly { ContentUnavailableView("未読の会話はありません", systemImage: "checkmark.circle") }
+                    else if directMessages {
+                        ContentUnavailableView {
+                            Label("DMはまだありません", systemImage: "bubble.left.and.bubble.right")
+                        } actions: { Button("DMを始める") { creating = true } }
+                    } else {
+                        ContentUnavailableView {
+                            Label("参加中のチャンネルはありません", systemImage: "number")
+                        } actions: { Button("チャンネルを探す") { browsing = true } }
+                    }
                 }
+                .listRowSeparator(.hidden)
             }
             let pinned = workspace.pinnedChannelIDs.compactMap { id in channels.first { $0.id == id } }
             let unpinned = channels.filter { !workspace.pinnedChannelIDs.contains($0.id) }
@@ -136,6 +142,7 @@ private struct ConversationDirectory: View {
         .refreshable {
             await workspace.refresh()
             await workspace.loadPins()
+            await workspace.calls.refreshActiveCalls()
             if showsThreadIndex { await workspace.threads.refresh() }
         }
         .task(id: showsThreadIndex) { if showsThreadIndex { await workspace.threads.run() } }
@@ -232,13 +239,21 @@ private struct ConversationDirectory: View {
                             labels
                         }
                         Spacer(minLength: 4)
+                        if workspace.calls.hasActiveCall(in: channel.id) {
+                            Image(systemName: "headphones")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.green)
+                                .fixedSize()
+                                .accessibilityLabel("通話中")
+                                .accessibilityIdentifier("channel-active-call-\(channel.id)")
+                        }
                         if workspace.unread.contains(channel.id) {
                             Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
                         }
                     }
                 }
-                .listRowInsets(EdgeInsets(top: directMessages ? 2 : 8, leading: 12,
-                                         bottom: directMessages ? 2 : 8, trailing: 12))
+                .listRowInsets(EdgeInsets(top: directMessages ? 10 : 8, leading: 12,
+                                         bottom: directMessages ? 10 : 8, trailing: 12))
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .contextMenu { ChannelPinButton(channel: channel, workspace: workspace) }
                 .accessibilityHint("長押しでピン留めを変更できます")

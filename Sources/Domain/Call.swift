@@ -1,5 +1,10 @@
 import Foundation
 
+struct ActiveCallSummary: Decodable, Sendable {
+    let channel_id: String
+    let participant_count: Int
+}
+
 struct CallParticipant: Decodable, Identifiable, Sendable {
     let session_id: String
     let user_id: String

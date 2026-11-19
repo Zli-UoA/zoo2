@@ -28,6 +28,9 @@ struct CallProtocolTests {
 
 @MainActor
 private final class FakeCallClient: CallClient {
+    var activeCallRows: [ActiveCallSummary] = []
+    var activeCallsFailure: Error?
+    var beforeActiveCallsResult: (@MainActor () async -> Void)?
     var events: [CallEvent] = []
     var commands: [String] = []
     var observed = false
@@ -44,6 +47,12 @@ private final class FakeCallClient: CallClient {
     var invitationsDelivered: (@MainActor () -> Void)?
     let invitationUpdates = AsyncStream<[CallInvitation]>.makeStream()
 
+    func activeCalls() async throws -> [ActiveCallSummary] {
+        let rows = activeCallRows
+        await beforeActiveCallsResult?()
+        if let activeCallsFailure { throw activeCallsFailure }
+        return rows
+    }
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
         observed = true
         for event in events { try await receive(event) }
@@ -95,6 +104,91 @@ private final class FakeCallMedia: CallMedia {
 @MainActor @Suite("通話のライフサイクル", .timeLimit(.minutes(1)))
 struct CallStoreTests {
     private var channel: Channel { Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false) }
+
+    @Test("未参加の通話も表示し、参加者ゼロと終了した通話は表示しない")
+    func activeCallsFollowServer() async {
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me")
+        defer { store.shutdown() }
+        client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 2),
+                                 ActiveCallSummary(channel_id: "empty", participant_count: 0)]
+        await store.refreshActiveCalls()
+        #expect(store.channel == nil)
+        #expect(store.hasActiveCall(in: channel.id))
+        #expect(!store.hasActiveCall(in: "empty"))
+        #expect(!store.hasActiveCall(in: "other"))
+        client.activeCallRows = []
+        await store.refreshActiveCalls()
+        #expect(!store.hasActiveCall(in: channel.id))
+    }
+
+    @Test("通話一覧の失敗で古い表示を消し、次の取得で復帰する")
+    func activeCallsRecoverAfterFailure() async {
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me")
+        defer { store.shutdown() }
+        client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 1)]
+        await store.refreshActiveCalls()
+        client.activeCallsFailure = URLError(.notConnectedToInternet)
+        await store.refreshActiveCalls()
+        #expect(store.activeChannelIDs.isEmpty)
+        #expect(store.error == nil)
+        client.activeCallsFailure = nil
+        await store.refreshActiveCalls()
+        #expect(store.hasActiveCall(in: channel.id))
+    }
+
+    @Test("通話一覧の認証切れをセッションへ通知する")
+    func activeCallsReportExpiredSession() async {
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me")
+        defer { store.shutdown() }
+        client.activeCallsFailure = ZooError.expiredSession
+        await confirmation("認証切れを通知") { expired in
+            store.onExpiredSession = { expired() }
+            await store.refreshActiveCalls()
+        }
+    }
+
+    @Test("古い通話一覧の応答で最新状態を巻き戻さない")
+    func staleActiveCallsAreIgnored() async {
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me")
+        defer { store.shutdown() }
+        client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 1)]
+        client.beforeActiveCallsResult = {
+            client.beforeActiveCallsResult = nil
+            client.activeCallRows = []
+            await store.refreshActiveCalls()
+        }
+        await store.refreshActiveCalls()
+        #expect(store.activeChannelIDs.isEmpty)
+    }
+
+    @Test("キャンセル・ログアウト後の通話一覧の応答を反映しない", arguments: [false, true])
+    func lateActiveCallsAreIgnored(shutdown: Bool) async {
+        let client = FakeCallClient()
+        let store = CallStore(client: client, userID: "me")
+        defer { store.shutdown() }
+        client.activeCallRows = [ActiveCallSummary(channel_id: channel.id, participant_count: 1)]
+        client.beforeActiveCallsResult = {
+            if shutdown { store.shutdown() }
+            else { withUnsafeCurrentTask { $0?.cancel() } }
+        }
+        await Task { await store.refreshActiveCalls() }.value
+        #expect(store.activeChannelIDs.isEmpty)
+    }
+
+    @Test("参加した通話は一覧APIの反映を待たず表示し、退出すると消える")
+    func localCallAppearsImmediately() async {
+        let client = FakeCallClient()
+        let store = await connected(client)
+        defer { store.shutdown() }
+        #expect(store.activeChannelIDs.isEmpty)
+        #expect(store.hasActiveCall(in: channel.id))
+        store.finish()
+        #expect(!store.hasActiveCall(in: channel.id))
+    }
 
     private func connected(_ client: FakeCallClient, channel: Channel? = nil, participants: [CallParticipant] = [], capacity: Int = 6) async -> CallStore {
         client.events = [.room(CallRoom(participants: participants, max_participants: capacity, ice_servers: []))]
@@ -398,6 +492,22 @@ struct CallStoreTests {
 
 @MainActor @Suite("通話のネイティブAPI契約")
 struct NativeCallAPITests {
+    @Test("認証付きで通話中チャンネルの非Envelope一覧を取得する")
+    func activeCalls() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.url?.path == "/api/calls/active")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-access")
+            return (200, [:], Data(#"[{"channel_id":"channel","participant_count":2,"participants":[]}]"#.utf8))
+        }
+        let calls = try await harness.client.activeCalls()
+        #expect(calls.count == 1)
+        #expect(calls.first?.channel_id == "channel")
+        #expect(calls.first?.participant_count == 2)
+    }
+
     @Test("チャンネル招待は宛先をPOSTし、Envelopeのない招待一覧を受け取る")
     func invite() async throws {
         let harness = try ChatHarness()

@@ -2,6 +2,7 @@ import Foundation
 
 @MainActor
 protocol CallClient {
+    func activeCalls() async throws -> [ActiveCallSummary]
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws
     func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws
@@ -12,6 +13,10 @@ protocol CallClient {
 }
 
 extension NativeChatClient {
+    func activeCalls() async throws -> [ActiveCallSummary] {
+        try await api.get("api/calls/active")
+    }
+
     func isCallInvitationPending(id: String) async throws -> Bool {
         guard UUID(uuidString: id) != nil else { throw ZooError.invalidResponse }
         struct Response: Decodable { let pending: Bool }

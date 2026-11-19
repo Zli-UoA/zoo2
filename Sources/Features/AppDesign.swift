@@ -2,8 +2,12 @@ import SwiftUI
 
 enum AppDesign {
     static let tint = Color(uiColor: .systemBlue)
-    static let navigationTint = Color(red: 37.0 / 255, green: 99.0 / 255, blue: 91.0 / 255)
-    static let settingsTint = Color(red: 0.15, green: 0.39, blue: 0.35)
+    // 暗い背景でも選択中のタブやリンクを識別できる明度を保つ。
+    static let navigationTint = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 112.0 / 255, green: 211.0 / 255, blue: 191.0 / 255, alpha: 1)
+            : UIColor(red: 37.0 / 255, green: 99.0 / 255, blue: 91.0 / 255, alpha: 1)
+    })
     static let horizontalInset: CGFloat = 12
     static let spacing: CGFloat = 8
     static let cornerRadius: CGFloat = 16

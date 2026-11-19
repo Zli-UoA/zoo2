@@ -245,6 +245,10 @@ final class PreviewChatClient: ChatClient {
         receive([])
         try await Task.sleep(for: .seconds(86_400))
     }
+    func activeCalls() async throws -> [ActiveCallSummary] {
+        ProcessInfo.processInfo.arguments.contains("--uitesting-active-calls")
+            ? [ActiveCallSummary(channel_id: Self.channelID, participant_count: 2)] : []
+    }
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
         guard ProcessInfo.processInfo.arguments.contains("--uitesting-call") else {
             throw ZooError.rejected(503, "プレビューでは実際の通話を開始しません。")
@@ -451,7 +455,10 @@ final class PreviewChatClient: ChatClient {
                               display_data: MessageDisplayData(reactions: [], attachments: attachmentIDs.compactMap { uploadedAttachments[$0] }))
         allMessages.append(message)
         if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
-            let delay: Double = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") ? 10 : 5
+            let arguments = ProcessInfo.processInfo.arguments
+            // 長い履歴を読み返すテストでは、画面遷移とスクロールの完了後に新着を届ける。
+            let delay: Double = arguments.contains("--uitesting-long-history") ? 30
+                : arguments.contains("--uitesting-short-thread") ? 10 : 5
             incomingReply = (.now.advanced(by: .seconds(delay)), channelID, parentID)
         }
         return message
