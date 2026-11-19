@@ -15,7 +15,6 @@ struct WorkspaceView: View {
                 compactTabs
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
         .sheet(isPresented: Binding(get: { workspace.calls.showingCall }, set: { workspace.calls.showingCall = $0 })) {
             CallView(store: workspace.calls, workspace: workspace)
         }
@@ -52,11 +51,15 @@ struct WorkspaceView: View {
                     InboxView(store: workspace.inbox, workspace: workspace,
                               isActive: workspace.selectedTab == .notifications && scenePhase == .active,
                               openChat: workspace.openInboxMessage)
+                        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                 }
             }
             .badge(workspace.inbox.unreadCount)
             Tab("プロフィール", systemImage: "person.crop.circle.fill", value: WorkspaceTab.profile) {
-                NavigationStack { ProfileView(workspace: workspace, session: session) }
+                NavigationStack {
+                    ProfileView(workspace: workspace, session: session)
+                        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
+                }
             }
         }
     }
@@ -64,6 +67,7 @@ struct WorkspaceView: View {
     private func chatStack(path: Binding<[ChatRoute]>, directMessages: Bool) -> some View {
         NavigationStack(path: path) {
             ConversationDirectory(workspace: workspace, directMessages: directMessages)
+                .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                 .navigationDestination(for: ChatRoute.self) { route in
                     ConversationDestination(workspace: workspace, route: route)
                 }
@@ -76,11 +80,14 @@ struct ConversationDestination: View {
     let route: ChatRoute
 
     var body: some View {
-        if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
-            ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
-        } else {
-            ContentUnavailableView("会話を表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+        Group {
+            if let channel = workspace.channels.first(where: { $0.id == route.channelID }) {
+                ConversationView(store: workspace.conversation(for: channel), workspace: workspace, route: route)
+            } else {
+                ContentUnavailableView("会話を表示できません", systemImage: "bubble.left.and.exclamationmark.bubble.right")
+            }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
     }
 }
 

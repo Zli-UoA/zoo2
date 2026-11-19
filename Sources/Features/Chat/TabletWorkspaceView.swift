@@ -18,9 +18,13 @@ struct TabletWorkspaceView: View {
                 NavigationStack {
                     InboxView(store: workspace.inbox, workspace: workspace, isActive: scenePhase == .active,
                               openChat: workspace.openInboxMessage)
+                        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                 }
             case .profile:
-                NavigationStack { ProfileView(workspace: workspace, session: session) }
+                NavigationStack {
+                    ProfileView(workspace: workspace, session: session)
+                        .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
+                }
             }
         }
     }
@@ -96,6 +100,7 @@ private struct TabletConversations: View {
                         ContentUnavailableView(directMessages ? "DMを選択" : "チャンネルを選択",
                                                systemImage: directMessages ? "bubble.left.and.bubble.right" : "number",
                                                description: Text("左の一覧から会話を開けます。"))
+                            .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                     }
                 }
                 .navigationDestination(for: ChatRoute.self) { route in
