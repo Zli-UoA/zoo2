@@ -143,7 +143,7 @@
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "Closed", "Encrypted"]
+      "states": ["Default", "Filled", "InvalidName", "Closed", "Encrypted"]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
