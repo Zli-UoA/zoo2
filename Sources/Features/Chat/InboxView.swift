@@ -44,6 +44,8 @@ struct InboxView: View {
             .padding(.top, AppDesign.spacing)
         }
         .background(Color(.systemBackground))
+        .navigationTitle("通知")
+        .navigationBarTitleDisplayMode(.large)
         .accessibilityIdentifier("inbox-list")
         .refreshable { await store.refresh() }
         .toolbar {
@@ -190,8 +192,8 @@ private struct InboxCard: View {
                 } else if let text = entry.content { preview(text) }
                 if entry.kind == "follow_request", entry.pendingFollow {
                     HStack {
-                        Button("承認") { respond(true) }.buttonStyle(.glassProminent)
-                        Button("拒否") { respond(false) }.buttonStyle(.glass)
+                        Button("承認") { respond(true) }.buttonStyle(.borderedProminent)
+                        Button("拒否") { respond(false) }.buttonStyle(.bordered)
                     }.disabled(responding)
                 }
             }

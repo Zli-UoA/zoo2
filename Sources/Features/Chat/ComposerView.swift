@@ -122,7 +122,7 @@ struct ComposerView: View {
     }
 
     private var additionSpace: some View {
-        Color.clear.frame(width: 40, height: 40).accessibilityHidden(true).allowsHitTesting(false)
+        Color.clear.frame(width: 44, height: 44).accessibilityHidden(true).allowsHitTesting(false)
     }
 
     private var additions: some View {
@@ -140,9 +140,10 @@ struct ComposerView: View {
             Button("スタンプを挿入", systemImage: "face.smiling") { openEmoji() }
             Button("メンションを挿入", systemImage: "at") { insertMention() }
         } label: {
-            Image(systemName: "plus").font(.system(size: 23, weight: .regular))
-                .foregroundStyle(.secondary).frame(width: 40, height: 40)
-                .background(.primary.opacity(0.05), in: Circle())
+            Image(systemName: "plus").font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.primary).frame(width: 32, height: 32)
+                .background(Color(.tertiarySystemFill), in: Circle())
+                .frame(width: 44, height: 44).contentShape(Rectangle())
         }.accessibilityLabel("メッセージに追加").accessibilityIdentifier("composer-additions")
     }
 
@@ -184,11 +185,12 @@ struct ComposerView: View {
         Button { submitting = true } label: {
             Group {
                 if store.sending.contains(key) { ProgressView() }
-                else { Image(systemName: "paperplane.fill").font(.system(size: 19, weight: .semibold)).rotationEffect(.degrees(45)) }
+                else { Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold)) }
             }
-            .frame(width: 40, height: 40)
+            .frame(width: 32, height: 32)
             .foregroundStyle(canSend ? .white : Color.secondary)
-            .background(canSend ? AppDesign.tint : .clear, in: Circle())
+            .background(canSend ? AppDesign.tint : Color(.tertiarySystemFill), in: Circle())
+            .frame(width: 44, height: 44).contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(!canSend)
         .accessibilityLabel("送信").accessibilityIdentifier(parentID == nil ? "send-message" : "send-reply")

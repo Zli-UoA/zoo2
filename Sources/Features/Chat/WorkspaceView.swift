@@ -118,6 +118,8 @@ private struct ConversationDirectory: View {
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
+        .navigationTitle(directMessages ? "DM" : "チャンネル")
+        .navigationBarTitleDisplayMode(.large)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 if let error = workspace.pinUpdateError {
@@ -172,8 +174,11 @@ private struct ConversationDirectory: View {
                     Text(title)
                     Spacer()
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
                         .accessibilityHidden(true)
                 }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color(.secondaryLabel))
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
@@ -188,20 +193,23 @@ private struct ConversationDirectory: View {
     private func channelRows(_ channels: [Channel]) -> some View {
         ForEach(channels) { channel in
                 NavigationLink(value: ChatRoute.channel(channel.id)) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 12) {
                         if let peer = workspace.directMessagePeer(for: channel) {
                             AvatarView(name: peer.name, url: peer.avatarURL)
                         } else {
-                            Image(systemName: channel.symbol).font(.body).foregroundStyle(.tint)
-                                .frame(minWidth: 24, minHeight: 28)
+                            Image(systemName: channel.symbol)
+                                .font(.body.weight(.medium)).foregroundStyle(.secondary)
+                                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                                .frame(width: AvatarView.size, height: AvatarView.size)
+                                .background(Color(.secondarySystemBackground), in: Circle())
                         }
                         let title = Text(workspace.name(for: channel))
-                            .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
+                            .fontWeight(workspace.unread.contains(channel.id) ? .semibold : .regular)
                         let description = channel.description ?? ""
                         let labels = VStack(alignment: .leading, spacing: 2) {
                             title
                             if !directMessages || !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(.secondary)
+                                Text(description).font(.subheadline).foregroundStyle(.secondary)
                                     .lineLimit(1, reservesSpace: true)
                                     .accessibilityHidden(description.isEmpty)
                             }
@@ -265,7 +273,7 @@ private struct ChannelBrowser: View {
                         }
                         Spacer()
                         Button(channel.archive_at == nil ? "参加" : "開く") { opening = channel }
-                            .buttonStyle(.glass)
+                            .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
                             .accessibilityIdentifier("browse-channel-\(channel.id)")
                     }
                 }
@@ -347,7 +355,7 @@ private struct CreateChannelView: View {
 
     var body: some View {
         NavigationStack {
-            AppList {
+            AppForm {
                 Section("新しいチャンネル") {
                     TextField("チャンネル名", text: $name).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityIdentifier("channel-name")

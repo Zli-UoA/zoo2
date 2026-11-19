@@ -58,7 +58,7 @@ struct CallView: View {
 
     var body: some View {
         NavigationStack {
-            AppList {
+            AppForm {
                 if let channel = store.channel {
                     Section {
                         Label(workspace.name(for: channel), systemImage: "headphones").font(.headline)

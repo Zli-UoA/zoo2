@@ -581,14 +581,15 @@ struct AvatarView: View {
             if let image = phase.image {
                 image.resizable().scaledToFill()
             } else {
-                Text(String(name.prefix(1))).font(dimension < Self.size ? .caption2.bold() : .subheadline.bold())
-                    .lineLimit(1).minimumScaleFactor(0.25).foregroundStyle(.tint)
+                Text(String(name.prefix(1)))
+                    .font(.system(size: dimension * 0.4, weight: .semibold))
+                    .lineLimit(1).minimumScaleFactor(0.25).foregroundStyle(.secondary)
             }
         }
         .id(url)
         .frame(width: dimension, height: dimension)
-        .background(.tint.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: dimension * 12 / Self.size))
+        .background(Color(.secondarySystemBackground))
+        .clipShape(Circle())
         .accessibilityHidden(true)
     }
 }
@@ -609,7 +610,7 @@ struct EditMessageView: View {
 
     var body: some View {
         NavigationStack {
-            AppList {
+            AppForm {
                 TextField("メッセージ", text: $content, axis: .vertical).lineLimit(5...15)
                     .accessibilityIdentifier("edit-message-input")
                 if let error = store.actionError { Text(error).foregroundStyle(.red) }

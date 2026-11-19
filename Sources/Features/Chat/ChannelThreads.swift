@@ -125,7 +125,7 @@ struct ChannelThreadRows: View {
                     Text(thread.reply_count, format: .number).monospacedDigit().foregroundStyle(.secondary)
                         .accessibilityLabel("返信\(thread.reply_count)件")
                 }
-                .font(.subheadline).padding(.leading, 24)
+                .font(.subheadline).padding(.leading, AvatarView.size + 12)
                 .frame(minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)

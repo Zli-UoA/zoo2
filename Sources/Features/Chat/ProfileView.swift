@@ -27,15 +27,16 @@ struct ProfileView: View {
     private var server: URL? { try? ConnectionSettings.secureURL(workspace.client.serverURL) }
 
     var body: some View {
-        AppList {
-            Section("アカウント") {
-                HStack(spacing: AppDesign.spacing) {
-                    AvatarView(name: user.name, url: user.avatarURL)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(user.name).font(.headline)
-                        Text("@\(user.user_name)").foregroundStyle(.secondary)
+        AppForm {
+            Section {
+                HStack(spacing: 12) {
+                    AvatarView(name: user.name, url: user.avatarURL, dimension: 56)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(user.name).font(.title2.bold())
+                        Text("@\(user.user_name)").font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
+                .padding(.vertical, 4)
                 if let url = workspace.client.accountProfileURL {
                     Link("名前・アイコンを編集", destination: url)
                 }
@@ -64,8 +65,11 @@ struct ProfileView: View {
                 .accessibilityIdentifier("workspace-settings")
             }
         }
+        .navigationTitle("プロフィール")
+        .navigationBarTitleDisplayMode(.large)
         .navigationDestination(for: Destination.self) { _ in
             ProfileSettingsView(session: session, webSettings: server?.appending(path: "settings"))
+                .tint(AppDesign.settingsTint)
         }
         .task { await load() }
         .refreshable { await load() }
@@ -112,7 +116,7 @@ private struct ProfileEditor: View {
 
     var body: some View {
         NavigationStack {
-            AppList {
+            AppForm {
                 Section {
                     TextField("表示名", text: $draft.display_name, prompt: Text(draft.default_display_name))
                         .accessibilityIdentifier("profile-name")

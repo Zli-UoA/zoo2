@@ -56,18 +56,18 @@ private struct RootView: View {
                             Text(prompt.verificationURI.absoluteString)
                                 .font(.footnote).textSelection(.enabled)
                             Button("認証画面を開く") { showingVerification = true }
-                                .buttonStyle(.glassProminent)
+                                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
                                 .controlSize(.large)
                                 .accessibilityIdentifier("device-verify")
                         }
                         if session.connecting {
                             ProgressView(session.deviceAuthorization == nil ? "接続しています…" : "承認を待っています…")
                             Button("ログインを中止", systemImage: "xmark") { session.cancelLogin() }
-                                .labelStyle(.iconOnly).buttonStyle(.glass).buttonBorderShape(.circle)
+                                .labelStyle(.iconOnly).buttonStyle(.bordered).buttonBorderShape(.circle)
                                 .accessibilityIdentifier("cancel-login")
                         } else {
                             Button("ログイン") { session.startLogin() }
-                                .buttonStyle(.glassProminent)
+                                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
                                 .controlSize(.large)
                                 .accessibilityIdentifier("login")
                         }

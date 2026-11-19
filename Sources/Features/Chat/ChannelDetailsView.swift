@@ -10,7 +10,7 @@ struct ChannelDetailsView: View {
 
     var body: some View {
         NavigationStack {
-            AppList {
+            AppForm {
                 Section("会話について") {
                     Label(workspace.name(for: channel), systemImage: channel.symbol).font(.headline)
                     if let description = channel.description, !description.isEmpty {
