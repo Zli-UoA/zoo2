@@ -76,7 +76,7 @@ struct ComposerView: View {
                     }
                 }
                 // フォーカスが外れても同じボタンを保ち、表示中のメニューを閉じない。
-                .overlay(alignment: .bottomLeading) { additions }
+                .overlay(alignment: expanded ? .bottomLeading : .leading) { additions }
                 .padding(expanded ? 8 : 4)
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: expanded ? 24 : 28))
                 .overlay(alignment: .top) { mentionPanel }
@@ -144,7 +144,9 @@ struct ComposerView: View {
                 .foregroundStyle(.primary).frame(width: 32, height: 32)
                 .background(Color(.tertiarySystemFill), in: Circle())
                 .frame(width: 44, height: 44).contentShape(Rectangle())
-        }.accessibilityLabel("メッセージに追加").accessibilityIdentifier("composer-additions")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("メッセージに追加").accessibilityIdentifier("composer-additions")
     }
 
     @ViewBuilder private var attachmentDrafts: some View {

@@ -676,6 +676,25 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testComposerAdditionsStayAlignedWithMultilineDraft() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let field = composer(app)
+        field.tap()
+        field.typeText("1行目\n2行目\n3行目")
+        let additions = app.buttons["composer-additions"]
+        let send = app.buttons["send-message"]
+        XCTAssertEqual(additions.frame.midY, send.frame.midY, accuracy: 1)
+        capture(app, name: "複数行を入力中の追加ボタン")
+        app.buttons["dismiss-composer-keyboard"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(additions.frame.midY, send.frame.midY, accuracy: 1)
+        capture(app, name: "キーボードを閉じた複数行の追加ボタン")
+        additions.tap()
+        XCTAssertTrue(app.buttons["composer-attach-file"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testWelcomeHasAccessibleLogin() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
