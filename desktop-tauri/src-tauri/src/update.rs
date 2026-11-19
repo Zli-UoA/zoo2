@@ -1304,11 +1304,17 @@ try {\n\
     $null = $p.Handle\n\
     $p.WaitForExit()\n\
     $code = [int]$p.ExitCode\n\
+    $p.Dispose()\n\
   }\n\
 } catch {\n\
   if ($code -eq 0 -or $code -eq -1) { $code = -1 }\n\
 } finally {\n\
-  if ($installer) { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue }\n\
+  if ($installer) {\n\
+    for ($i = 0; $i -lt 20 -and (Test-Path -LiteralPath $installer); $i++) {\n\
+      Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue\n\
+      if (Test-Path -LiteralPath $installer) { Start-Sleep -Milliseconds 50 }\n\
+    }\n\
+  }\n\
   if ($lockStream) { $lockStream.Dispose() }\n\
   if ($lockPath) { Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue }\n\
 }\n\

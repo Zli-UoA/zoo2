@@ -1566,8 +1566,23 @@ async fn prepare_verified_device_login(
         );
     }
 
-    let deadline = authorized_at + Duration::from_secs(authorization.expires_in);
-    let expires_at = authorized_unix.saturating_add(authorization.expires_in as i64);
+    let deadline = authorized_at
+        .checked_add(Duration::from_secs(authorization.expires_in))
+        .ok_or_else(|| {
+            IpcError::new(
+                ErrorCode::Internal,
+                "認証サーバーが不正な有効期限を返しました",
+            )
+        })?;
+    let expires_at = i64::try_from(authorization.expires_in)
+        .ok()
+        .and_then(|secs| authorized_unix.checked_add(secs))
+        .ok_or_else(|| {
+            IpcError::new(
+                ErrorCode::Internal,
+                "認証サーバーが不正な有効期限を返しました",
+            )
+        })?;
     ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())?;
 
     let login = DeviceLogin {
@@ -1905,7 +1920,8 @@ mod tests {
             "https://login.custom-idp.example/device"
         );
 
-        // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返す
+        // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返し、
+        //    Instant / i64 の表現範囲を超える expires_in (u64::MAX 等) は panic せず IpcError (Internal) を返す
         let expired_start = Instant::now() - Duration::from_secs(600);
         let expired_err = prepare_verified_device_login(
             Some(&client),
@@ -1917,6 +1933,19 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(expired_err.code, ErrorCode::Timeout);
+
+        let mut overflow_auth = ok_auth.clone();
+        overflow_auth.expires_in = u64::MAX;
+        let overflow_err = prepare_verified_device_login(
+            Some(&client),
+            &overflow_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(overflow_err.code, ErrorCode::Internal);
 
         stop.store(true, Ordering::SeqCst);
         let _ = server.join();
