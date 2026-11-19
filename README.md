@@ -4,6 +4,84 @@ SwiftUI と Swift で実装した Zoo の iPhone アプリです。iOS 26 以降
 チャンネル、DM、通知、プロフィールをタブで切り替え、チャットやスレッドをネイティブに表示します。
 REST API と Electric の差分同期で `https://zli.chat` に直接接続します。
 
+## スクリーンショット
+
+2026-11-19 に iPhone 18 Pro・iOS 27.0 シミュレーターで撮影した、ライト表示のアプリ画面です。
+表示内容はテスト用データで、通話は模擬接続です。画像をクリックすると原寸（1206 × 2622）で開きます。
+
+| チャンネル一覧 | DM一覧 | 通知 |
+| :---: | :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/02-channels.png"><img src="artifacts/ios-screenshots-2026-11-19/02-channels.png" alt="チャンネル一覧" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/14-direct-messages.png"><img src="artifacts/ios-screenshots-2026-11-19/14-direct-messages.png" alt="DM一覧" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/15-notifications.png"><img src="artifacts/ios-screenshots-2026-11-19/15-notifications.png" alt="通知" width="230"></a> |
+
+| チャンネルの会話 | スレッド | プロフィール |
+| :---: | :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/03-conversation.png"><img src="artifacts/ios-screenshots-2026-11-19/03-conversation.png" alt="チャンネルの会話" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/04-thread.png"><img src="artifacts/ios-screenshots-2026-11-19/04-thread.png" alt="スレッド" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/16-profile.png"><img src="artifacts/ios-screenshots-2026-11-19/16-profile.png" alt="プロフィール" width="230"></a> |
+
+<details>
+<summary>ログイン・チャンネル詳細・プロフィール編集・設定</summary>
+
+| ログイン | チャンネル詳細 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/01-login.png"><img src="artifacts/ios-screenshots-2026-11-19/01-login.png" alt="ログイン" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/05-channel-details.png"><img src="artifacts/ios-screenshots-2026-11-19/05-channel-details.png" alt="チャンネル詳細" width="230"></a> |
+
+| 公開プロフィール編集 | 設定 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/17-edit-profile.png"><img src="artifacts/ios-screenshots-2026-11-19/17-edit-profile.png" alt="公開プロフィール編集" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/18-settings.png"><img src="artifacts/ios-screenshots-2026-11-19/18-settings.png" alt="設定" width="230"></a> |
+
+</details>
+
+<details>
+<summary>チャンネル検索・作成とDM</summary>
+
+| チャンネルを探す | チャンネル作成 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/10-channel-browser.png"><img src="artifacts/ios-screenshots-2026-11-19/10-channel-browser.png" alt="チャンネルを探す" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/11-create-channel.png"><img src="artifacts/ios-screenshots-2026-11-19/11-create-channel.png" alt="チャンネル作成" width="230"></a> |
+
+| DMの宛先選択 | DMの会話 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/12-dm-recipients.png"><img src="artifacts/ios-screenshots-2026-11-19/12-dm-recipients.png" alt="DMの宛先選択" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/13-direct-message.png"><img src="artifacts/ios-screenshots-2026-11-19/13-direct-message.png" alt="DMの会話" width="230"></a> |
+
+</details>
+
+<details>
+<summary>メッセージ操作・スタンプ・編集</summary>
+
+| メッセージ操作 | スタンプ選択 | リアクションした人 |
+| :---: | :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/07-message-actions.png"><img src="artifacts/ios-screenshots-2026-11-19/07-message-actions.png" alt="メッセージ操作" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/08-emoji-picker.png"><img src="artifacts/ios-screenshots-2026-11-19/08-emoji-picker.png" alt="スタンプ選択" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/09-reaction-members.png"><img src="artifacts/ios-screenshots-2026-11-19/09-reaction-members.png" alt="リアクションした人" width="230"></a> |
+
+| メッセージの追加メニュー | メッセージ編集 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/27-composer-menu.png"><img src="artifacts/ios-screenshots-2026-11-19/27-composer-menu.png" alt="メッセージの追加メニュー" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/28-edit-message.png"><img src="artifacts/ios-screenshots-2026-11-19/28-edit-message.png" alt="メッセージ編集" width="230"></a> |
+
+</details>
+
+<details>
+<summary>画像・PDF・動画</summary>
+
+| 画像プレビュー | PDF添付の会話 | PDFプレビュー |
+| :---: | :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/06-image-preview.png"><img src="artifacts/ios-screenshots-2026-11-19/06-image-preview.png" alt="画像プレビュー" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/23-pdf-attachment.png"><img src="artifacts/ios-screenshots-2026-11-19/23-pdf-attachment.png" alt="PDF添付の会話" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/24-pdf-preview.png"><img src="artifacts/ios-screenshots-2026-11-19/24-pdf-preview.png" alt="PDFプレビュー" width="230"></a> |
+
+| 動画添付の会話 | 動画再生 | 動画の全画面再生 |
+| :---: | :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/25-video-attachment.png"><img src="artifacts/ios-screenshots-2026-11-19/25-video-attachment.png" alt="動画添付の会話" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/26-video-playback.png"><img src="artifacts/ios-screenshots-2026-11-19/26-video-playback.png" alt="動画再生" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/29-video-fullscreen.png"><img src="artifacts/ios-screenshots-2026-11-19/29-video-fullscreen.png" alt="動画の全画面再生" width="230"></a> |
+
+</details>
+
+<details>
+<summary>音声通話・招待・着信</summary>
+
+| 音声通話 | 通話メンバーの招待 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/19-voice-call.png"><img src="artifacts/ios-screenshots-2026-11-19/19-voice-call.png" alt="音声通話" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/20-call-invitation.png"><img src="artifacts/ios-screenshots-2026-11-19/20-call-invitation.png" alt="通話メンバーの招待" width="230"></a> |
+
+| 通話中の会話 | 着信 |
+| :---: | :---: |
+| <a href="artifacts/ios-screenshots-2026-11-19/21-active-call.png"><img src="artifacts/ios-screenshots-2026-11-19/21-active-call.png" alt="通話中の会話" width="230"></a> | <a href="artifacts/ios-screenshots-2026-11-19/22-incoming-call.png"><img src="artifacts/ios-screenshots-2026-11-19/22-incoming-call.png" alt="着信" width="230"></a> |
+
+</details>
+
 ## 技術構成
 
 - Xcode 27.2、Apple Swift 6.4.2、iOS 27.2 SDK。Swift 6 言語モードの厳格な並行性チェックを使用。
