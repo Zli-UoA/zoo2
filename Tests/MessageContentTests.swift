@@ -63,20 +63,20 @@ struct MessageRenderCacheTests {
                                            file_name: pdf ? "確認資料.pdf" : "縦長画像.png",
                                            content_type: pdf ? "application/pdf" : "image/png", is_sensitive: true)
         let state = AttachmentRenderState(attachment: attachment)
-        await state.load(workspace: workspace)
-        if pdf { #expect(state.url == nil) }
-        else { #expect(state.url != nil && state.image != nil && !state.revealed) }
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
+        if pdf { #expect(state.pdfThumbnail == nil) }
+        else { #expect(state.image != nil && !state.revealed) }
         let preloaded = state.image
         state.revealed = true
-        await state.load(workspace: workspace)
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
         let original = try #require(pdf ? state.pdfThumbnail : state.image)
         if !pdf { #expect(original === preloaded) }
         #expect(max(original.size.width, original.size.height) <= 1200)
         state.cancelLoad()
-        await state.load(workspace: workspace)
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
         #expect((pdf ? state.pdfThumbnail : state.image) === original)
         state.retryLoading()
-        await state.load(workspace: workspace)
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
         #expect((pdf ? state.pdfThumbnail : state.image) !== original)
         #expect(state.error == nil)
     }
@@ -98,7 +98,7 @@ struct MessageRenderCacheTests {
         message.inlineImages[url] = image
         await Task { @MainActor in
             withUnsafeCurrentTask { $0?.cancel() }
-            await attachment.load(workspace: workspace)
+            await attachment.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
             await message.loadInlineImages([])
         }.value
         #expect(attachment.url == nil && attachment.error == nil)

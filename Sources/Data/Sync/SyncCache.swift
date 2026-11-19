@@ -46,8 +46,9 @@ actor SyncCache {
     private var channelVersions: [String: UUID] = [:]
     private var blockedChannels: Set<String> = []
     private var notificationVersions: [String: UUID] = [:]
+    private var attachmentFiles: AttachmentDiskCache?
 
-    @concurrent static func open(inMemory: Bool = false, url: URL? = nil) async throws -> SyncCache {
+    @concurrent static func open(inMemory: Bool = false, url: URL? = nil, attachmentDirectory: URL? = nil) async throws -> SyncCache {
         let schema = Schema([CachedSyncRecord.self, CachedSyncAccount.self])
         let configuration: ModelConfiguration
         if let url {
@@ -56,7 +57,19 @@ actor SyncCache {
             configuration = ModelConfiguration("ElectricCache", schema: schema,
                                                isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
         }
-        return try SyncCache(modelContainer: ModelContainer(for: schema, configurations: configuration))
+        let cache = try SyncCache(modelContainer: ModelContainer(for: schema, configurations: configuration))
+        let directory = attachmentDirectory ?? url.map { $0.appendingPathExtension("attachments") }
+            ?? (inMemory ? nil : URL.cachesDirectory.appendingPathComponent("ZooAttachments-v1"))
+        await cache.configureAttachments(directory)
+        return cache
+    }
+
+    private func configureAttachments(_ directory: URL?) {
+        attachmentFiles = directory.map { AttachmentDiskCache(directory: $0) }
+        let prefix = "attachment-files:"
+        if let records = try? modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.resource.starts(with: prefix) })) {
+            attachmentFiles?.removeOrphans(keeping: Set(records.compactMap { String(data: $0.payload, encoding: .utf8) }))
+        }
     }
 
     static func connectionKey(_ settings: ConnectionSettings) -> String {
@@ -128,6 +141,47 @@ actor SyncCache {
         try save()
     }
 
+    func loadAttachment(_ attachment: MessageAttachment, channelID: String, version: UUID,
+                        reload: Bool, lease: SyncLease) throws -> Data? {
+        try check(lease)
+        try checkChannel(channelID, version: version, lease: lease)
+        guard let attachmentFiles else { return nil }
+        guard let namespace = try? attachmentNamespace(channelID: channelID, version: version, lease: lease) else { return nil }
+        if reload {
+            try? attachmentFiles.remove(account: lease.account, channelID: channelID, namespace: namespace, attachmentID: attachment.id)
+            return nil
+        }
+        // キャッシュがOSに消された場合や読み出せない場合は、通常の取得へ戻す。
+        return try? attachmentFiles.load(attachment, account: lease.account, channelID: channelID, namespace: namespace)
+    }
+
+    func storeAttachment(_ data: Data, attachment: MessageAttachment, channelID: String,
+                         version: UUID, lease: SyncLease) throws {
+        try check(lease)
+        try checkChannel(channelID, version: version, lease: lease)
+        guard let attachmentFiles else { return }
+        guard let namespace = try? attachmentNamespace(channelID: channelID, version: version, lease: lease) else { return }
+        // 空き容量不足でも、通信で取得した添付の表示は継続する。
+        try? attachmentFiles.store(data, attachment: attachment, account: lease.account, channelID: channelID, namespace: namespace)
+    }
+
+    private func attachmentNamespace(channelID: String, version: UUID, lease: SyncLease) throws -> String {
+        let resource = "attachment-files:" + channelID
+        if let data = try load(resource, lease: lease), let value = String(data: data, encoding: .utf8), UUID(uuidString: value) != nil {
+            return value
+        }
+        // 削除不能な古いファイルが残っても、失効後は別の保存先を使う。
+        let value = UUID().uuidString
+        try store(Data(value.utf8), resource: resource, channelID: channelID, channelVersion: version, lease: lease)
+        return value
+    }
+
+    private func checkChannel(_ id: String, version: UUID, lease: SyncLease) throws {
+        let key = lease.account + ":" + id
+        guard !blockedChannels.contains(key), channelVersions[key].map({ $0 == version }) ?? true else { throw CancellationError() }
+        channelVersions[key] = version
+    }
+
     func revokeChannel(_ channelID: String, version: UUID = UUID(), notificationVersion: UUID = UUID(), lease: SyncLease) throws {
         guard leases[lease.account] == lease.generation else { throw CancellationError() }
         let account = lease.account
@@ -135,6 +189,7 @@ actor SyncCache {
         channelVersions[key] = version
         blockedChannels.insert(key)
         notificationVersions[account] = notificationVersion
+        try? attachmentFiles?.remove(account: account, channelID: channelID)
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
         // 通知の本文にも会話の情報が含まれるため、通知の控えも再取得する。
         let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
@@ -169,6 +224,7 @@ actor SyncCache {
     }
 
     private func deleteRecords(account: String) throws {
+        try? attachmentFiles?.remove(account: account)
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account })
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
         blockedChannels = blockedChannels.filter { !$0.hasPrefix(account + ":") }

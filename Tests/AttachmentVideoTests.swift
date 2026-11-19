@@ -13,14 +13,14 @@ struct AttachmentVideoTests {
         let attachment = MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "動画.mp4",
                                            content_type: "video/mp4", is_sensitive: true)
         let state = AttachmentRenderState(attachment: attachment)
-        await state.load(workspace: workspace)
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
         #expect(state.url == nil && state.videoThumbnail == nil)
         state.revealed = true
-        await state.load(workspace: workspace)
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
         let poster = try #require(state.videoThumbnail)
         #expect(poster.size.width == 320 && poster.size.height == 180)
         state.cancelLoad()
-        await state.load(workspace: workspace)
+        await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
         #expect(state.videoThumbnail === poster)
         #expect(workspace.videoPlayback.session == nil)
     }

@@ -16,6 +16,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func readState(channelID: String) async throws -> ChannelReadState
     func attachmentURL(id: String) async throws -> URL
     func attachmentData(from url: URL) async throws -> Data
+    func attachmentData(_ attachment: MessageAttachment, channelID: String?, reload: Bool) async throws -> Data
     func readStates() async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws
@@ -44,6 +45,11 @@ struct CachedWorkspace: Sendable {
 }
 
 extension ChatClient {
+    func attachmentData(_ attachment: MessageAttachment, channelID: String? = nil, reload: Bool = false) async throws -> Data {
+        let url = try await attachmentURL(id: attachment.id)
+        try Task.checkCancellation()
+        return try await attachmentData(from: url)
+    }
     func cachedWorkspace() async throws -> CachedWorkspace? { nil }
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
@@ -140,11 +146,42 @@ struct NativeChatClient: ChatClient {
     func attachmentData(from url: URL) async throws -> Data {
         guard DisplayEmoji.assetURL(url.absoluteString) != nil else { throw ZooError.invalidResponse }
         // 署名付きURLにはAPIの認証トークンを付けず、ストレージの401でログアウトさせない。
-        let (data, response) = try await api.transport.send(URLRequest(url: url))
+        let (data, response) = try await api.transport.send(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
         try Task.checkCancellation()
         guard (200..<300).contains(response.statusCode) else {
             throw ZooError.rejected(response.statusCode, "添付ファイルを取得できませんでした。")
         }
+        return data
+    }
+
+    func attachmentData(_ attachment: MessageAttachment, channelID: String? = nil, reload: Bool = false) async throws -> Data {
+        guard let sync, let channelID, attachment.isImage || attachment.isPDF else {
+            let url = try await attachmentURL(id: attachment.id)
+            try Task.checkCancellation()
+            return try await attachmentData(from: url)
+        }
+        _ = try segment(attachment.id)
+        _ = try segment(channelID)
+        let version = sync.channelVersion(channelID)
+        try sync.check(channelID: channelID, channelVersion: version)
+        let cached = try await sync.cache.loadAttachment(attachment, channelID: channelID, version: version,
+                                                        reload: reload, lease: sync.lease)
+        try sync.check(channelID: channelID, channelVersion: version)
+        if let cached { return cached }
+        let url: URL
+        do { url = try await attachmentURL(id: attachment.id) }
+        catch {
+            try sync.check(channelID: channelID, channelVersion: version)
+            if case ZooError.rejected(let status, _) = error, status == 403 || status == 404 {
+                _ = try await sync.cache.loadAttachment(attachment, channelID: channelID, version: version, reload: true, lease: sync.lease)
+            }
+            throw error
+        }
+        try sync.check(channelID: channelID, channelVersion: version)
+        let data = try await attachmentData(from: url)
+        try sync.check(channelID: channelID, channelVersion: version)
+        try await sync.cache.storeAttachment(data, attachment: attachment, channelID: channelID, version: version, lease: sync.lease)
+        try sync.check(channelID: channelID, channelVersion: version)
         return data
     }
 
