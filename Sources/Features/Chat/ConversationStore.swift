@@ -9,9 +9,11 @@ final class ConversationStore {
     let userID: String
     private let client: any ChatClient
     private(set) var messages: [Message] = [] {
-        didSet { messagesByID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) }) }
+        didSet { indexMessages() }
     }
     private var messagesByID: [String: Message] = [:]
+    private(set) var roots: [Message] = []
+    private var repliesByParent: [String: [Message]] = [:]
     private(set) var loading = true
     private(set) var syncError: String?
     private(set) var blocked = false
@@ -64,17 +66,30 @@ final class ConversationStore {
     }
 
     var canPost: Bool { active && !blocked && channel.canPost }
-    var roots: [Message] {
-        let ids = Set(messages.map(\.id))
-        return messages.filter { $0.parent_id == nil || !ids.contains($0.parent_id!) }
-    }
     func message(id: String) -> Message? { messagesByID[id] }
     var focusedThreadID: String? {
         guard let focusedMessageID, let parent = messagesByID[focusedMessageID]?.parent_id,
               messagesByID[parent] != nil else { return nil }
         return parent
     }
-    func replies(to id: String) -> [Message] { messages.filter { $0.parent_id == id } }
+    func replies(to id: String) -> [Message] { repliesByParent[id] ?? [] }
+
+    private func indexMessages() {
+        let byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        var roots: [Message] = []
+        var replies: [String: [Message]] = [:]
+        for message in messages {
+            if let parentID = message.parent_id {
+                replies[parentID, default: []].append(message)
+                if byID[parentID] == nil { roots.append(message) }
+            } else {
+                roots.append(message)
+            }
+        }
+        messagesByID = byID
+        self.roots = roots
+        repliesByParent = replies
+    }
     func prepareForThread(_ id: String) {
         focusedMessageID = nil
         if messagesByID[id] == nil { loading = true }
@@ -247,10 +262,14 @@ final class ConversationStore {
             if rows[id] == nil || rows[id]?.deleted_at != nil { deletedIDs.remove(id) }
             rows[id] = nil
         }
-        messages = rows.values.filter { $0.deleted_at == nil }.sorted {
-            let left = $0.date ?? .distantPast
-            let right = $1.date ?? .distantPast
-            return left == right ? $0.id < $1.id : left < right
+        rows = rows.filter { $0.value.deleted_at == nil }
+        if rows != messagesByID {
+            // 比較のたびに日時を解析すると、長い履歴の更新中にメインスレッドを占有する。
+            var dated: [(message: Message, date: Date)] = rows.values.map { ($0, $0.date ?? .distantPast) }
+            dated.sort { left, right in
+                left.date == right.date ? left.message.id < right.message.id : left.date < right.date
+            }
+            messages = dated.map { $0.message }
         }
         reconcileReactionWrites()
     }

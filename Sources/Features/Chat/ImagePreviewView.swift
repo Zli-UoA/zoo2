@@ -3,28 +3,33 @@ import SwiftUI
 struct ImagePreviewView: UIViewRepresentable {
     let image: UIImage
     var onDismiss: () -> Void
+    var onZoomChanged: (Bool) -> Void = { _ in }
 
     func makeUIView(context: Context) -> AttachmentImageScrollView {
-        AttachmentImageScrollView(image: image, onDismiss: onDismiss)
+        AttachmentImageScrollView(image: image, onDismiss: onDismiss, onZoomChanged: onZoomChanged)
     }
 
     func updateUIView(_ view: AttachmentImageScrollView, context: Context) {
         view.onDismiss = onDismiss
+        view.onZoomChanged = onZoomChanged
     }
 }
 
 final class AttachmentImageScrollView: UIScrollView, UIScrollViewDelegate {
     let imageView: UIImageView
     var onDismiss: () -> Void
+    var onZoomChanged: (Bool) -> Void
+    private var reportedZoomed = false
     private var viewportSize: CGSize = .zero
     private lazy var dismissGesture = AttachmentPreviewDismissGesture(view: self, canDismiss: { [weak self] in
         guard let self else { return false }
         return zoomScale <= minimumZoomScale
     }, onDismiss: { [weak self] in self?.onDismiss() })
 
-    init(image: UIImage, onDismiss: @escaping () -> Void) {
+    init(image: UIImage, onDismiss: @escaping () -> Void, onZoomChanged: @escaping (Bool) -> Void = { _ in }) {
         imageView = UIImageView(image: image)
         self.onDismiss = onDismiss
+        self.onZoomChanged = onZoomChanged
         super.init(frame: .zero)
         delegate = self
         minimumZoomScale = 1
@@ -65,7 +70,14 @@ final class AttachmentImageScrollView: UIScrollView, UIScrollViewDelegate {
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
 
-    func scrollViewDidZoom(_ scrollView: UIScrollView) { centerImage() }
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        centerImage()
+        let zoomed = zoomScale > minimumZoomScale
+        if reportedZoomed != zoomed {
+            reportedZoomed = zoomed
+            onZoomChanged(zoomed)
+        }
+    }
 
     private func centerImage() {
         let horizontal = max(0, (bounds.width - imageView.frame.width) / 2)

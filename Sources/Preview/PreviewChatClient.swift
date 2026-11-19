@@ -27,18 +27,22 @@ enum PreviewImage {
         switch path {
         case "/stamp.png": stamp
         case "/tall.png": tall
+        case "/wide.png": wide
         default: nil
         }
     }
 
     private static let stamp = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR4nO3T0QmAMAyE4W7mNI7lVK7hDu0AtvaO5FqCOcib+H8glpKLuOe86ui2xuUIJC5F/A/ABF1BnmEaooxPESvin4hQgHofr1sG6MVZRAJMf4IVMIyjCAtgGrcg3OLop2AvAQmIBfBG0HEUgT5jGvpSSTynXgP20vIB9b499AAAAABJRU5ErkJggg==")
-    private static let tall: Data? = {
-        guard let context = CGContext(data: nil, width: 240, height: 1600, bitsPerComponent: 8,
+    private static let tall = stripedImage(width: 240, height: 1600)
+    private static let wide = stripedImage(width: 1600, height: 400)
+
+    private static func stripedImage(width: Int, height: Int) -> Data? {
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                       bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         for row in 0..<8 {
             context.setFillColor(CGColor(red: CGFloat(row) / 10, green: 0.5, blue: 0.8, alpha: 1))
-            context.fill(CGRect(x: 0, y: row * 200, width: 240, height: 200))
+            context.fill(CGRect(x: 0, y: row * height / 8, width: width, height: height / 8))
         }
         let bytes = NSMutableData()
         guard let image = context.makeImage(),
@@ -46,13 +50,13 @@ enum PreviewImage {
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return bytes as Data
-    }()
+    }
 }
 
 // 可変な共有状態を持たず、UI テスト専用画像を同期で返して外部配信に依存させない。
 final class PreviewEmojiURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == "ui.test.invalid" && ["/stamp.png", "/tall.png"].contains(request.url?.path ?? "")
+        request.url?.host == "ui.test.invalid" && ["/stamp.png", "/tall.png", "/wide.png"].contains(request.url?.path ?? "")
     }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -150,9 +154,22 @@ final class PreviewChatClient: ChatClient {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", file_name: "さくら.png", content_type: "image/png")]
             allMessages[1].created_at = "2026-11-19T09:01:00Z"
         }
-        if ProcessInfo.processInfo.arguments.contains("--uitesting-tall-image") {
-            allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04",
-                file_name: "縦長画像.png", content_type: "image/png")]
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-tall-image") || ProcessInfo.processInfo.arguments.contains("--uitesting-wide-image") {
+            let wide = ProcessInfo.processInfo.arguments.contains("--uitesting-wide-image")
+            allMessages[0].display_data?.attachments = [MessageAttachment(id: wide ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04",
+                file_name: wide ? "横長画像.png" : "縦長画像.png", content_type: "image/png",
+                is_sensitive: ProcessInfo.processInfo.arguments.contains("--uitesting-sensitive-image"))]
+            if ProcessInfo.processInfo.arguments.contains("--uitesting-sensitive-image") { allMessages[0].content = "" }
+        }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-multiple-images") {
+            allMessages[0].content = ""
+            allMessages[0].display_data?.attachments = [
+                MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", file_name: "さくら.png", content_type: "image/png"),
+                MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03", file_name: "確認資料.pdf", content_type: "application/pdf"),
+                MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04", file_name: "縦長画像.png", content_type: "image/png"),
+                MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06", file_name: "横長画像.png", content_type: "image/png"),
+                MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa05", file_name: "センシティブ画像.png", content_type: "image/png", is_sensitive: true)
+            ]
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-video") {
             allMessages[0].display_data?.attachments = [MessageAttachment(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", file_name: "確認用.mp4", content_type: "video/mp4",
@@ -168,6 +185,16 @@ final class PreviewChatClient: ChatClient {
                                        channel_id: Self.channelID, content: "参加中のスレッドです",
                                        created_at: "2026-11-18T09:02:00Z", parent_id: Self.messageID))
         }
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-long-thread") || ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") {
+            let count = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") ? 4 : 30
+            allMessages += (1...count).map { index in
+                Message(id: "preview-thread-reply-\(index)",
+                        user_id: [colleague.id, currentUser.id, otherColleague.id][index % 3],
+                        channel_id: Self.channelID, content: "スレッドの返信 \(index)",
+                        created_at: Date(timeIntervalSince1970: 1_795_000_000 + Double(index)).ISO8601Format(),
+                        parent_id: Self.messageID, display_data: MessageDisplayData(reactions: []))
+            }
+        }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-long-history") {
             allMessages = (1...60).map { index in
                 Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: Self.channelID,
@@ -181,7 +208,8 @@ final class PreviewChatClient: ChatClient {
         }
         if ProcessInfo.processInfo.arguments.contains("--uitesting-varied-history") {
             for index in allMessages.indices.dropLast() {
-                allMessages[index].content += String(repeating: "\n高さの異なるメッセージのスクロール確認", count: index % 6)
+                let lines = index % 12 == 6 ? 40 : index % 6
+                allMessages[index].content += String(repeating: "\n@you @sakura 高さの異なるメッセージのスクロール確認", count: lines)
             }
         }
     }
@@ -266,6 +294,7 @@ final class PreviewChatClient: ChatClient {
     }
 
     func attachmentURL(id: String) async throws -> URL {
+        if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06" { return URL(string: serverURL + "/wide.png")! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04" { return URL(string: serverURL + "/tall.png")! }
         if id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03" {
             pdfURLRequests += 1
@@ -352,11 +381,13 @@ final class PreviewChatClient: ChatClient {
         while !Task.isCancelled {
             if let incomingReply, ContinuousClock.now >= incomingReply.at {
                 self.incomingReply = nil
+                let replyContent = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread")
+                    ? "別の端末からの返信\n追加の確認事項です。\n返信が増えても\n最新の内容を\n入力欄の上に\n表示します。" : "別の端末からの返信"
                 allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: incomingReply.channelID,
                                            content: "別の端末からの新着", created_at: Date().ISO8601Format(),
                                            display_data: MessageDisplayData(reactions: [])))
                 allMessages.append(Message(id: UUID().uuidString.lowercased(), user_id: colleague.id, channel_id: incomingReply.channelID,
-                                           content: "別の端末からの返信", created_at: Date().ISO8601Format(), parent_id: incomingReply.parentID,
+                                           content: replyContent, created_at: Date().ISO8601Format(), parent_id: incomingReply.parentID,
                                            display_data: MessageDisplayData(reactions: [])))
             }
             receive(allMessages.filter { $0.channel_id == channelID })
@@ -390,7 +421,8 @@ final class PreviewChatClient: ChatClient {
                               display_data: MessageDisplayData(reactions: [], attachments: attachmentIDs.compactMap { uploadedAttachments[$0] }))
         allMessages.append(message)
         if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
-            incomingReply = (.now.advanced(by: .seconds(5)), channelID, parentID)
+            let delay: Double = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread") ? 10 : 5
+            incomingReply = (.now.advanced(by: .seconds(delay)), channelID, parentID)
         }
         return message
     }

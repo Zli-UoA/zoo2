@@ -70,12 +70,6 @@ struct ComposerView: View {
                     if expanded {
                         HStack(spacing: 4) {
                             additionSpace
-                            Button { openEmoji() } label: {
-                                Image(systemName: "face.smiling").font(.system(size: 21)).frame(width: 40, height: 40)
-                            }.accessibilityLabel("スタンプを挿入").accessibilityIdentifier("composer-emoji")
-                            Button { insertMention() } label: {
-                                Image(systemName: "at").font(.system(size: 21)).frame(width: 40, height: 40)
-                            }.accessibilityLabel("メンションを挿入").accessibilityIdentifier("composer-mention")
                             Spacer(minLength: 0)
                             sendButton
                         }.foregroundStyle(.secondary).padding(.top, 4)
