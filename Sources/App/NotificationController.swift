@@ -325,7 +325,7 @@ final class NotificationController {
 
 @MainActor
 final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    let session = AppSession.configured()
+    let session = AppSession.shared
     var controller: NotificationController?
     let systemCalls = SystemCallController()
     private var pendingMessageTap: PushDestination?
@@ -338,6 +338,7 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         if !AppSession.isUITesting {
+            ZooShortcuts.updateAppShortcutParameters()
             bind(session.notifications)
             systemCalls.bind(session)
             systemCalls.setForeground(application.applicationState == .active)

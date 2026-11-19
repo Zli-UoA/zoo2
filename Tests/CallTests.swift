@@ -441,6 +441,40 @@ struct CallStoreTests {
         #expect(store.channel == nil)
     }
 
+    @Test("Siriの発信結果は接続完了後に返し、マイク拒否は失敗として返す", arguments: [false, true])
+    func shortcutCallWaitsForConnection(allowed: Bool) async throws {
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        let media = FakeCallMedia()
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { allowed })
+        defer { store.shutdown() }
+        if allowed {
+            try await store.startAndWait(channel: channel)
+            #expect(store.ready && media.started)
+            await #expect(throws: ZooError.self) { try await store.startAndWait(channel: channel) }
+            #expect(store.ready)
+        } else {
+            await #expect(throws: ZooError.self) { try await store.startAndWait(channel: channel) }
+            #expect(!store.ready && !media.started && store.channel == nil)
+        }
+    }
+
+    @Test("Siriの発信待ちをキャンセルしたら接続とマイクを終了する")
+    func cancelledShortcutCall() async throws {
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { true })
+        defer { store.shutdown() }
+        let started = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish() }
+        client.delivered = { started.continuation.yield(()) }
+        let pending = Task { try await store.startAndWait(channel: channel) }
+        for await _ in started.stream { break }
+        pending.cancel()
+        await #expect(throws: CancellationError.self) { try await pending.value }
+        #expect(store.channel == nil && !store.ready)
+    }
+
     @Test("暗号化チャンネルでも着信に応答して通話へ参加できる")
     func encryptedInvitation() async throws {
         var encrypted = channel
