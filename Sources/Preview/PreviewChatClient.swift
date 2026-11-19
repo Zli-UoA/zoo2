@@ -148,6 +148,7 @@ final class PreviewChatClient: ChatClient {
 
     init(failNextSend: Bool = ProcessInfo.processInfo.arguments.contains("--uitesting-send-failure")) {
         self.failNextSend = failNextSend
+        allChannels[0].created_user_id = currentUser.id
         if ProcessInfo.processInfo.arguments.contains("--uitesting-incoming-call") {
             callInvitations = [CallInvitation(id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa001", channel_id: Self.channelID,
                 inviter_id: colleague.id, invitee_id: currentUser.id, status: "pending",
@@ -515,9 +516,27 @@ final class PreviewChatClient: ChatClient {
         readPositions[channelID] = allMessages.first { $0.id == messageID }?.created_at
     }
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
-        let channel = Channel(id: id, channel_name: name, description: description, is_private: isPrivate, is_dm: false)
+        let channel = Channel(id: id, channel_name: name, description: description, is_private: isPrivate, is_dm: false,
+                              created_user_id: currentUser.id)
         allChannels.append(channel)
         return channel
+    }
+    func updateChannel(id: String, name: String?, description: String) async throws -> Channel {
+        guard let index = allChannels.firstIndex(where: { $0.id == id }), allChannels[index].canManage(by: currentUser) else {
+            throw ZooError.rejected(403, "チャンネルを変更できません。")
+        }
+        if let name { allChannels[index].channel_name = name }
+        allChannels[index].description = description
+        allChannels[index].updated_at = Date().ISO8601Format()
+        return allChannels[index]
+    }
+    func archiveChannel(id: String) async throws -> Channel {
+        guard let index = allChannels.firstIndex(where: { $0.id == id }), allChannels[index].canManage(by: currentUser) else {
+            throw ZooError.rejected(403, "チャンネルを変更できません。")
+        }
+        allChannels[index].archive_at = Date().ISO8601Format()
+        allChannels[index].updated_at = allChannels[index].archive_at
+        return allChannels[index]
     }
     func dmMemberships() async throws -> [ChannelMembership] { memberships }
 

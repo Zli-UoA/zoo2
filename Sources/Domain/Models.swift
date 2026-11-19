@@ -54,10 +54,17 @@ struct Channel: Codable, Identifiable, Hashable, Sendable {
     var archive_at: String?
     var deleted_at: String?
     var encrypted: Bool?
+    var created_user_id: String? = nil
+    var updated_at: String? = nil
 
     var canPost: Bool { archive_at == nil && deleted_at == nil && encrypted != true }
     var canCall: Bool { archive_at == nil && deleted_at == nil }
     var symbol: String { encrypted == true ? "lock.shield" : is_dm ? "bubble.left.and.bubble.right" : is_private ? "lock" : "number" }
+
+    func canManage(by user: Person) -> Bool {
+        !is_dm && deleted_at == nil && archive_at == nil && !user.is_deactivated &&
+        (created_user_id == user.id || user.is_admin == true)
+    }
 }
 
 struct ChannelReadState: Codable, Sendable {
@@ -74,6 +81,8 @@ extension Channel {
         description = try values.decodeIfPresent(String.self, forKey: .description)
         archive_at = try values.decodeIfPresent(String.self, forKey: .archive_at)
         deleted_at = try values.decodeIfPresent(String.self, forKey: .deleted_at)
+        created_user_id = try values.decodeIfPresent(String.self, forKey: .created_user_id)
+        updated_at = try values.decodeIfPresent(String.self, forKey: .updated_at)
         func flag(_ key: CodingKeys) throws -> Bool? {
             guard let raw = try values.decodeIfPresent(JSONValue.self, forKey: key) else { return nil }
             switch raw {

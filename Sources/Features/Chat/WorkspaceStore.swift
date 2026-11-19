@@ -49,6 +49,8 @@ final class WorkspaceStore {
     private var accountGeneration = UUID()
     private(set) var loading = false
     private(set) var hasLoaded = false
+    private(set) var updatingChannels: Set<String> = []
+    private var channelWrites: [String: Channel] = [:]
     var error: String?
     var selectedTab: WorkspaceTab = .channels {
         didSet { if oldValue != selectedTab { tabVisit = UUID() } }
@@ -131,7 +133,22 @@ final class WorkspaceStore {
             let (channels, people, states) = try await (channelResult, peopleResult, readResult)
             try Task.checkCancellation()
             guard active, channelGeneration == epoch else { return }
-            self.channels = channels.filter { $0.deleted_at == nil }.sorted {
+            self.channels = channels.filter { $0.deleted_at == nil }.map { incoming in
+                guard let written = channelWrites[incoming.id] else { return incoming }
+                let caughtUp = incoming.updated_at.flatMap(ZooDate.parse).map { date in
+                    written.updated_at.flatMap(ZooDate.parse).map { date >= $0 } ?? false
+                } ?? false
+                if caughtUp || incoming == written {
+                    channelWrites[incoming.id] = nil
+                    return incoming
+                }
+                // 書き込み直後の古いshapeでは編集した項目だけを保持し、閲覧権限の属性は同期結果を使う。
+                var merged = incoming
+                merged.channel_name = written.channel_name
+                merged.description = written.description
+                merged.archive_at = written.archive_at
+                return merged
+            }.sorted {
                 $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending
             }
             self.people = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
@@ -140,6 +157,7 @@ final class WorkspaceStore {
             unread = Set(states.filter(\.has_unread).map(\.channel_id)).subtracting(readDuringRefresh)
             joinedChannelIDs = Set(states.map(\.channel_id))
             let visibleIDs = Set(self.channels.map(\.id))
+            channelWrites = channelWrites.filter { visibleIDs.contains($0.key) }
             channelPath.removeAll { !visibleIDs.contains($0.channelID) }
             dmPath.removeAll { !visibleIDs.contains($0.channelID) }
             if let lastChannelID, !visibleIDs.contains(lastChannelID) { self.lastChannelID = nil }
@@ -364,6 +382,39 @@ final class WorkspaceStore {
         else { channelPath = [.channel(channel.id)] }
     }
 
+    func updateChannel(_ channel: Channel, name: String, description: String) async throws {
+        try await mutateChannel(channel) {
+            try await client.updateChannel(id: channel.id, name: name == channel.channel_name ? nil : name, description: description)
+        }
+    }
+
+    func archiveChannel(_ channel: Channel) async throws {
+        try await mutateChannel(channel) { try await client.archiveChannel(id: channel.id) }
+    }
+
+    private func mutateChannel(_ channel: Channel, write: () async throws -> Channel) async throws {
+        guard active, let current = channels.first(where: { $0.id == channel.id }), current.canManage(by: user),
+              conversations[channel.id]?.blocked != true else {
+            throw ZooError.rejected(403, "このチャンネルを変更する権限がありません。")
+        }
+        guard updatingChannels.insert(channel.id).inserted else {
+            throw ZooError.rejected(409, "このチャンネルの変更が完了するまでお待ちください。")
+        }
+        defer { updatingChannels.remove(channel.id) }
+        channelGeneration = UUID()
+        let updated = try await write()
+        try Task.checkCancellation()
+        guard active, updated.id == channel.id, let index = channels.firstIndex(where: { $0.id == channel.id }),
+              conversations[channel.id]?.blocked != true else { throw CancellationError() }
+        if let currentDate = channels[index].updated_at.flatMap(ZooDate.parse),
+           let responseDate = updated.updated_at.flatMap(ZooDate.parse), currentDate > responseDate { return }
+        channelGeneration = UUID()
+        channelWrites[channel.id] = updated
+        channels[index] = updated
+        conversations[channel.id]?.update(updated)
+        if updated.archive_at != nil, calls.channel?.id == channel.id { calls.finish() }
+    }
+
     func openThread(_ parentID: String, in store: ConversationStore, focusComposer: Bool) {
         guard active, path.last == .channel(store.channel.id), !store.blocked,
               store.channel.encrypted != true, store.message(id: parentID) != nil else { return }
@@ -456,6 +507,7 @@ final class WorkspaceStore {
         pinnedChannelIDs = []; pinsError = nil; channelMembers = [:]; memberErrors = [:]
         pinsVersion = nil; pinUpdateError = nil
         channels = []
+        channelWrites = [:]
         people = [:]
         resolvedAuthors = [:]
         unread = []

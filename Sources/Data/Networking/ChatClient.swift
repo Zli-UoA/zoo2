@@ -33,6 +33,8 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel
+    func updateChannel(id: String, name: String?, description: String) async throws -> Channel
+    func archiveChannel(id: String) async throws -> Channel
     func directMessage(userIDs: [String]) async throws -> Channel
     func dmMemberships() async throws -> [ChannelMembership]
     func joinChannel(id: String) async throws
@@ -275,6 +277,24 @@ struct NativeChatClient: ChatClient {
 
     func directMessage(userIDs: [String]) async throws -> Channel {
         try await api.write("api/dms", body: ["target_user_ids": .array(try userIDs.map { .string(try segment($0)) })])
+    }
+
+    func updateChannel(id: String, name: String?, description: String) async throws -> Channel {
+        let version = sync?.channelVersion(id)
+        var body: [String: JSONValue] = ["description": .string(description)]
+        if let name { body["channel_name"] = .string(name) }
+        let updated: Channel = try await api.write("api/channels/\(try segment(id))", method: "PATCH", body: body)
+        try sync?.check()
+        if let version, sync?.channelVersion(id) != version { throw CancellationError() }
+        return updated
+    }
+
+    func archiveChannel(id: String) async throws -> Channel {
+        let version = sync?.channelVersion(id)
+        let updated: Channel = try await api.write("api/channels/\(try segment(id))/archive", body: [String: JSONValue]())
+        try sync?.check()
+        if let version, sync?.channelVersion(id) != version { throw CancellationError() }
+        return updated
     }
 
     func dmMemberships() async throws -> [ChannelMembership] {
