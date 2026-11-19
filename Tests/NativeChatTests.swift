@@ -300,6 +300,156 @@ struct NativeChatTests {
         return try JSONEncoder().encode(["data": value, "txid": .string("123")])
     }
 
+    @Test("既読の保存失敗を再試行し、成功した位置は重複送信しない")
+    func retriesReadSave() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let attempts = Mutex(0)
+        let messageID = "22222222-2222-4222-8222-222222222222"
+        let readPath = "/api/channels/\(Self.channelID)/read-state"
+        harness.stub { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.path == readPath)
+            let body = try JSONDecoder().decode([String: String].self, from: StubProtocol.body(request))
+            #expect(body["message_id"] == messageID)
+            if attempts.withLock({ $0 += 1; return $0 }) == 1 {
+                return (503, [:], Data())
+            }
+            return (200, [:], Data())
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        var acknowledgements = 0
+        store.onRead = { acknowledgements += 1 }
+        await store.markRead(through: messageID)
+        await store.markRead(through: messageID)
+        #expect(attempts.withLock { $0 } == 2)
+        #expect(acknowledgements == 1)
+        #expect(store.readError == nil)
+    }
+
+    @Test("画面を離れた既読リクエストは再試行せず、一覧も更新しない")
+    func cancelledReadDoesNotAcknowledge() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let attempts = Mutex(0)
+        harness.stub { _ in
+            attempts.withLock { $0 += 1 }
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return (200, [:], Data())
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        var acknowledged = false
+        store.onRead = { acknowledged = true }
+        let task = Task { await store.markRead(through: "22222222-2222-4222-8222-222222222222") }
+        defer { task.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        task.cancel()
+        release.continuation.yield(())
+        await task.value
+        #expect(attempts.withLock { $0 } == 1)
+        #expect(!acknowledged)
+        #expect(store.readError == nil)
+    }
+
+    @Test("既読の再試行待ちを中断し、同じ会話を開き直すと保存できる")
+    func cancelledReadRetryCanResume() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let failed = AsyncStream<Void>.makeStream()
+        defer { failed.continuation.finish() }
+        let attempts = Mutex(0)
+        harness.stub { _ in
+            let count = attempts.withLock { $0 += 1; return $0 }
+            return (count == 1 ? 503 : 200, [:], Data())
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        var acknowledgements = 0
+        store.onRead = { acknowledgements += 1 }
+        withObservationTracking { _ = store.readError } onChange: { failed.continuation.yield(()) }
+        let messageID = "22222222-2222-4222-8222-222222222222"
+        let task = Task { await store.markRead(through: messageID) }
+        defer { task.cancel() }
+        var iterator = failed.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(store.readError != nil)
+        task.cancel()
+        await task.value
+        #expect(attempts.withLock { $0 } == 1)
+        #expect(acknowledgements == 0)
+        await store.markRead(through: messageID)
+        #expect(attempts.withLock { $0 } == 2)
+        #expect(acknowledgements == 1)
+        #expect(store.readError == nil)
+    }
+
+    @Test("既読保存の恒久的な拒否は再試行せず、未読を残してエラーを表示する")
+    func rejectedReadRemainsUnread() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let attempts = Mutex(0)
+        harness.stub { _ in
+            attempts.withLock { $0 += 1 }
+            return (404, [:], Data())
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        var acknowledged = false
+        store.onRead = { acknowledged = true }
+        await store.markRead(through: "22222222-2222-4222-8222-222222222222")
+        #expect(attempts.withLock { $0 } == 1)
+        #expect(!acknowledged)
+        #expect(store.readError != nil)
+    }
+
+    @Test("一覧取得中に保存した既読を古い応答で巻き戻さず、次回の新着は取得する")
+    func staleRefreshDoesNotRestoreUnread() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let reads = Mutex(0)
+        let channelData = try JSONEncoder().encode([channel])
+        let readData = try JSONEncoder().encode([
+            ChannelReadState(channel_id: Self.channelID, has_unread: true, last_read_at: nil)
+        ])
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/channels": return (200, [:], channelData)
+            case "/api/shapes/users":
+                return (200, ["electric-handle": "users", "electric-offset": "0_1"],
+                        Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
+            case "/api/channel-read-states":
+                if reads.withLock({ $0 += 1; return $0 }) == 2 {
+                    started.continuation.yield(())
+                    var iterator = release.stream.makeAsyncIterator()
+                    _ = await iterator.next()
+                }
+                return (200, [:], readData)
+            default: return (200, [:], Data())
+            }
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: Self.userID, user_name: "you", display_name: "あなた"))
+        await workspace.refresh()
+        #expect(workspace.unread.contains(Self.channelID))
+        let refresh = Task { await workspace.refresh() }
+        defer { refresh.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        await workspace.conversation(for: channel).markRead(through: "22222222-2222-4222-8222-222222222222")
+        #expect(!workspace.unread.contains(Self.channelID))
+        release.continuation.yield(())
+        await refresh.value
+        #expect(!workspace.unread.contains(Self.channelID))
+        await workspace.refresh()
+        #expect(workspace.unread.contains(Self.channelID))
+    }
+
     @Test("送信失敗で下書きを保持し、同じ ID で再送する")
     func retryIsIdempotent() async throws {
         let harness = try ChatHarness()

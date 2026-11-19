@@ -51,6 +51,7 @@ final class ConversationStore {
     private var deletedIDs: Set<String> = []
     private var pendingSends: [String: PendingSend] = [:]
     private var lastReadID: String?
+    private(set) var readError: String?
 
     private struct PendingSend {
         let id: String
@@ -374,15 +375,30 @@ final class ConversationStore {
     }
 
     func markRead(through messageID: String) async {
-        guard active, lastReadID != messageID else { return }
-        do {
-            try await client.markRead(channelID: channel.id, messageID: messageID)
-            try Task.checkCancellation()
-            guard active else { return }
-            lastReadID = messageID
-            onRead?()
-        } catch {
-            if case ZooError.expiredSession = error, active, !Task.isCancelled { onExpiredSession?() }
+        let epoch = accessGeneration
+        var delay = 2
+        while active, !blocked, channel.encrypted != true, epoch == accessGeneration, !Task.isCancelled,
+              lastReadID != messageID {
+            do {
+                try await client.markRead(channelID: channel.id, messageID: messageID)
+                try Task.checkCancellation()
+                guard active, epoch == accessGeneration else { return }
+                lastReadID = messageID
+                readError = nil
+                onRead?()
+                return
+            } catch {
+                guard active, epoch == accessGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
+                if case ZooError.expiredSession = error { onExpiredSession?(); return }
+                if case ZooError.rejected(let status, _) = error,
+                   (400..<500).contains(status), status != 408, status != 429 {
+                    readError = "既読を保存できませんでした。会話を開き直してください。"
+                    return
+                }
+                readError = "既読を保存できませんでした。最新位置で再試行します。"
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                delay = min(delay * 2, 30)
+            }
         }
     }
 
@@ -431,7 +447,7 @@ final class ConversationStore {
         streamGeneration = UUID()
         accessGeneration = UUID()
         messages = []; remoteMessages = []; drafts = [:]; localWrites = [:]; deletedIDs = []; pendingSends = [:]
-        sendErrors = [:]; focusedMessageID = nil
+        sendErrors = [:]; focusedMessageID = nil; readError = nil
     }
 }
 

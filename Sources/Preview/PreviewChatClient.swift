@@ -109,6 +109,7 @@ final class PreviewChatClient: ChatClient {
     private var joinedPublic = false
     private var readPositions: [String: String] = [:]
     private var failedReadOnce = false
+    private var failedReadSaveOnce = false
     private var pdfURLRequests = 0
     private var videoURLRequests = 0
     private var failNextPin = ProcessInfo.processInfo.arguments.contains("--uitesting-pin-failure")
@@ -434,6 +435,10 @@ final class PreviewChatClient: ChatClient {
     }
     func delete(id: String) async throws { allMessages.removeAll { $0.id == id } }
     func markRead(channelID: String, messageID: String) async throws {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-read-save-retry"), !failedReadSaveOnce {
+            failedReadSaveOnce = true
+            throw URLError(.notConnectedToInternet)
+        }
         readPositions[channelID] = allMessages.first { $0.id == messageID }?.created_at
     }
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {

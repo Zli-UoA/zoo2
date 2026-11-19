@@ -5,6 +5,19 @@ import Testing
 
 @Suite("最新メッセージへのスクロール")
 struct MessageScrollStateTests {
+    @Test("実機の上側余白を補正し、末尾と過去ログを区別する", arguments: [
+        (611_062.0, 116.0, true, false),
+        (610_508.0, 670.0, true, false),
+        (610_982.0, 116.0, true, false),
+        (610_981.0, 116.0, false, false),
+        (610_821.0, 116.0, false, true)
+    ])
+    func deviceInsets(_ offsetY: Double, _ topInset: Double, _ followsLatest: Bool, _ showsButton: Bool) {
+        let state = MessageScrollState(contentHeight: 611_867, offsetY: offsetY, topInset: topInset, viewportHeight: 689)
+        #expect(state.followingLatest == followsLatest)
+        #expect(state.showsLatestButton == showsButton)
+    }
+
     @Test("末尾との距離に応じて追従とボタン表示を別々に判定する", arguments: [
         (-100.0, true, false), (0.0, true, false), (80.0, true, false),
         (81.0, false, false), (120.0, false, false), (240.0, false, false),

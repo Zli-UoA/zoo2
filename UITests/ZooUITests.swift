@@ -634,6 +634,18 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testReadSaveRetriesWhileConversationStaysOpen() {
+        let app = launchWorkspace(chatDetails: true, readSaveRetry: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let error = app.staticTexts["read-save-error"]
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertTrue(error.waitForNonExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["未読のみ"].tap()
+        XCTAssertTrue(app.staticTexts["未読の会話はありません"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testReadStateRetryMarksShortConversationRead() {
         let app = launchWorkspace(readRetry: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
@@ -709,7 +721,7 @@ final class ZooUITests: XCTestCase {
                                  pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,
                                  tallImage: Bool = false, wrappedReactions: Bool = false, retainedMessages: Bool = false,
                                  variedHistory: Bool = false, longThread: Bool = false, largeText: Bool = false,
-                                 shortThread: Bool = false) -> XCUIApplication {
+                                 shortThread: Bool = false, readSaveRetry: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -722,6 +734,7 @@ final class ZooUITests: XCTestCase {
         if retainedMessages { app.launchArguments.append("--uitesting-retained-messages") }
         if variedHistory { app.launchArguments.append("--uitesting-varied-history") }
         if readRetry { app.launchArguments.append("--uitesting-read-retry") }
+        if readSaveRetry { app.launchArguments.append("--uitesting-read-save-retry") }
         if pinFailure { app.launchArguments.append("--uitesting-pin-failure") }
         if call { app.launchArguments.append("--uitesting-call") }
         if callInviteFailure { app.launchArguments.append("--uitesting-call-invite-failure") }
@@ -1061,6 +1074,9 @@ final class ZooUITests: XCTestCase {
         assertLatestAboveComposer(latest, in: app)
         XCTAssertFalse(app.buttons["scroll-to-latest"].exists)
         capture(app, name: "未読がある長い会話も最新投稿から表示")
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["未読のみ"].tap()
+        XCTAssertTrue(app.staticTexts["未読の会話はありません"].waitForExistence(timeout: 5))
     }
 
     @MainActor

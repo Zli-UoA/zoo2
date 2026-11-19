@@ -288,8 +288,8 @@ private struct MessageList: View {
         }
         .onChange(of: messageIDs) { _, ids in renderCache.updateMessages(ids) }
         .onScrollGeometryChange(for: MessageScrollState.self) { geometry in
-            let topInset = parentID == nil ? 0 : geometry.contentInsets.top
-            return MessageScrollState(distanceToBottom: geometry.contentSize.height - geometry.contentOffset.y - topInset - geometry.containerSize.height)
+            MessageScrollState(contentHeight: geometry.contentSize.height, offsetY: geometry.contentOffset.y,
+                               topInset: geometry.contentInsets.top, viewportHeight: geometry.containerSize.height)
         } action: { _, state in
             // 画面遷移中の初回通知も保持し、移動先に応じて最新ボタンを表示する。
             followingLatest = state.followingLatest
@@ -344,6 +344,14 @@ private struct MessageList: View {
             }
         }
         .onDisappear { renderCache.cancelLoads() }
+        .overlay(alignment: .top) {
+            if parentID == nil, let error = store.readError {
+                Text(error).font(.caption).padding(8)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.horizontal)
+                    .accessibilityIdentifier("read-save-error")
+            }
+        }
         .task(id: readRetry) {
             guard parentID == nil, !readStateLoaded else { return }
             readStateError = false

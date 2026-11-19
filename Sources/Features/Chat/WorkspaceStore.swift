@@ -69,6 +69,7 @@ final class WorkspaceStore {
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
+    @ObservationIgnored private var readDuringRefresh: Set<String> = []
 
     init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard, calls: CallStore? = nil) {
         self.client = client
@@ -106,7 +107,8 @@ final class WorkspaceStore {
         guard active, !loading else { return }
         let epoch = channelGeneration
         loading = true
-        defer { loading = false }
+        readDuringRefresh = []
+        defer { loading = false; readDuringRefresh = [] }
         do {
             async let channelResult = client.channels()
             async let peopleResult = client.people()
@@ -119,7 +121,8 @@ final class WorkspaceStore {
             }
             self.people = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
             self.people.merge(resolvedAuthors) { current, _ in current }
-            unread = Set(states.filter(\.has_unread).map(\.channel_id))
+            // 取得開始後に確定した既読を、遅れて届く一覧の未読状態で巻き戻さない。
+            unread = Set(states.filter(\.has_unread).map(\.channel_id)).subtracting(readDuringRefresh)
             joinedChannelIDs = Set(states.map(\.channel_id))
             let visibleIDs = Set(self.channels.map(\.id))
             channelPath.removeAll { !visibleIDs.contains($0.channelID) }
@@ -254,7 +257,11 @@ final class WorkspaceStore {
         }
         store.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         store.onAccessRevoked = { [weak self] in self?.videoPlayback.stop(in: channel.id) }
-        store.onRead = { [weak self] in self?.unread.remove(channel.id) }
+        store.onRead = { [weak self] in
+            guard let self else { return }
+            unread.remove(channel.id)
+            if loading { readDuringRefresh.insert(channel.id) }
+        }
         store.onReactionAdded = { [weak self] emoji in self?.recentEmojis.record(emoji) }
         conversations[channel.id] = store
         return store
