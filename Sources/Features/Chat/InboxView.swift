@@ -10,13 +10,14 @@ struct InboxView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 if let error = store.error {
                     VStack(alignment: .leading, spacing: 8) {
                         Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
                         Button("再読み込み") { Task { await store.refresh() } }
                     }
                     .font(.subheadline)
+                    .padding(AppDesign.horizontalInset)
                 }
                 if store.entries.isEmpty {
                     if store.loading {
@@ -28,18 +29,23 @@ struct InboxView: View {
                 ForEach(store.entries) { entry in
                     InboxCard(entry: entry, store: store, workspace: workspace,
                               isActive: isActive && scenePhase == .active, openChat: openChat)
+                    Divider().padding(.leading, AppDesign.horizontalInset)
                 }
                 if store.hasMore {
                     Button(store.loadingMore ? "読み込み中…" : "さらに通知を表示") {
                         Task { await store.loadMore() }
                     }
                     .frame(maxWidth: .infinity)
+                    .frame(minHeight: AppDesign.minimumControlSize)
                     .disabled(store.loadingMore)
                     .accessibilityIdentifier("inbox-load-more")
                 }
             }
-            .padding()
+            .padding(.top, AppDesign.spacing)
         }
+        .background(Color(.systemBackground))
+        .navigationTitle("通知")
+        .navigationBarTitleDisplayMode(.large)
         .accessibilityIdentifier("inbox-list")
         .refreshable { await store.refresh() }
         .toolbar {
@@ -192,12 +198,8 @@ private struct InboxCard: View {
                 }
             }
         }
-        .padding(12)
-        .background(Color(.secondarySystemGroupedBackground), in: .rect(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14).strokeBorder(.quaternary)
-                .allowsHitTesting(false).accessibilityHidden(true)
-        }
+        .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onScrollVisibilityChange(threshold: 0.1) { visible = $0 }
         .onChange(of: isActive && visible, initial: true) { _, onScreen in
             store.setVisible(entry, visible: onScreen)
@@ -233,7 +235,7 @@ private struct InboxCard: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: AppDesign.spacing) {
             AvatarView(name: actor, url: entry.avatarURL ?? person?.avatarURL)
             VStack(alignment: .leading, spacing: 3) {
                 Text(actorSummary).font(.subheadline.bold()).foregroundStyle(.primary)

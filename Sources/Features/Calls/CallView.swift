@@ -8,20 +8,28 @@ struct CallBanner: View {
         VStack(spacing: 0) {
             if let channel = calls.channel {
                 Button { calls.showingCall = true } label: {
-                    HStack {
+                    HStack(spacing: AppDesign.spacing) {
                         Image(systemName: calls.muted ? "mic.slash.fill" : "headphones")
                         Text("\(workspace.name(for: channel))・\(calls.ready ? "通話中" : "接続中")")
                         Spacer()
                         Image(systemName: "chevron.right")
-                    }.padding(12).background(.green.opacity(0.12))
-                }.accessibilityIdentifier("active-call")
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, AppDesign.horizontalInset)
+                    .frame(minHeight: AppDesign.minimumControlSize)
+                    .contentShape(Capsule())
+                    .glassEffect(.regular.interactive(), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, 4)
+                .accessibilityIdentifier("active-call")
             } else {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     if let invite = calls.invitations.first(where: { (ZooDate.parse($0.expires_at) ?? .distantPast) > context.date }) {
-                        HStack {
+                        HStack(spacing: AppDesign.spacing) {
                             Label("\(workspace.people[invite.inviter_id]?.name ?? "メンバー")から通話", systemImage: "phone.fill")
                             Spacer()
-                            Button("辞退") { Task { await calls.decline(invite) } }
+                            Button("辞退") { Task { await calls.decline(invite) } }.buttonStyle(.glass)
                             Button("応答") {
                                 Task {
                                     do {
@@ -30,8 +38,11 @@ struct CallBanner: View {
                                         calls.start(channel: channel, invitationID: invite.id)
                                     } catch { workspace.report(error) }
                                 }
-                            }.buttonStyle(.borderedProminent)
-                        }.font(.callout).padding(12).background(.green.opacity(0.12))
+                            }.buttonStyle(.glassProminent)
+                        }
+                        .font(.callout).padding(AppDesign.horizontalInset)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
+                        .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, 4)
                     }
                 }
             }
@@ -47,17 +58,17 @@ struct CallView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppForm {
                 if let channel = store.channel {
                     Section {
-                        Label(workspace.name(for: channel), systemImage: "headphones").font(.title2.bold())
+                        Label(workspace.name(for: channel), systemImage: "headphones").font(.headline)
                         if !store.ready { ProgressView("接続中…") }
                         else if store.participants.count <= 1 { Text("ほかのメンバーの参加を待っています。") }
                         Text("ほかのアプリを開いても通話を続けられます。").font(.caption).foregroundStyle(.secondary)
                     }
                     Section("参加者（\(store.participants.count)人）") {
                         ForEach(store.participants) { person in
-                            HStack {
+                            HStack(spacing: AppDesign.spacing) {
                                 AvatarView(name: person.name, url: workspace.people[person.user_id]?.avatarURL)
                                 Text(person.name)
                                 Spacer()
@@ -71,7 +82,7 @@ struct CallView: View {
                                 .disabled(!store.ready).accessibilityIdentifier("call-invite")
                             TimelineView(.periodic(from: .now, by: 1)) { context in
                                 ForEach(store.pendingOutgoing(at: context.date)) { invitation in
-                                    HStack {
+                                    HStack(spacing: AppDesign.spacing) {
                                         Text("\(workspace.people[invitation.invitee_id]?.name ?? "メンバー")さんを呼び出し中…")
                                         Spacer()
                                         Button("取り消す") { Task { await store.cancelInvitation(invitation) } }
@@ -96,7 +107,7 @@ struct CallView: View {
                 if let error = store.error { Text(error).foregroundStyle(.red).accessibilityIdentifier("call-error") }
             }
             .navigationTitle("音声通話").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
             .sheet(item: $invitingChannel) { channel in
                 CallInviteView(store: store, workspace: workspace, channel: channel)
             }
@@ -119,7 +130,7 @@ private struct CallInviteView: View {
                 let candidates = store.invitationCandidates(members: members, at: context.date)
                 let chosen = selected.intersection(candidates.map(\.id))
                 let slots = store.invitationSlots(at: context.date)
-                List {
+                AppList {
                     Section {
                         Text("\(channel.channel_name)の通話に招待します。")
                         Text(slots == 0 ? "通話は満員です。" : "あと\(slots)人まで招待できます。")
@@ -139,7 +150,7 @@ private struct CallInviteView: View {
                                     if selected.contains(person.id) { selected.remove(person.id) }
                                     else { selected.insert(person.id) }
                                 } label: {
-                                    HStack {
+                                    HStack(spacing: AppDesign.spacing) {
                                         PersonRow(person: person)
                                         Spacer()
                                         Image(systemName: chosen.contains(person.id) ? "checkmark.circle.fill" : "circle")
@@ -160,7 +171,7 @@ private struct CallInviteView: View {
                 .onChange(of: candidates.map(\.id)) { _, ids in selected.formIntersection(ids) }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("閉じる") { dismiss() }.accessibilityIdentifier("call-invite-close")
+                        AppCloseButton { dismiss() }.accessibilityIdentifier("call-invite-close")
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button(store.inviting ? "送信中…" : "招待する") {

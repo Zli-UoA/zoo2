@@ -125,8 +125,8 @@ struct MessageAttachmentsView: View {
                                     .frame(height: image == nil ? 240 : nil)
                                     .aspectRatio(aspectRatio, contentMode: .fit)
                                     .containerRelativeFrame(.horizontal) { width, _ in min(240 * aspectRatio, width) }
-                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
+                                    .clipShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
                             }
                         }
                         .scrollTargetLayout()
@@ -208,8 +208,8 @@ private struct AttachmentView: View {
                         Button { fullScreenExpanded = true } label: {
                             Image(uiImage: pdfThumbnail).resizable().scaledToFit().frame(maxHeight: 280)
                                 .background(.white)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary) }
+                                .clipShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
+                                .overlay { RoundedRectangle(cornerRadius: AppDesign.cornerRadius).strokeBorder(.quaternary) }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain).accessibilityLabel("PDFを全画面で表示：\(attachment.file_name)")
                     }
@@ -266,8 +266,8 @@ private struct AttachmentView: View {
                         .background(.quaternary)
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .contentShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
+                .contentShape(RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(hidden ? "センシティブな添付を表示" : "画像を拡大：\(attachment.file_name)")
@@ -337,7 +337,7 @@ private struct AttachmentPreview: View {
             .navigationTitle(attachments.first(where: { $0.attachment.id == selectedID })?.attachment.file_name ?? "")
             .navigationBarTitleDisplayMode(.inline)
             .onChange(of: selectedID) { _, _ in isZoomed = false }
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
         }
     }
 }
@@ -378,7 +378,7 @@ private struct AttachmentPreviewPage: View {
                             Image(systemName: "eye.slash").padding(6)
                         }
                         .frame(width: size.width * scale, height: size.height * scale)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
                         .overlay { if image == nil { ProgressView() } }
                     }
                     .buttonStyle(.plain)

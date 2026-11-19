@@ -83,7 +83,7 @@ private struct ConversationDirectory: View {
     }
 
     var body: some View {
-        List {
+        AppList {
             if let error = workspace.error {
                 Label(error, systemImage: "wifi.exclamationmark")
                 Button("再読み込み") { Task { await workspace.refresh() } }
@@ -118,16 +118,18 @@ private struct ConversationDirectory: View {
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }
+        .navigationTitle(directMessages ? "DM" : "チャンネル")
+        .navigationBarTitleDisplayMode(.large)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let error = workspace.pinUpdateError {
-                Label(error, systemImage: "exclamationmark.circle")
-                    .font(.caption).foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                    .background(.regularMaterial)
+            VStack(spacing: 0) {
+                if let error = workspace.pinUpdateError {
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .font(.caption).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                        .background(.regularMaterial)
+                }
             }
         }
-        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: directMessages ? "DMを検索" : "チャンネルを検索")
         .refreshable {
             await workspace.refresh()
             await workspace.loadPins()
@@ -140,16 +142,16 @@ private struct ConversationDirectory: View {
                     unreadOnly.toggle()
                 }.accessibilityValue(unreadOnly ? "有効" : "無効")
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                if directMessages {
-                    Button("新しいDM", systemImage: "square.and.pencil") { creating = true }
-                        .accessibilityIdentifier("new-dm")
-                } else {
-                    Menu("チャンネルの操作", systemImage: "plus") {
-                        Button("チャンネルを探す", systemImage: "magnifyingglass") { browsing = true }
-                        Button("チャンネルを作成", systemImage: "number") { creating = true }
-                    }.accessibilityIdentifier("new-conversation")
-                }
+        }
+        .appSearch(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索", identifier: "conversation") {
+            if directMessages {
+                Button("新しいDM", systemImage: "square.and.pencil") { creating = true }
+                    .accessibilityIdentifier("new-dm")
+            } else {
+                Menu("チャンネルの操作", systemImage: "plus") {
+                    Button("チャンネルを探す", systemImage: "magnifyingglass") { browsing = true }
+                    Button("チャンネルを作成", systemImage: "number") { creating = true }
+                }.accessibilityIdentifier("new-conversation")
             }
         }
         .sheet(isPresented: $creating) {
@@ -172,8 +174,11 @@ private struct ConversationDirectory: View {
                     Text(title)
                     Spacer()
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
                         .accessibilityHidden(true)
                 }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color(.secondaryLabel))
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
@@ -181,6 +186,7 @@ private struct ConversationDirectory: View {
             .disabled(!search.isEmpty)
             .accessibilityValue(expanded ? "展開中" : "折り畳み中")
             .accessibilityIdentifier("channel-section-\(id)")
+            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
         }
     }
 
@@ -191,22 +197,37 @@ private struct ConversationDirectory: View {
                         if let peer = workspace.directMessagePeer(for: channel) {
                             AvatarView(name: peer.name, url: peer.avatarURL)
                         } else {
-                            Image(systemName: channel.symbol).font(.title3).foregroundStyle(.tint)
-                                .frame(width: 32, height: 38)
+                            Image(systemName: channel.symbol)
+                                .font(.body.weight(.medium)).foregroundStyle(.secondary)
+                                .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                                .frame(width: AvatarView.size, height: AvatarView.size)
+                                .background(Color(.secondarySystemBackground), in: Circle())
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(workspace.name(for: channel))
-                                .fontWeight(workspace.unread.contains(channel.id) ? .bold : .medium)
-                            if let description = channel.description, !description.isEmpty {
-                                Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        let title = Text(workspace.name(for: channel))
+                            .fontWeight(workspace.unread.contains(channel.id) ? .semibold : .regular)
+                        let description = channel.description ?? ""
+                        let labels = VStack(alignment: .leading, spacing: 2) {
+                            title
+                            if !directMessages || !description.isEmpty {
+                                Text(description).font(.subheadline).foregroundStyle(.secondary)
+                                    .lineLimit(1, reservesSpace: true)
+                                    .accessibilityHidden(description.isEmpty)
                             }
+                        }
+                        if !directMessages && description.isEmpty {
+                            // 説明の有無で行の高さが変わらないよう、2段分の寸法を残す。
+                            labels.hidden().overlay(alignment: .leading) { title }
+                        } else {
+                            labels
                         }
                         Spacer(minLength: 4)
                         if workspace.unread.contains(channel.id) {
                             Circle().fill(.tint).frame(width: 8, height: 8).accessibilityLabel("未読")
                         }
-                    }.padding(.vertical, 3)
+                    }
                 }
+                .listRowInsets(EdgeInsets(top: directMessages ? 2 : 8, leading: 12,
+                                         bottom: directMessages ? 2 : 8, trailing: 12))
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .contextMenu { ChannelPinButton(channel: channel, workspace: workspace) }
                 .accessibilityHint("長押しでピン留めを変更できます")
@@ -240,7 +261,7 @@ private struct ChannelBrowser: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppList {
                 Toggle("アーカイブ済みを含める", isOn: $includeArchived)
                 if let error { Text(error).foregroundStyle(.red) }
                 if matches.isEmpty { Text("該当するチャンネルはありません").foregroundStyle(.secondary) }
@@ -252,15 +273,16 @@ private struct ChannelBrowser: View {
                         }
                         Spacer()
                         Button(channel.archive_at == nil ? "参加" : "開く") { opening = channel }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.small)
                             .accessibilityIdentifier("browse-channel-\(channel.id)")
                     }
                 }
             }
             .disabled(opening != nil)
             .navigationTitle("チャンネルを探す")
-            .searchable(text: $search, prompt: "チャンネル名を検索")
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } } }
+            .navigationBarTitleDisplayMode(.inline)
+            .appSearch(text: $search, prompt: "チャンネル名を検索", identifier: "channel-browser")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
             .task(id: opening?.id) {
                 guard let channel = opening else { return }
                 defer { opening = nil }
@@ -333,7 +355,7 @@ private struct CreateChannelView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            AppForm {
                 Section("新しいチャンネル") {
                     TextField("チャンネル名", text: $name).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .accessibilityIdentifier("channel-name")
@@ -345,7 +367,7 @@ private struct CreateChannelView: View {
             .disabled(submitting)
             .navigationTitle("チャンネルを作成").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("作成") { submitting = true }
                         .disabled(submitting || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -387,7 +409,7 @@ private struct PeopleView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppList {
                 if let error { Text(error).foregroundStyle(.red) }
                 Section("宛先（9人まで）") {
                     ForEach(candidates) { person in
@@ -397,11 +419,7 @@ private struct PeopleView: View {
                             else { recipients.insert(person.id) }
                         } label: {
                             HStack {
-                                AvatarView(name: person.name, url: person.avatarURL)
-                                VStack(alignment: .leading) {
-                                    Text(person.name).foregroundStyle(.primary)
-                                    Text("@\(person.user_name)").font(.caption).foregroundStyle(.secondary)
-                                }
+                                PersonRow(person: person).foregroundStyle(.primary)
                                 Spacer()
                                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                             }
@@ -413,15 +431,14 @@ private struct PeopleView: View {
                 }
             }
             .disabled(submitting)
-            .searchable(text: $search, prompt: "名前を検索")
+            .appSearch(text: $search, prompt: "名前を検索", identifier: "people") {
+                Button("開始") { submitting = true }
+                    .disabled(recipients.isEmpty || submitting)
+                    .accessibilityIdentifier("start-dm")
+            }
             .navigationTitle("新しいDM").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("開始") { submitting = true }
-                        .disabled(recipients.isEmpty || submitting)
-                        .accessibilityIdentifier("start-dm")
-                }
+                ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } }
             }
             .task(id: submitting) {
                 guard submitting else { return }

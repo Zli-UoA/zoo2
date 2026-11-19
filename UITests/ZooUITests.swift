@@ -234,6 +234,13 @@ final class ZooUITests: XCTestCase {
     @MainActor
     func testChannelSearchShowsCollapsedSectionsAndRestoresState() {
         let app = launchWorkspace(chatDetails: true)
+        let searchButton = app.buttons["search-conversation"]
+        let search = app.textFields["conversation-search-input"]
+        let additions = app.buttons["new-conversation"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
+        XCTAssertLessThan(searchButton.frame.midX, additions.frame.midX)
+        XCTAssertFalse(search.exists)
+        capture(app, name: "検索バーを省き追加ボタンの左に検索を配置")
         let pinned = app.buttons["channel-section-pinned"]
         let list = app.buttons["channel-section-list"]
         let general = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
@@ -243,19 +250,29 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(general.waitForNonExistence(timeout: 5))
         XCTAssertFalse(development.exists)
 
-        let search = app.searchFields.firstMatch
+        searchButton.tap()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
-        search.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         search.typeText("一般")
         XCTAssertTrue(general.waitForExistence(timeout: 5))
         XCTAssertFalse(development.exists)
         XCTAssertEqual(pinned.value as? String, "展開中")
         XCTAssertFalse(pinned.isEnabled)
-        capture(app, name: "折り畳んだセクション内の検索結果")
+        capture(app, name: "Liquid Glassの検索欄と絞り込み結果")
 
-        let closeSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Close", "閉じる", "Cancel", "キャンセル"])).firstMatch
+        app.buttons["clear-conversation-search"].tap()
+        XCTAssertTrue(general.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(search.exists)
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        search.typeText("一般")
+        XCTAssertTrue(general.waitForExistence(timeout: 5))
+
+        let closeSearch = app.buttons["close-conversation-search"]
         XCTAssertTrue(closeSearch.waitForExistence(timeout: 5))
-        closeSearch.tap()
+        XCTAssertEqual(closeSearch.label, "検索を閉じる")
+        closeSearch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)).tap()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
         XCTAssertTrue(general.waitForNonExistence(timeout: 5))
         XCTAssertFalse(development.exists)
         XCTAssertEqual(pinned.value as? String, "折り畳み中")
@@ -263,6 +280,136 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(pinned.isEnabled)
         pinned.tap()
         XCTAssertTrue(general.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testChannelSearchSupportsAccessibilityTextSize() {
+        let app = launchWorkspace(chatDetails: true, largeText: true)
+        app.buttons["search-conversation"].tap()
+        let search = app.textFields["conversation-search-input"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        search.typeText("一般")
+        XCTAssertGreaterThan(search.frame.width, app.frame.width / 2)
+        XCTAssertTrue(search.isHittable)
+        let closeSearch = app.buttons["close-conversation-search"]
+        XCTAssertTrue(closeSearch.isHittable)
+        XCTAssertLessThanOrEqual(closeSearch.frame.maxY, app.keyboards.firstMatch.frame.minY)
+        capture(app, name: "文字を拡大したチャンネル検索")
+        closeSearch.tap()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        app.buttons["search-conversation"].tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        closeSearch.tap()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testDirectMessageSearchUsesSharedDirectorySearch() {
+        let app = launchWorkspace()
+        selectTab("DM", in: app)
+        let searchButton = app.buttons["search-conversation"]
+        let search = app.textFields["conversation-search-input"]
+        let create = app.buttons["new-dm"]
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
+        XCTAssertLessThan(searchButton.frame.midX, create.frame.midX)
+        XCTAssertFalse(search.exists)
+
+        for (id, name) in [("44444444-4444-4444-8444-444444444444", "さくら"),
+                           ("99999999-9999-4999-8999-999999999999", "あおい")] {
+            create.tap()
+            app.buttons["dm-recipient-\(id)"].tap()
+            app.buttons["start-dm"].tap()
+            let bar = app.navigationBars[name]
+            XCTAssertTrue(bar.waitForExistence(timeout: 5))
+            bar.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
+        }
+
+        let sakura = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "channel-", "さくら")).firstMatch
+        let aoi = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "channel-", "あおい")).firstMatch
+        XCTAssertTrue(sakura.waitForExistence(timeout: 5))
+        XCTAssertTrue(aoi.exists)
+        capture(app, name: "DM作成ボタンの左に検索を配置")
+
+        searchButton.tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertEqual(search.placeholderValue, "DMを検索")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        search.typeText("さくら")
+        XCTAssertTrue(sakura.waitForExistence(timeout: 5))
+        XCTAssertTrue(aoi.waitForNonExistence(timeout: 5))
+        capture(app, name: "DMも共通のLiquid Glass検索欄で絞り込み")
+
+        let clear = app.buttons["clear-conversation-search"]
+        clear.tap()
+        XCTAssertTrue(aoi.waitForExistence(timeout: 5))
+        search.typeText("該当者なし")
+        XCTAssertTrue(sakura.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(aoi.exists)
+        clear.tap()
+        search.typeText("さくら")
+        app.buttons["close-conversation-search"].tap()
+        XCTAssertTrue(search.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(sakura.waitForExistence(timeout: 5))
+        XCTAssertTrue(aoi.exists)
+        selectTab("チャンネル", in: app)
+        XCTAssertFalse(search.exists)
+        XCTAssertTrue(searchButton.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testSharedSearchInDiscoveryAndRecipientPicker() {
+        let app = launchWorkspace(dark: true)
+        app.buttons["new-conversation"].tap()
+        app.buttons["チャンネルを探す"].tap()
+        let channel = app.buttons["browse-channel-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+        XCTAssertTrue(channel.waitForExistence(timeout: 5))
+        let discovery = app.textFields["channel-browser-search-input"]
+        XCTAssertFalse(discovery.exists)
+        app.buttons["search-channel-browser"].tap()
+        XCTAssertTrue(discovery.waitForExistence(timeout: 5))
+        discovery.typeText("該当なし")
+        XCTAssertTrue(channel.waitForNonExistence(timeout: 5))
+        app.buttons["clear-channel-browser-search"].tap()
+        discovery.typeText("雑談")
+        XCTAssertTrue(channel.waitForExistence(timeout: 5))
+        capture(app, name: "ダーク表示のチャンネル検索")
+        app.buttons["close-channel-browser-search"].tap()
+        XCTAssertTrue(discovery.waitForNonExistence(timeout: 5))
+        app.buttons["閉じる"].tap()
+
+        selectTab("DM", in: app)
+        capture(app, name: "チャンネルと揃えたDM一覧")
+        app.buttons["new-dm"].tap()
+        let sakura = app.buttons["dm-recipient-44444444-4444-4444-8444-444444444444"]
+        let aoi = app.buttons["dm-recipient-99999999-9999-4999-8999-999999999999"]
+        XCTAssertTrue(sakura.waitForExistence(timeout: 5))
+        app.buttons["search-people"].tap()
+        let people = app.textFields["people-search-input"]
+        XCTAssertTrue(people.waitForExistence(timeout: 5))
+        people.typeText("さくら")
+        XCTAssertTrue(aoi.waitForNonExistence(timeout: 5))
+        sakura.tap()
+        app.buttons["clear-people-search"].tap()
+        people.typeText("あおい")
+        XCTAssertTrue(aoi.waitForExistence(timeout: 5))
+        XCTAssertTrue(sakura.exists)
+        XCTAssertTrue(sakura.isSelected)
+        capture(app, name: "共通検索と選択状態を保つDMの宛先一覧")
+        app.buttons["close-people-search"].tap()
+        XCTAssertTrue(people.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(sakura.isSelected)
+        app.buttons["閉じる"].tap()
+
+        selectTab("プロフィール", in: app)
+        XCTAssertTrue(app.buttons["profile-edit"].waitForExistence(timeout: 5))
+        capture(app, name: "ダーク表示のプロフィール")
+        app.buttons["workspace-settings"].tap()
+        XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["logout"].exists)
+        capture(app, name: "既存の表示を維持した設定画面")
     }
 
     @MainActor
@@ -529,6 +676,25 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testComposerAdditionsStayAlignedWithMultilineDraft() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let field = composer(app)
+        field.tap()
+        field.typeText("1行目\n2行目\n3行目")
+        let additions = app.buttons["composer-additions"]
+        let send = app.buttons["send-message"]
+        XCTAssertEqual(additions.frame.midY, send.frame.midY, accuracy: 1)
+        capture(app, name: "複数行を入力中の追加ボタン")
+        app.buttons["dismiss-composer-keyboard"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(additions.frame.midY, send.frame.midY, accuracy: 1)
+        capture(app, name: "キーボードを閉じた複数行の追加ボタン")
+        additions.tap()
+        XCTAssertTrue(app.buttons["composer-attach-file"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
     func testWelcomeHasAccessibleLogin() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
@@ -683,7 +849,8 @@ final class ZooUITests: XCTestCase {
 
         openActions(for: welcome, in: app)
         app.buttons["message-action-more-reactions"].tap()
-        let search = app.searchFields.firstMatch
+        app.buttons["search-reaction"].tap()
+        let search = app.textFields["reaction-search-input"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         search.typeText("hana")
@@ -698,6 +865,7 @@ final class ZooUITests: XCTestCase {
 
         openActions(for: welcome, in: app)
         app.buttons["message-action-more-reactions"].tap()
+        app.buttons["search-reaction"].tap()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap()
         search.typeText("@zoo")
@@ -822,22 +990,19 @@ final class ZooUITests: XCTestCase {
         let app = launchWorkspace(longHistory: true, chatDetails: true, variedHistory: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let latest = app.staticTexts["履歴 60"]
-        XCTAssertTrue(app.descendants(matching: .any)["unread-divider"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        assertLatestAboveComposer(latest, in: app)
         let list = app.scrollViews["message-list"]
         let jump = app.buttons["scroll-to-latest"]
-        for attempt in 0..<2 {
-            if attempt > 0 {
-                for _ in 0..<4 { list.swipeDown(velocity: .fast) }
-            }
+        for _ in 0..<2 {
+            for _ in 0..<4 { list.swipeDown(velocity: .fast) }
             XCTAssertFalse(latest.isHittable)
             XCTAssertTrue(jump.waitForExistence(timeout: 5))
             jump.tap()
             XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
             XCTAssertTrue(latest.isHittable)
             let latestY = latest.frame.minY
-            let bottomGap = composer(app).frame.minY - latest.frame.maxY
-            XCTAssertGreaterThanOrEqual(bottomGap, 0)
-            XCTAssertLessThan(bottomGap, 60, "最新の投稿と入力欄の間に大きな空白を残さない")
+            assertLatestAboveComposer(latest, in: app)
             let previous = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "履歴 59\n")).firstMatch
             XCTAssertTrue(previous.isHittable)
             XCTAssertLessThanOrEqual(previous.frame.maxY, latest.frame.minY, "隣り合う投稿の本文を重ねない")
@@ -868,11 +1033,51 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testShortConversationKeepsLatestAboveResizingComposer() {
+        let app = launchWorkspace()
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let latest = app.staticTexts["SwiftUI で、いつもの会話がもっと身近に。"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        assertLatestAboveComposer(latest, in: app)
+        capture(app, name: "短い会話も最新投稿を入力欄の直上に配置")
+        let field = composer(app)
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        assertLatestAboveComposer(latest, in: app)
+        field.typeText("一行目\n二行目\n三行目")
+        assertLatestAboveComposer(latest, in: app)
+        capture(app, name: "入力欄が広がっても最新投稿との間隔を維持")
+        app.buttons["dismiss-composer-keyboard"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        assertLatestAboveComposer(latest, in: app)
+    }
+
+    @MainActor
+    func testUnreadLongConversationInitiallyShowsLatestAboveComposer() {
+        let app = launchWorkspace(longHistory: true, chatDetails: true, variedHistory: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let latest = app.staticTexts["履歴 60"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 10))
+        assertLatestAboveComposer(latest, in: app)
+        XCTAssertFalse(app.buttons["scroll-to-latest"].exists)
+        capture(app, name: "未読がある長い会話も最新投稿から表示")
+    }
+
+    @MainActor
+    private func assertLatestAboveComposer(_ latest: XCUIElement, in app: XCUIApplication,
+                                          file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(latest.isHittable, file: file, line: line)
+        let bottomGap = app.otherElements["message-composer"].frame.minY - latest.frame.maxY
+        XCTAssertGreaterThanOrEqual(bottomGap, 0, file: file, line: line)
+        XCTAssertLessThan(bottomGap, 60, "最新の投稿を入力欄の直上に揃える", file: file, line: line)
+    }
+
+    @MainActor
     private func assertBottomOverscrollKeepsPosition(_ app: XCUIApplication, latestText: String) {
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let latest = app.staticTexts[latestText]
         XCTAssertTrue(latest.waitForExistence(timeout: 10))
-        XCTAssertTrue(latest.isHittable)
+        assertLatestAboveComposer(latest, in: app)
         let originalY = latest.frame.minY
         let list = app.scrollViews["message-list"]
         for _ in 0..<3 {
@@ -1148,6 +1353,7 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(mention.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["承認"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["inbox-read-all"].waitForNonExistence(timeout: 5))
+        capture(app, name: "共通の余白と区切り線に揃えた通知一覧")
         mention.tap()
         XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"].exists)
@@ -1160,6 +1366,7 @@ final class ZooUITests: XCTestCase {
         selectTab("プロフィール", in: app)
         let edit = app.buttons["profile-edit"]
         XCTAssertTrue(edit.waitForExistence(timeout: 5))
+        capture(app, name: "共通の一覧表示に揃えたプロフィール")
         edit.tap()
         let name = app.textFields["profile-name"]
         name.tap()

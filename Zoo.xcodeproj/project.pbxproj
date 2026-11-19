@@ -78,6 +78,7 @@
 		CC872F1EB856FF294BB96E95 /* ZooApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48CC24CCF9A14802AAA837EF /* ZooApp.swift */; };
 		CDF47B6B97F6A7B8692DD5BA /* DraftAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB537CBD3E87CD21D7A6F7FA /* DraftAttachment.swift */; };
 		CECE10939ABC3008116CB9A3 /* ReactionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9735CAB96A606BA5BE947D4C /* ReactionViews.swift */; };
+		D245AF6405F19384EE88F23C /* AppDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A44CFB9E7C2A7940E388CAD /* AppDesign.swift */; };
 		D6E56687A4F4875274167259 /* PublicProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCADD40C264C81FB2A211091 /* PublicProfile.swift */; };
 		DE27785108646185D520404F /* NativeCallMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBD80F99CDA0261D2C9C9BDF /* NativeCallMedia.swift */; };
 		E746829ED8E3D828F2518D54 /* AttachmentUploadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27229566EF770D5D9EB9EB54 /* AttachmentUploadTests.swift */; };
@@ -147,6 +148,7 @@
 		2D8EDA8358A4697C4243F758 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		337CC9AC583295489E718778 /* ZooNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZooNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		35169546CA55D414B0D9CF10 /* CallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallView.swift; sourceTree = "<group>"; };
+		3A44CFB9E7C2A7940E388CAD /* AppDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDesign.swift; sourceTree = "<group>"; };
 		43520FE923FB021B0362378A /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		48A7AE9F1620A0188FA8757C /* PreviewVideo.mp4 */ = {isa = PBXFileReference; path = PreviewVideo.mp4; sourceTree = "<group>"; };
 		48CC24CCF9A14802AAA837EF /* ZooApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooApp.swift; sourceTree = "<group>"; };
@@ -413,6 +415,7 @@
 		BE62B9546433F513B4A7AE62 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				3A44CFB9E7C2A7940E388CAD /* AppDesign.swift */,
 				AE1F3DDBBBB25B04CE7AD9CB /* Calls */,
 				2C6493F2A43F28541A844E70 /* Chat */,
 			);
@@ -646,6 +649,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D245AF6405F19384EE88F23C /* AppDesign.swift in Sources */,
 				0DDF8964D628DB378194A0D4 /* AppSession.swift in Sources */,
 				B4038C4D64C7D10987ABF395 /* AttachmentPreviewDismissGesture.swift in Sources */,
 				8C378AA23443EBE456EC05DA /* AttachmentSave.swift in Sources */,

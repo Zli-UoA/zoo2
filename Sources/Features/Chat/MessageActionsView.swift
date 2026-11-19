@@ -95,7 +95,7 @@ struct MessageActionsView: View {
                 }
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 16)
+            .padding(.horizontal, AppDesign.horizontalInset)
             .padding(.top, 26)
             .padding(.bottom, 12)
         }
@@ -116,7 +116,7 @@ struct MessageActionsView: View {
                             glyph
                                 .padding(4)
                                 .frame(width: size * 1.4, height: size)
-                                .background(selected ? Color.accentColor.opacity(0.14) : Color(.secondarySystemBackground), in: Capsule())
+                                .background(selected ? AppDesign.tint.opacity(0.14) : Color(.secondarySystemBackground), in: Capsule())
                                 .overlay { if selected { Capsule().strokeBorder(.tint) } }
                                 .contentShape(Capsule())
                         }
@@ -160,7 +160,7 @@ struct MessageActionsView: View {
     }
 
     private func actionLabel(_ title: LocalizedStringKey, icon: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppDesign.spacing) {
             Image(systemName: icon).font(.body).frame(width: 24)
             Text(title)
         }

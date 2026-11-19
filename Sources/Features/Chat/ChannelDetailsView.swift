@@ -10,7 +10,7 @@ struct ChannelDetailsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
+            AppForm {
                 Section("会話について") {
                     Label(workspace.name(for: channel), systemImage: channel.symbol).font(.headline)
                     if let description = channel.description, !description.isEmpty {
@@ -44,7 +44,7 @@ struct ChannelDetailsView: View {
                 }
             }
             .navigationTitle("チャンネル詳細").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
             .task { await workspace.loadMembers(channelID: channel.id) }
         }
     }
@@ -67,9 +67,9 @@ struct ChannelPinButton: View {
 struct PersonRow: View {
     let person: Person
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppDesign.spacing) {
             AvatarView(name: person.name, url: person.avatarURL)
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(person.name)
                 Text("@\(person.user_name)").font(.caption).foregroundStyle(.secondary)
             }
