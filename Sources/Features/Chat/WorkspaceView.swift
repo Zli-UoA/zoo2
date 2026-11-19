@@ -237,8 +237,8 @@ private struct ConversationDirectory: View {
                         }
                     }
                 }
-                .listRowInsets(EdgeInsets(top: directMessages ? 2 : 8, leading: 12,
-                                         bottom: directMessages ? 2 : 8, trailing: 12))
+                .listRowInsets(EdgeInsets(top: directMessages ? 10 : 8, leading: 12,
+                                         bottom: directMessages ? 10 : 8, trailing: 12))
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .contextMenu { ChannelPinButton(channel: channel, workspace: workspace) }
                 .accessibilityHint("長押しでピン留めを変更できます")
