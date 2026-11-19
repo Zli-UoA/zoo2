@@ -91,6 +91,7 @@ describe("CreateChannelDialog", () => {
 
   it("exposes form attributes and does not autofocus without a fine pointer", () => {
     expect(nameInput().getAttribute("name")).toBe("channel_name");
+    expect(nameInput().getAttribute("aria-required")).toBe("true");
     // HTML の maxlength は UTF-16 単位で切り詰めるため付けない。上限は tooLong エラーで伝える。
     expect(nameInput().hasAttribute("maxlength")).toBe(false);
     expect(nameInput().getAttribute("autocomplete")).toBe("off");

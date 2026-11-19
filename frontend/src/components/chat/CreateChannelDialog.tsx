@@ -146,6 +146,7 @@ export function CreateChannelDialog({
               onChange={(event) => setName(event.target.value)}
               aria-label={t("channels.newName")}
               aria-invalid={showNameError}
+              aria-required
               aria-describedby="create-channel-name-help"
               disabled={submitting}
               autoFocus={finePointer}
