@@ -31,6 +31,25 @@ body {
   margin: 0;
 }
 
+/*
+ * OS の「視差効果を減らす」設定を尊重する。CSS のアニメーション／トランジションを
+ * 実質的に停止し、CSS 由来のスクロールも即時にする。JS の smooth スクロールは
+ * MessageList 側で matchMedia を見て切り替える。
+ *
+ * 下の .animate-bubble-fade-out / .animate-bubble-pop の 0.3s は class セレクタの方が
+ * 詳細度が高いため維持される（短時間の気づき用フェードは残す既存の方針）。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", sans-serif;
@@ -106,7 +125,8 @@ body {
   --brand-muted-foreground: #000000;
   --border: #e5e5e5;
   --input: #d4d4d4;
-  --ring: #737373;
+  /* focus-visible:ring-ring/50 で 50% 透過されるため、白背景でも 3:1 を超えるよう暗くする。 */
+  --ring: #1f1f1f;
   --chart-1: #ffd600;
   --chart-2: #d9d9d9;
   --chart-3: #a3a3a3;

@@ -67,6 +67,18 @@ export function shouldStickToBottom(change: ScrollChange, atBottom: boolean): bo
   return false;
 }
 
+/**
+ * 視差効果を減らす設定が有効なときは smooth スクロールを即時に置き換える。
+ * CSS のグローバル設定では JS の `scrollTo` / `scrollToIndex` の挙動は変わらないため、
+ * スクロールだけは呼び出し側で明示的に切り替える。
+ */
+export function resolveScrollBehavior(
+  behavior: ScrollBehavior,
+  prefersReducedMotion: boolean,
+): ScrollBehavior {
+  return prefersReducedMotion ? "auto" : behavior;
+}
+
 /** ビューポート下端から `threshold` px 以内なら「最下部」とみなす。 */
 export function isNearBottom(
   scrollTop: number,

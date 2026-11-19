@@ -30,10 +30,12 @@ import { useMessageReadState } from "./useMessageReadState";
 import {
   classifyScrollChange,
   isNearBottom,
+  resolveScrollBehavior,
   shouldStickToBottom,
   snapshot,
   type ScrollSnapshot,
 } from "./messageScroll";
+import { useMediaQuery } from "../../layout/useMediaQuery";
 
 const ESTIMATED_ROW_HEIGHT = 64;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
@@ -202,6 +204,7 @@ export function MessageList({
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -249,9 +252,12 @@ export function MessageList({
         return;
       }
       // 行の実測高さに追従して最下部へ合わせる（scrollHeight 直指定より安定）。
-      virtualizer.scrollToIndex(items.length - 1, { align: "end", behavior });
+      virtualizer.scrollToIndex(items.length - 1, {
+        align: "end",
+        behavior: resolveScrollBehavior(behavior, prefersReducedMotion),
+      });
     },
-    [items.length, virtualizer],
+    [items.length, virtualizer, prefersReducedMotion],
   );
 
   const totalSize = virtualizer.getTotalSize();
