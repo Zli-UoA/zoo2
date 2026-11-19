@@ -1,4 +1,11 @@
 {
+  "a11y": {
+    "skipToContent": "Skip to content"
+  },
+  "notFoundPage": {
+    "title": "Page not found",
+    "description": "The page you are looking for may have moved or no longer exists."
+  },
   "nav": {
     "main": "Main navigation"
   },

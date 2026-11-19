@@ -246,8 +246,10 @@ export function MembersPanel({
 
   return (
     <section
-      role={onBack ? "region" : undefined}
-      aria-label={onBack ? t("members.title") : undefined}
+      // デスクトップは main の外にあるため、常に名前付きランドマークにする。
+      // モバイルの全画面表示でも同じ役割を持つ。
+      role="region"
+      aria-label={t("members.title")}
       className={cn("min-h-0 flex-col bg-background", className)}
       onKeyDown={handlePanelKeyDown}
     >

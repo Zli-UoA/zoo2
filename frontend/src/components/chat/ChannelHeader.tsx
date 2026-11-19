@@ -186,7 +186,7 @@ export function ChannelHeader({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          <h1 className="truncate text-sm font-semibold">{displayTitle}</h1>
           {channel.encrypted ? (
             // 見た目の印は左のアイコン（DM は鍵を重ねたアイコン）だけにし、印の文字はチャンネル設定に出す。読み上げでは、
             // 送信の前に暗号化されているかを確かめられるよう、見出しの隣で伝える。

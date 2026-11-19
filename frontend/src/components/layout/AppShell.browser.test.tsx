@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import { AppShell } from "./AppShell";
 import { useShell } from "./shell-context";
+import { LocaleProvider } from "../i18n/LocaleProvider";
 
 vi.mock("../preferences/SearchPreferences", () => ({
   SearchPreferencesProvider: ({ children }: { children: import("react").ReactNode }) => children,
@@ -71,7 +72,9 @@ vi.mock("../chat/MembersPanel", () => ({
     ) : null,
 }));
 vi.mock("../offline/OfflineBanner", () => ({ OfflineBanner: () => null }));
-vi.mock("./LeftRail", () => ({ LeftRail: () => null }));
+vi.mock("./LeftRail", () => ({
+  LeftRail: () => <button>Rail action</button>,
+}));
 
 function Channel() {
   const shell = useShell();
@@ -136,7 +139,11 @@ function setup(entries: string[]) {
     routeTree: root.addChildren([home, channel, settings, bubble]),
     history: createMemoryHistory({ initialEntries: entries }),
   });
-  render(<RouterProvider router={router} />);
+  render(
+    <LocaleProvider>
+      <RouterProvider router={router} />
+    </LocaleProvider>,
+  );
   return router;
 }
 
@@ -149,6 +156,34 @@ describe("shell navigation", () => {
   beforeEach(async () => {
     await page.viewport(1440, 900);
   });
+
+  it("provides a skip link that moves focus to the main landmark without navigating", async () => {
+    const router = setup(["/"]);
+    const skip = await screen.findByRole("link", { name: "本文へスキップ" });
+    expect(skip).toHaveAttribute("href", "#main-content");
+    const main = document.getElementById("main-content");
+    expect(main?.tagName).toBe("MAIN");
+    expect(main).toHaveAttribute("tabindex", "-1");
+    skip.focus();
+    expect(document.activeElement).toBe(skip);
+    await userEvent.keyboard("{Enter}");
+    expect(document.activeElement).toBe(main);
+    // フラグメント移動を起こさないので、thread/members の閉じる処理が使う履歴が壊れない。
+    expect(router.state.location.hash).toBe("");
+  });
+
+  it("sends the skip link to the visible sidebar on narrow home screens", async () => {
+    await page.viewport(390, 844);
+    setup(["/"]);
+    const skip = await screen.findByRole("link", { name: "本文へスキップ" });
+    skip.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(document.activeElement?.id).toBe("sidebar-content");
+    // スキップ後は共通ナビゲーション（LeftRail）ではなく本文側へ進む。
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Rail action" })).not.toHaveFocus();
+  });
+
   it("restores channel and thread views with Back and Forward", async () => {
     const router = setup(["/"]);
     await userEvent.click(await screen.findByRole("link", { name: "General" }));

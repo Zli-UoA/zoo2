@@ -1,6 +1,7 @@
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 import { createAppHistory } from "./lib/pwa/history";
+import { NotFoundScreen } from "./components/layout/NotFoundScreen";
 
 const RELOAD_GUARD_KEY = "zoo2:preload-error-reload-at";
 const RELOAD_GUARD_MS = 60_000;
@@ -35,6 +36,9 @@ export function getRouter() {
     scrollRestoration: true,
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
+    // 未知のパスは _shell/$ の catch-all がシェル内で描画する。loader などで
+    // notFound が投げられたときのフォールバックとしても同じ画面を使う。
+    defaultNotFoundComponent: () => <NotFoundScreen />,
   });
 
   return router;
