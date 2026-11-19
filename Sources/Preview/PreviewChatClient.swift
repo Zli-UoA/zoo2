@@ -479,12 +479,17 @@ final class PreviewChatClient: ChatClient {
         return id
     }
 
-    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = []) async throws -> Message {
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = [], sensitiveAttachmentIDs: [String] = []) async throws -> Message {
         if failNextSend { failNextSend = false; throw URLError(.notConnectedToInternet) }
         if let existing = allMessages.first(where: { $0.id == id }) { return existing }
+        let attachments = attachmentIDs.compactMap { id -> MessageAttachment? in
+            guard var attachment = uploadedAttachments[id] else { return nil }
+            attachment.is_sensitive = sensitiveAttachmentIDs.contains(id)
+            return attachment
+        }
         let message = Message(id: id, user_id: currentUser.id, channel_id: channelID, content: content,
                               created_at: Date().ISO8601Format(), parent_id: parentID,
-                              display_data: MessageDisplayData(reactions: [], attachments: attachmentIDs.compactMap { uploadedAttachments[$0] }))
+                              display_data: MessageDisplayData(reactions: [], attachments: attachments))
         allMessages.append(message)
         if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
             let arguments = ProcessInfo.processInfo.arguments

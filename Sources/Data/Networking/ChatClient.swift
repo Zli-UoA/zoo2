@@ -28,7 +28,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func emojis() async throws -> [WorkspaceEmoji]
     func emojiAccounts() async throws -> [EmojiAccount]
     func upload(_ attachment: DraftAttachment, channelID: String) async throws -> String
-    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String]) async throws -> Message
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String], sensitiveAttachmentIDs: [String]) async throws -> Message
     func edit(id: String, content: String) async throws -> Message
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
@@ -243,12 +243,15 @@ struct NativeChatClient: ChatClient {
         return id
     }
 
-    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = []) async throws -> Message {
+    func send(id: String, channelID: String, content: String, parentID: String?, attachmentIDs: [String] = [], sensitiveAttachmentIDs: [String] = []) async throws -> Message {
         _ = try segment(id)
         _ = try segment(channelID)
         var body: [String: JSONValue] = ["id": .string(id), "channel_id": .string(channelID), "content": .string(content)]
         if let parentID { body["parent_id"] = .string(try segment(parentID)) }
         if !attachmentIDs.isEmpty { body["attachment_ids"] = .array(try attachmentIDs.map { .string(try segment($0)) }) }
+        if !sensitiveAttachmentIDs.isEmpty {
+            body["sensitive_attachment_ids"] = .array(try sensitiveAttachmentIDs.map { .string(try segment($0)) })
+        }
         return try await api.write("api/messages", body: body)
     }
 

@@ -40,8 +40,8 @@ struct AttachmentUploadTests {
                        created_at: "2026-11-19T09:00:00Z", parent_id: parent)
     }
 
-    @Test("ファイルだけの投稿と返信は署名付きURLへPUTし、本文送信の失敗後も添付とIDを再利用する", arguments: [false, true])
-    func uploadAndRetry(reply: Bool) async throws {
+    @Test("ファイルだけの投稿と返信は署名付きURLへPUTし、本文送信の失敗後も添付とIDを再利用する", arguments: [false, true], [false, true])
+    func uploadAndRetry(reply: Bool, sensitive: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let source = try sourceFile()
@@ -70,6 +70,8 @@ struct AttachmentUploadTests {
             default:
                 #expect(request.url?.path == "/api/messages")
                 let message = try Self.message(request)
+                let body = try JSONDecoder().decode([String: JSONValue].self, from: StubProtocol.body(request))
+                #expect(body["sensitive_attachment_ids"] == (sensitive ? .array([.string(Self.attachmentID)]) : nil))
                 #expect(message.content.isEmpty)
                 #expect((message.parent_id != nil) == reply)
                 let count = messageIDs.withLock { $0.append(message.id); return $0.count }
@@ -81,12 +83,15 @@ struct AttachmentUploadTests {
         let parent = reply ? "22222222-2222-4222-8222-222222222222" : nil
         let key = store.draftKey(parent)
         await store.importFiles([source], parentID: parent)
+        let draftID = try #require(store.draftAttachments[key]?.first?.id)
+        store.setAttachmentSensitive(draftID, sensitive: sensitive, parentID: parent)
         let copiedURL = try #require(store.draftAttachments[key]?.first?.file.url)
         try Data("選択後に元ファイルが変わった".utf8).write(to: source)
         #expect(try Data(contentsOf: copiedURL) == Data("添付の本文".utf8))
         #expect(store.canSend(parentID: parent))
         await store.send(parentID: parent)
         #expect(store.draftAttachments[key]?.count == 1)
+        #expect(store.draftAttachments[key]?.first?.isSensitive == sensitive)
         #expect(store.sendErrors[key] != nil)
         await store.send(parentID: parent)
         #expect(store.sendErrors[key] == nil)
@@ -129,8 +134,8 @@ struct AttachmentUploadTests {
         #expect(store.messages.count == 1)
     }
 
-    @Test("投稿の応答消失後に本文を変更したら、使用済みか不明な添付も新規作成する")
-    func editedRetryReuploads() async throws {
+    @Test("投稿の応答消失後に本文またはセンシティブ指定を変更したら、使用済みか不明な添付も新規作成する", arguments: [false, true])
+    func editedRetryReuploads(changeSensitivity: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let source = try sourceFile()
@@ -157,9 +162,10 @@ struct AttachmentUploadTests {
                     }
                     #expect(fresh)
                 }
+                #expect(body["sensitive_attachment_ids"] == (changeSensitivity && attempt == 2 ? .array(attachments) : nil))
                 if attempt == 1 { throw URLError(.networkConnectionLost) }
                 let metadata = MessageAttachment(id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", file_name: "確認.txt",
-                                                 content_type: "text/plain", is_sensitive: false)
+                                                 content_type: "text/plain", is_sensitive: changeSensitivity)
                 let message = Message(id: id, user_id: Self.userID, channel_id: Self.channelID, content: content,
                                       created_at: "2026-11-19T09:00:00Z", display_data: MessageDisplayData(attachments: [metadata]))
                 return (200, [:], try Self.envelope(message))
@@ -169,12 +175,15 @@ struct AttachmentUploadTests {
         await store.importFiles([source], parentID: nil)
         store.drafts["root"] = "最初の本文"
         await store.send()
-        store.drafts["root"] = "修正した本文"
+        if changeSensitivity {
+            let id = try #require(store.draftAttachments["root"]?.first?.id)
+            store.setAttachmentSensitive(id, sensitive: true, parentID: nil)
+        } else { store.drafts["root"] = "修正した本文" }
         await store.send()
         #expect(presignCount.withLock { $0 } == 2)
         #expect(postedIDs.withLock { $0.count == 2 && $0[0] != $0[1] })
-        #expect(store.messages.first?.content == "修正した本文")
-        #expect(store.attachments(for: try #require(store.messages.first)).first?.is_sensitive == false)
+        #expect(store.messages.first?.content == (changeSensitivity ? "最初の本文" : "修正した本文"))
+        #expect(store.attachments(for: try #require(store.messages.first)).first?.is_sensitive == changeSensitivity)
         #expect(store.sendErrors["root"] == nil)
     }
 
@@ -200,12 +209,14 @@ struct AttachmentUploadTests {
             }
             let body = try JSONDecoder().decode([String: JSONValue].self, from: StubProtocol.body(request))
             #expect(body["attachment_ids"] == .array([.string(attachmentIDs[0]), .string(attachmentIDs[2])]))
+            #expect(body["sensitive_attachment_ids"] == .array([.string(attachmentIDs[0])]))
             guard case .string(let id) = body["id"] else { throw ZooError.invalidResponse }
             return (200, [:], try Self.envelope(Message(id: id, user_id: Self.userID, channel_id: Self.channelID,
                                                        content: "", created_at: "2026-11-19T09:00:00Z")))
         }
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         await store.importFiles([source, source], parentID: nil)
+        store.setAttachmentSensitive(try #require(store.draftAttachments["root"]?.first?.id), sensitive: true, parentID: nil)
         await store.send()
         #expect(store.messages.isEmpty)
         #expect(store.draftAttachments["root"]?.count == 2)
