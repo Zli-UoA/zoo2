@@ -38,44 +38,26 @@ private struct RootView: View {
             if let workspace = session.workspace {
                 WorkspaceView(workspace: workspace, session: session)
             } else {
-                ScrollView {
+                ViewThatFits(in: .vertical) {
                     VStack(spacing: 24) {
-                        Image(systemName: "pawprint.fill").font(.system(size: 64)).foregroundStyle(.tint)
-                        Text("ようこそ Zoo へ").font(.largeTitle.bold())
-                        Text("いつもの会話を、iPhone で。")
-                        if let error = session.error {
-                            Text(error).font(.callout).foregroundStyle(.red).accessibilityIdentifier("login-error")
-                        }
+                        welcomeHeader
                         if let prompt = session.deviceAuthorization {
-                            Text("確認コード").font(.headline)
-                            Text(prompt.userCode)
-                                .font(.largeTitle.monospaced().bold())
-                                .textSelection(.enabled)
-                                .accessibilityIdentifier("device-user-code")
-                            Text("認証画面のコードと一致することを確認して、ログインを承認してください。")
-                            Text(prompt.verificationURI.absoluteString)
-                                .font(.footnote).textSelection(.enabled)
-                            Button("認証画面を開く") { showingVerification = true }
-                                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-                                .controlSize(.large)
-                                .accessibilityIdentifier("device-verify")
+                            authorizationDetails(prompt)
                         }
-                        if session.connecting {
-                            ProgressView(session.deviceAuthorization == nil ? "接続しています…" : "承認を待っています…")
-                            Button("ログインを中止", systemImage: "xmark") { session.cancelLogin() }
-                                .labelStyle(.iconOnly).buttonStyle(.bordered).buttonBorderShape(.circle)
-                                .accessibilityIdentifier("cancel-login")
-                        } else {
-                            Button("ログイン") { session.startLogin() }
-                                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-                                .controlSize(.large)
-                                .accessibilityIdentifier("login")
-                        }
+                        loginActions
                     }
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                    .padding(24)
+                    HStack(spacing: 24) {
+                        if let prompt = session.deviceAuthorization {
+                            authorizationDetails(prompt)
+                        } else {
+                            welcomeHeader
+                        }
+                        loginActions
+                    }
                 }
+                .multilineTextAlignment(.center)
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .sheet(isPresented: $showingVerification) {
@@ -86,6 +68,52 @@ private struct RootView: View {
         }
         .onChange(of: session.deviceAuthorization) { _, prompt in
             if prompt == nil { showingVerification = false }
+        }
+    }
+
+    private var welcomeHeader: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "pawprint.fill").font(.system(size: 64)).foregroundStyle(.tint)
+            Text("ようこそ Zoo へ").font(.largeTitle.bold())
+            Text("いつもの会話を、iPhone で。")
+        }
+    }
+
+    private func authorizationDetails(_ prompt: DeviceAuthorizationPrompt) -> some View {
+        VStack(spacing: 12) {
+            Text("確認コード").font(.headline)
+            Text(prompt.userCode)
+                .font(.largeTitle.monospaced().bold())
+                .textSelection(.enabled)
+                .accessibilityIdentifier("device-user-code")
+            Text("認証画面のコードと一致することを確認して、ログインを承認してください。")
+            Text(prompt.verificationURI.absoluteString)
+                .font(.footnote).textSelection(.enabled)
+        }
+    }
+
+    private var loginActions: some View {
+        VStack(spacing: 24) {
+            if let error = session.error {
+                Text(error).font(.callout).foregroundStyle(.red).accessibilityIdentifier("login-error")
+            }
+            if session.deviceAuthorization != nil {
+                Button("認証画面を開く") { showingVerification = true }
+                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("device-verify")
+            }
+            if session.connecting {
+                ProgressView(session.deviceAuthorization == nil ? "接続しています…" : "承認を待っています…")
+                Button("ログインを中止", systemImage: "xmark") { session.cancelLogin() }
+                    .labelStyle(.iconOnly).buttonStyle(.bordered).buttonBorderShape(.circle)
+                    .accessibilityIdentifier("cancel-login")
+            } else {
+                Button("ログイン") { session.startLogin() }
+                    .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("login")
+            }
         }
     }
 }
