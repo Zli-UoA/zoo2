@@ -1,7 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
 import { MessagePane } from "./MessagePane";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn() } }));
 
 const fixture = vi.hoisted(() => {
   const root = {
@@ -45,6 +49,10 @@ const fixture = vi.hoisted(() => {
     closeThread: vi.fn(),
     openThread: vi.fn(),
     api: { request: vi.fn(), post: vi.fn().mockResolvedValue({}) },
+    /** useWriteRunner の失敗を差し替えてトーストの文言を検証する。 */
+    writeError: null as string | null,
+    writeErrorCause: null as unknown,
+    setWriteError: vi.fn(),
   };
 });
 const collection = {
@@ -111,8 +119,9 @@ vi.mock("../../../hooks/useTyping", () => ({
 }));
 vi.mock("../../../hooks/useWriteRunner", () => ({
   useWriteRunner: () => ({
-    error: null,
-    setError: () => {},
+    error: fixture.writeError,
+    errorCause: fixture.writeErrorCause,
+    setError: fixture.setWriteError,
     run: async (action: () => unknown) => action(),
     isPending: false,
   }),
@@ -189,6 +198,11 @@ beforeEach(() => {
   fixture.closeThread.mockClear();
   fixture.openThread.mockClear();
   fixture.loadOlder.mockClear();
+  fixture.writeError = null;
+  fixture.writeErrorCause = null;
+  fixture.setWriteError.mockClear();
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.info).mockClear();
 });
 
 describe("links and threads whose rows are older than the loaded range", () => {
@@ -319,4 +333,24 @@ it("shows a retryable pane without closing when its root request fails", async (
   expect(screen.getByRole("button", { name: "再試行" })).toBeTruthy();
   screen.getByRole("button", { name: "スレッドを閉じる" }).click();
   expect(fixture.closeThread).toHaveBeenCalledTimes(1);
+});
+
+it("shows a localized description for an offline write failure", async () => {
+  const previousLocale = localStorage.getItem(LOCALE_STORAGE_KEY);
+  localStorage.setItem(LOCALE_STORAGE_KEY, "ja");
+  try {
+    fixture.writeError = "Failed to fetch";
+    fixture.writeErrorCause = new TypeError("Failed to fetch");
+    render(pane());
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("操作に失敗しました", {
+        description: "サーバーに接続できませんでした。接続を確認してもう一度お試しください。",
+        id: "message-write-error",
+      }),
+    );
+    expect(fixture.setWriteError).toHaveBeenCalledWith(null);
+  } finally {
+    if (previousLocale === null) localStorage.removeItem(LOCALE_STORAGE_KEY);
+    else localStorage.setItem(LOCALE_STORAGE_KEY, previousLocale);
+  }
 });
