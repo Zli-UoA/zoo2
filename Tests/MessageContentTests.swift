@@ -5,27 +5,27 @@ import Testing
 
 @MainActor @Suite("画面外のメッセージ保持")
 struct MessageRenderCacheTests {
-    @Test("表示範囲の上下5件を同じ状態のまま保持し、それより遠い行を解放する")
-    func fiveNeighbors() {
+    @Test("表示範囲の上下10件を同じ状態のまま保持し、それより遠い行を解放する")
+    func tenNeighbors() {
         let cache = MessageRenderCache()
-        let ids = (0..<30).map(String.init)
+        let ids = (0..<40).map(String.init)
         let original = Dictionary(uniqueKeysWithValues: ids.map { ($0, cache.state(for: $0)) })
-        cache.retain(visibleIDs: ["10", "11", "12"], orderedIDs: ids)
-        #expect(Set(cache.states.keys) == Set(ids[5...17]))
-        for id in ids[5...17] { #expect(cache.state(for: id) === original[id]) }
+        cache.retain(visibleIDs: ["15", "16", "17"], orderedIDs: ids)
+        #expect(Set(cache.states.keys) == Set(ids[5...27]))
+        for id in ids[5...27] { #expect(cache.state(for: id) === original[id]) }
         #expect(cache.state(for: "4") !== original["4"])
-        cache.retain(visibleIDs: ["11", "12", "13"], orderedIDs: ids)
-        #expect(Set(cache.states.keys) == Set(ids[6...18]).subtracting(["18"]))
-        #expect(cache.state(for: "12") === original["12"])
+        cache.retain(visibleIDs: ["16", "17", "18"], orderedIDs: ids)
+        #expect(Set(cache.states.keys) == Set(ids[6...27]))
+        #expect(cache.state(for: "17") === original["17"])
     }
 
-    @Test("先頭・末尾で存在しない隣接行を作らない", arguments: [0, 9])
+    @Test("先頭・末尾で存在しない隣接行を作らない", arguments: [0, 24])
     func ends(_ index: Int) {
         let cache = MessageRenderCache()
-        let ids = (0..<10).map(String.init)
+        let ids = (0..<25).map(String.init)
         for id in ids { _ = cache.state(for: id) }
         cache.retain(visibleIDs: [ids[index]], orderedIDs: ids)
-        let expected = index == 0 ? ids[0...5] : ids[4...9]
+        let expected = index == 0 ? ids[0...10] : ids[14...24]
         #expect(Set(cache.states.keys) == Set(expected))
     }
 

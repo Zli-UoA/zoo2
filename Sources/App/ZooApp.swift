@@ -13,7 +13,7 @@ struct ZooApp: App {
             RootView(session: session)
                 .preferredColorScheme(appearance.colorScheme)
                 .environment(\.locale, Locale(identifier: "ja_JP"))
-                .tint(AppDesign.tint)
+                .tint(AppDesign.navigationTint)
                 .task {
                     guard !AppSession.isUITesting else { return }
                     delegate.bind(session.notifications)

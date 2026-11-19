@@ -2,6 +2,7 @@ import SwiftUI
 
 enum AppDesign {
     static let tint = Color(uiColor: .systemBlue)
+    static let navigationTint = Color(red: 37.0 / 255, green: 99.0 / 255, blue: 91.0 / 255)
     static let settingsTint = Color(red: 0.15, green: 0.39, blue: 0.35)
     static let horizontalInset: CGFloat = 12
     static let spacing: CGFloat = 8
@@ -40,7 +41,7 @@ struct AppCloseButton: View {
     var body: some View {
         Button("閉じる", systemImage: "xmark", action: action)
             .labelStyle(.iconOnly)
-            .tint(.primary)
+            .tint(AppDesign.navigationTint)
     }
 }
 
@@ -112,7 +113,7 @@ private struct AppSearch<Actions: View>: ViewModifier {
                     presented = false
                 } label: {
                     Image(systemName: "xmark").font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(AppDesign.navigationTint)
                         .frame(width: AppDesign.minimumControlSize, height: AppDesign.minimumControlSize)
                         .contentShape(Rectangle())
                 }

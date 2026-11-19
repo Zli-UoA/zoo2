@@ -2,6 +2,7 @@ import SwiftUI
 
 @MainActor
 final class MessageRenderCache {
+    private static let retainedNeighborCount = 10
     private(set) var states: [String: MessageRenderState] = [:]
     private var visibleIDs: Set<String> = []
 
@@ -24,9 +25,9 @@ final class MessageRenderCache {
             evict(except: available)
             return
         }
-        // 行ビューが破棄されても、画面に近い上下5件の表示状態は一覧側で保持する。
-        let lower = max(0, first - 5)
-        let upper = min(orderedIDs.count, last + 6)
+        // スクロールで戻った際の再読み込みを防ぐため、行ビューの外で上下10件の表示状態を保持する。
+        let lower = max(0, first - Self.retainedNeighborCount)
+        let upper = min(orderedIDs.count, last + Self.retainedNeighborCount + 1)
         let retained = Set(orderedIDs[lower..<upper])
         evict(except: retained)
     }
@@ -123,6 +124,7 @@ struct MessageContentView: View {
             return nil
         })).sorted { $0.absoluteString < $1.absoluteString }
         MessageContentText.render(parts, images: renderState.inlineImages, emojiHeight: emojiHeight)
+        .tint(AppDesign.tint)
         .task(id: ImageLoadKey(stateID: renderState.id, urls: urls)) {
             await renderState.loadInlineImages(urls)
         }

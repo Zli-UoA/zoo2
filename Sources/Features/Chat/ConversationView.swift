@@ -69,6 +69,7 @@ struct ConversationView: View {
                         }
                     }
                     .foregroundStyle(.primary)
+                    .tint(.primary)
                     .accessibilityLabel("\(workspace.name(for: store.channel))の詳細")
                     .accessibilityIdentifier("channel-details")
                 }
