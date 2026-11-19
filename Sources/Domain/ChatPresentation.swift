@@ -4,6 +4,11 @@ struct MessageScrollState: Equatable {
     let followingLatest: Bool
     let showsLatestButton: Bool
 
+    init(contentHeight: CGFloat, offsetY: CGFloat, topInset: CGFloat, viewportHeight: CGFloat) {
+        // 上側の余白を含む座標差を補正し、最新位置を過去ログの閲覧中と誤判定しない。
+        self.init(distanceToBottom: contentHeight - offsetY - topInset - viewportHeight)
+    }
+
     init(distanceToBottom: CGFloat) {
         followingLatest = distanceToBottom <= 80
         // 少し履歴を確認しただけではボタンを重ねず、既読・新着追従の判定は従来どおりに保つ。
