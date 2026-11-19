@@ -1423,10 +1423,90 @@ where
     }
 }
 
+/// `verification_uri` 自体に IdP が `user_code`（クエリ・フラグメント・パス）を含めて返した場合でも、
+/// 手動リンクの `verification_uri` から `user_code` を確実に除去してコードなし URL に正規化する。
+fn strip_user_code_from_verification_uri(uri: &str, user_code: &str) -> String {
+    let code_trimmed = user_code.trim();
+    let code_lower = code_trimmed.to_ascii_lowercase();
+    let code_compact: String = code_trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let contains_code = |s: &str| -> bool {
+        if !code_lower.is_empty() && s.to_ascii_lowercase().contains(&code_lower) {
+            return true;
+        }
+        if !code_compact.is_empty() {
+            let s_compact: String = s
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            if s_compact.contains(&code_compact) {
+                return true;
+            }
+        }
+        false
+    };
+
+    let Ok(mut parsed) = url::Url::parse(uri) else {
+        return if !code_trimmed.is_empty() && contains_code(uri) {
+            uri.replace(code_trimmed, "")
+        } else {
+            uri.to_string()
+        };
+    };
+
+    if parsed.query().is_some() {
+        let kept: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(k, v)| {
+                !k.eq_ignore_ascii_case("user_code")
+                    && !k.eq_ignore_ascii_case("code")
+                    && !contains_code(k)
+                    && !contains_code(v)
+            })
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        if kept.is_empty() {
+            parsed.set_query(None);
+        } else {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for (k, v) in kept {
+                serializer.append_pair(&k, &v);
+            }
+            let query = serializer.finish();
+            parsed.set_query(Some(&query));
+        }
+    }
+    if let Some(fragment) = parsed.fragment()
+        && (fragment.to_ascii_lowercase().contains("user_code") || contains_code(fragment))
+    {
+        parsed.set_fragment(None);
+    }
+    if contains_code(parsed.path())
+        && let Some(mut segments) = parsed.path_segments().map(|s| {
+            s.filter(|seg| !contains_code(seg))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+    {
+        if segments.is_empty() {
+            segments.push(String::new());
+        }
+        let new_path = format!("/{}", segments.join("/"));
+        parsed.set_path(&new_path);
+    }
+    parsed.into()
+}
+
 /// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin`・自動起動対象 URL・`authorized_at` 基準の `deadline` を返す。
+/// - `verification_uri` 自体に `user_code` が含まれていた場合でも `strip_user_code_from_verification_uri` で除去し、
+///   手動リンク用の `login.verification_uri` は常にコードなし URL とする。
 /// - `verification_uri` が `issuer` と別オリジン（または非ループバック HTTP）の場合や、
 ///   リダイレクト安全性が未確認の外部カスタム `issuer` では、ログイン自体は失敗させず
-///   ユーザーコードと手動リンク表示へフォールバックし、ブラウザー自動起動と `verification_uri_complete` を抑止する。
+///   ユーザーコードとコードなしの手動リンク表示へフォールバックし、ブラウザー自動起動と `verification_uri_complete` を抑止する。
 /// - 確認済み `issuer` かつ同一オリジンの場合のみ、自動起動および `verification_uri_complete` の採用前に
 ///   `GET` でリダイレクト先を検証する。
 /// - 事前検証完了時点で認可コードの有効期限が切れていた場合は、`LoggingIn` 遷移やブラウザー自動起動へ進まず
@@ -1438,10 +1518,14 @@ async fn prepare_verified_device_login(
     authorized_at: Instant,
     authorized_unix: i64,
 ) -> Result<(DeviceLogin, Option<String>, Instant), IpcError> {
+    let sanitized_verification_uri = strip_user_code_from_verification_uri(
+        &authorization.verification_uri,
+        &authorization.user_code,
+    );
     let mut verification_uri_complete = None;
     let mut auto_open_url = None;
 
-    if !is_same_issuer_origin(&authorization.verification_uri, issuer) {
+    if !is_same_issuer_origin(&sanitized_verification_uri, issuer) {
         eprintln!(
             "ログイン確認 URL のスキームまたはオリジンが issuer と一致しないため、コード付き URL とブラウザー自動起動を抑止します"
         );
@@ -1463,11 +1547,10 @@ async fn prepare_verified_device_login(
                 }
             },
             None => {
-                match verify_login_redirect_chain(client, &authorization.verification_uri, issuer)
-                    .await
+                match verify_login_redirect_chain(client, &sanitized_verification_uri, issuer).await
                 {
                     Ok(()) => {
-                        auto_open_url = Some(authorization.verification_uri.clone());
+                        auto_open_url = Some(sanitized_verification_uri.clone());
                     }
                     Err(err) => {
                         eprintln!(
@@ -1489,7 +1572,7 @@ async fn prepare_verified_device_login(
 
     let login = DeviceLogin {
         user_code: authorization.user_code.clone(),
-        verification_uri: authorization.verification_uri.clone(),
+        verification_uri: sanitized_verification_uri,
         verification_uri_complete,
         expires_at,
     };
@@ -1502,7 +1585,8 @@ mod tests {
         BrowserLaunchGate, DeviceAuthorization, Duration, ErrorCode, Instant,
         build_no_redirect_http_client, ensure_device_login_not_expired, is_confirmed_login_issuer,
         is_same_issuer_origin, poll_device_authorization_until, prepare_verified_device_login,
-        resolve_and_validate_redirect, token, verify_login_redirect_chain,
+        resolve_and_validate_redirect, strip_user_code_from_verification_uri, token,
+        verify_login_redirect_chain,
     };
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1782,13 +1866,16 @@ mod tests {
         assert!(unconfirmed_login.verification_uri_complete.is_none());
         assert!(unconfirmed_auto_open.is_none());
 
-        // 4) 別オリジンの verification_uri を返す IdP でもログインは失敗させず、手動リンクのみ表示して自動起動と verification_uri_complete を抑止する
+        // 4) 別オリジンの verification_uri を返す IdP でもログインは失敗させず、手動リンクのみ表示して自動起動と verification_uri_complete を抑止する。
+        //    さらに IdP が verification_uri 自体に user_code を含めていた場合も、手動リンクから user_code を除去する。
         let cross_origin_auth = DeviceAuthorization {
             device_code: "dev-cross".to_string(),
-            user_code: "CROSS123".to_string(),
-            verification_uri: "https://login.custom-idp.example/device".to_string(),
+            user_code: "CROSS-123".to_string(),
+            verification_uri:
+                "https://login.custom-idp.example/device?user_code=CROSS-123&lang=ja#user_code=CROSS-123"
+                    .to_string(),
             verification_uri_complete: Some(
-                "https://login.custom-idp.example/device?user_code=CROSS123".to_string(),
+                "https://login.custom-idp.example/device?user_code=CROSS-123".to_string(),
             ),
             expires_in: 600,
             interval: Some(5),
@@ -1802,13 +1889,21 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(cross_login.user_code, "CROSS123");
+        assert_eq!(cross_login.user_code, "CROSS-123");
         assert_eq!(
             cross_login.verification_uri,
-            "https://login.custom-idp.example/device"
+            "https://login.custom-idp.example/device?lang=ja"
         );
+        assert!(!cross_login.verification_uri.contains("CROSS"));
         assert!(cross_login.verification_uri_complete.is_none());
         assert!(cross_auto_open.is_none());
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/device/CROSS123?code=CROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/device"
+        );
 
         // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返す
         let expired_start = Instant::now() - Duration::from_secs(600);
