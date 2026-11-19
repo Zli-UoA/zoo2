@@ -500,19 +500,25 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
-    func testComposerToolbarInsertsMentionAndEmoji() {
+    func testComposerMenuInsertsMentionAndEmoji() {
         let app = launchWorkspace(dark: true)
         app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
         let field = composer(app)
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         capture(app, name: "Slackに合わせた通常時の入力欄")
         field.tap()
-        app.buttons["composer-mention"].tap()
+        app.buttons["composer-additions"].tap()
+        let mention = app.buttons["メンションを挿入"]
+        XCTAssertTrue(mention.waitForExistence(timeout: 5))
+        mention.tap()
         XCTAssertTrue(app.buttons["mention-sakura"].waitForExistence(timeout: 5))
         capture(app, name: "Slackに合わせた入力欄と候補パネル")
         app.buttons["mention-sakura"].tap()
         field.typeText("ありがとう ")
-        app.buttons["composer-emoji"].tap()
+        app.buttons["composer-additions"].tap()
+        let emoji = app.buttons["スタンプを挿入"]
+        XCTAssertTrue(emoji.waitForExistence(timeout: 5))
+        emoji.tap()
         XCTAssertTrue(app.buttons["pick-reaction-🎉"].waitForExistence(timeout: 5))
         app.buttons["pick-reaction-🎉"].tap()
         XCTAssertTrue(app.buttons["send-message"].wait(for: \.isHittable, toEqual: true, timeout: 5))
@@ -536,7 +542,8 @@ final class ZooUITests: XCTestCase {
                                  threadDirectory: Bool = false, chatDetails: Bool = false, video: Bool = false, readRetry: Bool = false, dark: Bool = false, pinFailure: Bool = false, call: Bool = false, attachments: Bool = false,
                                  pdf: Bool = false, pdfFailure: Bool = false, sensitivePDF: Bool = false, callInviteFailure: Bool = false,
                                  tallImage: Bool = false, wrappedReactions: Bool = false, retainedMessages: Bool = false,
-                                 variedHistory: Bool = false) -> XCUIApplication {
+                                 variedHistory: Bool = false, longThread: Bool = false, largeText: Bool = false,
+                                 shortThread: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace"]
         if failingSend { app.launchArguments.append("--uitesting-send-failure") }
@@ -558,6 +565,9 @@ final class ZooUITests: XCTestCase {
         if sensitivePDF { app.launchArguments.append("--uitesting-sensitive-pdf") }
         if chatDetails { app.launchArguments.append("--uitesting-chat-details") }
         if threadDirectory { app.launchArguments.append("--uitesting-thread-directory") }
+        if longThread { app.launchArguments.append("--uitesting-long-thread") }
+        if shortThread { app.launchArguments.append("--uitesting-short-thread") }
+        if largeText { app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"] }
         app.launch()
         XCTAssertTrue(app.buttons["channel-11111111-1111-4111-8111-111111111111"].waitForExistence(timeout: 10))
         return app
@@ -618,6 +628,8 @@ final class ZooUITests: XCTestCase {
         let threadBar = app.navigationBars["スレッド"]
         XCTAssertTrue(threadBar.waitForExistence(timeout: 5))
         XCTAssertFalse(threadBar.buttons["閉じる"].exists)
+        XCTAssertTrue(app.staticTexts["thread-empty-state"].exists)
+        XCTAssertEqual(app.staticTexts["thread-reply-count"].label, "0 件の返信")
         app.typeText("スレッドへの返信テスト")
         app.buttons["send-reply"].tap()
         XCTAssertTrue(app.staticTexts["スレッドへの返信テスト"].waitForExistence(timeout: 5))
@@ -625,10 +637,25 @@ final class ZooUITests: XCTestCase {
         capture(app, name: "スレッドへの返信")
         threadBar.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["一般"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "2 件の返信"))
-            .firstMatch.waitForExistence(timeout: 5))
+        let replies = app.buttons["thread-replies-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(replies.waitForExistence(timeout: 5))
+        XCTAssertEqual(replies.label, "2 件の返信")
+        XCTAssertTrue((replies.value as? String)?.contains("あなた") == true)
+        XCTAssertTrue((replies.value as? String)?.contains("さくら") == true)
+        XCTAssertTrue((replies.value as? String)?.contains("最終返信") == true)
         XCTAssertTrue(app.staticTexts["別の端末からの新着"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.navigationBars["スレッド"].exists)
+        replies.tap()
+        XCTAssertTrue(threadBar.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["スレッドへの返信テスト"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["別の端末からの返信"].exists)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["thread-reply-count"].label, "2 件の返信")
+        XCTAssertFalse(app.staticTexts["thread-empty-state"].exists)
+        XCTAssertFalse(replies.exists)
+        capture(app, name: "返信件数から開いたスレッド")
+        threadBar.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(replies.waitForExistence(timeout: 5))
         XCTAssertFalse(app.webViews.firstMatch.exists)
     }
 
@@ -771,16 +798,15 @@ final class ZooUITests: XCTestCase {
         let preview = app.buttons["PDFを全画面で表示：確認資料.pdf"]
         XCTAssertTrue(preview.waitForExistence(timeout: 10))
         let list = app.scrollViews["message-list"]
+        let latest = app.staticTexts["履歴 60"]
+        XCTAssertTrue(latest.isHittable)
+        // 端末の高さにかかわらず、末尾だけを画面外へ送り、近隣行はキャッシュ範囲に残す。
+        let distance = list.frame.maxY + 20 - latest.frame.minY
         let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2))
-        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 450)),
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: distance)),
                     withVelocity: .slow, thenHoldForDuration: 0.3)
-        if preview.isHittable || app.staticTexts["履歴 60"].isHittable {
-            let next = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.4))
-            next.press(forDuration: 0.05, thenDragTo: next.withOffset(CGVector(dx: 0, dy: 180)),
-                       withVelocity: .slow, thenHoldForDuration: 0.3)
-        }
         XCTAssertFalse(preview.isHittable)
-        XCTAssertFalse(app.staticTexts["履歴 60"].isHittable)
+        XCTAssertFalse(latest.isHittable)
         XCTAssertTrue(app.staticTexts["履歴 57"].isHittable)
         let jump = app.buttons["scroll-to-latest"]
         XCTAssertTrue(jump.waitForExistence(timeout: 5))
@@ -789,6 +815,38 @@ final class ZooUITests: XCTestCase {
         XCTAssertFalse(reveal.exists)
         XCTAssertFalse(app.staticTexts["保持した添付が再読み込みされました。"].exists)
         capture(app, name: "画面外から戻っても読み込み済みの添付を保持")
+    }
+
+    @MainActor
+    func testJumpToLatestInVariedHistoryKeepsBottomPosition() {
+        let app = launchWorkspace(longHistory: true, chatDetails: true, variedHistory: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let latest = app.staticTexts["履歴 60"]
+        XCTAssertTrue(app.descendants(matching: .any)["unread-divider"].firstMatch.waitForExistence(timeout: 10))
+        let list = app.scrollViews["message-list"]
+        let jump = app.buttons["scroll-to-latest"]
+        for attempt in 0..<2 {
+            if attempt > 0 {
+                for _ in 0..<4 { list.swipeDown(velocity: .fast) }
+            }
+            XCTAssertFalse(latest.isHittable)
+            XCTAssertTrue(jump.waitForExistence(timeout: 5))
+            jump.tap()
+            XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(latest.isHittable)
+            let latestY = latest.frame.minY
+            let bottomGap = composer(app).frame.minY - latest.frame.maxY
+            XCTAssertGreaterThanOrEqual(bottomGap, 0)
+            XCTAssertLessThan(bottomGap, 60, "最新の投稿と入力欄の間に大きな空白を残さない")
+            let previous = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "履歴 59\n")).firstMatch
+            XCTAssertTrue(previous.isHittable)
+            XCTAssertLessThanOrEqual(previous.frame.maxY, latest.frame.minY, "隣り合う投稿の本文を重ねない")
+            capture(app, name: "長文の履歴から最新の投稿へ移動")
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.8))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -280)),
+                        withVelocity: .slow, thenHoldForDuration: 0.3)
+            XCTAssertEqual(latest.frame.minY, latestY, accuracy: 2)
+        }
     }
 
     @MainActor
@@ -974,11 +1032,102 @@ final class ZooUITests: XCTestCase {
         let thread = app.navigationBars["スレッド"]
         XCTAssertTrue(thread.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["参加中のスレッドです"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["thread-channel-name"].label, "#一般")
+        let parent = app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"]
+        let count = app.staticTexts["thread-reply-count"]
+        let reply = app.staticTexts["参加中のスレッドです"]
+        XCTAssertTrue(parent.isHittable)
+        XCTAssertEqual(count.label, "1 件の返信")
+        XCTAssertLessThan(parent.frame.maxY, count.frame.minY)
+        XCTAssertLessThan(count.frame.maxY, reply.frame.minY)
+        XCTAssertLessThan(parent.frame.minY, app.frame.height * 0.25)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        capture(app, name: "親投稿と返信を区切ったスレッド")
         thread.buttons.element(boundBy: 0).tap()
         let channel = app.navigationBars["一般"]
         XCTAssertTrue(channel.waitForExistence(timeout: 5))
         channel.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(entry.waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testThreadKeepsLatestWhenKeyboardAndRepliesReduceSpace() {
+        let app = launchWorkspace(liveMessage: true, shortThread: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let parent = app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"]
+        openActions(for: parent, in: app)
+        app.buttons["message-action-reply"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        let latest = app.staticTexts["スレッドの返信 4"]
+        XCTAssertTrue(latest.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        let input = composer(app, reply: true)
+        capture(app, name: "キーボード表示後も最新返信が見えるスレッド")
+        XCTAssertLessThanOrEqual(latest.frame.maxY, input.frame.minY)
+        let content = "境界の確認\n2行目\n3行目"
+        app.typeText(content)
+        XCTAssertLessThanOrEqual(latest.frame.maxY, input.frame.minY)
+        app.buttons["send-reply"].tap()
+        XCTAssertTrue(app.staticTexts[content].wait(for: \.isHittable, toEqual: true, timeout: 5))
+        app.buttons["dismiss-composer-keyboard"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(parent.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        let incoming = app.staticTexts["別の端末からの返信\n追加の確認事項です。\n返信が増えても\n最新の内容を\n入力欄の上に\n表示します。"]
+        XCTAssertTrue(incoming.waitForExistence(timeout: 15))
+        XCTAssertTrue(incoming.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        XCTAssertLessThanOrEqual(incoming.frame.maxY, input.frame.minY)
+        capture(app, name: "新着で表示領域を超えても最新返信に追従")
+    }
+
+    @MainActor
+    func testThreadReplyLinkSupportsAccessibilityTextSize() {
+        let app = launchWorkspace(longThread: true, largeText: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let link = app.buttons["thread-replies-22222222-2222-4222-8222-222222222222"]
+        let list = app.scrollViews["message-list"]
+        let input = composer(app)
+        for _ in 0..<6 {
+            if link.exists && link.frame.maxY > input.frame.minY {
+                list.swipeUp()
+            } else if link.exists && link.isHittable {
+                break
+            } else {
+                list.swipeDown()
+            }
+        }
+        XCTAssertTrue(link.isHittable)
+        XCTAssertLessThanOrEqual(link.frame.maxX, app.frame.maxX)
+        XCTAssertEqual(link.label, "30 件の返信")
+        XCTAssertTrue((link.value as? String)?.contains("最終返信") == true)
+        capture(app, name: "文字を拡大した返信リンク")
+        link.tap()
+        XCTAssertTrue(app.navigationBars["スレッド"].waitForExistence(timeout: 5))
+        XCTAssertTrue(composer(app, reply: true).exists)
+    }
+
+    @MainActor
+    func testLongThreadCanScrollBetweenParentAndLatestReply() {
+        let app = launchWorkspace(dark: true, longThread: true)
+        app.buttons["channel-11111111-1111-4111-8111-111111111111"].tap()
+        let link = app.buttons["thread-replies-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        XCTAssertEqual(link.label, "30 件の返信")
+        capture(app, name: "参加者と最終返信を表示するスレッド入口")
+        link.tap()
+        let latest = app.staticTexts["スレッドの返信 30"]
+        XCTAssertTrue(latest.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        let parent = app.staticTexts["message-content-22222222-2222-4222-8222-222222222222"]
+        let list = app.scrollViews["thread-message-list"]
+        for _ in 0..<12 {
+            if parent.isHittable { break }
+            list.swipeDown()
+        }
+        XCTAssertTrue(parent.isHittable)
+        XCTAssertEqual(app.staticTexts["thread-reply-count"].label, "30 件の返信")
+        capture(app, name: "長いスレッドの親投稿と返信の区切り")
+        let latestButton = app.buttons["scroll-to-latest"]
+        XCTAssertTrue(latestButton.waitForExistence(timeout: 5))
+        latestButton.tap()
+        XCTAssertTrue(latest.wait(for: \.isHittable, toEqual: true, timeout: 5))
     }
 
     @MainActor

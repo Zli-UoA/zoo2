@@ -64,10 +64,13 @@ struct MessageRenderCacheTests {
                                            content_type: pdf ? "application/pdf" : "image/png", is_sensitive: true)
         let state = AttachmentRenderState(attachment: attachment)
         await state.load(workspace: workspace)
-        #expect(state.url == nil)
+        if pdf { #expect(state.url == nil) }
+        else { #expect(state.url != nil && state.image != nil && !state.revealed) }
+        let preloaded = state.image
         state.revealed = true
         await state.load(workspace: workspace)
         let original = try #require(pdf ? state.pdfThumbnail : state.image)
+        if !pdf { #expect(original === preloaded) }
         #expect(max(original.size.width, original.size.height) <= 1200)
         state.cancelLoad()
         await state.load(workspace: workspace)
