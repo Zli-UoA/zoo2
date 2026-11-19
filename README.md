@@ -1,7 +1,8 @@
 # Zoo の iOS アプリ
 
-SwiftUI と Swift で実装した Zoo の iPhone アプリです。iOS 26 以降に対応し、
+SwiftUI と Swift で実装した Zoo の iPhone・iPad アプリです。iOS／iPadOS 26 以降に対応し、
 チャンネル、DM、通知、プロフィールをタブで切り替え、チャットやスレッドをネイティブに表示します。
+iPadでは縦・横・上下逆向きの表示に対応します。
 REST API と Electric の差分同期で `https://zli.chat` に直接接続します。
 
 ## スクリーンショット
@@ -160,6 +161,14 @@ Push Notifications の機能設定が必要です。Debug は APNs のサンド�
 [ライセンス原文](Sources/Resources/WebRTC-LICENSE.txt) をアプリにも同梱します。
 
 ## 検証
+
+2026-11-20 に iPad（第10世代）・iPadOS 27.0 で単体テスト226件とUIテスト5件、
+iPhone 17・iOS 27.0で回帰UIテスト3件を確認しました。
+テスト操作の修正後の再実行を含め、回転・下書き保持・タブ切り替え・送信・返信・画像とPDFの表示が成功しています。
+署名付きReleaseアーカイブと配布用IPAの生成、reviewer-jpの最終レビューも通過しました。
+TestFlightへ1.0（6）を提出し、iPhone・iPad対応と内部グループ「zli」での「テスト中」を確認しました。
+WebRTC配布バイナリのdSYMが含まれない警告があり、
+WebRTC内部でのクラッシュ解析には制約が残りますが、アップロードは成功しています。
 
 2026-11-19 の結果:
 
