@@ -201,7 +201,7 @@ private struct MessageList: View {
     private var scrollTarget: String? { isVisible ? store.focusedMessageID : nil }
 
     private var readID: String? {
-        guard isVisible, parentID == nil, readStateLoaded, initialReadState != nil, positionedInitialMessages, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
+        guard isVisible, parentID == nil, !store.showingCachedMessages, readStateLoaded, initialReadState != nil, positionedInitialMessages, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
               selectedMessage == nil, replyAfterDismiss == nil else { return nil }
         return messages.last(where: { $0.parent_id == nil })?.id
     }
@@ -226,6 +226,19 @@ private struct MessageList: View {
             ? MessageTimeline.firstUnread(in: messages, state: initialReadState, userID: store.userID) : nil
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                if store.showingCachedMessages {
+                    Label("保存済みのメッセージを表示しています", systemImage: "internaldrive")
+                        .font(.caption).foregroundStyle(.secondary).padding(8)
+                }
+                if store.hasOlder(parentID: parentID) {
+                    Button {
+                        store.loadOlder(parentID: parentID)
+                    } label: {
+                        if store.loadingOlder { ProgressView() } else { Text("以前のメッセージを読み込む") }
+                    }
+                    .disabled(store.loadingOlder || store.showingCachedMessages)
+                    .padding(8).accessibilityIdentifier("load-older-messages")
+                }
                 if !store.loading && messages.isEmpty && store.syncError == nil {
                     ContentUnavailableView("会話を始めましょう", systemImage: "bubble.left.and.bubble.right",
                                            description: Text("最初のメッセージを送ってみませんか。"))
@@ -442,7 +455,7 @@ private struct MessageList: View {
     }
 
     private var threadRepliesDivider: some View {
-        let count = parentID.map { store.replies(to: $0).count } ?? 0
+        let count = parentID.map { store.replyCount(to: $0) } ?? 0
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 Text("\(count) 件の返信")
@@ -517,8 +530,9 @@ private struct MessageList: View {
                 ReactionChips(store: store, workspace: workspace, message: message)
                 if parentID == nil {
                     let replies = store.replies(to: message.id)
-                    if !replies.isEmpty {
-                        ThreadReplyLink(replies: replies, workspace: workspace) {
+                    let replyCount = store.replyCount(to: message.id)
+                    if replyCount > 0 {
+                        ThreadReplyLink(replies: replies, replyCount: replyCount, workspace: workspace) {
                             composerFocused = false
                             workspace.openThread(message.id, in: store, focusComposer: false)
                         }
@@ -546,6 +560,7 @@ private struct MessageList: View {
 
 private struct ThreadReplyLink: View {
     let replies: [Message]
+    let replyCount: Int
     let workspace: WorkspaceStore
     let open: () -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -576,7 +591,7 @@ private struct ThreadReplyLink: View {
                         }
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(replies.count) 件の返信").font(.caption.weight(.semibold)).foregroundStyle(.tint)
+                        Text("\(replyCount) 件の返信").font(.caption.weight(.semibold)).foregroundStyle(.tint)
                         if let latestReply {
                             Text(latestReply).font(.caption2).foregroundStyle(.secondary)
                         }
@@ -593,7 +608,7 @@ private struct ThreadReplyLink: View {
         }
         .buttonStyle(.plain)
         .tint(Color(.link))
-        .accessibilityLabel("\(replies.count) 件の返信")
+        .accessibilityLabel("\(replyCount) 件の返信")
         .accessibilityValue(details)
         .accessibilityHint("スレッドを開きます")
     }

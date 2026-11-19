@@ -16,12 +16,12 @@ struct MessageScrollState: Equatable {
     }
 }
 
-struct ChannelPin: Decodable, Sendable {
+struct ChannelPin: Codable, Sendable {
     let channel_id: String
     let position: Int64
 }
 
-struct ChannelPins: Decodable, Sendable {
+struct ChannelPins: Codable, Sendable {
     let pins: [ChannelPin]
     let version: Int64
 }

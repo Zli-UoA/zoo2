@@ -18,6 +18,8 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func attachmentData(from url: URL) async throws -> Data
     func readStates() async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
+    func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws
+    func cachedWorkspace() async throws -> CachedWorkspace?
     func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws
     func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws
     func addReaction(messageID: String, emoji: String) async throws -> MessageReaction
@@ -35,21 +37,87 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func joinChannel(id: String) async throws
 }
 
+struct CachedWorkspace: Sendable {
+    let channels: [Channel]
+    let people: [Person]
+    let readStates: [ChannelReadState]
+}
+
+extension ChatClient {
+    func cachedWorkspace() async throws -> CachedWorkspace? { nil }
+    func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
+        try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
+    }
+}
+
 @MainActor
 struct NativeChatClient: ChatClient {
     let api: APIClient
+    var sync: SyncSession? = nil
     var serverURL: String { api.settings.server }
+    var shapes: ShapeStream { ShapeStream(api: api, sync: sync) }
 
-    func channels() async throws -> [Channel] { try await api.get("api/channels") }
-    func channel(id: String) async throws -> Channel { try await api.get("api/channels/\(try segment(id))") }
+    func channels() async throws -> [Channel] {
+        guard let sync else { return try await api.get("api/channels") }
+        let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self)
+        let previous = try await sync.load("workspace:channels", as: [Channel].self) ?? []
+        let accessible = Set(channels.filter { $0.deleted_at == nil && $0.encrypted != true }.map(\.id))
+        for channel in previous where !accessible.contains(channel.id) { try await sync.revokeChannel(channel.id) }
+        try await sync.store(channels, key: "workspace:channels")
+        return channels
+    }
+    func channel(id: String) async throws -> Channel {
+        let version = sync?.channelVersion(id)
+        do {
+            let channel: Channel = try await api.get("api/channels/\(try segment(id))")
+            if let sync, let version {
+                try sync.check()
+                guard sync.channelVersion(id) == version else { throw CancellationError() }
+                if channel.deleted_at == nil, channel.encrypted != true {
+                    try await sync.authorizeChannel(id, version: version)
+                } else { try await sync.revokeChannel(id) }
+                try sync.check()
+            }
+            return channel
+        } catch {
+            if case ZooError.rejected(let status, _) = error, status == 403 || status == 404,
+               let sync, sync.channelVersion(id) == version {
+                try await sync.revokeChannel(id)
+            }
+            throw error
+        }
+    }
     func people() async throws -> [Person] {
         // REST のユーザー応答には avatar_url がないため、Web と同じ shape を使う。
-        try await ShapeStream(api: api).snapshot("api/shapes/users", as: Person.self)
+        let people = try await shapes.snapshot("api/shapes/users", as: Person.self)
+        try await sync?.store(people, key: "workspace:people")
+        return people
     }
     func person(id: String) async throws -> Person { try await api.get("api/users/\(try segment(id))") }
-    func readStates() async throws -> [ChannelReadState] { try await api.get("api/channel-read-states") }
+    func readStates() async throws -> [ChannelReadState] { try await cachedGet("api/channel-read-states") }
 
-    func channelPins() async throws -> ChannelPins { try await api.get("api/channel-pins") }
+    func cachedWorkspace() async throws -> CachedWorkspace? {
+        guard let sync,
+              let channels = try await sync.load("workspace:channels", as: [Channel].self),
+              let people = try await sync.load("workspace:people", as: [Person].self) else { return nil }
+        let states = try await sync.load("rest:api/channel-read-states", as: [ChannelReadState].self) ?? []
+        return CachedWorkspace(channels: channels, people: people, readStates: states)
+    }
+
+    func cachedGet<T: Codable & Sendable>(_ path: String, query: [String: String] = [:]) async throws -> T {
+        let key = "rest:" + path + query.sorted { $0.key < $1.key }.map { "|\($0.key)=\($0.value)" }.joined()
+        do {
+            let data = try await api.data(path, query: query)
+            guard let value = try await Optional(data).asyncDecode(T.self) else { throw ZooError.invalidResponse }
+            try await sync?.store(value, key: key)
+            return value
+        } catch {
+            if isOfflineFailure(error), let value = try await sync?.load(key, as: T.self) { return value }
+            throw error
+        }
+    }
+
+    func channelPins() async throws -> ChannelPins { try await cachedGet("api/channel-pins") }
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins {
         let id = try segment(id)
         if pinned {
@@ -58,10 +126,10 @@ struct NativeChatClient: ChatClient {
         return try await api.write("api/channel-pins/\(id)", method: "DELETE", query: ["expected_version": String(expectedVersion)])
     }
     func members(channelID: String) async throws -> [ChannelMembership] {
-        try await ShapeStream(api: api).snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
+        try await shapes.snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
     }
     func readState(channelID: String) async throws -> ChannelReadState {
-        try await api.get("api/channels/\(try segment(channelID))/read-state")
+        try await cachedGet("api/channels/\(try segment(channelID))/read-state")
     }
     func attachmentURL(id: String) async throws -> URL {
         let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")
@@ -86,13 +154,21 @@ struct NativeChatClient: ChatClient {
                                                as: Message.self, receive: receive)
     }
 
+    func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
+        guard let sync else {
+            return try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
+        }
+        if sync.isRevoked(channelID) { _ = try await channel(id: channelID) }
+        try await MessageSync(api: api, sync: sync, channelID: segment(channelID)).observe(request, receive: receive)
+    }
+
     func observeAttachments(channelID: String, receive: @MainActor ([MessageAttachment]?) -> Void) async throws {
-        try await ShapeStream(api: api).observe("api/shapes/attachments", query: ["channel_id": try segment(channelID)], as: MessageAttachment.self, receive: receive)
+        try await shapes.observe("api/shapes/attachments", query: ["channel_id": try segment(channelID)], as: MessageAttachment.self, receive: receive)
     }
 
     func observeReactions(channelID: String, receive: @MainActor ([MessageReaction]?) -> Void) async throws {
-        try await ShapeStream(api: api).observe("api/shapes/message_reactions", query: ["channel_id": try segment(channelID)],
-                                               as: MessageReaction.self, receive: receive)
+        try await shapes.observe("api/shapes/message_reactions", query: ["channel_id": try segment(channelID)],
+                                 as: MessageReaction.self, restoreCached: false, receive: receive)
     }
 
     func addReaction(messageID: String, emoji: String) async throws -> MessageReaction {
@@ -162,7 +238,7 @@ struct NativeChatClient: ChatClient {
     }
 
     func dmMemberships() async throws -> [ChannelMembership] {
-        try await ShapeStream(api: api).snapshot("api/shapes/channel_users", as: ChannelMembership.self)
+        try await shapes.snapshot("api/shapes/channel_users", as: ChannelMembership.self)
     }
 
     func joinChannel(id: String) async throws {

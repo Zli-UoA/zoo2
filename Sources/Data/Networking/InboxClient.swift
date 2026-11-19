@@ -15,16 +15,15 @@ protocol InboxClient: Sendable {
 
 extension NativeChatClient {
     func channelNoticeSnapshot() async throws -> [ChannelNotice] {
-        try await ShapeStream(api: api).snapshot("api/shapes/notifications", as: ChannelNotice.self)
+        try await shapes.snapshot("api/shapes/notifications", as: ChannelNotice.self)
     }
 
     func observeInbox(receive: @MainActor ([ChannelNotice]?) -> Void) async throws {
-        try await ShapeStream(api: api).observe("api/shapes/notifications", query: [:], as: ChannelNotice.self, receive: receive)
+        try await shapes.observe("api/shapes/notifications", query: [:], as: ChannelNotice.self, receive: receive)
     }
 
     func federatedNotices(before: String?) async throws -> FederatedNoticePage {
-        let data = try await api.data("api/activitypub/notifications", query: before.map { ["before": $0] } ?? [:])
-        return try JSONDecoder().decode(FederatedNoticePage.self, from: data)
+        try await cachedGet("api/activitypub/notifications", query: before.map { ["before": $0] } ?? [:])
     }
 
     func federatedNotices(ids: [String]) async throws -> [FederatedNotice] {

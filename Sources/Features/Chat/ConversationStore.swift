@@ -19,6 +19,11 @@ final class ConversationStore {
     private(set) var syncError: String?
     private(set) var blocked = false
     private(set) var syncRequest = UUID()
+    private(set) var showingCachedMessages = false
+    private(set) var loadingOlder = false
+    private var feedRequest = MessageFeedRequest()
+    private var pageLimits: [String: Int] = [:]
+    private var morePages: [String: Bool] = [:]
     private(set) var sending: Set<String> = []
     private(set) var mutationInProgress = false
     var drafts: [String: String] = [:]
@@ -69,7 +74,7 @@ final class ConversationStore {
         typing.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
-    var canPost: Bool { active && !blocked && channel.canPost }
+    var canPost: Bool { active && !blocked && !showingCachedMessages && channel.canPost }
     var canCall: Bool { active && !blocked && channel.canCall }
     func message(id: String) -> Message? { messagesByID[id] }
     var focusedThreadID: String? {
@@ -78,6 +83,7 @@ final class ConversationStore {
         return parent
     }
     func replies(to id: String) -> [Message] { repliesByParent[id] ?? [] }
+    func replyCount(to id: String) -> Int { max(messagesByID[id]?.display_data?.reply_count ?? 0, replies(to: id).count) }
 
     private func indexMessages() {
         let byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
@@ -195,11 +201,15 @@ final class ConversationStore {
         while active, !Task.isCancelled, epoch == streamGeneration {
             do {
                 var writesAtStart = reactionWrites
-                try await client.observeMessages(channelID: channel.id) { snapshot in
+                let request = feedRequest
+                try await client.observeMessageFeed(channelID: channel.id, request: request) { update in
                     guard self.active, !Task.isCancelled, self.streamGeneration == epoch else { return }
-                    if let snapshot {
+                    self.showingCachedMessages = update.fromCache
+                    self.morePages[request.key] = update.hasMore
+                    if !update.fromCache { self.loadingOlder = false }
+                    if let snapshot = update.messages {
                         self.apply(snapshot)
-                        self.acceptFreshSnapshot(&writesAtStart, isFallback: false)
+                        if !update.fromCache { self.acceptFreshSnapshot(&writesAtStart, isFallback: false) }
                         self.loading = false
                         self.syncError = nil
                         delay = 2
@@ -219,10 +229,28 @@ final class ConversationStore {
                     return
                 }
                 syncError = "更新を取得できません。接続を確認して再試行しています。"
+                loadingOlder = false
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 delay = min(delay * 2, 30)
             }
         }
+    }
+
+    func selectFeed(parentID: String?) {
+        let request = MessageFeedRequest(parentID: parentID, limit: pageLimits[parentID ?? "root"] ?? 50, focusID: focusedMessageID)
+        guard request != feedRequest else { return }
+        feedRequest = request
+    }
+
+    func hasOlder(parentID: String?) -> Bool { morePages[parentID ?? "root"] ?? false }
+
+    func loadOlder(parentID: String?) {
+        guard !loadingOlder, hasOlder(parentID: parentID), !showingCachedMessages else { return }
+        loadingOlder = true
+        let key = parentID ?? "root"
+        pageLimits[key] = (pageLimits[key] ?? 50) + 50
+        feedRequest = MessageFeedRequest(parentID: parentID, limit: pageLimits[key]!, focusID: focusedMessageID)
+        syncRequest = UUID()
     }
 
     func retryAccess() {

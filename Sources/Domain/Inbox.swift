@@ -66,9 +66,9 @@ extension ChannelNotice {
     }
 }
 
-struct FederatedNotice: Decodable, Sendable {
-    struct Avatar: Decodable, Sendable { let image_id: String? }
-    struct Emoji: Decodable, Sendable {
+struct FederatedNotice: Codable, Sendable {
+    struct Avatar: Codable, Sendable { let image_id: String? }
+    struct Emoji: Codable, Sendable {
         let image_id: String?
         let name: String
     }
@@ -94,7 +94,7 @@ struct FederatedNotice: Decodable, Sendable {
     }
 }
 
-struct FederatedNoticePage: Decodable, Sendable {
+struct FederatedNoticePage: Codable, Sendable {
     let items: [FederatedNotice]
     let unread_count: Int
     let next_cursor: String?

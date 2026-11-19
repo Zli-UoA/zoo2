@@ -30,6 +30,7 @@ struct MessageDisplayData: Codable, Hashable, Sendable {
     var reactions: [MessageReaction]?
     var emojis: [String: DisplayEmoji] = [:]
     var attachments: [MessageAttachment] = []
+    var reply_count: Int? = nil
 }
 
 extension MessageDisplayData {
@@ -37,6 +38,7 @@ extension MessageDisplayData {
         var reactions: [MessageReaction]?
         var emojis: [String: DisplayEmoji]?
         var attachments: [MessageAttachment]?
+        var reply_count: Int?
     }
 
     init(from decoder: any Decoder) throws {
@@ -47,7 +49,7 @@ extension MessageDisplayData {
         } else {
             fields = try? Fields(from: decoder)
         }
-        self.init(reactions: fields?.reactions, emojis: fields?.emojis ?? [:], attachments: fields?.attachments ?? [])
+        self.init(reactions: fields?.reactions, emojis: fields?.emojis ?? [:], attachments: fields?.attachments ?? [], reply_count: fields?.reply_count)
     }
 }
 

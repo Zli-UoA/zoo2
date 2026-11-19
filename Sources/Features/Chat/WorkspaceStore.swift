@@ -149,6 +149,17 @@ final class WorkspaceStore {
     }
 
     func run() async {
+        if !hasLoaded {
+            do {
+                if let cached = try await client.cachedWorkspace(), active, !Task.isCancelled {
+                    channels = cached.channels.filter { $0.deleted_at == nil }.sorted { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
+                    people = Dictionary(cached.people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                    unread = Set(cached.readStates.filter(\.has_unread).map(\.channel_id))
+                    joinedChannelIDs = Set(cached.readStates.map(\.channel_id))
+                    hasLoaded = true
+                }
+            } catch { report(error) }
+        }
         while active, !Task.isCancelled {
             await refresh()
             await loadPins()
