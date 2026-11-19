@@ -63,6 +63,8 @@ pub struct Core {
     ui: UiMode,
     config: Result<Config, String>,
     http: reqwest::Client,
+    /// ログイン URL の自動起動前リダイレクト検証専用クライアント（自動リダイレクト無効）。
+    no_redirect_http: Option<reqwest::Client>,
     inner: Mutex<Inner>,
     /// ブラウザー起動とキャンセルを順序付ける同期ゲート（`inner` とは別に保ち、ブロッキング I/O で `inner` を止めない）。
     browser_launch: Arc<BrowserLaunchGate>,
@@ -96,6 +98,14 @@ impl BrowserLaunchGate {
         }
     }
 
+    fn is_active(&self, generation: u64) -> bool {
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.active_gen == Some(generation) && generation > guard.cancelled_through
+    }
+
     fn cancel(&self, generation: u64) {
         let mut guard = self
             .state
@@ -107,17 +117,27 @@ impl BrowserLaunchGate {
         }
     }
 
+    /// 状態遷移・通知より先にゲートを無効化し、遷移通知後に旧試行の起動タスクが走っても抑止される順序を保証する。
+    fn cancel_before_transition<F>(&self, generation: u64, transition: F)
+    where
+        F: FnOnce(),
+    {
+        self.cancel(generation);
+        transition();
+    }
+
     fn launch_if_active<F>(&self, generation: u64, launcher: F) -> bool
     where
         F: FnOnce(),
     {
-        let guard = self
+        let mut guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.active_gen != Some(generation) || generation <= guard.cancelled_through {
             return false;
         }
+        guard.active_gen = None;
         launcher();
         true
     }
@@ -181,6 +201,7 @@ impl Core {
             ui,
             config: config.map_err(|err| format!("{err:#}")),
             http: reqwest::Client::new(),
+            no_redirect_http: build_no_redirect_http_client(),
             browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),
             reauth: std::sync::Mutex::new(None),
@@ -759,7 +780,7 @@ impl Core {
 
     pub async fn start_login(self: &Arc<Self>) -> Result<DeviceLogin, IpcError> {
         let (config, oidc) = self.oidc()?;
-        let (prev_gen, generation) = {
+        let generation = {
             let mut inner = self.inner.lock().await;
             if matches!(inner.state, SessionState::Ready { .. }) {
                 return Err(IpcError::new(ErrorCode::WrongMode, "ログイン済みです"));
@@ -769,10 +790,10 @@ impl Core {
             }
             let prev = inner.generation;
             inner.generation += 1;
-            (prev, inner.generation)
+            // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。
+            self.browser_launch.cancel(prev);
+            inner.generation
         };
-        // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。
-        self.browser_launch.cancel(prev_gen);
         let discovery = tokio::time::timeout(
             REAUTH_HTTP_TIMEOUT,
             auth::discover(&self.http, &oidc.issuer),
@@ -839,14 +860,24 @@ impl Core {
                 }
                 Err(_) => {
                     let mut inner = core.inner.lock().await;
-                    if inner.generation == generation {
-                        core.set_state(&mut inner, SessionState::LoggedOut);
-                    }
-                    drop(inner);
-                    core.browser_launch.cancel(generation);
+                    core.browser_launch
+                        .cancel_before_transition(generation, || {
+                            if inner.generation == generation {
+                                core.set_state(&mut inner, SessionState::LoggedOut);
+                            }
+                        });
                 }
             }
         }));
+        let url = login
+            .verification_uri_complete
+            .clone()
+            .unwrap_or_else(|| login.verification_uri.clone());
+        let can_auto_open = is_same_issuer_origin(&url, &issuer);
+        if can_auto_open {
+            // 状態遷移・通知前にゲートを有効化し、直後の cancel_login と順序を揃える。
+            self.browser_launch.arm(generation);
+        }
         self.set_state(
             &mut inner,
             SessionState::LoggingIn {
@@ -854,17 +885,31 @@ impl Core {
             },
         );
         drop(inner);
-        let url = login
-            .verification_uri_complete
-            .clone()
-            .unwrap_or_else(|| login.verification_uri.clone());
         // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
-        // 非ループバック HTTP と IdP 以外のオリジンは自動で開かず、中止済みなら実行時にも抑止する。
-        if is_same_issuer_origin(&url, &issuer) {
+        // 非ループバック HTTP・IdP 以外のオリジン・リダイレクト先逸脱は自動で開かず、中止済みなら実行時にも抑止する。
+        if can_auto_open {
             let gate = self.browser_launch.clone();
-            gate.arm(generation);
             let app = self.app.clone();
+            let client = self.no_redirect_http.clone();
             tauri::async_runtime::spawn(async move {
+                if !gate.is_active(generation) {
+                    return;
+                }
+                let Some(client) = client else {
+                    eprintln!(
+                        "リダイレクト検証クライアントを初期化できないため、ブラウザー自動起動をスキップします"
+                    );
+                    return;
+                };
+                if let Err(err) = verify_login_redirect_chain(&client, &url, &issuer).await {
+                    eprintln!(
+                        "ログイン URL のリダイレクト先検証に失敗したため、自動では開きません: {err}"
+                    );
+                    return;
+                }
+                if !gate.is_active(generation) {
+                    return;
+                }
                 if let Err(err) = tokio::task::spawn_blocking(move || {
                     gate.launch_if_active(generation, || {
                         if let Err(err) = open_in_browser(&app, &url) {
@@ -884,29 +929,26 @@ impl Core {
     }
 
     pub async fn cancel_login(&self) {
-        let cancelled_gen = {
-            let mut inner = self.inner.lock().await;
-            if let Some(task) = inner.login_task.take() {
-                task.abort();
-            }
-            if matches!(inner.state, SessionState::LoggingIn { .. }) {
-                let cancelled = inner.generation;
-                inner.generation += 1;
+        let mut inner = self.inner.lock().await;
+        if let Some(task) = inner.login_task.take() {
+            task.abort();
+        }
+        if matches!(inner.state, SessionState::LoggingIn { .. }) {
+            let cancelled = inner.generation;
+            inner.generation += 1;
+            self.browser_launch.cancel_before_transition(cancelled, || {
                 self.set_state(&mut inner, SessionState::LoggedOut);
-                Some(cancelled)
-            } else {
-                None
-            }
-        };
-        if let Some(cancelled_gen) = cancelled_gen {
-            self.browser_launch.cancel(cancelled_gen);
+            });
         }
     }
 
     pub async fn logout(&self) -> Result<(), IpcError> {
         let mut inner = self.inner.lock().await;
         let ending = self.prepare_end_session(&mut inner).map_err(to_ipc)?;
-        self.set_state(&mut inner, SessionState::LoggedOut);
+        let cancelled = inner.generation;
+        self.browser_launch.cancel_before_transition(cancelled, || {
+            self.set_state(&mut inner, SessionState::LoggedOut);
+        });
         drop(inner);
         self.finish_end_session(ending).await.map_err(to_ipc)
     }
@@ -1201,6 +1243,18 @@ fn load_notification_settings() -> NotificationSettings {
         .unwrap_or_default()
 }
 
+const MAX_LOGIN_REDIRECT_HOPS: usize = 5;
+const LOGIN_REDIRECT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn build_no_redirect_http_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(LOGIN_REDIRECT_CHECK_TIMEOUT)
+        .timeout(LOGIN_REDIRECT_CHECK_TIMEOUT)
+        .build()
+        .ok()
+}
+
 fn is_loopback_host(url: &url::Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
@@ -1226,12 +1280,87 @@ fn is_same_issuer_origin(url: &str, issuer: &str) -> bool {
     }
 }
 
+fn resolve_and_validate_redirect(
+    current: &url::Url,
+    location: &str,
+    issuer: &str,
+) -> std::result::Result<url::Url, String> {
+    let next = current
+        .join(location.trim())
+        .map_err(|err| format!("リダイレクト先 URL を解釈できませんでした: {err}"))?;
+    if !is_same_issuer_origin(next.as_str(), issuer) {
+        return Err(format!(
+            "リダイレクト先のスキームまたはオリジンが不正です: {}",
+            next.origin().ascii_serialization()
+        ));
+    }
+    Ok(next)
+}
+
+/// ブラウザー自動起動前に、`Location` リダイレクトを最大 `MAX_LOGIN_REDIRECT_HOPS` 回まで手動追跡し、
+/// すべての遷移先が IdP と同一オリジンの HTTPS（開発用ループバックのみ HTTP）に留まることを確認する。
+async fn verify_login_redirect_chain(
+    client: &reqwest::Client,
+    url: &str,
+    issuer: &str,
+) -> std::result::Result<(), String> {
+    if !is_same_issuer_origin(url, issuer) {
+        return Err("初期 URL のスキームまたはオリジンが不正です".to_string());
+    }
+    let mut current = url::Url::parse(url)
+        .map_err(|err| format!("ログイン URL を解釈できませんでした: {err}"))?;
+    for hop in 0..=MAX_LOGIN_REDIRECT_HOPS {
+        let mut res = client
+            .head(current.clone())
+            .send()
+            .await
+            .map_err(|err| format!("ログイン URL の事前確認に失敗しました: {err}"))?;
+        if matches!(
+            res.status(),
+            reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
+        ) {
+            res =
+                client.get(current.clone()).send().await.map_err(|err| {
+                    format!("ログイン URL の事前確認 (GET) に失敗しました: {err}")
+                })?;
+        }
+        let status = res.status();
+        if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+            if hop == MAX_LOGIN_REDIRECT_HOPS {
+                return Err("リダイレクト回数が上限を超えました".to_string());
+            }
+            let location = res
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .ok_or_else(|| "リダイレクト応答に Location ヘッダーがありません".to_string())?
+                .to_str()
+                .map_err(|_| "Location ヘッダーに不正な文字が含まれています".to_string())?;
+            current = resolve_and_validate_redirect(&current, location, issuer)?;
+            continue;
+        }
+        if status.is_success() {
+            return Ok(());
+        }
+        return Err(format!(
+            "ログイン URL の事前確認が予期しないステータスを返しました (HTTP {})",
+            status.as_u16()
+        ));
+    }
+    Err("リダイレクト回数が上限を超えました".to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BrowserLaunchGate, is_same_issuer_origin};
+    use super::{
+        BrowserLaunchGate, build_no_redirect_http_client, is_same_issuer_origin,
+        resolve_and_validate_redirect, verify_login_redirect_chain,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
     };
 
     #[test]
@@ -1286,6 +1415,115 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn login_redirect_validation_allows_same_origin_and_blocks_downgrade_or_cross_origin() {
+        let base = url::Url::parse("https://account.zli.works/device?user_code=ABCD-1234").unwrap();
+        let issuer = "https://account.zli.works/api/auth";
+        assert_eq!(
+            resolve_and_validate_redirect(&base, "/login?next=%2Fdevice", issuer)
+                .unwrap()
+                .as_str(),
+            "https://account.zli.works/login?next=%2Fdevice"
+        );
+        assert!(
+            resolve_and_validate_redirect(&base, "http://account.zli.works/login", issuer).is_err()
+        );
+        assert!(
+            resolve_and_validate_redirect(&base, "https://evil.example/login", issuer).is_err()
+        );
+        assert!(resolve_and_validate_redirect(&base, "//evil.example/login", issuer).is_err());
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_server = stop.clone();
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop_server.load(Ordering::SeqCst) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let first_line = req.lines().next().unwrap_or("");
+                let mut parts = first_line.split_whitespace();
+                let method = parts.next().unwrap_or("");
+                let path = parts.next().unwrap_or("/");
+                let resp = match (method, path) {
+                    (_, "/device?user_code=OK") => {
+                        "HTTP/1.1 303 See Other\r\nLocation: /login?next=%2Fdevice\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/login?next=%2Fdevice") => {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("HEAD", "/head-405") => {
+                        "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("GET", "/head-405") => {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/downgrade") => {
+                        "HTTP/1.1 302 Found\r\nLocation: http://account.zli.works/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/cross-origin") => {
+                        "HTTP/1.1 302 Found\r\nLocation: https://evil.example/device\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/loop") => {
+                        "HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                };
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        let client = build_no_redirect_http_client().unwrap();
+        let local_issuer = format!("http://{addr}/api/auth");
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/device?user_code=OK"),
+                &local_issuer
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            verify_login_redirect_chain(&client, &format!("http://{addr}/head-405"), &local_issuer)
+                .await
+                .is_ok()
+        );
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/downgrade"),
+                &local_issuer
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/cross-origin"),
+                &local_issuer
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            verify_login_redirect_chain(&client, &format!("http://{addr}/loop"), &local_issuer)
+                .await
+                .is_err()
+        );
+
+        stop.store(true, Ordering::SeqCst);
+        let _ = server.join();
+    }
+
     #[test]
     fn browser_launch_gate_skips_launch_when_cancelled_before_blocking_task_runs() {
         let gate = BrowserLaunchGate::default();
@@ -1299,9 +1537,12 @@ mod tests {
         }));
         assert_eq!(launched.load(Ordering::SeqCst), 0);
 
-        // 中止されていないログイン試行は通常どおり起動する
+        // 中止されていないログイン試行は通常どおり起動し、同一世代は二重起動しない
         gate.arm(2);
         assert!(gate.launch_if_active(2, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert!(!gate.launch_if_active(2, || {
             launched.fetch_add(1, Ordering::SeqCst);
         }));
         assert_eq!(launched.load(Ordering::SeqCst), 1);
@@ -1315,10 +1556,79 @@ mod tests {
         assert_eq!(launched.load(Ordering::SeqCst), 2);
 
         // 次の試行へ置き換えられた (new arm の前に prev を失効させた) 直後の旧タスクも拒否される
-        gate.cancel(3);
-        assert!(!gate.launch_if_active(3, || {
+        gate.arm(4);
+        gate.cancel(4);
+        assert!(!gate.launch_if_active(4, || {
             launched.fetch_add(1, Ordering::SeqCst);
         }));
         assert_eq!(launched.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn browser_launch_gate_orders_cancel_before_state_transition_and_blocks_concurrent_launch() {
+        // 1) cancel_before_transition 内の状態変更・通知コールバック実行中に別スレッドが起動を試みても拒否される
+        let gate = Arc::new(BrowserLaunchGate::default());
+        gate.arm(10);
+        let launched = Arc::new(AtomicUsize::new(0));
+        let (tx_transition, rx_transition) = mpsc::channel();
+        let (tx_attempt_done, rx_attempt_done) = mpsc::channel();
+
+        let gate_worker = gate.clone();
+        let launched_worker = launched.clone();
+        let worker = std::thread::spawn(move || {
+            rx_transition.recv().unwrap();
+            let ran = gate_worker.launch_if_active(10, || {
+                launched_worker.fetch_add(1, Ordering::SeqCst);
+            });
+            tx_attempt_done.send(ran).unwrap();
+        });
+
+        gate.cancel_before_transition(10, || {
+            // LoggedOut 通知と同タイミングで起動タスクが走っても、既にゲートが無効化されている。
+            tx_transition.send(()).unwrap();
+            let ran = rx_attempt_done.recv().unwrap();
+            assert!(
+                !ran,
+                "cancelled generation must not launch during LoggedOut transition"
+            );
+        });
+        worker.join().unwrap();
+        assert_eq!(launched.load(Ordering::SeqCst), 0);
+
+        // 2) 既に launch_if_active が起動処理に入っている場合は、その完了後に状態遷移コールバックが走る
+        gate.arm(11);
+        let entered = Arc::new(Barrier::new(2));
+        let release_launch = Arc::new(Barrier::new(2));
+        let transitioned = Arc::new(AtomicBool::new(false));
+
+        let gate_launch = gate.clone();
+        let entered_launch = entered.clone();
+        let release_worker = release_launch.clone();
+        let transitioned_check = transitioned.clone();
+        let launcher_thread = std::thread::spawn(move || {
+            assert!(gate_launch.launch_if_active(11, || {
+                entered_launch.wait();
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                assert!(
+                    !transitioned_check.load(Ordering::SeqCst),
+                    "LoggedOut transition must wait for in-flight launch gate lock"
+                );
+                release_worker.wait();
+            }));
+        });
+
+        entered.wait();
+        let gate_cancel = gate.clone();
+        let transitioned_cancel = transitioned.clone();
+        let cancel_thread = std::thread::spawn(move || {
+            gate_cancel.cancel_before_transition(11, || {
+                transitioned_cancel.store(true, Ordering::SeqCst);
+            });
+        });
+
+        release_launch.wait();
+        launcher_thread.join().unwrap();
+        cancel_thread.join().unwrap();
+        assert!(transitioned.load(Ordering::SeqCst));
     }
 }
