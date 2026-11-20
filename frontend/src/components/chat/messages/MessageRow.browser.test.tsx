@@ -421,7 +421,12 @@ describe("MessageRow", () => {
   it("shows recent reactions of all kinds in the touch sheet", async () => {
     localStorage.setItem(
       RECENT_EMOJIS_STORAGE_KEY,
-      JSON.stringify(["🎉", ":party-parrot:", "kitchen:1f431_1f600"]),
+      JSON.stringify([
+        "🎉",
+        ":party-parrot:",
+        "kitchen:1f431_1f600",
+        `apub:${"a".repeat(64)}::remote:`,
+      ]),
     );
     try {
       renderRow(buildItem(), false, { canReact: true });
@@ -431,6 +436,8 @@ describe("MessageRow", () => {
       expect(within(group).getByRole("button", { name: "🎉" })).toBeTruthy();
       expect(within(group).getByRole("button", { name: ":party-parrot:" })).toBeTruthy();
       expect(within(group).getByRole("button", { name: "🐱 + 😀" })).toBeTruthy();
+      // 画像付きリアクションはチャット API で扱えないので出さない。
+      expect(within(group).queryByRole("button", { name: ":remote:" })).toBeNull();
     } finally {
       localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
     }

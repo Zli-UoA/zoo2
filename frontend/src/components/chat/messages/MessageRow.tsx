@@ -400,7 +400,14 @@ export function MessageRow({
   }
   const [sheetOpen, setSheetOpen] = useState(false);
   const tapOrigin = useRef<{ x: number; y: number } | null>(null);
-  const recentEmojis = useMemo(() => loadRecentEmojis().slice(0, 6), [sheetOpen]);
+  const recentEmojis = useMemo(
+    // チャットのリアクション API は画像付き（apub:）の値を受け付けないので除外する。
+    () =>
+      loadRecentEmojis()
+        .filter((emoji) => !emoji.startsWith("apub:"))
+        .slice(0, 6),
+    [sheetOpen],
+  );
 
   function rememberTouchStart(event: PointerEvent<HTMLDivElement>) {
     tapOrigin.current =
