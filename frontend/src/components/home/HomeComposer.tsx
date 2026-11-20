@@ -41,6 +41,14 @@ import { attachmentFilesFromClipboard, resolveAttachmentContentType } from "../.
 import { useCollections } from "../../lib/electric/collections-context";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 
+// バックエンドの `apps::events::posting` が、投稿権限のないチャンネルへ返す 403 の文言。
+const POSTING_FORBIDDEN_MESSAGE = "Only channel managers may post here";
+
+function isPostingForbidden(body: unknown): boolean {
+  const message = (body as { error?: unknown } | null)?.error;
+  return typeof message === "string" && message.includes(POSTING_FORBIDDEN_MESSAGE);
+}
+
 export interface HomePostInput {
   image_ids?: string[];
   sensitive?: boolean;
@@ -260,8 +268,13 @@ export function HomeComposer({
       setImageError(false);
       setOpen(false);
     } catch (error) {
-      // 403 はチャンネルの投稿権限による（返信は参加を要求せず、返信と同時に参加する）。
-      setFailed(error instanceof ApiError && error.status === 403 ? "forbidden" : "send");
+      // チャンネルの投稿権限による 403 だけ専用の文言にする（返信は参加を要求せず、返信と同時に参加する）。
+      // 認証・アカウント停止など、ほかの 403 は汎用の送信エラーにする。
+      setFailed(
+        error instanceof ApiError && error.status === 403 && isPostingForbidden(error.body)
+          ? "forbidden"
+          : "send",
+      );
     } finally {
       inFlight.current = false;
       setSending(false);
