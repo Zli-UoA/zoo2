@@ -5,7 +5,6 @@ struct ConversationView: View {
     let workspace: WorkspaceStore
     let route: ChatRoute
     @FocusState private var composerFocused: Bool
-    @State private var showingDetails = false
     @State private var didRequestInitialFocus = false
     @State private var navigationContentWidth: CGFloat?
 
@@ -60,11 +59,16 @@ struct ConversationView: View {
         .background(Color(.systemBackground))
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingDetails) { ChannelDetailsView(channel: store.channel, workspace: workspace) }
+        .onChange(of: workspace.composerFocusRequest?.id, initial: true) { _, _ in
+            guard let request = workspace.composerFocusRequest, isVisible,
+                  request.channelID == store.channel.id, request.parentID == parentID else { return }
+            composerFocused = store.canPost
+            workspace.composerFocusRequest = nil
+        }
         .toolbar {
             if parentID == nil {
                 ToolbarItem(placement: .principal) {
-                    Button { composerFocused = false; showingDetails = true } label: {
+                    Button { composerFocused = false; workspace.presentedSheet = .channelDetails(store.channel) } label: {
                         HStack(spacing: 4) {
                             Text(workspace.name(for: store.channel)).font(.headline).lineLimit(1)
                             Image(systemName: "chevron.down").font(.caption2)

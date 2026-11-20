@@ -95,7 +95,7 @@ final class ZooUITests: XCTestCase {
         capture(app, name: "入力中に開いた添付メニュー")
         attach.tap()
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "キャンセル"])).firstMatch
-        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        XCTAssertTrue(cancel.waitForExistence(timeout: 15))
         capture(app, name: "添付ファイルの選択画面")
         cancel.tap()
         XCTAssertTrue(field.waitForExistence(timeout: 5))

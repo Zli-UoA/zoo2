@@ -360,6 +360,41 @@ struct AttachmentUploadTests {
         #expect(!FileManager.default.fileExists(atPath: try #require(copied).path))
     }
 
+    @Test("写真取り込みは入力欄の破棄後も続き、ログアウトでは中止する", arguments: [false, true])
+    func ownedMediaImportSurvivesViewRemoval(logout: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let source = try sourceFile(name: "写真.jpg")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        defer { store.shutdown() }
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        var importTask: Task<Void, Never>?
+        let viewTask = Task {
+            importTask = store.startAttachmentImport(count: 1, parentID: nil) {
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                return try await DraftAttachment.importing([source])
+            }
+            await importTask?.value
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(store.startAttachmentImport(count: 1, parentID: nil, load: { [] }) == nil)
+        viewTask.cancel()
+        if logout { store.shutdown() }
+        release.continuation.yield(())
+        await viewTask.value
+        #expect(try #require(importTask).isCancelled == logout)
+        #expect(store.draftAttachments["root"]?.count ?? 0 == (logout ? 0 : 1))
+        #expect(store.importingAttachments.isEmpty)
+        #expect(store.sendErrors.isEmpty)
+        if !logout { #expect(store.canSend(parentID: nil)) }
+    }
+
     @Test("ファイルとメディアの合計が上限を超える場合はメディアの取得を始めない")
     func mixedAttachmentLimit() async throws {
         let harness = try ChatHarness()

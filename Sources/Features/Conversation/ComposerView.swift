@@ -1,6 +1,4 @@
 import SwiftUI
-import PhotosUI
-import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @Bindable var store: ConversationStore
@@ -10,9 +8,6 @@ struct ComposerView: View {
     @State private var selection: TextSelection?
     @State private var submitting = false
     @State private var showingEmoji = false
-    @State private var showingFiles = false
-    @State private var showingPhotos = false
-    @State private var selectedPhotos: [PhotosPickerItem] = []
     @State private var emojiInsertionRange: Range<String.Index>?
     @ScaledMetric(relativeTo: .body) private var candidateHeight: CGFloat = 48
 
@@ -29,9 +24,9 @@ struct ComposerView: View {
         let name = workspace.name(for: store.channel)
         return store.channel.is_dm ? "\(name) へのメッセージ" : "#\(name) へのメッセージ"
     }
-    private var canSend: Bool { !submitting && selectedPhotos.isEmpty && store.canSend(parentID: parentID) }
+    private var canSend: Bool { !submitting && store.canSend(parentID: parentID) }
     private var attachmentsBusy: Bool {
-        submitting || !selectedPhotos.isEmpty || store.sending.contains(key) || store.importingAttachments.contains(key)
+        submitting || store.sending.contains(key) || store.importingAttachments.contains(key)
     }
     private var remainingAttachmentCount: Int { DraftAttachment.maximumCount - (store.draftAttachments[key]?.count ?? 0) }
     private var selectedRange: Range<String.Index>? {
@@ -94,10 +89,13 @@ struct ComposerView: View {
                 if draft.wrappedValue.unicodeScalars.count > 40_000 {
                     Text("メッセージは 40,000 文字以内で入力してください。").font(.caption).foregroundStyle(.red)
                 }
-            } else {
-                Label(store.channel.encrypted == true ? "暗号化された会話には送信できません" :
-                      store.blocked ? "このチャンネルには送信できません" : "アーカイブ済みのチャンネルです", systemImage: "lock")
+            } else if let message = store.postingRestrictionMessage {
+                Label(message, systemImage: "lock")
                     .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .accessibilityLabel("メッセージを同期中")
             }
         }
         .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
@@ -109,22 +107,6 @@ struct ComposerView: View {
                 insert(value, replacing: emojiInsertionRange)
                 showingEmoji = false
             }
-        }
-        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls):
-                Task { await store.importFiles(urls, parentID: parentID) }
-            case .failure(let error):
-                store.sendErrors[key] = "ファイルを選択できませんでした。\(error.localizedDescription)"
-            }
-        }
-        .photosPicker(isPresented: $showingPhotos, selection: $selectedPhotos,
-                      maxSelectionCount: max(1, remainingAttachmentCount), selectionBehavior: .ordered,
-                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
-        .task(id: selectedPhotos) {
-            guard !selectedPhotos.isEmpty else { return }
-            await store.importPhotos(selectedPhotos, parentID: parentID)
-            selectedPhotos = []
         }
         .task(id: submitting) {
             if submitting {
@@ -143,13 +125,15 @@ struct ComposerView: View {
         Menu {
             Button("写真・動画を添付", systemImage: "photo.on.rectangle") {
                 focused = false
-                showingPhotos = true
+                workspace.attachmentPickerTarget = AttachmentPickerTarget(store: store, parentID: parentID)
+                workspace.showingPhotos = true
             }
             .disabled(attachmentsBusy || remainingAttachmentCount <= 0)
             .accessibilityIdentifier("composer-attach-photos")
             Button("ファイルを添付", systemImage: "paperclip") {
                 focused = false
-                showingFiles = true
+                workspace.attachmentPickerTarget = AttachmentPickerTarget(store: store, parentID: parentID)
+                workspace.showingFiles = true
             }.disabled(attachmentsBusy).accessibilityIdentifier("composer-attach-file")
             Button("スタンプを挿入", systemImage: "face.smiling") { openEmoji() }
             Button("メンションを挿入", systemImage: "at") { insertMention() }

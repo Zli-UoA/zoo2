@@ -7,8 +7,6 @@ struct ConversationDirectory: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var search = ""
     @State private var unreadOnly = false
-    @State private var creating = false
-    @State private var browsing = false
     @State private var pinnedExpanded = true
     @State private var listExpanded = true
 
@@ -43,11 +41,11 @@ struct ConversationDirectory: View {
                     else if directMessages {
                         ContentUnavailableView {
                             Label("DMはまだありません", systemImage: "bubble.left.and.bubble.right")
-                        } actions: { Button("DMを始める") { creating = true } }
+                        } actions: { Button("DMを始める") { workspace.presentedSheet = .createDirectMessage } }
                     } else {
                         ContentUnavailableView {
                             Label("参加中のチャンネルはありません", systemImage: "number")
-                        } actions: { Button("チャンネルを探す") { browsing = true } }
+                        } actions: { Button("チャンネルを探す") { workspace.presentedSheet = .browseChannels } }
                     }
                 }
                 .listRowSeparator(.hidden)
@@ -104,20 +102,15 @@ struct ConversationDirectory: View {
         }
         .appSearch(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索", identifier: "conversation") {
             if directMessages {
-                Button("新しいDM", systemImage: "square.and.pencil") { creating = true }
+                Button("新しいDM", systemImage: "square.and.pencil") { workspace.presentedSheet = .createDirectMessage }
                     .accessibilityIdentifier("new-dm")
             } else {
                 Menu("チャンネルの操作", systemImage: "plus") {
-                    Button("チャンネルを探す", systemImage: "magnifyingglass") { browsing = true }
-                    Button("チャンネルを作成", systemImage: "number") { creating = true }
+                    Button("チャンネルを探す", systemImage: "magnifyingglass") { workspace.presentedSheet = .browseChannels }
+                    Button("チャンネルを作成", systemImage: "number") { workspace.presentedSheet = .createChannel }
                 }.accessibilityIdentifier("new-conversation")
             }
         }
-        .sheet(isPresented: $creating) {
-            if directMessages { PeopleView(workspace: workspace) }
-            else { CreateChannelView(workspace: workspace) }
-        }
-        .sheet(isPresented: $browsing) { ChannelBrowser(workspace: workspace) }
     }
 
     private func channelSection(_ title: LocalizedStringKey, id: String, channels: [Channel],

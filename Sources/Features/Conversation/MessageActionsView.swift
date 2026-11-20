@@ -1,5 +1,33 @@
 import SwiftUI
 
+@MainActor
+final class MessageActionSheet: Identifiable {
+    let id = UUID()
+    let store: ConversationStore
+    let message: Message
+    let parentID: String?
+    let canOpenThread: Bool
+    let wasComposing: Bool
+    var replyRequested = false
+
+    init(store: ConversationStore, message: Message, parentID: String?, canOpenThread: Bool,
+         wasComposing: Bool) {
+        self.store = store
+        self.message = message
+        self.parentID = parentID
+        self.canOpenThread = canOpenThread
+        self.wasComposing = wasComposing
+    }
+
+    func finish(in workspace: WorkspaceStore) {
+        if replyRequested, parentID == nil {
+            workspace.openThread(message.id, in: store, focusComposer: store.canPost)
+        } else if (replyRequested || wasComposing), store.canPost {
+            workspace.composerFocusRequest = ComposerFocusRequest(channelID: store.channel.id, parentID: parentID)
+        }
+    }
+}
+
 struct MessageActionsView: View {
     let store: ConversationStore
     let workspace: WorkspaceStore
