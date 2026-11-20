@@ -201,12 +201,17 @@ struct NativeChatClient: ChatClient {
         } catch ZooError.rejected(403, let message) {
             // 参加行があるスレッドへ、未参加・退出済みの利用者は返信できない（サーバーが 403 を返す）。
             // 参加（アーカイブ済みは先に再Open）してから、同じ ID で一度だけ再送する。復旧できなければ元の 403 を返す。
-            guard let parentID, try await rejoinThread(messageID: parentID) else {
+            // 投稿権限がないチャンネルなど、参加不足以外の 403 では参加せず、そのまま失敗にする。
+            guard let parentID, message.contains(Self.joinRequiredMessage),
+                  try await rejoinThread(messageID: parentID) else {
                 throw ZooError.rejected(403, message)
             }
             return try await api.write("api/messages", body: body)
         }
     }
+
+    /// サーバー（`create_message_impl`）が参加不足の 403 に付ける文言。
+    private static let joinRequiredMessage = "Join the thread before replying"
 
     /// 参加が必要なスレッドへ参加する。参加できる状態でなければ false を返す。
     private func rejoinThread(messageID: String) async throws -> Bool {

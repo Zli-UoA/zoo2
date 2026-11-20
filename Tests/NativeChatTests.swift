@@ -560,7 +560,7 @@ struct NativeChatTests {
             if path == "/api/messages" {
                 let message = try Self.sentMessage(request)
                 let attempt = ids.withLock { $0.append(message.id); return $0.count }
-                if attempt == 1 { return (403, [:], Data("Join the thread before replying".utf8)) }
+                if attempt == 1 { return (403, [:], Data(#"{"error":"Join the thread before replying"}"#.utf8)) }
                 return (200, [:], try Self.envelope(message))
             }
             if path == "/api/threads/\(parent)" {
@@ -584,28 +584,22 @@ struct NativeChatTests {
         #expect(calls.withLock { $0 } == expected)
     }
 
-    @Test("参加できない403は復旧せず、下書きを保持してエラーにする")
-    func forbiddenWithoutPermissionKeepsDraft() async throws {
+    @Test("参加不足以外の403（投稿権限なしなど）では参加せず、下書きを保持してエラーにする")
+    func otherForbiddenDoesNotJoin() async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let parent = "22222222-2222-4222-8222-222222222222"
-        let joins = Mutex(0)
+        let calls = Mutex<[String]>([])
         harness.stub { request in
-            let path = request.url?.path ?? ""
-            if path == "/api/messages" { return (403, [:], Data("forbidden".utf8)) }
-            if path == "/api/threads/\(parent)" {
-                let status: JSONValue = .object(["membership": .string("none"), "can_participate": .bool(false)])
-                return (200, [:], try JSONEncoder().encode(["data": status]))
-            }
-            joins.withLock { $0 += 1 }
-            return (200, [:], try Self.envelope(["ok": true]))
+            calls.withLock { $0.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")") }
+            return (403, [:], Data(#"{"error":"Only managers can post in this channel"}"#.utf8))
         }
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         store.drafts[parent] = "送れない返信"
         await store.send(parentID: parent)
         #expect(store.drafts[parent] == "送れない返信")
         #expect(store.sendErrors[parent] != nil)
-        #expect(joins.withLock { $0 } == 0)
+        #expect(calls.withLock { $0 } == ["POST /api/messages"])
     }
 
     @Test("暗号化・アーカイブ済みチャンネルには平文を送らない", arguments: [true, false])
