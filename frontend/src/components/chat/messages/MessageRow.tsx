@@ -901,12 +901,8 @@ export function MessageRow({
                       setSheetOpen(false);
                     }}
                   >
-                    <ReactionEmoji
-                      emoji={emoji}
-                      catalog={kitchenCatalog}
-                      emojis={message.display_data?.emojis}
-                      size={26}
-                    />
+                    {/* このメッセージの display_data にない絵文字もあるので、ワークスペース絵文字から解決させる。 */}
+                    <ReactionEmoji emoji={emoji} catalog={kitchenCatalog} size={26} />
                   </button>
                 ))}
               </div>
