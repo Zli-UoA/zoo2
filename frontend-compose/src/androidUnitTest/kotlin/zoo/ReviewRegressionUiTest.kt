@@ -79,8 +79,9 @@ class ReviewRegressionUiTest {
             // Android 14+ uses nonlinear font scaling; verify the rendered dp
             // size instead of assuming that sp = dp / fontScale.
             val glyphDp = with(layout.layoutInput.density) { layout.layoutInput.style.fontSize.toDp() }
+            val lineDp = with(layout.layoutInput.density) { layout.layoutInput.style.lineHeight.toDp() }
             assertEquals(24f, glyphDp.value, 0.1f)
-            assertEquals(layout.layoutInput.style.fontSize, layout.layoutInput.style.lineHeight)
+            assertEquals(24f, lineDp.value, 0.1f)
         } finally { fixture.close() }
     }
 
