@@ -24,17 +24,19 @@ export function PdfPreview({ src }: { src: string }) {
       setFailed(true);
     }, 15_000);
     void (async () => {
-      const [pdfjs, workerUrl, bytes] = await Promise.all([
+      const [pdfjs, bytes] = await Promise.all([
         import("pdfjs-dist/legacy/build/pdf.mjs"),
-        import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
         fetchPreviewBytes(src, abort.signal),
       ]);
       if (cancelled) return;
-      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl.default;
+      // デコーダー・フォントと同じ版付きのディレクトリから、module worker として読み込む。
+      // 以前のハッシュ付き .mjs のURLとは別になるため、octet-stream でキャッシュされた
+      // 古い応答も使われない（#631）。
       const assets = new URL(
         `${import.meta.env.BASE_URL}assets/pdfjs/${pdfjs.version}/`,
         window.location.href,
       );
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdf.worker.min.mjs", assets).href;
       const task = pdfjs.getDocument({
         data: bytes,
         cMapUrl: new URL("cmaps/", assets).href,

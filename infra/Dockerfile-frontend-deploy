@@ -64,6 +64,12 @@ COPY infra/csp-hashes.mjs /tmp/csp-hashes.mjs
 RUN node /tmp/csp-hashes.mjs dist/client/index.html csp-script-src.txt
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine AS runtime
+# nginx 1.30.6 の mime.types には mjs がない。PDF.js の worker（.mjs）が
+# application/octet-stream で配信され、module worker の読み込みに失敗するため追加する（#631）。
+# server に types ブロックを足すと親の mime.types を継承しないので、ここで直す。
+# ベースイメージの書式が変わったらビルドを失敗させる。
+RUN sed -i '/^[[:space:]]*application\/javascript[[:space:]]/ s/[[:space:]]js;$/ js mjs;/' /etc/nginx/mime.types \
+    && grep -Eq 'application/javascript[[:space:]]+js mjs;' /etc/nginx/mime.types
 COPY --from=build /app/dist/client/ /usr/share/nginx/html/
 COPY --from=build /app/csp-script-src.txt /etc/nginx/csp-script-src.txt
 # 起動時に /etc/nginx/templates/*.template を envsubst する公式 entrypoint を使う。

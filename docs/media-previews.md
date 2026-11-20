@@ -29,6 +29,9 @@ PDF・文書の取得は12 MiB、アーカイブの展開結果は16 MiB・100�
 ZIP内とメール内の添付も共通部品を使い、入れ子は3段までプレビューする。
 文書解析は専用Workerで実行し、閉じる・URLが変わる・アンマウント時はWorkerと取得を終了する。
 PDFはファイルを1回読み込み、ページ送りでは同じ文書を使う。
+PDF.jsのworkerはmodule workerとして読み込むため、`.mjs` をJavaScriptのMIMEタイプ（`text/javascript` など）で配信する。
+配信先のnginxはバージョンによって `.mjs` を知らないので、`infra/Dockerfile-frontend-deploy` で `mime.types` に追加し、CIで実際の応答を検証する。
+デコーダー・フォント・workerは `/assets/pdfjs/<version>/` に置き、PDF.jsの版が変わったときだけURLを変える。
 メールのHTMLはテキストに変換し、外部画像・スクリプト・フォームを読み込まない。
 Office XMLのDTDは禁止する。大きなファイルや壊れたファイルはエラー表示とダウンロードにフォールバックする。
 
