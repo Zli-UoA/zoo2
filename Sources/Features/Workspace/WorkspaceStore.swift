@@ -7,6 +7,7 @@ enum WorkspaceTab: Hashable {
 
 enum WorkspaceSheet: Identifiable {
     case createChannel, createDirectMessage, browseChannels, profile
+    case draftDirectMessage(String)
     case channelDetails(Channel)
     case messageActions(MessageActionSheet)
 
@@ -14,6 +15,7 @@ enum WorkspaceSheet: Identifiable {
         switch self {
         case .createChannel: "create-channel"
         case .createDirectMessage: "create-dm"
+        case .draftDirectMessage: "draft-dm"
         case .browseChannels: "browse-channels"
         case .profile: "profile"
         case .channelDetails(let channel): "details-\(channel.id)"
@@ -541,6 +543,7 @@ final class WorkspaceStore {
 
     func shutdown() {
         active = false
+        if #available(iOS 27.0, *) { ZooSentMessageStore.shared.clear(in: self) }
         destinationGeneration = UUID()
         channelGeneration = UUID()
         conversations.values.forEach { $0.shutdown() }

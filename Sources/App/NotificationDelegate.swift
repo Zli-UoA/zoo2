@@ -33,9 +33,13 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
         AppOrientation.supportedOrientations(in: window?.windowScene)
     }
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) { controller?.failed() }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        guard let notice = PushNotice(payload: notification.request.content.userInfo) else { return [] }
-        return await presentationOptions(for: notice)
+    // async版の自動生成ブリッジは完了時にメインスレッドを離れるため、iOSへの完了通知まで隔離する。
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                           withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void) {
+        let notice = PushNotice(payload: notification.request.content.userInfo)
+        Task { @MainActor in
+            completionHandler(notice.map { presentationOptions(for: $0) } ?? [])
+        }
     }
     func presentationOptions(for notice: PushNotice) -> UNNotificationPresentationOptions {
         guard let controller else {
@@ -44,9 +48,12 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
         }
         return controller.receive(notice) ? [.banner, .sound] : []
     }
-    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let target = PushNotice(payload: response.notification.request.content.userInfo) else { return }
-        await MainActor.run {
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                           withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
+        let target = PushNotice(payload: response.notification.request.content.userInfo)
+        Task { @MainActor in
+            defer { completionHandler() }
+            guard let target else { return }
             if let controller { controller.opened(target) }
             else {
                 switch target {
