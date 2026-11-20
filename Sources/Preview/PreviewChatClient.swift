@@ -47,6 +47,7 @@ final class PreviewChatClient: ChatClient {
     ]
     private var allMessages: [Message] = []
     private var readNotices: Set<String> = []
+    private var inboxRefreshCount = 0
     private var followPending = true
     private var failNextSend: Bool
     private var incomingReply: (at: ContinuousClock.Instant, channelID: String, parentID: String)?
@@ -495,12 +496,25 @@ final class PreviewChatClient: ChatClient {
     }
 
     func federatedNotices(before: String?) async throws -> FederatedNoticePage {
+        let testsRefresh = ProcessInfo.processInfo.arguments.contains("--uitesting-inbox-refresh")
+        if testsRefresh, before == nil {
+            try await Task.sleep(for: .seconds(1))
+            inboxRefreshCount += 1
+        }
         let read = readNotices.contains(Self.followNoticeID)
         let follow = FederatedNotice(id: Self.followNoticeID, actor_id: "https://example.invalid/users/hana",
                                      display_name: "はな", avatar: nil, kind: "follow_request", activity_id: "follow-1",
-                                     post_id: nil, content: nil, created_at: "2026-11-17T09:00:00Z",
+                                     post_id: nil, content: testsRefresh ? "通知の取得：\(inboxRefreshCount)回目" : nil,
+                                     created_at: "2026-11-17T09:00:00Z",
                                      is_read: read, pending: followPending, reaction: nil)
-        return .init(items: before == nil ? [follow] : [], unread_count: read ? 0 : 1, next_cursor: nil)
+        let older: [FederatedNotice] = testsRefresh && ProcessInfo.processInfo.arguments.contains("--uitesting-long-inbox") ? (1...30).map { index in
+            FederatedNotice(id: "older-\(index)", actor_id: "https://example.invalid/users/hana",
+                            display_name: "はな", avatar: nil, kind: "reply", activity_id: "reply-\(index)",
+                            post_id: nil, content: String(repeating: "以前の通知です。", count: index % 5 + 1),
+                            created_at: "2026-11-16T09:00:\(String(format: "%02d", 30 - index))Z",
+                            is_read: true, pending: false, reaction: nil)
+        } : []
+        return .init(items: before == nil ? [follow] + older : [], unread_count: read ? 0 : 1, next_cursor: nil)
     }
 
     func federatedNotices(ids: [String]) async throws -> [FederatedNotice] {
