@@ -8,6 +8,34 @@ import { cdp, page } from "vite-plus/test/browser/context";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 
+vi.mock("../../../hooks/useAttachments", () => ({
+  useAttachmentUrl: () => ({
+    url: "/media/image.png",
+    status: "ready",
+    expiresAt: null,
+    reload: () => {},
+    getFreshUrl: () => Promise.resolve(),
+  }),
+}));
+
+vi.mock("../../ui/media-preview", async () => {
+  const { useState } = await import("react");
+  const { createPortal } = await import("react-dom");
+  return {
+    MediaPreview: () => {
+      const [open, setOpen] = useState(false);
+      return (
+        <div>
+          <button type="button" onClick={() => setOpen(true)}>
+            プレビューを開く
+          </button>
+          {open ? createPortal(<div>プレビュー内</div>, document.body) : null}
+        </div>
+      );
+    },
+  };
+});
+
 vi.mock("../../../lib/emoji/workspace", () => ({
   useWorkspaceEmojis: () => ({
     emojis: [
@@ -480,6 +508,21 @@ describe("MessageRow", () => {
     const blur = container.querySelector(".mfm-blur");
     expect(blur).not.toBeNull();
     tapTouch(blur!);
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("does not open the sheet when tapping inside a portaled preview", async () => {
+    renderRow(buildItem(), false, {
+      attachments: [
+        {
+          id: "attachment-1",
+          file_name: "image.png",
+          content_type: "image/png",
+        } as never,
+      ],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "プレビューを開く" }));
+    await userEvent.click(screen.getByText("プレビュー内"));
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
