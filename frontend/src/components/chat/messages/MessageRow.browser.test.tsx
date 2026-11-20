@@ -456,9 +456,14 @@ describe("MessageRow", () => {
       // 画像付きリアクションはチャット API で扱えないので出さない。
       expect(within(group).queryByRole("button", { name: ":remote:" })).toBeNull();
 
-      // シートから選んだ絵文字も最近の履歴を更新する。
-      await userEvent.click(within(group).getByRole("button", { name: "🎉" }));
-      expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)[0]).toBe("🎉");
+      // 先頭以外を選ぶと、その値が先頭へ移動し既存の順序が保たれることを検証する。
+      await userEvent.click(within(group).getByRole("button", { name: ":party-parrot:" }));
+      expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual([
+        ":party-parrot:",
+        "🎉",
+        "kitchen:1f431_1f600",
+        `apub:${"a".repeat(64)}::remote:`,
+      ]);
     } finally {
       localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
     }
