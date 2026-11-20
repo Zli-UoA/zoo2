@@ -61,9 +61,10 @@ struct ReactionEmojiTests {
         ("kitchen:1f602_1f60d", "20201001/u1f602/u1f602_u1f60d.png"),
         ("kitchen:263a_2615", "20230301/u263a-ufe0f/u263a-ufe0f_u2615.png")
     ])
-    func publishedImage(_ value: String, _ path: String) async {
+    @MainActor func publishedImage(_ value: String, _ path: String) async {
         let url = await ReactionEmoji.kitchenImageURL(value)
         #expect(url?.absoluteString == "https://www.gstatic.com/android/keyboard/emojikitchen/" + path)
+        #expect(ReactionEmoji.cachedKitchenImageURL(value) == url)
     }
 
     @Test("未配信の組み合わせには画像を返さない", arguments: ["kitchen:1f602_1f94d", "kitchen:1f600_10ffff", "👍"])

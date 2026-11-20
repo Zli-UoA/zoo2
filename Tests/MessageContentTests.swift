@@ -81,7 +81,7 @@ struct MessageRenderCacheTests {
         #expect(state.error == nil)
     }
 
-    @Test("キャンセル済みの行タスクは通信を始めず、保持した本文画像も変更しない")
+    @Test("キャンセル済みの行タスクは添付の通信を始めない")
     func cancelledCaller() async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
@@ -92,17 +92,11 @@ struct MessageRenderCacheTests {
         let workspace = WorkspaceStore(client: harness.client, user: Person(id: "you", user_name: "you", display_name: "あなた"), recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
         let attachment = AttachmentRenderState(attachment: MessageAttachment(id: "attachment", file_name: "資料.txt", content_type: "text/plain"))
-        let message = MessageRenderState()
-        let url = try #require(URL(string: "https://example.org/stamp.png"))
-        let image = UIImage()
-        message.inlineImages[url] = image
         await Task { @MainActor in
             withUnsafeCurrentTask { $0?.cancel() }
             await attachment.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
-            await message.loadInlineImages([])
         }.value
         #expect(attachment.url == nil && attachment.error == nil)
-        #expect(message.inlineImages[url] === image)
     }
 }
 

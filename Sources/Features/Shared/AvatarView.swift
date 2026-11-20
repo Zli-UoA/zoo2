@@ -7,8 +7,8 @@ struct AvatarView: View {
     var dimension: CGFloat = Self.size
 
     var body: some View {
-        AsyncImage(url: url) { phase in
-            if let image = phase.image {
+        CachedRemoteImage(url: url) { image in
+            if let image {
                 image.resizable().scaledToFill()
             } else {
                 Text(String(name.prefix(1)))
@@ -16,7 +16,6 @@ struct AvatarView: View {
                     .lineLimit(1).minimumScaleFactor(0.25).foregroundStyle(.secondary)
             }
         }
-        .id(url)
         .frame(width: dimension, height: dimension)
         .background(AppDesign.surface)
         .clipShape(Circle())

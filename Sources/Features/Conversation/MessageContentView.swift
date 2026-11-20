@@ -45,11 +45,7 @@ final class MessageRenderCache {
 @Observable @MainActor
 final class MessageRenderState {
     let id = UUID()
-    var inlineImages: [URL: UIImage] = [:]
     @ObservationIgnored private var attachments: [String: AttachmentRenderState] = [:]
-    @ObservationIgnored private var inlineTask: Task<Void, Never>?
-    @ObservationIgnored private var inlineURLs: [URL] = []
-    @ObservationIgnored private var inlineGeneration = UUID()
 
     func attachment(_ attachment: MessageAttachment) -> AttachmentRenderState {
         if let state = attachments[attachment.id], state.attachment == attachment { return state }
@@ -64,44 +60,9 @@ final class MessageRenderState {
         attachments = attachments.filter { ids.contains($0.key) }
     }
 
-    func loadInlineImages(_ urls: [URL]) async {
-        guard !Task.isCancelled else { return }
-        if inlineURLs == urls, let inlineTask { await inlineTask.value; return }
-        inlineTask?.cancel()
-        inlineURLs = urls
-        inlineImages = inlineImages.filter { urls.contains($0.key) }
-        let generation = UUID()
-        inlineGeneration = generation
-        let missing = urls.filter { inlineImages[$0] == nil }
-        let task = Task { [weak self] in
-            guard self?.inlineGeneration == generation else { return }
-            for url in missing {
-                guard !Task.isCancelled else { return }
-                do {
-                    let (data, response) = try await URLSession.shared.data(from: url)
-                    try Task.checkCancellation()
-                    guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
-                          let image = UIImage(data: data) else { continue }
-                    guard let self, self.inlineGeneration == generation else { return }
-                    self.inlineImages[url] = image
-                } catch {
-                    if Task.isCancelled { return }
-                }
-            }
-        }
-        inlineTask = task
-        await task.value
-        if inlineGeneration == generation { inlineTask = nil }
-    }
-
     func cancelLoads() {
-        inlineGeneration = UUID()
-        inlineTask?.cancel()
-        inlineTask = nil
         for state in attachments.values { state.cancelLoad() }
     }
-
-    deinit { inlineTask?.cancel() }
 }
 
 struct MessageContentView: View {
@@ -109,10 +70,12 @@ struct MessageContentView: View {
     let workspace: WorkspaceStore
     @Bindable var renderState: MessageRenderState
     @ScaledMetric(relativeTo: .body) private var emojiHeight: CGFloat = 24
+    @Environment(\.scenePhase) private var scenePhase
 
     private struct ImageLoadKey: Equatable {
         let stateID: UUID
         let urls: [URL]
+        let active: Bool
     }
 
     var body: some View {
@@ -123,10 +86,13 @@ struct MessageContentView: View {
             if case .emoji(_, let url) = part { return url }
             return nil
         })).sorted { $0.absoluteString < $1.absoluteString }
-        MessageContentText.render(parts, images: renderState.inlineImages, emojiHeight: emojiHeight)
+        let states = Dictionary(uniqueKeysWithValues: urls.map { ($0, workspace.images.state(for: $0)) })
+        let images = states.compactMapValues { $0.inlineImage(height: emojiHeight) }
+        MessageContentText.render(parts, images: images, emojiHeight: emojiHeight)
         .tint(AppDesign.link)
-        .task(id: ImageLoadKey(stateID: renderState.id, urls: urls)) {
-            await renderState.loadInlineImages(urls)
+        .task(id: ImageLoadKey(stateID: renderState.id, urls: urls, active: scenePhase == .active)) {
+            guard scenePhase == .active, !urls.isEmpty else { return }
+            await workspace.images.watch(states, policy: .stored)
         }
     }
 
@@ -135,14 +101,6 @@ struct MessageContentView: View {
 @MainActor
 enum MessageContentText {
     static func render(_ parts: [MessageContent.Part], images: [URL: UIImage], emojiHeight: CGFloat) -> Text {
-        let thumbnails = images.mapValues { image in
-            guard image.size.height > 0, image.size.width > 0 else { return image }
-            let scale = min(emojiHeight / image.size.height, emojiHeight * 4 / image.size.width)
-            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-            return UIGraphicsImageRenderer(size: size).image { _ in
-                image.draw(in: CGRect(origin: .zero, size: size))
-            }
-        }
         var runs: [Text] = []
         var text = AttributedString()
         func flush() {
@@ -162,7 +120,7 @@ enum MessageContentText {
                 mention.font = .body.bold()
                 text.append(mention)
             case .emoji(let name, let url):
-                if let image = thumbnails[url] {
+                if let image = images[url] {
                     flush()
                     runs.append(Text(Image(uiImage: image)).baselineOffset(-emojiHeight / 6)
                         .accessibilityLabel(Text(verbatim: name)))

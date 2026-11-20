@@ -13,10 +13,18 @@ enum ReactionEmoji {
         kitchenParts(value)?.joined(separator: " + ")
     }
 
-    static func kitchenImageURL(_ value: String) async -> URL? {
+    @MainActor static func kitchenImageURL(_ value: String) async -> URL? {
         guard let parts = kitchenParts(value), let catalog = await catalogTask.value else { return nil }
+        resolvedCatalog = catalog
         return catalog.imageURL(left: parts[0], right: parts[1])
     }
+
+    @MainActor static func cachedKitchenImageURL(_ value: String) -> URL? {
+        guard let parts = kitchenParts(value) else { return nil }
+        return resolvedCatalog?.imageURL(left: parts[0], right: parts[1])
+    }
+
+    @MainActor private static var resolvedCatalog: KitchenCatalog?
 
     private static let catalogTask = Task { @concurrent () -> KitchenCatalog? in
         guard let url = Bundle.main.url(forResource: "emoji-kitchen", withExtension: "json") else { return nil }
