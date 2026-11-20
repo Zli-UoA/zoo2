@@ -130,7 +130,7 @@ ZIP は添付ファイルと同じバケット（`S3_*`）の `slack-imports/` �
 - 配備の順序: (1) このバイナリを含むイメージを配備する（backend の挙動は変わりません）、(2) 専用のワーカーの Deployment を足して、`/healthz` が通り、小さな ZIP が最後まで取り込めることを確認する、(3) backend に `SLACK_IMPORT_WORKER=false` を足して再起動する。戻すときは、この env を外して再起動します。
 
 
-ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でストレージへ直接アップロードします（「大きな ZIP を手動でアップロードする」）。プレースホルダのアイコンは Slack のプロフィール画像の URL（`https://avatars.slack-edge.com/…` など）を使うので、表示するには、その配信元を `CSP_APP_IMAGE_SRC`（`img-src`）に追加します。追加しない場合は、既定のアイコンを表示します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
+ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でストレージへ直接アップロードします（「大きな ZIP を手動でアップロードする」）。プレースホルダの `avatars.slack-edge.com` のプロフィール画像は、Web と Android で `MEDIA_PROXY_URL` に設定した画像プロキシを経由して取得します。プロキシを設定する前に取り込んだ画像にも適用します。プロキシが未設定、または画像取得に失敗した場合は、既定のアイコンを表示します。その他の配信元を Web で表示する場合は、配信元に応じて `CSP_APP_IMAGE_SRC`（`img-src`）を設定します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
 
 ### 大きな ZIP を手動でアップロードする
 

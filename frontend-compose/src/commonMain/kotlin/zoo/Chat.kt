@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
+import io.ktor.http.Url
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
@@ -60,7 +61,12 @@ fun Avatar(
                     color = colors.onSurfaceVariant,
                 )
             }
-            val url = user?.text("avatar_url").orEmpty()
+            val source = user?.text("avatar_url").orEmpty()
+            val url =
+                if (source.isNotEmpty() && isSlackAvatar(source)) {
+                    val proxy by LocalApp.current.previews.mediaProxyEndpoint.collectAsState()
+                    proxyImageUrl(proxy, source).orEmpty()
+                } else source
             if (url.isNotEmpty())
                 RemoteImage(url, name, Modifier.fillMaxSize(), fallback = fallbackContent)
             else fallbackContent()
@@ -79,6 +85,10 @@ fun Avatar(
             )
     }
 }
+
+private fun isSlackAvatar(source: String): Boolean =
+    runCatching { Url(source).host.equals("avatars.slack-edge.com", ignoreCase = true) }
+        .getOrDefault(false)
 
 @Composable
 fun RemoteImage(
