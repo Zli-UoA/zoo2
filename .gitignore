@@ -11,3 +11,4 @@ xcuserdata/
 .autodev/
 
 Scripts/IssueWebhook/node_modules/
+Scripts/TestFlight/node_modules/
