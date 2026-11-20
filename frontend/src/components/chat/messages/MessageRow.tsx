@@ -410,11 +410,18 @@ export function MessageRow({
   }, [sheetOpen]);
 
   function rememberTouchStart(event: PointerEvent<HTMLDivElement>) {
+    // ポータル内のダイアログは React ツリー上この行の子だが、DOM 上は外にある。
+    if (!event.currentTarget.contains(event.target as Node)) {
+      tapOrigin.current = null;
+      return;
+    }
     tapOrigin.current =
       event.pointerType === "touch" ? { x: event.clientX, y: event.clientY } : null;
   }
 
   function openSheetOnTap(event: MouseEvent<HTMLDivElement>) {
+    // 画像プレビューなどのポータル内タップは、React のバブリングでここまで届くので除外する。
+    if (!event.currentTarget.contains(event.target as Node)) return;
     const origin = tapOrigin.current;
     tapOrigin.current = null;
     // pointerdown がタッチで、移動していないシングルタップだけを対象にする。
