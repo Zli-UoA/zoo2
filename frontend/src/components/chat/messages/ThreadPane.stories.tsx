@@ -353,6 +353,42 @@ export const NotJoinedEveryoneLeft: Story = {
     await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
   }),
 };
+export const PostingForbidden: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    participantCount: 2,
+    postingForbidden: true,
+    composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 閲覧はできるまま、入力欄だけが理由付きで止まる。
+    await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeDisabled();
+    await expect(canvas.getByText("このチャンネルは管理者のみ投稿できます。")).toBeInTheDocument();
+  }),
+};
+export const PostingForbiddenNotJoined: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "left",
+    participantCount: 2,
+    postingForbidden: true,
+    composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+    onJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("このチャンネルは管理者のみ投稿できます。")).toBeVisible();
+    // 参加は投稿権限と無関係にできる。返信を促す文は出さない。
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(
+      canvas.queryByText("参加するとこのスレッドに返信できます。"),
+    ).not.toBeInTheDocument();
+  }),
+};
 export const FirstReplyWithoutJoining: Story = {
   parameters: { a11y: { test: "error" } },
   args: { replies: [], membership: "none", participantCount: 0, onJoinThread: fn() },

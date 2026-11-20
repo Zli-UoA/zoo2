@@ -117,6 +117,7 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  postingForbidden = false,
   encrypted = false,
   membershipEpoch,
   channelName,
@@ -126,6 +127,8 @@ export function MessagePane({
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** 投稿権限がない（`posting_policy=managers` で管理者・作成者ではない）。閲覧はでき、入力欄だけを理由付きで止める。 */
+  postingForbidden?: boolean;
   /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
   encrypted?: boolean;
   /** 暗号化チャンネルの Channels Shape の `membership_epoch`（int8 なので文字列）。 */
@@ -993,17 +996,25 @@ export function MessagePane({
                 onTyping={typing.onTyping}
                 // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
                 // 最初のページの取得を止めるため、互いに待ち合って失敗する。
-                disabled={readOnly || sendBlocked || !isOnline || messagesQuery.isLoading}
+                disabled={
+                  readOnly ||
+                  postingForbidden ||
+                  sendBlocked ||
+                  !isOnline ||
+                  messagesQuery.isLoading
+                }
                 placeholder={
-                  downgraded
-                    ? t("e2ee.downgraded")
-                    : checkingEncryption
-                      ? t("e2ee.checking")
-                      : sendBlocked
-                        ? t("e2ee.deviceNotReady")
-                        : isOnline
-                          ? undefined
-                          : t("offline.composeDisabled")
+                  postingForbidden
+                    ? t("channels.postingManagersOnly")
+                    : downgraded
+                      ? t("e2ee.downgraded")
+                      : checkingEncryption
+                        ? t("e2ee.checking")
+                        : sendBlocked
+                          ? t("e2ee.deviceNotReady")
+                          : isOnline
+                            ? undefined
+                            : t("offline.composeDisabled")
                 }
               />
             </>
@@ -1078,14 +1089,17 @@ export function MessagePane({
             onSendReply={handleSendReply}
             onOpenThread={openThread}
             composeDisabledReason={
-              downgraded
-                ? t("e2ee.downgraded")
-                : checkingEncryption
-                  ? t("e2ee.checking")
-                  : sendBlocked
-                    ? t("e2ee.deviceNotReady")
-                    : undefined
+              postingForbidden
+                ? t("channels.postingManagersOnly")
+                : downgraded
+                  ? t("e2ee.downgraded")
+                  : checkingEncryption
+                    ? t("e2ee.checking")
+                    : sendBlocked
+                      ? t("e2ee.deviceNotReady")
+                      : undefined
             }
+            postingForbidden={postingForbidden}
             hasOlder={threadQuery.hasOlder}
             isLoadingOlder={threadQuery.isLoadingOlder}
             onLoadOlder={() => void threadQuery.loadOlder()}

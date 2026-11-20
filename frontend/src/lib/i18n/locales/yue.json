@@ -55,6 +55,7 @@
     "notFound": "搵唔到頻道。",
     "duplicateName": "同名頻道已經存在。",
     "privateMessages": "呢個係私人頻道，收到邀請之後就可以睇訊息。",
+    "postingManagersOnly": "呢個頻道淨係管理員先可以發文。",
     "back": "返去頻道列表",
     "noDescription": "仲未有簡介",
     "visibilityHelp": "任何人都可以加入公開頻道。私人頻道就要開頻道嘅人邀請先入得。",

@@ -55,6 +55,7 @@
     "notFound": "Channel not found.",
     "duplicateName": "A channel with this name already exists.",
     "privateMessages": "This channel is private. You can view messages once you are invited.",
+    "postingManagersOnly": "Only channel managers can post in this channel.",
     "back": "Back to channels",
     "noDescription": "No description yet",
     "visibilityHelp": "Anyone can join a public channel. Private channels are invite-only.",

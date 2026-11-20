@@ -22,6 +22,8 @@ import {
   LoaderCircleIcon,
   XIcon,
 } from "lucide-react";
+import { canPostInChannel } from "../../hooks/channelPermissions";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useActiveChannels, useMyChannelMemberships } from "../../hooks/useRealtime";
 import { useVisualViewport } from "../layout/useVisualViewport";
 import { useMediaQuery } from "../layout/useMediaQuery";
@@ -198,6 +200,20 @@ export function HomeComposer({
     visibility !== "followers" && availableChannels.some((channel) => channel.id === channelId)
       ? channelId
       : "";
+  // 投稿権限のないチャンネル（`posting_policy=managers`）には、閲覧はできても書き込めない。
+  // 返信は返信先のチャンネル、新規投稿は選んだチャンネルが対象。
+  const { currentUserId, isAdmin } = useCurrentUser();
+  const targetChannelId = replyTo ? (replyTo.channel_id ?? null) : selectedChannelId || null;
+  const targetChannel = targetChannelId
+    ? (channelsQuery.data ?? []).find((channel) => channel.id === targetChannelId)
+    : undefined;
+  const postingForbidden =
+    !!targetChannel &&
+    !canPostInChannel({
+      postingPolicy: targetChannel.posting_policy,
+      isAdmin,
+      isCreator: !!currentUserId && targetChannel.created_user_id === currentUserId,
+    });
   const channelSelectionPending =
     channelId !== "" &&
     visibility !== "followers" &&
@@ -231,6 +247,7 @@ export function HomeComposer({
   const submit = async () => {
     if (
       channelSelectionPending ||
+      postingForbidden ||
       inFlight.current ||
       uploadLock.current ||
       (!content.trim() && !images.length) ||
@@ -468,6 +485,7 @@ export function HomeComposer({
                     sending ||
                     uploading ||
                     channelSelectionPending ||
+                    postingForbidden ||
                     (!content.trim() && !images.length) ||
                     length > 1000
                   }
@@ -646,6 +664,11 @@ export function HomeComposer({
                   {length} / 1000
                 </span>
               </div>
+              {postingForbidden ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {t("channels.postingManagersOnly")}
+                </p>
+              ) : null}
               {failed ? (
                 <p role="alert" className="text-sm text-destructive">
                   {failed === "forbidden" ? t("home.postForbidden") : t("home.sendError")}

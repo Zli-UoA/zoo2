@@ -55,6 +55,7 @@
     "notFound": "找不到频道。",
     "duplicateName": "同名频道已存在。",
     "privateMessages": "此频道为私密频道，受邀后即可查看消息。",
+    "postingManagersOnly": "此频道仅管理员可以发帖。",
     "back": "返回频道列表",
     "noDescription": "暂无描述",
     "visibilityHelp": "任何人都可以加入公开频道。私密频道仅限创建者邀请的人加入。",

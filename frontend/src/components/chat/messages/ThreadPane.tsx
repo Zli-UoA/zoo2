@@ -34,6 +34,8 @@ export interface ThreadPaneProps {
   isOffline?: boolean;
   /** 返信を送れない理由（暗号化チャンネルで暗号化の送信がまだ使えない、など）。指定すると入力欄を止める。 */
   composeDisabledReason?: string;
+  /** 投稿権限がない。閲覧と参加はでき、返信・再Openだけを止める（理由は `composeDisabledReason`）。 */
+  postingForbidden?: boolean;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
@@ -110,6 +112,7 @@ export function ThreadPane({
   isMember = true,
   isOffline = false,
   composeDisabledReason,
+  postingForbidden = false,
   typingUsers = [],
   onTyping,
   root,
@@ -351,7 +354,9 @@ export function ThreadPane({
       ) : null}
       {!readOnly &&
       isMember &&
-      ((isArchived && onReopenThread) || membershipError || canJoinBeforeFirstReply) ? (
+      ((isArchived && onReopenThread && !postingForbidden) ||
+        membershipError ||
+        canJoinBeforeFirstReply) ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
           {canJoinBeforeFirstReply ? (
             <Button
@@ -364,7 +369,7 @@ export function ThreadPane({
               {t("threads.join")}
             </Button>
           ) : null}
-          {isArchived && onReopenThread ? (
+          {isArchived && onReopenThread && !postingForbidden ? (
             <Button
               variant="outline"
               size="sm"
@@ -504,13 +509,14 @@ export function ThreadPane({
 
       {!readOnly ? (
         <>
-          {isArchived && !needsJoin ? (
+          {isArchived && !needsJoin && !postingForbidden ? (
             <p className="px-3 py-2 text-xs text-muted-foreground">{t("threads.reopenOnSend")}</p>
           ) : null}
           <TypingIndicator users={typingUsers} />
           {needsJoin ? (
             <ThreadJoinPrompt
               archived={!!isArchived}
+              reason={postingForbidden ? composeDisabledReason : undefined}
               pending={membershipPending}
               disabled={membership === undefined || isOffline}
               onJoin={isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread}
@@ -597,11 +603,14 @@ function ThreadParticipants({
 
 function ThreadJoinPrompt({
   archived,
+  reason,
   pending,
   disabled,
   onJoin,
 }: {
   archived: boolean;
+  /** 投稿権限がないときの理由。出すと、返信を促す文の代わりになる。 */
+  reason?: string;
   pending: boolean;
   disabled: boolean;
   onJoin?: () => void;
@@ -610,15 +619,18 @@ function ThreadJoinPrompt({
   return (
     <div className="border-t px-3 py-3">
       <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
-        <p className="text-sm text-muted-foreground">{t("threads.joinToReply")}</p>
-        <Button
-          size="sm"
-          onClick={onJoin}
-          disabled={disabled || pending || !onJoin}
-          aria-busy={pending}
-        >
-          {archived ? t("threads.reopenAndJoin") : t("threads.join")}
-        </Button>
+        <p className="text-sm text-muted-foreground">{reason ?? t("threads.joinToReply")}</p>
+        {/* アーカイブ済みの再Openは投稿権限が要るので、権限がないときはボタンを出さない。 */}
+        {reason && archived ? null : (
+          <Button
+            size="sm"
+            onClick={onJoin}
+            disabled={disabled || pending || !onJoin}
+            aria-busy={pending}
+          >
+            {archived ? t("threads.reopenAndJoin") : t("threads.join")}
+          </Button>
+        )}
       </div>
     </div>
   );

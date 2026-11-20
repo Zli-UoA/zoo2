@@ -147,6 +147,10 @@ export function ChannelScreen({
                 isMember={access.isMember}
                 canModerate={!channel.is_dm && access.canManageChannel}
                 readOnly={access.isArchived}
+                // 閲覧はできるまま、書き込みだけを止める（投稿権限は管理者・作成者のみ）。
+                postingForbidden={
+                  channel.posting_policy === "managers" && !access.canManageChannel
+                }
                 encrypted={channel.encrypted === true}
                 membershipEpoch={channel.membership_epoch ?? null}
                 channelName={channel.channel_name}
