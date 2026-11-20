@@ -403,6 +403,19 @@ async fn idempotent_existing_message_in_snapshot(
     Err(AppError::Conflict("Idempotency key already used".into()))
 }
 
+/// Reply gate lookup (`$1` = thread root, `$2` = author): whether the thread has participant
+/// rows, whether the author is joined, and whether the author is a bot. Shared with the scale
+/// test so it measures exactly the SQL the write path runs.
+///
+/// Every term is bounded independent of other threads' rows: `joined` is one primary-key
+/// probe on (thread_id,user_id) and `bot` one `users` primary-key probe. `tracked` only asks
+/// whether any row exists; `ORDER BY user_id LIMIT 1` follows the primary-key order so the
+/// planner takes the first index entry of this thread instead of a sequential scan that skips
+/// every other thread's rows (the plan the participant list SQL was measured to choose).
+pub fn reply_participation_sql() -> &'static str {
+    "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL),'bot',(SELECT is_bot FROM users WHERE id=$2))::text"
+}
+
 pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
@@ -848,9 +861,12 @@ pub(crate) async fn create_message_impl(
             &[gate_root.as_str()],
         )
         .await?;
-        let participation = crate::apps::one(&mut tx,
-            "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL),'bot',(SELECT is_bot FROM users WHERE id=$2))::text",
-            &[gate_root.as_str(), auth_user.id.as_str()]).await?;
+        let participation = crate::apps::one(
+            &mut tx,
+            reply_participation_sql(),
+            &[gate_root.as_str(), auth_user.id.as_str()],
+        )
+        .await?;
         // Bots (Apps API) have no way to join a thread, so they are not gated.
         if participation["tracked"] == true
             && participation["joined"] != true

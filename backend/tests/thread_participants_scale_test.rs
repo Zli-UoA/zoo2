@@ -3,7 +3,12 @@
 //! large `users` table. P = participant rows of one thread, L = live (joined, not
 //! deactivated) ones. Bound: no Seq Scan on users/thread_participants, `thread_participants`
 //! rows <= P, `users` rows <= joined (not left), sort input <= L, logical blocks <= 5*joined + 2P + 64.
-use backend::{config::Config, routes::threads::participants_sql};
+//! The reply gate SQL (`reply_participation_sql`, run on every thread reply) is measured too:
+//! no Seq Scan, `thread_participants` rows <= 2, `users` rows <= 1, logical blocks <= 64.
+use backend::{
+    config::Config,
+    routes::{messages::reply_participation_sql, threads::participants_sql},
+};
 use serde_json::{Value, json};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
 
@@ -102,6 +107,40 @@ fn work(case: &Case, mode: &str, plan: &Value) -> Value {
         "{name}: {blocks} logical blocks > {limit}"
     );
     json!({"relations":relations,"sort_input":max_sort,"logical_blocks":blocks})
+}
+
+/// Work of the reply gate SQL: a fixed number of primary-key probes, whatever P or the totals.
+fn gate_work(name: &str, plan: &Value) -> Value {
+    let mut relations = std::collections::BTreeMap::<String, f64>::new();
+    walk(&plan["Plan"], &mut |node| {
+        if let Some(table) = node["Relation Name"].as_str() {
+            let loops = node["Actual Loops"].as_f64().unwrap_or(0.);
+            let n = (node["Actual Rows"].as_f64().unwrap_or(0.)
+                + node["Rows Removed by Filter"].as_f64().unwrap_or(0.)
+                + node["Rows Removed by Index Recheck"].as_f64().unwrap_or(0.))
+                * loops;
+            *relations.entry(table.into()).or_default() += n;
+            assert!(
+                node["Node Type"] != "Seq Scan",
+                "{name}: Seq Scan on {table}"
+            );
+        }
+    });
+    let scanned = |table: &str| *relations.get(table).unwrap_or(&0.);
+    assert!(
+        scanned("thread_participants") <= 2.,
+        "{name}: thread_participants scanned {} > 2: {relations:?}",
+        scanned("thread_participants")
+    );
+    assert!(
+        scanned("users") <= 1.,
+        "{name}: users scanned {} > 1: {relations:?}",
+        scanned("users")
+    );
+    let blocks = plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)
+        + plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0);
+    assert!(blocks <= 64, "{name}: {blocks} logical blocks > 64");
+    json!({"relations":relations,"sort_input":0,"logical_blocks":blocks})
 }
 
 #[tokio::test]
@@ -231,6 +270,43 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             }
             metrics.insert(format!("{}/{run}", case.name), measured);
         }
+        client
+            .batch_execute("DEALLOCATE ALL; RESET plan_cache_mode")
+            .await?;
+
+        // Reply gate for a user who is not in the thread (the owner): `tracked` must come from
+        // one index entry of this thread, not a scan that skips other threads' rows.
+        let gate = reply_participation_sql();
+        let custom = gate
+            .replace("$1", &quoted(&case.thread))
+            .replace("$2", &quoted(&owner));
+        let raw = client
+            .simple_query(&format!(
+                "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) {custom}"
+            ))
+            .await?;
+        let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        metrics.insert(
+            format!("{}/gate_custom", case.name),
+            gate_work(&format!("{}/gate_custom", case.name), &plan[0]),
+        );
+        client
+            .batch_execute(&format!(
+                "PREPARE gate(text,text) AS {gate}; SET plan_cache_mode=force_generic_plan"
+            ))
+            .await?;
+        let raw = client
+            .simple_query(&format!(
+                "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) EXECUTE gate({},{})",
+                quoted(&case.thread),
+                quoted(&owner)
+            ))
+            .await?;
+        let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        metrics.insert(
+            format!("{}/gate_generic", case.name),
+            gate_work(&format!("{}/gate_generic", case.name), &plan[0]),
+        );
         client
             .batch_execute("DEALLOCATE ALL; RESET plan_cache_mode")
             .await?;
