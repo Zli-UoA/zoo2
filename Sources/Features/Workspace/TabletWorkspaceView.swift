@@ -62,8 +62,8 @@ struct TabletWorkspaceView: View {
                 Text(title).font(.caption2).lineLimit(2).minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity, minHeight: 58)
-            .foregroundStyle(workspace.selectedTab == tab ? Color.accentColor : .secondary)
-            .background(workspace.selectedTab == tab ? Color.accentColor.opacity(0.12) : .clear,
+            .foregroundStyle(workspace.selectedTab == tab ? AppDesign.selectionForeground : .secondary)
+            .background(workspace.selectedTab == tab ? AppDesign.selectionBackground : .clear,
                         in: RoundedRectangle(cornerRadius: 12))
             .contentShape(Rectangle())
         }

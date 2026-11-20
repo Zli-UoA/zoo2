@@ -1,18 +1,30 @@
 import SwiftUI
 
 enum AppDesign {
-    static let tint = Color(uiColor: .systemBlue)
-    // 暗い背景でも選択中のタブやリンクを識別できる明度を保つ。
-    static let navigationTint = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 112.0 / 255, green: 211.0 / 255, blue: 191.0 / 255, alpha: 1)
-            : UIColor(red: 37.0 / 255, green: 99.0 / 255, blue: 91.0 / 255, alpha: 1)
-    })
+    // Zoo本体の配色に合わせ、黄色は黒文字の主要操作に使う。
+    // 原本: https://github.com/Zli-UoA/zoo2/blob/main/frontend/src/styles.css
+    static let primary = Color(red: 1, green: 214.0 / 255, blue: 0)
+    static let primaryForeground = Color.black
+    // ライト表示のガラス製タブでも文字が薄くならないよう、本体の濃いアクセント文字色を使う。
+    static let navigationTint = adaptiveColor(light: 0x424242, dark: 0xD9D9D9)
+    static let link = adaptiveColor(light: 0x1D4ED8, dark: 0x8AB4FF)
+    static let selectionBackground = adaptiveColor(light: 0xFFF6CC, dark: 0x303030)
+    static let selectionForeground = adaptiveColor(light: 0x000000, dark: 0xE5E5E5)
+    static let accentBackground = adaptiveColor(light: 0xFFFBE8, dark: 0x2E2E2E)
     static let horizontalInset: CGFloat = 12
     static let spacing: CGFloat = 8
     static let cornerRadius: CGFloat = 16
     static let minimumControlSize: CGFloat = 44
     static let rowInsets = EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
+
+    private static func adaptiveColor(light: UInt32, dark: UInt32) -> Color {
+        Color(uiColor: UIColor { traits in
+            let rgb = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                           green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                           blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+        })
+    }
 }
 
 struct AppList<Content: View>: View {

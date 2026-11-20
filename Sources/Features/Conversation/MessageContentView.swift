@@ -124,7 +124,7 @@ struct MessageContentView: View {
             return nil
         })).sorted { $0.absoluteString < $1.absoluteString }
         MessageContentText.render(parts, images: renderState.inlineImages, emojiHeight: emojiHeight)
-        .tint(AppDesign.tint)
+        .tint(AppDesign.link)
         .task(id: ImageLoadKey(stateID: renderState.id, urls: urls)) {
             await renderState.loadInlineImages(urls)
         }
@@ -157,8 +157,8 @@ enum MessageContentText {
                 text.append(link)
             case .mention(let value, let isSelf):
                 var mention = AttributedString(value)
-                mention.foregroundColor = isSelf ? Color(.label) : Color.accentColor
-                mention.backgroundColor = isSelf ? Color.yellow.opacity(0.3) : Color.accentColor.opacity(0.12)
+                mention.foregroundColor = isSelf ? AppDesign.selectionForeground : AppDesign.link
+                mention.backgroundColor = isSelf ? AppDesign.selectionBackground : AppDesign.accentBackground
                 mention.font = .body.bold()
                 text.append(mention)
             case .emoji(let name, let url):

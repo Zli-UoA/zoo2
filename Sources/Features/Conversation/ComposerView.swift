@@ -26,7 +26,7 @@ struct ComposerView: View {
     }
     private var canSend: Bool { !submitting && store.canSend(parentID: parentID) }
     private var attachmentsBusy: Bool {
-        submitting || store.sending.contains(key) || store.importingAttachments.contains(key)
+        !store.canPost || submitting || store.sending.contains(key) || store.importingAttachments.contains(key)
     }
     private var remainingAttachmentCount: Int { DraftAttachment.maximumCount - (store.draftAttachments[key]?.count ?? 0) }
     private var selectedRange: Range<String.Index>? {
@@ -51,7 +51,10 @@ struct ComposerView: View {
                 Text(error).font(.caption).foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading).accessibilityIdentifier("send-error")
             }
-            if store.canPost {
+            if let message = store.postingRestrictionMessage {
+                Label(message, systemImage: "lock")
+                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+            } else {
                 attachmentDrafts
                 if let indicator = store.typing.indicator(parentID: parentID) {
                     Text(indicator)
@@ -89,13 +92,6 @@ struct ComposerView: View {
                 if draft.wrappedValue.unicodeScalars.count > 40_000 {
                     Text("メッセージは 40,000 文字以内で入力してください。").font(.caption).foregroundStyle(.red)
                 }
-            } else if let message = store.postingRestrictionMessage {
-                Label(message, systemImage: "lock")
-                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .accessibilityLabel("メッセージを同期中")
             }
         }
         .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
@@ -200,8 +196,8 @@ struct ComposerView: View {
                 else { Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold)) }
             }
             .frame(width: 32, height: 32)
-            .foregroundStyle(canSend ? .white : Color.secondary)
-            .background(canSend ? AppDesign.tint : Color(.tertiarySystemFill), in: Circle())
+            .foregroundStyle(canSend ? AppDesign.primaryForeground : Color.secondary)
+            .background(canSend ? AppDesign.primary : Color(.tertiarySystemFill), in: Circle())
             .frame(width: 44, height: 44).contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(!canSend)
