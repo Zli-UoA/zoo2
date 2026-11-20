@@ -152,6 +152,14 @@ async fn unarchive_thread(
     thread_operation(state, auth, id, "unarchive").await
 }
 
+/// Participants of one thread (`$1` = thread id): `tracked`, live count and the first 50.
+/// Shared with the scale test so it measures exactly the SQL the route runs.
+pub fn participants_sql() -> &'static str {
+    "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at,p.left_at FROM thread_participants p WHERE p.thread_id=$1), \
+              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM users u JOIN keys k ON k.user_id=u.id WHERE u.id = ANY(ARRAY(SELECT user_id FROM keys WHERE left_at IS NULL)) AND k.left_at IS NULL AND NOT u.is_deactivated) \
+         SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text"
+}
+
 async fn thread_operation(
     state: AppState,
     auth: AuthUser,
@@ -231,11 +239,7 @@ async fn thread_operation(
     // - `users` is read only through `u.id = ANY(ARRAY(keys))`, an index lookup per live key,
     //   not a Hash Join that scans all users.
     // The list sorts the live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
-    let participants = crate::apps::one(&mut tx,
-        "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at,p.left_at FROM thread_participants p WHERE p.thread_id=$1), \
-              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM users u JOIN keys k ON k.user_id=u.id WHERE u.id = ANY(ARRAY(SELECT user_id FROM keys WHERE left_at IS NULL)) AND k.left_at IS NULL AND NOT u.is_deactivated) \
-         SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text",
-        &[root_id]).await?;
+    let participants = crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?;
     row["tracked"] = participants["tracked"].clone();
     row["participant_count"] = participants["count"].clone();
     row["participants"] = participants["items"].clone();

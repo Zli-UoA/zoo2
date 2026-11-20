@@ -66,6 +66,23 @@ jobs:
             SCALE_PLAN_DIR="$PWD/performance-results/${count}-plans" SCALE_POSTS="$count" cargo test --manifest-path backend/Cargo.toml --test read_state_worker_scale_test read_states_and_worker_claims_do_not_scan_history -- --ignored --nocapture 2>&1 | tee "performance-results/${count}.log"
           done
           python3 infra/db/compare-read-state-worker-work.py performance-results/300000-plans performance-results/1000000-plans | tee performance-results/plan-comparison.txt
+      - name: Build participant benchmark before measuring
+        run: cargo test --manifest-path backend/Cargo.toml --test thread_participants_scale_test --no-run
+      - name: Measure thread participants at 300k and 1m users
+        shell: bash
+        env:
+          PGPASSWORD: password
+        run: |
+          set -euo pipefail
+          mkdir -p performance-results
+          for count in 300000 1000000; do
+            db="participants_${count}"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE $db"
+            export DATABASE_URL="postgres://root:password@localhost:5432/$db?sslmode=disable"
+            atlas migrate apply --dir file://infra/db/migrations --url "$DATABASE_URL"
+            SCALE_PLAN_DIR="$PWD/performance-results/participants-${count}-plans" SCALE_USERS="$count" cargo test --manifest-path backend/Cargo.toml --test thread_participants_scale_test participants_sql_does_not_scan_users -- --ignored --nocapture 2>&1 | tee "performance-results/participants-${count}.log"
+          done
+          python3 infra/db/compare-thread-participants-work.py performance-results/participants-300000-plans performance-results/participants-1000000-plans | tee performance-results/participants-plan-comparison.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
