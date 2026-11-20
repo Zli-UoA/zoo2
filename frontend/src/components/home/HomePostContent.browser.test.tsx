@@ -73,7 +73,8 @@ it("preserves Home links without a Provider when Summaly fails", async () => {
   );
   render(<HomePostContent content={`<${url}>`} />);
   const link = screen.getByRole("link", { name: url.replace("https://", "") });
-  await waitFor(() => expect(lookups).toBe(1));
+  // Summaly の取得は並列で動くブラウザーテストの負荷で1秒を超えることがある。
+  await waitFor(() => expect(lookups).toBe(1), { timeout: 10_000 });
   expect(link).toHaveAttribute("href", url);
   expect(screen.getAllByRole("link")).toHaveLength(1);
   expect(screen.queryByRole("link", { name: `${url} example.com` })).toBeNull();

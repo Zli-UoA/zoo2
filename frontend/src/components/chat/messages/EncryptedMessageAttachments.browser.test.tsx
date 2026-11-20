@@ -53,13 +53,14 @@ it("does not fetch and decrypt again when a virtualized row remounts", async () 
 
   const first = render(element());
   const image = (await screen.findByRole("img", { name: "wide.png" })) as HTMLImageElement;
-  await waitFor(() => expect(image.naturalWidth).toBe(3));
+  // 画像のデコードは並列で動くブラウザーテストの負荷で1秒を超えることがある。
+  await waitFor(() => expect(image.naturalWidth).toBe(3), { timeout: 10_000 });
   first.unmount();
 
   // 戻ってきた行は、スピナーを挟まずにキャッシュの画像を出す。
   render(element());
   const again = screen.getByRole("img", { name: "wide.png" }) as HTMLImageElement;
-  await waitFor(() => expect(again.naturalWidth).toBe(3));
+  await waitFor(() => expect(again.naturalWidth).toBe(3), { timeout: 10_000 });
   expect(loader).toHaveBeenCalledTimes(1);
 });
 
