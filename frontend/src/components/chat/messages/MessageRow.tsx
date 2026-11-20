@@ -887,14 +887,19 @@ export function MessageRow({
                   <button
                     key={emoji}
                     type="button"
-                    aria-label={emoji}
-                    className="flex size-11 items-center justify-center rounded-lg text-2xl outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+                    aria-label={kitchenLabel(emoji)}
+                    className="flex size-11 items-center justify-center rounded-lg outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
                     onClick={() => {
                       onReaction(emoji);
                       setSheetOpen(false);
                     }}
                   >
-                    <span aria-hidden="true">{emoji}</span>
+                    <ReactionEmoji
+                      emoji={emoji}
+                      catalog={kitchenCatalog}
+                      emojis={message.display_data?.emojis}
+                      size={26}
+                    />
                   </button>
                 ))}
               </div>

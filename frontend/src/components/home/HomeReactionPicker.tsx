@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import { EmojiPicker } from "../chat/messages/EmojiPicker";
 import { ActivityPubEmoji, type CustomEmoji } from "./ActivityPubEmoji";
 import { panelTabClassName } from "../ui/control-panel";
+import { addRecentEmoji } from "../../lib/emoji/recents";
 export interface ReactionChoice {
   reaction: string;
   emoji_id?: string;
@@ -60,6 +61,7 @@ export function HomeReactionPicker({
     ),
   );
   const select = (value: ReactionChoice) => {
+    addRecentEmoji(value.reaction);
     onSelect(value);
     onClose();
   };
@@ -86,19 +88,6 @@ export function HomeReactionPicker({
             </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="unicode" className="flex min-h-0 flex-1 flex-col">
-            <div role="group" aria-label={t("home.quickReactions")} className="mb-2 flex gap-1">
-              {["❤️", "👍", "🎉", "😊", "😢"].map((reaction) => (
-                <Button
-                  key={reaction}
-                  variant="ghost"
-                  size="icon-lg"
-                  aria-label={reaction}
-                  onClick={() => select({ reaction })}
-                >
-                  {reaction}
-                </Button>
-              ))}
-            </div>
             <EmojiPicker onSelect={(reaction) => select({ reaction })} />
           </Tabs.Panel>
           <Tabs.Panel value="custom" className="flex min-h-0 flex-1 flex-col gap-3">

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import { MessageRow, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -415,6 +416,24 @@ describe("MessageRow", () => {
     await userEvent.click(item);
     expect(onStartEdit).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("shows recent reactions of all kinds in the touch sheet", async () => {
+    localStorage.setItem(
+      RECENT_EMOJIS_STORAGE_KEY,
+      JSON.stringify(["🎉", ":party-parrot:", "kitchen:1f431_1f600"]),
+    );
+    try {
+      renderRow(buildItem(), false, { canReact: true });
+      tapTouch(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      const group = within(sheet).getByRole("group", { name: "最近使った絵文字" });
+      expect(within(group).getByRole("button", { name: "🎉" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: ":party-parrot:" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: "🐱 + 😀" })).toBeTruthy();
+    } finally {
+      localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
+    }
   });
 
   it("does not open the sheet while the message is being edited", () => {

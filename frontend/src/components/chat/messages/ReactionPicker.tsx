@@ -11,6 +11,7 @@ import {
 } from "../../ui/dialog";
 import { EmojiKitchenPicker } from "./EmojiKitchenPicker";
 import { EmojiPicker, CustomEmojiPicker } from "./EmojiPicker";
+import { addRecentEmoji } from "../../../lib/emoji/recents";
 
 type ReactionTab = "emoji" | "kitchen" | "custom";
 
@@ -30,6 +31,8 @@ export function ReactionPicker({
   const [tab, setTab] = useState<ReactionTab>("emoji");
   const [dialogElement, setDialogElement] = useState<HTMLDivElement | null>(null);
   const select = (emoji: string) => {
+    // Unicode / カスタム / Kitchen の種別を問わず、リアクションとして使った値を最近に残す。
+    addRecentEmoji(emoji);
     onSelect(emoji);
     onOpenChange(false);
   };

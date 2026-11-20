@@ -908,11 +908,9 @@ export const Like: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
-    await userEvent.click(
-      within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
-        name: "❤️",
-      }),
-    );
+    // ピッカーに固定のクイックリアクションは置かないので、絵文字グリッドから選ぶ。
+    const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
+    await userEvent.click(cells[0]!);
     await expect(await canvas.findByRole("button", { name: "❤️ 1" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -937,11 +935,9 @@ export const LikeError: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
-    await userEvent.click(
-      within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
-        name: "❤️",
-      }),
-    );
+    // ピッカーに固定のクイックリアクションは置かないので、絵文字グリッドから選ぶ。
+    const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
+    await userEvent.click(cells[0]!);
     await expect(await canvas.findByRole("alert")).toBeVisible();
   }),
 };
