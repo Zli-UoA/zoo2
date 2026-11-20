@@ -13,15 +13,14 @@ enum AppearancePreference: String {
     }
 }
 
-struct ProfileView: View {
-    private enum Destination: Hashable { case settings }
+enum ProfileDestination: Hashable { case settings }
 
+struct ProfileView: View {
     let workspace: WorkspaceStore
     let session: AppSession
-    @State private var profile: PublicProfile?
-    @State private var loadError: String?
-    @State private var currentLoad: UUID?
-    @State private var editing = false
+
+    private var profile: PublicProfile? { workspace.publicProfile }
+    private var loadError: String? { workspace.profileLoadError }
 
     private var user: Person { workspace.people[workspace.user.id] ?? workspace.user }
     private var server: URL? { try? ConnectionSettings.secureURL(workspace.client.serverURL) }
@@ -45,7 +44,7 @@ struct ProfileView: View {
                 if let profile {
                     LabeledContent("表示名", value: profile.name)
                     if !profile.summary.isEmpty { Text(profile.summary).textSelection(.enabled) }
-                    Button("公開プロフィールを編集") { editing = true }
+                    Button("公開プロフィールを編集") { workspace.presentedSheet = .profile }
                         .accessibilityIdentifier("profile-edit")
                 } else if loadError == nil {
                     ProgressView("読み込み中…")
@@ -59,7 +58,7 @@ struct ProfileView: View {
                 }
             }
             Section {
-                NavigationLink(value: Destination.settings) {
+                NavigationLink(value: ProfileDestination.settings) {
                     Label("設定", systemImage: "gearshape")
                 }
                 .accessibilityIdentifier("workspace-settings")
@@ -67,40 +66,31 @@ struct ProfileView: View {
         }
         .navigationTitle("プロフィール")
         .navigationBarTitleDisplayMode(.large)
-        .navigationDestination(for: Destination.self) { _ in
+        .navigationDestination(for: ProfileDestination.self) { _ in
             ProfileSettingsView(session: session, webSettings: server?.appending(path: "settings"))
                 .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
         }
         .task { await load() }
         .refreshable { await load() }
-        .sheet(isPresented: $editing) {
-            if let profile {
-                ProfileEditor(profile: profile, workspace: workspace) { updated in
-                    currentLoad = nil
-                    loadError = nil
-                    self.profile = updated
-                }
-            }
-        }
     }
 
     private func load() async {
         let request = UUID()
-        currentLoad = request
-        loadError = nil
+        workspace.profileLoadRequest = request
+        workspace.profileLoadError = nil
         do {
             let value = try await workspace.client.publicProfile()
-            guard currentLoad == request, !Task.isCancelled else { return }
-            profile = value
+            guard workspace.profileLoadRequest == request, !Task.isCancelled else { return }
+            workspace.publicProfile = value
         } catch {
-            guard currentLoad == request, !Task.isCancelled else { return }
+            guard workspace.profileLoadRequest == request, !Task.isCancelled else { return }
             if case ZooError.expiredSession = error { workspace.report(error) }
-            else { loadError = "公開プロフィールを読み込めませんでした。" }
+            else { workspace.profileLoadError = "公開プロフィールを読み込めませんでした。" }
         }
     }
 }
 
-private struct ProfileEditor: View {
+struct ProfileEditor: View {
     let workspace: WorkspaceStore
     let saved: (PublicProfile) -> Void
     @State private var draft: PublicProfile

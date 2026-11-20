@@ -557,6 +557,7 @@ struct NativeChatTests {
         channel.archive_at = encrypted ? nil : "2026-11-18 09:00:00"
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         store.drafts["root"] = "平文"
+        #expect(store.postingRestrictionMessage == (encrypted ? "暗号化された会話には送信できません" : "アーカイブ済みのチャンネルです"))
         await store.send()
         #expect(store.messages.isEmpty)
         #expect(store.drafts["root"] == "平文")
@@ -727,6 +728,7 @@ struct NativeChatTests {
         revoke.continuation.yield(())
         await stream.value
         #expect(store.blocked)
+        #expect(store.postingRestrictionMessage == "このチャンネルには送信できません")
         #expect(store.messages.isEmpty)
         releaseSend.continuation.yield(())
         await send.value

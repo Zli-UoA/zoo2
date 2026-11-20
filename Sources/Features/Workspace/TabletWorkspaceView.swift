@@ -8,6 +8,8 @@ struct TabletWorkspaceView: View {
     var body: some View {
         HStack(spacing: 0) {
             destinations
+                // 開閉中のサイドバーをタブ列の背後へ隠す。
+                .zIndex(1)
             Divider()
             switch workspace.selectedTab {
             case .channels:
@@ -21,7 +23,7 @@ struct TabletWorkspaceView: View {
                         .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                 }
             case .profile:
-                NavigationStack {
+                NavigationStack(path: $workspace.profilePath) {
                     ProfileView(workspace: workspace, session: session)
                         .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                 }

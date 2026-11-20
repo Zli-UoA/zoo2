@@ -5,6 +5,38 @@ enum WorkspaceTab: Hashable {
     case channels, directMessages, notifications, profile
 }
 
+enum WorkspaceSheet: Identifiable {
+    case createChannel, createDirectMessage, browseChannels, profile
+    case channelDetails(Channel)
+    case messageActions(MessageActionSheet)
+
+    var id: String {
+        switch self {
+        case .createChannel: "create-channel"
+        case .createDirectMessage: "create-dm"
+        case .browseChannels: "browse-channels"
+        case .profile: "profile"
+        case .channelDetails(let channel): "details-\(channel.id)"
+        case .messageActions(let sheet): sheet.id.uuidString
+        }
+    }
+}
+
+struct AttachmentPickerTarget {
+    let store: ConversationStore
+    let parentID: String?
+
+    @MainActor var remainingCount: Int {
+        DraftAttachment.maximumCount - (store.draftAttachments[store.draftKey(parentID)]?.count ?? 0)
+    }
+}
+
+struct ComposerFocusRequest: Identifiable {
+    let id = UUID()
+    let channelID: String
+    let parentID: String?
+}
+
 enum ChatRoute: Hashable {
     case channel(String)
     case thread(channelID: String, parentID: String, focusComposer: Bool)
@@ -61,6 +93,15 @@ final class WorkspaceStore {
         didSet { if let channelID = channelPath.first?.channelID { lastChannelID = channelID } }
     }
     var dmPath: [ChatRoute] = []
+    var profilePath: [ProfileDestination] = []
+    var publicProfile: PublicProfile?
+    var profileLoadRequest: UUID?
+    var profileLoadError: String?
+    var presentedSheet: WorkspaceSheet?
+    var attachmentPickerTarget: AttachmentPickerTarget?
+    var showingPhotos = false
+    var showingFiles = false
+    var composerFocusRequest: ComposerFocusRequest?
     private var lastChannelID: String?
 
     var resumableChannel: Channel? {
@@ -525,6 +566,15 @@ final class WorkspaceStore {
         joinedChannelIDs = []
         channelPath = []
         dmPath = []
+        profilePath = []
+        publicProfile = nil
+        profileLoadRequest = nil
+        profileLoadError = nil
+        presentedSheet = nil
+        attachmentPickerTarget = nil
+        showingPhotos = false
+        showingFiles = false
+        composerFocusRequest = nil
         lastChannelID = nil
         selectedTab = .channels
     }

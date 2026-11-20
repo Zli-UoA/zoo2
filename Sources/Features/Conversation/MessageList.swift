@@ -52,10 +52,7 @@ struct MessageList: View {
     @State private var followingLatest = false
     @State private var showsLatestButton = false
     @State private var positionedInitialMessages = false
-    @State private var selectedMessage: Message?
     @State private var pressingMessageID: String?
-    @State private var replyAfterDismiss: String?
-    @State private var wasComposingBeforeMenu = false
     @State private var initialReadState: ChannelReadState?
     @State private var readStateLoaded = false
     @State private var readStateError = false
@@ -80,9 +77,15 @@ struct MessageList: View {
 
     private var scrollTarget: String? { isVisible ? store.focusedMessageID : nil }
 
+    private var selectedMessage: Message? {
+        guard case .messageActions(let sheet) = workspace.presentedSheet,
+              sheet.store === store, sheet.parentID == parentID else { return nil }
+        return sheet.message
+    }
+
     private var readID: String? {
         guard isVisible, parentID == nil, !store.showingCachedMessages, readStateLoaded, initialReadState != nil, positionedInitialMessages, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
-              selectedMessage == nil, replyAfterDismiss == nil else { return nil }
+              selectedMessage == nil else { return nil }
         return messages.last(where: { $0.parent_id == nil })?.id
     }
 
@@ -359,28 +362,8 @@ struct MessageList: View {
         .sensoryFeedback(.impact(weight: .light), trigger: selectedMessage != nil) { _, isPresented in
             isPresented
         }
-        .sheet(item: $selectedMessage, onDismiss: {
-            if let id = replyAfterDismiss {
-                if store.message(id: id) != nil { openThread(id) }
-            } else if wasComposingBeforeMenu, isVisible, store.canPost {
-                composerFocused = true
-            }
-            replyAfterDismiss = nil
-            wasComposingBeforeMenu = false
-        }) { selected in
-            if let message = store.message(id: selected.id) {
-                MessageActionsView(store: store, workspace: workspace, message: message,
-                                   canOpenThread: canOpenThread(for: message)) {
-                    replyAfterDismiss = parentID ?? message.id
-                    // キーボードのフォーカスを渡す前にメニューを閉じ、画面遷移だけをアニメーションさせる。
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { selectedMessage = nil }
-                }
-            }
-        }
         .onChange(of: selectedActionsAvailable) { _, available in
-            if !available { selectedMessage = nil }
+            if !available, selectedMessage != nil { workspace.presentedSheet = nil }
         }
     }
 
@@ -428,9 +411,12 @@ struct MessageList: View {
         let name = person?.name ?? "ユーザー"
         let showActions = {
             guard hasActions(for: message) else { return }
-            wasComposingBeforeMenu = composerFocused
+            let wasComposing = composerFocused
             composerFocused = false
-            selectedMessage = message
+            workspace.presentedSheet = .messageActions(MessageActionSheet(
+                store: store, message: message, parentID: parentID,
+                canOpenThread: canOpenThread(for: message), wasComposing: wasComposing
+            ))
         }
         let pressingChanged: (Bool) -> Void = { pressed in
             if pressed { pressingMessageID = message.id }

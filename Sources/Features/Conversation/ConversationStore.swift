@@ -31,6 +31,7 @@ final class ConversationStore {
     var drafts: [String: String] = [:]
     private(set) var draftAttachments: [String: [DraftAttachment]] = [:]
     private(set) var importingAttachments: Set<String> = []
+    private var attachmentImportTasks: [String: Task<Void, Never>] = [:]
     private(set) var uploadStatus: [String: String] = [:]
     private var uploadedAttachmentIDs: [UUID: String] = [:]
     var sendErrors: [String: String] = [:]
@@ -78,6 +79,12 @@ final class ConversationStore {
     }
 
     var canPost: Bool { active && !blocked && !showingCachedMessages && channel.canPost }
+    var postingRestrictionMessage: String? {
+        if channel.encrypted == true { return "暗号化された会話には送信できません" }
+        if !active || blocked || channel.deleted_at != nil { return "このチャンネルには送信できません" }
+        if channel.archive_at != nil { return "アーカイブ済みのチャンネルです" }
+        return nil
+    }
     var canCall: Bool { active && !blocked && channel.canCall }
     func message(id: String) -> Message? { messagesByID[id] }
     var focusedThreadID: String? {
@@ -116,7 +123,7 @@ final class ConversationStore {
     func canSend(parentID: String?) -> Bool {
         let key = draftKey(parentID)
         let text = drafts[key] ?? ""
-        return canPost && !sending.contains(key) && !importingAttachments.contains(key) &&
+        return canPost && !sending.contains(key) && !importingAttachments.contains(key) && attachmentImportTasks[key] == nil &&
             text.unicodeScalars.count <= 40_000 && (validContent(text) || !(draftAttachments[key] ?? []).isEmpty)
     }
 
@@ -126,8 +133,8 @@ final class ConversationStore {
         }
     }
 
-    func importPhotos(_ items: [PhotosPickerItem], parentID: String?) async {
-        await importAttachments(count: items.count, parentID: parentID) {
+    func importPhotos(_ items: [PhotosPickerItem], parentID: String?) {
+        startAttachmentImport(count: items.count, parentID: parentID) {
             var files: [DraftAttachment] = []
             for item in items {
                 try Task.checkCancellation()
@@ -138,6 +145,23 @@ final class ConversationStore {
             }
             return files
         }
+    }
+
+    @discardableResult
+    func startAttachmentImport(count: Int, parentID: String?,
+                               load: @escaping @MainActor () async throws -> [DraftAttachment]) -> Task<Void, Never>? {
+        let key = draftKey(parentID)
+        guard canPost, !sending.contains(key), !importingAttachments.contains(key),
+              attachmentImportTasks[key] == nil, count > 0 else { return nil }
+        let epoch = accessGeneration
+        // 開閉で入力欄が再作成されても取り込みを継続し、ログアウトや権限喪失時だけ破棄する。
+        let task = Task {
+            defer { if epoch == accessGeneration { attachmentImportTasks[key] = nil } }
+            guard epoch == accessGeneration, !Task.isCancelled else { return }
+            await importAttachments(count: count, parentID: parentID, load: load)
+        }
+        attachmentImportTasks[key] = task
+        return task
     }
 
     func importAttachments(count: Int, parentID: String?, load: () async throws -> [DraftAttachment]) async {
@@ -178,6 +202,8 @@ final class ConversationStore {
     }
 
     private func clearDraftAttachments() {
+        attachmentImportTasks.values.forEach { $0.cancel() }
+        attachmentImportTasks = [:]
         draftAttachments = [:]
         uploadedAttachmentIDs = [:]
         pendingSends = [:]
