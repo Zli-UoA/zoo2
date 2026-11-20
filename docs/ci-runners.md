@@ -22,6 +22,8 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 2. heavyが使えることを確認します。`kubectl -n arc-runners get autoscalingrunnerset zli-k8s-zoo2-heavy` でscale setがあること、zoo2のSettings → Actions → Runnersに、ラベル `zli-k8s-heavy` のscale setが登録されていることを確認します。
 3. その後で、zoo2のActions variable `CI_LARGE_RUNNER` を `zli-k8s-heavy` に設定します。戻すときは、変数を空にします（次のrunからHostedに戻ります）。
 4. `large: true` を渡すCI BackendまたはCI Frontendを起動し、selectのログで `Heavy runner usage checked: <件数>/2` を確認します。`Heavy runner usage unavailable` または `Heavy runner usage unknown` が出た実行では、使用状況の確認に失敗しています。
+5. **heavyを選んだジョブが、実際にheavyで起動することを確認します。** 上のログは、使用状況のAPIを読めたことしか示しません。scale setが登録済みでも、Runner Podの起動が失敗すると（イメージのpull、ノードの空き、`arc-github-app` のSecretなど）、heavyを選んだ重いジョブは待ち続けます。重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`・`browser-test`）のジョブの画面で、Runner名が `zli-k8s-zoo2-heavy-runner-…`、ラベルが `zli-k8s-heavy` になって、数分以内に実行が始まることを確認します。`kubectl -n arc-runners get pods -o wide` で、`zli-k8s-zoo2-heavy-runner-…` のPodが `Running` になっていることも確認できます。
+6. **数分たっても起動しない（ジョブが `queued` のまま）ときは、戻します。** zoo2のActions variable `CI_LARGE_RUNNER` を空にし、待っているrunは、「Re-run all jobs」で選び直します（「Re-run failed jobs」は前回の選択を使うので、heavyのままになります）。原因の調査は、zoo2-infra側（`kubectl -n arc-runners describe pod`、listenerのログ）で行います。
 
 ## 判定ジョブの実行先
 
