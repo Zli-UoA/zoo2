@@ -196,7 +196,34 @@ struct NativeChatClient: ChatClient {
         if !sensitiveAttachmentIDs.isEmpty {
             body["sensitive_attachment_ids"] = .array(try sensitiveAttachmentIDs.map { .string(try segment($0)) })
         }
-        return try await api.write("api/messages", body: body)
+        do {
+            return try await api.write("api/messages", body: body)
+        } catch ZooError.rejected(403, let message) {
+            // 参加行があるスレッドへ、未参加・退出済みの利用者は返信できない（サーバーが 403 を返す）。
+            // 参加（アーカイブ済みは先に再Open）してから、同じ ID で一度だけ再送する。復旧できなければ元の 403 を返す。
+            // 投稿権限がないチャンネルなど、参加不足以外の 403 では参加せず、そのまま失敗にする。
+            guard let parentID, message.contains(Self.joinRequiredMessage),
+                  try await rejoinThread(messageID: parentID) else {
+                throw ZooError.rejected(403, message)
+            }
+            return try await api.write("api/messages", body: body)
+        }
+    }
+
+    /// サーバー（`create_message_impl`）が参加不足の 403 に付ける文言。
+    private static let joinRequiredMessage = "Join the thread before replying"
+
+    /// 参加が必要なスレッドへ参加する。参加できる状態でなければ false を返す。
+    private func rejoinThread(messageID: String) async throws -> Bool {
+        let path = "api/threads/\(try segment(messageID))"
+        // GET に本文を付けると URLSession が拒否するため、`write` ではなく本文なしの `data` で取得する。
+        let status = try JSONDecoder().decode(Envelope<ThreadMembership>.self, from: await api.data(path)).data
+        guard status.can_participate, status.membership != "joined" else { return false }
+        if status.thread_archive_at != nil {
+            _ = try await api.data("\(path)/unarchive", method: "POST")
+        }
+        _ = try await api.data("\(path)/join", method: "POST")
+        return true
     }
 
     func edit(id: String, content: String) async throws -> Message {
@@ -251,4 +278,12 @@ struct NativeChatClient: ChatClient {
         guard UUID(uuidString: id) != nil else { throw ZooError.invalidResponse }
         return id
     }
+}
+
+/// `GET /api/threads/{id}` の参加状態。返信の可否の判定に必要な項目だけを読む。
+struct ThreadMembership: Decodable, Sendable, Equatable {
+    /// `joined`・`left`・`none`
+    let membership: String
+    let can_participate: Bool
+    let thread_archive_at: String?
 }
