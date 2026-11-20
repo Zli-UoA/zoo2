@@ -417,7 +417,7 @@ export function MessageRow({
     // リンク・操作ボタン・メニュー項目のタップは従来どおり動かす。
     if (
       (event.target as HTMLElement).closest(
-        "a, button, input, textarea, [role='button'], [data-slot='dropdown-menu-item']",
+        "a, button, input, textarea, audio, video, .mfm-blur, [role='button'], [data-slot='dropdown-menu-item']",
       )
     )
       return;
