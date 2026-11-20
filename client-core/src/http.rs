@@ -88,6 +88,21 @@ pub enum HttpError {
     },
 }
 
+/// 参加行があるスレッドへ、未参加・退出済みのまま返信したときの 403 の本文
+/// （backend の `create_message_impl`）。参加すれば同じ返信を送れる。
+pub const THREAD_JOIN_REQUIRED_MESSAGE: &str = "Join the thread before replying";
+
+/// `error` が「スレッドに参加してから返信する」ことを求める 403 か。投稿権限がないなど、
+/// ほかの 403 は含まない（参加しても送れない）。
+pub fn is_thread_join_required(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<HttpError>(),
+        Some(HttpError::Status { status, message })
+            if *status == reqwest::StatusCode::FORBIDDEN
+                && message.contains(THREAD_JOIN_REQUIRED_MESSAGE)
+    )
+}
+
 /// backend のエラー応答 `{"error": "..."}` から本文を取り出す。
 pub async fn error_for_status(response: reqwest::Response) -> Result<reqwest::Response> {
     let status = response.status();
@@ -165,4 +180,35 @@ pub async fn error_for_status_coded(response: reqwest::Response) -> Result<reqwe
         body,
     }
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(status: reqwest::StatusCode, message: &str) -> anyhow::Error {
+        HttpError::Status {
+            status,
+            message: message.to_string(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn only_the_join_required_403_asks_for_a_join() {
+        assert!(is_thread_join_required(&status(
+            reqwest::StatusCode::FORBIDDEN,
+            THREAD_JOIN_REQUIRED_MESSAGE,
+        )));
+        // 投稿権限がないなどの 403、ほかの状態、別の種類のエラーは、参加しても直らない。
+        assert!(!is_thread_join_required(&status(
+            reqwest::StatusCode::FORBIDDEN,
+            "Only channel managers may post here",
+        )));
+        assert!(!is_thread_join_required(&status(
+            reqwest::StatusCode::CONFLICT,
+            THREAD_JOIN_REQUIRED_MESSAGE,
+        )));
+        assert!(!is_thread_join_required(&anyhow::anyhow!("network down")));
+    }
 }

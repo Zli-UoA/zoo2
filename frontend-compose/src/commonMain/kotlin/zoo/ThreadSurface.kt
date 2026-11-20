@@ -119,6 +119,11 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
             else if (!archived)
                 Button(app.t("threads.join"), detail != null && !pending && app.env.online, size = "sm") { change("join") }
         }
+        // 参加行があるスレッドは、参加してから返信する（未参加のまま送ると 403 になる）。
+        val membership = detail?.text("membership")
+        val needsJoin = membership != null && membership != "joined" && membership.isNotEmpty() &&
+            (membership == "left" || detail?.flag("tracked") == true)
+        if (needsJoin) Text(app.t("threads.joinToReply"), small = true, muted = true)
         if (archived) Text(app.t("threads.reopenOnSend"), small = true, muted = true)
         if (failed) Text(app.t("threads.membershipError"), small = true, color = MaterialTheme.colorScheme.error)
     }

@@ -2422,7 +2422,7 @@ impl App {
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
             if let Err(err) = result {
-                let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
+                let _ = tx.send(AppEvent::Notice(send_failure_notice(&target, &err)));
                 let _ = tx.send(AppEvent::RestoreDraft {
                     channel_id,
                     target,
@@ -2601,7 +2601,7 @@ impl App {
                         });
                         return;
                     }
-                    let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
+                    let _ = tx.send(AppEvent::Notice(send_failure_notice(&target, &err)));
                     let _ = tx.send(AppEvent::RestoreDraft {
                         channel_id,
                         target,
@@ -2611,6 +2611,17 @@ impl App {
                 }
             }
         });
+    }
+}
+
+/// 送信に失敗したときの通知。参加行があるスレッドへ未参加・退出済みのまま返信すると 403 になるので、
+/// 参加（`J`）すれば送れることを伝える。投稿権限がないなど、ほかの失敗は原因をそのまま出す。
+fn send_failure_notice(target: &Target, err: &anyhow::Error) -> String {
+    if matches!(target, Target::Reply(_)) && zoo2_client_core::http::is_thread_join_required(err) {
+        "このスレッドに参加していません。Esc で入力を終え、J で参加してから返信してください（下書きは残しています）"
+            .to_string()
+    } else {
+        format!("送信に失敗しました: {err}")
     }
 }
 
@@ -2690,6 +2701,27 @@ fn merge_pinned_order(intended: &[String], moved: &str, latest_active: &[String]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_to_a_thread_the_user_has_not_joined_points_to_join() {
+        let join_required: anyhow::Error = zoo2_client_core::http::HttpError::Status {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+        }
+        .into();
+        let notice = send_failure_notice(&Target::Reply("root".into()), &join_required);
+        assert!(notice.contains("J で参加"), "{notice}");
+        // 返信以外では参加しても直らないので、原因をそのまま出す。
+        let notice = send_failure_notice(&Target::Channel, &join_required);
+        assert!(notice.starts_with("送信に失敗しました"), "{notice}");
+        let forbidden: anyhow::Error = zoo2_client_core::http::HttpError::Status {
+            status: reqwest::StatusCode::FORBIDDEN,
+            message: "Only channel managers may post here".into(),
+        }
+        .into();
+        let notice = send_failure_notice(&Target::Reply("root".into()), &forbidden);
+        assert!(notice.contains("Only channel managers"), "{notice}");
+    }
 
     fn api_test_app(base: &str) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
         let http = reqwest::Client::new();

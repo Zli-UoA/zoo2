@@ -468,6 +468,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             true
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ApiException) {
+            // 参加が必要なスレッドへの返信は、参加（スレッドの「参加する」）を案内する。
+            toast = t(if (parent != null && e.requiresThreadJoin) "threads.joinToReply" else "common.writeError")
+            false
         } catch (_: Exception) {
             toast = t("common.writeError")
             false

@@ -3895,12 +3895,15 @@ impl AppState {
                         .send_message_resolved(&id, &channel_id, &content, None, attachment_ids_opt)
                         .await
                         .map(|_| None),
+                    // 参加行があるスレッドへ未参加・退出済みで返信すると 403 になる。デスクトップ版には
+                    // 参加の操作がないので、参加して同じ ID で一度だけ送り直す（クライアントごとの違いは
+                    // docs/thread-rollout.md）。
                     Target::Reply(root_id) => api
-                        .send_message_resolved(
+                        .send_reply_rejoining(
                             &id,
                             &channel_id,
                             &content,
-                            Some(root_id),
+                            root_id,
                             attachment_ids_opt,
                         )
                         .await

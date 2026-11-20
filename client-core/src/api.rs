@@ -477,6 +477,37 @@ impl ApiClient {
         self.write(Method::POST, &path, None).await
     }
 
+    /// スレッドへの返信を送る。参加行があるスレッドへ未参加・退出済みのまま送ると 403 になる
+    /// （[`crate::http::is_thread_join_required`]）ので、そのときだけ、アーカイブ済みなら再Openし、
+    /// 参加して、同じ ID で一度だけ送り直す。ほかの失敗はそのまま返す。
+    pub async fn send_reply_rejoining(
+        &self,
+        id: &str,
+        channel_id: &str,
+        content: &str,
+        parent_id: &str,
+        attachment_ids: Option<Vec<String>>,
+    ) -> Result<(Option<String>, Option<String>)> {
+        match self
+            .send_message_resolved(
+                id,
+                channel_id,
+                content,
+                Some(parent_id),
+                attachment_ids.clone(),
+            )
+            .await
+        {
+            Err(err) if crate::http::is_thread_join_required(&err) => {
+                self.unarchive_thread(parent_id).await?;
+                self.join_thread(parent_id).await?;
+                self.send_message_resolved(id, channel_id, content, Some(parent_id), attachment_ids)
+                    .await
+            }
+            other => other,
+        }
+    }
+
     /// `GET /api/users/me/profile` のうち、クライアントが使う部分。
     /// `dnd_until` は `preferences:read` の scope がないと返らない (None になる)。
     pub async fn my_profile(&self) -> Result<MyProfile> {
@@ -1067,6 +1098,73 @@ mod tests {
                 .as_deref(),
             Some("43")
         );
+    }
+
+    #[tokio::test]
+    async fn a_reply_to_an_unjoined_thread_rejoins_and_resends_once_with_the_same_id() {
+        let server = MockServer::start().await;
+        let body_with_id =
+            || wiremock::matchers::body_partial_json(json!({"id":"m1","parent_id":"root"}));
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .and(body_with_id())
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"error":"Join the thread before replying"})),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .and(body_with_id())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data":{"id":"m1","parent_id":"root"},"txid":"7"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        for action in ["unarchive", "join"] {
+            Mock::given(method("POST"))
+                .and(path(format!("/api/threads/root/{action}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let (txid, parent) = client(&server)
+            .send_reply_rejoining("m1", "c1", "hi", "root", None)
+            .await
+            .unwrap();
+        assert_eq!(txid.as_deref(), Some("7"));
+        assert_eq!(parent.as_deref(), Some("root"));
+    }
+
+    #[tokio::test]
+    async fn other_forbidden_replies_do_not_join_the_thread() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"error":"Only channel managers may post here"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex("^/api/threads/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let err = client(&server)
+            .send_reply_rejoining("m1", "c1", "hi", "root", None)
+            .await
+            .unwrap_err();
+        assert!(!crate::http::is_thread_join_required(&err));
     }
 
     #[tokio::test]
