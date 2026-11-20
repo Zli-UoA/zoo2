@@ -7,6 +7,23 @@ import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+
+vi.mock("../../../lib/emoji/workspace", () => ({
+  useWorkspaceEmojis: () => ({
+    emojis: [
+      {
+        name: "party-parrot",
+        url: "/api/emoji-images/party-parrot",
+        aliases: [],
+        category: "custom",
+      },
+    ],
+    imageUrl: (url: string) => url,
+    loading: false,
+    failed: false,
+    retry: () => {},
+  }),
+}));
 import { MessageRow, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -438,6 +455,10 @@ describe("MessageRow", () => {
       expect(within(group).getByRole("button", { name: "🐱 + 😀" })).toBeTruthy();
       // 画像付きリアクションはチャット API で扱えないので出さない。
       expect(within(group).queryByRole("button", { name: ":remote:" })).toBeNull();
+
+      // シートから選んだ絵文字も最近の履歴を更新する。
+      await userEvent.click(within(group).getByRole("button", { name: "🎉" }));
+      expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)[0]).toBe("🎉");
     } finally {
       localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
     }

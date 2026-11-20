@@ -34,7 +34,8 @@ import { previewUrls } from "./linkPreviews";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
-import { loadRecentEmojis } from "../../../lib/emoji/recents";
+import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
+import { RecentReactions } from "./RecentReactions";
 import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
@@ -886,27 +887,16 @@ export function MessageRow({
           className="inset-x-0 bottom-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none pb-6 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-w-sm sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
         >
           <DialogTitle>{t("messages.actions")}</DialogTitle>
-          {canReact && recentEmojis.length > 0 ? (
-            <div role="group" aria-label={t("reactions.recent")}>
-              <p className="mb-2 text-xs text-muted-foreground">{t("reactions.recent")}</p>
-              <div className="flex flex-wrap gap-1">
-                {recentEmojis.map((emoji) => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    aria-label={kitchenLabel(emoji)}
-                    className="flex size-11 items-center justify-center rounded-lg outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
-                    onClick={() => {
-                      onReaction(emoji);
-                      setSheetOpen(false);
-                    }}
-                  >
-                    {/* このメッセージの display_data にない絵文字もあるので、ワークスペース絵文字から解決させる。 */}
-                    <ReactionEmoji emoji={emoji} catalog={kitchenCatalog} size={26} />
-                  </button>
-                ))}
-              </div>
-            </div>
+          {canReact ? (
+            <RecentReactions
+              values={recentEmojis}
+              catalog={kitchenCatalog}
+              onSelect={(emoji) => {
+                addRecentEmoji(emoji);
+                onReaction(emoji);
+                setSheetOpen(false);
+              }}
+            />
           ) : null}
           <div className="flex flex-col">
             {onOpenThread ? (
