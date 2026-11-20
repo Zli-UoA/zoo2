@@ -14,7 +14,14 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 マージキュー（`merge_group`）には元PRがforkかどうかの情報がなく、fork PRのコードもキューでは同じ条件で実行されます。そのため、`merge-queue.yaml` とそこから呼び出すworkflowは、`github.event_name == 'merge_group'` のときも各ジョブと選択処理をGitHub-hostedに固定します。
 
-公開リポジトリで `CI_LARGE_RUNNER=zli-k8s-heavy` を設定した後、`large: true` を渡すCI BackendまたはCI Frontendを起動します。selectのログで `Heavy runner usage checked: <件数>/2` を確認します。`Heavy runner usage unavailable` または `Heavy runner usage unknown` が出た実行では、使用状況の確認に失敗しています。
+### heavyを有効にする手順
+
+**変数を設定する前に、heavy runnerが使える状態になっている必要があります。** heavyが無い（未配備、または登録できていない）状態で `CI_LARGE_RUNNER=zli-k8s-heavy` を設定すると、heavyを選んだ重いジョブ（`ci-backend` の `check`、`ci-frontend` の `check`・`build`・`browser-test`）は、`zli-k8s-heavy` のRunnerを待ち続けます（`timeout-minutes` はキューの待ち時間に効きません）。
+
+1. [zoo2-infra#205](https://github.com/Zli-UoA/zoo2-infra/pull/205) をマージして反映します。GitHub Appのインストールに、zoo2のリポジトリが含まれている必要があります（含まれていないと、listenerが登録できません）。
+2. heavyが使えることを確認します。`kubectl -n arc-runners get autoscalingrunnerset zli-k8s-zoo2-heavy` でscale setがあること、zoo2のSettings → Actions → Runnersに、ラベル `zli-k8s-heavy` のscale setが登録されていることを確認します。
+3. その後で、zoo2のActions variable `CI_LARGE_RUNNER` を `zli-k8s-heavy` に設定します。戻すときは、変数を空にします（次のrunからHostedに戻ります）。
+4. `large: true` を渡すCI BackendまたはCI Frontendを起動し、selectのログで `Heavy runner usage checked: <件数>/2` を確認します。`Heavy runner usage unavailable` または `Heavy runner usage unknown` が出た実行では、使用状況の確認に失敗しています。
 
 ## 判定ジョブの実行先
 
