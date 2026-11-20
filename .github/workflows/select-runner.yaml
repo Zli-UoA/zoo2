@@ -99,23 +99,29 @@ jobs:
                 for (let n = 1; ; n++) {
                   if (state.stopped || requests >= MAX_HEAVY_API_REQUESTS) return null;
                   requests++;
-                  const query = new URLSearchParams({...params, per_page: '100', page: String(n)});
-                  const response = await fetch(`${api}/repos/${owner}/${repo}/actions/${path}?${query}`, {
-                    headers: {
-                      accept: 'application/vnd.github+json',
-                      authorization: `Bearer ${process.env.ACTIONS_READ_TOKEN}`,
-                      'x-github-api-version': '2022-11-28',
-                      'user-agent': 'zoo2-select-runner',
-                    },
-                    // 1回ごとの timeout と、全体の期限（state.signal）の両方で、実行中のリクエストを止める。
-                    signal: AbortSignal.any([AbortSignal.timeout(10000), state.signal]),
-                  });
-                  // 応答の本文は、ログに出さない。
-                  if (!response.ok) throw Object.assign(new Error('heavy usage request failed'), {status: response.status});
-                  const data = await response.json();
-                  if (state.stopped) return null;
-                  items.push(...data[key]);
-                  if (data[key].length < 100) return items;
+                  try {
+                    const query = new URLSearchParams({...params, per_page: '100', page: String(n)});
+                    const response = await fetch(`${api}/repos/${owner}/${repo}/actions/${path}?${query}`, {
+                      headers: {
+                        accept: 'application/vnd.github+json',
+                        authorization: `Bearer ${process.env.ACTIONS_READ_TOKEN}`,
+                        'x-github-api-version': '2022-11-28',
+                        'user-agent': 'zoo2-select-runner',
+                      },
+                      // 1回ごとの timeout と、全体の期限（state.signal）の両方で、実行中のリクエストを止める。
+                      signal: AbortSignal.any([AbortSignal.timeout(10000), state.signal]),
+                    });
+                    // 応答の本文は、ログに出さない。
+                    if (!response.ok) throw Object.assign(new Error('heavy usage request failed'), {status: response.status});
+                    const data = await response.json();
+                    if (state.stopped) return null;
+                    items.push(...data[key]);
+                    if (data[key].length < 100) return items;
+                  } catch (error) {
+                    // 後続のページが失敗しても、それまでに取得したページは、呼び出し側が確認できるようにする。
+                    error.partial = items;
+                    throw error;
+                  }
                 }
               };
               for (const workflow_id of LARGE_WORKFLOWS) {
@@ -127,6 +133,8 @@ jobs:
                     if (!listed) return {busy, partial: true};
                     runs.push(...listed);
                   } catch (error) {
+                    // 失敗した一覧の、取得済みのページの run も確認する。何も取得できていなければ、そのまま失敗にする。
+                    runs.push(...(error.partial || []));
                     if (runs.length === 0) throw error;
                     listError = error;
                     break;
@@ -152,6 +160,8 @@ jobs:
                       if (count === 0) activeRuns.delete(id);
                       busy += count;
                     }
+                    // 再取得した先の run だけで満杯なら、現在の run を再取得するまでもない（失敗しても、満杯は確認できている）。
+                    if (busy - current >= HEAVY_RUNNERS) return {busy, partial: false};
                     if (busy >= HEAVY_RUNNERS && current < HEAVY_RUNNERS) {
                       const refreshed = await page(`runs/${run.id}/jobs`, {filter: 'latest'}, 'jobs');
                       if (!refreshed) return {busy, partial: true};

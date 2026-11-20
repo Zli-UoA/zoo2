@@ -73,6 +73,12 @@ const cases = [
       ['an incomplete listing warns when the queued run is below capacity', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['the latest run can finish during confirmation', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [job('in_progress')], 2: [job('queued')]}, finishedRun: '2', heavyCalls: {runs: 4, jobs: 4}}, H, H],
       ['a completed job from an earlier run does not make heavy full', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}], 'ci-frontend.yaml:queued': [{id: 2}]}, heavyJobs: {1: [...Array.from({length: 100}, () => job('completed')), job('in_progress')], 2: [job('queued')]}, finishedRun: '1', heavyCalls: {runs: 4, jobs: 4}}, H, H],
+      // 後続ページの取得が失敗しても、取得済みのページの run を確認する。2件が分かれば Hosted、分からなければ警告して heavy のまま。
+      ['a failing second page still checks the runs already fetched: full means hosted', {...base, largeExpected: H, heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, ...Array.from({length: 99}, (_, i) => ({id: 100 + i}))]}, heavyJobs: {1: [job('queued'), job('queued')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      ['a failing second page with many fetched runs runs out of budget and keeps heavy', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, ...Array.from({length: 99}, (_, i) => ({id: 100 + i}))]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unknown: the API request budget (30) ran out; using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 28}}, H, H],
+      ['a failing second page warns and keeps heavy when the fetched runs are not full', {...base, largeExpected: 'zli-k8s-heavy', heavyError: 2, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}]}, heavyJobs: {1: [job('queued')]}, warning: 'Heavy runner usage unavailable (403); using zli-k8s-heavy', heavyCalls: {runs: 2, jobs: 1}}, H, H],
+      // 先に数えた run の再取得だけで2件に達したら、現在の run の再取得が失敗しても、Hosted を選ぶ。
+      ['the refreshed earlier runs alone fill heavy even if the current run cannot be refreshed', {...base, largeExpected: H, heavyRuns: {'ci-backend.yaml:queued': [{id: 1}, {id: 2}]}, jobSequence: {1: [[job('queued')], [job('queued'), job('queued')]], 2: [[job('queued')], 'error']}, heavyCalls: {runs: 2, jobs: 3}}, H, H],
       ['a run moving out of queued is counted', {...base, largeExpected: H, movingRun: true, heavyJobs: {1: [job('in_progress'), job('in_progress')]}, heavyCalls: {runs: 2, jobs: 1}}, H, H],
       ['a padded runner label is rejected', {...base, large: 'zli-k8s-heavy ', largeExpected: H, warning: 'CI_LARGE_RUNNER must be empty or zli-k8s-heavy; using hosted'}, H, H],
       ['other labels and finished jobs are not counted', {...base, largeExpected: 'zli-k8s-heavy', heavyRuns: {'ci-backend.yaml:in_progress': [{id: 1}]}, heavyJobs: {1: [job('in_progress', 'ubuntu-latest'), job('completed'), job('waiting'), job('queued', 'zli-k8s')]}, heavyCalls: {runs: 4, jobs: 1}}, H, H],
@@ -145,6 +151,13 @@ for (const [name, input, expected, hostedExpected] of cases) {
       if (input.movingRun && heavy.runs < 2) return paged([], 'jobs');
       if (u.searchParams.get('page') === '1') {
         jobReads.set(runId, (jobReads.get(runId) || 0) + 1);
+      }
+      // 同じ run のジョブを読むたびに、順番に違う結果を返す（'error' は HTTP 503）。
+      const sequence = (input.jobSequence || {})[runId];
+      if (sequence) {
+        const entry = sequence[Math.min(jobReads.get(runId), sequence.length) - 1];
+        if (entry === 'error') return {ok: false, status: 503, json: async () => { throw new Error('response must not be read'); }};
+        return paged(entry, 'jobs');
       }
       if (input.finishedRun === runId && jobReads.get(runId) > 1) return paged([], 'jobs');
       return paged((input.heavyJobs || {})[runId] || [], 'jobs');
