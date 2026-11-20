@@ -54,7 +54,10 @@ extension NativeChatClient {
         guard UUID(uuidString: channelID) != nil, ["signal", "state", "heartbeat", "leave"].contains(action) else {
             throw ZooError.invalidResponse
         }
-        _ = try await api.data("api/channels/\(channelID)/call/\(action)", method: "POST", body: body)
+        let request = try await api.request("api/channels/\(channelID)/call/\(action)", method: "POST", body: body)
+        // 通話presenceの30秒の期限内にheartbeatの再試行を終えられるようにする。
+        let (data, response) = try await api.transport.send(request, timeout: .seconds(4))
+        try HTTPTransport.check(data, response)
     }
 
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
