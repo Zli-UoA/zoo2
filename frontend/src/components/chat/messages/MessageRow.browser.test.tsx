@@ -41,7 +41,7 @@ async function emulateTouch() {
 
 function tapTouch(element: Element) {
   fireEvent.pointerDown(element, { pointerType: "touch", clientX: 10, clientY: 10 });
-  fireEvent.pointerUp(element, { pointerType: "touch", clientX: 10, clientY: 10 });
+  fireEvent.click(element, { clientX: 10, clientY: 10 });
 }
 
 function expectChipHitArea(button: HTMLElement) {
@@ -410,8 +410,8 @@ describe("MessageRow", () => {
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
     const item = screen.getByRole("menuitem", { name: "編集" });
-    // タッチの pointerDown/Up を送っても、メニュー項目から操作シートは開かない。
-    tapTouch(item);
+    // タッチの pointerDown の後に項目をactivateしても、操作シートは開かない。
+    fireEvent.pointerDown(item, { pointerType: "touch", clientX: 10, clientY: 10 });
     await userEvent.click(item);
     expect(onStartEdit).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();

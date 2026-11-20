@@ -1,5 +1,13 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import { type PointerEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  type PointerEvent,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -399,11 +407,12 @@ export function MessageRow({
       event.pointerType === "touch" ? { x: event.clientX, y: event.clientY } : null;
   }
 
-  function openSheetOnTap(event: PointerEvent<HTMLDivElement>) {
+  function openSheetOnTap(event: MouseEvent<HTMLDivElement>) {
     const origin = tapOrigin.current;
     tapOrigin.current = null;
-    // マウスクリックやスクロール後の pointerup では開かない。タッチのシングルタップだけが対象。
-    if (event.pointerType !== "touch" || !origin) return;
+    // pointerdown がタッチで、移動していないシングルタップだけを対象にする。
+    // シートは click で開く（pointerup で開くと直後の click が外側扱いになり閉じるため）。
+    if (!origin) return;
     if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) return;
     // リンク・操作ボタン・メニュー項目のタップは従来どおり動かす。
     if (
@@ -433,7 +442,7 @@ export function MessageRow({
       {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
       <div
         onPointerDown={rememberTouchStart}
-        onPointerUp={openSheetOnTap}
+        onClick={openSheetOnTap}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",

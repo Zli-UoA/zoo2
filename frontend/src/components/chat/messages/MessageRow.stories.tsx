@@ -699,7 +699,7 @@ export const TouchActionSheet: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const body = await within(canvasElement).findByText(/こんにちは/);
     await fireEvent.pointerDown(body, { pointerType: "touch", clientX: 10, clientY: 10 });
-    await fireEvent.pointerUp(body, { pointerType: "touch", clientX: 10, clientY: 10 });
+    await fireEvent.click(body, { clientX: 10, clientY: 10 });
     const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
     await waitFor(async () => {
       await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
