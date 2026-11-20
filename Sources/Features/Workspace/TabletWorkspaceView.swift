@@ -43,7 +43,7 @@ struct TabletWorkspaceView: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 12)
         .frame(width: 88)
-        .background(Color(.secondarySystemBackground))
+        .background(AppDesign.surface)
     }
 
     private func destination(_ title: String, symbol: String, tab: WorkspaceTab) -> some View {
@@ -102,6 +102,7 @@ private struct TabletConversations: View {
                         ContentUnavailableView(directMessages ? "DMを選択" : "チャンネルを選択",
                                                systemImage: directMessages ? "bubble.left.and.bubble.right" : "number",
                                                description: Text("左の一覧から会話を開けます。"))
+                            .background(AppDesign.background.ignoresSafeArea())
                             .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
                     }
                 }

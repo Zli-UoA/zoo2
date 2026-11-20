@@ -159,7 +159,7 @@ private struct ProfileSettingsView: View {
     @AppStorage(AppearancePreference.key) private var appearance = AppearancePreference.system
 
     var body: some View {
-        Form {
+        AppForm {
             Section("表示") {
                 Picker("テーマ", selection: $appearance) {
                     Text("システムに合わせる").tag(AppearancePreference.system)

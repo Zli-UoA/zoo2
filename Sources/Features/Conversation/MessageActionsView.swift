@@ -99,7 +99,7 @@ struct MessageActionsView: View {
                         }
                         .frame(maxWidth: .infinity, minHeight: 76)
                         .padding(.vertical, 4)
-                        .background(Color(.secondarySystemBackground), in: .rect(cornerRadius: 16))
+                        .background(AppDesign.surface, in: .rect(cornerRadius: 16))
                     }
                     .accessibilityIdentifier("message-action-reply")
                 }
@@ -144,7 +144,7 @@ struct MessageActionsView: View {
                             glyph
                                 .padding(4)
                                 .frame(width: size * 1.4, height: size)
-                                .background(selected ? AppDesign.selectionBackground : Color(.secondarySystemBackground), in: Capsule())
+                                .background(selected ? AppDesign.selectionBackground : AppDesign.surface, in: Capsule())
                                 .overlay { if selected { Capsule().strokeBorder(AppDesign.navigationTint) } }
                                 .contentShape(Capsule())
                         }
@@ -164,11 +164,11 @@ struct MessageActionsView: View {
                     .overlay(alignment: .topTrailing) {
                         Image(systemName: "plus.circle.fill")
                             .font(.caption.bold()).symbolRenderingMode(.palette)
-                            .foregroundStyle(.primary, Color(.secondarySystemBackground))
+                            .foregroundStyle(.primary, AppDesign.surface)
                             .offset(x: 4, y: -2)
                     }
                     .frame(width: size * 1.4, height: size)
-                    .background(Color(.secondarySystemBackground), in: Capsule())
+                    .background(AppDesign.surface, in: Capsule())
                     .contentShape(Capsule())
             }
             .accessibilityLabel("スタンプを追加")

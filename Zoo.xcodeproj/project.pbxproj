@@ -37,6 +37,7 @@
 		369996B563277F8F04860E89 /* Authentication.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE2C3E0430A8484BCDF3C08 /* Authentication.swift */; };
 		37B5AF5537276E4567417D78 /* AttachmentVideoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F60D13FAC3AF4D27673E7AD3 /* AttachmentVideoTests.swift */; };
 		392A7D2098A29B5DCA8A6142 /* NativeChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88DEB360DFCD9A5EF93469D1 /* NativeChatTests.swift */; };
+		3AD902E68A47FFE503610640 /* LaunchScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EC63BCE7571549AA251E0EB /* LaunchScreenView.swift */; };
 		3E430DA7A12D85970CADB8A8 /* MessageList.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB6543929F4E5EC8465C1E6A /* MessageList.swift */; };
 		3EF9522A8587C5DE8EBFF0B6 /* ConversationDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2404904C875E990F2DE45F43 /* ConversationDirectory.swift */; };
 		3F288075817EA44CD4CF57E9 /* ZooError.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8B4E2E3A28518438D152878 /* ZooError.swift */; };
@@ -69,6 +70,7 @@
 		668F32106D62E0CC1E7850A2 /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E17CDC3496D288695B1949AA /* ProfileView.swift */; };
 		671D24762ECA6B88367C5656 /* AttachmentRenderState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC38AB430AA1777D763AB387 /* AttachmentRenderState.swift */; };
 		68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */; };
+		6F7EC3297CC479A2FF50706E /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 84988680574ACD3D2856EBF0 /* LaunchScreen.storyboard */; };
 		6FE23D9AF44A22C289554B41 /* PushNotice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12854D256475220A637BE892 /* PushNotice.swift */; };
 		739FFABA115543EED15A1D4F /* emoji-shortcodes.json in Resources */ = {isa = PBXBuildFile; fileRef = 0D12A552929A7154204E90F7 /* emoji-shortcodes.json */; };
 		763529232B63AAA64590903B /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9013878118EB556FFF8679B /* ConversationView.swift */; };
@@ -270,6 +272,7 @@
 		729D2F9CAA0005F2308EDB51 /* ShapeStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShapeStream.swift; sourceTree = "<group>"; };
 		7B03BC7CB2A09956279AA93A /* CachedSyncModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedSyncModels.swift; sourceTree = "<group>"; };
 		805443D6BD58FDE63B07CA86 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		84988680574ACD3D2856EBF0 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		8572B7B1BF673293BE8F6FB8 /* NotificationDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDelegate.swift; sourceTree = "<group>"; };
 		88DEB360DFCD9A5EF93469D1 /* NativeChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatTests.swift; sourceTree = "<group>"; };
 		898A7E900CC70E6A6DD4AB58 /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSession.swift; sourceTree = "<group>"; };
@@ -277,6 +280,7 @@
 		8A7E7F971B693C6723C53450 /* PreviewChatClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewChatClient.swift; sourceTree = "<group>"; };
 		8ABFDDBCB88D37E242378003 /* ImagePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImagePreviewView.swift; sourceTree = "<group>"; };
 		8C29A7E4B80DCC7F626EFBA4 /* ZooTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ZooTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		8EC63BCE7571549AA251E0EB /* LaunchScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchScreenView.swift; sourceTree = "<group>"; };
 		8F82BBED6F6E3E3ECFC06678 /* MessageActionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageActionsView.swift; sourceTree = "<group>"; };
 		90753D29DA20E7D9A00BEDF1 /* PushTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTests.swift; sourceTree = "<group>"; };
 		90CF169EFD87FC14EF186771 /* PreviewNotificationStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewNotificationStorage.swift; sourceTree = "<group>"; };
@@ -538,6 +542,7 @@
 			isa = PBXGroup;
 			children = (
 				6A7719EDD1AC7F79FA44F275 /* Assets.xcassets */,
+				84988680574ACD3D2856EBF0 /* LaunchScreen.storyboard */,
 				8B9BB421C92B7E13ACEC4EF4 /* App */,
 				B38DDCFDB828BAA8089926D9 /* Data */,
 				A574F06B7CF59719A21FE353 /* Domain */,
@@ -562,6 +567,7 @@
 			children = (
 				5C4E223B8FAF667DB327FCDB /* AppOrientation.swift */,
 				898A7E900CC70E6A6DD4AB58 /* AppSession.swift */,
+				8EC63BCE7571549AA251E0EB /* LaunchScreenView.swift */,
 				95F69CCAB38F5C906204A606 /* NotificationController.swift */,
 				8572B7B1BF673293BE8F6FB8 /* NotificationDelegate.swift */,
 				805443D6BD58FDE63B07CA86 /* RootView.swift */,
@@ -857,6 +863,7 @@
 			files = (
 				3263A20A1D055056EC277DE4 /* Assets.xcassets in Resources */,
 				A5B3B2174411ED707B979BEF /* IncomingCall.caf in Resources */,
+				6F7EC3297CC479A2FF50706E /* LaunchScreen.storyboard in Resources */,
 				C60AE94239D392D3FFAACB49 /* PreviewVideo.mp4 in Resources */,
 				8CB30A8B6C732AA7AFF96A90 /* PrivacyInfo.xcprivacy in Resources */,
 				017E36C75CDB6F86DA0C29B5 /* WebRTC-LICENSE.txt in Resources */,
@@ -977,6 +984,7 @@
 				47A69642EDF547839597D353 /* InboxView.swift in Sources */,
 				9B1C8F73EE8ED592041BDEF5 /* IncomingCall.swift in Sources */,
 				E7BAF6451FD36BC26D0BF384 /* JSONValue.swift in Sources */,
+				3AD902E68A47FFE503610640 /* LaunchScreenView.swift in Sources */,
 				B0A8370093066F0346E6D3F0 /* Message.swift in Sources */,
 				8DBF1BB17081BE6039BF81C7 /* MessageActionsView.swift in Sources */,
 				1A095FA85FC3872A764B6A70 /* MessageAttachmentsView.swift in Sources */,
@@ -1199,7 +1207,6 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -1227,7 +1234,6 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

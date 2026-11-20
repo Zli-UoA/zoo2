@@ -7,6 +7,8 @@ final class AppSession {
     private(set) var userID: String?
     private(set) var workspace: WorkspaceStore?
     var connecting: Bool { connection != nil }
+    var restoring: Bool { connection?.interactive == false }
+    private(set) var isStarting = true
     private(set) var deviceAuthorization: DeviceAuthorizationPrompt?
     var error: String?
     let notifications: NotificationController
@@ -36,6 +38,7 @@ final class AppSession {
             let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
                                      notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
             let client = PreviewChatClient()
+            session.isStarting = false
             session.userID = client.currentUser.id
             session.validatedSession = true
             let calls = CallStore(client: client, userID: client.currentUser.id, makeMedia: { PreviewCallMedia() }, permission: { true })
@@ -49,8 +52,10 @@ final class AppSession {
             return session
         }
         if isUITesting {
-            return AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
+            let session = AppSession(settings: ConnectionSettings(server: "https://ui.test.invalid", clientID: "ui-test"),
                               notificationStore: PreviewPushReceiptStore(), previewKeys: InMemoryNotificationPreviewKeys())
+            session.isStarting = false
+            return session
         }
         #endif
         return AppSession()
@@ -185,12 +190,14 @@ final class AppSession {
     }
 
     func resume() async {
+        defer { isStarting = false }
         if userID == nil || !validatedSession {
             guard !connecting else { return }
             do {
                 if try authentication.hasSession {
                     await beginConnection(interactive: false).value
                 } else {
+                    isStarting = false
                     if workspace != nil { logout() }
                     if syncCache == nil { syncCache = try await SyncCache.open(inMemory: Self.isUITesting) }
                     try await syncCache?.forget(connection: SyncCache.connectionKey(api.settings))

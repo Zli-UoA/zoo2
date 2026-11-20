@@ -9,6 +9,8 @@ struct RootView: View {
         Group {
             if let workspace = session.workspace {
                 WorkspaceView(workspace: workspace, session: session)
+            } else if session.isStarting || session.restoring {
+                LaunchScreenView()
             } else {
                 ViewThatFits(in: .vertical) {
                     VStack(spacing: 24) {
@@ -32,6 +34,7 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .background(AppDesign.background.ignoresSafeArea())
         .sheet(isPresented: $showingVerification) {
             if let prompt = session.deviceAuthorization {
                 VerificationBrowser(url: prompt.verificationURL)

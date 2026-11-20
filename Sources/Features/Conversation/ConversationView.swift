@@ -56,7 +56,7 @@ struct ConversationView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { navigationContentWidth = $0 }
-        .background(Color(.systemBackground))
+        .background(AppDesign.background.ignoresSafeArea())
         .navigationTitle(parentID == nil ? workspace.name(for: store.channel) : "スレッド")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: workspace.composerFocusRequest?.id, initial: true) { _, _ in
