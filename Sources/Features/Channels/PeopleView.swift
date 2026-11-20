@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PeopleView: View {
     let workspace: WorkspaceStore
+    var draftContent: String? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
     @State private var recipients: Set<String> = []
@@ -20,7 +21,7 @@ struct PeopleView: View {
         NavigationStack {
             AppList {
                 if let error { Text(error).foregroundStyle(.red) }
-                Section("宛先（9人まで）") {
+                Section(draftContent == nil ? "宛先（9人まで）" : "宛先") {
                     ForEach(candidates) { person in
                         let selected = recipients.contains(person.id)
                         Button {
@@ -33,7 +34,7 @@ struct PeopleView: View {
                                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                             }
                         }
-                        .disabled(!selected && recipients.count >= 9)
+                        .disabled(!selected && recipients.count >= (draftContent == nil ? 9 : 1))
                         .accessibilityAddTraits(selected ? .isSelected : [])
                         .accessibilityIdentifier("dm-recipient-\(person.id)")
                     }
@@ -54,9 +55,18 @@ struct PeopleView: View {
                 defer { submitting = false }
                 do {
                     let ids = recipients.sorted()
-                    let channel = try await workspace.client.directMessage(userIDs: ids)
-                    try Task.checkCancellation()
-                    workspace.addAndOpen(channel, members: ids + [workspace.user.id])
+                    if let draftContent {
+                        let actions = ShortcutActions(workspace: workspace)
+                        let targets = try actions.recipients(in: Array(workspace.people.values)).filter { recipients.contains($0.personID) }
+                        guard ids.count == 1, targets.count == 1, let target = targets.first else {
+                            throw ZooError.auth("宛先を1人選び直してください。")
+                        }
+                        try await actions.draft(draftContent, to: target)
+                    } else {
+                        let channel = try await workspace.client.directMessage(userIDs: ids)
+                        try Task.checkCancellation()
+                        workspace.addAndOpen(channel, members: ids + [workspace.user.id])
+                    }
                     dismiss()
                 } catch {
                     if !Task.isCancelled { self.error = error.localizedDescription; workspace.report(error) }

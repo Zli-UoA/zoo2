@@ -27,6 +27,14 @@ struct ShortcutActions {
 
     func recipients() async throws -> [ShortcutRecipient] {
         try check()
+        // Siriの宛先照合は同期済み一覧で行い、短時間のバックグラウンド実行で全件通信を始めない。
+        // 実際に送信する直前にはresolveで相手の有効性をサーバーへ再確認する。
+        if workspace.hasLoaded {
+            return try recipients(in: Array(workspace.people.values))
+        }
+        if let cached = try await workspace.client.cachedWorkspace() {
+            return try recipients(in: cached.people)
+        }
         let people = try await workspace.client.people()
         return try recipients(in: people)
     }
@@ -68,18 +76,51 @@ struct ShortcutActions {
         }
     }
 
-    func send(_ content: String, to recipient: ShortcutRecipient) async throws {
+    @discardableResult
+    func send(_ content: String, to recipient: ShortcutRecipient) async throws -> Message {
         try Self.validateMessage(content)
         let channel = try await directMessage(to: recipient)
         guard channel.canPost else { throw ZooError.auth("暗号化された会話にはSiriから送信できません。") }
+        let message: Message
         do {
-            _ = try await workspace.client.send(id: UUID().uuidString.lowercased(), channelID: channel.id,
+            message = try await workspace.client.send(id: UUID().uuidString.lowercased(), channelID: channel.id,
                                               content: content, parentID: nil, attachmentIDs: [], sensitiveAttachmentIDs: [])
         } catch {
             workspace.report(error)
             throw error
         }
+        // サーバーで成立した送信を失敗に変えず、ログアウト後の画面遷移だけを抑止する。
+        if workspace.active, !Task.isCancelled { workspace.addAndOpen(channel) }
+        return message
+    }
+
+    func draft(_ content: String, to recipient: ShortcutRecipient?) async throws {
         try check()
+        guard content.unicodeScalars.count <= 40_000 else {
+            throw ZooError.auth("メッセージは40,000文字以内で入力してください。")
+        }
+        guard let recipient else {
+            // 下書きスキーマは画面での編集に引き継ぐため、未指定の宛先をSiriで聞き返さない。
+            if let sheet = workspace.presentedSheet {
+                if content.isEmpty { return }
+                guard case .draftDirectMessage(let existing) = sheet, existing.isEmpty || existing == content else {
+                    throw ZooError.auth("入力中の画面があります。Zooで内容を確認してください。")
+                }
+                if existing == content { return }
+            }
+            workspace.selectedTab = .directMessages
+            workspace.presentedSheet = .draftDirectMessage(content)
+            return
+        }
+        let channel = try await directMessage(to: recipient)
+        guard channel.canPost else { throw ZooError.auth("この会話には下書きを作成できません。") }
+        let conversation = workspace.conversation(for: channel)
+        let key = conversation.draftKey(nil)
+        let existing = conversation.drafts[key] ?? ""
+        guard content.isEmpty || existing.isEmpty || existing == content else {
+            throw ZooError.auth("入力中の下書きがあります。Zooで内容を確認してください。")
+        }
+        if !content.isEmpty { conversation.drafts[key] = content }
         workspace.addAndOpen(channel)
     }
 

@@ -190,7 +190,10 @@ final class AppSession {
     }
 
     func resume() async {
-        defer { isStarting = false }
+        defer {
+            isStarting = false
+            if !Self.isUITesting { SiriVocabulary.refreshAuthorization(workspace) }
+        }
         if userID == nil || !validatedSession {
             guard !connecting else { return }
             do {
@@ -199,6 +202,7 @@ final class AppSession {
                 } else {
                     isStarting = false
                     if workspace != nil { logout() }
+                    else if !Self.isUITesting { SiriVocabulary.update(nil) }
                     if syncCache == nil { syncCache = try await SyncCache.open(inMemory: Self.isUITesting) }
                     try await syncCache?.forget(connection: SyncCache.connectionKey(api.settings))
                     await notifications.revokeRegistration().value

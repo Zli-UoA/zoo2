@@ -25,9 +25,9 @@ struct SiriMessageHandlerTests {
 
     @Test("標準送信要求の受付とロック中の制限を配布設定に登録する")
     func registersSystemMessageIntent() throws {
-        let delegate = NotificationDelegate()
-        #expect(delegate.application(UIApplication.shared, handlerFor: intent(recipient: person(identifier: nil))) is SiriMessageHandler)
-        #expect(delegate.application(UIApplication.shared, handlerFor: INSearchForMessagesIntent()) == nil)
+        let delegate = try #require(UIApplication.shared.delegate)
+        #expect(delegate.application?(UIApplication.shared, handlerFor: intent(recipient: person(identifier: nil))) is SiriMessageHandler)
+        #expect(delegate.application?(UIApplication.shared, handlerFor: INSearchForMessagesIntent()) == nil)
         let info = try #require(Bundle.main.infoDictionary)
         for key in ["INIntentsSupported", "INIntentsRestrictedWhileLocked", "INIntentsRestrictedWhileProtectedDataUnavailable"] {
             #expect((info[key] as? [String])?.contains("INSendMessageIntent") == true)

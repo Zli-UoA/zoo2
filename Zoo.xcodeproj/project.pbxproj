@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0049768C0551C30EC2A63BF8 /* ZooMessageSchemas.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD210A905C644AF9486510B3 /* ZooMessageSchemas.swift */; };
 		017E36C75CDB6F86DA0C29B5 /* WebRTC-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 06C2582A361DB82A2A24585B /* WebRTC-LICENSE.txt */; };
 		02A54FEBFF890844AAA7A343 /* SyncCoding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 245AE894E05BC1E0DEDE0CF0 /* SyncCoding.swift */; };
 		02C122958A9B0B5838784C64 /* ConversationSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26A675980111EF4DD4A4BF20 /* ConversationSync.swift */; };
@@ -306,6 +307,7 @@
 		B8D75455ED3D61632AD514B1 /* ZooShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooShortcuts.swift; sourceTree = "<group>"; };
 		BC38AB430AA1777D763AB387 /* AttachmentRenderState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentRenderState.swift; sourceTree = "<group>"; };
 		BCADD40C264C81FB2A211091 /* PublicProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicProfile.swift; sourceTree = "<group>"; };
+		BD210A905C644AF9486510B3 /* ZooMessageSchemas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooMessageSchemas.swift; sourceTree = "<group>"; };
 		BDFA0EA73CA3D24EFC391EBC /* InboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxTests.swift; sourceTree = "<group>"; };
 		C01020741494B6B776CDE495 /* MessageContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentView.swift; sourceTree = "<group>"; };
 		C6BEC97D3AE34D98ED3B5376 /* Zoo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Zoo.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -703,6 +705,7 @@
 				EAC85886AA1B8DCF3C432F37 /* SiriMessageHandler.swift */,
 				658DA7218E890A9040E0F7D1 /* SiriSettingsSection.swift */,
 				102E33938A627DB54B47D79E /* SiriVocabulary.swift */,
+				BD210A905C644AF9486510B3 /* ZooMessageSchemas.swift */,
 				B8D75455ED3D61632AD514B1 /* ZooShortcuts.swift */,
 			);
 			path = Intents;
@@ -1038,6 +1041,7 @@
 				CC872F1EB856FF294BB96E95 /* ZooApp.swift in Sources */,
 				B3212C8778C3373FA20688B6 /* ZooDate.swift in Sources */,
 				3F288075817EA44CD4CF57E9 /* ZooError.swift in Sources */,
+				0049768C0551C30EC2A63BF8 /* ZooMessageSchemas.swift in Sources */,
 				4C8FBBB14D6C07DAD40D069C /* ZooShortcuts.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

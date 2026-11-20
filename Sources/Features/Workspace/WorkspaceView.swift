@@ -28,6 +28,7 @@ struct WorkspaceView: View {
             switch sheet {
             case .createChannel: CreateChannelView(workspace: workspace)
             case .createDirectMessage: PeopleView(workspace: workspace)
+            case .draftDirectMessage(let content): PeopleView(workspace: workspace, draftContent: content)
             case .browseChannels: ChannelBrowser(workspace: workspace)
             case .channelDetails(let channel): ChannelDetailsView(channel: channel, workspace: workspace)
             case .messageActions(let action):

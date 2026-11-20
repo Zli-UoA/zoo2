@@ -1,4 +1,5 @@
 import Foundation
+import AppIntents
 import Synchronization
 import Testing
 @testable import Zoo
@@ -45,6 +46,48 @@ struct ShortcutActionsTests {
         #expect(recipients.allSatisfy { !$0.matches(" ") })
     }
 
+    @Test("Siriの宛先照合は同期済み一覧を使い、送信前には相手を再検証する", arguments: [false, true])
+    func usesSyncedRecipients(loadWorkspace: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let cache = try await SyncCache.open(inMemory: true)
+        let lease = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: user)
+        let sync = SyncSession(cache: cache, lease: lease)
+        try await sync.store([Channel](), key: "workspace:channels")
+        try await sync.store([user, peer], key: "workspace:people")
+        let workspace = WorkspaceStore(client: NativeChatClient(api: harness.api, sync: sync), user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        if loadWorkspace {
+            let restored = AsyncStream<Void>.makeStream()
+            workspace.onPeopleChanged = { restored.continuation.yield(()) }
+            harness.stub { _ in throw URLError(.notConnectedToInternet) }
+            let run = Task { await workspace.run() }
+            for await _ in restored.stream { break }
+            run.cancel()
+            await run.value
+            restored.continuation.finish()
+            #expect(workspace.hasLoaded)
+        } else {
+            #expect(!workspace.hasLoaded)
+        }
+        harness.stub { _ in Issue.record("保存済みの宛先照合で通信を開始してはいけません"); throw URLError(.cancelled) }
+        let actions = ShortcutActions(workspace: workspace)
+        let candidates = try await actions.recipients()
+        #expect(candidates == [recipient(workspace)])
+        let target = try #require(candidates.first)
+        var inactive = peer
+        inactive.is_deactivated = true
+        let inactiveData = try JSONEncoder().encode(inactive)
+        let peerID = peer.id
+        harness.stub { request in
+            if request.url?.path == "/api/users/\(peerID)" { return (200, [:], inactiveData) }
+            Issue.record("無効になった宛先への送信を開始してはいけません")
+            return (500, [:], Data())
+        }
+        await #expect(throws: ZooError.self) { try await actions.send("本文", to: target) }
+        try await sync.close().value
+    }
+
     @Test("相手を再検証してDMへ送信し、既存の下書きを保持する")
     func sendsToResolvedDM() async throws {
         let harness = try ChatHarness()
@@ -73,7 +116,14 @@ struct ShortcutActionsTests {
         defer { workspace.shutdown() }
         let conversation = workspace.conversation(for: channel)
         conversation.drafts["root"] = "入力途中の下書き"
-        try await ShortcutActions(workspace: workspace).send("Siriからのメッセージ", to: recipient(workspace))
+        let message = try await ShortcutActions(workspace: workspace).send("Siriからのメッセージ", to: recipient(workspace))
+        #expect(message.id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        if #available(iOS 27.0, *) {
+            let result = ZooSentMessage(message, recipient: recipient(workspace), workspace: workspace)
+            #expect(result.id.hasSuffix(message.id))
+            #expect(result.body == AttributedString("Siriからのメッセージ"))
+            #expect(result.conversation.recipients.map(\.id) == [recipient(workspace).id])
+        }
         #expect(sent.withLock { $0 })
         #expect(workspace.selectedTab == .directMessages)
         #expect(workspace.dmPath == [.channel(channel.id)])
@@ -131,5 +181,277 @@ struct ShortcutActionsTests {
         release.continuation.yield(())
         await #expect(throws: ZooError.self) { try await pending.value }
         #expect(workspace.dmPath.isEmpty)
+    }
+
+    @Test("送信中にログアウトしても成立済みの送信を失敗へ変えない")
+    func logoutWhileSending() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let peer = peer, channel = channel, user = user
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/users/\(peer.id)": return (200, [:], try JSONEncoder().encode(peer))
+            case "/api/dms": return (200, [:], try Self.envelope(channel))
+            case "/api/messages":
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                return (200, [:], try Self.envelope(Message(id: "accepted", user_id: user.id, channel_id: channel.id,
+                                                            content: "本文", created_at: "2026-11-20T00:00:00Z")))
+            default: Issue.record("想定外の通信です"); return (500, [:], Data())
+            }
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let actions = ShortcutActions(workspace: workspace), target = recipient(workspace)
+        let pending = Task { try await actions.send("本文", to: target) }
+        for await _ in started.stream { break }
+        workspace.shutdown()
+        release.continuation.yield(())
+        #expect(try await pending.value.id == "accepted")
+        #expect(workspace.dmPath.isEmpty)
+    }
+
+    @Test("Siriの下書き作成は送信せず、既存の入力を上書きしない",
+          arguments: ["new", "same", "empty", "conflict", "encrypted", "long"])
+    func draftsWithoutSending(kind: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let peer = peer
+        var channel = channel
+        if kind == "encrypted" { channel.encrypted = true }
+        let channelData = try Self.envelope(channel)
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/users/\(peer.id)": return (200, [:], try JSONEncoder().encode(peer))
+            case "/api/dms": return (200, [:], channelData)
+            default: Issue.record("下書き作成では送信してはいけません"); return (500, [:], Data())
+            }
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let conversation = workspace.conversation(for: channel)
+        let existing = ["same", "empty", "conflict"].contains(kind) ? "入力中の下書き" : ""
+        conversation.drafts["root"] = existing
+        let content = kind == "empty" ? "" : kind == "same" ? existing : kind == "long" ? String(repeating: "あ", count: 40_001) : "新しい下書き"
+        let actions = ShortcutActions(workspace: workspace), target = recipient(workspace)
+        if ["conflict", "encrypted", "long"].contains(kind) {
+            await #expect(throws: ZooError.self) { try await actions.draft(content, to: target) }
+            #expect(conversation.drafts["root"] == existing)
+            #expect(workspace.dmPath.isEmpty)
+        } else {
+            try await actions.draft(content, to: target)
+            #expect(conversation.drafts["root"] == (content.isEmpty ? existing : content))
+            #expect(workspace.dmPath == [.channel(channel.id)])
+        }
+    }
+
+    @Test("宛先のない下書きは通信せず本文を宛先選択画面へ渡す", arguments: ["empty", "text", "long", "signedOut"])
+    func draftsWithoutRecipient(kind: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in Issue.record("宛先未指定の下書きで通信してはいけません"); return (500, [:], Data()) }
+        let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let conversation = workspace.conversation(for: channel)
+        conversation.drafts["root"] = "入力中の下書き"
+        let content = kind == "empty" ? "" : kind == "long" ? String(repeating: "あ", count: 40_001) : "改行を\n残した本文"
+        if kind == "signedOut" { workspace.shutdown() }
+        let actions = ShortcutActions(workspace: workspace)
+        if ["long", "signedOut"].contains(kind) {
+            await #expect(throws: ZooError.self) { try await actions.draft(content, to: nil) }
+            #expect(workspace.presentedSheet == nil)
+        } else {
+            try await actions.draft(content, to: nil)
+            guard case .draftDirectMessage(let retained) = workspace.presentedSheet else {
+                Issue.record("宛先選択画面へ下書きが渡されていません")
+                return
+            }
+            #expect(retained == content)
+            #expect(workspace.selectedTab == .directMessages)
+            #expect(conversation.drafts["root"] == "入力中の下書き")
+        }
+        #expect(workspace.dmPath.isEmpty)
+    }
+
+    @Test("宛先未指定の下書きでも編集中の画面と本文を保護する",
+          arguments: ["empty", "same", "conflict", "replaceEmpty", "other", "emptyOther"])
+    func preservesDraftSheet(kind: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in Issue.record("画面上の下書きの引き継ぎで通信してはいけません"); return (500, [:], Data()) }
+        let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let other = ["other", "emptyOther"].contains(kind)
+        workspace.presentedSheet = other ? .profile : .draftDirectMessage(kind == "replaceEmpty" ? "" : "編集中の本文")
+        let content = ["empty", "emptyOther"].contains(kind) ? "" : kind == "same" ? "編集中の本文" : "別の本文"
+        let actions = ShortcutActions(workspace: workspace)
+        if ["conflict", "other"].contains(kind) {
+            await #expect(throws: ZooError.self) { try await actions.draft(content, to: nil) }
+        } else {
+            try await actions.draft(content, to: nil)
+        }
+        if other {
+            guard case .profile = workspace.presentedSheet else { Issue.record("編集中のプロフィールが閉じられました"); return }
+        } else {
+            guard case .draftDirectMessage(let retained) = workspace.presentedSheet else { Issue.record("下書き画面が失われました"); return }
+            #expect(retained == (kind == "replaceEmpty" ? content : "編集中の本文"))
+        }
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri AIの送信では本文を保持し、未対応の入力を黙って捨てない",
+          arguments: ["text", "subject", "attachment", "audio", "link", "scheduled"])
+    func validatesSchemaContent(kind: String) throws {
+        let intent = SendZooSchemaMessageIntent()
+        intent.content = "改行と「引用」を\nそのまま送る"
+        switch kind {
+        case "subject": intent.subject = "件名"
+        case "attachment": intent.attachments = [IntentFile(data: Data(), filename: "資料.txt")]
+        case "audio": intent.audioMessage = IntentFile(data: Data(), filename: "音声.m4a")
+        case "link": intent.links = [try #require(URL(string: "https://example.com"))]
+        case "scheduled": intent.scheduledDate = .now
+        default: break
+        }
+        if kind == "text" { #expect(try intent.validatedContent() == "改行と「引用」を\nそのまま送る") }
+        else { #expect(throws: ZooError.self) { try intent.validatedContent() } }
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri AIの宛先もアカウント付き識別子で解決する")
+    func resolvesSchemaDestination() async throws {
+        let client = PreviewChatClient()
+        let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let recipient = try #require(try await ShortcutActions(workspace: workspace).recipients().first)
+        #expect(try await ZooMessageDestination.member(ZooMessagePerson(recipient)).resolve(in: workspace) == recipient)
+        #expect(try await ZooMessageDestination.members([ZooMessagePerson(recipient)]).resolve(in: workspace) == recipient)
+        await #expect(throws: ZooError.self) { try await ZooMessageDestination.members([]).resolve(in: workspace) }
+        await #expect(throws: ZooError.self) {
+            try await ZooMessageDestination.members([ZooMessagePerson(recipient), ZooMessagePerson(recipient)]).resolve(in: workspace)
+        }
+        let stale = ShortcutRecipient(id: "別アカウント", personID: recipient.personID, name: recipient.name, username: recipient.username)
+        await #expect(throws: ZooError.self) { try await ZooMessageDestination.member(ZooMessagePerson(stale)).resolve(in: workspace) }
+        await #expect(throws: ZooError.self) { try await ZooMessageDestination.members([ZooMessagePerson(stale)]).resolve(in: workspace) }
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri AIの送信者はIDから復元でき、宛先候補には含まれない")
+    func resolvesSchemaAuthor() async throws {
+        let client = PreviewChatClient()
+        let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let author = ZooMessagePerson.currentUser(in: workspace)
+        let entities = try await ZooMessagePersonQuery().entities(for: [author.id], in: workspace)
+        #expect(entities.map(\.id) == [author.id])
+        #expect(try await ShortcutActions(workspace: workspace).recipients().allSatisfy { $0.id != author.id })
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri標準の連絡先は一意な宛先だけ解決し、古いIDや曖昧な名前では送信しない",
+          arguments: ["id", "name", "username", "stale", "duplicate", "partial", "unknown", "self", "empty"])
+    func resolvesStandardSchemaPerson(kind: String) throws {
+        let target = ShortcutRecipient(id: "account|sakura", personID: peer.id, name: peer.name, username: peer.user_name)
+        var recipients = [target]
+        var person = IntentPerson(identifier: .unknown, name: .displayName(target.name), handle: nil)
+        switch kind {
+        case "id": person.identifier = .applicationDefined(target.id)
+        case "username": person.name = .unknown; person.handle = .init(applicationDefined: "SAKURA")
+        case "stale": person.identifier = .applicationDefined("old-account|sakura")
+        case "duplicate": recipients.append(.init(id: "account|other", personID: "other", name: target.name, username: "other"))
+        case "partial": person.name = .displayName("さく")
+        case "unknown": person.name = .unknown
+        case "self": person.isMe = true
+        default: break
+        }
+        let values = kind == "empty" ? [] : [person]
+        let members = ZooMessagePersonQuery().values(for: values, in: recipients)
+        if ["id", "name", "username"].contains(kind) {
+            #expect(try ZooMessageDestination.members(members).resolve(in: recipients) == target)
+        } else {
+            #expect(throws: ZooError.self) { try ZooMessageDestination.members(members).resolve(in: recipients) }
+        }
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siriの連絡先変換では同名候補を保ち、重複と古いアカウントを除く")
+    func convertsSchemaPeople() {
+        let first = ShortcutRecipient(id: "account|first", personID: "first", name: "さくら", username: "sakura1")
+        let second = ShortcutRecipient(id: "account|second", personID: "second", name: "さくら", username: "sakura2")
+        let person = IntentPerson(identifier: .unknown, name: .displayName("さくら"), handle: nil)
+        let query = ZooMessagePersonQuery()
+        let candidates = query.values(for: [person, person], in: [first, second])
+        #expect(candidates.map(\.id) == [first.id, second.id])
+        #expect(candidates.map(\.person.identifier) == [.applicationDefined(first.id), .applicationDefined(second.id)])
+        let stale = IntentPerson(identifier: .applicationDefined("old|first"), name: person.name, handle: nil)
+        #expect(query.values(for: [stale], in: [first, second]).isEmpty)
+        #expect(query.values(for: [ZooMessagePerson(first).person], in: [first, second]).map(\.id) == [first.id])
+        let known = ZooMessagePerson(first).person
+        let unknown = IntentPerson(identifier: .unknown, name: .unknown, handle: nil)
+        for invalid in [stale, unknown] {
+            #expect(query.values(for: [known, invalid], in: [first, second]).isEmpty)
+            #expect(query.values(for: [invalid, known], in: [first, second]).isEmpty)
+        }
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri由来の別形式IDは完全一致名で照合し、古いZoo IDや曖昧な宛先は送信しない",
+          arguments: ["foreignID", "foreignHandle", "duplicate", "partial", "unknown", "staleAccount", "staleServer", "mixed"])
+    func resolvesSiriProvidedIdentifier(kind: String) throws {
+        let target = ShortcutRecipient(id: "https://example.com|current-user|sakura", personID: "sakura", name: "さくら", username: "sakura")
+        var recipients = [target]
+        var person = IntentPerson(identifier: .applicationDefined("siri-person-identifier"), name: .displayName(target.name), handle: nil)
+        switch kind {
+        case "foreignHandle": person.handle = .init(applicationDefined: "siri-person-handle")
+        case "duplicate": recipients.append(.init(id: "https://example.com|current-user|other", personID: "other", name: target.name, username: "other"))
+        case "partial": person.name = .displayName("さく")
+        case "unknown": person.name = .unknown
+        case "staleAccount": person.identifier = .applicationDefined("https://example.com|previous-user|sakura")
+        case "staleServer": person.identifier = .applicationDefined("https://other.example.com|current-user|sakura")
+        default: break
+        }
+        let unknown = IntentPerson(identifier: .applicationDefined("another-siri-id"), name: .unknown, handle: nil)
+        let input = kind == "mixed" ? [person, unknown] : [person]
+        let members = ZooMessagePersonQuery().values(for: input, in: recipients)
+        if ["foreignID", "foreignHandle"].contains(kind) {
+            #expect(members.map(\.id) == [target.id])
+            #expect(try ZooMessageDestination.members(members).resolve(in: recipients) == target)
+        } else {
+            #expect(throws: ZooError.self) { try ZooMessageDestination.members(members).resolve(in: recipients) }
+            if kind == "duplicate" { #expect(members.count == 2) }
+            else { #expect(members.isEmpty) }
+        }
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri AIは直近の複数の送信結果を同一ログイン中だけ復元する")
+    func restoresSchemaResults() throws {
+        let client = PreviewChatClient()
+        let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+        let other = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
+        defer { workspace.shutdown(); other.shutdown() }
+        let store = ZooSentMessageStore()
+        var results: [ZooSentMessage] = []
+        for index in 0..<21 {
+            let message = Message(id: String(index), user_id: workspace.user.id, channel_id: channel.id,
+                                  content: "本文\(index)", created_at: "2026-11-20T00:00:00Z")
+            let result = ZooSentMessage(message, recipient: recipient(workspace), workspace: workspace)
+            results.append(result)
+            store.remember(result, in: workspace)
+        }
+        let ids = results.map(\.id)
+        #expect(store.messages(for: ids, in: workspace).map(\.id) == Array(ids.suffix(20)))
+        #expect(store.conversations(for: [results[0].conversation.id], in: workspace).first?.previewText == "本文20")
+        #expect(store.messages(for: ids, in: other).isEmpty)
+        #expect(store.conversations(for: [results[0].conversation.id], in: other).isEmpty)
+        store.clear(in: workspace)
+        #expect(store.messages(for: ids, in: workspace).isEmpty)
+        store.remember(results[0], in: workspace)
+        workspace.shutdown()
+        store.remember(results[1], in: workspace)
+        #expect(store.messages(for: ids, in: workspace).isEmpty)
+        store.remember(results[2], in: other)
+        #expect(store.messages(for: ids, in: other).map(\.id) == [results[2].id])
     }
 }
