@@ -34,6 +34,9 @@ private final class FakeCallClient: CallClient {
     var events: [CallEvent] = []
     var commands: [String] = []
     var observed = false
+    var sessions: [String] = []
+    var commandFailure: (@MainActor (String) -> Error?)?
+    var commandBodies: [(String, [String: JSONValue])] = []
     var commandObserved: (@MainActor (String) -> Void)?
     var accepted = false
     var failStream = false
@@ -55,12 +58,18 @@ private final class FakeCallClient: CallClient {
     }
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
         observed = true
+        sessions.append(sessionID)
         for event in events { try await receive(event) }
         delivered?()
         if failStream { throw URLError(.networkConnectionLost) }
         try await Task.sleep(for: .seconds(86_400))
     }
-    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws { commands.append(action); commandObserved?(action) }
+    func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {
+        commands.append(action); commandBodies.append((action, body))
+        let failure = commandFailure?(action)
+        commandObserved?(action)
+        if let failure { throw failure }
+    }
     func observeCallInvitations(receive: @MainActor ([CallInvitation]) -> Void) async throws {
         receive(invitationRows)
         invitationsDelivered?()
@@ -85,25 +94,162 @@ private final class FakeCallClient: CallClient {
 
 @MainActor
 private final class FakeCallMedia: CallMedia {
+    var onPeerState: (@MainActor (String, CallPeerState) -> Void)?
     var started = false
     var closed = false
     var muted = false
     var handled: [String] = []
     var participantIDs: [String] = []
+    var mutedWhenHandlingRoom: Bool?
     var signal: (@MainActor (String, CallSignal) -> Void)?
     func start(sessionID: String, room: CallRoom, signal: @escaping @MainActor (String, CallSignal) -> Void,
                failed: @escaping @MainActor () -> Void) throws { started = true; self.signal = signal }
     func handle(_ event: CallEvent) async throws {
+        if case .room = event { mutedWhenHandlingRoom = muted }
         switch event { case .room(let room): handled.append("room"); participantIDs = room.participants.map(\.id); case .left: handled.append("left"); default: handled.append("other") }
     }
     func mute(_ muted: Bool) { self.muted = muted }
     func speaker(_ enabled: Bool) throws {}
+    func diagnostics() async -> [CallPeerDiagnostics] { [] }
     func close() { closed = true; signal = nil }
 }
 
 @MainActor @Suite("通話のライフサイクル", .timeLimit(.minutes(1)))
 struct CallStoreTests {
     private var channel: Channel { Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false) }
+
+    @Test("入室と音声接続を区別し、一部の相手だけ未接続でも通話中にしない")
+    func mediaConnectionStatus() async {
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        let peers = ["one", "two"].map {
+            CallParticipant(session_id: $0, user_id: $0, user_name: $0, display_name: $0, is_muted: false)
+        }
+        client.events = [.room(CallRoom(participants: peers, max_participants: 6, ice_servers: []))]
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { true })
+        defer { store.shutdown() }
+        await withCheckedContinuation { done in client.delivered = { done.resume() }; store.start(channel: channel) }
+        #expect(store.ready && store.connectionStatus == "音声を接続中")
+        media.onPeerState?("one", .connected)
+        #expect(store.connectionStatus == "音声を接続中")
+        media.onPeerState?("two", .connected)
+        #expect(store.connectionStatus == "通話中")
+        media.onPeerState?("one", .reconnecting)
+        #expect(store.connectionStatus == "音声を再接続中")
+        let stale = media.onPeerState
+        store.finish()
+        stale?("one", .connected)
+        #expect(store.peerStates.isEmpty)
+    }
+
+    @Test("heartbeatの一時失敗を再試行し、回復した通話を終了しない")
+    func heartbeatRecovers() async {
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        var attempts = 0
+        let completed = AsyncStream<Void>.makeStream()
+        client.commandFailure = { action in
+            guard action == "heartbeat" else { return nil }
+            attempts += 1
+            return attempts < 3 ? URLError(.networkConnectionLost) : nil
+        }
+        client.commandObserved = { if $0 == "heartbeat", attempts == 3 { completed.continuation.yield(()) } }
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { true }, retryDelay: .milliseconds(1))
+        defer { completed.continuation.finish(); store.shutdown() }
+        store.start(channel: channel)
+        for await _ in completed.stream { break }
+        #expect(attempts == 3 && store.ready && store.error == nil)
+        #expect(!store.heartbeatRetrying && !media.closed)
+    }
+
+    @Test("heartbeatの継続障害は3回で終了し、認証・権限・session消失は再試行しない", arguments: [0, 401, 403, 404])
+    func heartbeatFailureIsBounded(status: Int) async {
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        client.commandFailure = { action in
+            guard action == "heartbeat" else { return nil }
+            return status == 0 ? URLError(.timedOut) : ZooError.rejected(status, "テスト")
+        }
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true }, retryDelay: .milliseconds(1))
+        defer { store.shutdown() }
+        await store.start(channel: channel)?.value
+        #expect(client.commands.filter { $0 == "heartbeat" }.count == (status == 0 ? 3 : 1))
+        #expect(store.channel == nil && store.error != nil)
+        #expect((store.retryChannel != nil) == (status == 0))
+    }
+
+    @Test("再試行待ちで終了した通話を復活させない")
+    func cancelHeartbeatRetry() async {
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        let failed = AsyncStream<Void>.makeStream()
+        client.commandFailure = { action in action == "heartbeat" ? URLError(.timedOut) : nil }
+        client.commandObserved = { if $0 == "heartbeat" { failed.continuation.yield(()) } }
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true })
+        defer { failed.continuation.finish(); store.shutdown() }
+        let task = store.start(channel: channel)
+        for await _ in failed.stream { break }
+        store.finish()
+        await task?.value
+        #expect(client.commands.filter { $0 == "heartbeat" }.count == 1)
+        #expect(store.channel == nil && store.error == nil && store.retryChannel == nil)
+    }
+
+    @Test("SSE切断では自動再着信せず、手動再接続で新しい参加IDを使う")
+    func retryUsesNewSession() async {
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        client.failStream = true
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true })
+        defer { store.shutdown() }
+        await store.start(channel: channel)?.value
+        #expect(client.sessions.count == 1 && store.retryChannel?.id == channel.id)
+        client.failStream = false
+        await withCheckedContinuation { done in client.delivered = { done.resume() }; store.retry() }
+        #expect(client.sessions.count == 2 && Set(client.sessions).count == 2)
+        #expect(store.ready && store.error == nil && store.retryChannel == nil)
+        #expect(store.connectionStatus == "参加者を待機中")
+    }
+
+    @Test("ミュート中の切断後は音声接続前にミュートを戻し、サーバーにも同期する")
+    func retryPreservesMute() async {
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        client.failStream = true
+        let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { true })
+        defer { store.shutdown() }
+        client.delivered = { store.toggleMute() }
+        await store.start(channel: channel)?.value
+        #expect(store.retryChannel != nil)
+        client.failStream = false
+        await withCheckedContinuation { done in client.delivered = { done.resume() }; store.retry() }
+        #expect(store.ready && store.muted && media.mutedWhenHandlingRoom == true)
+        #expect(client.commandBodies.contains { $0.0 == "state" && $0.1["is_muted"] == .bool(true) && $0.1["session_id"] == .string(client.sessions.last!) })
+    }
+
+    @Test("ミュート更新の一時失敗を同じ値で再試行し、通話を継続する")
+    func muteUpdateRecovers() async {
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true }, retryDelay: .milliseconds(1))
+        defer { store.shutdown() }
+        await withCheckedContinuation { done in client.delivered = { done.resume() }; store.start(channel: channel) }
+        let updated = AsyncStream<Void>.makeStream()
+        defer { updated.continuation.finish() }
+        var attempts = 0
+        client.commandFailure = { action in
+            guard action == "state" else { return nil }
+            attempts += 1
+            return attempts < 3 ? URLError(.timedOut) : nil
+        }
+        client.commandObserved = { if $0 == "state", attempts == 3 { updated.continuation.yield(()) } }
+        store.toggleMute()
+        for await _ in updated.stream { break }
+        #expect(store.ready && store.muted && !store.changingMute && store.error == nil)
+        #expect(client.commandBodies.filter { $0.0 == "state" }.allSatisfy { $0.1["is_muted"] == .bool(true) })
+    }
 
     @Test("未参加の通話も表示し、参加者ゼロと終了した通話は表示しない")
     func activeCallsFollowServer() async {

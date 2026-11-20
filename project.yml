@@ -52,6 +52,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: このバージョンではカメラを使用しません。音声通話はマイクのみを使用します。
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
+        NSLocalNetworkUsageDescription: 同じWi-Fiに接続している通話相手と音声を直接送受信します。
         NSSiriUsageDescription: SiriからDMを送信するため、宛先の名前と送信するメッセージをSiriと共有します。
         INIntentsSupported: [INSendMessageIntent]
         INIntentsRestrictedWhileLocked: [INSendMessageIntent]

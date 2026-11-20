@@ -8,11 +8,19 @@ final class CallStore {
     private let userID: String
     private let makeMedia: @MainActor () -> any CallMedia
     private let permission: @MainActor () async -> Bool
+    private let retryDelay: Duration
     private(set) var channel: Channel?
     private(set) var participants: [CallParticipant] = []
     private(set) var activeChannelIDs: Set<String> = []
     private var activeCallsGeneration = UUID()
     private(set) var ready = false
+    private(set) var peerStates: [String: CallPeerState] = [:]
+    private(set) var heartbeatRetrying = false
+    private(set) var iceServerKinds: [String] = []
+    private(set) var retryChannel: Channel?
+    private var retryMuted = false
+    private var retrySpeaker = false
+    private(set) var diagnostics: [CallPeerDiagnostics] = []
     private(set) var muted = false
     private(set) var speakerEnabled = false
     private(set) var changingMute = false
@@ -47,8 +55,34 @@ final class CallStore {
 
     init(client: any CallClient, userID: String,
          makeMedia: @escaping @MainActor () -> any CallMedia = { NativeCallMedia() },
-         permission: @escaping @MainActor () async -> Bool = { await AVAudioApplication.requestRecordPermission() }) {
+         permission: @escaping @MainActor () async -> Bool = { await AVAudioApplication.requestRecordPermission() },
+         retryDelay: Duration = .seconds(1)) {
         self.client = client; self.userID = userID; self.makeMedia = makeMedia; self.permission = permission
+        self.retryDelay = retryDelay
+    }
+
+    var connectionStatus: String {
+        guard ready else { return "接続中" }
+        if heartbeatRetrying { return "通信を確認中" }
+        let remote = participants.filter { $0.id != sessionID }
+        guard !remote.isEmpty else { return "参加者を待機中" }
+        let states = remote.map { peerStates[$0.id] ?? .connecting }
+        if states.allSatisfy({ $0 == .connected }) { return "通話中" }
+        if states.contains(.reconnecting) { return "音声を再接続中" }
+        if states.contains(.failed) { return "音声の接続に失敗" }
+        return "音声を接続中"
+    }
+
+    func refreshDiagnostics() async {
+        guard let session = sessionID, let media else { return }
+        let result = await media.diagnostics()
+        guard !Task.isCancelled, sessionID == session else { return }
+        diagnostics = result
+    }
+
+    func retry() {
+        guard let retryChannel, channel == nil else { return }
+        start(channel: retryChannel, initialMuted: retryMuted, initialSpeaker: retrySpeaker)
     }
 
     func hasActiveCall(in channelID: String) -> Bool {
@@ -79,12 +113,14 @@ final class CallStore {
     }
 
     @discardableResult
-    func start(channel: Channel, invitationID: String? = nil, systemAudio: Bool = false) -> Task<Void, Never>? {
+    func start(channel: Channel, invitationID: String? = nil, systemAudio: Bool = false,
+               initialMuted: Bool = false, initialSpeaker: Bool = false) -> Task<Void, Never>? {
         guard active, self.channel == nil, channel.canCall, canStart?(systemAudio) != false else { return nil }
         onWillStart?()
         let session = UUID().uuidString.lowercased()
         self.channel = channel; sessionID = session
-        error = nil; showingCall = true
+        muted = initialMuted; speakerEnabled = initialSpeaker
+        error = nil; retryChannel = nil; showingCall = true
         connection = Task { [weak self] in
             guard let self else { return }
             do {
@@ -107,11 +143,21 @@ final class CallStore {
                         let engine = makeMedia()
                         (engine as? NativeCallMedia)?.systemAudio = systemAudio
                         media = engine
+                        engine.onPeerState = { [weak self] id, state in
+                            guard let self, sessionID == session else { return }
+                            peerStates[id] = state
+                        }
                         prepareSignals(channelID: channel.id, session: session)
                         try engine.start(sessionID: session, room: room) { [weak self] target, signal in
                             guard let self, sessionID == session else { return }
                             if case .dropped = signals?.yield((target, signal)) { fail(ZooError.invalidResponse, session: session) }
                         } failed: { [weak self] in self?.fail(URLError(.cannotConnectToHost), session: session) }
+                        // 再参加でミュートが解除されないよう、相手へtrackを追加する前に適用する。
+                        engine.mute(muted)
+                        if speakerEnabled { try engine.speaker(true) }
+                        if muted { try await sendMute(channelID: channel.id, session: session, value: true) }
+                        try Task.checkCancellation()
+                        guard sessionID == session else { return }
                         let departed = Set(early.compactMap { event -> String? in
                             if case .left(let id) = event { return id }; return nil
                         })
@@ -119,6 +165,10 @@ final class CallStore {
                                                max_participants: room.max_participants, ice_servers: room.ice_servers)
                         for id in departed { try await engine.handle(.left(id)) }
                         ready = true
+                        iceServerKinds = Array(Set(room.ice_servers.flatMap(\.urls).compactMap {
+                            let kind = String($0.prefix(while: { $0 != ":" })).lowercased()
+                            return ["stun", "turn", "turns"].contains(kind) ? kind.uppercased() : nil
+                        })).sorted()
                         maxParticipants = min(6, max(1, room.max_participants))
                         timeout?.cancel(); timeout = nil
                         participants = initial.participants
@@ -126,6 +176,7 @@ final class CallStore {
                         for pending in early { try await receive(pending, session: session) }
                         early = []
                         startHeartbeat(channelID: channel.id, session: session)
+                        // CallKitの応答完了で音声セッションが有効になるため、入室と音声接続を分ける。
                         onReady?()
                     } else if ready { try await receive(event, session: session) }
                     else {
@@ -169,6 +220,7 @@ final class CallStore {
         case .left(let id):
             if id == session { finish(); return }
             participants.removeAll { $0.id == id }
+            peerStates[id] = nil
         default: break
         }
         try await media?.handle(event)
@@ -200,8 +252,8 @@ final class CallStore {
                                 try await media?.handle(.left(target))
                                 break
                             }
-                            if case ZooError.rejected(503, _) = error, attempt < 2 {
-                                try await Task.sleep(for: .milliseconds(300 * (attempt + 1)))
+                            if CallRetryPolicy.isTransient(error), attempt < 2 {
+                                try await Task.sleep(for: retryDelay * (attempt + 1))
                             } else { throw error }
                         }
                     }
@@ -215,7 +267,20 @@ final class CallStore {
             guard let self else { return }
             do {
                 while sessionID == session, !Task.isCancelled {
-                    try await client.callCommand(channelID: channelID, action: "heartbeat", body: ["session_id": .string(session)])
+                    // presenceの有効期間は30秒。短い障害だけを1秒・2秒の待機で再試行する。
+                    for attempt in 0..<3 {
+                        do {
+                            try await client.callCommand(channelID: channelID, action: "heartbeat", body: ["session_id": .string(session)])
+                            guard sessionID == session, !Task.isCancelled else { return }
+                            heartbeatRetrying = false
+                            break
+                        } catch {
+                            guard sessionID == session, !Task.isCancelled else { return }
+                            guard CallRetryPolicy.isTransient(error), attempt < 2 else { throw error }
+                            heartbeatRetrying = true
+                            try await Task.sleep(for: retryDelay * (attempt + 1))
+                        }
+                    }
                     try await Task.sleep(for: .seconds(10))
                 }
             } catch { if !Task.isCancelled { fail(error, session: session) } }
@@ -230,9 +295,24 @@ final class CallStore {
         mutation = Task { [weak self] in
             guard let self else { return }
             do {
-                try await client.callCommand(channelID: channel.id, action: "state", body: ["session_id": .string(session), "is_muted": .bool(value)])
+                try await sendMute(channelID: channel.id, session: session, value: value)
                 if sessionID == session { changingMute = false }
             } catch { if !Task.isCancelled { fail(error, session: session) } }
+        }
+    }
+
+    private func sendMute(channelID: String, session: String, value: Bool) async throws {
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            guard sessionID == session else { throw CancellationError() }
+            do {
+                try await client.callCommand(channelID: channelID, action: "state",
+                                             body: ["session_id": .string(session), "is_muted": .bool(value)])
+                return
+            } catch {
+                guard CallRetryPolicy.isTransient(error), attempt < 2 else { throw error }
+                try await Task.sleep(for: retryDelay * (attempt + 1))
+            }
         }
     }
 
@@ -254,6 +334,8 @@ final class CallStore {
         signals?.finish(); signals = nil
         media?.close(); media = nil
         channel = nil; participants = []; ready = false; muted = false; speakerEnabled = false; changingMute = false
+        peerStates = [:]; diagnostics = []; iceServerKinds = []; heartbeatRetrying = false; retryChannel = nil
+        retryMuted = false; retrySpeaker = false
         inviting = false; cancellingInvitations = []; invitationError = nil; invitationNotice = nil
         submittedInvitations = []; invitationsSeenWhileSending = []
         if let oldChannel, let oldSession {
@@ -265,8 +347,15 @@ final class CallStore {
 
     private func fail(_ error: Error, session: String) {
         guard sessionID == session else { return }
+        let previousChannel = channel
+        let previousMuted = muted
+        let previousSpeaker = speakerEnabled
         finish()
-        self.error = "通話を続けられませんでした。\(error.localizedDescription)"
+        if CallRetryPolicy.isTransient(error) {
+            retryChannel = previousChannel
+            retryMuted = previousMuted; retrySpeaker = previousSpeaker
+            self.error = "通話の接続が途切れました。通信環境を確認して再接続してください。"
+        } else { self.error = "通話を続けられませんでした。\(error.localizedDescription)" }
         if case ZooError.expiredSession = error { onExpiredSession?() }
     }
 

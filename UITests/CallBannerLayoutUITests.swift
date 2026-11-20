@@ -2,6 +2,36 @@ import XCTest
 
 @MainActor
 final class CallBannerLayoutUITests: XCTestCase {
+    func testWaitingCallShowsConnectionDiagnostics() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-call"]
+        app.launch()
+        let general = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
+        XCTAssertTrue(general.waitForExistence(timeout: 10))
+        general.tap()
+        app.buttons["start-call"].tap()
+        let state = app.staticTexts["call-connection-status"]
+        XCTAssertTrue(state.waitForExistence(timeout: 5))
+        XCTAssertEqual(state.label, "参加者を待機中")
+        let diagnostics = app.buttons["call-diagnostics"]
+        if !diagnostics.isHittable { app.swipeUp() }
+        diagnostics.tap()
+        let server = app.staticTexts["call-diagnostics-server"]
+        if !server.exists { app.swipeUp() }
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "通話の通信状況"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        XCTAssertTrue(server.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(server.label, "通話情報の接続：接続済み")
+        XCTAssertEqual(app.staticTexts["call-diagnostics-ice"].label, "接続サーバー：なし")
+        if !diagnostics.isHittable { app.swipeDown() }
+        diagnostics.tap()
+        app.buttons["call-end"].tap()
+        XCTAssertTrue(app.buttons["active-call"].waitForNonExistence(timeout: 5))
+    }
+
     func testCallBannerLeavesNavigationAndComposerAccessible() {
         continueAfterFailure = false
         let app = XCUIApplication()

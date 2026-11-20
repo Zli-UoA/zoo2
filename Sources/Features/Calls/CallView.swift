@@ -10,7 +10,7 @@ struct CallBanner: View {
                 Button { calls.showingCall = true } label: {
                     HStack(spacing: AppDesign.spacing) {
                         Image(systemName: calls.muted ? "mic.slash.fill" : "headphones")
-                        Text("\(workspace.name(for: channel))・\(calls.ready ? "通話中" : "接続中")")
+                        Text("\(workspace.name(for: channel))・\(calls.connectionStatus)")
                         Spacer()
                         Image(systemName: "chevron.right")
                     }
@@ -70,7 +70,8 @@ struct CallView: View {
                 if let channel = store.channel {
                     Section {
                         Label(workspace.name(for: channel), systemImage: "headphones").font(.headline)
-                        if !store.ready { ProgressView("接続中…") }
+                        Text(store.connectionStatus).accessibilityIdentifier("call-connection-status")
+                        if !store.ready { ProgressView() }
                         else if store.participants.count <= 1 { Text("ほかのメンバーの参加を待っています。") }
                         Text("ほかのアプリを開いても通話を続けられます。").font(.caption).foregroundStyle(.secondary)
                     }
@@ -79,6 +80,9 @@ struct CallView: View {
                             HStack(spacing: AppDesign.spacing) {
                                 AvatarView(name: person.name, url: workspace.people[person.user_id]?.avatarURL)
                                 Text(person.name)
+                                if let state = store.peerStates[person.id], state != .connected {
+                                    Text(state.label).font(.caption).foregroundStyle(.secondary)
+                                }
                                 Spacer()
                                 if person.is_muted { Image(systemName: "mic.slash.fill").accessibilityLabel("ミュート中") }
                             }
@@ -111,8 +115,13 @@ struct CallView: View {
                         Button("通話を終了", systemImage: "phone.down.fill", role: .destructive) { store.finish(); dismiss() }
                             .accessibilityIdentifier("call-end")
                     }
+                    CallDiagnosticsSection(store: store)
                 } else if store.error == nil { Text("通話は終了しました。") }
                 if let error = store.error { Text(error).foregroundStyle(.red).accessibilityIdentifier("call-error") }
+                if store.retryChannel != nil {
+                    Button("再接続", systemImage: "arrow.clockwise") { store.retry() }
+                        .accessibilityIdentifier("call-retry")
+                }
             }
             .navigationTitle("音声通話").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } } }
@@ -120,6 +129,44 @@ struct CallView: View {
                 CallInviteView(store: store, workspace: workspace, channel: channel)
             }
             .onChange(of: store.ready) { _, ready in if !ready { invitingChannel = nil } }
+        }
+    }
+}
+
+private struct CallDiagnosticsSection: View {
+    let store: CallStore
+    @State private var expanded = false
+
+    var body: some View {
+        Section {
+            DisclosureGroup("通話の通信状況", isExpanded: $expanded) {
+                if expanded {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("通話情報の接続：\(store.ready ? "接続済み" : "未接続")")
+                            .accessibilityIdentifier("call-diagnostics-server")
+                        Text("接続サーバー：\(store.iceServerKinds.isEmpty ? "なし" : store.iceServerKinds.joined(separator: "・"))")
+                            .accessibilityIdentifier("call-diagnostics-ice")
+                        ForEach(store.diagnostics) { peer in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(store.participants.first { $0.id == peer.id }?.name ?? "参加者").bold()
+                                Text("\(peer.state.label)・ICE：\(peer.iceState)")
+                                Text("経路：\(peer.route)")
+                                Text("音声受信：\(peer.receivedBytes) B・送信：\(peer.sentBytes) B")
+                            }
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                    .font(.caption)
+                    .task {
+                        // 通信状況を開いている間だけ統計を取得し、閉じたら停止する。
+                        while !Task.isCancelled {
+                            await store.refreshDiagnostics()
+                            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                        }
+                    }
+                }
+            }
+            .accessibilityIdentifier("call-diagnostics")
         }
     }
 }

@@ -32,6 +32,7 @@
 		2B5E49E1F342B071682412A5 /* emoji-kitchen.json in Resources */ = {isa = PBXBuildFile; fileRef = 282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */; };
 		2CFD7013D5467E9EDE3D7C07 /* MessageSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C95B5F4BDB5E3364893D00 /* MessageSync.swift */; };
 		30F58F229E22FC2239A1A5DE /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56A4F9C874CC22CFE3F5EA06 /* PeopleView.swift */; };
+		321F928016165948A8736531 /* NativeCallMediaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */; };
 		3263A20A1D055056EC277DE4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6A7719EDD1AC7F79FA44F275 /* Assets.xcassets */; };
 		3433B75975D40B3A19FC5392 /* ChannelManagementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA60D7EE6FE8038A5F10D9A0 /* ChannelManagementTests.swift */; };
 		34F6772827704360C8C111AF /* AttachmentSaveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D55FF32D15ADC5CFB4DDDB1 /* AttachmentSaveTests.swift */; };
@@ -50,6 +51,7 @@
 		4AC6096099048AF5425F8FD7 /* ImagePreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ABFDDBCB88D37E242378003 /* ImagePreviewView.swift */; };
 		4BB114C8A59D8BBF6C2BF478 /* NotificationPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51FA111F133136EC511F356C /* NotificationPreview.swift */; };
 		4C8FBBB14D6C07DAD40D069C /* ZooShortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8D75455ED3D61632AD514B1 /* ZooShortcuts.swift */; };
+		4CC95CA6A4180AC16B56C690 /* CallConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15394EC238B72BE70D20E77B /* CallConnection.swift */; };
 		4D8412CF0BC04BCD70259F6F /* TypingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC9A3F509D28BCB4647FB81D /* TypingStore.swift */; };
 		4EEE80F7647418932F36D08C /* NotificationPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51FA111F133136EC511F356C /* NotificationPreview.swift */; };
 		4F4D1850FA0057D0613FA47F /* NotificationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95F69CCAB38F5C906204A606 /* NotificationController.swift */; };
@@ -216,9 +218,11 @@
 		12D51F722D7C4B8DBFB9B6D3 /* CallStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallStore.swift; sourceTree = "<group>"; };
 		132FD98256984E0F35ADCCDD /* Call.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Call.swift; sourceTree = "<group>"; };
 		14E4AAB4AE5607CB586D5A7B /* AttachmentPreviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentPreviewUITests.swift; sourceTree = "<group>"; };
+		15394EC238B72BE70D20E77B /* CallConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallConnection.swift; sourceTree = "<group>"; };
 		1651B9D5D7861771BAF31E96 /* TypingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingUITests.swift; sourceTree = "<group>"; };
 		1664E69F66D50F581EA2FF8C /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
 		16CF3EB75D2C45B7013FE2FD /* ReactionChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionChips.swift; sourceTree = "<group>"; };
+		17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCallMediaTests.swift; sourceTree = "<group>"; };
 		1B5A97DE9BE174514BFEFB1C /* SyncSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSession.swift; sourceTree = "<group>"; };
 		1EECD0A3E9993C94D242F919 /* ReactionEmoji.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionEmoji.swift; sourceTree = "<group>"; };
 		21BD9F627E87B53FCAE111D3 /* RecentEmojiTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentEmojiTests.swift; sourceTree = "<group>"; };
@@ -425,6 +429,7 @@
 				BDFA0EA73CA3D24EFC391EBC /* InboxTests.swift */,
 				57993368233A06C99B903220 /* IncomingCallTests.swift */,
 				FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */,
+				17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */,
 				88DEB360DFCD9A5EF93469D1 /* NativeChatTests.swift */,
 				4B4C4BE48C074ADC1E8D7E50 /* NetworkTests.swift */,
 				D0BF1120D18E1AAF42BFA9A9 /* NotificationPreviewTests.swift */,
@@ -583,6 +588,7 @@
 			isa = PBXGroup;
 			children = (
 				132FD98256984E0F35ADCCDD /* Call.swift */,
+				15394EC238B72BE70D20E77B /* CallConnection.swift */,
 				984E216091B094C68ED1D671 /* Channel.swift */,
 				288C868343D5CF6B3975C4BF /* ChatPresentation.swift */,
 				AB537CBD3E87CD21D7A6F7FA /* DraftAttachment.swift */,
@@ -897,6 +903,7 @@
 				9C4AC6D0333226761FBC7CA9 /* InboxTests.swift in Sources */,
 				46D213091D0C9ECF3B419F83 /* IncomingCallTests.swift in Sources */,
 				429726CC1380B378CAB26B5C /* MessageContentTests.swift in Sources */,
+				321F928016165948A8736531 /* NativeCallMediaTests.swift in Sources */,
 				392A7D2098A29B5DCA8A6142 /* NativeChatTests.swift in Sources */,
 				B73229EA47C697500B02EFED /* NetworkTests.swift in Sources */,
 				F9C7123D1EE2F360EA0B2F27 /* NotificationPreviewTests.swift in Sources */,
@@ -960,6 +967,7 @@
 				7734920B54638328E4A06324 /* CachedSyncModels.swift in Sources */,
 				58F7E998B1EAE15F8AF73C2C /* Call.swift in Sources */,
 				85E6D5F0F8C6965E41C1EB52 /* CallClient.swift in Sources */,
+				4CC95CA6A4180AC16B56C690 /* CallConnection.swift in Sources */,
 				5DB7DFA19CDDFFDE5AFE7D4E /* CallStore.swift in Sources */,
 				1B7F6BCAE4C67B7914263744 /* CallView.swift in Sources */,
 				C45C537309681A0964E5077E /* Channel.swift in Sources */,
