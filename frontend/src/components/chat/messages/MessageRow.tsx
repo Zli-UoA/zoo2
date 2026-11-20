@@ -1,5 +1,5 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useId, useMemo, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -26,6 +26,7 @@ import { previewUrls } from "./linkPreviews";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
+import { loadRecentEmojis } from "../../../lib/emoji/recents";
 import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
@@ -68,6 +69,9 @@ const touchHitArea = "[@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-1
 /** 枠や背景を持つチップは見た目を変えず、透明な疑似要素で当たり判定だけを広げる。 */
 const touchChipHitArea =
   "[@media(hover:none)]:after:absolute [@media(hover:none)]:after:inset-x-0 [@media(hover:none)]:after:-inset-y-3 [@media(hover:none)]:after:content-['']";
+
+const sheetActionClass =
+  "flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50";
 
 export interface MessageRowProps {
   item: MessageItem;
@@ -386,14 +390,15 @@ export function MessageRow({
     }
     return labels;
   }
-  const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressed = useRef(false);
-  const origin = useRef({ x: 0, y: 0 });
-  function cancelHold() {
-    if (hold.current !== null) clearTimeout(hold.current);
-    hold.current = null;
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const recentEmojis = useMemo(() => loadRecentEmojis().slice(0, 6), [sheetOpen]);
+
+  function openSheetOnTap(event: MouseEvent<HTMLDivElement>) {
+    // リンクや既存の操作ボタンのタップは従来どおり動かす。
+    if ((event.target as HTMLElement).closest("a, button, input, textarea, [role='button']"))
+      return;
+    setSheetOpen(true);
   }
-  useEffect(() => cancelHold, []);
 
   const threadButton = onOpenThread ? (
     <Button
@@ -412,51 +417,7 @@ export function MessageRow({
     <>
       {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
       <div
-        onPointerDown={(event) => {
-          cancelHold();
-          longPressed.current = false;
-          if (
-            isEditing ||
-            event.pointerType !== "touch" ||
-            !event.isPrimary ||
-            (event.target as HTMLElement).closest("button, a, input, textarea")
-          )
-            return;
-          origin.current = { x: event.clientX, y: event.clientY };
-          hold.current = setTimeout(() => {
-            longPressed.current = true;
-            setMenuOpen(true);
-            hold.current = null;
-          }, 500);
-        }}
-        onPointerMove={(event) => {
-          if (Math.hypot(event.clientX - origin.current.x, event.clientY - origin.current.y) > 10)
-            cancelHold();
-        }}
-        onPointerUp={(event) => {
-          cancelHold();
-          if (longPressed.current) event.stopPropagation();
-        }}
-        onTouchEnd={(event) => {
-          if (longPressed.current) {
-            event.preventDefault();
-            event.stopPropagation();
-            longPressed.current = false;
-          }
-        }}
-        onPointerCancel={() => {
-          cancelHold();
-          longPressed.current = false;
-        }}
-        onTouchCancel={() => {
-          cancelHold();
-          longPressed.current = false;
-        }}
-        onContextMenu={(event) => {
-          // リンクなどの標準メニューは維持し、本文の長押しは操作メニューに使う。
-          if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
-          if (longPressed.current || menuOpen || hold.current !== null) event.preventDefault();
-        }}
+        onClick={openSheetOnTap}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",
@@ -884,6 +845,116 @@ export function MessageRow({
               )}
             </ul>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={sheetOpen} onOpenChange={setSheetOpen}>
+        <DialogContent
+          aria-label={t("messages.actions")}
+          className="inset-x-0 bottom-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none pb-6 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-w-sm sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
+        >
+          <DialogTitle>{t("messages.actions")}</DialogTitle>
+          {canReact && recentEmojis.length > 0 ? (
+            <div role="group" aria-label={t("reactions.recent")}>
+              <p className="mb-2 text-xs text-muted-foreground">{t("reactions.recent")}</p>
+              <div className="flex flex-wrap gap-1">
+                {recentEmojis.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    aria-label={emoji}
+                    className="flex size-11 items-center justify-center rounded-lg text-2xl outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+                    onClick={() => {
+                      onReaction(emoji);
+                      setSheetOpen(false);
+                    }}
+                  >
+                    <span aria-hidden="true">{emoji}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="flex flex-col">
+            {onOpenThread ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onOpenThread();
+                }}
+              >
+                <MessageSquareTextIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("threads.open")}
+              </button>
+            ) : null}
+            {canReact ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onPickReaction();
+                }}
+              >
+                <SmilePlusIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("reactions.add")}
+              </button>
+            ) : null}
+            {resolvedDecryption?.status !== "undecryptable" ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  void copyRawMessage();
+                }}
+              >
+                <CopyIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.copyRaw")}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={sheetActionClass}
+              onClick={() => {
+                setSheetOpen(false);
+                window.dispatchEvent(
+                  new CustomEvent("zoo:message-actions", { detail: message.id }),
+                );
+              }}
+            >
+              <BotIcon className="size-4 shrink-0" aria-hidden="true" />
+              {t("apps.messageActions")}
+            </button>
+            {canEdit ? (
+              <button
+                type="button"
+                className={sheetActionClass}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onStartEdit();
+                }}
+              >
+                <PencilIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.edit")}
+              </button>
+            ) : null}
+            {canDelete ? (
+              <button
+                type="button"
+                className={cn(sheetActionClass, "text-destructive hover:bg-destructive/10")}
+                onClick={() => {
+                  setSheetOpen(false);
+                  onRequestDelete();
+                }}
+              >
+                <TrashIcon className="size-4 shrink-0" aria-hidden="true" />
+                {t("messages.delete")}
+              </button>
+            ) : null}
+          </div>
         </DialogContent>
       </Dialog>
     </>

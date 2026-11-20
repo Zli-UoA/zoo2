@@ -216,6 +216,7 @@
     "edit": "Edit",
     "delete": "Delete",
     "more": "More actions",
+    "actions": "Message actions",
     "editLabel": "Edit message",
     "loadError": "Failed to load messages",
     "retryHelp": "Check your connection and try again.",

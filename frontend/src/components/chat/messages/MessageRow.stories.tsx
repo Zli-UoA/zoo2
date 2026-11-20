@@ -686,6 +686,27 @@ export const EncryptedWithAttachments: Story = {
   }),
 };
 
+export const TouchActionSheet: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
+  args: {
+    isOwn: true,
+    canReact: true,
+    onOpenThread: fn(),
+    onPickReaction: fn(),
+    onRequestDelete: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByText(/こんにちは/));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    await waitFor(async () => {
+      await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
+    });
+    await expect(within(sheet).getByRole("button", { name: "リアクションを追加" })).toBeVisible();
+    await expect(within(sheet).getByRole("button", { name: "削除" })).toBeVisible();
+  }),
+};
+
 export const EncryptedAttachmentDecryptFailed: Story = {
   args: {
     item: encryptedItem,

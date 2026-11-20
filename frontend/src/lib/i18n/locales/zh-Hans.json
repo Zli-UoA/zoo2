@@ -216,6 +216,7 @@
     "edit": "编辑",
     "delete": "删除",
     "more": "更多操作",
+    "actions": "操作消息",
     "editLabel": "编辑消息",
     "loadError": "无法加载消息",
     "retryHelp": "请检查连接后重试。",

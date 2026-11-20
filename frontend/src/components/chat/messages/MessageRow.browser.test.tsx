@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -112,18 +112,13 @@ describe("MessageRow", () => {
     expect(chip.getBoundingClientRect().height).toBeLessThan(30);
     expect(parseFloat(getComputedStyle(chip, "::after").height)).toBeGreaterThanOrEqual(44);
 
-    // タッチでは長押しでメニューが開き、操作はメニュー項目から行う。
-    fireEvent.pointerDown(screen.getByText("hello"), {
-      pointerType: "touch",
-      isPrimary: true,
-      clientX: 10,
-      clientY: 10,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 550));
+    // タッチでは本文タップでシートが開き、操作はシート内のボタンから行う。
+    await userEvent.click(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
 
     for (const name of ["リアクションを追加", "スレッドを開く", "編集", "削除"]) {
-      const item = await screen.findByRole("menuitem", { name });
-      // メニューは出現アニメーションで一時的に scale されるため、落ち着くまで待つ。
+      const item = within(sheet).getByRole("button", { name });
+      // シートは出現アニメーションで一時的に scale されるため、落ち着くまで待つ。
       await waitFor(() => {
         const { width, height } = item.getBoundingClientRect();
         expect(width).toBeGreaterThanOrEqual(44);
@@ -365,29 +360,26 @@ describe("MessageRow", () => {
     },
   );
 
-  it("opens the menu on a touch hold and adds the first reaction", async () => {
+  it("opens the action sheet on a tap and adds the first reaction", async () => {
     const onPickReaction = vi.fn();
-    const { container } = renderRow(buildItem(), false, { canReact: true, onPickReaction });
-    const row = container.querySelector("div.group\\/row")!;
-    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
-    await waitFor(() =>
-      expect(screen.getByRole("menuitem", { name: "リアクションを追加" })).toBeTruthy(),
-    );
-    await userEvent.click(screen.getByRole("menuitem", { name: "リアクションを追加" }));
+    renderRow(buildItem(), false, { canReact: true, onPickReaction });
+    await userEvent.click(screen.getByText("hello"));
+    const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+    await userEvent.click(within(sheet).getByRole("button", { name: "リアクションを追加" }));
     expect(onPickReaction).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull(),
+    );
   });
 
-  it("opens App message actions from the touch hold menu", async () => {
+  it("opens App message actions from the tap action sheet", async () => {
     const opened = vi.fn();
     window.addEventListener("zoo:message-actions", opened);
     try {
-      const { container } = renderRow(buildItem());
-      const row = container.querySelector("div.group\\/row")!;
-      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-      await waitFor(() =>
-        expect(screen.getByRole("menuitem", { name: "Appでメッセージを操作" })).toBeTruthy(),
-      );
-      await userEvent.click(screen.getByRole("menuitem", { name: "Appでメッセージを操作" }));
+      renderRow(buildItem());
+      await userEvent.click(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      await userEvent.click(within(sheet).getByRole("button", { name: "Appでメッセージを操作" }));
       expect(opened).toHaveBeenCalledOnce();
       expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
     } finally {
@@ -395,70 +387,17 @@ describe("MessageRow", () => {
     }
   });
 
-  it("cancels a touch hold when scrolling", async () => {
-    const { container } = renderRow(buildItem());
-    const row = container.querySelector("div.group\\/row")!;
-    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
-    fireEvent.pointerMove(row, { pointerType: "touch", clientX: 20, clientY: 50 });
-    await new Promise((resolve) => setTimeout(resolve, 550));
-    expect(screen.queryByRole("menu")).toBeNull();
+  it("does not open the sheet when a link is tapped", async () => {
+    renderRow(buildItem({ content: "hello https://example.com" }));
+    await userEvent.click(screen.getByRole("link", { name: "example.com" }));
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
-  for (const cancel of ["pointerCancel", "touchCancel"] as const) {
-    it(`clears a completed hold after ${cancel} so a subsequent reaction tap works`, async () => {
-      const onReaction = vi.fn();
-      const { container } = renderRow(buildItem(), false, {
-        canReact: true,
-        onReaction,
-        reactions: [{ emoji: "👍", count: 1, ownId: null }],
-      });
-      const row = container.querySelector("div.group\\/row")!;
-      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-      await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-      fireEvent[cancel](row);
-      // pointercancel の後に touchend が届かなくても抑止状態を残さない。
-      expect(fireEvent.touchEnd(row)).toBe(true);
-      await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-      const reaction = screen.getByRole("button", { name: "👍 1 件" });
-      fireEvent.pointerDown(reaction, { pointerType: "touch", isPrimary: true });
-      expect(fireEvent.touchEnd(reaction)).toBe(true);
-      await userEvent.click(reaction);
-      expect(onReaction).toHaveBeenCalledWith("👍");
-    });
-  }
-
-  it("preserves native context menus on links while using body holds for actions", async () => {
+  it("leaves the native context menu available for text selection", () => {
     const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
     const row = container.querySelector("div.group\\/row")!;
-    const link = screen.getByRole("link", { name: "example.com" });
     expect(fireEvent.contextMenu(row)).toBe(true);
-    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-    expect(fireEvent.contextMenu(row)).toBe(false);
-    expect(fireEvent.contextMenu(link)).toBe(true);
-    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
-    expect(fireEvent.contextMenu(row)).toBe(false);
-    expect(fireEvent.contextMenu(link)).toBe(true);
-    fireEvent.pointerCancel(row);
-  });
-
-  it("suppresses the native menu immediately after the hold timer before React commits", () => {
-    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
-    const row = container.querySelector("div.group\\/row")!;
-    const link = screen.getByRole("link", { name: "example.com" });
-    vi.useFakeTimers();
-    try {
-      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
-      act(() => {
-        vi.advanceTimersByTime(500);
-        // state の反映前、タイマーはクリア済みでも本文の標準メニューを抑止する。
-        expect(screen.queryByRole("menu")).toBeNull();
-        expect(fireEvent.contextMenu(row)).toBe(false);
-        expect(fireEvent.contextMenu(link)).toBe(true);
-      });
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
   it("offers the long-press menu as a keyboard fallback", async () => {
