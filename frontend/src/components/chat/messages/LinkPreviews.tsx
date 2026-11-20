@@ -6,9 +6,10 @@ import {
 } from "../../../lib/summaly";
 import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
-import { previewUrls, proxyImageUrl } from "./linkPreviews";
+import { proxyImageUrl } from "../../../lib/media-proxy";
+import { previewUrls } from "./linkPreviews";
 import { acquirePreview, cachedPreview, subscribePreview } from "./linkPreviewRequests";
-import { subscribePreviewEndpoints, type PreviewEndpoints } from "./linkPreviewEndpoints";
+import { subscribePreviewEndpoints, type PreviewEndpoints } from "../../../lib/preview-endpoints";
 
 function LinkPreview({
   url,

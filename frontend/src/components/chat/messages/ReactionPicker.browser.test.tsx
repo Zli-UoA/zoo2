@@ -131,8 +131,8 @@ describe("ReactionPicker", () => {
     const { onSelect, onOpenChange } = renderPicker();
 
     await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
-    expect(screen.queryByTestId("mock-emoji")).toBeNull();
-    expect(document.body.textContent).toContain("1つ目の絵文字");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "😀" })).toBeNull());
+    expect(await screen.findByText("1つ目の絵文字")).toBeVisible();
 
     fireEvent.load(screen.getByRole("img", { name: "組み合わせのプレビュー" }));
 

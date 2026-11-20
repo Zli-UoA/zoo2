@@ -107,55 +107,53 @@ class PreviewLoader(private val app: Session, private val clock: TimeSource = Ti
     private data class Work(val request: Deferred<PreviewData?>, var users: Int = 0)
 
     private val pending = mutableMapOf<String, Work>()
-    private var resolved: Pair<String, String>? = null
+    private val summalyEndpoint = runtimeEndpoint("/summaly-endpoint", app.config.summalyUrl)
+    val mediaProxyEndpoint = runtimeEndpoint("/media-proxy-endpoint", app.config.mediaProxyUrl)
     val endpoints =
-        flow {
-                resolved?.let {
-                    emit(it)
-                    return@flow
-                }
-                var wait = 2000L
-                while (currentCoroutineContext().isActive) {
-                    if (!app.env.online || !app.env.visible) { delay(wait); continue }
-                    try {
-                        suspend fun runtime(path: String): String {
-                            val value =
-                                json
-                                    .parseToJsonElement(
-                                        app.platform.invoke(
-                                            "publicGet",
-                                            obj("url" to endpoint(app.config.assetsBaseUrl, path))
-                                                .toString(),
-                                        )
-                                    )
-                                    .jsonObject
-                            return if (value.text("contentType").startsWith("text/plain"))
-                                value.text("body").trim()
-                            else ""
-                        }
-                        val next = coroutineScope {
-                            val summaly = async { runtime("/summaly-endpoint") }
-                            val media = async { runtime("/media-proxy-endpoint") }
-                            summaly.await().ifEmpty { app.config.summalyUrl } to
-                                media.await().ifEmpty { app.config.mediaProxyUrl }
-                        }
-                        resolved = next
-                        emit(next)
-                        break
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        emit(app.config.summalyUrl to app.config.mediaProxyUrl)
-                        delay(wait)
-                        wait = (wait * 2).coerceAtMost(30000)
-                    }
-                }
-            }
+        summalyEndpoint.combine(mediaProxyEndpoint) { summaly, media -> summaly to media }
             .stateIn(
                 app.scope,
                 SharingStarted.WhileSubscribed(0),
                 app.config.summalyUrl to app.config.mediaProxyUrl,
             )
+
+    private fun runtimeEndpoint(path: String, fallback: String): StateFlow<String> {
+        var resolved: String? = null
+        return flow {
+            resolved?.let {
+                emit(it)
+                return@flow
+            }
+            var wait = 2000L
+            while (currentCoroutineContext().isActive) {
+                if (!app.env.online || !app.env.visible) {
+                    delay(wait)
+                    continue
+                }
+                val configured = try {
+                    val value = json.parseToJsonElement(
+                        app.platform.invoke(
+                            "publicGet",
+                            obj("url" to endpoint(app.config.assetsBaseUrl, path)).toString(),
+                        )
+                    ).jsonObject
+                    if (value.text("contentType").startsWith("text/plain"))
+                        value.text("body").trim()
+                    else ""
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    delay(wait)
+                    wait = (wait * 2).coerceAtMost(30000)
+                    continue
+                }
+                val value = configured.ifEmpty { fallback }
+                resolved = value
+                emit(value)
+                break
+            }
+        }.stateIn(app.scope, SharingStarted.WhileSubscribed(0), fallback)
+    }
 
     suspend fun load(service: String, url: String): PreviewData? {
         val key = "$service:$url"

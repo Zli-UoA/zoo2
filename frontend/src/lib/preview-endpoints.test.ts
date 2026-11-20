@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vite-plus/test";
-import { DEFAULT_CONFIG } from "../../../lib/config";
+import { DEFAULT_CONFIG } from "./config";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 it("retries runtime configuration after a network failure and then shares success", async () => {
-  const { previewEndpoints } = await import("./linkPreviewEndpoints");
+  const { previewEndpoints } = await import("./preview-endpoints");
   const fetch = vi.fn().mockRejectedValue(new TypeError("offline"));
   vi.stubGlobal("fetch", fetch);
   await expect(previewEndpoints(DEFAULT_CONFIG)).rejects.toThrow("offline");
@@ -25,7 +25,7 @@ it("retries runtime configuration after a network failure and then shares succes
 });
 
 it("does not retain HTTP failures as empty configuration", async () => {
-  const { previewEndpoints } = await import("./linkPreviewEndpoints");
+  const { previewEndpoints } = await import("./preview-endpoints");
   const fetch = vi.fn().mockImplementation(async () => new Response("error", { status: 503 }));
   vi.stubGlobal("fetch", fetch);
   await expect(previewEndpoints(DEFAULT_CONFIG)).rejects.toThrow();
