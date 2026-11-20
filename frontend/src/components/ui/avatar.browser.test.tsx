@@ -5,10 +5,6 @@ import { expect, it, vi } from "vite-plus/test";
 import { mockServer, startMockServer } from "../../test/browser-setup";
 import { Avatar, AvatarFallback, AvatarImage } from "./avatar";
 
-vi.mock("../../lib/electric/collections-context", () => ({
-  useOptionalCollections: () => null,
-}));
-
 it("loads Slack avatars through the shared media proxy endpoint", async () => {
   await startMockServer();
   const slackUrl = "https://avatars.slack-edge.com/profile.png?size=72&v=2";
@@ -34,7 +30,11 @@ it("loads Slack avatars through the shared media proxy endpoint", async () => {
         <AvatarFallback>A</AvatarFallback>
       </Avatar>
       <Avatar>
-        <AvatarImage src={slackUrl} alt="Alice in the member list" />
+        <AvatarImage
+          src={slackUrl.slice("https:".length)}
+          srcSet={`${slackUrl} 1x`}
+          alt="Alice in the member list"
+        />
         <AvatarFallback>A</AvatarFallback>
       </Avatar>
     </>,
@@ -44,6 +44,7 @@ it("loads Slack avatars through the shared media proxy endpoint", async () => {
   await waitFor(() => expect(screen.getAllByRole("img", { name: /^Alice/ })).toHaveLength(2));
   const avatars = screen.getAllByRole("img", { name: /^Alice/ });
   for (const avatar of avatars) {
+    expect(avatar).not.toHaveAttribute("srcset");
     expect(avatar).toHaveAttribute("src", `/test-media-proxy?url=${encodeURIComponent(slackUrl)}`);
   }
   expect(proxied).toHaveBeenCalled();

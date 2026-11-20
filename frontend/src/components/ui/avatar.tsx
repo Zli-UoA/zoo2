@@ -4,7 +4,6 @@ import * as React from "react";
 import { Avatar as AvatarPrimitive } from "@base-ui/react/avatar";
 import { cn } from "cn";
 import { resolvePublicConfig } from "../../lib/config";
-import { useOptionalCollections } from "../../lib/electric/collections-context";
 import { proxyImageUrl } from "../../lib/media-proxy";
 import { subscribeMediaProxyEndpoint } from "../../lib/preview-endpoints";
 import { avatarSource, subscribeAvatar } from "../../lib/pwa/avatar-cache";
@@ -30,28 +29,25 @@ function Avatar({
 }
 
 function AvatarImage(props: AvatarPrimitive.Image.Props) {
-  if (props.src && isSlackAvatar(props.src)) {
-    return <SlackAvatarImage {...props} src={props.src} />;
+  const slackSource = props.src ? slackAvatarUrl(props.src) : undefined;
+  if (slackSource) {
+    return <SlackAvatarImage {...props} src={slackSource} srcSet={undefined} />;
   }
   return <CachedAvatarImage {...props} />;
 }
 
-function isSlackAvatar(src: string): boolean {
+function slackAvatarUrl(src: string): string | undefined {
   try {
-    return new URL(src).hostname === "avatars.slack-edge.com";
+    const url = new URL(src, "https://same-origin.invalid");
+    return url.hostname === "avatars.slack-edge.com" ? url.href : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
 function SlackAvatarImage({ src, ...props }: AvatarPrimitive.Image.Props & { src: string }) {
-  const collections = useOptionalCollections();
-  const config = React.useMemo(
-    () => collections?.config ?? resolvePublicConfig(),
-    [collections?.config],
-  );
   const [endpoint, setEndpoint] = React.useState("");
-  React.useEffect(() => subscribeMediaProxyEndpoint(config, setEndpoint), [config]);
+  React.useEffect(() => subscribeMediaProxyEndpoint(resolvePublicConfig(), setEndpoint), []);
   const source = proxyImageUrl(endpoint, src);
   return source ? <CachedAvatarImage {...props} src={source} /> : null;
 }
