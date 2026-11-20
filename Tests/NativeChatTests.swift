@@ -547,6 +547,61 @@ struct NativeChatTests {
         #expect(store.messages.first?.parent_id == parent)
     }
 
+    @Test("参加が必要なスレッドへの返信が403なら、参加して同じ ID で再送する", arguments: [false, true])
+    func replyRejoinsThreadAfterForbidden(archived: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let parent = "22222222-2222-4222-8222-222222222222"
+        let calls = Mutex<[String]>([])
+        let ids = Mutex<[String]>([])
+        harness.stub { request in
+            let path = request.url?.path ?? ""
+            calls.withLock { $0.append("\(request.httpMethod ?? "") \(path)") }
+            if path == "/api/messages" {
+                let message = try Self.sentMessage(request)
+                let attempt = ids.withLock { $0.append(message.id); return $0.count }
+                if attempt == 1 { return (403, [:], Data(#"{"error":"Join the thread before replying"}"#.utf8)) }
+                return (200, [:], try Self.envelope(message))
+            }
+            if path == "/api/threads/\(parent)" {
+                let status: JSONValue = .object([
+                    "membership": .string("left"), "can_participate": .bool(true),
+                    "thread_archive_at": archived ? .string("2026-11-01T00:00:00Z") : .null
+                ])
+                return (200, [:], try JSONEncoder().encode(["data": status]))
+            }
+            return (200, [:], try Self.envelope(["ok": true]))
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        store.drafts[parent] = "退出後の返信"
+        await store.send(parentID: parent)
+        #expect(store.drafts[parent] == "")
+        #expect(store.sendErrors[parent] == nil)
+        #expect(ids.withLock { $0.count == 2 && $0[0] == $0[1] })
+        let expected = ["POST /api/messages", "GET /api/threads/\(parent)"]
+            + (archived ? ["POST /api/threads/\(parent)/unarchive"] : [])
+            + ["POST /api/threads/\(parent)/join", "POST /api/messages"]
+        #expect(calls.withLock { $0 } == expected)
+    }
+
+    @Test("参加不足以外の403（投稿権限なしなど）では参加せず、下書きを保持してエラーにする")
+    func otherForbiddenDoesNotJoin() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let parent = "22222222-2222-4222-8222-222222222222"
+        let calls = Mutex<[String]>([])
+        harness.stub { request in
+            calls.withLock { $0.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")") }
+            return (403, [:], Data(#"{"error":"Only managers can post in this channel"}"#.utf8))
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        store.drafts[parent] = "送れない返信"
+        await store.send(parentID: parent)
+        #expect(store.drafts[parent] == "送れない返信")
+        #expect(store.sendErrors[parent] != nil)
+        #expect(calls.withLock { $0 } == ["POST /api/messages"])
+    }
+
     @Test("暗号化・アーカイブ済みチャンネルには平文を送らない", arguments: [true, false])
     func readOnlyChannels(encrypted: Bool) async throws {
         let harness = try ChatHarness()
