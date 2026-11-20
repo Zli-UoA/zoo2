@@ -147,7 +147,10 @@ final class AppSession {
         let sync = SyncSession(cache: cache, lease: lease)
         syncSession = sync
         userID = user.id
-        let workspace = WorkspaceStore(client: NativeChatClient(api: api, sync: sync), user: user)
+        let client = NativeChatClient(api: api, sync: sync)
+        let journal = KeychainCallSessionJournal(account: SyncCache.connectionKey(api.settings) + ":" + user.id)
+        let calls = CallStore(client: client, userID: user.id, sessionJournal: Self.isUITesting ? nil : journal)
+        let workspace = WorkspaceStore(client: client, user: user, calls: calls)
         sync.onChannelRevoked = { [weak workspace] id in workspace?.inbox.revokeChannel(id) }
         workspace.onExpiredSession = { [weak self] in
             self?.logout()

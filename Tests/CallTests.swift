@@ -38,6 +38,8 @@ final class FakeCallClient: CallClient {
     var commandFailure: (@MainActor (String) -> Error?)?
     var commandBodies: [(String, [String: JSONValue])] = []
     var commandObserved: (@MainActor (String) -> Void)?
+    var beforeCommand: (@MainActor (String) async throws -> Void)?
+    var commandChannels: [String] = []
     var accepted = false
     var failStream = false
     var delivered: (@MainActor () -> Void)?
@@ -66,6 +68,8 @@ final class FakeCallClient: CallClient {
     }
     func callCommand(channelID: String, action: String, body: [String: JSONValue]) async throws {
         commands.append(action); commandBodies.append((action, body))
+        commandChannels.append(channelID)
+        try await beforeCommand?(action)
         let failure = commandFailure?(action)
         commandObserved?(action)
         if let failure { throw failure }
