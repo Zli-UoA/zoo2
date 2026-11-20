@@ -37,6 +37,7 @@ final class RemoteImageStore {
     private let disk: RemoteImageDiskCache
     private let session: URLSession
     private let now: @MainActor () -> Date
+    private let sleep: @MainActor (TimeInterval) async throws -> Void
     private let states = NSCache<NSURL, RemoteImageState>()
     private final class WeakState {
         weak var value: RemoteImageState?
@@ -65,11 +66,13 @@ final class RemoteImageStore {
     }()
 
     init(namespace: String, disk: RemoteImageDiskCache = .shared, session: URLSession? = nil,
-         now: @escaping @MainActor () -> Date = { .now }) {
+         now: @escaping @MainActor () -> Date = { .now },
+         sleep: @escaping @MainActor (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.namespace = namespace
         self.disk = disk
         self.session = session ?? Self.publicSession
         self.now = now
+        self.sleep = sleep
         states.totalCostLimit = 32 * 1024 * 1024
         states.countLimit = 256
     }
@@ -112,9 +115,23 @@ final class RemoteImageStore {
             await withTaskGroup(of: Void.self) { group in
                 for url in displayed.keys { group.addTask { await self.load(url, policy: policy) } }
             }
-            do { try await Task.sleep(for: .seconds(Self.refreshInterval)) }
+            do { try await sleep(nextLoadDelay(for: displayed, policy: policy)) }
             catch { return }
         }
+    }
+
+    func nextLoadDelay(for displayed: [URL: RemoteImageState], policy: RemoteImagePolicy) -> TimeInterval {
+        var delay = Self.refreshInterval
+        guard policy == .refreshing else { return delay }
+        let time = now()
+        for state in displayed.values {
+            let deadline: Date
+            if state.retryAfter != .distantPast { deadline = state.retryAfter }
+            else if state.image != nil { deadline = state.checkedAt.addingTimeInterval(Self.refreshInterval) }
+            else { continue }
+            delay = min(delay, max(0, deadline.timeIntervalSince(time)))
+        }
+        return delay
     }
 
     private func fetch(_ url: URL, state: RemoteImageState, policy: RemoteImagePolicy) async {

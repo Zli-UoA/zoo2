@@ -14,6 +14,87 @@ struct RemoteImageTests {
 
     @MainActor private final class Clock { var value = Date() }
 
+    @Test("再表示では残りの有効時間でアイコンを更新し、保存スタンプは再取得しない", arguments: [RemoteImagePolicy.refreshing, .stored])
+    func schedulesRefreshFromLastCheck(policy: RemoteImagePolicy) async throws {
+        let folder = try folder()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
+        let requests = Mutex(0)
+        harness.stub { _ in
+            requests.withLock { $0 += 1 }
+            return (200, [:], bytes)
+        }
+        let clock = Clock()
+        var waits: [TimeInterval] = []
+        let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
+                                     session: harness.api.transport.session, now: { clock.value }, sleep: { delay in
+            waits.append(delay)
+            if waits.count == 2 { throw CancellationError() }
+            clock.value.addTimeInterval(delay)
+        })
+        defer { store.close() }
+        await store.load(url, policy: policy)
+        let state = store.state(for: url), image = try #require(store.state(for: url).image)
+        clock.value.addTimeInterval(299)
+        await store.watch([url: state], policy: policy)
+        #expect(waits == (policy == .refreshing ? [1, 300] : [300, 300]))
+        #expect(requests.withLock { $0 } == (policy == .refreshing ? 2 : 1))
+        #expect(state.image === image)
+    }
+
+    @Test("期限後の更新が失敗しても画像を残し、再試行期限まで待機する")
+    func waitsAfterRefreshFailure() async throws {
+        let folder = try folder()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
+        let clock = Clock()
+        var waits: [TimeInterval] = []
+        let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
+                                     session: harness.api.transport.session, now: { clock.value }, sleep: { delay in
+            waits.append(delay)
+            throw CancellationError()
+        })
+        defer { store.close() }
+        harness.stub { _ in (200, [:], bytes) }
+        await store.load(url)
+        let state = store.state(for: url), image = try #require(store.state(for: url).image)
+        clock.value.addTimeInterval(301)
+        harness.stub { _ in throw URLError(.notConnectedToInternet) }
+        await store.watch([url: state])
+        #expect(waits == [30])
+        #expect(state.image === image)
+    }
+
+    @Test("別の画像の取得中に再試行期限を過ぎた場合は、追加で待機しない")
+    func includesExpiredRetryAmongImages() async throws {
+        let folder = try folder()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let clock = Clock()
+        let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
+                                     session: harness.api.transport.session, now: { clock.value })
+        defer { store.close() }
+        harness.stub { _ in throw URLError(.notConnectedToInternet) }
+        await store.load(url)
+        let failed = store.state(for: url)
+        #expect(failed.image == nil)
+        clock.value.addTimeInterval(35)
+        let secondURL = url.appendingPathComponent("取得が遅い画像")
+        let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
+        harness.stub { _ in (200, [:], bytes) }
+        await store.load(secondURL)
+        let second = store.state(for: secondURL)
+        #expect(second.image != nil)
+        #expect(store.nextLoadDelay(for: [url: failed, secondURL: second], policy: .refreshing) == 0)
+        let missingURL = url.appendingPathComponent("未取得")
+        #expect(store.nextLoadDelay(for: [missingURL: store.state(for: missingURL)], policy: .refreshing) == 300)
+    }
+
     @Test("アイコンとスタンプで描画用画像を共有し、再起動後はオフラインでも復元する")
     func reusesMemoryAndDisk() async throws {
         let folder = try folder()
