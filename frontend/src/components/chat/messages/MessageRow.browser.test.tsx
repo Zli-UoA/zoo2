@@ -404,12 +404,15 @@ describe("MessageRow", () => {
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
-  it("does not open the sheet when an existing menu item is clicked", async () => {
+  it("does not open the sheet when an existing menu item is tapped", async () => {
     const onStartEdit = vi.fn();
     renderRow(buildItem(), true, { onStartEdit });
     screen.getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
-    await userEvent.click(screen.getByRole("menuitem", { name: "編集" }));
+    const item = screen.getByRole("menuitem", { name: "編集" });
+    // タッチの pointerDown/Up を送っても、メニュー項目から操作シートは開かない。
+    tapTouch(item);
+    await userEvent.click(item);
     expect(onStartEdit).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
