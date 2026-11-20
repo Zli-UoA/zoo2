@@ -1,5 +1,6 @@
 import UIKit
 import UserNotifications
+import Intents
 
 @MainActor
 final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -8,6 +9,9 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
     let systemCalls = SystemCallController()
     private var pendingMessageTap: PushDestination?
     private var pendingTest: PushNotice?
+    func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
+        intent is INSendMessageIntent ? SiriMessageHandler() : nil
+    }
     func bind(_ controller: NotificationController) {
         self.controller = controller
         if let pendingMessageTap { controller.opened(.message(pendingMessageTap)); self.pendingMessageTap = nil }

@@ -148,8 +148,11 @@ final class AppSession {
             self?.logout()
             self?.error = ZooError.expiredSession.localizedDescription
         }
-        workspace.onPeopleChanged = {
-            if !Self.isUITesting { ZooShortcuts.updateAppShortcutParameters() }
+        workspace.onPeopleChanged = { [weak workspace] in
+            if !Self.isUITesting {
+                ZooShortcuts.updateAppShortcutParameters()
+                SiriVocabulary.update(workspace)
+            }
         }
         self.workspace = workspace
         systemCalls?.connect(workspace)
@@ -171,7 +174,10 @@ final class AppSession {
         workspace = nil
         userID = nil
         validatedSession = false
-        if !Self.isUITesting { ZooShortcuts.updateAppShortcutParameters() }
+        if !Self.isUITesting {
+            ZooShortcuts.updateAppShortcutParameters()
+            SiriVocabulary.update(nil)
+        }
         notifications.logout()
         authentication.logout()
         if let syncSession { cacheCleanup = syncSession.close() }
