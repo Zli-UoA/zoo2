@@ -2,7 +2,23 @@ import Foundation
 import Security
 import Synchronization
 import Testing
+import UserNotifications
 @testable import Zoo
+
+// 公開の復元APIで通知を作り、OSが呼ぶObjective-Cのデリゲート入口まで検証する。
+private final class NotificationTestCoder: NSCoder {
+    private let values: [String: Any]
+    init(_ values: [String: Any]) { self.values = values }
+    override var allowsKeyedCoding: Bool { true }
+    override func decodeObject(forKey key: String) -> Any? { values[key] }
+
+    static func notification(payload: [String: String]) throws -> UNNotification {
+        let content = UNMutableNotificationContent()
+        content.userInfo = payload
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        return try #require(UNNotification(coder: NotificationTestCoder(["request": request, "date": Date()])))
+    }
+}
 
 // URLProtocolの継承にはunchecked適合が必要なため、追加する可変状態はすべてMutexで保護します。
 final class StubProtocol: URLProtocol, @unchecked Sendable {
@@ -416,6 +432,75 @@ struct NetworkTests {
             Issue.record("テストを送っていないアカウントで配信済み通知を取得しました。")
             return []
         }
+    }
+
+    @Test("通知表示の完了をメインスレッドで一度だけ返す", arguments: [true, false])
+    func testForegroundNotificationCompletion(validPayload: Bool) async throws {
+        let api = try client()
+        let user = UUID().uuidString
+        let preference = "zoo.push.enabled." + PushReceipt.digest(api.settings.storageKey + "|" + user)
+        UserDefaults.standard.set(true, forKey: preference)
+        defer {
+            UserDefaults.standard.removeObject(forKey: preference)
+            api.auth.logout()
+            api.transport.session.invalidateAndCancel()
+        }
+        let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
+                                                previewKeys: InMemoryNotificationPreviewKeys())
+        controller.connect(api: api, userID: user)
+        let delegate = NotificationDelegate()
+        delegate.bind(controller)
+        let payload = validPayload ? ["user_id": user, "channel_id": UUID().uuidString] : [:]
+        try await confirmation("通知表示の完了は1回だけ") { completed in
+            let options: UNNotificationPresentationOptions = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global().async {
+                    #expect(!Thread.isMainThread)
+                    do {
+                        let notification = try NotificationTestCoder.notification(payload: payload)
+                        let receiver: any UNUserNotificationCenterDelegate = delegate
+                        receiver.userNotificationCenter?(UNUserNotificationCenter.current(), willPresent: notification) { options in
+                            #expect(Thread.isMainThread)
+                            completed()
+                            continuation.resume(returning: options)
+                        }
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+            #expect(options == (validPayload ? [.banner, .sound] : []))
+        }
+        #expect(controller.destination == nil)
+    }
+
+    @Test("通知応答の完了をメインスレッドで一度だけ返し、接続前の宛先も保持する", arguments: [true, false], [true, false])
+    func testNotificationResponseCompletion(validPayload: Bool, bindBeforeResponse: Bool) async throws {
+        let api = try client()
+        defer { api.auth.logout(); api.transport.session.invalidateAndCancel() }
+        let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
+                                                previewKeys: InMemoryNotificationPreviewKeys())
+        let delegate = NotificationDelegate()
+        if bindBeforeResponse { delegate.bind(controller) }
+        let payload = validPayload ? ["user_id": UUID().uuidString, "channel_id": UUID().uuidString] : [:]
+        try await confirmation("通知応答の完了は1回だけ") { completed in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                DispatchQueue.global().async {
+                    #expect(!Thread.isMainThread)
+                    do {
+                        let notification = try NotificationTestCoder.notification(payload: payload)
+                        let response = try #require(UNNotificationResponse(coder: NotificationTestCoder([
+                            "notification": notification, "actionIdentifier": UNNotificationDefaultActionIdentifier
+                        ])))
+                        let receiver: any UNUserNotificationCenterDelegate = delegate
+                        receiver.userNotificationCenter?(UNUserNotificationCenter.current(), didReceive: response) {
+                            #expect(Thread.isMainThread)
+                            completed()
+                            continuation.resume()
+                        }
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+        }
+        if !bindBeforeResponse { delegate.bind(controller) }
+        #expect(controller.destination == PushDestination(payload: payload))
     }
 
     @Test func testUnauthorizedIsAnExpiredSession() async throws {
