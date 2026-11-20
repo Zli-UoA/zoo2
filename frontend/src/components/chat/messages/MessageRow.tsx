@@ -401,14 +401,13 @@ export function MessageRow({
   }
   const [sheetOpen, setSheetOpen] = useState(false);
   const tapOrigin = useRef<{ x: number; y: number } | null>(null);
-  const recentEmojis = useMemo(
+  const [recentEmojis, setRecentEmojis] = useState<string[]>([]);
+  useEffect(() => {
+    if (!sheetOpen) return;
     // チャットのリアクション API は画像付き（apub:）の値を受け付けないので除外する。
-    () =>
-      loadRecentEmojis()
-        .filter((emoji) => !emoji.startsWith("apub:"))
-        .slice(0, 6),
-    [sheetOpen],
-  );
+    // 件数制限は RecentReactions で有効な候補を絞った後に行う。
+    setRecentEmojis(loadRecentEmojis().filter((emoji) => !emoji.startsWith("apub:")));
+  }, [sheetOpen]);
 
   function rememberTouchStart(event: PointerEvent<HTMLDivElement>) {
     tapOrigin.current =

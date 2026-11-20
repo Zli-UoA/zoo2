@@ -22,11 +22,15 @@ export function RecentReactions({
   const { emojis } = useWorkspaceEmojis();
   const available = useMemo(
     () =>
-      values.filter((value) => {
-        if (!value.startsWith(":")) return true;
-        const name = value.startsWith(":@") ? value.slice(2, -1) : value.slice(1, -1);
-        return emojis.some((emoji) => emoji.name === name || emoji.aliases?.includes(name));
-      }),
+      values
+        .filter((value) => {
+          // アカウントのショートコードは MfmAccounts 側で解決するのでカタログ照合しない。
+          if (value.startsWith(":@")) return true;
+          if (!value.startsWith(":")) return true;
+          const name = value.slice(1, -1);
+          return emojis.some((emoji) => emoji.name === name || emoji.aliases?.includes(name));
+        })
+        .slice(0, 6),
     [values, emojis],
   );
 
