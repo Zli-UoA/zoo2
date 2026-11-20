@@ -1,5 +1,6 @@
 import CoreTransferable
 import Foundation
+import ImageIO
 import Synchronization
 import Testing
 import UniformTypeIdentifiers
@@ -19,6 +20,30 @@ struct AttachmentUploadTests {
         let url = directory.appendingPathComponent(name)
         try bytes.write(to: url)
         return url
+    }
+
+    nonisolated private static func heicData() throws -> Data {
+        let context = try #require(CGContext(data: nil, width: 48, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+                                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 24, height: 32))
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 24, y: 0, width: 24, height: 32))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, UTType.heic.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try #require(context.makeImage()), [kCGImagePropertyOrientation: 6] as CFDictionary)
+        try #require(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
+    nonisolated private static func expectJPEG(_ data: Data) throws {
+        let source = try #require(CGImageSourceCreateWithData(data as CFData, nil))
+        #expect(CGImageSourceGetType(source) as String? == UTType.jpeg.identifier)
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect(properties[kCGImagePropertyPixelWidth] as? Int == 48)
+        #expect(properties[kCGImagePropertyPixelHeight] as? Int == 32)
+        #expect(properties[kCGImagePropertyOrientation] as? Int == 6)
+        #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) != nil)
     }
 
     nonisolated private static func envelope(_ value: some Encodable) throws -> Data {
@@ -275,8 +300,8 @@ struct AttachmentUploadTests {
         #expect(remaining.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
     }
 
-    @Test("写真・動画のファイル転送は元の形式と内容を保ち、提供元の削除後も送信できる", arguments: [
-        ("写真.jpg", "image/jpeg"), ("写真.heic", "image/heic"),
+    @Test("JPEG・PNG・GIF・動画のファイル転送は元の形式と内容を保ち、提供元の削除後も送信できる", arguments: [
+        ("写真.jpg", "image/jpeg"), ("写真.png", "image/png"), ("スタンプ.gif", "image/gif"),
         ("動画.mov", "video/quicktime"), ("動画.mp4", "video/mp4")
     ])
     func mediaTransfer(name: String, mimeType: String) async throws {
@@ -301,6 +326,99 @@ struct AttachmentUploadTests {
         #expect(try Data(contentsOf: copied) == Data("添付の本文".utf8))
         attachment = nil
         #expect(!FileManager.default.fileExists(atPath: copied.path))
+    }
+
+    @Test("HEICのファイル・写真転送は解像度と向きを保ってJPEGに変換し、元ファイルを変更しない",
+          arguments: ["写真.heic", "写真.HEIC", "写真.heif", "写真.jpg", "写真"], [false, true])
+    func heicImport(name: String, transfer: Bool) async throws {
+        let original = try Self.heicData()
+        let source = try sourceFile(name: name, bytes: original)
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        var attachment: DraftAttachment?
+        if transfer {
+            let provider = NSItemProvider()
+            let contentType = UTType(filenameExtension: source.pathExtension) ?? .heic
+            provider.registerFileRepresentation(forTypeIdentifier: contentType.identifier, fileOptions: [], visibility: .all) { completion in
+                completion(source, false, nil)
+                return nil
+            }
+            attachment = try await withCheckedThrowingContinuation { continuation in
+                _ = provider.loadTransferable(type: DraftAttachment.self) { result in continuation.resume(with: result) }
+            }
+        } else {
+            attachment = try await DraftAttachment.importing([source]).first
+        }
+        let converted = try #require(attachment?.file.url)
+        let bytes = try Data(contentsOf: converted)
+        #expect(attachment?.fileName == "写真.jpg")
+        #expect(attachment?.contentType == "image/jpeg")
+        #expect(attachment?.byteCount == bytes.count)
+        #expect(try Data(contentsOf: source) == original)
+        try FileManager.default.removeItem(at: source)
+        try Self.expectJPEG(Data(contentsOf: converted))
+        attachment = nil
+        #expect(!FileManager.default.fileExists(atPath: converted.path))
+    }
+
+    @Test("HEICの投稿・返信はJPEGの名前・サイズ・MIMEタイプと実データをアップロードする", arguments: [false, true])
+    func heicUpload(reply: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let source = try sourceFile(name: "写真.HEIC", bytes: Self.heicData())
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let parent = reply ? "22222222-2222-4222-8222-222222222222" : nil
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        await store.importFiles([source], parentID: parent)
+        let key = store.draftKey(parent)
+        let converted = try #require(store.draftAttachments[key]?.first?.file.url)
+        let expectedBytes = try Data(contentsOf: converted)
+        let paths = Mutex<[String]>([])
+        harness.stub { request in
+            paths.withLock { $0.append(request.url!.path) }
+            switch request.url?.path {
+            case "/api/attachments/presign":
+                let body = try JSONDecoder().decode([String: JSONValue].self, from: StubProtocol.body(request))
+                #expect(body["file_name"] == .string("写真.jpg"))
+                #expect(body["file_size"] == .number(Double(expectedBytes.count)))
+                #expect(body["content_type"] == .string("image/jpeg"))
+                return (200, [:], Self.presigned())
+            case "/file":
+                #expect(request.httpMethod == "PUT")
+                #expect(request.value(forHTTPHeaderField: "Content-Type") == "image/jpeg")
+                #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+                let bytes = try StubProtocol.body(request)
+                #expect(bytes == expectedBytes)
+                try Self.expectJPEG(bytes)
+                return (200, [:], Data())
+            default:
+                #expect(request.url?.path == "/api/messages")
+                let message = try Self.message(request)
+                #expect(message.parent_id == parent)
+                return (200, [:], try Self.envelope(message))
+            }
+        }
+        await store.send(parentID: parent)
+        #expect(store.sendErrors[key] == nil)
+        #expect(paths.withLock { $0 } == ["/api/attachments/presign", "/file", "/api/messages"])
+        #expect(store.draftAttachments[key]?.isEmpty == true)
+        #expect(!FileManager.default.fileExists(atPath: converted.path))
+    }
+
+    @Test("壊れたHEICはJPEGへの変換エラーを表示し、下書きやアップロードに残さない", arguments: ["heic", "HEIF"])
+    func invalidHEIC(ext: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in
+            Issue.record("壊れたHEICをアップロードしてはいけません。")
+            return (500, [:], Data())
+        }
+        let source = try sourceFile(name: "写真.\(ext)")
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        await store.importFiles([source], parentID: nil)
+        #expect(store.draftAttachments["root"]?.isEmpty ?? true)
+        #expect(store.sendErrors["root"]?.contains(AttachmentImportError.imageConversionFailed.localizedDescription) == true)
+        #expect(!store.canSend(parentID: nil))
     }
 
     @Test("メディア取得中は送信・追加を止め、完了時は選択したスレッドだけに追加する")
