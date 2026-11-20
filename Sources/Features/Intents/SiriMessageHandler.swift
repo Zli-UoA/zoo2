@@ -226,8 +226,7 @@ final class SiriMessageHandler: NSObject, Sendable, INSendMessageIntentHandling 
         }.filter { !$0.isEmpty }
         let exact = recipients.filter { recipient in
             queries.contains { query in
-                recipient.name.localizedStandardCompare(query) == .orderedSame ||
-                    recipient.username.localizedStandardCompare(query) == .orderedSame
+                recipient.exactlyMatches(query)
             }
         }
         return exact.isEmpty ? recipients.filter { recipient in queries.contains { recipient.matches($0) } } : exact

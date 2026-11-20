@@ -19,8 +19,13 @@ struct ZooRecipientEntity: AppEntity {
 }
 
 struct ZooRecipientQuery: EntityStringQuery {
+    private let prepare: @MainActor @Sendable () async throws -> WorkspaceStore
+
+    init() { self.init { try await AppSession.shared.prepareForShortcut() } }
+    init(prepare: @escaping @MainActor @Sendable () async throws -> WorkspaceStore) { self.prepare = prepare }
+
     @MainActor private func recipients() async throws -> [ZooRecipientEntity] {
-        let workspace = try await AppSession.shared.prepareForShortcut()
+        let workspace = try await prepare()
         return try await ShortcutActions(workspace: workspace).recipients().map(ZooRecipientEntity.init)
     }
 
@@ -44,7 +49,7 @@ struct ZooRecipientQuery: EntityStringQuery {
 
 struct SendZooMessageIntent: AppIntent {
     static let title: LocalizedStringResource = "Zooでメッセージを送る"
-    static let description = IntentDescription("ZooのメンバーとのDMにメッセージを送信します。")
+    static let description = IntentDescription("ZooのメンバーとのDMに送信します。宛先を選んで保存し、メッセージを「毎回尋ねる」にすると、本文だけを指定して使えます。")
     static var supportedModes: IntentModes { .foreground }
     static var authenticationPolicy: IntentAuthenticationPolicy { .requiresAuthentication }
 
@@ -91,10 +96,11 @@ struct ZooChannelQuery: EntityStringQuery {
         self.prepare = prepare
     }
 
-    @MainActor private func channels() async throws -> [ShortcutChannel] {
+    @MainActor private func channels(suggested: Bool = false) async throws -> [ShortcutChannel] {
         do {
             let workspace = try await prepare()
-            let channels = try await ShortcutActions(workspace: workspace).channels()
+            let actions = ShortcutActions(workspace: workspace)
+            let channels = try await suggested ? actions.suggestedChannels() : actions.channels()
             Self.logger.notice("チャンネル検索の最新一覧: \(channels.count)件")
             return channels
         } catch {
@@ -120,7 +126,7 @@ struct ZooChannelQuery: EntityStringQuery {
 
     func suggestedEntities() async throws -> [ZooChannelEntity] {
         Self.logger.notice("チャンネルの候補一覧を要求されました。")
-        do { return try await channels().map(ZooChannelEntity.init) }
+        do { return try await channels(suggested: true).map(ZooChannelEntity.init) }
         catch {
             if await AppSession.shared.userID == nil { return [] }
             throw error
@@ -131,7 +137,7 @@ struct ZooChannelQuery: EntityStringQuery {
 struct SendZooChannelMessageIntent: AppIntent {
     private static let logger = Logger(subsystem: "works.zli.zoo", category: "Siri")
     static let title: LocalizedStringResource = "Zooのチャンネルに投稿する"
-    static let description = IntentDescription("Zooのチャンネルにメッセージを投稿します。")
+    static let description = IntentDescription("Zooのチャンネルに投稿します。チャンネルを選んで保存し、メッセージを「毎回尋ねる」にすると、本文だけを指定して使えます。")
     static var supportedModes: IntentModes { .foreground }
     static var authenticationPolicy: IntentAuthenticationPolicy { .requiresAuthentication }
 

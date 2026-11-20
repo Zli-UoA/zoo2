@@ -7,6 +7,7 @@ enum SiriVocabulary {
     private static var indexedRecipients: [ShortcutRecipient]?
     private static var indexedChannels: [ShortcutChannel]?
     private static var indexing: Task<Void, Never>?
+    private static var updating: Task<Void, Never>?
 
     static func refreshAuthorization(_ workspace: WorkspaceStore?) {
         // Siriによるバックグラウンド起動では、未読込の一覧で登録済み宛先を消さない。
@@ -15,16 +16,27 @@ enum SiriVocabulary {
     }
 
     static func update(_ workspace: WorkspaceStore?) {
-        let recipients: [ShortcutRecipient]
-        let channels: [ShortcutChannel]
-        if INPreferences.siriAuthorizationStatus() == .authorized, let workspace {
-            let actions = ShortcutActions(workspace: workspace)
-            recipients = (try? actions.recipients(in: Array(workspace.people.values))) ?? []
-            channels = (try? actions.channels(in: workspace.channels)) ?? []
-        } else {
-            recipients = []
-            channels = []
+        updating?.cancel()
+        updating = nil
+        guard INPreferences.siriAuthorizationStatus() == .authorized, let workspace else {
+            apply(recipients: [], channels: [])
+            return
         }
+        updating = Task {
+            let values = (try? await candidates(in: workspace)) ?? (recipients: [], channels: [])
+            guard !Task.isCancelled else { return }
+            apply(recipients: values.recipients, channels: values.channels)
+        }
+    }
+
+    static func candidates(in workspace: WorkspaceStore) async throws -> (recipients: [ShortcutRecipient], channels: [ShortcutChannel]) {
+        let actions = ShortcutActions(workspace: workspace)
+        // 古いキャッシュからアーカイブ済み宛先を再登録しない。通信失敗時もチャンネルは登録しない。
+        let channels = (try? await actions.channels()) ?? []
+        return (try actions.recipients(in: Array(workspace.people.values)), channels)
+    }
+
+    private static func apply(recipients: [ShortcutRecipient], channels: [ShortcutChannel]) {
         // 端末の連絡先にないメンバーも認識させ、ログアウト時には古いアカウントの候補を消す。
         let vocabulary = recipients.map {
             INSpeakableString(vocabularyIdentifier: $0.id, spokenPhrase: $0.name, pronunciationHint: nil)

@@ -2,6 +2,24 @@ import XCTest
 
 @MainActor
 final class ShortcutActionsUITests: XCTestCase {
+    func testFixedRecipientGuideIsReachableFromSettings() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace"]
+        app.launch()
+        let profile = app.tabBars.buttons["プロフィール"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 10))
+        profile.tap()
+        app.buttons["workspace-settings"].tap()
+        let guide = app.buttons["fixed-recipient-shortcut-guide"]
+        for _ in 0..<5 where !guide.isHittable { app.swipeUp() }
+        XCTAssertTrue(guide.isHittable)
+        guide.tap()
+        XCTAssertTrue(app.navigationBars["宛先を固定して使う"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["open-zoo-shortcuts"].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "チャンネルを選びます", "DMには")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "毎回尋ねる")).firstMatch.exists)
+    }
+
     func testShortcutSendOpensRecipientConversation() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace", "--uitesting-shortcut-send"]

@@ -8,7 +8,16 @@ struct ShortcutRecipient: Identifiable, Hashable, Sendable {
 
     func matches(_ text: String) -> Bool {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !query.isEmpty && (name.localizedStandardContains(query) || username.localizedStandardContains(query))
+        return !query.isEmpty && [name, username].contains {
+            $0.range(of: query, options: [.caseInsensitive, .widthInsensitive], locale: .current) != nil
+        }
+    }
+
+    func exactlyMatches(_ text: String) -> Bool {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !query.isEmpty && [name, username].contains {
+            $0.compare(query, options: [.caseInsensitive, .widthInsensitive], locale: .current) == .orderedSame
+        }
     }
 }
 
@@ -31,6 +40,24 @@ struct ShortcutChannel: Identifiable, Hashable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if result.hasPrefix("#") { result.removeFirst() }
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func suggestedOrder(_ channels: [Self], pinnedIDs: [String], readStates: [ChannelReadState],
+                               joinedIDs: Set<String>) -> [Self] {
+        let pins = Dictionary(pinnedIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
+        let recent = Dictionary(readStates.compactMap { state -> (String, Date)? in
+            guard let date = state.last_read_at.flatMap(ZooDate.parse) else { return nil }
+            return (state.channel_id, date)
+        }, uniquingKeysWith: max)
+        return channels.sorted { lhs, rhs in
+            let leftPin = pins[lhs.channelID] ?? Int.max, rightPin = pins[rhs.channelID] ?? Int.max
+            if leftPin != rightPin { return leftPin < rightPin }
+            let leftDate = recent[lhs.channelID] ?? .distantPast, rightDate = recent[rhs.channelID] ?? .distantPast
+            if leftDate != rightDate { return leftDate > rightDate }
+            if joinedIDs.contains(lhs.channelID) != joinedIDs.contains(rhs.channelID) { return joinedIDs.contains(lhs.channelID) }
+            let order = lhs.name.localizedStandardCompare(rhs.name)
+            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+        }
     }
 }
 
@@ -71,6 +98,23 @@ struct ShortcutActions {
     func channels() async throws -> [ShortcutChannel] {
         try check()
         return try await channels(in: workspace.client.currentChannels())
+    }
+
+    func suggestedChannels() async throws -> [ShortcutChannel] {
+        try check()
+        async let latest = channels()
+        async let pins = workspace.client.channelPins()
+        async let states = workspace.client.readStates()
+        let channels = try await latest
+        // 優先順位の取得失敗だけで候補を隠さない。宛先の有効性は最新一覧で確認する。
+        let preferences = await (try? pins, try? states)
+        try check()
+        let pinnedIDs = preferences.0?.pins.sorted {
+            $0.position == $1.position ? $0.channel_id < $1.channel_id : $0.position < $1.position
+        }.map(\.channel_id) ?? workspace.pinnedChannelIDs
+        let joinedIDs = preferences.1.map { Set($0.map(\.channel_id)) } ?? workspace.joinedChannelIDs
+        return ShortcutChannel.suggestedOrder(channels, pinnedIDs: pinnedIDs,
+                                             readStates: preferences.1 ?? [], joinedIDs: joinedIDs)
     }
 
     func channelTarget(identifier: String, name: String) throws -> ShortcutChannel {

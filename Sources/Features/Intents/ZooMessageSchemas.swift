@@ -46,9 +46,7 @@ struct ZooMessagePerson: IndexedEntity, Transferable {
         case .unknown: name = ""
         @unknown default: name = ""
         }
-        return name.isEmpty ? [] : recipients.filter {
-            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame || $0.username.localizedCaseInsensitiveCompare(name) == .orderedSame
-        }
+        return recipients.filter { $0.exactlyMatches(name) }
     }
 
     var displayRepresentation: DisplayRepresentation {

@@ -20,6 +20,55 @@ struct ShortcutActionsTests {
         return try JSONEncoder().encode(["data": value])
     }
 
+    @Test("メンバー検索と標準Siriは名前・ユーザー名の大小文字違いをすべて候補に残す",
+          arguments: ["team", "TEAM", "TeAm", "MEMBER", "member", "MeMbEr"])
+    func matchesRecipientCases(query: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let people = [Person(id: "person-a", user_name: "member", display_name: "Team"),
+                      Person(id: "person-b", user_name: "MEMBER", display_name: "TEAM")]
+        harness.stub { _ in
+            var events = try people.map { person in
+                JSONValue.object(["key": .string(person.id), "headers": .object(["operation": .string("insert")]),
+                                  "value": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(person))])
+            }
+            events.append(.object(["headers": .object(["control": .string("up-to-date")])]))
+            return (200, ["electric-handle": "users", "electric-offset": "0_1"], try JSONEncoder().encode(events))
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let recipientQuery = ZooRecipientQuery { workspace }
+        let candidates = try await recipientQuery.entities(matching: query)
+        #expect(Set(candidates.map(\.personID)) == Set(people.map(\.id)))
+        let recipients = candidates.map(\.recipient)
+        #expect(SiriMessageHandler.matchingRecipients(identifier: nil, name: query, handle: nil, in: recipients) == recipients)
+        #expect(SiriMessageHandler.matchingRecipients(identifier: nil, name: "", handle: query, in: recipients) == recipients)
+        let saved = try #require(candidates.first)
+        #expect(try await ZooRecipientQuery { workspace }.entities(for: [saved.id]).map(\.id) == [saved.id])
+        #expect(try await recipientQuery.entities(for: [saved.id.uppercased()]).isEmpty)
+        #expect(SiriMessageHandler.matchingRecipients(identifier: saved.id.uppercased(), name: query, handle: nil, in: recipients).isEmpty)
+        let otherWorkspace = WorkspaceStore(client: harness.client, user: people[0], recentEmojiDefaults: nil)
+        defer { otherWorkspace.shutdown() }
+        #expect(try await ZooRecipientQuery { otherWorkspace }.entities(for: [saved.id]).isEmpty)
+    }
+
+    @available(iOS 27.0, *)
+    @Test("Siri AIも名前・ユーザー名の大小文字では候補を絞らず、確定IDだけを厳密に照合する",
+          arguments: ["name", "username", "handle"])
+    func matchesSchemaRecipientCases(kind: String) throws {
+        let recipients = [ShortcutRecipient(id: "account|person-a", personID: "person-a", name: "Team", username: "member"),
+                          ShortcutRecipient(id: "account|person-b", personID: "person-b", name: "TEAM", username: "MEMBER")]
+        var person = IntentPerson(identifier: .unknown, name: .displayName(kind == "name" ? "tEaM" : "mEmBeR"), handle: nil)
+        if kind == "handle" { person.name = .unknown; person.handle = .init(applicationDefined: "mEmBeR") }
+        let candidates = ZooMessagePersonQuery().values(for: [person], in: recipients)
+        #expect(candidates.map(\.id) == recipients.map(\.id))
+        #expect(throws: ZooError.self) { try ZooMessageDestination.members(candidates).resolve(in: recipients) }
+        person.identifier = .applicationDefined(recipients[0].id.uppercased())
+        #expect(ZooMessagePerson.matching(person, in: recipients).isEmpty)
+        person.identifier = .applicationDefined(recipients[0].id)
+        #expect(ZooMessagePerson.matching(person, in: recipients) == [recipients[0]])
+    }
+
     @Test("同名メンバーを勝手に一人へ絞らず、自分・bot・無効なメンバーを除く")
     func recipientCandidates() async throws {
         let harness = try ChatHarness()

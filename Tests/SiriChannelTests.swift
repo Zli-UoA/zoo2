@@ -7,6 +7,103 @@ import Testing
 @MainActor
 @Suite("Siriからのチャンネル投稿", .timeLimit(.minutes(1)))
 struct SiriChannelTests {
+    @Test("保存後のアーカイブを候補・名前検索・Siri登録・実行で除外し、同名へ置き換えない")
+    func excludesArchivedSavedChannel() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        await fixture.workspace.refresh()
+        let actions = ShortcutActions(workspace: fixture.workspace)
+        let query = ZooChannelQuery { fixture.workspace }
+        let saved = try #require(try await query.entities(matching: fixture.channel.channel_name).first)
+        #expect(try await SiriVocabulary.candidates(in: fixture.workspace).channels == [saved.channel])
+        let replacement = Channel(id: "77777777-7777-4777-8777-777777777777", channel_name: fixture.channel.channel_name,
+                                  is_private: false, is_dm: false)
+        fixture.state.value.withLock {
+            $0.channel.archive_at = "2026-11-21T00:00:00Z"
+            $0.listedChannels = [$0.channel, replacement]
+            $0.pins = [ChannelPin(channel_id: $0.channel.id, position: 0)]
+            $0.readStates = [ChannelReadState(channel_id: $0.channel.id, has_unread: false, last_read_at: "2026-11-21T09:00:00Z")]
+        }
+        #expect(fixture.workspace.channels.first?.archive_at == nil)
+        #expect(try await query.suggestedEntities().map(\.channelID) == [replacement.id])
+        #expect(try await query.entities(matching: fixture.channel.channel_name).map(\.channelID) == [replacement.id])
+        #expect(try await query.entities(for: [saved.id]).isEmpty)
+        #expect(try await SiriVocabulary.candidates(in: fixture.workspace).channels.map(\.channelID) == [replacement.id])
+        let handler = SiriMessageHandler { fixture.workspace }
+        #expect(await handler.channelResolution(for: intent(groupID: saved.id)) == .unsupported)
+        #expect(await handler.handle(intent: intent(groupID: saved.id)).code != .success)
+        await #expect(throws: ZooError.self) { try await actions.send("本文", to: saved.channel) }
+        #expect(fixture.state.value.withLock { $0.sent }.isEmpty)
+        fixture.harness.stub { _ in throw URLError(.notConnectedToInternet) }
+        #expect(try await SiriVocabulary.candidates(in: fixture.workspace).channels.isEmpty)
+        fixture.workspace.shutdown()
+        await #expect(throws: ZooError.self) { try await SiriVocabulary.candidates(in: fixture.workspace) }
+    }
+
+    @Test("候補はピンの順序、最近の既読、参加中を優先し、残りも省略しない")
+    func ranksSuggestedChannels() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        let channels = (0..<15).map {
+            Channel(id: "channel-\($0)", channel_name: "開発\($0)", is_private: false, is_dm: false)
+        }
+        fixture.workspace.addAndOpen(channels[0])
+        var archived = fixture.channel; archived.archive_at = "2026-11-21T00:00:00Z"
+        fixture.state.value.withLock {
+            $0.listedChannels = channels + [archived]
+            $0.pins = [ChannelPin(channel_id: channels[9].id, position: 2),
+                       ChannelPin(channel_id: channels[7].id, position: 1),
+                       ChannelPin(channel_id: archived.id, position: 0),
+                       ChannelPin(channel_id: "削除済み", position: 0)]
+            $0.readStates = [ChannelReadState(channel_id: channels[3].id, has_unread: false, last_read_at: "2026-11-20T09:00:00Z"),
+                             ChannelReadState(channel_id: channels[4].id, has_unread: true, last_read_at: "2026-11-21T09:00:00Z"),
+                             ChannelReadState(channel_id: channels[8].id, has_unread: false, last_read_at: nil)]
+        }
+        let query = ZooChannelQuery { fixture.workspace }
+        let suggested = try await query.suggestedEntities()
+        #expect(suggested.map(\.channel.channelID).prefix(5) == [channels[7].id, channels[9].id, channels[4].id, channels[3].id, channels[8].id])
+        #expect(Set(suggested.map(\.channel.channelID)) == Set(channels.map(\.id)))
+        #expect(try await query.entities(matching: "開発14").map(\.channel.channelID) == [channels[14].id])
+    }
+
+    @Test("優先順位の取得に失敗しても最新の利用可能なチャンネルを提示する")
+    func suggestsWithoutPreferences() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        fixture.workspace.addAndOpen(fixture.channel)
+        let other = Channel(id: "channel-b", channel_name: "ABC", is_private: false, is_dm: false)
+        fixture.state.value.withLock { $0.failPreferences = true; $0.listedChannels.append(other) }
+        let suggested = try await ShortcutActions(workspace: fixture.workspace).suggestedChannels()
+        #expect(suggested.map(\.channelID) == [fixture.channel.id, other.id])
+        fixture.workspace.shutdown()
+        await #expect(throws: ZooError.self) { try await ShortcutActions(workspace: fixture.workspace).suggestedChannels() }
+    }
+
+    @Test("保存したチャンネルIDを新しい一覧から復元し、名前の大小文字を区別しない",
+          arguments: ["dev", "DEV", "DeV"])
+    func restoresSavedChannelAndSearchesAllCases(query: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        var first = fixture.channel; first.channel_name = "dev"
+        let second = Channel(id: "channel-b", channel_name: "DEV", is_private: false, is_dm: false)
+        fixture.state.value.withLock { $0.listedChannels = [first, second] }
+        let channelQuery = ZooChannelQuery { fixture.workspace }
+        let candidates = try await channelQuery.entities(matching: query)
+        #expect(Set(candidates.map(\.channel.channelID)) == [first.id, second.id])
+        let saved = try #require(candidates.first { $0.channel.channelID == second.id })
+        fixture.state.value.withLock { $0.listedChannels = [Channel(id: second.id, channel_name: "改名後", is_private: false, is_dm: false)] }
+        let restored = try await ZooChannelQuery { fixture.workspace }.entities(for: [saved.id])
+        #expect(restored.map(\.channel.name) == ["改名後"])
+        #expect(try await channelQuery.entities(for: [saved.id.uppercased()]).isEmpty)
+        let otherUser = Person(id: "別アカウント", user_name: "other", display_name: "別の人")
+        let otherWorkspace = WorkspaceStore(client: fixture.harness.client, user: otherUser, recentEmojiDefaults: nil)
+        defer { otherWorkspace.shutdown() }
+        #expect(try await ZooChannelQuery { otherWorkspace }.entities(for: [saved.id]).isEmpty)
+        fixture.state.value.withLock { $0.listedChannels = [] }
+        #expect(try await channelQuery.entities(for: [saved.id]).isEmpty)
+        #expect(fixture.state.value.withLock { $0.sent }.isEmpty)
+    }
+
     @Test("チャンネル名は完全一致を優先し、同名や部分一致の候補を保持する")
     func matchesChannelNames() {
         let channels = [
@@ -336,6 +433,9 @@ struct SiriChannelTests {
     private struct State {
         var channel: Channel
         var listedChannels: [Channel]
+        var pins: [ChannelPin] = []
+        var readStates: [ChannelReadState] = []
+        var failPreferences = false
         var listReads = 0
         var revoked = false
         var failSend = false
@@ -378,7 +478,16 @@ struct SiriChannelTests {
                         .object(["headers": .object(["control": .string("up-to-date")])])
                     ]
                     return (200, ["electric-handle": "users", "electric-offset": "0_1"], try JSONEncoder().encode(events))
-                case "/api/channel-read-states": return (200, [:], Data("[]".utf8))
+                case "/api/channel-read-states":
+                    return try state.value.withLock {
+                        if $0.failPreferences { return (500, [:], Data()) }
+                        return (200, [:], try JSONEncoder().encode($0.readStates))
+                    }
+                case "/api/channel-pins":
+                    return try state.value.withLock {
+                        if $0.failPreferences { return (500, [:], Data()) }
+                        return (200, [:], try JSONEncoder().encode(ChannelPins(pins: $0.pins, version: 1)))
+                    }
                 case "/api/channels":
                     return try state.value.withLock {
                         $0.listReads += 1
