@@ -1042,8 +1042,10 @@ export function MessagePane({
             onReopenThread={() => void threadMembership.change?.("unarchive")}
             onReopenAndJoinThread={() =>
               void (async () => {
-                await threadMembership.change?.("unarchive");
-                await threadMembership.change?.("join");
+                // 再Openに失敗したら参加しない（アーカイブ中の参加は 409 になり、原因が分からなくなる）。
+                if (await threadMembership.change?.("unarchive")) {
+                  await threadMembership.change?.("join");
+                }
               })()
             }
             isLoading={threadQuery.isLoading}

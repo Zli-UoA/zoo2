@@ -117,10 +117,18 @@ it("keeps data on a failed operation and allows retry", async () => {
     .mockRejectedValueOnce(new Error("offline"))
     .mockResolvedValue({ data: { ...data, membership: "left" } });
   await act(async () => root.render(createElement(Test)));
-  await act(async () => value.change!("leave"));
+  let failed: boolean | undefined;
+  let retried: boolean | undefined;
+  await act(async () => {
+    failed = await value.change!("leave");
+  });
+  expect(failed).toBe(false);
   expect(value.error).toBe(true);
   expect(value.data?.membership).toBe("joined");
-  await act(async () => value.change!("leave"));
+  await act(async () => {
+    retried = await value.change!("leave");
+  });
+  expect(retried).toBe(true);
   expect(value.error).toBe(false);
   expect(value.data?.membership).toBe("left");
 });

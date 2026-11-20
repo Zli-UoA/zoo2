@@ -74,8 +74,9 @@ function createStore(
   return {
     snapshot: () => state,
     refresh,
-    change: async (action: "join" | "leave" | "unarchive") => {
-      if (state.pending) return;
+    // 成功したときだけ true。失敗・実行中は false（呼び出し側が後続の操作を止められる）。
+    change: async (action: "join" | "leave" | "unarchive"): Promise<boolean> => {
+      if (state.pending) return false;
       generation += 1;
       set({ ...state, pending: true, error: false });
       try {
@@ -88,8 +89,10 @@ function createStore(
         window.dispatchEvent(
           new CustomEvent(THREADS_CHANGED, { detail: { ...result.data, userId, config } }),
         );
+        return true;
       } catch {
         set({ ...state, pending: false, error: true });
+        return false;
       } finally {
         if (queued) {
           queued = false;
