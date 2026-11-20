@@ -1835,6 +1835,53 @@ final class ZooUITests: XCTestCase {
     }
 
     @MainActor
+    func testInboxReturnsToOriginalPositionAfterRefresh() {
+        assertInboxReturnsToOriginalPositionAfterRefresh(long: true)
+    }
+
+    @MainActor
+    func testShortInboxReturnsToOriginalPositionAfterRefresh() {
+        assertInboxReturnsToOriginalPositionAfterRefresh(long: false)
+    }
+
+    @MainActor
+    private func assertInboxReturnsToOriginalPositionAfterRefresh(long: Bool) {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-inbox-refresh"]
+        if long { app.launchArguments.append("--uitesting-long-inbox") }
+        app.launch()
+        XCTAssertTrue(app.buttons["channel-11111111-1111-4111-8111-111111111111"].waitForExistence(timeout: 10))
+        selectTab("通知", in: app)
+        let mention = app.buttons["inbox-open-22222222-2222-4222-8222-222222222222"]
+        XCTAssertTrue(mention.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["inbox-read-all"].waitForNonExistence(timeout: 5))
+        let countText = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "通知の取得：")).firstMatch
+        XCTAssertTrue(countText.waitForExistence(timeout: 5))
+        guard let initialCount = Int(countText.label.filter(\.isNumber)) else {
+            XCTFail("通知の初期取得回数を読み取れませんでした。")
+            return
+        }
+        let originalY = mention.frame.minY
+        let list = app.descendants(matching: .any)["inbox-list"].firstMatch
+        XCTAssertTrue(list.exists)
+        capture(app, name: "通知一覧の更新前")
+
+        for refresh in 1...3 {
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+            let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+            start.press(forDuration: 0.1, thenDragTo: end)
+            XCTAssertTrue(app.staticTexts["通知の取得：\(initialCount + refresh)回目"].waitForExistence(timeout: 5))
+            let returned = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in abs(mention.frame.minY - originalY) < 2 }, object: nil
+            )
+            XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 5), .completed,
+                           "更新後は通知行が元の縦位置に戻る必要があります。更新前：\(originalY)、更新後：\(mention.frame.minY)")
+            capture(app, name: "通知一覧の更新後")
+        }
+    }
+
+    @MainActor
     func testJoinChannelAndOpenNotification() {
         let app = launchWorkspace()
         let joined = app.buttons["channel-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]

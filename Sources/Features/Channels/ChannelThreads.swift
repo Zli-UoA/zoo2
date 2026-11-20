@@ -33,7 +33,6 @@ final class ChannelThreads {
     var hasMore: Bool { cursor != nil }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var expanded = false
-    @ObservationIgnored private var failedAppend = false
     @ObservationIgnored private var requestID = UUID()
     @ObservationIgnored private var active = true
 
@@ -48,7 +47,6 @@ final class ChannelThreads {
 
     func refresh() async { await fetch(append: false) }
     func loadMore() async { await fetch(append: true) }
-    func retry() async { await fetch(append: failedAppend) }
 
     func shutdown() {
         active = false
@@ -93,7 +91,6 @@ final class ChannelThreads {
             error = nil
         } catch {
             guard requestID == request, !Task.isCancelled else { return }
-            failedAppend = append
             self.error = "参加中のスレッドを読み込めませんでした。"
             if case ZooError.expiredSession = error {
                 shutdown()
@@ -102,7 +99,6 @@ final class ChannelThreads {
                 byChannel = [:]
                 cursor = nil
                 expanded = false
-                failedAppend = false
             }
         }
     }
@@ -140,11 +136,9 @@ struct ChannelThreadPagination: View {
 
     var body: some View {
         if let error = store.error {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(error).font(.caption).foregroundStyle(.secondary)
-                Button("再読み込み") { Task { await store.retry() } }.disabled(store.loading)
-            }
-        } else if store.hasMore {
+            Text(error).font(.caption).foregroundStyle(.secondary)
+        }
+        if store.hasMore {
             Button(store.loading ? "読み込み中…" : "さらにスレッドを表示") {
                 Task { await store.loadMore() }
             }

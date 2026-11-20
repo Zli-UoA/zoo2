@@ -30,7 +30,6 @@ struct ConversationDirectory: View {
         AppList {
             if let error = workspace.error {
                 Label(error, systemImage: "wifi.exclamationmark")
-                Button("再読み込み") { Task { await workspace.refresh() } }
             }
             let channels = visible
             if !workspace.hasLoaded && workspace.loading {
@@ -61,7 +60,6 @@ struct ConversationDirectory: View {
             }
             if let error = workspace.pinsError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
-                Button("ピン留めを再読み込み") { Task { await workspace.loadPins() } }
             }
             if !directMessages { ChannelThreadPagination(store: workspace.threads) }
         }

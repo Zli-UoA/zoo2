@@ -9,15 +9,13 @@ struct InboxView: View {
     @State private var readingAll = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+        List {
+            Group {
                 if let error = store.error {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
-                        Button("再読み込み") { Task { await store.refresh() } }
-                    }
-                    .font(.subheadline)
-                    .padding(AppDesign.horizontalInset)
+                    Label(error, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .padding(AppDesign.horizontalInset)
                 }
                 if store.entries.isEmpty {
                     if store.loading {
@@ -27,9 +25,11 @@ struct InboxView: View {
                     }
                 }
                 ForEach(store.entries) { entry in
-                    InboxCard(entry: entry, store: store, workspace: workspace,
-                              isActive: isActive && scenePhase == .active, openChat: openChat)
-                    Divider().padding(.leading, AppDesign.horizontalInset)
+                    VStack(spacing: 0) {
+                        InboxCard(entry: entry, store: store, workspace: workspace,
+                                  isActive: isActive && scenePhase == .active, openChat: openChat)
+                        Divider().padding(.leading, AppDesign.horizontalInset)
+                    }
                 }
                 if store.hasMore {
                     Button(store.loadingMore ? "読み込み中…" : "さらに通知を表示") {
@@ -41,8 +41,13 @@ struct InboxView: View {
                     .accessibilityIdentifier("inbox-load-more")
                 }
             }
-            .padding(.top, AppDesign.spacing)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(AppDesign.background)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, AppDesign.spacing, for: .scrollContent)
         .background(AppDesign.background.ignoresSafeArea())
         .navigationTitle("通知")
         .navigationBarTitleDisplayMode(.large)
@@ -203,6 +208,7 @@ private struct InboxCard: View {
         }
         .padding(.horizontal, AppDesign.horizontalInset).padding(.vertical, AppDesign.spacing)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .labelStyle(.titleAndIcon)
         .onScrollVisibilityChange(threshold: 0.1) { visible = $0 }
         .onChange(of: isActive && visible, initial: true) { _, onScreen in
             store.setVisible(entry, visible: onScreen)

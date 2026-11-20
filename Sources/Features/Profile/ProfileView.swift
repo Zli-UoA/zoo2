@@ -51,7 +51,6 @@ struct ProfileView: View {
                 }
                 if let loadError {
                     Text(loadError).foregroundStyle(.red)
-                    Button("再読み込み") { Task { await load() } }
                 }
                 if let server {
                     Link("公開ページを見る", destination: server.appending(path: "public/users").appending(component: user.id))
