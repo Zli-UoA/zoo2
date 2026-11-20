@@ -522,7 +522,8 @@ describe("MessageRow", () => {
       ],
     });
     await userEvent.click(screen.getByRole("button", { name: "プレビューを開く" }));
-    await userEvent.click(screen.getByText("プレビュー内"));
+    // タッチでポータル内をタップする。contains チェックがないと裏のシートが開いてしまう。
+    tapTouch(screen.getByText("プレビュー内"));
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
