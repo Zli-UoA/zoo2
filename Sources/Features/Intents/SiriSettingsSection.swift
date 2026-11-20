@@ -11,7 +11,7 @@ struct SiriSettingsSection: View {
         Section {
             switch status {
             case .authorized:
-                Text("Siriからメッセージを送信できます。")
+                Text("SiriからDMやチャンネルにメッセージを送信できます。")
             case .notDetermined:
                 Button("Siriでの送信を有効にする") { requesting = true }
                     .disabled(requesting)
@@ -29,7 +29,7 @@ struct SiriSettingsSection: View {
         } header: {
             Text("Siri")
         } footer: {
-            Text("「Zooで○○にこんにちはとメッセージを送って」と話しかけます。宛先の名前とメッセージをSiriと共有します。")
+            Text("DMは「Zooで○○にこんにちはとメッセージを送って」と話しかけます。チャンネルは「Zooのチャンネルに投稿して」と話しかけ、チャンネル名、メッセージの順に答えます。メンバー名・チャンネル名とメッセージをSiriと共有します。")
         }
         .task(id: requesting) {
             guard requesting else { return }

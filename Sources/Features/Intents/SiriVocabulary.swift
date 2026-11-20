@@ -5,6 +5,7 @@ import os
 @MainActor
 enum SiriVocabulary {
     private static var indexedRecipients: [ShortcutRecipient]?
+    private static var indexedChannels: [ShortcutChannel]?
     private static var indexing: Task<Void, Never>?
 
     static func refreshAuthorization(_ workspace: WorkspaceStore?) {
@@ -15,18 +16,27 @@ enum SiriVocabulary {
 
     static func update(_ workspace: WorkspaceStore?) {
         let recipients: [ShortcutRecipient]
+        let channels: [ShortcutChannel]
         if INPreferences.siriAuthorizationStatus() == .authorized, let workspace {
-            recipients = (try? ShortcutActions(workspace: workspace).recipients(in: Array(workspace.people.values))) ?? []
+            let actions = ShortcutActions(workspace: workspace)
+            recipients = (try? actions.recipients(in: Array(workspace.people.values))) ?? []
+            channels = (try? actions.channels(in: workspace.channels)) ?? []
         } else {
             recipients = []
+            channels = []
         }
         // 端末の連絡先にないメンバーも認識させ、ログアウト時には古いアカウントの候補を消す。
         let vocabulary = recipients.map {
             INSpeakableString(vocabularyIdentifier: $0.id, spokenPhrase: $0.name, pronunciationHint: nil)
         }
         INVocabulary.shared().setVocabulary(NSOrderedSet(array: vocabulary), of: .contactName)
-        if #available(iOS 27.0, *), indexedRecipients != recipients {
+        let groups = channels.map {
+            INSpeakableString(vocabularyIdentifier: $0.id, spokenPhrase: $0.name, pronunciationHint: nil)
+        }
+        INVocabulary.shared().setVocabulary(NSOrderedSet(array: groups), of: .contactGroupName)
+        if #available(iOS 27.0, *), indexedRecipients != recipients || indexedChannels != channels {
             indexedRecipients = recipients
+            indexedChannels = channels
             let previous = indexing
             previous?.cancel()
             // 更新を直列化し、ログアウト後に古い宛先の登録が完了する順序逆転を防ぐ。
@@ -36,13 +46,19 @@ enum SiriVocabulary {
                 do {
                     let index = CSSearchableIndex.default()
                     try await index.deleteAppEntities(ofType: ZooMessagePerson.self)
+                    try await index.deleteAppEntities(ofType: ZooChannelEntity.self)
                     guard !Task.isCancelled else { return }
                     try await index.indexAppEntities(recipients.map(ZooMessagePerson.init))
-                    Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri向けの宛先登録を更新しました。件数: \(recipients.count)")
+                    guard !Task.isCancelled else { return }
+                    try await index.indexAppEntities(channels.map(ZooChannelEntity.init))
+                    Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri向けの宛先登録を更新しました。メンバー: \(recipients.count)件、チャンネル: \(channels.count)件")
                 } catch {
                     Logger(subsystem: "works.zli.zoo", category: "Siri").error("Siri向けの宛先登録に失敗しました。")
                     await MainActor.run {
-                        if indexedRecipients == recipients { indexedRecipients = nil }
+                        if indexedRecipients == recipients, indexedChannels == channels {
+                            indexedRecipients = nil
+                            indexedChannels = nil
+                        }
                     }
                 }
             }
