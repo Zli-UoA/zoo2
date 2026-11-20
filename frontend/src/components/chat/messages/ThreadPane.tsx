@@ -441,7 +441,7 @@ export function ThreadPane({
 
       {!readOnly ? (
         <>
-          {isArchived ? (
+          {isArchived && !needsJoin ? (
             <p className="px-3 py-2 text-xs text-muted-foreground">{t("threads.reopenOnSend")}</p>
           ) : null}
           <TypingIndicator users={typingUsers} />
