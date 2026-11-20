@@ -900,6 +900,7 @@ export const Like: Story = {
           await expect(body.post_id).toBe(posts[0].id);
           likedReaction = body.reaction;
           liked = true;
+          // 選択した絵文字が送信されていることは play 側で検証する。
           return HttpResponse.json({ ok: true });
         }),
         http.delete("*/api/activitypub/reactions", () => {
@@ -913,11 +914,12 @@ export const Like: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
-    // ピッカーに固定のクイックリアクションは置かないので、絵文字グリッドから選ぶ。
-    const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
-    await userEvent.click(cells[0]!);
+    // ピッカーに固定のクイックリアクションは置かないので、特定の絵文字をグリッドから選ぶ。
+    const cell = await picker.findByRole("gridcell", { name: "にっこり笑う" }, { timeout: 5000 });
+    await userEvent.click(cell);
     // POST が反映されてから、選んだ値を使って検証する。
-    await waitFor(() => expect(likedReaction).not.toBe("❤️"));
+    await waitFor(() => expect(liked).toBe(true));
+    await expect(likedReaction).toBe("😀");
     await expect(await canvas.findByRole("button", { name: `${likedReaction} 1` })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -942,9 +944,9 @@ export const LikeError: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
-    // ピッカーに固定のクイックリアクションは置かないので、絵文字グリッドから選ぶ。
-    const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
-    await userEvent.click(cells[0]!);
+    // ピッカーに固定のクイックリアクションは置かないので、特定の絵文字をグリッドから選ぶ。
+    const cell = await picker.findByRole("gridcell", { name: "にっこり笑う" }, { timeout: 5000 });
+    await userEvent.click(cell);
     await expect(await canvas.findByRole("alert")).toBeVisible();
   }),
 };
