@@ -874,9 +874,11 @@ export const TimelineSwitch: Story = {
 };
 
 let liked = false;
+let likedReaction = "❤️";
 export const Like: Story = {
   beforeEach: () => {
     liked = false;
+    likedReaction = "❤️";
   },
   parameters: {
     msw: {
@@ -887,13 +889,16 @@ export const Like: Story = {
               ...posts[0],
               likes: liked ? 1 : 0,
               liked,
-              reactions: liked ? [{ reaction: "❤️", emoji: null, count: 1, selected: true }] : [],
+              reactions: liked
+                ? [{ reaction: likedReaction, emoji: null, count: 1, selected: true }]
+                : [],
             },
           ]),
         ),
         http.post("*/api/activitypub/reactions", async ({ request }) => {
-          const body = (await request.json()) as { post_id: string };
+          const body = (await request.json()) as { post_id: string; reaction: string };
           await expect(body.post_id).toBe(posts[0].id);
+          likedReaction = body.reaction;
           liked = true;
           return HttpResponse.json({ ok: true });
         }),
@@ -911,13 +916,15 @@ export const Like: Story = {
     // ピッカーに固定のクイックリアクションは置かないので、絵文字グリッドから選ぶ。
     const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
     await userEvent.click(cells[0]!);
-    await expect(await canvas.findByRole("button", { name: "❤️ 1" })).toHaveAttribute(
+    // POST が反映されてから、選んだ値を使って検証する。
+    await waitFor(() => expect(likedReaction).not.toBe("❤️"));
+    await expect(await canvas.findByRole("button", { name: `${likedReaction} 1` })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await userEvent.click(canvas.getByRole("button", { name: "❤️ 1" }));
+    await userEvent.click(canvas.getByRole("button", { name: `${likedReaction} 1` }));
     await waitFor(() =>
-      expect(canvas.queryByRole("button", { name: "❤️ 1" })).not.toBeInTheDocument(),
+      expect(canvas.queryByRole("button", { name: `${likedReaction} 1` })).not.toBeInTheDocument(),
     );
     await expect(canvas.getByRole("button", { name: "リアクション 0" })).toBeVisible();
   }),

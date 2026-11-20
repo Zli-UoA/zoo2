@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import { EmojiPicker } from "../chat/messages/EmojiPicker";
 import { ActivityPubEmoji, type CustomEmoji } from "./ActivityPubEmoji";
 import { panelTabClassName } from "../ui/control-panel";
-import { addRecentEmoji } from "../../lib/emoji/recents";
+import { addRecentEmoji, recentReactionValue } from "../../lib/emoji/recents";
 export interface ReactionChoice {
   reaction: string;
   emoji_id?: string;
@@ -61,7 +61,7 @@ export function HomeReactionPicker({
     ),
   );
   const select = (value: ReactionChoice) => {
-    addRecentEmoji(value.reaction);
+    addRecentEmoji(recentReactionValue(value.reaction, value.emoji_id));
     onSelect(value);
     onClose();
   };

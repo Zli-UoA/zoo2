@@ -5,6 +5,7 @@ import {
   RECENT_EMOJIS_STORAGE_KEY,
   addRecentEmoji,
   loadRecentEmojis,
+  recentReactionValue,
 } from "./recents";
 
 function fakeStorage(initial: string | null = null) {
@@ -52,6 +53,14 @@ describe("recent emojis", () => {
     expect(next).toHaveLength(MAX_RECENT_EMOJIS);
     expect(next[0]).toBe("newest");
     expect(next.at(-1)).toBe("emoji-14");
+  });
+
+  it("keeps the image ID with an image-based reaction", () => {
+    const hash = "a".repeat(64);
+    expect(recentReactionValue("party_parrot")).toBe("party_parrot");
+    // ReactionEmoji の形式は apub:<image_id>:<:name:> なので区切りと名前にコロンが並ぶ。
+    expect(recentReactionValue("party_parrot", hash)).toBe(`apub:${hash}::party_parrot:`);
+    expect(recentReactionValue(":party_parrot:", hash)).toBe(`apub:${hash}::party_parrot:`);
   });
 
   it("keeps the in-memory list when writing storage fails", () => {
