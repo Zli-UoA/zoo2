@@ -77,7 +77,10 @@ function AttachmentPreview({ attachment }: { attachment: AttachmentMetadata }) {
         }
       }}
       onOpen={() => {
-        if (shouldRefreshAttachmentUrl(state.expiresAt)) void state.getFreshUrl();
+        if (shouldRefreshAttachmentUrl(state.expiresAt)) {
+          // 表示用の先読み。失敗してもダウンロード時に再試行する。
+          void state.getFreshUrl().catch(() => undefined);
+        }
       }}
       footer={<AttachmentDownloadButton attachment={attachment} state={state} showLabel />}
     />

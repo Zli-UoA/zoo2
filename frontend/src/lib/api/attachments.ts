@@ -43,6 +43,19 @@ export class AttachmentDownloadError extends Error {
   }
 }
 
+function errorStatus(error: unknown): number | null {
+  if (typeof error !== "object" || error === null || !("status" in error)) {
+    return null;
+  }
+  const status = (error as { status?: unknown }).status;
+  return typeof status === "number" ? status : null;
+}
+
+/** `/url` の取得失敗を、API の状態コードを保ったダウンロードエラーにする。 */
+export function attachmentUrlError(error: unknown): AttachmentDownloadError {
+  return new AttachmentDownloadError("url", { status: errorStatus(error), cause: error });
+}
+
 export interface UploadedAttachment {
   id: string;
   file_name: string;
@@ -101,17 +114,20 @@ export async function fetchAttachmentBlob(
   url: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<Blob> {
-  let response: Response;
   try {
-    response = await fetchImpl(url, { credentials: "omit" });
+    const response = await fetchImpl(url, { credentials: "omit" });
+    if (!response.ok) {
+      throw new AttachmentDownloadError("http", { status: response.status });
+    }
+    return await response.blob();
   } catch (error) {
-    // 通信そのものの失敗（オフライン、CORS、中断など）と HTTP エラーを区別して残す。
+    // 通信そのものの失敗（オフライン、CORS、中断）と、200 受信後の本文読み取り失敗を
+    // まとめて network として残す。非成功応答の http 分類はそのまま通す。
+    if (error instanceof AttachmentDownloadError) {
+      throw error;
+    }
     throw new AttachmentDownloadError("network", { cause: error });
   }
-  if (!response.ok) {
-    throw new AttachmentDownloadError("http", { status: response.status });
-  }
-  return response.blob();
 }
 
 function saveBlob(blob: Blob, fileName: string): void {
@@ -129,7 +145,7 @@ function saveBlob(blob: Blob, fileName: string): void {
   }
 }
 
-export type AttachmentUrlResolver = (options: { refresh: boolean }) => Promise<string | null>;
+export type AttachmentUrlResolver = (options: { refresh: boolean }) => Promise<string>;
 
 const DOWNLOAD_RETRY_DELAY_MS = 300;
 
@@ -148,9 +164,6 @@ export async function fetchAttachmentWithRetry(
   const { fetchImpl = fetch, retryDelayMs = DOWNLOAD_RETRY_DELAY_MS } = options;
   const attempt = async (refresh: boolean) => {
     const url = await resolveUrl({ refresh });
-    if (!url) {
-      throw new AttachmentDownloadError("url");
-    }
     return fetchAttachmentBlob(url, fetchImpl);
   };
   try {

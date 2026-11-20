@@ -11,6 +11,7 @@ import {
 import { createConfiguredApiClient } from "../lib/api/client";
 import {
   AttachmentUploadError,
+  attachmentUrlError,
   uploadAttachment,
   type UploadedAttachment,
 } from "../lib/api/attachments";
@@ -28,8 +29,9 @@ export interface AttachmentUrlState {
   /**
    * ダウンロードなど、表示の状態に左右されずに URL が必要なときに使う。
    * `refresh` を渡すとキャッシュを捨てて取り直す（ダウンロードの再試行用）。
+   * 取得に失敗したときは、状態コードを保った `AttachmentDownloadError` を投げる。
    */
-  getFreshUrl: (options?: { refresh?: boolean }) => Promise<string | null>;
+  getFreshUrl: (options?: { refresh?: boolean }) => Promise<string>;
 }
 
 export function useMessageAttachments(channelId: string | null, enabled = true) {
@@ -123,24 +125,42 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   // 表示用の `load()` は `requestId` で古い応答を捨てるが、ダウンロードは利用者の操作なので
   // 取得できた URL を必ず返す。行の再マウントや仮想スクロールで `load()` の結果が捨てられても、
   // 押したダウンロードが失敗しないようにする（#640）。
+  // 表示状態の更新だけは、config の切替やアンマウントをまたいだ古い応答で上書きしないよう
+  // 同じ `requestId` で守る。
   const getFreshUrl = useCallback(
-    async (options: { refresh?: boolean } = {}): Promise<string | null> => {
+    async (options: { refresh?: boolean } = {}): Promise<string> => {
+      const current = requestId.current;
       if (options.refresh) {
         forgetAttachmentUrl(config, attachmentId);
       } else {
         const cachedEntry = cachedAttachmentUrl(config, attachmentId);
         if (cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
+          if (current === requestId.current) {
+            setUrl(cachedEntry.url);
+            setExpiresAt(cachedEntry.expiresAt);
+            setStatus("ready");
+          }
           return cachedEntry.url;
         }
       }
+      if (current === requestId.current) {
+        setStatus("loading");
+      }
       try {
         const value = await requestAttachmentUrl(client, config, attachmentId);
-        setUrl(value.url);
-        setExpiresAt(value.expiresAt);
-        setStatus("ready");
+        if (current === requestId.current) {
+          setUrl(value.url);
+          setExpiresAt(value.expiresAt);
+          setStatus("ready");
+        }
         return value.url;
-      } catch {
-        return null;
+      } catch (error) {
+        if (current === requestId.current) {
+          setUrl(null);
+          setExpiresAt(null);
+          setStatus("error");
+        }
+        throw attachmentUrlError(error);
       }
     },
     [attachmentId, client, config],

@@ -151,6 +151,23 @@ describe("fetchAttachmentBlob", () => {
       ),
     ).rejects.toMatchObject({ reason: "http", status: 403 });
   });
+
+  it("classifies a body read failure as a network error", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => {
+        throw new TypeError("network error");
+      },
+    }));
+
+    await expect(
+      fetchAttachmentBlob(
+        "https://attachments.zliusercontent.com/object",
+        fetchImpl as unknown as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ reason: "network", status: null });
+  });
 });
 
 describe("fetchAttachmentWithRetry", () => {
@@ -181,7 +198,7 @@ describe("fetchAttachmentWithRetry", () => {
   it("retries when the URL is unavailable on the first attempt", async () => {
     const resolveUrl = vi
       .fn()
-      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new AttachmentDownloadError("url", { status: 503 }))
       .mockResolvedValueOnce("https://storage.example/object");
     const fetchImpl = vi.fn(async () => new Response(new Blob(["attachment"]), { status: 200 }));
 
@@ -217,9 +234,12 @@ describe("fetchAttachmentWithRetry", () => {
     }).catch((cause: unknown) => cause);
     expect(network).toMatchObject({ reason: "network", status: null });
 
-    const unavailable = await fetchAttachmentWithRetry(async () => null, {
-      retryDelayMs: 0,
-    }).catch((cause: unknown) => cause);
-    expect(unavailable).toMatchObject({ reason: "url" });
+    const unavailable = await fetchAttachmentWithRetry(
+      async () => {
+        throw new AttachmentDownloadError("url", { status: 503 });
+      },
+      { retryDelayMs: 0 },
+    ).catch((cause: unknown) => cause);
+    expect(unavailable).toMatchObject({ reason: "url", status: 503 });
   });
 });

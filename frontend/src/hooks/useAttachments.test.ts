@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { AttachmentDownloadError } from "../lib/api/attachments";
 import { useAttachmentUrl } from "./useAttachments";
 const mocks = vi.hoisted(() => ({ config: {}, requestWithTx: vi.fn() }));
 vi.mock("../lib/electric/collections-context", () => ({
@@ -92,4 +93,46 @@ it("refetches only when getFreshUrl is asked to refresh", async () => {
     "https://files.test/image.png",
   );
   expect(mocks.requestWithTx).toHaveBeenCalledTimes(2);
+});
+
+it("keeps the /url status and marks the preview as failed", async () => {
+  mocks.requestWithTx.mockRejectedValue(
+    Object.assign(new Error("Request failed"), { status: 503 }),
+  );
+  await act(async () => root.render(tree()));
+  const getFreshUrl = results[0].getFreshUrl;
+  let error: unknown;
+  await act(async () => {
+    error = await getFreshUrl().catch((cause: unknown) => cause);
+  });
+  expect(error).toBeInstanceOf(AttachmentDownloadError);
+  expect(error).toMatchObject({ reason: "url", status: 503 });
+  expect(results[0].status).toBe("error");
+});
+
+it("does not overwrite the display state with a URL fetched for an old config", async () => {
+  let finishFirst!: (value: unknown) => void;
+  mocks.requestWithTx.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishFirst = resolve;
+      }),
+  );
+  await act(async () => root.render(tree()));
+  const getFreshUrl = results[0].getFreshUrl;
+  const pending = getFreshUrl();
+  // 接続の設定を切り替え、新しい設定で URL を取得する。
+  mocks.config = {};
+  mocks.requestWithTx.mockResolvedValue({
+    data: { download_url: "https://files.test/new.png" },
+    txid: null,
+  });
+  await act(async () => root.render(tree()));
+  expect(results[0].url).toBe("https://files.test/new.png");
+  // 切り替え前の取得が完了しても、表示は新しい設定の URL のまま。
+  await act(async () => {
+    finishFirst({ data: { download_url: "https://files.test/old.png" }, txid: null });
+  });
+  await expect(pending).resolves.toBe("https://files.test/old.png");
+  expect(results[0].url).toBe("https://files.test/new.png");
 });
