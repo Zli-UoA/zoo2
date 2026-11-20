@@ -950,6 +950,12 @@
       "reason": "AppMessageでBotアバター・著者名・APP表示を組み合わせて確認する。"
     },
     {
+      "file": "src/components/chat/messages/RecentReactions.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "TouchActionSheetで最近のリアクション一覧と選択を確認する。"
+    },
+    {
       "file": "src/components/chat/AppSettingsSections.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx",
       "composed": true,

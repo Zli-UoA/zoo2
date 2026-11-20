@@ -6,6 +6,24 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { cdp, page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
+
+vi.mock("../../../lib/emoji/workspace", () => ({
+  useWorkspaceEmojis: () => ({
+    emojis: [
+      {
+        name: "party-parrot",
+        url: "/api/emoji-images/party-parrot",
+        aliases: [],
+        category: "custom",
+      },
+    ],
+    imageUrl: (url: string) => url,
+    loading: false,
+    failed: false,
+    retry: () => {},
+  }),
+}));
 import { MessageRow, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -415,6 +433,35 @@ describe("MessageRow", () => {
     await userEvent.click(item);
     expect(onStartEdit).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("shows recent reactions of all kinds in the touch sheet", async () => {
+    localStorage.setItem(
+      RECENT_EMOJIS_STORAGE_KEY,
+      JSON.stringify([
+        "🎉",
+        ":party-parrot:",
+        "kitchen:1f431_1f600",
+        `apub:${"a".repeat(64)}::remote:`,
+      ]),
+    );
+    try {
+      renderRow(buildItem(), false, { canReact: true });
+      tapTouch(screen.getByText("hello"));
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      const group = within(sheet).getByRole("group", { name: "最近使った絵文字" });
+      expect(within(group).getByRole("button", { name: "🎉" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: ":party-parrot:" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: "🐱 + 😀" })).toBeTruthy();
+      // 画像付きリアクションはチャット API で扱えないので出さない。
+      expect(within(group).queryByRole("button", { name: ":remote:" })).toBeNull();
+
+      // シートから選んだ絵文字も最近の履歴を更新する。
+      await userEvent.click(within(group).getByRole("button", { name: "🎉" }));
+      expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)[0]).toBe("🎉");
+    } finally {
+      localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
+    }
   });
 
   it("does not open the sheet while the message is being edited", () => {

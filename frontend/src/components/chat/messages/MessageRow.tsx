@@ -34,7 +34,8 @@ import { previewUrls } from "./linkPreviews";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
-import { loadRecentEmojis } from "../../../lib/emoji/recents";
+import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
+import { RecentReactions } from "./RecentReactions";
 import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
@@ -400,7 +401,13 @@ export function MessageRow({
   }
   const [sheetOpen, setSheetOpen] = useState(false);
   const tapOrigin = useRef<{ x: number; y: number } | null>(null);
-  const recentEmojis = useMemo(() => loadRecentEmojis().slice(0, 6), [sheetOpen]);
+  const [recentEmojis, setRecentEmojis] = useState<string[]>([]);
+  useEffect(() => {
+    if (!sheetOpen) return;
+    // チャットのリアクション API は画像付き（apub:）の値を受け付けないので除外する。
+    // 件数制限は RecentReactions で有効な候補を絞った後に行う。
+    setRecentEmojis(loadRecentEmojis().filter((emoji) => !emoji.startsWith("apub:")));
+  }, [sheetOpen]);
 
   function rememberTouchStart(event: PointerEvent<HTMLDivElement>) {
     tapOrigin.current =
@@ -879,26 +886,16 @@ export function MessageRow({
           className="inset-x-0 bottom-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-t-2xl rounded-b-none pb-6 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:max-w-sm sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
         >
           <DialogTitle>{t("messages.actions")}</DialogTitle>
-          {canReact && recentEmojis.length > 0 ? (
-            <div role="group" aria-label={t("reactions.recent")}>
-              <p className="mb-2 text-xs text-muted-foreground">{t("reactions.recent")}</p>
-              <div className="flex flex-wrap gap-1">
-                {recentEmojis.map((emoji) => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    aria-label={emoji}
-                    className="flex size-11 items-center justify-center rounded-lg text-2xl outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
-                    onClick={() => {
-                      onReaction(emoji);
-                      setSheetOpen(false);
-                    }}
-                  >
-                    <span aria-hidden="true">{emoji}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+          {canReact ? (
+            <RecentReactions
+              values={recentEmojis}
+              catalog={kitchenCatalog}
+              onSelect={(emoji) => {
+                addRecentEmoji(emoji);
+                onReaction(emoji);
+                setSheetOpen(false);
+              }}
+            />
           ) : null}
           <div className="flex flex-col">
             {onOpenThread ? (

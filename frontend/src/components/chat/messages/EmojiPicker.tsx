@@ -12,7 +12,6 @@ import { cn } from "cn";
 import { EMOJIBASE_DATA_URL, SUPPORTED_EMOJI_VERSION } from "../../../lib/emoji/data";
 import { resolveEmojiDataLocale } from "../../../lib/emoji/locale";
 import { resolveMultilingualEmojiData } from "../../../lib/emoji/resolver";
-import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { inputClassName } from "../../ui/input-styles";
 
@@ -34,13 +33,8 @@ const SCROLL_CORRECTION_WINDOW_MS = 200;
 export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
-  const [recents, setRecents] = useState<string[]>([]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const keyboardNavigationAt = useRef(0);
-
-  useEffect(() => {
-    setRecents(loadRecentEmojis());
-  }, []);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -60,14 +54,6 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
     });
     return () => observer.disconnect();
   }, []);
-
-  const choose = useCallback(
-    (emoji: string) => {
-      setRecents(addRecentEmoji(emoji));
-      onSelect(emoji);
-    },
-    [onSelect],
-  );
 
   // Base UI Dialog stops arrow-key propagation at the popup, but frimousse
   // listens on document for grid navigation. Re-dispatch the key on document
@@ -101,29 +87,10 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
       emojibaseUrl={EMOJIBASE_DATA_URL}
       resolveEmojiData={resolveMultilingualEmojiData}
       emojiVersion={SUPPORTED_EMOJI_VERSION}
-      onEmojiSelect={(emoji) => choose(emoji.emoji)}
+      onEmojiSelect={(emoji) => onSelect(emoji.emoji)}
       onKeyDown={forwardNavigationKey}
       className="flex h-full min-h-0 flex-col gap-2"
     >
-      {recents.length > 0 ? (
-        <div
-          role="group"
-          aria-label={t("reactions.recent")}
-          className="flex shrink-0 flex-wrap gap-1 border-b border-border pb-2"
-        >
-          {recents.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              aria-label={emoji}
-              className="flex size-8 items-center justify-center rounded-md text-lg leading-none outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50"
-              onClick={() => choose(emoji)}
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
-      ) : null}
       <div className="flex shrink-0 items-center gap-2">
         <div className="relative min-w-0 flex-1">
           <SearchIcon
