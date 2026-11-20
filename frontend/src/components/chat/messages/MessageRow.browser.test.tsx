@@ -39,6 +39,11 @@ async function emulateTouch() {
   await cdp().send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
 }
 
+function tapTouch(element: Element) {
+  fireEvent.pointerDown(element, { pointerType: "touch", clientX: 10, clientY: 10 });
+  fireEvent.pointerUp(element, { pointerType: "touch", clientX: 10, clientY: 10 });
+}
+
 function expectChipHitArea(button: HTMLElement) {
   expect(button.className).toContain("[@media(hover:none)]:after:absolute");
   expect(button.className).toContain("relative");
@@ -113,7 +118,7 @@ describe("MessageRow", () => {
     expect(parseFloat(getComputedStyle(chip, "::after").height)).toBeGreaterThanOrEqual(44);
 
     // タッチでは本文タップでシートが開き、操作はシート内のボタンから行う。
-    await userEvent.click(screen.getByText("hello"));
+    tapTouch(screen.getByText("hello"));
     const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
 
     for (const name of ["リアクションを追加", "スレッドを開く", "編集", "削除"]) {
@@ -363,7 +368,7 @@ describe("MessageRow", () => {
   it("opens the action sheet on a tap and adds the first reaction", async () => {
     const onPickReaction = vi.fn();
     renderRow(buildItem(), false, { canReact: true, onPickReaction });
-    await userEvent.click(screen.getByText("hello"));
+    tapTouch(screen.getByText("hello"));
     const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
     await userEvent.click(within(sheet).getByRole("button", { name: "リアクションを追加" }));
     expect(onPickReaction).toHaveBeenCalledOnce();
@@ -377,7 +382,7 @@ describe("MessageRow", () => {
     window.addEventListener("zoo:message-actions", opened);
     try {
       renderRow(buildItem());
-      await userEvent.click(screen.getByText("hello"));
+      tapTouch(screen.getByText("hello"));
       const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
       await userEvent.click(within(sheet).getByRole("button", { name: "Appでメッセージを操作" }));
       expect(opened).toHaveBeenCalledOnce();
@@ -390,6 +395,22 @@ describe("MessageRow", () => {
   it("does not open the sheet when a link is tapped", async () => {
     renderRow(buildItem({ content: "hello https://example.com" }));
     await userEvent.click(screen.getByRole("link", { name: "example.com" }));
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("does not open the sheet on a mouse click", async () => {
+    renderRow(buildItem());
+    await userEvent.click(screen.getByText("hello"));
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
+  it("does not open the sheet when an existing menu item is clicked", async () => {
+    const onStartEdit = vi.fn();
+    renderRow(buildItem(), true, { onStartEdit });
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await userEvent.click(screen.getByRole("menuitem", { name: "編集" }));
+    expect(onStartEdit).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 

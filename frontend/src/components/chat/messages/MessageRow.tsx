@@ -1,5 +1,5 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import { type MouseEvent, useEffect, useId, useMemo, useState } from "react";
+import { type PointerEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -391,11 +391,26 @@ export function MessageRow({
     return labels;
   }
   const [sheetOpen, setSheetOpen] = useState(false);
+  const tapOrigin = useRef<{ x: number; y: number } | null>(null);
   const recentEmojis = useMemo(() => loadRecentEmojis().slice(0, 6), [sheetOpen]);
 
-  function openSheetOnTap(event: MouseEvent<HTMLDivElement>) {
-    // リンクや既存の操作ボタンのタップは従来どおり動かす。
-    if ((event.target as HTMLElement).closest("a, button, input, textarea, [role='button']"))
+  function rememberTouchStart(event: PointerEvent<HTMLDivElement>) {
+    tapOrigin.current =
+      event.pointerType === "touch" ? { x: event.clientX, y: event.clientY } : null;
+  }
+
+  function openSheetOnTap(event: PointerEvent<HTMLDivElement>) {
+    const origin = tapOrigin.current;
+    tapOrigin.current = null;
+    // マウスクリックやスクロール後の pointerup では開かない。タッチのシングルタップだけが対象。
+    if (event.pointerType !== "touch" || !origin) return;
+    if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) return;
+    // リンク・操作ボタン・メニュー項目のタップは従来どおり動かす。
+    if (
+      (event.target as HTMLElement).closest(
+        "a, button, input, textarea, [role='button'], [data-slot='dropdown-menu-item']",
+      )
+    )
       return;
     setSheetOpen(true);
   }
@@ -417,7 +432,8 @@ export function MessageRow({
     <>
       {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
       <div
-        onClick={openSheetOnTap}
+        onPointerDown={rememberTouchStart}
+        onPointerUp={openSheetOnTap}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",

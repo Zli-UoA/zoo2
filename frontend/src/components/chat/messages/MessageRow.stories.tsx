@@ -1,7 +1,7 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
@@ -697,7 +697,9 @@ export const TouchActionSheet: Story = {
     onRequestDelete: fn(),
   },
   play: playForImplementation(async ({ canvasElement }) => {
-    await userEvent.click(await within(canvasElement).findByText(/こんにちは/));
+    const body = await within(canvasElement).findByText(/こんにちは/);
+    await fireEvent.pointerDown(body, { pointerType: "touch", clientX: 10, clientY: 10 });
+    await fireEvent.pointerUp(body, { pointerType: "touch", clientX: 10, clientY: 10 });
     const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
     await waitFor(async () => {
       await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
