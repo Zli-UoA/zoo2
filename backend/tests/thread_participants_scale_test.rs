@@ -2,7 +2,7 @@
 //! Measures `GET /api/threads/{id}`'s participant SQL (`participants_sql`) against a
 //! large `users` table. P = participant rows of one thread, L = live (joined, not
 //! deactivated) ones. Bound: no Seq Scan on users/thread_participants, `thread_participants`
-//! rows <= P, `users` rows <= L, sort input <= L, logical blocks <= 5L + 2P + 64.
+//! rows <= P, `users` rows <= joined (not left), sort input <= L, logical blocks <= 5*joined + 2P + 64.
 use backend::{config::Config, routes::threads::participants_sql};
 use serde_json::{Value, json};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
@@ -32,6 +32,8 @@ struct Case {
     name: &'static str,
     thread: String,
     participants: f64,
+    /// Not left: the keys looked up in users. Live = joined minus deactivated.
+    joined: f64,
     live: f64,
 }
 
@@ -77,10 +79,10 @@ fn work(case: &Case, mode: &str, plan: &Value) -> Value {
         case.participants
     );
     assert!(
-        scanned("users") <= case.live,
-        "{name}: users scanned {} > L={}: {relations:?}",
+        scanned("users") <= case.joined,
+        "{name}: users scanned {} > joined={}: {relations:?}",
         scanned("users"),
-        case.live
+        case.joined
     );
     assert!(
         max_sort <= case.live,
@@ -94,7 +96,7 @@ fn work(case: &Case, mode: &str, plan: &Value) -> Value {
     );
     let blocks = plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)
         + plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0);
-    let limit = 5. * case.live + 2. * case.participants + 64.;
+    let limit = 5. * case.joined + 2. * case.participants + 64.;
     assert!(
         blocks as f64 <= limit,
         "{name}: {blocks} logical blocks > {limit}"
@@ -119,12 +121,11 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     let channel = format!("{tag}-channel");
     let owner = format!("{tag}-owner");
     // (name, participants P, left, deactivated). Live = P - left - deactivated.
-    let specs: [(&str, i32, i32, i32); 5] = [
+    let specs: [(&str, i32, i32, i32); 4] = [
         ("small", 50, 0, 0),
         ("large", 10_000, 500, 500),
         ("empty", 0, 0, 0),
         ("all_left", 100, 100, 0),
-        ("unrelated_history", users / 10, 0, 0),
     ];
     let tx = client.transaction().await?;
     tx.execute(
@@ -145,15 +146,19 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         // Rows 1..=left are left; the next `deactivated` users are deactivated.
         tx.execute("INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+(n*37)%$3::integer)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$5::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$4::integer)n", &[&thread, &tag, &users, &p, &left]).await?;
         if deactivated > 0 {
-            tx.execute("UPDATE users SET is_deactivated=true WHERE id IN (SELECT user_id FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT $2::integer)", &[&thread, &i64::from(deactivated)]).await?;
+            tx.execute("UPDATE users SET is_deactivated=true WHERE id IN (SELECT user_id FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT $2::integer)", &[&thread, &deactivated]).await?;
         }
         cases.push(Case {
             name,
             thread,
             participants: f64::from(p),
+            joined: f64::from(p - left),
             live: f64::from(p - left - deactivated),
         });
     }
+    // Unrelated history: `users` rows spread over users/30 other threads (30 rows each),
+    // so the planner sees many distinct thread_id values, as in production.
+    tx.execute("INSERT INTO thread_participants(thread_id,user_id) SELECT $1||'-noise-'||(n%($2::integer/30)),$1||'-u-'||lpad((1+(n*37)%$2::integer)::text,9,'0') FROM generate_series(1,$2::integer)n", &[&tag, &users]).await?;
     tx.batch_execute("SET LOCAL session_replication_role=origin")
         .await?;
     tx.commit().await?;
