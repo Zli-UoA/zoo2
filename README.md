@@ -175,6 +175,11 @@ Push Notifications の機能設定が必要です。Debug は APNs のサンド�
 音声通話には [stasel/WebRTC](https://github.com/stasel/WebRTC/tree/157.0.0) の配布バイナリを使用し、バージョンを固定しています。
 [ライセンス原文](Sources/Resources/WebRTC-LICENSE.txt) をアプリにも同梱します。
 
+## TestFlightの内部テスター招待
+
+GitHub Actionsから、App Store Connectへのユーザー招待と、承諾済みユーザーの内部グループ「zli」への追加を実行できます。
+設定方法・実行方法は[内部テスター管理](Scripts/TestFlight/README.md)を参照してください。
+
 ## 検証
 
 2026-11-20 に、SwiftData同期・添付キャッシュ・履歴の自動読み込みとIssue #37〜#43の実装後、

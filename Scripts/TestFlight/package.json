@@ -1,0 +1,13 @@
+{
+  "name": "zoo2-testflight-invitations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --allowJs --checkJs --noEmit --target ES2023 --module NodeNext --types node --strict false --skipLibCheck *.mjs",
+    "test": "npm run check && node --test *.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
