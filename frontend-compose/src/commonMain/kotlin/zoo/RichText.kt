@@ -268,17 +268,17 @@ private fun InlineParagraph(
                         }
                     }
                     if (token.kind == "emoji") {
-                        val kitchen = kitchenFromShortcode(value)
-                        if (kitchen != null) {
-                            val id = "kitchen-emoji-${kitchenParts.size}"
-                            kitchenParts[id] = kitchen
-                            appendInlineContent(id, value)
-                            return@forEach
-                        }
                         val remote = remoteEmojis.find { it.text("name") == value }
                         if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")))) {
                             val id = "apub-emoji-${emojiParts.size}"
                             emojiParts[id] = remote
+                            appendInlineContent(id, value)
+                            return@forEach
+                        }
+                        val kitchen = kitchenFromShortcode(value)
+                        if (kitchen != null) {
+                            val id = "kitchen-emoji-${kitchenParts.size}"
+                            kitchenParts[id] = kitchen
                             appendInlineContent(id, value)
                             return@forEach
                         }

@@ -337,7 +337,8 @@
         "Headings",
         "SharedShortcodes",
         "AuthZAccounts",
-        "KitchenBody"
+        "KitchenBody",
+        "KitchenTaggedEmoji"
       ]
     },
     {

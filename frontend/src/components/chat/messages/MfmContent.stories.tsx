@@ -148,3 +148,15 @@ export const KitchenBody: Story = {
     await expect(canvasElement.querySelector("code")).toHaveTextContent(":kitchen_1f431_1f600:");
   },
 };
+
+export const KitchenTaggedEmoji: Story = {
+  args: {
+    content: "投稿のタグを優先 :kitchen_1f431_1f600:",
+    emojis: { kitchen_1f431_1f600: customEmojiFixture },
+  },
+  play: async ({ canvasElement }) => {
+    const image = await within(canvasElement).findByRole("img", { name: ":kitchen_1f431_1f600:" });
+    const box = image.getBoundingClientRect();
+    await expect(box.width / box.height).toBeCloseTo(3);
+  },
+};

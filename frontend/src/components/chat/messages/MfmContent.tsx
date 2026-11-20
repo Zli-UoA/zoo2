@@ -139,6 +139,8 @@ function EmojiCode({
         loading="lazy"
       />
     );
+  const kitchen = kitchenFromShortcode(name);
+  if (kitchen) return <KitchenCode value={kitchen} />;
   return Object.hasOwn(shortcodes, name) ? shortcodes[name] : `:${name}:`;
 }
 function MathFormula({ formula, block }: { formula: string; block: boolean }) {
@@ -202,8 +204,6 @@ function renderNode(
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
-      if (kitchenFromShortcode(node.props.name))
-        return <KitchenCode value={kitchenFromShortcode(node.props.name)!} />;
       if (node.props.name.startsWith("@")) return <AccountGlyph name={node.props.name.slice(1)} />;
       return (
         options.renderEmoji?.(node.props.name) ?? (
