@@ -456,12 +456,12 @@ struct PersistentSyncIntegrationTests {
         }
         let store = ConversationStore(channel: Channel(id: syncChannel, channel_name: "履歴", is_private: false, is_dm: false),
                                       client: NativeChatClient(api: harness.api, sync: sync), userID: syncUser.id)
-        store.drafts["root"] = "同期後に送信する下書き"
         #expect(store.postingRestrictionMessage == nil)
         var run = Task { await store.run() }
         defer { run.cancel() }
         for await _ in started.stream { break }
         #expect(store.showingCachedMessages)
+        store.drafts["root"] = "同期中に入力した下書き"
         #expect(!store.canSend(parentID: nil))
         #expect(store.postingRestrictionMessage == nil)
         var channel = store.channel
@@ -478,6 +478,7 @@ struct PersistentSyncIntegrationTests {
         var iterator = ready.stream.makeAsyncIterator()
         _ = await iterator.next()
         #expect(!store.showingCachedMessages && store.messages.count == 100)
+        #expect(store.drafts["root"] == "同期中に入力した下書き")
         #expect(store.canSend(parentID: nil))
         #expect(store.postingRestrictionMessage == nil)
         #expect(store.historyRevision == 0)

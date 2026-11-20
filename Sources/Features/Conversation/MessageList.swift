@@ -475,7 +475,7 @@ struct MessageList: View {
         .padding(.horizontal, horizontalPadding).padding(.vertical, AppDesign.spacing)
         .background {
             // 余白でだけ長押しを受け取り、添付やスタンプ固有の操作を優先する。
-            (store.focusedMessageID == message.id ? AppDesign.tint.opacity(0.08) : .clear)
+            (store.focusedMessageID == message.id ? AppDesign.selectionBackground : .clear)
                 .contentShape(Rectangle())
                 .onLongPressGesture(perform: showActions, onPressingChanged: pressingChanged)
                 .accessibilityHidden(true)

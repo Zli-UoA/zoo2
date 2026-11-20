@@ -49,7 +49,7 @@ struct ThreadReplyLink: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .tint(Color(.link))
+        .tint(AppDesign.link)
         .accessibilityLabel("\(replyCount) 件の返信")
         .accessibilityValue(details)
         .accessibilityHint("スレッドを開きます")

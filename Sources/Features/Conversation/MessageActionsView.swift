@@ -144,8 +144,8 @@ struct MessageActionsView: View {
                             glyph
                                 .padding(4)
                                 .frame(width: size * 1.4, height: size)
-                                .background(selected ? AppDesign.tint.opacity(0.14) : Color(.secondarySystemBackground), in: Capsule())
-                                .overlay { if selected { Capsule().strokeBorder(.tint) } }
+                                .background(selected ? AppDesign.selectionBackground : Color(.secondarySystemBackground), in: Capsule())
+                                .overlay { if selected { Capsule().strokeBorder(AppDesign.navigationTint) } }
                                 .contentShape(Capsule())
                         }
                         .disabled(store.isReactionPending(messageID: message.id, emoji: emoji))

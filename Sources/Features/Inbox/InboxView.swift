@@ -188,11 +188,14 @@ private struct InboxCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .tint(AppDesign.link)
                     .accessibilityIdentifier("inbox-post-\(entry.id)")
                 } else if let text = entry.content { preview(text) }
                 if entry.kind == "follow_request", entry.pendingFollow {
                     HStack {
                         Button("承認") { respond(true) }.buttonStyle(.borderedProminent)
+                            .tint(AppDesign.primary)
+                            .foregroundStyle(responding ? Color.secondary : AppDesign.primaryForeground)
                         Button("拒否") { respond(false) }.buttonStyle(.bordered)
                     }.disabled(responding)
                 }

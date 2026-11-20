@@ -149,7 +149,7 @@ struct ConversationDirectory: View {
                 channelLabel(channel).contentShape(Rectangle())
             }
                 .buttonStyle(.plain)
-                .listRowBackground(workspace.path.first?.channelID == channel.id ? Color.accentColor.opacity(0.12) : nil)
+                .listRowBackground(workspace.path.first?.channelID == channel.id ? AppDesign.selectionBackground : nil)
                 .accessibilityAddTraits(workspace.path.first?.channelID == channel.id ? .isSelected : [])
         } else {
             NavigationLink(value: ChatRoute.channel(channel.id)) { channelLabel(channel) }

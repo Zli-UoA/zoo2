@@ -72,6 +72,7 @@ struct RootView: View {
             if session.deviceAuthorization != nil {
                 Button("認証画面を開く") { showingVerification = true }
                     .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                    .tint(AppDesign.primary).foregroundStyle(AppDesign.primaryForeground)
                     .controlSize(.large)
                     .accessibilityIdentifier("device-verify")
             }
@@ -83,6 +84,7 @@ struct RootView: View {
             } else {
                 Button("ログイン") { session.startLogin() }
                     .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
+                    .tint(AppDesign.primary).foregroundStyle(AppDesign.primaryForeground)
                     .controlSize(.large)
                     .accessibilityIdentifier("login")
             }

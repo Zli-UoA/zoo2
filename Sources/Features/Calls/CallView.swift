@@ -44,7 +44,9 @@ struct CallBanner: View {
                                         calls.start(channel: channel, invitationID: invite.id)
                                     } catch { workspace.report(error) }
                                 }
-                            }.buttonStyle(.glassProminent).accessibilityIdentifier("incoming-call-answer")
+                            }.buttonStyle(.glassProminent)
+                                .tint(AppDesign.primary).foregroundStyle(AppDesign.primaryForeground)
+                                .accessibilityIdentifier("incoming-call-answer")
                         }
                         .font(.callout).padding(AppDesign.horizontalInset)
                         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: AppDesign.cornerRadius))
