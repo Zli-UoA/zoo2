@@ -27,7 +27,7 @@ struct CallProtocolTests {
 }
 
 @MainActor
-private final class FakeCallClient: CallClient {
+final class FakeCallClient: CallClient {
     var activeCallRows: [ActiveCallSummary] = []
     var activeCallsFailure: Error?
     var beforeActiveCallsResult: (@MainActor () async -> Void)?
@@ -93,7 +93,7 @@ private final class FakeCallClient: CallClient {
 }
 
 @MainActor
-private final class FakeCallMedia: CallMedia {
+final class FakeCallMedia: CallMedia {
     var onPeerState: (@MainActor (String, CallPeerState) -> Void)?
     var started = false
     var closed = false

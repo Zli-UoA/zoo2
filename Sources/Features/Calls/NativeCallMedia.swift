@@ -15,6 +15,64 @@ protocol CallMedia: AnyObject {
 }
 
 @MainActor
+protocol CallWaitingAudio: AnyObject {
+    func start(failed: @escaping @MainActor () -> Void) throws
+    func stop()
+}
+
+@MainActor
+final class NativeCallWaitingAudio: CallWaitingAudio {
+    private var engine: AVAudioEngine?
+    private var observer: (any NSObjectProtocol)?
+    private var generation = UUID()
+    var isRunning: Bool { engine?.isRunning == true }
+
+    func start(failed: @escaping @MainActor () -> Void) throws {
+        guard engine == nil else { return }
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { throw ZooError.invalidResponse }
+        // 待機中も通話の音声入力を稼働させる。音声は保存・送信せず、WebRTCの音声入出力開始時に譲る。
+        // AVFAudioの音声スレッドで呼ばれるため、MainActorの隔離を継承させない。
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable _, _ in }
+        self.engine = engine
+        do { try engine.start() }
+        catch { stop(); throw error }
+        let epoch = generation
+        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, generation == epoch, self.engine != nil else { return }
+                // Bluetoothの接続などで入力形式が変わった場合も、待機中の音声入力を再構築する。
+                stop()
+                do { try start(failed: failed) }
+                catch { failed() }
+            }
+        }
+    }
+
+    func stop() {
+        generation = UUID()
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+        engine?.stop()
+        engine?.inputNode.removeTap(onBus: 0)
+        engine = nil
+    }
+}
+
+final class WebRTCCallAudioObserver: NSObject, RTCAudioSessionDelegate {
+    let changed: @MainActor @Sendable (Bool) -> Void
+    init(changed: @escaping @MainActor @Sendable (Bool) -> Void) { self.changed = changed }
+    func audioSessionDidStartPlayOrRecord(_ session: RTCAudioSession) {
+        Task { @MainActor [changed] in changed(true) }
+    }
+    func audioSessionDidStopPlayOrRecord(_ session: RTCAudioSession) {
+        Task { @MainActor [changed] in changed(false) }
+    }
+}
+
+@MainActor
 final class NativeCallMedia: NSObject, CallMedia {
     var systemAudio = false
     var onPeerState: (@MainActor (String, CallPeerState) -> Void)?
@@ -41,16 +99,50 @@ final class NativeCallMedia: NSObject, CallMedia {
     private var sessionID = ""
     private var generation = UUID()
     private var audioActive = false
+    private var systemAudioActive = false
+    private let waitingAudio: any CallWaitingAudio
+    private var webRTCAudioRunning = false
+    private(set) var audioObserver: WebRTCCallAudioObserver?
     private var mediaOperation: Task<Void, Error>?
     private var signal: (@MainActor (String, CallSignal) -> Void)?
     private var failed: (@MainActor () -> Void)?
     private let connectionTimeout: Duration
     private let restartTimeout: Duration
 
-    init(connectionTimeout: Duration = .seconds(20), restartTimeout: Duration = .seconds(12)) {
+    init(connectionTimeout: Duration = .seconds(20), restartTimeout: Duration = .seconds(12),
+         waitingAudio: any CallWaitingAudio = NativeCallWaitingAudio()) {
         self.connectionTimeout = connectionTimeout
         self.restartTimeout = restartTimeout
+        self.waitingAudio = waitingAudio
         super.init()
+    }
+
+    private static var audioConfiguration: RTCAudioSessionConfiguration {
+        let configuration = RTCAudioSessionConfiguration.webRTC()
+        configuration.category = AVAudioSession.Category.playAndRecord.rawValue
+        configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
+        configuration.categoryOptions = [.allowBluetoothHFP]
+        return configuration
+    }
+
+    static func prepareSystemAudio() throws {
+        let audio = RTCAudioSession.sharedInstance()
+        audio.useManualAudio = true
+        audio.isAudioEnabled = false
+        audio.lockForConfiguration()
+        defer { audio.unlockForConfiguration() }
+        try audio.setConfiguration(audioConfiguration)
+    }
+
+    func setSystemAudioActive(_ active: Bool) throws {
+        systemAudioActive = active
+        try updateWaitingAudio()
+    }
+
+    private func updateWaitingAudio() throws {
+        if track != nil, !webRTCAudioRunning, systemAudio ? systemAudioActive : audioActive {
+            try waitingAudio.start { [weak self] in self?.failed?() }
+        } else { waitingAudio.stop() }
     }
 
     func start(sessionID: String, room: CallRoom, signal: @escaping @MainActor (String, CallSignal) -> Void,
@@ -59,19 +151,29 @@ final class NativeCallMedia: NSObject, CallMedia {
         self.signal = signal
         self.failed = failed
         generation = UUID()
+        let epoch = generation
+        webRTCAudioRunning = false
+        let observer = WebRTCCallAudioObserver { [weak self] running in
+            guard let self, generation == epoch, track != nil else { return }
+            webRTCAudioRunning = running && !peers.isEmpty
+            do { try updateWaitingAudio() }
+            catch { self.failed?() }
+        }
+        audioObserver = observer
         iceServers = room.ice_servers.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         let audio = RTCAudioSession.sharedInstance()
+        audio.add(observer)
         if !systemAudio { audio.useManualAudio = false }
         audio.lockForConfiguration()
-        defer { audio.unlockForConfiguration() }
-        let configuration = RTCAudioSessionConfiguration.webRTC()
-        configuration.category = AVAudioSession.Category.playAndRecord.rawValue
-        configuration.mode = AVAudioSession.Mode.voiceChat.rawValue
-        configuration.categoryOptions = [.allowBluetoothHFP]
-        if systemAudio { try audio.setConfiguration(configuration) }
-        else { try audio.setConfiguration(configuration, active: true) }
+        let configuration = Self.audioConfiguration
+        do {
+            if systemAudio { try audio.setConfiguration(configuration) }
+            else { try audio.setConfiguration(configuration, active: true) }
+        } catch { audio.unlockForConfiguration(); throw error }
+        audio.unlockForConfiguration()
         audioActive = !systemAudio
         track = factory.audioTrack(withTrackId: "zoo-audio")
+        try updateWaitingAudio()
     }
 
     private func peer(_ id: String) throws -> Peer {
@@ -143,6 +245,10 @@ final class NativeCallMedia: NSObject, CallMedia {
             removed?.recovery?.cancel()
             removed?.connection.close()
             early[id] = nil
+            if peers.isEmpty {
+                webRTCAudioRunning = false
+                try updateWaitingAudio()
+            }
         case .signal(let id, let value):
             guard id != sessionID, !left.contains(id), UUID(uuidString: id) != nil else { return }
             switch value.type {
@@ -350,6 +456,11 @@ final class NativeCallMedia: NSObject, CallMedia {
 
     func close() {
         generation = UUID()
+        systemAudioActive = false
+        waitingAudio.stop()
+        if let audioObserver { RTCAudioSession.sharedInstance().remove(audioObserver) }
+        audioObserver = nil
+        webRTCAudioRunning = false
         mediaOperation?.cancel(); mediaOperation = nil
         signal = nil; failed = nil; onPeerState = nil
         track?.isEnabled = false

@@ -5,6 +5,151 @@ import Testing
 // RTCAudioSessionはプロセス共通なので、実WebRTCを使う試験同士だけを直列にする。
 @MainActor @Suite("実WebRTCの通話接続", .serialized, .timeLimit(.minutes(1)))
 struct NativeCallMediaTests {
+    @Test("実際の待機音声エンジンを開始でき、通話終了で入力を解放する")
+    func realWaitingInput() async throws {
+        let waiting = NativeCallWaitingAudio()
+        let media = NativeCallMedia(waitingAudio: waiting)
+        defer { media.close() }
+        try media.start(sessionID: UUID().uuidString, room: CallRoom(participants: [], max_participants: 6, ice_servers: []),
+                        signal: { _, _ in }, failed: { Issue.record("待機中の音声入力が停止しました。") })
+        #expect(waiting.isRunning)
+        // 開始直後に閉じると、別スレッドの音声コールバックで起きるクラッシュを検出できない。
+        try await Task.sleep(for: .seconds(2))
+        #expect(waiting.isRunning)
+        media.close()
+        #expect(!waiting.isRunning)
+    }
+
+    @MainActor private final class WaitingAudio: CallWaitingAudio {
+        var running = false
+        var failure: Error?
+        func start(failed: @escaping @MainActor () -> Void) throws {
+            if let failure { throw failure }
+            running = true
+        }
+        func stop() { running = false }
+    }
+
+    @Test("1人待機の音声入力はCallKitの有効化後だけ稼働し、無効化・終了で停止する", arguments: [false, true])
+    func waitingAudioActivation(activateBeforeRoom: Bool) throws {
+        let waiting = WaitingAudio()
+        let media = NativeCallMedia(waitingAudio: waiting)
+        media.systemAudio = true
+        defer { media.close() }
+        if activateBeforeRoom { try media.setSystemAudioActive(true) }
+        #expect(!waiting.running)
+        try media.start(sessionID: UUID().uuidString, room: CallRoom(participants: [], max_participants: 6, ice_servers: []),
+                        signal: { _, _ in }, failed: {})
+        #expect(waiting.running == activateBeforeRoom)
+        try media.setSystemAudioActive(true)
+        #expect(waiting.running)
+        media.mute(true)
+        #expect(waiting.running)
+        try media.setSystemAudioActive(false)
+        #expect(!waiting.running)
+        try media.setSystemAudioActive(true)
+        #expect(waiting.running)
+        media.close()
+        #expect(!waiting.running)
+        try media.setSystemAudioActive(true)
+        #expect(!waiting.running)
+    }
+
+    @Test("相手の参加後も交渉中は待機入力を続け、WebRTCの音声入出力開始・終了で切り替える")
+    func waitingAudioFollowsParticipants() async throws {
+        let waiting = WaitingAudio()
+        let media = NativeCallMedia(waitingAudio: waiting)
+        media.systemAudio = true
+        defer { media.close() }
+        let local = "22222222-2222-4222-8222-222222222222"
+        let remote = CallParticipant(session_id: "11111111-1111-4111-8111-111111111111", user_id: "相手",
+                                     user_name: "相手", display_name: "相手", is_muted: false)
+        try media.setSystemAudioActive(true)
+        try media.start(sessionID: local, room: CallRoom(participants: [], max_participants: 6, ice_servers: []),
+                        signal: { _, _ in }, failed: {})
+        #expect(waiting.running)
+        try await media.handle(.joined(remote))
+        #expect(waiting.running)
+        #expect(await media.diagnostics().count == 1)
+        let observer = try #require(media.audioObserver)
+        observer.changed(true)
+        #expect(!waiting.running)
+        try await media.handle(.left(remote.id))
+        #expect(waiting.running)
+        observer.changed(true)
+        #expect(waiting.running)
+        observer.changed(false)
+        #expect(await media.diagnostics().isEmpty)
+        media.close()
+        observer.changed(false)
+        #expect(!waiting.running)
+    }
+
+    @Test("CallKit有効化前の最後の退出と終了通知の欠落でも1人待機へ戻る")
+    func peerLeavesBeforeAudioActivation() async throws {
+        let waiting = WaitingAudio()
+        let media = NativeCallMedia(waitingAudio: waiting)
+        media.systemAudio = true
+        defer { media.close() }
+        let local = "22222222-2222-4222-8222-222222222222"
+        let remote = CallParticipant(session_id: "11111111-1111-4111-8111-111111111111", user_id: "相手",
+                                     user_name: "相手", display_name: "相手", is_muted: false)
+        try media.start(sessionID: local, room: CallRoom(participants: [remote], max_participants: 6, ice_servers: []),
+                        signal: { _, _ in }, failed: {})
+        try await media.handle(.joined(remote))
+        let observer = try #require(media.audioObserver)
+        observer.changed(true)
+        #expect(!waiting.running)
+        try await media.handle(.left(remote.id))
+        observer.changed(true)
+        try media.setSystemAudioActive(true)
+        #expect(waiting.running)
+    }
+
+    @Test("終了後は旧通話の有効化状態を破棄し、次のCallKit有効化まで入力を始めない")
+    func resetsAudioActivationBetweenCalls() async throws {
+        let firstWaiting = WaitingAudio(), nextWaiting = WaitingAudio()
+        let first = NativeCallMedia(waitingAudio: firstWaiting), next = NativeCallMedia(waitingAudio: nextWaiting)
+        var engines = [first, next]
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        let calls = CallStore(client: client, userID: "利用者", makeMedia: { engines.removeFirst() }, permission: { true })
+        let channel = Channel(id: UUID().uuidString, channel_name: "会話", is_private: false, is_dm: false)
+        defer { calls.finish() }
+        calls.setSystemAudioActive(true)
+        await withCheckedContinuation { continuation in
+            client.delivered = { continuation.resume() }
+            calls.start(channel: channel, systemAudio: true)
+        }
+        #expect(firstWaiting.running)
+        calls.finish()
+        #expect(!firstWaiting.running)
+        await withCheckedContinuation { continuation in
+            client.delivered = { continuation.resume() }
+            calls.start(channel: channel, systemAudio: true)
+        }
+        #expect(!nextWaiting.running)
+        calls.setSystemAudioActive(false)
+        #expect(!nextWaiting.running)
+        calls.setSystemAudioActive(true)
+        #expect(nextWaiting.running)
+    }
+
+    @Test("待機入力を開始できない場合は成功扱いにしない")
+    func waitingAudioFailure() throws {
+        let waiting = WaitingAudio()
+        waiting.failure = URLError(.cannotOpenFile)
+        let media = NativeCallMedia(waitingAudio: waiting)
+        media.systemAudio = true
+        defer { media.close() }
+        try media.setSystemAudioActive(true)
+        #expect(throws: URLError.self) {
+            try media.start(sessionID: UUID().uuidString, room: CallRoom(participants: [], max_participants: 6, ice_servers: []),
+                            signal: { _, _ in }, failed: {})
+        }
+        #expect(!waiting.running)
+    }
+
     @MainActor private final class Pair {
         let firstID = "11111111-1111-4111-8111-111111111111"
         let secondID = "22222222-2222-4222-8222-222222222222"

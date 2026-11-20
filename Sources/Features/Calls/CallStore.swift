@@ -41,6 +41,8 @@ final class CallStore {
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored var onInvitationsChanged: (([CallInvitation]) -> Void)?
     @ObservationIgnored var onReady: (() -> Void)?
+    @ObservationIgnored var prepareSystemCall: ((UUID, Channel) async throws -> Void)?
+    @ObservationIgnored var onPeerConnected: (() -> Void)?
     @ObservationIgnored var onFinished: (() -> Void)?
     @ObservationIgnored var onMutedChanged: ((Bool) -> Void)?
     @ObservationIgnored private var media: (any CallMedia)?
@@ -52,6 +54,7 @@ final class CallStore {
     @ObservationIgnored private var signals: AsyncStream<(String, CallSignal)>.Continuation?
     private var sessionID: String?
     private var active = true
+    private var systemAudioActive = false
 
     init(client: any CallClient, userID: String,
          makeMedia: @escaping @MainActor () -> any CallMedia = { NativeCallMedia() },
@@ -117,14 +120,20 @@ final class CallStore {
                initialMuted: Bool = false, initialSpeaker: Bool = false) -> Task<Void, Never>? {
         guard active, self.channel == nil, channel.canCall, canStart?(systemAudio) != false else { return nil }
         onWillStart?()
-        let session = UUID().uuidString.lowercased()
+        let callID = UUID()
+        let session = callID.uuidString.lowercased()
         self.channel = channel; sessionID = session
         muted = initialMuted; speakerEnabled = initialSpeaker
         error = nil; retryChannel = nil; showingCall = true
+        let prepareSystemCall = systemAudio ? nil : self.prepareSystemCall
+        let usesSystemAudio = systemAudio || prepareSystemCall != nil
         connection = Task { [weak self] in
             guard let self else { return }
             do {
                 guard await permission() else { throw ZooError.rejected(403, "設定でマイクへのアクセスを許可してください。") }
+                try Task.checkCancellation()
+                guard sessionID == session else { return }
+                if let prepareSystemCall { try await prepareSystemCall(callID, channel) }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
                 if let invitationID { try await client.answerCallInvitation(id: invitationID, accept: true) }
@@ -141,11 +150,13 @@ final class CallStore {
                     if case .room(let room) = event {
                         guard !ready, room.participants.count <= 6 else { throw ZooError.invalidResponse }
                         let engine = makeMedia()
-                        (engine as? NativeCallMedia)?.systemAudio = systemAudio
+                        (engine as? NativeCallMedia)?.systemAudio = usesSystemAudio
+                        try (engine as? NativeCallMedia)?.setSystemAudioActive(systemAudioActive)
                         media = engine
                         engine.onPeerState = { [weak self] id, state in
                             guard let self, sessionID == session else { return }
                             peerStates[id] = state
+                            if state == .connected { onPeerConnected?() }
                         }
                         prepareSignals(channelID: channel.id, session: session)
                         try engine.start(sessionID: session, room: room) { [weak self] target, signal in
@@ -322,10 +333,17 @@ final class CallStore {
         catch { self.error = "音声の出力先を変更できませんでした。" }
     }
 
+    func setSystemAudioActive(_ active: Bool) {
+        systemAudioActive = active
+        do { try (media as? NativeCallMedia)?.setSystemAudioActive(active) }
+        catch { if let sessionID { fail(error, session: sessionID) } }
+    }
+
     func finish() {
         let oldChannel = channel?.id
         let oldSession = sessionID
         sessionID = nil
+        systemAudioActive = false
         connection?.cancel(); connection = nil
         heartbeat?.cancel(); heartbeat = nil
         outgoing?.cancel(); outgoing = nil
