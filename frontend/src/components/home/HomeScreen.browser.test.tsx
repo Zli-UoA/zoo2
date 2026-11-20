@@ -13,6 +13,7 @@ import {
 } from "@tanstack/react-router";
 import { LocaleProvider } from "../i18n/LocaleProvider";
 import { HomeScreen, type HomePost } from "./HomeScreen";
+import { ApiError } from "../../lib/api/client";
 
 const fixture = vi.hoisted(() => ({
   get: vi.fn(),
@@ -572,4 +573,60 @@ it("shows the original link only inside the post menu", async () => {
   expect(original.getAttribute("href")).toBe("https://remote.test/notes/first");
   expect(original.getAttribute("target")).toBe("_blank");
   expect(original.getAttribute("rel")).toContain("noopener");
+});
+
+it.each(["article", "time"])(
+  "shows the clicked %s post while its thread is pending, then replaces it with the server thread",
+  async (target) => {
+    await mount();
+    const get = fixture.get.getMockImplementation()!;
+    let release!: (posts: HomePost[]) => void;
+    let threadRequests = 0;
+    fixture.get.mockImplementation((path: string) => {
+      if (path.endsWith("/p-0/thread")) {
+        threadRequests++;
+        return new Promise<HomePost[]>((resolve) => {
+          release = resolve;
+        });
+      }
+      return get(path);
+    });
+    fireEvent.click(root.querySelector(`[data-home-post="p-0"] ${target}`)!);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/home/posts/p-0"));
+    await screen.findByRole("button", { name: "戻る" });
+    expect(screen.getByText(/^投稿 0/)).toBeVisible();
+    await waitFor(() => expect(threadRequests).toBe(1));
+    await act(async () =>
+      release([
+        { ...rows[0], content: "更新済みの投稿" },
+        { ...rows[1], content: "取得した返信", parent_id: "p-0", tree_depth: 1 },
+      ]),
+    );
+    await screen.findByText("更新済みの投稿");
+    await screen.findByText("取得した返信");
+    expect(screen.queryByText(/^投稿 0/)).toBeNull();
+    expect(threadRequests).toBe(1);
+  },
+);
+
+it.each([500, 403, 404])("handles a %s response after displaying a known post", async (status) => {
+  await mount();
+  const get = fixture.get.getMockImplementation()!;
+  let reject!: (error: Error) => void;
+  fixture.get.mockImplementation((path: string) => {
+    if (path.endsWith("/p-0/thread")) {
+      return new Promise<HomePost[]>((_resolve, fail) => {
+        reject = fail;
+      });
+    }
+    return get(path);
+  });
+  fireEvent.click(root.querySelector('[data-home-post="p-0"] article')!);
+  await screen.findByRole("button", { name: "戻る" });
+  expect(screen.getByText(/^投稿 0/)).toBeVisible();
+  await waitFor(() => expect(reject).toBeTypeOf("function"));
+  await act(async () => reject(Object.assign(new ApiError(status, "unavailable"), { status })));
+  await screen.findByRole("alert");
+  if (status === 500) expect(screen.getByText(/^投稿 0/)).toBeVisible();
+  else expect(screen.queryByText(/^投稿 0/)).toBeNull();
 });

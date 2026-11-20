@@ -5,7 +5,7 @@ import type {
   UpdateMutationFnParams,
 } from "@tanstack/react-db";
 
-import type { ApiClient } from "../api/client";
+import { createChannelPinsApi, type ApiClient } from "../api/client";
 import type {
   AddChannelUserRequest,
   CreateChannelRequest,
@@ -424,6 +424,17 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
     }
   }
   return { onInsert, onDelete };
+}
+
+/**
+ * チャンネル・DM のピン留め。
+ *
+ * 並び順と `version` をサーバーが持つため、コレクションの楽観更新ではなく
+ * `hooks/usePinnedChannels.tsx` が応答をそのまま採用する。409 の競合では
+ * 応答の `version` / `pins` を使い、最新の状態の上でやり直す。
+ */
+export function createChannelPinWrites({ client }: Pick<WriteDependencies, "client">) {
+  return createChannelPinsApi(client);
 }
 
 /** 通知の既読化。まとめて更新する場合は read-all API を使う。 */

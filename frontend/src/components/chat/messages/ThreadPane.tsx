@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, LogOutIcon, UsersIcon, XIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -10,6 +10,7 @@ import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions
 import { Button } from "../../ui/button";
 import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
+import { useMediaQuery } from "../../layout/useMediaQuery";
 
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
@@ -18,6 +19,9 @@ import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export interface ThreadPaneProps {
   commands?: readonly CommandSuggestion[];
@@ -151,7 +155,12 @@ export function ThreadPane({
 }: ThreadPaneProps) {
   const { t } = useTranslation();
   const [participantsOpen, setParticipantsOpen] = useState(false);
+  // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
+  // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
+  const isWidePane = useMediaQuery("(min-width: 640px)");
   const items = useMemo(() => buildMessageItems(replies), [replies]);
+  const paneRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   // チャンネルと同様、参加してから返信する。最初の返信（参加者がまだ居ない）はスレッドを作るので参加不要。
   const needsJoin =
     isMember &&
@@ -218,12 +227,66 @@ export function ThreadPane({
     return () => cancelAnimationFrame(frame);
   }, [targetMessageId, replies]);
 
-  return (
-    <aside
-      aria-label={t("threads.title")}
-      className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96"
-    >
-      <PaneHeader className="gap-2">
+  // 幅が変わっても同じ要素ツリーを保つため、ダイアログの属性とフォーカス制御は
+  // この要素にだけ付け外しする（Composer の下書きやスクロール位置を失わないため）。
+  useEffect(() => {
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => restoreFocusRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (isWidePane) return;
+    // 広幅から狭幅へ戻ったとき、フォーカスが背後に残っていたらペイン内へ移す。
+    // すでにペイン内にある場合はユーザーのフォーカス位置を維持する。
+    const pane = paneRef.current;
+    if (pane && !pane.contains(document.activeElement)) pane.focus();
+  }, [isWidePane]);
+
+  function handlePaneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (isWidePane) return;
+    // 削除確認やリアクションピッカーなど、子のダイアログが Escape を処理する場合は干渉しない。
+    if ((event.target as HTMLElement).closest('[role="dialog"]') !== event.currentTarget) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusables = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+    ).filter(
+      (element) =>
+        element.getClientRects().length > 0 &&
+        !element.hasAttribute("disabled") &&
+        element.getAttribute("aria-disabled") !== "true",
+    );
+    if (focusables.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (document.activeElement === event.currentTarget) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  const paneClassName =
+    "absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96";
+
+  const paneContent = (
+    <>
+      <PaneHeader className="gap-2" role="none">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -479,7 +542,21 @@ export function ThreadPane({
           </div>
         </>
       ) : null}
-    </aside>
+    </>
+  );
+
+  return (
+    <div
+      ref={paneRef}
+      role={isWidePane ? "complementary" : "dialog"}
+      aria-modal={isWidePane ? undefined : true}
+      aria-label={t("threads.title")}
+      tabIndex={-1}
+      className={paneClassName}
+      onKeyDown={handlePaneKeyDown}
+    >
+      {paneContent}
+    </div>
   );
 }
 

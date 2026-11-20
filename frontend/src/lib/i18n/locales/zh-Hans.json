@@ -1,4 +1,11 @@
 {
+  "a11y": {
+    "skipToContent": "跳到主要内容"
+  },
+  "notFoundPage": {
+    "title": "找不到页面",
+    "description": "你访问的页面可能已移动或不存在。"
+  },
   "nav": {
     "main": "主导航"
   },
@@ -10,6 +17,10 @@
     "unread": "有未读消息",
     "editTitle": "编辑频道",
     "editHelp": "频道名最多80个字符，仅限文字、数字、半角连字符（-）和下划线（_）。不能使用空格、表情符号、其他符号或保留名称。",
+    "nameRequired": "请输入频道名。",
+    "nameTooLong": "频道名请控制在{{max}}个字符以内（当前{{length}}个字符）。",
+    "nameReserved": "“{{name}}”是保留名称，无法使用。",
+    "invalidName": "频道名只能使用文字、数字、半角连字符（-）和下划线（_）。",
     "saveName": "保存",
     "savingName": "保存中…",
     "title": "频道",
@@ -205,6 +216,7 @@
     "edit": "编辑",
     "delete": "删除",
     "more": "更多操作",
+    "actions": "操作消息",
     "editLabel": "编辑消息",
     "loadError": "无法加载消息",
     "retryHelp": "请检查连接后重试。",
@@ -227,6 +239,8 @@
     "edited": "已编辑"
   },
   "attachments": {
+    "play": "播放",
+    "pause": "暂停",
     "add": "添加文件",
     "selected": "要附加的文件",
     "remove": "删除{{name}}",
@@ -248,7 +262,21 @@
     "markSensitive": "将图片标记为敏感内容",
     "showSensitive": "显示图片",
     "hideSensitive": "隐藏图片",
-    "sensitiveShort": "敏感图片"
+    "sensitiveShort": "敏感图片",
+    "documentSummary": "正文与单元格的简化预览，格式和布局可能与原文件不同。",
+    "previewLimit": "预览超出大小、文件数量或处理时间限制，请下载文件查看。",
+    "emptyPreview": "无内容",
+    "containedFiles": "包含的文件",
+    "previousPage": "上一页",
+    "nextPage": "下一页",
+    "pdfPage": "PDF 第{{page}}页",
+    "mail": {
+      "subject": "主题",
+      "from": "发件人",
+      "to": "收件人",
+      "cc": "抄送",
+      "date": "日期"
+    }
   },
   "threads": {
     "title": "子线程",
@@ -339,6 +367,15 @@
     "yesterday": "昨天"
   },
   "composer": {
+    "editorTitle": "编辑消息",
+    "expand": "全屏展开编辑器",
+    "collapse": "收起编辑器",
+    "dragHandle": "上下滑动输入框顶部的拖动条",
+    "formatting": "格式",
+    "bold": "粗体",
+    "italic": "斜体",
+    "strike": "删除线",
+    "code": "代码块",
     "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
     "ctrl": "Ctrl+Enter 发送 / Enter 换行",
     "other": "Cmd / Ctrl+Enter 发送 / Enter 换行",
@@ -401,6 +438,11 @@
   },
   "mentions": {
     "suggestions": "提及建议"
+  },
+  "appUpdate": {
+    "title": "有新版本的界面",
+    "description": "重新加载即可使用新版本。如有正在输入的内容，请先发送。",
+    "reload": "重新加载"
   },
   "offline": {
     "bannerTitle": "你已离线",
@@ -556,6 +598,30 @@
     "you": "你",
     "closeParticipants": "关闭参与者列表"
   },
+  "channelPins": {
+    "title": "置顶",
+    "menu": "频道操作",
+    "channelMenu": "{{name}} 频道操作",
+    "dmMenu": "{{name}} 私信操作",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "dragHandle": "拖动以重新排序",
+    "dismissError": "关闭",
+    "errors": {
+      "conflict": "置顶的频道已在另一台设备上更改。已重新载入最新顺序，请重试。",
+      "limitExceeded": "最多只能置顶 50 个频道。",
+      "reorderConflict": "置顶顺序已在另一台设备上更改。已重新载入最新顺序，请重试。"
+    },
+    "announce": {
+      "pinned": "已置顶。",
+      "unpinned": "已取消置顶。",
+      "moved": "已移动置顶项目。",
+      "reorderConflict": "该项目已在另一台设备上取消置顶，因此未移动。",
+      "reorderArchived": "该频道已归档，因此未移动。"
+    }
+  },
   "dms": {
     "title": "私信",
     "createTitle": "新建私信",
@@ -698,6 +764,20 @@
       "addEncrypted": "添加到加密频道",
       "notReady": "此应用尚未完成加密准备（注册设备）。请启动应用后重试。",
       "encryptedHint": "将应用添加到加密频道需要成员许可。"
+    },
+    "components": {
+      "unsupported": "暂不支持此组件",
+      "more": "更多操作",
+      "choose": "请选择",
+      "search": "搜索",
+      "noOptions": "没有选项",
+      "uploading": "正在上传…",
+      "page": "第 {{page}} / {{pages}} 页",
+      "spoiler": "包含剧透内容（可在网页版查看）",
+      "webOnly": "请在网页版进行此操作",
+      "date": "日期",
+      "time": "时间",
+      "datetime": "日期和时间"
     }
   },
   "search": {
@@ -1215,6 +1295,7 @@
       "popupBlocked": "无法打开登录窗口。请允许弹出窗口后再按一次。",
       "reauthFailed": "无法重新登录。请再按一次，密钥会保持不变。",
       "reauthTimeout": "登录未在规定时间内完成，请再按一次。",
+      "desktopOutdated": "此版本的桌面应用无法重新登录。请更新应用后再按一次。",
       "setupConflict": "另一台设备已先开始设置加密。此页面显示的恢复密钥无法使用。请用该设备记下的恢复密钥或通行密钥解锁。",
       "mismatch": "密钥吊销可能尚未完成，或服务器上的密钥可能被篡改。此设备未签名。请重新吊销或重置加密。",
       "invalidRecoveryKey": "恢复密钥格式不正确，请检查是否输错。",
@@ -1670,5 +1751,78 @@
     "title": "使用导览",
     "chooseChannel": "选择一个频道即可继续。需要时可从浏览频道中加入。",
     "navigationError": "无法打开页面，请重试。"
+  },
+  "sip": {
+    "title": "电话（SIP）",
+    "description": "管理个人和社团共享的线路及电话机。连接所选的一条线路进行呼入和呼出。接听来电需要浏览器保持打开并连接。",
+    "refresh": "刷新",
+    "addLine": "添加线路",
+    "loading": "正在加载…",
+    "loadError": "无法加载线路，请刷新后重试。",
+    "disabled": "电话功能尚未启用，需要管理员配置基础设施。",
+    "channelBusy": "频道通话期间无法使用SIP连接。",
+    "line": "通话线路",
+    "selectLine": "选择线路",
+    "personal": "个人",
+    "shared": "社团共享",
+    "connect": "连接并等待来电",
+    "disconnect": "断开连接",
+    "number": "电话号码或分机号",
+    "dial": "拨号",
+    "empty": "暂无可用线路。",
+    "edit": "编辑",
+    "delete": "删除",
+    "lineForm": "添加或编辑线路",
+    "name": "线路名称",
+    "ownership": "所有权",
+    "phone_number": "外线号码（可选）",
+    "websocket_path": "SIP连接路径",
+    "sip_domain": "SIP域名",
+    "username": "SIP用户名",
+    "password": "SIP密码",
+    "keepPassword": "留空以保留当前密码",
+    "members": "允许使用的成员",
+    "membersHelp": "只有选中的成员可以连接。管理员如需使用也须选中。成员共享SIP凭据，移除成员时也请在PBX上更换密码。",
+    "phones": "电话机和站点联系人",
+    "phonesHelp": "登记名称和分机号后，将显示的 SIP 账号配置到电话机。",
+    "gatewayAccount": "站点网关 SIP 账号",
+    "phoneAccount": "电话机 SIP 账号",
+    "phoneName": "电话机或站点名称",
+    "extension": "目标号码",
+    "removePhone": "移除联系人",
+    "addPhone": "添加电话机",
+    "pbxHelp": "请登记管理员提供的PBX域名和账户。SIP连接由服务器处理。PBX也须限制允许使用的外线和号码。",
+    "writeError": "无法保存，请检查输入和权限后重试。",
+    "save": "保存",
+    "saving": "正在保存…",
+    "cancel": "取消",
+    "deleteTitle": "删除此线路？",
+    "deleteHelp": "从zoo2移除线路和联系人。请另行在PBX禁用分机和凭据。",
+    "answer": "接听",
+    "hangup": "挂断或拒接",
+    "mute": "静音",
+    "unmute": "取消静音",
+    "dtmf": "按键音（0–9、*、#）",
+    "sendTone": "发送",
+    "callError": "连接或操作失败，请检查线路权限、PBX和音频中继配置。",
+    "status": {
+      "offline": "未连接",
+      "connecting": "正在连接…",
+      "ready": "等待来电",
+      "dialing": "正在呼叫…",
+      "incoming": "来电",
+      "active": "通话中"
+    },
+    "unavailableMember": "不可用的成员"
+  },
+  "androidPhone": {
+    "description": "通过设备的通话功能使用个人或共享SIP线路及私信语音通话。",
+    "nativeCalls": "设备通话集成",
+    "nativeHelp": "启用来电后将显示常驻通知并保持连接。可通过设备的通话控件接听、挂断和切换音频输出。需要麦克风权限。",
+    "receiveDm": "接收私信来电",
+    "callError": "无法准备或操作通话，请检查麦克风权限、设备通话支持、网络和线路设置。",
+    "speaker": "扬声器",
+    "waiting": "正在等待来电",
+    "dmCall": "通话"
   }
 }

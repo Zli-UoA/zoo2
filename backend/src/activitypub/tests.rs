@@ -598,3 +598,20 @@ fn quote_urls_are_normalized_before_becoming_visible_links() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires ACTIVITYPUB_BASE_URL"]
+fn kitchen_body_has_federated_emoji_tag_and_preserves_source() -> anyhow::Result<()> {
+    let content = "Hello :kitchen_1f431_1f600:";
+    let post = json!({"id":"kitchen-post","user_id":"alice","content":content,"visibility":"public","created_at":"2026-01-01T00:00:00Z"});
+    let note = note_value(&post)?;
+    assert_eq!(note["source"]["content"], content);
+    assert_eq!(note["_misskey_content"], content);
+    assert_eq!(note["tag"][0]["type"], "Emoji");
+    assert_eq!(note["tag"][0]["name"], ":kitchen_1f431_1f600:");
+    assert_eq!(
+        note["tag"][0]["icon"]["url"],
+        "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png"
+    );
+    Ok(())
+}

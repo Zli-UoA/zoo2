@@ -105,6 +105,9 @@ describe("ReactionPicker", () => {
     await userEvent.click(screen.getByRole("button", { name: ":party-parrot:" }));
     expect(onSelect).toHaveBeenCalledWith(":party-parrot:");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual([
+      ":party-parrot:",
+    ]);
   });
   it("shows all tabs and selects an emoji while recording it as recent", async () => {
     const { onSelect, onOpenChange } = renderPicker();
@@ -120,7 +123,8 @@ describe("ReactionPicker", () => {
     expect(onSelect).toHaveBeenCalledWith("😀");
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual(["😀"]);
-    expect(screen.getByLabelText("最近使った絵文字").textContent).toContain("😀");
+    // ピッカー側には「最近」を出さない（保存先のシートで使う）。
+    expect(screen.queryByLabelText("最近使った絵文字")).toBeNull();
   });
 
   it("keeps Emoji Kitchen working and selects a combination", async () => {
@@ -138,6 +142,9 @@ describe("ReactionPicker", () => {
 
     expect(onSelect).toHaveBeenCalledWith("kitchen:1f431_1f600");
     expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(JSON.parse(localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY)!)).toEqual([
+      "kitchen:1f431_1f600",
+    ]);
   });
 
   it("switches back to the emoji tab", async () => {

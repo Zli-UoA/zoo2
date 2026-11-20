@@ -61,7 +61,25 @@ pub fn resolve_emoji(input: &str) -> Option<String> {
     EMOJI_CATALOG.read().unwrap().resolve_emoji(input)
 }
 pub fn unicode_shortcode(name: &str) -> Option<String> {
-    EMOJI_CATALOG.read().unwrap().unicode(name)
+    kitchen_shortcode_label(name).or_else(|| EMOJI_CATALOG.read().unwrap().unicode(name))
+}
+
+// Text clients show the two source glyphs for image-only Kitchen shortcodes.
+fn kitchen_shortcode_label(name: &str) -> Option<String> {
+    let pair = name.strip_prefix("kitchen_")?;
+    if pair.len() > 256 {
+        return None;
+    }
+    let (left, right) = pair.split_once('_')?;
+    let glyph = |hex: &str| -> Option<String> {
+        let value: String = hex
+            .split('-')
+            .map(|part| char::from_u32(u32::from_str_radix(part, 16).ok()?))
+            .collect::<Option<String>>()?;
+        emojis::get(&value)?;
+        Some(value)
+    };
+    Some(format!("{} + {}", glyph(left)?, glyph(right)?))
 }
 
 #[cfg(test)]
@@ -833,5 +851,20 @@ mod tests {
             parse_with_accounts(":@unknown:", None, &profiles)[0].spans[0].avatar_fallback,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod kitchen_shortcode_tests {
+    use super::*;
+    #[test]
+    fn image_shortcodes_have_readable_text_fallbacks() {
+        assert_eq!(
+            unicode_shortcode("kitchen_1f431_1f600").as_deref(),
+            Some("🐱 + 😀")
+        );
+        assert!(kitchen_shortcode_label("kitchen_0_1").is_none());
+        assert!(kitchen_shortcode_label("kitchen_d800_1f431").is_none());
+        assert!(kitchen_shortcode_label("kitchen_1f431_1f600_extra").is_none());
     }
 }

@@ -17,6 +17,7 @@
     "allow-zoo-open-channel",
     "allow-zoo-resync",
     "allow-zoo-account-profiles",
-    "allow-zoo-send-message"
+    "allow-zoo-send-message",
+    "allow-zoo-invoke-app-action"
   ]
 }

@@ -34,6 +34,10 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
+import zoo.phone.LocalPhoneController
+import zoo.phone.PhoneCallBanner
+import zoo.android.phone.AndroidPhoneHost
+import zoo.android.phone.PhonePermissionRequest
 import zoo.android.update.AndroidUpdateFrame
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
@@ -59,6 +63,7 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             notificationPermissionRevision++
+            AndroidPushRegistration.tokenChanged()
         }
 
     private fun enableNotifications() {
@@ -73,6 +78,14 @@ class MainActivity : ComponentActivity() {
             startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
         }
+    }
+
+    private val phonePermissionRequest = PhonePermissionRequest()
+    private val phonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> phonePermissionRequest.complete(granted) }
+    private suspend fun preparePhone() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        check(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        phonePermissionRequest.await { phonePermission.launch(android.Manifest.permission.RECORD_AUDIO) }
     }
 
     private var fileResult: CompletableDeferred<List<Uri>>? = null
@@ -132,6 +145,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AndroidApp() {
         var active by remember { mutableStateOf<RunningSession?>(null) }
+        var loggingOut by remember { mutableStateOf(false) }
         val dark = isSystemInDarkTheme()
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
@@ -142,9 +156,16 @@ class MainActivity : ComponentActivity() {
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        LaunchedEffect(current) {
+            if (current != null && android.os.Build.VERSION.SDK_INT >= 33 &&
+                !current.notifications.allowed() &&
+                !getSharedPreferences("notification-permission", MODE_PRIVATE).getBoolean("requested", false)) {
+                enableNotifications()
+            }
+        }
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
-                notificationIntent?.let { current.notifications.open(it) }
+                notificationIntent?.let { if (!current.phone.open(it) && !current.push.open(it, current.notifications::dismissTag)) current.notifications.open(it) }
                 notificationIntent = null
             }
         }
@@ -156,23 +177,33 @@ class MainActivity : ComponentActivity() {
                 onExpired = { expiredAuth ->
                     scope.launch {
                         val running = active
+                        if (running == null && !loginStore.hasSession) PushBinding(this@MainActivity).forgetAll()
                         if (running != null && running.auth === expiredAuth) {
                             active = null
                             canRestore = false
                             restoreError = "認証情報の有効期限が切れました。ログインし直してください。"
-                            running.close()
+                            running.notifications.close()
+                            running.push.forget()
+                            running.close(preserveNotifications = false)
                         }
                     }
                 },
                 logout = {
-                    val running = active
-                    active = null
-                    canRestore = false
-                    restoreError = ""
-                    try {
-                        running?.logout()
-                    } catch (failure: LoginFailure) {
-                        restoreError = failure.message.orEmpty()
+                    if (!loggingOut) {
+                        loggingOut = true
+                        scope.launch {
+                            val running = active
+                            try {
+                                running?.logout()
+                                restoreError = ""
+                            } catch (failure: LoginFailure) {
+                                restoreError = failure.message.orEmpty()
+                            } finally {
+                                active = null
+                                canRestore = false
+                                loggingOut = false
+                            }
+                        }
                     }
                 },
             )
@@ -186,6 +217,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val saved = loginStore.load()
                 canRestore = saved != null
+                if (saved == null) PushBinding(this@MainActivity).forgetAll()
                 if (saved != null) connect(saved.connection, saved.refreshToken) { _, _ -> }
             } catch (failure: CancellationException) {
                 throw failure
@@ -227,6 +259,7 @@ class MainActivity : ComponentActivity() {
                     ) { base, issuer, client, resource, code ->
                         canRestore = false
                         loginStore.clear()
+                        PushBinding(this@MainActivity).forgetAll()
                         connect(LoginConnection(base, issuer, client, resource), null, code)
                     }
                 }
@@ -238,7 +271,8 @@ class MainActivity : ComponentActivity() {
                 }
                 DisposableEffect(current) {
                     var disposed = false
-                    val observer = LifecycleEventObserver { _, _ ->
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
                         platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                         current.session.update(platform.env)
                     }
@@ -289,6 +323,7 @@ class MainActivity : ComponentActivity() {
                     LocalApp provides current.session,
                     LocalEncryptionSettings provides encryption,
                     LocalTouchUi provides true,
+                    LocalPhoneController provides current.phone.controller,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
                         Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
@@ -304,6 +339,7 @@ class MainActivity : ComponentActivity() {
                             Box(Modifier.weight(1f)) {
                                 NativeWindow(current.session) { ZooApp(current.session) }
                             }
+                            PhoneCallBanner(current.session, current.phone.controller)
                         }
                         unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                     }
@@ -391,6 +427,7 @@ class MainActivity : ComponentActivity() {
                 setupApi = e2eeApi,
             )
             platform.e2ee = e2ee
+            platform.messageEncryption = zoo.crypto.AndroidMessageEncryption(e2ee, session.api, lifetime)
             // 設定の「暗号化」タブ（#360）。再認証は Custom Tabs、パスキーは Credential Manager。
             val reauthenticator = AndroidReauth(this, http, connection)
             reauth = reauthenticator
@@ -403,7 +440,10 @@ class MainActivity : ComponentActivity() {
                     copySecret = ::copySecret,
                 )
             }
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session)).also {
+            val logoutApi = ZooApi(config, object : Platform by platform {
+                override suspend fun headers() = auth.headersWithoutRefresh()
+            }, http)
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
                 session.start()
                 e2ee.start()
             }
@@ -581,14 +621,21 @@ private class RunningSession(
     private val e2ee: zoo.crypto.E2eeDeviceManager,
     val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
     val notifications: AndroidNotifications,
+    val push: AndroidPushRegistration,
+    val phone: AndroidPhoneHost,
 ) {
-    fun logout() {
-        try { auth.forget() } finally { close() }
+    suspend fun logout() {
+        notifications.close()
+        try { push.logout() } finally {
+            try { auth.forget() } finally { close(preserveNotifications = false) }
+        }
     }
 
-    fun close() {
+    fun close(preserveNotifications: Boolean = true) {
+        phone.close()
         e2ee.stop()
-        notifications.close()
+        push.close()
+        notifications.close(preserveNotifications = preserveNotifications)
         auth.close()
         session.close()
         scope.cancel()

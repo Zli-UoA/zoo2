@@ -1587,6 +1587,82 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
 }
 
 #[tokio::test]
+async fn explicit_kitchen_named_custom_image_wins_over_bundled_catalog() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let post = format!("{}/notes/kitchen-name-collision", f.remote);
+    let name = ":kitchen_1f431_1f600:";
+    let selected_url = "https://cdn.remote.example/different-cat.png";
+    let note = json!({
+        "id":post, "type":"Note", "attributedTo":f.remote,
+        "content":name, "published":"2026-01-01T00:00:00Z",
+        "to":["https://www.w3.org/ns/activitystreams#Public"],
+        "tag":[{"type":"Emoji", "name":name, "icon":{"type":"Image", "url":selected_url}}]
+    });
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    let received = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == post)
+        .unwrap();
+    let image_id = received["emojis"][0]["image_id"].clone();
+    for (selection, expected_status, expected_url) in [
+        (
+            json!({"post_id":post,"reaction":name,"emoji_id":image_id}),
+            StatusCode::OK,
+            selected_url,
+        ),
+        (
+            json!({"post_id":post,"reaction":name,"emoji_id":"unknown"}),
+            StatusCode::BAD_REQUEST,
+            selected_url,
+        ),
+        (
+            json!({"post_id":post,"reaction":name}),
+            StatusCode::OK,
+            "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png",
+        ),
+        (
+            json!({"post_id":post,"reaction":"kitchen:1f431_1f600"}),
+            StatusCode::OK,
+            "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png",
+        ),
+    ] {
+        let (status, _) = request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(selection),
+        )
+        .await?;
+        assert_eq!(status, expected_status);
+        let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+        let post = feed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == post)
+            .unwrap();
+        let reaction = post["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["selected"] == true)
+            .unwrap();
+        assert_eq!(reaction["emoji"]["url"], expected_url);
+    }
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn reply_preserves_parent_recipient_and_audience_including_nonfollowed_author()
 -> anyhow::Result<()> {
     let _serial = PROTOCOL_SERIAL.lock().await;

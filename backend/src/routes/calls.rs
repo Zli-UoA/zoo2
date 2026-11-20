@@ -929,6 +929,7 @@ pub fn router() -> Router<AppState> {
             "/api/channels/{id}/call/invites",
             post(call_invites::create),
         )
+        .route("/api/call-invites/{id}", get(call_invites::pending))
         .route("/api/call-invites/{id}/accept", post(call_invites::accept))
         .route(
             "/api/call-invites/{id}/decline",

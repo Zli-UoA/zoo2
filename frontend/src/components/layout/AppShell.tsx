@@ -4,6 +4,7 @@ import { OnboardingProvider } from "./OnboardingTour";
 import "./navigation";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { isUuid } from "../../lib/api/path";
@@ -16,11 +17,13 @@ import { MfmAccountsProvider } from "../chat/messages/MfmAccounts";
 import { useAuthZAccounts } from "../../lib/emoji/accounts";
 import { CallBar } from "../chat/CallBar";
 import { DesktopBridge } from "../desktop/DesktopBridge";
+import { AppBadgeBridge } from "../pwa/AppBadgeBridge";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersPanel } from "../chat/MembersPanel";
 import { SearchPreferencesProvider } from "../preferences/SearchPreferences";
 import { PwaProvider } from "../pwa/PwaControls";
 import { OfflineBanner } from "../offline/OfflineBanner";
+import { AppUpdateNotice } from "../pwa/AppUpdateNotice";
 import { LeftRail } from "./LeftRail";
 import { ShellContext, type ShellContextValue, type ShellPane } from "./shell-context";
 import { useMediaQuery } from "./useMediaQuery";
@@ -41,6 +44,7 @@ import { useVisualViewport } from "./useVisualViewport";
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
 function AppShellContent({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const accounts = useAuthZAccounts();
   usePresence();
   const viewportRef = useVisualViewport();
@@ -57,6 +61,7 @@ function AppShellContent({ children }: { children: ReactNode }) {
     },
   });
   const isWide = useMediaQuery("(min-width: 1024px)");
+  const isDesktop = useMediaQuery("(min-width: 768px)");
 
   const call = useCall();
   const isCallActive = Boolean(call.currentChannelId && call.connectionState !== "idle");
@@ -96,6 +101,8 @@ function AppShellContent({ children }: { children: ReactNode }) {
   }
 
   const pane: ShellPane = isHome ? "sidebar" : "chat";
+  const mainRef = useRef<HTMLElement>(null);
+  const sidebarSkipRef = useRef<HTMLSpanElement>(null);
 
   const setMembersOpen = useCallback(
     (open: boolean) => {
@@ -239,10 +246,13 @@ function AppShellContent({ children }: { children: ReactNode }) {
   const sidebarVisible = pane === "sidebar";
   const showChat = pane === "chat";
   const showMembersScreen = !isWide && membersOpen && !!membersChannel;
+  // 狭幅のホームでは main が hidden なので、代わりに表示中のサイドバーへフォーカスする。
+  const skipTarget = !showChat && !isDesktop && !showMembersScreen ? sidebarSkipRef : mainRef;
 
   return (
     <SearchPreferencesProvider>
       <DesktopBridge channelId={selectedChannelId ?? null} />
+      <AppBadgeBridge />
       <PwaProvider>
         <ShellContext.Provider value={value}>
           <MfmChannelsProvider channels={channels}>
@@ -252,10 +262,31 @@ function AppShellContent({ children }: { children: ReactNode }) {
                 data-app-shell
                 className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
               >
+                <a
+                  href="#main-content"
+                  // フラグメント移動だと state が null の履歴が積まれ、thread/members の
+                  // 閉じる処理が履歴を辿れなくなる。移動せずフォーカスだけを当てる。
+                  onClick={(event) => {
+                    event.preventDefault();
+                    skipTarget.current?.focus();
+                  }}
+                  className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:shadow-lg focus:ring-2 focus:ring-ring focus:outline-none"
+                >
+                  {t("a11y.skipToContent")}
+                </a>
                 <OfflineBanner />
+                <AppUpdateNotice />
                 <AppSurfaceHost />
                 <div className={isSettings || showMembersScreen ? "hidden" : "contents"}>
                   <LeftRail />
+                  {/* display:contents の親はフォーカスできないので、実体のある目標を置く。
+                      共通ナビゲーションを飛ばすため LeftRail の後・サイドバーの前に置く。 */}
+                  <span
+                    ref={sidebarSkipRef}
+                    id="sidebar-content"
+                    tabIndex={-1}
+                    className="sr-only"
+                  />
                   <ChannelSidebar
                     channels={channels}
                     loading={channelsQuery.isLoading}
@@ -266,6 +297,9 @@ function AppShellContent({ children }: { children: ReactNode }) {
                   />
                 </div>
                 <main
+                  ref={mainRef}
+                  id="main-content"
+                  tabIndex={-1}
                   className={cn(
                     "min-h-0 min-w-0 flex-1 flex-col",
                     showChat ? "flex" : "hidden md:flex",

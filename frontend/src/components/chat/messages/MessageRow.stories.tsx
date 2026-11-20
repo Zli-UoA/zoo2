@@ -1,11 +1,12 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
+import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import {
   EncryptedChannelContext,
   MentionUserNamesContext,
@@ -677,9 +678,48 @@ export const EncryptedWithAttachments: Story = {
   ],
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("img", { name: "architecture.png" })).toBeVisible();
+    const image = await canvas.findByRole("img", { name: "architecture.png" });
+    await waitFor(async () => {
+      await expect(image).toBeVisible();
+    });
     await expect(canvas.getByText("議事録.pdf")).toBeVisible();
     await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
+  }),
+};
+
+export const TouchActionSheet: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
+  args: {
+    isOwn: true,
+    canReact: true,
+    onOpenThread: fn(),
+    onPickReaction: fn(),
+    onRequestDelete: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const previous = localStorage.getItem(RECENT_EMOJIS_STORAGE_KEY);
+    localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify(["🎉", "👍"]));
+    try {
+      const body = await within(canvasElement).findByText(/こんにちは/);
+      await fireEvent.pointerDown(body, { pointerType: "touch", clientX: 10, clientY: 10 });
+      await fireEvent.click(body, { clientX: 10, clientY: 10 });
+      const sheet = await screen.findByRole("dialog", { name: "メッセージを操作" });
+      await waitFor(async () => {
+        await expect(within(sheet).getByRole("button", { name: "スレッドを開く" })).toBeVisible();
+      });
+      await expect(within(sheet).getByRole("button", { name: "リアクションを追加" })).toBeVisible();
+      await expect(within(sheet).getByRole("button", { name: "削除" })).toBeVisible();
+
+      const recent = within(sheet).getByRole("group", { name: "最近使った絵文字" });
+      await expect(within(recent).getByRole("button", { name: "🎉" })).toBeVisible();
+      await expect(within(recent).getByRole("button", { name: "👍" })).toBeVisible();
+      await userEvent.click(within(recent).getByRole("button", { name: "🎉" }));
+      await expect(args.onReaction).toHaveBeenCalledWith("🎉");
+    } finally {
+      if (previous === null) localStorage.removeItem(RECENT_EMOJIS_STORAGE_KEY);
+      else localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, previous);
+    }
   }),
 };
 

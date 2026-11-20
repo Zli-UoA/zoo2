@@ -37,8 +37,16 @@ fn work(name: &str, plan: &Value) -> Value {
             + node["Rows Removed by Filter"].as_f64().unwrap_or(0.)
             + node["Rows Removed by Index Recheck"].as_f64().unwrap_or(0.))
             * loops;
-        max_intermediate = max_intermediate
-            .max(n + node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops);
+        // Static lookup tables are bounded independently of message history.
+        // A plan may switch between an index lookup and a full scan, so their
+        // fixed row count must not count as history-dependent intermediate work.
+        let static_relation = node["Relation Name"]
+            .as_str()
+            .is_some_and(|table| table == "app_event_types");
+        if !static_relation {
+            max_intermediate = max_intermediate
+                .max(n + node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops);
+        }
         if let Some(table) = node["Relation Name"].as_str() {
             *relations.entry(table.into()).or_default() += n;
         }
@@ -141,7 +149,22 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         .await?;
     tx.batch_execute("INSERT INTO channel_message_authors(channel_id,user_id,latest_at) SELECT channel_id,user_id,max(created_at) FROM messages WHERE parent_id IS NULL AND deleted_at IS NULL GROUP BY channel_id,user_id ON CONFLICT(channel_id,user_id) DO UPDATE SET latest_at=EXCLUDED.latest_at").await?;
     tx.commit().await?;
-    client.batch_execute("ANALYZE messages; ANALYZE users; ANALYZE channels; ANALYZE channel_user; ANALYZE channel_read_states; ANALYZE channel_message_authors; ANALYZE slack_import_jobs; ANALYZE slack_channels; ANALYZE slack_channel_syncs; ANALYZE slack_channel_wakes; ANALYZE display_refresh_queue;").await?;
+    // Include migration-seeded catalogs and empty trigger targets, not only
+    // scaled history. Otherwise autovacuum may analyze app_event_types during
+    // just the longer fixture, comparing an unstatted index lookup with a
+    // legitimate 90-row sequential scan in the other database.
+    client.batch_execute("ANALYZE").await?;
+    let catalog = client.query_one(
+        "SELECT reltuples::bigint, (SELECT count(*) FROM app_event_types) FROM pg_class WHERE oid='app_event_types'::regclass",
+        &[],
+    ).await?;
+    let estimated: i64 = catalog.get(0);
+    let actual: i64 = catalog.get(1);
+    assert_eq!(
+        estimated, actual,
+        "event catalog statistics must match the fixture"
+    );
+    eprintln!("fixture statistics: app_event_types rows={actual}, estimated={estimated}");
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
     if let Some(dir) = &output {
         std::fs::create_dir_all(dir)?;

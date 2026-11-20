@@ -97,7 +97,7 @@ fun PublicProfileView(app: Session, userId: String, data: Row?, error: Int?, bef
                     val posts = data.homeRows("posts")
                     posts.forEach { post ->
                         Column(Modifier.card().then(webControlModifier("article"))) {
-                            Text(app.platform.fullTimestamp(post.text("created_at")), size = 14.sp, muted = true)
+                            PostTimestamp(app, post.text("created_at"))
                             HomePostContent(app, post)
                         }
                     }

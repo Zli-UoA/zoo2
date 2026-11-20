@@ -28,6 +28,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/users", get(users_shape))
         .route("/api/shapes/channel_leaves", get(channel_leaves_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
+        .route(
+            "/api/shapes/user_pinned_channels",
+            get(user_pinned_channels_shape),
+        )
         .route("/api/shapes/notifications", get(notifications_shape))
         .route("/api/shapes/call_invites", get(call_invites_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
@@ -158,6 +162,28 @@ pub(crate) fn channel_leaves_shape_where(user_id: &str) -> (String, Vec<(&'stati
     ("user_id = $1".to_string(), vec![("params[1]", user_id)])
 }
 
+/// ピン留めしたチャンネルの Shape の where 句とパラメータ。
+///
+/// 認証ユーザー自身の行だけを配る。削除済みのチャンネルと、閲覧できなくなった
+/// 非公開・DM（ゲストは公開チャンネルも所属が必要）のピンは配らない。アーカイブ中の
+/// ピンは残し、クライアントが表示だけを止める（アンアーカイブで元の位置に戻る）。
+pub(crate) fn user_pinned_channels_shape_where(
+    user_id: &str,
+    is_guest: bool,
+) -> (String, Vec<(&'static str, &str)>) {
+    let visibility = if is_guest {
+        "id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
+    } else {
+        "(is_private = false AND is_dm = false) OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
+    };
+    (
+        format!(
+            "user_id = $1 AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND ({visibility}))"
+        ),
+        vec![("params[1]", user_id)],
+    )
+}
+
 /// E2EE の端末の Shape の where 句とパラメータ（docs/e2ee.md の「Electric の Shape」）。
 ///
 /// 自分の端末と、自分と暗号化チャンネル（削除されていないもの）を共有しているユーザーの端末。削除済みの端末は除く。
@@ -285,7 +311,7 @@ async fn proxy_shape(
         {
             // App messages never include the UI projection: its joined profiles and
             // attachments require scopes beyond messages:read (and metadata:read).
-            let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
+            let mut columns = "id,user_id,channel_id,content,card,components,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
             if metadata_allowed == "true" {
                 columns.push_str(",metadata");
             }
@@ -689,6 +715,28 @@ async fn channel_leaves_shape(
     .await
 }
 
+/// ピン留めしたチャンネルの Shape（ユーザー別の認可・配信）
+async fn user_pinned_channels_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let mut db = state.db.clone();
+    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
+    let (where_clause, extra_params) =
+        user_pinned_channels_shape_where(auth_user.id.as_str(), is_guest);
+    proxy_shape(
+        &state,
+        "user_pinned_channels",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// Notifications Shape (ユーザー別認可・配信)
 async fn notifications_shape(
     State(state): State<AppState>,
@@ -1046,6 +1094,24 @@ mod tests {
     fn test_channel_leaves_shape_where() {
         let (clause, params) = channel_leaves_shape_where("user-123");
         assert_eq!(clause, "user_id = $1");
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_user_pinned_channels_shape_where() {
+        let (clause, params) = user_pinned_channels_shape_where("user-123", false);
+        assert!(clause.starts_with("user_id = $1"));
+        assert!(clause.contains("deleted_at IS NULL"));
+        assert!(clause.contains("is_private = false AND is_dm = false"));
+        assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+
+        // ゲストは公開チャンネルも所属がなければ配らない。
+        let (guest_clause, params) = user_pinned_channels_shape_where("user-123", true);
+        assert!(!guest_clause.contains("is_private = false AND is_dm = false"));
+        assert!(
+            guest_clause.contains("id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)")
+        );
         assert_eq!(params, vec![("params[1]", "user-123")]);
     }
 

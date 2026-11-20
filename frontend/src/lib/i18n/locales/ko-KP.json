@@ -1,4 +1,11 @@
 {
+  "a11y": {
+    "skipToContent": "본문으로 건너뛰기"
+  },
+  "notFoundPage": {
+    "title": "페이지를 찾을 수 없습니다",
+    "description": "요청하신 페이지가 옮겨졌거나 더 이상 존재하지 않을수 있습니다."
+  },
   "nav": {
     "main": "주요 탐색"
   },
@@ -10,6 +17,10 @@
     "unread": "읽지 않은 통보문이 있습니다",
     "editTitle": "통로 편집",
     "editHelp": "통로 이름은 조선글 등의 글자와 수자, 반각 하이픈(-), 밑줄(_)로 80자 이내여야 합니다. 공백, 그림글자, 그 밖의 기호와 예약어는 쓸수 없습니다.",
+    "nameRequired": "통로 이름을 입력하십시오.",
+    "nameTooLong": "통로 이름은 {{max}}자 이내여야 합니다 (현재 {{length}}자).",
+    "nameReserved": "'{{name}}'은 예약어라 쓸수 없습니다.",
+    "invalidName": "통로 이름에는 글자, 수자, 반각 하이픈(-), 밑줄(_)만 쓸수 있습니다.",
     "saveName": "저장",
     "savingName": "저장하는 중…",
     "title": "통로",
@@ -205,6 +216,7 @@
     "edit": "편집",
     "delete": "삭제",
     "more": "다른 조작",
+    "actions": "메시지 조작",
     "editLabel": "통보문 편집",
     "loadError": "통보문을 얻지 못했습니다",
     "retryHelp": "접속상태를 확인하고 다시 시도하십시오.",
@@ -227,6 +239,8 @@
     "edited": "편집됨"
   },
   "attachments": {
+    "play": "재생",
+    "pause": "일시 정지",
     "add": "화일 첨부",
     "selected": "첨부할 화일",
     "remove": "{{name}} 삭제",
@@ -248,7 +262,21 @@
     "markSensitive": "화상을 민감한 내용으로 표시",
     "showSensitive": "화상 표시",
     "hideSensitive": "화상 숨기기",
-    "sensitiveShort": "민감한 화상"
+    "sensitiveShort": "민감한 화상",
+    "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
+    "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 내려받아 확인하십시오.",
+    "emptyPreview": "내용 없음",
+    "containedFiles": "포함된 파일",
+    "previousPage": "이전 페지",
+    "nextPage": "다음 페지",
+    "pdfPage": "PDF {{page}}페지",
+    "mail": {
+      "subject": "제목",
+      "from": "보낸 사람",
+      "to": "받는 사람",
+      "cc": "참조",
+      "date": "날자"
+    }
   },
   "threads": {
     "title": "타래",
@@ -339,6 +367,15 @@
     "yesterday": "어제"
   },
   "composer": {
+    "editorTitle": "통보문 편집",
+    "expand": "입력칸을 전체 화면으로 펼치기",
+    "collapse": "입력칸 접기",
+    "dragHandle": "입력칸 손잡이를 우아래로 밀기",
+    "formatting": "서식",
+    "bold": "굵은 글씨",
+    "italic": "기울임 글씨",
+    "strike": "취소선",
+    "code": "코드 블로크",
     "mac": "⌘(Cmd)+Enter로 보내기 / Enter로 줄바꾸기",
     "ctrl": "Ctrl+Enter로 보내기 / Enter로 줄바꾸기",
     "other": "Cmd / Ctrl+Enter로 보내기 / Enter로 줄바꾸기",
@@ -401,6 +438,11 @@
   },
   "mentions": {
     "suggestions": "지명 후보"
+  },
+  "appUpdate": {
+    "title": "새 판의 화면이 있습니다",
+    "description": "다시 읽으면 새 판이 적용됩니다. 입력하던 내용이 있으면 먼저 보내십시오.",
+    "reload": "다시 읽기"
   },
   "offline": {
     "bannerTitle": "오프라인입니다",
@@ -556,6 +598,30 @@
     "you": "당신",
     "closeParticipants": "참가자 목록 닫기"
   },
+  "channelPins": {
+    "title": "고정",
+    "menu": "채널 조작",
+    "channelMenu": "{{name}} 채널 조작",
+    "dmMenu": "{{name}} DM 조작",
+    "pin": "고정",
+    "unpin": "고정 풀기",
+    "moveUp": "위로 이동",
+    "moveDown": "아래로 이동",
+    "dragHandle": "끌어서 순서 바꾸기",
+    "dismissError": "닫기",
+    "errors": {
+      "conflict": "다른 기기에서 고정한 채널이 바뀌었습니다. 최신 순서를 다시 읽어왔으니 다시 해보십시오.",
+      "limitExceeded": "채널은 최대 50개까지 고정할 수 있습니다.",
+      "reorderConflict": "다른 기기에서 고정 순서가 바뀌었습니다. 최신 순서를 다시 읽어왔으니 다시 해보십시오."
+    },
+    "announce": {
+      "pinned": "고정하였습니다.",
+      "unpinned": "고정을 풀었습니다.",
+      "moved": "고정한 항목을 이동하였습니다.",
+      "reorderConflict": "다른 기기에서 고정이 풀려 이동하지 않았습니다.",
+      "reorderArchived": "통로가 보관되여 이동하지 않았습니다."
+    }
+  },
   "dms": {
     "title": "직접통보문",
     "createTitle": "새 직접통보문",
@@ -698,6 +764,20 @@
       "addEncrypted": "암호화통로에 추가",
       "notReady": "이 응용프로그람은 아직 암호화준비(단말등록)를 마치지 않았습니다. 응용프로그람을 기동한 뒤 다시 시도하십시오.",
       "encryptedHint": "암호화통로에 응용프로그람을 넣으려면 성원의 허가가 필요합니다."
+    },
+    "components": {
+      "unsupported": "아직 지원하지 않는 요소입니다",
+      "more": "기타 조작",
+      "choose": "선택하십시오",
+      "search": "검색",
+      "noOptions": "후보가 없습니다",
+      "uploading": "올리는 중…",
+      "page": "{{page}} / {{pages}} 페지",
+      "spoiler": "미리보기를 가린 요소입니다(웨브판에서 볼수 있습니다)",
+      "webOnly": "이 조작은 웨브판에서 할수 있습니다",
+      "date": "날자",
+      "time": "시간",
+      "datetime": "날자와 시간"
     }
   },
   "search": {
@@ -1215,6 +1295,7 @@
       "popupBlocked": "로그인 창을 열지 못했습니다. 팝업을 허용하고 다시 누르십시오.",
       "reauthFailed": "다시 로그인하지 못했습니다. 다시 누르십시오. 키는 그대로 유지됩니다.",
       "reauthTimeout": "제한 시간 안에 로그인을 마치지 못했습니다. 다시 누르십시오.",
+      "desktopOutdated": "이 판본의 데스크톱 앱에서는 다시 로그인할 수 없습니다. 앱을 갱신한 뒤 다시 누르십시오.",
       "setupConflict": "다른 장치에서 먼저 암호화 설정을 시작했습니다. 이 화면에 표시된 복구 키는 사용할 수 없습니다. 그 장치에서 기록한 복구 키나 패스키로 잠금을 해제하십시오.",
       "mismatch": "키 폐기가 끝나지 않았거나 서버의 키가 변조되었을 수 있습니다. 이 장치에는 서명하지 않았습니다. 폐기를 다시 하거나 암호화를 재설정하십시오.",
       "invalidRecoveryKey": "복구 키 형식이 올바르지 않습니다. 오타가 없는지 확인하십시오.",
@@ -1670,5 +1751,78 @@
     "title": "사용 안내",
     "chooseChannel": "채널을 선택하면 계속할 수 있습니다. 필요하면 채널 찾기에서 참여하세요.",
     "navigationError": "화면을 열 수 없습니다. 다시 시도하세요."
+  },
+  "sip": {
+    "title": "전화(SIP)",
+    "description": "개인 및 동아리 공유 회선과 전화기를 관리합니다. 선택한 회선 하나에 연결해 전화를 걸고 받습니다. 수신하려면 브라우저를 열고 연결을 유지해야 합니다.",
+    "refresh": "새로 고침",
+    "addLine": "회선 등록",
+    "loading": "불러오는 중…",
+    "loadError": "회선을 불러올 수 없습니다. 새로 고침 후 다시 시도하세요.",
+    "disabled": "전화 기능이 아직 활성화되지 않았습니다. 관리자의 기반 설정이 필요합니다.",
+    "channelBusy": "채널 통화 중에는 SIP 연결을 사용할 수 없습니다.",
+    "line": "통화 회선",
+    "selectLine": "회선 선택",
+    "personal": "개인용",
+    "shared": "동아리 공유",
+    "connect": "연결 및 수신 대기",
+    "disconnect": "연결 해제",
+    "number": "전화번호 또는 내선번호",
+    "dial": "전화 걸기",
+    "empty": "사용 가능한 회선이 없습니다.",
+    "edit": "편집",
+    "delete": "삭제",
+    "lineForm": "회선 등록 및 편집",
+    "name": "회선 이름",
+    "ownership": "소유 구분",
+    "phone_number": "외선번호(선택 사항)",
+    "websocket_path": "SIP 연결 경로",
+    "sip_domain": "SIP 도메인",
+    "username": "SIP 사용자 이름",
+    "password": "SIP 비밀번호",
+    "keepPassword": "비워 두면 기존 비밀번호 유지",
+    "members": "사용 가능한 구성원",
+    "membersHelp": "선택한 구성원만 연결할 수 있습니다. 관리자도 사용하려면 선택하세요. SIP 인증 정보를 공유하므로 구성원 삭제 시 PBX에서도 비밀번호를 변경하세요.",
+    "phones": "전화기 및 거점 연락처",
+    "phonesHelp": "이름과 내선번호를 등록한 다음 표시된 SIP계정을 전화기에 설정하십시오.",
+    "gatewayAccount": "거점 중계기 SIP계정",
+    "phoneAccount": "전화기 SIP계정",
+    "phoneName": "전화기 또는 거점 이름",
+    "extension": "대상 번호",
+    "removePhone": "연락처 삭제",
+    "addPhone": "전화기 추가",
+    "pbxHelp": "관리자가 제공한 PBX 도메인과 계정을 등록하세요. SIP 연결은 서버에서 처리합니다. 발신 가능한 외선과 번호도 PBX에서 제한하세요.",
+    "writeError": "저장할 수 없습니다. 입력과 권한을 확인한 후 다시 시도하세요.",
+    "save": "저장",
+    "saving": "저장 중…",
+    "cancel": "취소",
+    "deleteTitle": "이 회선을 삭제할까요?",
+    "deleteHelp": "zoo2에서 회선과 연락처를 삭제합니다. PBX의 내선과 인증 정보는 별도로 비활성화하세요.",
+    "answer": "응답",
+    "hangup": "종료 또는 거절",
+    "mute": "음소거",
+    "unmute": "음소거 해제",
+    "dtmf": "누름음(0–9, *, #)",
+    "sendTone": "보내기",
+    "callError": "연결 또는 작업에 실패했습니다. 회선 권한, PBX 및 음성 중계 설정을 확인하세요.",
+    "status": {
+      "offline": "연결 안 됨",
+      "connecting": "연결 중…",
+      "ready": "수신 대기 중",
+      "dialing": "발신 중…",
+      "incoming": "수신 중",
+      "active": "통화 중"
+    },
+    "unavailableMember": "사용할 수 없는 구성원"
+  },
+  "androidPhone": {
+    "description": "개인 또는 공유 SIP 회선과 DM 음성 통화를 기기의 통화 기능과 함께 사용합니다.",
+    "nativeCalls": "기기 통화 기능 연동",
+    "nativeHelp": "수신을 켜면 지속 알림과 함께 연결을 유지합니다. 기기의 통화 제어로 응답, 종료 및 음성 출력을 조작할 수 있습니다. 마이크 권한이 필요합니다.",
+    "receiveDm": "DM 전화 받기",
+    "callError": "통화 준비 또는 조작에 실패했습니다. 마이크 권한, 기기의 통화 지원, 네트워크와 회선 설정을 확인하세요.",
+    "speaker": "스피커",
+    "waiting": "전화 수신 대기 중",
+    "dmCall": "통화"
   }
 }

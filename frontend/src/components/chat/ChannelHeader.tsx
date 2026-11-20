@@ -15,13 +15,16 @@ import {
   MessagesSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  PinIcon,
+  PinOffIcon,
   SettingsIcon,
   WebhookIcon,
   UsersIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
+import { usePinnedChannels } from "../../hooks/usePinnedChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -86,6 +89,43 @@ export function ChannelHeader({
   // 既存の非公開チャンネルは、管理できる人が暗号化に切り替えられる（#367）。
   const canEncrypt = canManage && channel.is_private && !channel.encrypted && !isArchived;
 
+  const pins = usePinnedChannels();
+  const pinned = pins.isPinned(channel.id);
+  const pinPending = pins.pending.has(channel.id);
+  const showPinButton = !isDm && (!isArchived || pinned) && pins.available;
+
+  // ピンの操作中もボタンを外さない。ネイティブの `disabled` は押した瞬間にフォーカスを
+  // `document.body` へ落とすため、`aria-disabled` と押下ガードで二重実行だけを止める。
+  // アーカイブ中のピンを解除するとボタン自体が消えるので、そのときだけヘッダーに残る
+  // 操作へフォーカスを移す（チャンネルの切り替えでは動かさない）。
+  const headerActionsRef = useRef<HTMLDivElement | null>(null);
+  const pinButtonFocused = useRef(false);
+  const previousPinButton = useRef<{ channelId: string; visible: boolean } | null>(null);
+  useEffect(() => {
+    const previous = previousPinButton.current;
+    previousPinButton.current = { channelId: channel.id, visible: showPinButton };
+    if (!previous || previous.channelId !== channel.id) {
+      pinButtonFocused.current = false;
+      return;
+    }
+    if (showPinButton || !pinButtonFocused.current) {
+      return;
+    }
+    pinButtonFocused.current = false;
+    // 消えたピンボタンからフォーカスが外れた直後でも、利用者が別の操作へ移していたら
+    // 奪わない。ブラウザーがフォーカスを外した場合だけ、残るヘッダーの操作へ移す。
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active && active !== document.body && active.isConnected) {
+        return;
+      }
+      headerActionsRef.current
+        ?.querySelector<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])')
+        ?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [channel.id, showPinButton]);
+
   const call = useCall();
   const isInThisCall = call.currentChannelId === channel.id;
   const activeCallCount = call.activeCalls.get(channel.id) ?? 0;
@@ -146,7 +186,7 @@ export function ChannelHeader({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          <h1 className="truncate text-sm font-semibold">{displayTitle}</h1>
           {channel.encrypted ? (
             // 見た目の印は左のアイコン（DM は鍵を重ねたアイコン）だけにし、印の文字はチャンネル設定に出す。読み上げでは、
             // 送信の前に暗号化されているかを確かめられるよう、見出しの隣で伝える。
@@ -163,7 +203,7 @@ export function ChannelHeader({
         </div>
         <p className="truncate text-xs text-muted-foreground">{displaySubtitle}</p>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div ref={headerActionsRef} className="flex shrink-0 items-center gap-1">
         {!isArchived ? (
           <Button
             variant={isInThisCall ? "secondary" : hasActiveCall ? "outline" : "ghost"}
@@ -207,6 +247,8 @@ export function ChannelHeader({
           <Button
             variant="outline"
             size="sm"
+            // sm 未満ではラベルが非表示になりアイコンだけになるため、タッチ時は縦横とも 44px 以上にする。
+            className="[@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11"
             onClick={shell.toggleMembers}
             aria-expanded={shell.membersOpen}
             aria-label={
@@ -222,6 +264,29 @@ export function ChannelHeader({
                 {memberCount === null ? "…" : memberCount}
               </span>
             )}
+          </Button>
+        ) : null}
+        {showPinButton ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="size-11 aria-disabled:opacity-50 md:size-8"
+            aria-label={t(pinned ? "channelPins.unpin" : "channelPins.pin")}
+            title={t(pinned ? "channelPins.unpin" : "channelPins.pin")}
+            aria-pressed={pinned}
+            aria-disabled={pinPending}
+            onFocus={() => {
+              pinButtonFocused.current = true;
+            }}
+            onClick={() => {
+              // `aria-disabled` では押下自体は届くため、保留中は何もしない。
+              if (pinPending) {
+                return;
+              }
+              void (pinned ? pins.unpinChannel(channel.id) : pins.pinChannel(channel.id));
+            }}
+          >
+            {pinned ? <PinOffIcon /> : <PinIcon />}
           </Button>
         ) : null}
         {isDm ? <DmHeaderMenu channel={channel} /> : null}
@@ -384,6 +449,9 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
   const navigate = useNavigate();
   const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
+  const pins = usePinnedChannels();
+  const pinned = pins.isPinned(channel.id);
+  const pinPending = pins.pending.has(channel.id);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [encryptOpen, setEncryptOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -427,6 +495,18 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {pins.available ? (
+            <DropdownMenuItem
+              className="min-h-11"
+              disabled={pinPending}
+              onClick={() => {
+                void (pinned ? pins.unpinChannel(channel.id) : pins.pinChannel(channel.id));
+              }}
+            >
+              {pinned ? <PinOffIcon /> : <PinIcon />}
+              {t(pinned ? "channelPins.unpin" : "channelPins.pin")}
+            </DropdownMenuItem>
+          ) : null}
           {!channel.encrypted ? (
             // 既存の DM も、参加者なら暗号化に切り替えられる（#367）。
             <DropdownMenuItem className="min-h-11" onClick={() => setEncryptOpen(true)}>

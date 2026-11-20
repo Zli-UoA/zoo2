@@ -139,3 +139,24 @@ export const SharedShortcodes: Story = {
     await expect(canvasElement).toHaveTextContent(":unknown_service_emoji:");
   }),
 };
+
+export const KitchenBody: Story = {
+  args: { content: "本文 **:kitchen_1f431_1f600:** と `:kitchen_1f431_1f600:`" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("img", { name: "🐱 + 😀" })).toBeVisible();
+    await expect(canvasElement.querySelector("code")).toHaveTextContent(":kitchen_1f431_1f600:");
+  },
+};
+
+export const KitchenTaggedEmoji: Story = {
+  args: {
+    content: "投稿のタグを優先 :kitchen_1f431_1f600:",
+    emojis: { kitchen_1f431_1f600: customEmojiFixture },
+  },
+  play: async ({ canvasElement }) => {
+    const image = await within(canvasElement).findByRole("img", { name: ":kitchen_1f431_1f600:" });
+    const box = image.getBoundingClientRect();
+    await expect(box.width / box.height).toBeCloseTo(3);
+  },
+};

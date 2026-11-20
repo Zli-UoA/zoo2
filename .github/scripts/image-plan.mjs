@@ -27,10 +27,10 @@ export function promotionAliases(selected, sha, release) {
 }
 
 // 変更されたファイルの一覧から、ビルドが必要なコンポーネントを返す。
-// ビルド用のスクリプト・アクション・ワークフロー、.dockerignore が変わった場合は、すべてのコンポーネントをビルドし直す。
+// イメージ計画・配布workflow・.dockerignore が変わった場合は、全コンポーネントを検証する。
 // それ以外は、各コンポーネントのソースと Dockerfile の変更を見る（migrate のソースは infra/db/、frontend は nginx 設定・CSP ハッシュ生成・entrypoint も含む）。
 export function changedComponents(files) {
-  const shared = files.some(f => f.startsWith('.github/scripts/') || f.startsWith('.github/actions/') || f === '.github/workflows/cd-images.yaml' || f === '.dockerignore');
+  const shared = files.some(f => ['.github/scripts/image-plan.mjs', '.github/workflows/cd-images.yaml', '.dockerignore'].includes(f));
   return components.filter(c => shared || files.some(f => componentFile(c, f)));
 }
 
@@ -42,7 +42,8 @@ function componentFile(c, f) {
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
     (c === 'frontend' && frontendInfraFiles.includes(f)) ||
-    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f.startsWith('crates/zoo-crypto/')));
+    (c === 'frontend' && (f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-crypto-wasm/') || f === 'rust-toolchain.toml')) ||
+    (c === 'backend' && (f === 'docs/slack-event-coverage.json' || f === 'frontend/src/lib/emoji/emoji-kitchen.json' || f.startsWith('crates/zoo-crypto/') || f.startsWith('crates/zoo-components/')));
 }
 
 const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
@@ -77,6 +78,35 @@ export async function promotedMainSha(github, org) {
   return sha;
 }
 
+export async function mainRequiresImages(github, repo, sha) {
+  let promoted;
+  try {
+    const latest = await Promise.all(components.map(async component => {
+      const versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {
+        org: repo.owner, package_type: 'container', package_name: `zoo2-${component}`, per_page: 100,
+      });
+      return versions.find(v => v.metadata?.container?.tags?.includes('latest'))?.metadata.container.tags ?? [];
+    }));
+    const common = latest[0].filter(tag => latest.every(tags => tags.includes(tag)));
+    // latest aliases move before the terminal migrate release tag. An
+    // interrupted promotion must not become a checkpoint for a later push.
+    // Require all three latest manifests to share a completed release and SHA.
+    if (!common.some(isReleaseTag)) return true;
+    promoted = common.find(tag => /^[a-f0-9]{40}$/.test(tag));
+    if (!promoted) return true;
+  }
+  catch (error) {
+    if (error.status === 404) return true;
+    throw error;
+  }
+  if (promoted === sha) return false;
+  const { data } = await github.rest.repos.compareCommitsWithBasehead({ ...repo, basehead: `${promoted}...${sha}`, per_page: 100 });
+  // Compare truncates its file list at 300. Unknown/diverged history and
+  // truncated diffs must build, rather than hide an unpromoted application.
+  if (!['ahead', 'identical'].includes(data.status) || !Array.isArray(data.files) || data.files.length >= 300) return true;
+  return pullRequestComponents(data.files).length > 0;
+}
+
 // ビルド計画を作り、ジョブの出力に渡す。
 // - main への push・手動実行: 全コンポーネントをビルドし、タグは `<SHA>`
 // - PR: 変更のあるコンポーネントだけをビルドする。タグは全コンポーネントで `pr-<番号>-<SHA>` にそろえ、
@@ -91,6 +121,10 @@ export default async function plan({github, context, core}) {
     return;
   }
   let selected = components;
+  if (!pr && context.eventName === 'push' && !await mainRequiresImages(github, context.repo, context.sha)) {
+    core.setOutput('enabled', 'false');
+    return;
+  }
   if (pr) {
     // イベントの発生後に PR が close・更新されていれば、古いコミットはビルドしない。
     const {data: current} = await github.rest.pulls.get({...context.repo, pull_number: pr.number});

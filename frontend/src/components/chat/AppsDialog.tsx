@@ -50,7 +50,7 @@ type Surface = {
   id: string;
   kind: string;
   channel_id: string | null;
-  document: { blocks?: unknown };
+  document: { blocks?: unknown; components?: unknown; flags?: number };
 };
 export function AppDialogs() {
   const [open, setOpen] = useState(false);
@@ -582,7 +582,7 @@ function UserAppsDialog({
                         aria-label={t(surface.kind === "modal" ? "apps.form" : "apps.home")}
                       >
                         <AppBlocks
-                          blocks={surface.document.blocks}
+                          blocks={surface.document}
                           appId={app.id}
                           surfaceId={surface.id}
                           channelId={surface.channel_id}

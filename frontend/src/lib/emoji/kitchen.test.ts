@@ -6,6 +6,8 @@ import {
   kitchenEmojis,
   kitchenImageUrl,
   kitchenLabel,
+  kitchenShortcode,
+  kitchenFromShortcode,
   kitchenParts,
   matchesKitchenQuery,
   reactionKey,
@@ -17,6 +19,19 @@ const catalog = JSON.parse(
 ) as KitchenCatalog;
 
 describe("Emoji Kitchen", () => {
+  it("round-trips body shortcodes and rejects invalid Unicode", () => {
+    expect(kitchenShortcode("kitchen:😀_🐱")).toBe(":kitchen_1f431_1f600:");
+    expect(kitchenFromShortcode("kitchen_1f600_1f431")).toBe("kitchen:1f431_1f600");
+    expect(kitchenShortcode("😀")).toBe("😀");
+    for (const name of [
+      "kitchen_110000_1f431",
+      "kitchen_d800_1f431",
+      "kitchen_1f600",
+      "kitchen_1f600_1f431_extra",
+    ]) {
+      expect(kitchenFromShortcode(name)).toBeNull();
+    }
+  });
   it("uses the published image orientation and per-pair date", () => {
     const expected =
       "https://www.gstatic.com/android/keyboard/emojikitchen/20230301/u1f600/u1f600_u1f431.png";

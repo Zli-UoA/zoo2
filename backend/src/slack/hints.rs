@@ -357,7 +357,7 @@ async fn apply(
     };
     let existing = query(
         &mut tx,
-        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''))::text \
+        "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''),'components',COALESCE(components,''))::text \
          FROM messages WHERE id=$1 AND channel_id=$2 \
          AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
         &[&id, zoo_channel, if zoo_mapped || !super::is_valid_ts(ts) { "" } else { ts }],
@@ -519,20 +519,35 @@ pub(super) async fn edit(
     let formatting_only = edited.is_none()
         && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
     let same = (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
-        && stored["card"].as_str().unwrap_or_default() == rendered.card;
+        && stored["components"].as_str().unwrap_or_default() == rendered.components;
+    // 部品の導入前に `card` で取り込んだ行 (バックフィル後も `card` は残る) は、保存した部品が旧カードから作られて
+    // いて、attachments から作り直した部品とは形式が違う。形式の違いだけで「編集済み」にしないよう、
+    // 当時の変換で作り直した本文と `card` を、保存したものとバイト単位で比べる
+    let same = same || {
+        let card = stored["card"].as_str().unwrap_or_default();
+        !card.is_empty() && {
+            let (content, legacy) = super::legacy_card::render(message, &*ctx);
+            let content = if content.trim().is_empty() {
+                rendered.content.as_str()
+            } else {
+                content.as_str()
+            };
+            legacy == card && stored["content"].as_str() == Some(content)
+        }
+    };
     if same {
         return Ok(());
     }
     let updated = query(
         tx,
-        "UPDATE messages SET content=$2,card=NULLIF($3,''),\
+        "UPDATE messages SET content=$2,components=NULLIF($3,''),card=NULL,\
          updated_at=CASE WHEN $4='' THEN (now() AT TIME ZONE 'UTC')::timestamp(3) \
            ELSE (to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          revision=revision+1 \
          WHERE id=$1 AND deleted_at IS NULL \
          AND ($4='' OR updated_at IS NULL OR updated_at<(to_timestamp($4::numeric) AT TIME ZONE 'UTC')::timestamp(3)) \
          RETURNING json_build_object('ok',true)::text",
-        &[id, &rendered.content, &rendered.card, edited.unwrap_or_default()],
+        &[id, &rendered.content, &rendered.components, edited.unwrap_or_default()],
     )
     .await?;
     if updated.is_empty() {

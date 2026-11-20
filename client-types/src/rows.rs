@@ -48,6 +48,16 @@ pub struct ChannelUser {
     pub channel_id: String,
 }
 
+/// 自分がピン留めしたチャンネル・DM と、その並び順（`user_pinned_channels`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserPinnedChannel {
+    pub user_id: String,
+    pub channel_id: String,
+    pub position: i64,
+    pub created_at: DateTime,
+    pub updated_at: DateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -55,6 +65,12 @@ pub struct Message {
     pub channel_id: String,
     pub content: String,
     pub card: Option<String>,
+    /// メッセージ部品（Discord Components V2 形式の JSON）。[`Message::components_document`] で読む。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<String>,
+    /// 部品を付けたアプリの ID。ボタンなどを押したとき、このアプリに送る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_origin_id: Option<String>,
     pub created_at: DateTime,
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
@@ -78,6 +94,19 @@ pub struct Message {
     /// `message` か `emote`（`messages.message_kind`）。古いスキーマでは `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_kind: Option<String>,
+}
+
+impl Message {
+    /// メッセージ部品を読む。`components` が無く、旧形式の `card` だけがある行（移行前）は、
+    /// 旧形式から作る。壊れていれば None（本文を表示する）。
+    pub fn components_document(&self) -> Option<zoo_components::Document> {
+        if let Some(json) = self.components.as_deref().filter(|s| !s.trim().is_empty()) {
+            return zoo_components::Document::parse(json);
+        }
+        let card: Value = serde_json::from_str(self.card.as_deref()?).ok()?;
+        let doc = zoo_components::legacy::cards(&card);
+        (!doc.components.is_empty()).then_some(doc)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -170,6 +199,7 @@ pub struct CardData {
 }
 
 /// JSON 文字列から 1 個または複数の CardData をパースする。
+/// 旧形式（`messages.card`）。新しいクライアントは [`Message::components_document`] を使う。
 pub fn parse_message_cards(value: &str) -> Vec<CardData> {
     if value.trim().is_empty() {
         return Vec::new();
@@ -228,6 +258,18 @@ impl FromRow for User {
     }
 }
 
+impl FromRow for UserPinnedChannel {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            user_id: text(row, "user_id")?,
+            channel_id: text(row, "channel_id")?,
+            position: integer(row, "position")?,
+            created_at: time(row, "created_at")?,
+            updated_at: time(row, "updated_at")?,
+        })
+    }
+}
+
 impl FromRow for ChannelUser {
     fn from_row(row: &Row) -> Result<Self> {
         Ok(Self {
@@ -245,6 +287,8 @@ impl FromRow for Message {
             channel_id: text(row, "channel_id")?,
             content: opt_text(row, "content").unwrap_or_default(),
             card: opt_text(row, "card"),
+            components: opt_text(row, "components"),
+            app_origin_id: opt_text(row, "app_origin_id"),
             created_at: time(row, "created_at")?,
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
@@ -564,9 +608,22 @@ mod tests {
             Some("{\"title\":\"zoo2\",\"url\":\"https://zoo2.app\"}")
         );
 
-        let cards = parse_message_cards(message.card.as_deref().unwrap());
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].title, "zoo2");
-        assert_eq!(cards[0].url, "https://zoo2.app");
+        // 移行前の行は、旧形式のカードから部品を作る
+        let doc = message.components_document().unwrap();
+        assert!(doc.hides_content());
+        assert!(doc.fallback_text(100).contains("[zoo2](https://zoo2.app)"));
+
+        let message = Message::from_row(&row(json!({
+            "id": "m2", "user_id": "u1", "channel_id": "c1", "content": "fallback",
+            "components": "{\"flags\":32768,\"components\":[{\"type\":10,\"content\":\"hi\"}]}",
+            "app_origin_id": "app1",
+            "created_at": "2026-11-01T00:00:00"
+        })))
+        .unwrap();
+        assert_eq!(message.app_origin_id.as_deref(), Some("app1"));
+        assert_eq!(
+            message.components_document().unwrap().fallback_text(100),
+            "hi"
+        );
     }
 }

@@ -31,6 +31,16 @@ const EXTENSION_TO_IMAGE_TYPE: Record<string, string> = {
 
 const EXTENSION_TO_CONTENT_TYPE: Record<string, string> = {
   ...EXTENSION_TO_IMAGE_TYPE,
+  avif: "image/avif",
+  eml: "message/rfc822",
+  msg: "application/vnd.ms-outlook",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  yaml: "text/yaml",
+  yml: "text/yaml",
+  ics: "text/calendar",
+  vcf: "text/vcard",
   pdf: "application/pdf",
   txt: "text/plain",
   md: "text/markdown",
@@ -125,6 +135,55 @@ function fileExtension(name: string): string {
 
 export function isInlineImage(contentType: string): boolean {
   return (SUPPORTED_IMAGE_TYPES as readonly string[]).includes(baseMime(contentType));
+}
+
+/** Only passive formats are embedded; HTML, SVG and other documents stay downloads. */
+export function mediaPreviewKind(
+  contentType: string,
+  name = "",
+): "image" | "video" | "audio" | "pdf" | "document" | null {
+  const mime = baseMime(contentType);
+  if (isInlineImage(mime) || mime === "image/avif") return "image";
+  if (["video/mp4", "video/webm", "video/ogg", "video/quicktime"].includes(mime)) return "video";
+  if (
+    [
+      "audio/mpeg",
+      "audio/mp4",
+      "audio/wav",
+      "audio/x-wav",
+      "audio/ogg",
+      "audio/webm",
+      "audio/flac",
+      "audio/aac",
+    ].includes(mime)
+  )
+    return "audio";
+  if (mime === "application/pdf") return "pdf";
+  if (
+    mime.startsWith("text/") ||
+    [
+      "application/javascript",
+      "application/json",
+      "application/xml",
+      "application/yaml",
+      "application/toml",
+      "message/rfc822",
+      "application/vnd.ms-outlook",
+      "application/zip",
+      "application/x-zip-compressed",
+    ].includes(mime) ||
+    mime.startsWith("application/vnd.openxmlformats-officedocument.") ||
+    mime.startsWith("application/vnd.oasis.opendocument.")
+  )
+    return "document";
+  if (
+    ["application/octet-stream", "binary/octet-stream", ""].includes(mime) &&
+    /\.(?:eml|msg|docx|xlsx|pptx|odt|ods|odp|zip|txt|md|csv|json|xml|html?|log|ya?ml|toml|ini|ics|vcf|sql|js|ts|py|rs|kt|css)$/i.test(
+      name,
+    )
+  )
+    return "document";
+  return null;
 }
 
 export function resolveAttachmentContentType(file: Pick<File, "type" | "name">): string | null {

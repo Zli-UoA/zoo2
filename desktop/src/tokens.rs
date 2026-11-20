@@ -150,7 +150,7 @@ impl Tokens {
         let accent = hex(0xfffbe8);
         let accent_foreground = hex(0x424242);
         let border = hex(0xe5e5e5);
-        let ring = hex(0x737373);
+        let ring = hex(0x1f1f1f);
         Self {
             background: hex(0xffffff),
             foreground: hex(0x000000),

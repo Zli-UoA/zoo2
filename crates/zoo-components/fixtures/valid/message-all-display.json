@@ -1,0 +1,24 @@
+{
+  "document": {
+    "flags": 32768,
+    "components": [
+      {"type": 10, "content": "# Release\n**zoo** v2 is out"},
+      {"type": 17, "accent_color": 3066993, "components": [
+        {"type": 9, "components": [{"type": 10, "content": "Section text"}], "accessory": {"type": 11, "media": {"url": "https://example.com/a.png"}, "description": "logo"}},
+        {"type": 12, "items": [{"media": {"url": "https://example.com/1.png"}, "description": "one"}, {"media": {"url": "https://example.com/2.png"}, "spoiler": true}]},
+        {"type": 14, "divider": false, "spacing": 2},
+        {"type": 13, "file": {"url": "https://example.com/report.pdf"}, "name": "report.pdf"},
+        {"type": 1, "components": [{"type": 2, "style": 5, "label": "Open", "url": "https://example.com"}]}
+      ]},
+      {"type": 17, "spoiler": true, "title": "Details", "collapsible": true, "collapsed": true, "components": [{"type": 10, "content": "hidden"}]},
+      {"type": 1010, "content": "Heads up", "level": "warning"},
+      {"type": 1008, "title": "Demo", "video_url": "https://example.com/v", "thumbnail_url": "https://example.com/t.png"},
+      {"type": 1009, "header": true, "caption": "Hosts", "page_size": 5, "rows": [[{"text": "Host"}, {"text": "CPU"}], [{"text": "web1"}, {"text": "42", "number": 42}]]},
+      {"type": 1012, "cards": [{"type": 1011, "title": "A", "body": "first", "hero_image": {"url": "https://example.com/h.png"}}, {"type": 1011, "title": "B"}]},
+      {"type": 1013, "title": "Sales", "chart_type": "bar", "categories": ["Q1", "Q2"], "series": [{"name": "2026", "data": [{"label": "Q1", "value": 3}, {"label": "Q2", "value": 5}]}]},
+      {"type": 1014, "rows": [[{"component": {"type": 10, "content": "left"}}, {"width": 1, "align": "end", "component": {"type": 10, "content": "right"}}]]},
+      {"type": 1015, "title": "Steps", "tasks": [{"task_id": "1", "title": "Build", "status": "complete"}, {"task_id": "2", "title": "Ship", "status": "in_progress"}]},
+      {"type": 1000, "original_type": "slack:future", "text": "kept text"}
+    ]
+  }
+}

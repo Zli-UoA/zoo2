@@ -1904,6 +1904,11 @@
       "audience": "app"
     },
     {
+      "name": "options.requested",
+      "scope": null,
+      "audience": "app"
+    },
+    {
       "name": "shortcut.invoked",
       "scope": null,
       "audience": "app"

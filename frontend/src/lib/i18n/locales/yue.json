@@ -1,4 +1,11 @@
 {
+  "a11y": {
+    "skipToContent": "跳去主要內容"
+  },
+  "notFoundPage": {
+    "title": "搵唔到頁面",
+    "description": "你要搵嘅頁面可能已經搬咗或者唔存在。"
+  },
   "nav": {
     "main": "主要導覽"
   },
@@ -10,6 +17,10 @@
     "unread": "有未讀訊息",
     "editTitle": "編輯頻道",
     "editHelp": "頻道名最多80個字元，只可以用文字、數字、半形連字號（-）同底線（_）。唔可以用空格、表情符號、其他符號或者保留名稱。",
+    "nameRequired": "請輸入頻道名。",
+    "nameTooLong": "頻道名最多{{max}}個字元（而家{{length}}個）。",
+    "nameReserved": "「{{name}}」係保留名稱，唔可以用。",
+    "invalidName": "頻道名只可以用文字、數字、半形連字號（-）同底線（_）。",
     "saveName": "儲存",
     "savingName": "儲存緊…",
     "title": "頻道",
@@ -205,6 +216,7 @@
     "edit": "編輯",
     "delete": "刪除",
     "more": "更多操作",
+    "actions": "操作訊息",
     "editLabel": "編輯訊息",
     "loadError": "載入唔到訊息",
     "retryHelp": "請檢查連線再試多次。",
@@ -227,6 +239,8 @@
     "edited": "已編輯"
   },
   "attachments": {
+    "play": "播放",
+    "pause": "暫停",
     "add": "附加檔案",
     "selected": "要附加嘅檔案",
     "remove": "移除{{name}}",
@@ -248,7 +262,21 @@
     "markSensitive": "將圖片標記為敏感內容",
     "showSensitive": "顯示圖片",
     "hideSensitive": "隱藏圖片",
-    "sensitiveShort": "敏感圖片"
+    "sensitiveShort": "敏感圖片",
+    "documentSummary": "內文同儲存格嘅簡單預覽，格式同版面可能同原檔唔同。",
+    "previewLimit": "預覽超出大小、檔案數量或處理時間限制，請下載檔案查看。",
+    "emptyPreview": "冇內容",
+    "containedFiles": "包含嘅檔案",
+    "previousPage": "上一頁",
+    "nextPage": "下一頁",
+    "pdfPage": "PDF 第{{page}}頁",
+    "mail": {
+      "subject": "主旨",
+      "from": "寄件者",
+      "to": "收件者",
+      "cc": "副本",
+      "date": "日期"
+    }
   },
   "threads": {
     "title": "子討論",
@@ -339,6 +367,15 @@
     "yesterday": "尋日"
   },
   "composer": {
+    "editorTitle": "編輯訊息",
+    "expand": "全屏展開編輯器",
+    "collapse": "收起編輯器",
+    "dragHandle": "上下掃輸入框頂部嘅拖曳列",
+    "formatting": "格式",
+    "bold": "粗體",
+    "italic": "斜體",
+    "strike": "刪除線",
+    "code": "程式碼區塊",
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
     "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",
@@ -401,6 +438,11 @@
   },
   "mentions": {
     "suggestions": "提及建議"
+  },
+  "appUpdate": {
+    "title": "有新版本嘅畫面",
+    "description": "重新載入就會用新版本。如果有緊打嘅內容，請先送出。",
+    "reload": "重新載入"
   },
   "offline": {
     "bannerTitle": "你而家離線",
@@ -556,6 +598,30 @@
     "you": "你",
     "closeParticipants": "關閉參加者名單"
   },
+  "channelPins": {
+    "title": "置頂",
+    "menu": "頻道操作",
+    "channelMenu": "{{name}} 頻道操作",
+    "dmMenu": "{{name}} DM 操作",
+    "pin": "置頂",
+    "unpin": "取消置頂",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "dragHandle": "拖曳以重新排序",
+    "dismissError": "閂咗",
+    "errors": {
+      "conflict": "另一個裝置改咗置頂嘅頻道。已經重新載入最新次序，請再試一次。",
+      "limitExceeded": "最多只可以置頂 50 個頻道。",
+      "reorderConflict": "另一個裝置改咗置頂次序。已經重新載入最新次序，請再試一次。"
+    },
+    "announce": {
+      "pinned": "已經置頂。",
+      "unpinned": "已經取消置頂。",
+      "moved": "已經移動置頂項目。",
+      "reorderConflict": "另一個裝置已經取消置頂呢個項目，所以冇移動。",
+      "reorderArchived": "呢個頻道已經封存，所以冇移動。"
+    }
+  },
   "dms": {
     "title": "私訊",
     "createTitle": "新開私訊",
@@ -698,6 +764,20 @@
       "addEncrypted": "加入加密頻道",
       "notReady": "呢個 App 未準備好加密（未登記裝置）。請開咗 App 之後再試。",
       "encryptedHint": "將 App 加入加密頻道，要成員批准。"
+    },
+    "components": {
+      "unsupported": "暫時未支援呢個元件",
+      "more": "更多操作",
+      "choose": "請揀",
+      "search": "搜尋",
+      "noOptions": "冇選項",
+      "uploading": "上載緊…",
+      "page": "第 {{page}} / {{pages}} 頁",
+      "spoiler": "有劇透內容（可以喺網頁版睇）",
+      "webOnly": "請喺網頁版做呢個操作",
+      "date": "日期",
+      "time": "時間",
+      "datetime": "日期同時間"
     }
   },
   "search": {
@@ -1215,6 +1295,7 @@
       "popupBlocked": "開唔到登入視窗。請容許彈出視窗之後再撳一次。",
       "reauthFailed": "重新登入唔到。請再撳一次，金鑰會保持唔變。",
       "reauthTimeout": "登入冇喺時限內完成，請再撳一次。",
+      "desktopOutdated": "呢個版本嘅桌面 App 冇辦法重新登入。請更新 App 之後再撳一次。",
       "setupConflict": "另一部裝置已經搶先開始設定加密。呢個畫面顯示嘅復原金鑰用唔到。請用嗰部裝置抄低嘅復原金鑰或者通行金鑰解鎖。",
       "mismatch": "金鑰撤銷可能未完成，或者伺服器上嘅金鑰可能俾人改過。呢部裝置冇簽署。請重新撤銷或者重設加密。",
       "invalidRecoveryKey": "復原金鑰格式唔啱，請檢查有冇打錯。",
@@ -1670,5 +1751,78 @@
     "title": "使用導覽",
     "chooseChannel": "揀一個頻道就可以繼續。有需要可以喺瀏覽頻道加入。",
     "navigationError": "開唔到頁面，請再試。"
+  },
+  "sip": {
+    "title": "電話（SIP）",
+    "description": "管理個人同社團共用嘅線路及電話機。連接揀咗嘅一條線路打出或接聽電話。接聽來電需要瀏覽器保持開啟同連線。",
+    "refresh": "重新整理",
+    "addLine": "新增線路",
+    "loading": "載入中…",
+    "loadError": "載入唔到線路，請重新整理再試。",
+    "disabled": "電話功能尚未啟用，需要管理員設定基礎設施。",
+    "channelBusy": "頻道通話期間無法使用SIP連線。",
+    "line": "通話線路",
+    "selectLine": "選擇線路",
+    "personal": "個人",
+    "shared": "社團共用",
+    "connect": "連線並等候來電",
+    "disconnect": "中斷連線",
+    "number": "電話號碼或分機號碼",
+    "dial": "撥號",
+    "empty": "暫時冇可用線路。",
+    "edit": "編輯",
+    "delete": "刪除",
+    "lineForm": "新增或編輯線路",
+    "name": "線路名稱",
+    "ownership": "擁有權",
+    "phone_number": "外線號碼（選填）",
+    "websocket_path": "SIP連線路徑",
+    "sip_domain": "SIP網域",
+    "username": "SIP使用者名稱",
+    "password": "SIP密碼",
+    "keepPassword": "留空以保留目前的密碼",
+    "members": "允許使用的成員",
+    "membersHelp": "只有揀咗嘅成員先可以連線，管理員要用都要揀。成員共用SIP憑證，移除成員時亦要喺PBX更改密碼。",
+    "phones": "電話機和據點聯絡人",
+    "phonesHelp": "登記名稱同分機號碼之後，將顯示嘅 SIP 帳號設定到電話機。",
+    "gatewayAccount": "據點閘道 SIP 帳號",
+    "phoneAccount": "電話機 SIP 帳號",
+    "phoneName": "電話機或據點名稱",
+    "extension": "目標號碼",
+    "removePhone": "移除聯絡人",
+    "addPhone": "新增電話機",
+    "pbxHelp": "請登記管理員提供嘅PBX網域同帳戶。SIP連線由伺服器處理。PBX亦要限制可用嘅外線同號碼。",
+    "writeError": "儲存唔到，請檢查輸入同權限再試。",
+    "save": "儲存",
+    "saving": "儲存中…",
+    "cancel": "取消",
+    "deleteTitle": "刪除此線路？",
+    "deleteHelp": "從zoo2移除線路和聯絡人。請另外在PBX停用分機和憑證。",
+    "answer": "接聽",
+    "hangup": "掛斷或拒接",
+    "mute": "靜音",
+    "unmute": "取消靜音",
+    "dtmf": "按鍵音（0–9、*、#）",
+    "sendTone": "傳送",
+    "callError": "連線或操作失敗，請檢查線路權限、PBX和音訊中繼設定。",
+    "status": {
+      "offline": "未連線",
+      "connecting": "連線中…",
+      "ready": "等候來電",
+      "dialing": "撥號中…",
+      "incoming": "來電",
+      "active": "通話中"
+    },
+    "unavailableMember": "無法使用嘅成員"
+  },
+  "androidPhone": {
+    "description": "透過裝置嘅通話功能使用個人或共用SIP線路同私訊語音通話。",
+    "nativeCalls": "裝置通話整合",
+    "nativeHelp": "啟用來電後會顯示持續通知並保持連線。可以用裝置嘅通話控制接聽、掛斷同切換音訊輸出。需要咪高峰權限。",
+    "receiveDm": "接收私訊來電",
+    "callError": "準備或操作通話失敗，請檢查咪高峰權限、裝置通話支援、網絡同線路設定。",
+    "speaker": "揚聲器",
+    "waiting": "正在等候來電",
+    "dmCall": "通話"
   }
 }

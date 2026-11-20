@@ -10,6 +10,25 @@ erDiagram
       boolean id PK
       text ltl_channel_pattern
     }
+    apns_revocation_capacity {
+      boolean id PK
+      bigint records
+    }
+    apns_revocations {
+      text id PK
+      timestamp(3) revoked_at
+      timestamp(3) invalidated_at
+    }
+    apns_subscriptions {
+      text id PK
+      text user_id FK
+      text device_token
+      text environment
+      text revocation_hash
+      timestamp(3) created_at
+      timestamptz last_test_at
+    }
+    apns_subscriptions }o--o| users : apns_subscriptions_user_id_fkey
     assistant_sessions {
       text id PK
       text installation_id FK
@@ -276,6 +295,7 @@ erDiagram
       bigint epoch
       integer revision
       text reply_target_id
+      text components
     }
     messages }o--o| apps : messages_app_origin_id_fkey
     messages }o--o| channels : messages_channel_id_fkey
@@ -315,6 +335,20 @@ erDiagram
     notifications }o--o| channels : notifications_channel_id_fkey
     notifications }o--o| messages : notifications_message_id_fkey
     notifications }o--o| users : notifications_user_id_fkey
+    phone_sessions {
+      text id PK
+      text user_id FK
+      text line_id FK
+      timestamptz line_revision
+      text peer_id
+      bigint gateway_session_id
+      bigint gateway_handle_id
+      text lease_owner
+      timestamptz expires_at
+      timestamptz created_at
+    }
+    phone_sessions }o--o| sip_lines : phone_sessions_line_id_fkey
+    phone_sessions }o--o| users : phone_sessions_user_id_fkey
     push_subscriptions {
       text id PK
       text user_id FK
@@ -351,6 +385,33 @@ erDiagram
       text image_id
       timestamptz updated_at
     }
+    sip_line_members {
+      text line_id PK,FK
+      text user_id PK,FK
+    }
+    sip_line_members }o--o| sip_lines : sip_line_members_line_id_fkey
+    sip_line_members }o--o| users : sip_line_members_user_id_fkey
+    sip_lines {
+      text id PK
+      text name
+      text owner_user_id FK
+      text websocket_path
+      text sip_domain
+      text username
+      text password_ciphertext
+      text phone_number
+      text created_by FK
+      timestamptz updated_at
+    }
+    sip_lines }o--o| users : sip_lines_created_by_fkey
+    sip_lines }o--o| users : sip_lines_owner_user_id_fkey
+    sip_phones {
+      text id PK
+      text line_id FK
+      text name
+      text extension
+    }
+    sip_phones }o--o| sip_lines : sip_phones_line_id_fkey
     thread_migration_completed {
       text thread_id PK,FK
       timestamptz completed_at
@@ -380,6 +441,12 @@ erDiagram
     typing_presence }o--o| channels : typing_presence_channel_id_fkey
     typing_presence }o--o| messages : typing_presence_parent_id_fkey
     typing_presence }o--o| users : typing_presence_user_id_fkey
+    user_channel_pin_states {
+      text user_id PK,FK
+      bigint version
+      timestamp(3) updated_at
+    }
+    user_channel_pin_states |o--o| users : user_channel_pin_states_user_id_fkey
     user_event_settings {
       text user_id PK,FK
       text preferences
@@ -398,6 +465,15 @@ erDiagram
       timestamp(3) updated_at
     }
     user_identities }o--o| users : user_identities_user_id_fkey
+    user_pinned_channels {
+      text user_id PK,FK
+      text channel_id PK,FK
+      integer position
+      timestamp(3) created_at
+      timestamp(3) updated_at
+    }
+    user_pinned_channels }o--o| channels : user_pinned_channels_channel_id_fkey
+    user_pinned_channels }o--o| users : user_pinned_channels_user_id_fkey
     user_reminders {
       text id PK
       text user_id FK

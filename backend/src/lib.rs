@@ -1,8 +1,10 @@
 pub mod activitypub;
+pub mod apns;
 pub mod apps;
 pub mod auth;
 pub mod call_invites;
 pub mod cards;
+pub mod components;
 pub mod config;
 pub mod db;
 pub mod display_refresh;
@@ -10,6 +12,7 @@ pub mod error;
 pub mod metrics;
 pub mod models;
 pub mod notifications;
+pub mod phone_gateway;
 pub mod push;
 pub mod routes;
 pub mod slack;

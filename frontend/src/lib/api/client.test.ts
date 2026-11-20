@@ -4,6 +4,7 @@ import {
   ApiError,
   buildAuthHeaders,
   createApiClient,
+  createChannelPinsApi,
   createConfiguredApiClient,
   unwrapEnvelope,
   type FetchLike,
@@ -361,4 +362,62 @@ it("starts an exit write synchronously using the latest resolved auth without re
   expect(options.headers.get("Authorization")).toBe("Bearer first-token");
   expect(JSON.parse(options.body).content).toBe("");
   await sent;
+});
+
+describe("createChannelPinsApi", () => {
+  it("keeps the structured conflict body so the caller can recover", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () =>
+      jsonResponse(
+        {
+          error: "conflict",
+          code: "CHANNEL_PINS_CONFLICT",
+          version: 7,
+          pins: [{ channel_id: "c1", position: 0 }],
+        },
+        { status: 409 },
+      ),
+    );
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: fetchMock,
+    });
+    const pins = createChannelPinsApi(client);
+
+    await expect(pins.pinChannel("c2", 6)).rejects.toMatchObject({
+      name: "ApiError",
+      status: 409,
+      body: {
+        code: "CHANNEL_PINS_CONFLICT",
+        version: 7,
+        pins: [{ channel_id: "c1", position: 0 }],
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/channel-pins",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ channel_id: "c2", expected_version: 6 }),
+      }),
+    );
+  });
+
+  it("sends the full order on PATCH /api/channel-pins/order", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () =>
+      jsonResponse({ data: { version: 8, pins: [] }, txid: "12" }),
+    );
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: fetchMock,
+    });
+    const pins = createChannelPinsApi(client);
+
+    await pins.reorderChannelPins(["c2", "c1"], 7);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/channel-pins/order",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ channel_ids: ["c2", "c1"], expected_version: 7 }),
+      }),
+    );
+  });
 });

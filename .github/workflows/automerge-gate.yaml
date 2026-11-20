@@ -2,33 +2,110 @@ name: automerge-gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, auto_merge_enabled]
-  pull_request_review:
-    types: [submitted]
+    types: [opened, synchronize, reopened, auto_merge_enabled, auto_merge_disabled]
+  pull_request_target:
+    types: [opened, synchronize, reopened, auto_merge_enabled, auto_merge_disabled]
+  workflow_run:
+    # Explicit list excludes this gate itself and prevents event recursion.
+    workflows:
+      - "PR review relay"
+      - "PR assign"
+      - "CI"
+      - "CI Android"
+      - "CI Crypto"
+      - "CI Desktop Tauri"
+      - "CI Frontend"
+      - "CI Frontend Auth E2E"
+      - "CI Frontend E2EE E2E"
+      - "CI GitHub Bot"
+      - "CI TUI"
+      - "Check DB ER diagram"
+      - "DB ER diagram"
+      - "Deployment badges"
+      - "Home query budget"
+      - "Phone query budget"
+      - "Message components query budget"
+      - "OpenTofu R2"
+      - "Read state and worker query budget"
+      - "Validate Flux production status"
+    types: [requested, in_progress, completed]
+  check_run:
+    types: [created, completed, rerequested]
+  check_suite:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: Pull request to re-evaluate once
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  gate:
+  resolve:
     if: >-
-      !cancelled() &&
-      (github.event_name != 'pull_request_review' || github.event.review.state == 'approved')
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
-    timeout-minutes: 180
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name != github.repository) &&
+      (github.event_name != 'check_run' || github.event.check_run.app.slug != 'github-actions') &&
+      (github.event_name != 'check_suite' || github.event.check_suite.app.slug != 'github-actions')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      numbers: ${{ steps.prs.outputs.numbers }}
+      has_prs: ${{ steps.prs.outputs.has_prs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.sha || github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          sparse-checkout: .github
+          persist-credentials: false
+      - id: prs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const {resolvePullRequestNumbers} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/automerge-gate.mjs`);
+            const numbers = await resolvePullRequestNumbers({github, context});
+            core.setOutput('numbers', JSON.stringify(numbers));
+            core.setOutput('has_prs', numbers.length > 0);
+
+  gate:
+    needs: resolve
+    if: needs.resolve.outputs.has_prs == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        number: ${{ fromJSON(needs.resolve.outputs.numbers) }}
+    concurrency:
+      # Dispatch, PR, review relay and CI events use the same PR identifier.
+      # Never cancel a writer; newer pending snapshots may replace older ones.
+      group: gate-${{ github.repository }}-pr-${{ matrix.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
       statuses: write
       checks: read
       pull-requests: read
       actions: read
     steps:
-      - uses: pkgdeps/automerge-gate@9ab7a1d211aca48667cdbf94cca05ae67b64eba2 # v5.0.5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          gate-mode: 'private'
-          context: 'automerge-gate/all-passed'
-          ignore-checks: |
-            [
-              { "workflow": "cd-images.yaml" },
-              { "workflow": "cd-preview-label.yaml" },
-              { "workflow": "cd-storybook.yaml" }
-            ]
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.sha || github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Gate regression tests
+        run: node --test .github/scripts/automerge-gate.test.mjs
+      - name: Evaluate once and release the runner
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          PR_NUMBER: ${{ matrix.number }}
+        with:
+          script: |
+            const {default: gate} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/automerge-gate.mjs`);
+            await gate({github, context, core, pullNumber: Number(process.env.PR_NUMBER)});

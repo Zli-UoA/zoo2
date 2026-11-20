@@ -10,6 +10,8 @@ pub struct Message {
     pub channel_id: String,
     pub content: String,
     pub card: Option<String>,
+    /// メッセージ部品（Discord Components V2 形式の JSON）。信頼できる経路（Webhook、Slack の取り込み、App API）だけが書く。
+    pub components: Option<String>,
     #[serde(default)]
     pub apub: bool,
     pub apub_visibility: Option<String>,

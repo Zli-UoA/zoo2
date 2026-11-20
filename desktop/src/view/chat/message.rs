@@ -298,12 +298,49 @@ impl WorkspaceView {
             })
             .collect();
 
-        // 連携カード (`card` 列) があれば、本文の代わりにカードを出す (`MessageBody`)。
-        let cards = message
-            .card
-            .as_deref()
-            .map(parse_message_cards)
-            .unwrap_or_default();
+        // メッセージ部品 (`components` 列。移行前の行は `card` 列から作る) を出す。
+        // フラグが立っていれば、本文の代わりに部品だけを出す (`MessageBody`)。
+        let doc = message.components_document();
+        let hides_body = doc.as_ref().is_some_and(|d| d.hides_content());
+        // 部品の描画は cx を借りるので、ストアの値は先に写しておく（メンションの名前に使う、小さな表）
+        let accounts = state.store.account_profiles.clone();
+        // 部品がなくなった（None）ときも、このメッセージの開いていた確認を捨てる
+        super::components::drop_stale_confirm(
+            &self.component_confirm,
+            &format!("{pane_prefix}-{msg_id}"),
+            doc.as_ref().map(super::components::document_version),
+        );
+        let components_view = doc.as_ref().map(|d| {
+            let key = format!("{pane_prefix}-{msg_id}");
+            let version = super::components::document_version(d);
+            let confirming = self.component_confirm.borrow().clone();
+            super::components::render_components(
+                d,
+                &super::components::Target {
+                    key: &key,
+                    app_id: message.app_origin_id.as_deref(),
+                    message_id: &msg_id,
+                    colors,
+                    accounts: &accounts,
+                    me: Some(me_user_name),
+                    confirming: confirming.as_deref(),
+                    // 確認のキーに文書の版を含め、文書が更新されたら開いていた確認を出さない
+                    version,
+                    focus: &self.card_focus_handles,
+                },
+                &i18n,
+                cx,
+            )
+        });
+        let cards: Vec<zoo2_client_core::electric::rows::CardData> = if doc.is_some() {
+            Vec::new()
+        } else {
+            message
+                .card
+                .as_deref()
+                .map(parse_message_cards)
+                .unwrap_or_default()
+        };
         let card_views: Vec<AnyElement> = cards
             .iter()
             .enumerate()
@@ -374,7 +411,7 @@ impl WorkspaceView {
         let edited_in_header = (is_edited && item.is_group_start).then(edited_marker);
         let edited_after_body = (is_edited && !item.is_group_start).then(edited_marker);
         // カードの行は本文を出さないので、カードの後ろに置く。
-        let (edited_after_body, edited_after_cards) = if cards.is_empty() {
+        let (edited_after_body, edited_after_cards) = if cards.is_empty() && !hides_body {
             (edited_after_body, None)
         } else {
             (None, edited_after_body)
@@ -768,17 +805,21 @@ impl WorkspaceView {
                 .flex_1()
                 .min_w_0()
                 .children(header)
-                .when(cards.is_empty(), |d| match edited_after_body {
-                    Some(marker) => d.child(
-                        h_flex()
-                            .items_start()
-                            .gap(px(4.0))
-                            .child(div().flex_1().min_w_0().child(body))
-                            .child(div().mt(px(5.0)).child(marker)),
-                    ),
-                    None => d.child(body),
-                })
+                .when(
+                    cards.is_empty() && !hides_body,
+                    |d| match edited_after_body {
+                        Some(marker) => d.child(
+                            h_flex()
+                                .items_start()
+                                .gap(px(4.0))
+                                .child(div().flex_1().min_w_0().child(body))
+                                .child(div().mt(px(5.0)).child(marker)),
+                        ),
+                        None => d.child(body),
+                    },
+                )
                 .children(card_views)
+                .children(components_view)
                 .children(edited_after_cards)
                 .children(attachments_view)
                 .children(reply_pill)

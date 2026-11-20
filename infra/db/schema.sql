@@ -249,6 +249,62 @@ CREATE INDEX idx_push_subscriptions_user_id ON push_subscriptions (user_id);
 ALTER TABLE push_subscriptions ADD COLUMN p256dh text;
 ALTER TABLE push_subscriptions ADD COLUMN auth_secret text;
 
+CREATE TABLE apns_subscriptions (
+  id text NOT NULL PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  device_token text NOT NULL,
+  environment text NOT NULL CHECK (environment IN ('sandbox', 'production')),
+  revocation_hash text NOT NULL,
+  created_at timestamp(3) NOT NULL,
+  last_test_at timestamptz
+);
+CREATE INDEX idx_apns_subscriptions_user_id ON apns_subscriptions (user_id);
+-- 既存のIDから用途を判定し、旧サーバーの書き込みや解除情報も維持する。
+CREATE UNIQUE INDEX apns_subscriptions_token_environment_kind_key ON apns_subscriptions (
+  device_token, environment,
+  (id = encode(sha256(('voip:' || environment || ':' || device_token)::bytea), 'hex'))
+);
+
+-- 遅れて届いた登録要求で、ログアウト済みの端末に通知が再開されるのを防ぐ。
+CREATE TABLE apns_revocations (
+  id text NOT NULL PRIMARY KEY,
+  revoked_at timestamp(3) NOT NULL,
+  invalidated_at timestamp(3)
+);
+CREATE INDEX idx_apns_revocations_revoked_at ON apns_revocations (revoked_at);
+
+-- 未登録端末の解除を受け付けるときに、保持中の全記録を数え直さずに済むようにする。
+CREATE TABLE apns_revocation_capacity (
+  id boolean PRIMARY KEY CHECK (id),
+  records bigint NOT NULL CHECK (records >= 0)
+);
+INSERT INTO apns_revocation_capacity (id, records) VALUES (true, 0);
+
+CREATE FUNCTION update_apns_revocation_capacity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE changed bigint;
+BEGIN
+  IF TG_OP = 'TRUNCATE' THEN
+    UPDATE apns_revocation_capacity SET records = 0 WHERE id;
+  ELSE
+    SELECT count(*) INTO changed FROM affected_revocations;
+    IF changed > 0 THEN
+      UPDATE apns_revocation_capacity
+      SET records = records + CASE WHEN TG_OP = 'INSERT' THEN changed ELSE -changed END
+      WHERE id;
+    END IF;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER apns_revocations_after_insert AFTER INSERT ON apns_revocations
+  REFERENCING NEW TABLE AS affected_revocations
+  FOR EACH STATEMENT EXECUTE FUNCTION update_apns_revocation_capacity();
+CREATE TRIGGER apns_revocations_after_delete AFTER DELETE ON apns_revocations
+  REFERENCING OLD TABLE AS affected_revocations
+  FOR EACH STATEMENT EXECUTE FUNCTION update_apns_revocation_capacity();
+CREATE TRIGGER apns_revocations_after_truncate AFTER TRUNCATE ON apns_revocations
+  FOR EACH STATEMENT EXECUTE FUNCTION update_apns_revocation_capacity();
+
 -- App profiles are public; all other platform tables are server-only.
 CREATE TABLE apps (
  id text PRIMARY KEY,
@@ -4067,3 +4123,162 @@ CREATE TRIGGER messages_channel_author_latest AFTER INSERT OR DELETE OR UPDATE O
 CREATE INDEX slack_import_jobs_active_team ON slack_import_jobs(team_id) WHERE status IN ('analyzing','importing');
 CREATE INDEX slack_channel_syncs_due_order ON slack_channel_syncs(available_at,team_id,slack_channel_id);
 CREATE INDEX slack_channel_wakes_due_order ON slack_channel_wakes(first_at,team_id,slack_channel_id);
+-- SIP credentials stay outside Electric/publication; only authenticated REST may read them.
+CREATE TABLE sip_lines (
+ id text PRIMARY KEY,
+ name text NOT NULL,
+ owner_user_id text REFERENCES users(id),
+ websocket_path text NOT NULL,
+ sip_domain text NOT NULL,
+ username text NOT NULL,
+ password_ciphertext text NOT NULL,
+ phone_number text NOT NULL DEFAULT '',
+ created_by text NOT NULL REFERENCES users(id),
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE sip_line_members (
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ user_id text NOT NULL REFERENCES users(id),
+ PRIMARY KEY(line_id,user_id)
+);
+CREATE TABLE sip_phones (
+ id text PRIMARY KEY,
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ extension text NOT NULL
+);
+CREATE INDEX sip_lines_owner_idx ON sip_lines(owner_user_id);
+CREATE INDEX sip_line_members_user_idx ON sip_line_members(user_id);
+-- Ephemeral, authenticated gateway registrations. No SIP credentials or call history.
+CREATE TABLE phone_sessions (
+ id text PRIMARY KEY,
+ user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ line_id text NOT NULL REFERENCES sip_lines(id) ON DELETE CASCADE,
+ line_revision timestamptz NOT NULL,
+ peer_id text NOT NULL,
+ gateway_session_id bigint,
+ gateway_handle_id bigint,
+ lease_owner text,
+ expires_at timestamptz NOT NULL DEFAULT (now() + interval '60 seconds'),
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX phone_sessions_user_expiry ON phone_sessions(user_id, expires_at);
+CREATE INDEX phone_sessions_line_idx ON phone_sessions(line_id);
+-- PBX realtime and line quotas must not scan other users' directory entries.
+CREATE INDEX sip_phones_line_extension_idx ON sip_phones(line_id, extension);
+CREATE INDEX sip_lines_created_by_idx ON sip_lines(created_by);
+
+-- メッセージ部品（Discord Components V2 形式、docs/apps.md「メッセージ部品」）を入れる列を足す。
+-- これまでの card（MessageCard）と app_blocks（旧 Block の一覧）は、この列に移していく。
+-- 旧列はまだ消さない（後のマイグレーションで消す）。列の追加と関数の置き換えだけなので、適用前のバックエンドが
+-- 動いたままでも壊れない。既存の行の変換は zoo_components_backfill で行う（暗号化チャンネルの行は変換しない）。
+ALTER TABLE messages ADD COLUMN components text;
+ALTER TABLE app_link_unfurls ADD COLUMN components text;
+-- 新しいバックエンドは components だけを書く。旧バックエンドは card を書くので、NOT NULL だけ外す。
+ALTER TABLE app_link_unfurls ALTER COLUMN card DROP NOT NULL;
+
+CREATE OR REPLACE FUNCTION messages_clear_deleted_content() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.content := '';
+  NEW.card := NULL;
+  NEW.components := NULL;
+  NEW.metadata := NULL;
+  NEW.display_data := '{}'::jsonb;
+  NEW.app_blocks := NULL;
+  NEW.app_attachments := NULL;
+  NEW.app_unfurls := NULL;
+  RETURN NEW;
+END $$;
+DROP TRIGGER messages_clear_deleted_content ON messages;
+CREATE TRIGGER messages_clear_deleted_content BEFORE INSERT OR UPDATE ON messages
+  FOR EACH ROW WHEN (NEW.deleted_at IS NOT NULL AND (
+    NEW.content <> '' OR NEW.card IS NOT NULL OR NEW.components IS NOT NULL OR NEW.metadata IS NOT NULL
+    OR NEW.display_data <> '{}'::jsonb
+    OR NEW.app_blocks IS NOT NULL OR NEW.app_attachments IS NOT NULL OR NEW.app_unfurls IS NOT NULL))
+  EXECUTE FUNCTION messages_clear_deleted_content();
+
+-- 暗号化チャンネルの平文の検査に components を足す（20261128010000 の本体に、components の 2 か所を足したもの）。
+CREATE OR REPLACE FUNCTION e2ee_reject_plaintext_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  enc boolean;
+BEGIN
+  -- encrypted の条件を WHERE に入れると、切り替える前の版で条件に合わない行はロックされず、切り替えを待たない。
+  SELECT encrypted INTO enc FROM channels WHERE id = NEW.channel_id FOR KEY SHARE;
+  IF NOT COALESCE(enc, false) THEN
+    RETURN NEW;
+  END IF;
+  -- 別のチャンネルから移した行は、切り替える前からこのチャンネルにあった行ではないので、例外にしない。
+  IF TG_OP = 'UPDATE' AND OLD.channel_id = NEW.channel_id AND OLD.epoch IS NULL AND OLD.ciphertext IS NULL THEN
+    IF NEW.ciphertext IS NOT NULL OR NEW.epoch IS NOT NULL
+       OR (NEW.content IS DISTINCT FROM OLD.content AND NEW.content <> '')
+       OR (NULLIF(NEW.app_attachments, '') IS DISTINCT FROM NULLIF(OLD.app_attachments, '') AND NULLIF(NEW.app_attachments, '') IS NOT NULL)
+       OR (NULLIF(NEW.app_blocks, '') IS DISTINCT FROM NULLIF(OLD.app_blocks, '') AND NULLIF(NEW.app_blocks, '') IS NOT NULL)
+       OR (NULLIF(NEW.app_unfurls, '') IS DISTINCT FROM NULLIF(OLD.app_unfurls, '') AND NULLIF(NEW.app_unfurls, '') IS NOT NULL)
+       OR (NULLIF(NEW.metadata, '') IS DISTINCT FROM NULLIF(OLD.metadata, '') AND NULLIF(NEW.metadata, '') IS NOT NULL)
+       OR (NULLIF(NEW.card, '') IS DISTINCT FROM NULLIF(OLD.card, '') AND NULLIF(NEW.card, '') IS NOT NULL)
+       OR (NULLIF(NEW.components, '') IS DISTINCT FROM NULLIF(OLD.components, '') AND NULLIF(NEW.components, '') IS NOT NULL)
+       OR (NEW.home_post_id IS DISTINCT FROM OLD.home_post_id AND NEW.home_post_id IS NOT NULL)
+       OR (NEW.apub AND NOT OLD.apub)
+       OR (OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL) THEN
+      RAISE EXCEPTION 'messages written before the channel was encrypted cannot be changed to carry new content' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- 削除済みの行は本文が空になる（messages_clear_deleted_content）。それでも、別のチャンネルから暗号文のない
+  -- 行を移してくることは、削除済みかどうかにかかわらず認めない。
+  IF NEW.content <> '' OR (NEW.deleted_at IS NULL AND NEW.ciphertext IS NULL)
+     OR (TG_OP = 'UPDATE' AND OLD.channel_id IS DISTINCT FROM NEW.channel_id AND NEW.ciphertext IS NULL) THEN
+    RAISE EXCEPTION 'messages in an encrypted channel require ciphertext and empty content' USING ERRCODE = '23514';
+  END IF;
+  IF NULLIF(NEW.app_attachments, '') IS NOT NULL OR NULLIF(NEW.app_blocks, '') IS NOT NULL
+     OR NULLIF(NEW.app_unfurls, '') IS NOT NULL OR NULLIF(NEW.metadata, '') IS NOT NULL
+     OR NULLIF(NEW.card, '') IS NOT NULL OR NULLIF(NEW.components, '') IS NOT NULL
+     -- Home との同期（sync_home_post）は、削除済みの行を INSERT ... ON CONFLICT で書き戻す。削除済みの行は本文が空なので、
+     -- Home との紐付けだけは認める。
+     OR (NEW.deleted_at IS NULL AND (NEW.home_post_id IS NOT NULL OR NEW.apub)) THEN
+    RAISE EXCEPTION 'messages in an encrypted channel cannot carry plaintext fields' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+
+-- external_select の選択肢の問い合わせ（invoke の kind "options"）。アプリの応答を 1 分だけ置く。
+ALTER TABLE app_ui DROP CONSTRAINT app_ui_kind_check;
+ALTER TABLE app_ui ADD CONSTRAINT app_ui_kind_check CHECK(kind IN ('home','modal','ephemeral','trigger','options'));
+INSERT INTO app_event_types VALUES('options.requested',NULL,'app');
+
+-- モーダルのファイル送信（file_upload）。利用者が上げた添付を、送信先のアプリが 1 日だけ取得できるようにする。
+CREATE TABLE app_submitted_files (
+  attachment_id text NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  installation_id text NOT NULL REFERENCES app_installations(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (attachment_id, installation_id)
+);
+-- アプリの削除（外部キー）と、付与の確認の両方に使う。attachment_id も入れるので、主キーの代わりに選ばれても 1 行だけを読む
+CREATE INDEX app_submitted_files_installation ON app_submitted_files(installation_id, attachment_id);
+CREATE INDEX app_submitted_files_expiry ON app_submitted_files(expires_at);
+-- 期限切れの画面の掃除（delivery.rs）。問い合わせ（options）の行は 1 分で切れて増えるので、全件を読まずに
+-- 期限切れの行だけを、どの接続でも同じ順に消す（全件読みでは開始位置が接続ごとに違い、同時の掃除がデッドロックする）
+CREATE INDEX app_ui_expiry ON app_ui(expires_at) WHERE expires_at IS NOT NULL;
+-- 利用者の画面の一覧（GET /api/apps/{id}/surfaces）。全件を読まず、その利用者の画面だけを更新順に読む。
+-- 一覧に出さない trigger・options（短い間だけの行）は入れない（入れると、消えた行の項目が溜まり、主キーで引く問い合わせの計画もこの索引に寄る）
+CREATE INDEX app_ui_user ON app_ui(user_id, updated_at) WHERE kind NOT IN ('trigger','options');
+-- ユーザーごとのピン留めしたチャンネル・DM。位置はユーザーごとに独立して並べる。
+CREATE TABLE user_pinned_channels (
+  user_id text NOT NULL REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  channel_id text NOT NULL REFERENCES channels(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  position integer NOT NULL CHECK (position >= 0),
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, channel_id)
+);
+CREATE INDEX idx_user_pinned_channels_user_position ON user_pinned_channels (user_id, position, channel_id);
+CREATE INDEX idx_user_pinned_channels_channel ON user_pinned_channels (channel_id);
+
+-- ピン留めの並びの版。書き込みはユーザー単位でこの行をロックして直列にする。
+CREATE TABLE user_channel_pin_states (
+  user_id text NOT NULL PRIMARY KEY REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
+  version bigint NOT NULL DEFAULT 0 CHECK (version >= 0),
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;

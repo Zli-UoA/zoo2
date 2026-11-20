@@ -7,7 +7,8 @@ import { useLocale } from "../i18n/LocaleProvider";
 import { Button } from "../ui/button";
 import { CollapsibleSection } from "../ui/collapsible-section";
 import { Skeleton } from "../ui/skeleton";
-import { formatDmDisplayName, parseOneToOneDmIds, resolveDmDisplayName } from "./dm";
+import { ChannelPinMenu } from "./ChannelPinMenu";
+import { buildDmLabels, parseOneToOneDmIds } from "./dm";
 import { DmListItem } from "./DmListItem";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -44,33 +45,18 @@ export function DmSection({
   const { t } = useTranslation();
   const { locale } = useLocale();
 
-  const membersByChannel = useMemo(() => {
-    const map = new Map<string, ChannelUserRow[]>();
-    for (const membership of memberships) {
-      const rows = map.get(membership.channel_id);
-      if (rows) {
-        rows.push(membership);
-      } else {
-        map.set(membership.channel_id, [membership]);
-      }
-    }
-    return map;
-  }, [memberships]);
-
-  const labels = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const channel of channels) {
-      const resolved = resolveDmDisplayName({
-        channelName: channel.channel_name,
-        members: membersByChannel.get(channel.id) ?? [],
+  const labels = useMemo(
+    () =>
+      buildDmLabels({
+        channels,
+        memberships,
         users,
         currentUserId,
         locale,
-      });
-      map.set(channel.id, formatDmDisplayName(resolved, t));
-    }
-    return map;
-  }, [channels, currentUserId, locale, membersByChannel, t, users]);
+        t,
+      }),
+    [channels, currentUserId, locale, memberships, t, users],
+  );
 
   return (
     <CollapsibleSection
@@ -125,6 +111,13 @@ export function DmSection({
                 active={activeChannelId === channel.id}
                 unread={unreadChannelIds.has(channel.id)}
                 onOpen={onOpen}
+                actions={
+                  <ChannelPinMenu
+                    channelId={channel.id}
+                    itemLabel={labels.get(channel.id) ?? t("dms.untitled")}
+                    isDm
+                  />
+                }
               />
             );
           })

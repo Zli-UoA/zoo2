@@ -40,7 +40,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio-postgres = "0.7"
 tokio-postgres-rustls = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "http2"] }
 futures-util = "0.3"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 emojis = "0.6"
@@ -65,6 +65,8 @@ httpdate = "1"
 html-escape = "0.2"
 # E2EE の鍵の署名の検証（docs/e2ee.md の「方針」）。クライアントと同じ実装を使う。
 zoo-crypto = { path = "../crates/zoo-crypto" }
+# メッセージ部品（Discord Components V2 形式）のモデルと検証。クライアントと同じ定義を使う。
+zoo-components = { path = "../crates/zoo-components" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
@@ -92,3 +94,7 @@ path = "src/bin/zoo_slack_worker.rs"
 [[bin]]
 name = "zoo_slack_reformat"
 path = "src/bin/zoo_slack_reformat.rs"
+
+[[bin]]
+name = "zoo_components_backfill"
+path = "src/bin/zoo_components_backfill.rs"

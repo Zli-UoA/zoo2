@@ -1,4 +1,7 @@
 //! RFC 8291 encrypted notification payloads with RFC 8292 VAPID authentication.
+pub mod fcm;
+#[cfg(test)]
+mod web_owner_tests;
 use crate::{
     error::AppError,
     models::{Channel, Message, Notification, PushSubscription, User},
@@ -188,38 +191,69 @@ impl NotificationPayload {
 /// 暗号化チャンネルの Web Push の本文。
 pub const ENCRYPTED_MESSAGE_BODY: &str = "新しいメッセージ";
 
+#[derive(Serialize)]
+pub(crate) struct NotificationPreview {
+    pub title: String,
+    pub body: String,
+    #[serde(rename = "notificationType")]
+    pub notification_type: String,
+}
+
+impl NotificationPreview {
+    pub(crate) fn new(
+        notification: &Notification,
+        name: &str,
+        channel_name: &str,
+        is_dm: bool,
+        visible_content: Option<&str>,
+    ) -> Self {
+        let name: String = name.chars().take(60).collect();
+        let title = if is_dm {
+            name
+        } else {
+            format!(
+                "{name} · #{}",
+                channel_name.chars().take(60).collect::<String>()
+            )
+        };
+        let body = if notification.message_id.is_none() {
+            "不在着信"
+        } else {
+            visible_content.unwrap_or(ENCRYPTED_MESSAGE_BODY)
+        };
+        Self {
+            title,
+            body: body.chars().take(240).collect(),
+            notification_type: notification.notification_type.clone(),
+        }
+    }
+}
+
 fn notification_payload(
     notification: &Notification,
     actor: &User,
     channel: &Channel,
-    message: &Message,
+    message: Option<&Message>,
 ) -> NotificationPayload {
-    let name = if actor.display_name.is_empty() {
-        &actor.user_name
-    } else {
-        &actor.display_name
+    let preview = NotificationPreview::new(
+        notification,
+        display_name(actor),
+        &channel.channel_name,
+        channel.is_dm,
+        message
+            .filter(|_| !channel.encrypted)
+            .map(|message| message.content.as_str()),
+    );
+    let url = match message {
+        Some(message) => format!("/channels/{}?message={}", channel.id, message.id),
+        None => format!("/channels/{}", channel.id),
     };
-    let channel_name: String = channel.channel_name.chars().take(60).collect();
     NotificationPayload {
-        title: if channel.is_dm {
-            name.chars().take(60).collect()
-        } else {
-            format!(
-                "{} · #{}",
-                name.chars().take(60).collect::<String>(),
-                channel_name
-            )
-        },
-        // 暗号化チャンネルの本文はサーバーで読めないので、「新しいメッセージ」を送り、暗号文を
-        // `e2ee` に付ける (#358、#365)。Service Worker が復号できたら本文に置き換える。
-        body: if channel.encrypted {
-            ENCRYPTED_MESSAGE_BODY.to_string()
-        } else {
-            message.content.chars().take(240).collect()
-        },
-        url: format!("/channels/{}?message={}", channel.id, message.id),
+        title: preview.title,
+        body: preview.body,
+        url,
         tag: format!("zoo-{}", notification.id),
-        notification_type: notification.notification_type.clone(),
+        notification_type: preview.notification_type,
         e2ee: None,
         invite_id: None,
     }
@@ -285,7 +319,7 @@ async fn build_payload(
     }
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let mut payload = notification_payload(notification, &actor, &channel, &message);
+    let mut payload = notification_payload(notification, &actor, &channel, Some(&message));
     if channel.encrypted {
         payload.e2ee = encrypted_push(db, notification, &message).await?;
     }
@@ -313,6 +347,7 @@ pub fn dispatch_db(db: toasty::Db, notifications: Vec<Notification>) {
     if notifications.is_empty() {
         return;
     }
+    crate::apns::dispatch(db.clone(), notifications.clone());
     tokio::spawn(async move {
         if deliver(db, notifications).await.is_err() {
             tracing::warn!("Web Push delivery failed");
@@ -321,9 +356,11 @@ pub fn dispatch_db(db: toasty::Db, notifications: Vec<Notification>) {
 }
 
 async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow::Result<()> {
-    let Some(config) = PushConfig::from_env()? else {
+    let config = PushConfig::from_env()?;
+    let android = fcm::FcmConfig::from_env()?;
+    if config.is_none() && android.is_none() {
         return Ok(());
-    };
+    }
     let client = push_client()?;
     for notification in notifications {
         let Some(payload) = build_payload(&mut db, &notification).await? else {
@@ -331,7 +368,8 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
         };
         push_to_user(
             &client,
-            &config,
+            config.as_ref(),
+            android.as_ref(),
             &mut db,
             &notification.user_id,
             &payload,
@@ -342,7 +380,7 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
     Ok(())
 }
 
-fn push_client() -> anyhow::Result<reqwest::Client> {
+pub(crate) fn push_client() -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
@@ -370,10 +408,65 @@ impl Delivery {
     };
 }
 
+fn web_registration_match(subscription: &PushSubscription) -> toasty::stmt::Expr<bool> {
+    let fields = PushSubscription::fields();
+    fields
+        .id()
+        .eq(&subscription.id)
+        .and(fields.user_id().eq(&subscription.user_id))
+        .and(fields.endpoint().eq(&subscription.endpoint))
+        .and(fields.created_at().eq(subscription.created_at))
+        .and(match &subscription.p256dh {
+            Some(key) => fields.p256dh().eq(key.as_str()),
+            None => fields.p256dh().is_none(),
+        })
+        .and(match &subscription.auth_secret {
+            Some(key) => fields.auth_secret().eq(key.as_str()),
+            None => fields.auth_secret().is_none(),
+        })
+}
+
+async fn send_current_web_push(
+    db: &mut dyn toasty::db::Executor,
+    subscription: &PushSubscription,
+    send: impl Future<Output = anyhow::Result<Option<reqwest::Response>>>,
+) -> anyhow::Result<Option<reqwest::Response>> {
+    if PushSubscription::filter(web_registration_match(subscription))
+        .first()
+        .exec(db)
+        .await?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    send.await
+}
+
+async fn handle_web_push_response(
+    db: &mut dyn toasty::db::Executor,
+    subscription: &PushSubscription,
+    response: reqwest::Response,
+) -> anyhow::Result<()> {
+    let status = response.status();
+    if matches!(status.as_u16(), 404 | 410) {
+        PushSubscription::filter(web_registration_match(subscription))
+            .delete()
+            .exec(db)
+            .await?;
+    } else {
+        anyhow::ensure!(
+            status.is_success(),
+            "Web Pushの配信先が通知を受け付けませんでした"
+        );
+    }
+    Ok(())
+}
+
 /// 1 人のユーザーの、すべての購読へ送る。
 async fn push_to_user(
     client: &reqwest::Client,
-    config: &PushConfig,
+    config: Option<&PushConfig>,
+    android: Option<&fcm::FcmConfig>,
     db: &mut toasty::Db,
     user_id: &str,
     payload: &NotificationPayload,
@@ -387,10 +480,37 @@ async fn push_to_user(
         .exec(db)
         .await?;
     for subscription in subscriptions {
+        if subscription.endpoint.starts_with("fcm:") {
+            // Calls are a Web-only feature; native Android subscribes to message notifications.
+            if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
+                match android
+                    .send(client, &subscription.endpoint, user_id, payload)
+                    .await
+                {
+                    Ok(true) => {
+                        PushSubscription::filter(
+                            PushSubscription::fields().id().eq(subscription.id.as_str()),
+                        )
+                        .delete()
+                        .exec(db)
+                        .await?;
+                    }
+                    Ok(false) => {}
+                    Err(_) => tracing::warn!("Android push delivery failed"),
+                }
+            }
+            continue;
+        }
+        let Some(config) = config else {
+            continue;
+        };
         let Ok(endpoint) = validate_endpoint(&subscription.endpoint) else {
             continue;
         };
-        let body = match (subscription.p256dh, subscription.auth_secret) {
+        let body = match (
+            subscription.p256dh.clone(),
+            subscription.auth_secret.clone(),
+        ) {
             (Some(p256dh), Some(auth)) => {
                 match (SubscriptionKeys { p256dh, auth }).encrypt_fitting(payload) {
                     Ok(body) => Some(body),
@@ -403,42 +523,44 @@ async fn push_to_user(
             // Older registrations receive a generic alert until the browser refreshes its keys.
             _ => None,
         };
-        // 期限つきの送信は、残りの時間を TTL にする。残りがなければ、送らない。
-        let remaining = delivery.expires.map(|expires| {
-            expires
-                .saturating_duration_since(std::time::Instant::now())
-                .as_secs()
-        });
-        if remaining == Some(0) {
-            break;
-        }
-        let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
-        let result = send_with(client, config, endpoint, body, delivery, ttl).await;
-        match result {
-            Ok(response)
-                if response.status().as_u16() == 404 || response.status().as_u16() == 410 =>
-            {
-                PushSubscription::filter(
-                    PushSubscription::fields().id().eq(subscription.id.as_str()),
-                )
-                .delete()
-                .exec(db)
-                .await?;
+        let result = send_current_web_push(db, &subscription, async {
+            // 購読の照合を待つ間にも、着信の期限が過ぎることがある。
+            let remaining = delivery.expires.map(|expires| {
+                expires
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_secs()
+            });
+            if remaining == Some(0) {
+                return Ok(None);
             }
-            Ok(response) if response.status().is_success() => {}
-            _ => tracing::warn!("Web Push provider did not accept delivery"),
+            let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
+            send_with(client, config, endpoint, body, delivery, ttl)
+                .await
+                .map(Some)
+        })
+        .await;
+        match result {
+            Ok(Some(response)) => {
+                if handle_web_push_response(db, &subscription, response)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("Web Pushの配信結果を処理できませんでした");
+                }
+            }
+            Ok(None) => {}
+            Err(_) => tracing::warn!("Web Pushの購読確認または配信に失敗しました"),
         }
     }
     Ok(())
 }
 
-fn display_name(user: &User) -> String {
-    let name = if user.display_name.is_empty() {
+fn display_name(user: &User) -> &str {
+    if user.display_name.is_empty() {
         &user.user_name
     } else {
         &user.display_name
-    };
-    name.chars().take(60).collect()
+    }
 }
 
 /// 不在着信の Web Push の本文。
@@ -448,23 +570,7 @@ async fn missed_call_payload(
 ) -> anyhow::Result<NotificationPayload> {
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let name = display_name(&actor);
-    Ok(NotificationPayload {
-        title: if channel.is_dm {
-            name
-        } else {
-            format!(
-                "{name} · #{}",
-                channel.channel_name.chars().take(60).collect::<String>()
-            )
-        },
-        body: "不在着信".into(),
-        url: format!("/channels/{}", channel.id),
-        tag: format!("zoo-{}", notification.id),
-        notification_type: "missed_call".into(),
-        e2ee: None,
-        invite_id: None,
-    })
+    Ok(notification_payload(notification, &actor, &channel, None))
 }
 
 /// 通話の招待の、Web Push に必要な値。
@@ -481,6 +587,7 @@ pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
     if invites.is_empty() {
         return;
     }
+    crate::apns::dispatch_call_invites(db.clone(), invites.clone());
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, false).await.is_err() {
             tracing::warn!("Web Push call invite delivery failed");
@@ -530,7 +637,7 @@ async fn deliver_call_invites(
             } else {
                 let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
                 let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
-                let name = display_name(&actor);
+                let name: String = display_name(&actor).chars().take(60).collect();
                 NotificationPayload {
                     title: if channel.is_dm {
                         name
@@ -563,7 +670,8 @@ async fn deliver_call_invites(
             };
             push_to_user(
                 &client,
-                &config,
+                Some(&config),
+                None,
                 &mut db,
                 &invite.invitee_id,
                 &payload,
@@ -851,7 +959,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             "message_id":"message", "notification_type":"mention", "is_read":false, "created_at":now
         }))
         .unwrap();
-        let payload = notification_payload(&notification, &actor, &channel, &message);
+        let payload = notification_payload(&notification, &actor, &channel, Some(&message));
         assert_eq!(payload.title, "Alice · #general");
         assert_eq!(
             payload.body,
@@ -866,12 +974,12 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         assert!(keys.encrypt(&payload).unwrap().len() <= 4096);
         channel.is_dm = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).title,
+            notification_payload(&notification, &actor, &channel, Some(&message)).title,
             "Alice"
         );
         channel.encrypted = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).body,
+            notification_payload(&notification, &actor, &channel, Some(&message)).body,
             ENCRYPTED_MESSAGE_BODY
         );
     }

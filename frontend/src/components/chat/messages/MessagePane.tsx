@@ -261,7 +261,7 @@ export function MessagePane({
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
-  const { error, setError, run, isPending: isWritePending } = useWriteRunner();
+  const { error, errorCause, setError, run, isPending: isWritePending } = useWriteRunner();
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
   const reactionRows = reactionsQuery.data ?? [];
@@ -558,13 +558,16 @@ export function MessagePane({
   ]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
+  // `error` は英語の技術メッセージになり得るため、生の原因があれば localizeApiError で
+  // 現在のロケールの文言に換えてから出す（暗号化送信の失敗と同じ経路）。
   useEffect(() => {
     if (!error) {
       return;
     }
-    toast.error(t("common.writeError"), { description: error, id: "message-write-error" });
+    const description = errorCause == null ? error : localizeApiError(errorCause, t);
+    toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
-  }, [error, setError, t]);
+  }, [error, errorCause, setError, t]);
 
   const handleJoin = useCallback(async () => {
     if (!currentUserId || isJoining) {

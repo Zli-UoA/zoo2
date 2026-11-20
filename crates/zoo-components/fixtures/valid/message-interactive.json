@@ -1,0 +1,23 @@
+{
+  "document": {
+    "components": [
+      {"type": 10, "content": "Choose"},
+      {"type": 1, "components": [
+        {"type": 2, "style": 1, "label": "Approve", "custom_id": "approve", "value": "yes", "confirm": {"title": "Sure?", "text": "This approves the deploy", "confirm": "Yes", "deny": "No"}},
+        {"type": 2, "style": 4, "label": "Reject", "custom_id": "reject"},
+        {"type": 2, "style": 2, "label": "Off", "custom_id": "off", "disabled": true},
+        {"type": 1002, "custom_id": "more", "options": [{"label": "Edit", "value": "edit"}]}
+      ]},
+      {"type": 1, "components": [{"type": 3, "custom_id": "pick", "placeholder": "Pick", "max_values": 2, "options": [{"label": "A", "value": "a", "description": "first"}, {"label": "B", "value": "b", "default": true}]}]},
+      {"type": 1, "components": [{"type": 5, "custom_id": "who"}]},
+      {"type": 1, "components": [{"type": 8, "custom_id": "where", "max_values": 3}]},
+      {"type": 1, "components": [{"type": 1001, "custom_id": "search", "min_query_length": 2}]},
+      {"type": 1, "components": [{"type": 1003, "custom_id": "day", "initial_value": "2026-11-16"}]},
+      {"type": 1, "components": [{"type": 1004, "custom_id": "time", "initial_value": "09:30"}]},
+      {"type": 1, "components": [{"type": 1005, "custom_id": "at", "initial_value": "1700000000"}]},
+      {"type": 9, "components": [{"type": 10, "content": "With a button"}], "accessory": {"type": 2, "label": "Go", "custom_id": "go"}},
+      {"type": 1009, "rows": [[{"text": "row"}, {"text": "", "button": {"type": 2, "label": "Act", "custom_id": "cell"}}]]}
+    ]
+  },
+  "fallback": "Choose\nWith a button\nrow | "
+}

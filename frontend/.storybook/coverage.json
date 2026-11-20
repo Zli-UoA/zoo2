@@ -94,8 +94,15 @@
         "LongDescription",
         "Mobile",
         "WebhookSettingsOpen",
-        "Encrypted"
+        "Encrypted",
+        "Pinned",
+        "PinnedArchived",
+        "PinLimit"
       ]
+    },
+    {
+      "file": "src/components/chat/ChannelListItem.stories.tsx",
+      "states": ["Default", "Active", "Unread", "Nsfw", "DropIndicator", "ActiveCall"]
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
@@ -124,7 +131,10 @@
         "EmptyThreadTitle",
         "MobileThreads",
         "Sections",
-        "MobileSections"
+        "MobileSections",
+        "Pinned",
+        "MobilePinned",
+        "PinnedReorderError"
       ]
     },
     {
@@ -133,7 +143,7 @@
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "Closed", "Encrypted"]
+      "states": ["Default", "Filled", "InvalidName", "Closed", "Encrypted"]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
@@ -145,6 +155,7 @@
         "Default",
         "Active",
         "Unread",
+        "DropIndicator",
         "LongName",
         "UserAvatar",
         "UserAvatarFallback",
@@ -161,6 +172,7 @@
         "UsersError",
         "Unread",
         "Group",
+        "PinFromMenu",
         "UserAvatar"
       ]
     },
@@ -229,7 +241,8 @@
         "WithFileAttachment",
         "AttachmentUploadError",
         "SendError",
-        "MixedSensitivity"
+        "MixedSensitivity",
+        "KitchenBody"
       ]
     },
     {
@@ -288,6 +301,7 @@
         "LongMessage",
         "Card",
         "Mobile",
+        "TouchActionSheet",
         "AppMessage",
         "CopyOriginalMenu",
         "Edited",
@@ -322,7 +336,9 @@
         "CodeAndMathDark",
         "Headings",
         "SharedShortcodes",
-        "AuthZAccounts"
+        "AuthZAccounts",
+        "KitchenBody",
+        "KitchenTaggedEmoji"
       ]
     },
     {
@@ -356,6 +372,7 @@
         "Loading",
         "Error",
         "Mobile",
+        "MobileDialog",
         "Completions",
         "AppCard",
         "RootLoadError",
@@ -391,6 +408,10 @@
     {
       "file": "src/components/i18n/LanguageToggle.stories.tsx",
       "states": ["Default", "Open", "SelectControl"]
+    },
+    {
+      "file": "src/components/layout/NotFoundScreen.stories.tsx",
+      "states": ["Default", "Mobile"]
     },
     {
       "file": "src/components/layout/AppShell.stories.tsx",
@@ -507,6 +528,10 @@
       "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
+      "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
+      "states": ["Available", "Mobile"]
+    },
+    {
       "file": "src/components/pwa/PwaControls.stories.tsx",
       "states": [
         "Default",
@@ -617,6 +642,7 @@
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
       "states": [
+        "PostWhileThreadLoading",
         "QuotedRenote",
         "ReplyToMediaOnly",
         "WithImages",
@@ -822,6 +848,56 @@
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
       "states": ["Default", "Undeliverable", "AddedRecipients"]
+    },
+    {
+      "file": "src/components/chat/components/ComponentTree.stories.tsx",
+      "states": ["AllDisplay", "InteractiveWithoutApp", "Interactive", "ModalInputs", "Narrow"]
+    },
+    {
+      "file": "src/components/ui/media-preview.stories.tsx",
+      "states": [
+        "Loading",
+        "Image",
+        "PDF",
+        "Video",
+        "Audio",
+        "Failed",
+        "Narrow",
+        "Email",
+        "Outlook",
+        "Word",
+        "Spreadsheet",
+        "Slides",
+        "OpenDocument",
+        "Archive",
+        "Text",
+        "JapanesePDF",
+        "JPEG2000PDF",
+        "EmbeddedEmail"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.stories.tsx",
+      "states": [
+        "PersonalAndShared",
+        "Empty",
+        "Disabled",
+        "Loading",
+        "LoadError",
+        "SharedMember",
+        "Incoming",
+        "Active",
+        "Failed",
+        "ChannelBusy",
+        "EditKeepsPassword",
+        "SaveError",
+        "Mobile",
+        "RegisterSharedLine",
+        "Saving",
+        "DeleteConfirmation",
+        "RemoveUnavailableMember",
+        "NarrowPhoneForm"
+      ]
     }
   ],
   "modules": [
@@ -875,6 +951,12 @@
       "story": "src/components/chat/messages/MessageRow.stories.tsx",
       "composed": true,
       "reason": "AppMessageでBotアバター・著者名・APP表示を組み合わせて確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/RecentReactions.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "TouchActionSheetで最近のリアクション一覧と選択を確認する。"
     },
     {
       "file": "src/components/chat/AppSettingsSections.tsx",
@@ -947,12 +1029,23 @@
     },
     {
       "file": "src/components/chat/ChannelHeader.tsx",
-      "story": "src/components/chat/ChannelHeader.stories.tsx"
+      "story": "src/components/chat/ChannelHeader.stories.tsx",
+      "reason": "Pinned でピン留め済みの aria-pressed、PinnedArchived でアーカイブ中のピンを解除できること、Archived でアーカイブ中の未ピンにはボタンを出さないこと、PinLimit で上限エラー時のクリックと状態維持を確認する。"
+    },
+    {
+      "file": "src/components/chat/ChannelListItem.tsx",
+      "story": "src/components/chat/ChannelListItem.stories.tsx"
     },
     {
       "file": "src/components/chat/ChannelScreen.tsx",
       "story": "src/components/chat/ChannelScreen.stories.tsx",
       "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/ChannelPinMenu.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "Pinned Story の行メニューで対象名入りの aria-label、ピン留め・解除・上下移動を確認し、下へ移動で PATCH /api/channel-pins/order が呼ばれることまで検証する。DmSection の PinFromMenu も使う。409 の回復は usePinnedChannels.test.ts で検証する。"
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",
@@ -961,6 +1054,12 @@
         "src/lib/electric/collections.persistence.test.ts",
         "src/components/chat/ChannelSidebar.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/chat/PinnedSection.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
     },
     {
       "file": "src/components/chat/ChannelThreadItems.tsx",
@@ -986,7 +1085,8 @@
     },
     {
       "file": "src/components/chat/DmSection.tsx",
-      "story": "src/components/chat/DmSection.stories.tsx"
+      "story": "src/components/chat/DmSection.stories.tsx",
+      "reason": "Default・Empty・Loading・LoadError・UsersError の一覧状態と、PinFromMenu で実際の行メニューからピン留めする操作を確認する。"
     },
     {
       "file": "src/components/chat/MembersPanel.tsx",
@@ -1007,6 +1107,11 @@
     {
       "file": "src/components/chat/WelcomePanel.tsx",
       "story": "src/components/chat/WelcomePanel.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/ComposerEmojiButton.tsx",
+      "story": "src/components/chat/messages/Composer.stories.tsx",
+      "reason": "本文への挿入は KitchenBody、選択範囲とIMEは ComposerEmojiButton.browser.test.tsx で検証する"
     },
     {
       "file": "src/components/chat/messages/Composer.tsx",
@@ -1036,6 +1141,11 @@
     {
       "file": "src/components/chat/messages/MessageCard.tsx",
       "story": "src/components/chat/messages/MessageCard.stories.tsx"
+    },
+    {
+      "file": "src/components/pwa/AppBadgeBridge.tsx",
+      "reason": "インストール済み PWA のアイコンの未読バッジを合わせる制御層で、画面を持たない。未読数の反映と再同期は AppBadgeBridge.browser.test.tsx、App Badging API の呼び出しは badge.test.ts で確認する。",
+      "checks": ["src/components/pwa/AppBadgeBridge.browser.test.tsx", "src/lib/pwa/badge.test.ts"]
     },
     {
       "file": "src/components/ui/image-preview.tsx",
@@ -1118,6 +1228,10 @@
       "story": "src/components/layout/AppShell.stories.tsx"
     },
     {
+      "file": "src/components/layout/NotFoundScreen.tsx",
+      "story": "src/components/layout/NotFoundScreen.stories.tsx"
+    },
+    {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
       "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
@@ -1180,6 +1294,10 @@
       "file": "src/components/offline/OfflineProvider.tsx",
       "reason": "永続化・接続状態を供給する制御層。表示はOfflineBanner、OPFS初期化と再試行はブラウザテストで確認する。",
       "checks": ["src/components/offline/OfflineProvider.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/pwa/AppUpdateNotice.tsx",
+      "story": "src/components/pwa/AppUpdateNotice.stories.tsx"
     },
     {
       "file": "src/components/pwa/PwaControls.tsx",
@@ -1308,7 +1426,7 @@
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
-      "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。"
+      "reason": "Default/Mobileで投稿下のアクションの従来のボタンサイズ・均等配置・下側の余白・三点メニューの配置を確認する。タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",
@@ -1482,6 +1600,62 @@
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
       "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/components/ComponentTree.tsx",
+      "story": "src/components/chat/components/ComponentTree.stories.tsx",
+      "checks": [
+        "src/components/chat/components/parse.test.ts",
+        "src/components/chat/components/ComponentTree.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/ui/document-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "composed": true,
+      "reason": "Email、Outlook、Word、Spreadsheet、Slides、OpenDocument、Archive、Textで実際のWorkerと取得・解析・表示を確認する。",
+      "checks": ["src/components/ui/document-preview.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/ui/pdf-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "composed": true,
+      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
+      "checks": [
+        "src/components/ui/media-preview.browser.test.tsx",
+        "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/ui/media-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "checks": [
+        "src/components/ui/media-preview.browser.test.tsx",
+        "src/components/ui/pdf-preview-timeout.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx"
+    },
+    {
+      "file": "src/components/sip/SipControls.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx",
+      "composed": true,
+      "reason": "通話操作はIncoming・Activeで実コンポーネントを描画し確認する。"
+    },
+    {
+      "file": "src/components/sip/SipPanel.tsx",
+      "reason": "シェル共通Providerと回線一覧・常設通話操作を接続する制御層。画面状態はSipPanelViewのStory、共有接続と認証終了はブラウザー統合テストで確認する。",
+      "checks": [
+        "src/components/sip/SipProvider.browser.test.tsx",
+        "src/lib/sip/controller.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipProvider.tsx",
+      "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
+      "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
     }
   ]
 }

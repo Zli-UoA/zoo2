@@ -752,6 +752,7 @@ async fn the_trigger_rejects_plaintext_columns_in_encrypted_channels() {
     // 平文の列は、暗号化チャンネルでは拒否し、平文チャンネルでは今までどおり入る
     for (col, val) in [
         (", card", ", '{\"title\":\"x\"}'"),
+        (", components", ", '{\"components\":[]}'"),
         (", home_post_id", ", gen_random_uuid()::text"),
         (", apub", ", true"),
         (", app_blocks", ", '[]'"),
@@ -820,6 +821,7 @@ async fn the_trigger_rejects_plaintext_columns_in_encrypted_channels() {
     .unwrap();
     for set in [
         "card = '{\"title\":\"x\"}'",
+        "components = '{\"components\":[]}'",
         "apub = true",
         "home_post_id = id",
         "metadata = '{}'",

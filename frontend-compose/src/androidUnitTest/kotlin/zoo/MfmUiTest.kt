@@ -74,6 +74,31 @@ class MfmUiTest {
     }
 
     @Test
+    fun suppliedKitchenNamedEmojiKeepsItsImageSlotInsteadOfUsingTheCatalog() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                Shell(fixture) {
+                    ActivityPubContent(
+                        "前 :kitchen_1f431_1f600: 後",
+                        listOf(obj(
+                            "name" to ":kitchen_1f431_1f600:",
+                            "image_id" to "a".repeat(64),
+                            "url" to "https://peer.example/custom-cat.png",
+                            "width" to 96, "height" to 32,
+                        )),
+                    )
+                }
+            }
+            val paragraph = layout(ui.onNodeWithText("前 ", substring = true, useUnmergedTree = true))
+            val slot = paragraph.placeholderRects.single()!!
+            val em = with(paragraph.layoutInput.density) { paragraph.layoutInput.style.fontSize.toPx() }
+            assertEquals(4.5f * em, slot.width, 1f)
+            assertEquals(1.5f * em, slot.height, 1f)
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun rubyRendersWholeStyledBaseAndSmallerReadingAboveIt() {
         val fixture = Fixture()
         try {

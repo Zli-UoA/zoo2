@@ -1,3 +1,4 @@
+import { SipPanel } from "../sip/SipPanel";
 import { ExternalLink } from "../ui/external-link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../lib/api/client";
@@ -105,6 +106,9 @@ export function ZooSettings() {
             <Tabs.Tab value="call" className={panelTabClassName}>
               {t("call.settingsTab")}
             </Tabs.Tab>
+            <Tabs.Tab value="sip" className={panelTabClassName}>
+              {t("sip.title")}
+            </Tabs.Tab>
             <Tabs.Tab value="encryption" className={panelTabClassName}>
               {t("e2ee.tab")}
             </Tabs.Tab>
@@ -179,6 +183,10 @@ export function ZooSettings() {
               <p className="mb-3 text-xs text-muted-foreground">{t("call.defaultsDescription")}</p>
               <CallSettingsDevices />
             </div>
+          </Tabs.Panel>
+          <Tabs.Panel value="sip" className="min-h-0">
+            <h2 className="sr-only">{t("sip.title")}</h2>
+            <SipPanel />
           </Tabs.Panel>
           <Tabs.Panel value="encryption" className="min-h-0">
             <h2 className="sr-only">{t("e2ee.tab")}</h2>

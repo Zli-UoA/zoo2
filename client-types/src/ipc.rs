@@ -41,6 +41,9 @@ pub mod command {
     pub const LOGOUT: &str = "zoo_logout";
     /// [`super::FocusState`]。通知を抑えるために、前面かどうかと表示中のチャンネルを知らせる。
     pub const SET_FOCUS: &str = "zoo_set_focus";
+    /// `{ count: i64 }`。Dock やランチャーのアイコンに出す未読数。`0` 以下で消す。
+    /// 古い版のアプリにはないので、呼べなかったら何もしない (`PROTOCOL_VERSION` は上げない)。
+    pub const SET_BADGE: &str = "zoo_set_badge";
     /// 引数なし。[`super::NotificationSettings`] を返す。アプリが OS の通知を出すかどうか。
     /// 古い版のアプリにはないので、呼べなかったら設定を出さない (`PROTOCOL_VERSION` は上げない)。
     pub const NOTIFICATION_SETTINGS: &str = "zoo_notification_settings";
@@ -56,6 +59,9 @@ pub mod command {
     pub const ACCOUNT_PROFILES: &str = "zoo_account_profiles";
     /// [`super::SendMessage`]。[`super::SendResult`] を返す。
     pub const SEND_MESSAGE: &str = "zoo_send_message";
+    /// [`super::InvokeAppAction`]。メッセージ部品のボタン・選択肢を押したことをアプリへ送る。
+    /// 古い版のアプリにはないので、呼べなかったら知らせる (`PROTOCOL_VERSION` は上げない)。
+    pub const INVOKE_APP_ACTION: &str = "zoo_invoke_app_action";
 
     // (b) React だけ
     /// 引数なし。[`super::AccessToken`] を返す。期限が近ければ Rust 側で更新してから返す。
@@ -66,6 +72,10 @@ pub mod command {
     /// 外から偽装できない、Rust 側だけが残す印。古い版のアプリにはないので、呼べなかったら何もしない
     /// (`PROTOCOL_VERSION` は上げない)。
     pub const TAKE_CALL_ACCEPT: &str = "zoo_take_call_accept";
+    /// 引数なし。E2EE の再認証の ID トークン（文字列）を返す。既定のブラウザーで AuthZ に
+    /// ログインし直してもらい、ループバックのリダイレクトで受け取る。古い版のアプリにはないので、
+    /// 呼べなかったら Web 側はアプリの更新を案内する (`PROTOCOL_VERSION` は上げない)。
+    pub const REAUTHENTICATE: &str = "zoo_reauthenticate";
 }
 
 /// Rust 側から WebView へ送るイベントの名前。
@@ -127,6 +137,8 @@ pub struct DeviceLogin {
     pub user_code: String,
     pub verification_uri: String,
     pub verification_uri_complete: Option<String>,
+    /// ブラウザーを自動で開く対象かどうか。実際に開けたかどうかは表さない。
+    pub auto_open: bool,
     /// UNIX 秒。これを過ぎたらやり直す。
     pub expires_at: i64,
 }
@@ -163,6 +175,17 @@ pub struct SendMessage {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+}
+
+/// メッセージ部品の操作 ([`command::INVOKE_APP_ACTION`])。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvokeAppAction {
+    pub app_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub custom_id: String,
+    /// ボタンの `value`、選んだ値 (select は配列)
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,8 +242,12 @@ pub enum ErrorCode {
     WrongMode,
     /// 通信の失敗。再試行してよい。
     Network,
-    /// backend が 4xx を返した。
+    /// backend が 4xx を返した。再認証では、AuthZ が拒んだ、または ID トークンを受け付けられない。
     Rejected,
+    /// 時間内に終わらなかった (再認証で、利用者がログインし直すのを待ちきれなかった)。
+    Timeout,
+    /// 新しい操作を始めたので、前の操作を取り消した。
+    Cancelled,
     Internal,
 }
 
@@ -311,12 +338,14 @@ mod tests {
             command::CANCEL_LOGIN,
             command::LOGOUT,
             command::SET_FOCUS,
+            command::SET_BADGE,
             command::OPEN_CHANNEL,
             command::RESYNC,
             command::SEND_MESSAGE,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
+            command::REAUTHENTICATE,
         ] {
             assert!(
                 name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),

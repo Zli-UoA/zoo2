@@ -7,18 +7,21 @@ import {
   DESKTOP_CALL_ACCEPT_EVENT,
   desktopListen,
   desktopReportNotifications,
+  desktopSetBadge,
   desktopSetFocus,
   desktopTakeCallAccept,
   isDesktopSession,
   type DesktopChange,
   type DesktopOpenTarget,
 } from "../../lib/desktop";
+import { useUnifiedNotifications } from "../../hooks/useUnifiedNotifications";
 import { useCollections } from "../../lib/electric/collections-context";
 
 /**
  * デスクトップ版（Tauri）の中だけで動く。通常の Web では何もしない。
  *
  * - 通知のコレクションの変化を Rust 側に渡す（OS の通知は Rust 側が判定して出す）。
+ * - 未読数を Dock やランチャーのバッジに出す。
  * - 表示中のチャンネルと前面かどうかを知らせる（見ているチャンネルの通知を出さないため）。
  * - 通知のクリックで届く `zoo://open` で、そのメッセージへ移る。
  */
@@ -31,6 +34,12 @@ function DesktopBridgeInner({ channelId }: { channelId: string | null }) {
   const router = useRouter();
   const collections = useCollections();
   const { currentUserId } = useCurrentUser();
+
+  const { unreadCount } = useUnifiedNotifications();
+  useEffect(() => {
+    desktopSetBadge(unreadCount);
+  }, [unreadCount]);
+  useEffect(() => () => desktopSetBadge(0), []);
 
   useEffect(() => {
     desktopSetFocus(channelId);

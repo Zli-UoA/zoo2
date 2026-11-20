@@ -1,3 +1,4 @@
+import { ComposerEmojiButton } from "./ComposerEmojiButton";
 import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
 import { ComposerField, composerTextareaClassName } from "./ComposerField";
@@ -586,6 +587,18 @@ export function Composer({
         </ul>
       ) : null}
       <ComposerField>
+        <ComposerEmojiButton
+          textareaRef={textareaRef}
+          value={value}
+          disabled={disabled}
+          isComposing={() => composingRef.current}
+          onChange={(next) => {
+            draftVersion.current++;
+            setValue(next);
+            setDismissed(true);
+            onTyping?.(true);
+          }}
+        />
         {onUploadAttachment ? (
           <>
             <input

@@ -1,3 +1,5 @@
+import { SipProvider } from "../components/sip/SipProvider";
+import { SipCallBanner } from "../components/sip/SipPanel";
 import { HomeLiveProvider } from "../hooks/useHomeLive";
 import { Outlet, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -9,6 +11,7 @@ import { SasVerificationHost } from "../components/e2ee/SasVerificationHost";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { IncomingCallDialog } from "../components/call/IncomingCallDialog";
 import { CallProvider } from "../lib/call/call-context";
+import { PinnedChannelsProvider } from "../hooks/usePinnedChannels";
 import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
 import { resolveConfig } from "../lib/config";
 
@@ -31,15 +34,20 @@ function ShellLayout() {
     <OfflineProvider config={config}>
       <E2eeProvider config={config}>
         <CallProvider config={config}>
-          <HomeLiveProvider>
-            <NotificationsProvider>
-              <AppShell>
-                <Outlet />
-              </AppShell>
-              <SasVerificationHost />
-              <IncomingCallDialog />
-            </NotificationsProvider>
-          </HomeLiveProvider>
+          <SipProvider config={config}>
+            <HomeLiveProvider>
+              <NotificationsProvider>
+                <PinnedChannelsProvider>
+                  <AppShell>
+                    <Outlet />
+                  </AppShell>
+                  <SasVerificationHost />
+                  <IncomingCallDialog />
+                </PinnedChannelsProvider>
+              </NotificationsProvider>
+            </HomeLiveProvider>
+            <SipCallBanner />
+          </SipProvider>
         </CallProvider>
       </E2eeProvider>
     </OfflineProvider>

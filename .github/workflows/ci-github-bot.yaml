@@ -12,6 +12,9 @@ on:
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
+      - ".github/actions/crypto-wasm/**"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/*test-selection*.mjs"
       - ".github/workflows/ci-github-bot.yaml"
       - ".github/workflows/select-runner.yaml"
   push:
@@ -24,26 +27,38 @@ on:
       - "crates/zoo-crypto/**"
       - "crates/zoo-crypto-wasm/**"
       - "rust-toolchain.toml"
+      - ".github/actions/crypto-wasm/**"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/*test-selection*.mjs"
       - ".github/workflows/ci-github-bot.yaml"
       - ".github/workflows/select-runner.yaml"
 permissions:
   contents: read
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: github-bot-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-github-bot
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
   test:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.bots).bot
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
@@ -51,11 +66,12 @@ jobs:
           cache-dependency-path: apps/github-bot/package-lock.json
       - run: npm ci --prefix apps/github-bot --ignore-scripts
       - run: npm --prefix apps/github-bot run check
-      - run: npm --prefix apps/github-bot test
-      - run: node --experimental-strip-types --test sdk/src/index.test.ts
+      - run: node .github/scripts/node-test-selection.mjs bot
       - name: Build standalone bot image
+        if: fromJSON(needs.test-selection.outputs.bots).image
         run: docker build -f apps/github-bot/Dockerfile -t zoo-github-bot:test .
       - name: Smoke-test the packaged server and SQLite as an unprivileged user
+        if: fromJSON(needs.test-selection.outputs.bots).image
         run: |
           docker run --rm --entrypoint node zoo-github-bot:test --experimental-strip-types --input-type=module -e '
             import { Store } from "./apps/github-bot/src/store.ts";
@@ -73,48 +89,24 @@ jobs:
           '
   # sdk の E2EE（Bot の端末。#366）とサンプルの Bot。wasm（crates/zoo-crypto-wasm）を作ってから試す。
   sdk-e2ee:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.bots).sdk
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Read Rust toolchain and wasm-bindgen version
-        id: versions
-        run: |
-          echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-          echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: ${{ steps.versions.outputs.channel }}
-          targets: wasm32-unknown-unknown
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          # キャッシュの保存は main だけにする（ci-frontend.yaml の crypto-wasm と同じ）。
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: crates/zoo-crypto-wasm
-      # cargo install は毎回ソースからビルドして約90秒かかるので、版ごとにバイナリーをキャッシュする。
-      - name: Restore wasm-bindgen-cli
-        id: wasm-bindgen-cli
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: ~/.cargo-tools
-          key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-${{ steps.versions.outputs.wasm-bindgen }}
-      - name: Install wasm-bindgen-cli
-        if: steps.wasm-bindgen-cli.outputs.cache-hit != 'true'
-        run: cargo install --locked --root "$HOME/.cargo-tools" wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
-      - name: Add cached tools to PATH
-        run: echo "$HOME/.cargo-tools/bin" >> "$GITHUB_PATH"
-      - name: Build wasm package
-        run: crates/zoo-crypto-wasm/build.sh
+          fetch-depth: 2
+      - name: Restore or build Wasm package
+        uses: ./.github/actions/crypto-wasm
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
+      - name: Install dependency parser
+        run: npm ci --prefix apps/github-bot --ignore-scripts
       - name: Test the E2EE sdk and the sample bot
-        run: node --experimental-strip-types --test sdk/src/e2ee.test.ts examples/e2ee-echo-bot/echo.test.ts
+        run: node .github/scripts/node-test-selection.mjs sdk
 
   publish:
     needs: [runner, test]
@@ -128,6 +120,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:

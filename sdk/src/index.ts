@@ -1,4 +1,6 @@
 export { EVENT_TYPES, type EventType } from "./events.ts";
+export * from "./components.ts";
+import type { ComponentDocument, SelectOption } from "./components.ts";
 export interface Credentials { access_token: string; refresh_token: string; expires_in?: number }
 export interface AppEvent { id: string; version: 1; type: string; actor_id: string | null; channel_id?: string | null; subject_user_id?: string | null; data: Record<string, unknown> }
 export interface Delivery { delivery_id: string; ack_token: string; event: AppEvent; attempt: number }
@@ -47,8 +49,13 @@ export class ZooApp {
   postMessage(input: { channel_id: string; content: string; parent_id?: string; id?: string; kind?: "message" | "emote"; broadcast?: boolean; metadata?: Record<string, unknown> }) { return this.request<{ id: string }>("POST", "/messages", { ...input, id: input.id ?? crypto.randomUUID() }); }
   updateMessage(id: string, content: string) { return this.request("PATCH", `/messages/${encodeURIComponent(id)}`, { content }); }
   deleteMessage(id: string) { return this.request("DELETE", `/messages/${encodeURIComponent(id)}`); }
-  setBlocks(id: string, blocks: unknown[]) { return this.request("POST", `/messages/${encodeURIComponent(id)}/blocks`, blocks); }
-  publish(input: { kind: "home" | "modal" | "ephemeral"; user_id: string; channel_id?: string; trigger_id?: string; blocks: unknown[] }) { return this.request("POST", "/surfaces", input); }
+  /** @deprecated Use {@link setComponents}. Accepts the legacy block list or Slack Block Kit (`{ blocks }`). */
+  setBlocks(id: string, blocks: unknown[] | { blocks: unknown[] }) { return this.request("POST", `/messages/${encodeURIComponent(id)}/blocks`, blocks); }
+  /** Attach message components (Discord Components V2 shape) to a message this app posted. */
+  setComponents(id: string, document: ComponentDocument) { return this.request<{ id: string; components: ComponentDocument }>("POST", `/messages/${encodeURIComponent(id)}/components`, document); }
+  publish(input: { kind: "home" | "modal" | "ephemeral"; user_id: string; channel_id?: string; trigger_id?: string } & ({ components: ComponentDocument["components"]; flags?: number } | { blocks: unknown[] })) { return this.request("POST", "/surfaces", input); }
+  /** Answer an `options.requested` event (external select) with up to 100 options. */
+  provideOptions(requestId: string, options: SelectOption[]) { return this.request("POST", `/options/${encodeURIComponent(requestId)}`, { options }); }
   openDm(userId: string) { return this.request<{ id: string }>("POST", "/dms", { target_user_ids: [userId] }); }
   async dispatch(delivery: Delivery, handler: (event: AppEvent) => Promise<void>) {
     const id = delivery.event.id;

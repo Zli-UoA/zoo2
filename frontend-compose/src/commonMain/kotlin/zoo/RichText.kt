@@ -193,6 +193,7 @@ private data class CachedParagraph(
     val emojiParts: Map<String, Row>,
     val accountParts: Map<String, Row>,
     val embeddedParts: Map<String, EmbeddedMfm>,
+    val kitchenParts: Map<String, String>,
 )
 
 @Composable
@@ -235,6 +236,7 @@ private fun InlineParagraph(
         val emojiParts = mutableMapOf<String, Row>()
         val accountParts = mutableMapOf<String, Row>()
         val embeddedParts = mutableMapOf<String, EmbeddedMfm>()
+        val kitchenParts = mutableMapOf<String, String>()
         val text = buildAnnotatedString {
             fun write(
                 source: String,
@@ -270,6 +272,13 @@ private fun InlineParagraph(
                         if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")))) {
                             val id = "apub-emoji-${emojiParts.size}"
                             emojiParts[id] = remote
+                            appendInlineContent(id, value)
+                            return@forEach
+                        }
+                        val kitchen = kitchenFromShortcode(value)
+                        if (kitchen != null) {
+                            val id = "kitchen-emoji-${kitchenParts.size}"
+                            kitchenParts[id] = kitchen
                             appendInlineContent(id, value)
                             return@forEach
                         }
@@ -356,7 +365,7 @@ private fun InlineParagraph(
                 appendInlineContent("edited", " ")
             }
         }
-        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap(), embeddedParts.toMap())
+        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap(), embeddedParts.toMap(), kitchenParts.toMap())
     }
     val text = paragraph.text
     val mentions = paragraph.mentions
@@ -398,7 +407,14 @@ private fun InlineParagraph(
             }
         }
     }
-    val fixedContent = emojiParts.mapValues { (_, emoji) ->
+    val kitchenContent = paragraph.kitchenParts.mapValues { (_, value) ->
+        androidx.compose.foundation.text.InlineTextContent(
+            Placeholder(1.5.em, 1.5.em, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            ReactionEmoji(value, size = with(density) { (inheritedStyle.fontSize.value * 1.5f).sp.toDp() })
+        }
+    }
+    val fixedContent = kitchenContent + emojiParts.mapValues { (_, emoji) ->
         androidx.compose.foundation.text.InlineTextContent(
             Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)
         ) {
@@ -739,6 +755,7 @@ fun EmojiPicker(
     app: Session,
     close: () -> Unit,
     initialSearch: String = "",
+    forMessage: Boolean = false,
     initialKitchen: Boolean = false,
     initialRecents: List<String>? = null,
     kitchenCatalogUrl: String? = null,
@@ -748,7 +765,7 @@ fun EmojiPicker(
     val customEmojis = workspaceEmojis(app)
     var query by remember(initialSearch) { mutableStateOf(initialSearch) }
     var emojis by remember(app.env.locale) { mutableStateOf<List<Row>>(emptyList()) }
-    var recents by remember { mutableStateOf<List<String>>(emptyList()) }
+    var recents by remember(initialRecents) { mutableStateOf(initialRecents.orEmpty()) }
     var groups by remember(app.env.locale) { mutableStateOf<List<Row>>(emptyList()) }
     var loading by remember(app.env.locale) { mutableStateOf(true) }
     var tone by remember { mutableStateOf("") }
@@ -756,6 +773,22 @@ fun EmojiPicker(
     var custom by remember { mutableStateOf(false) }
     LaunchedEffect(app.env.locale) {
         try {
+            val raw = app.platform.invoke("storageRead", "zoo-recent-emoji")
+            recents =
+                initialRecents
+                    ?: try {
+                        json
+                            .parseToJsonElement(raw)
+                            .jsonArray
+                            .mapNotNull {
+                                (it as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+                            }
+                            .filter { it.isNotEmpty() }
+                            .distinct()
+                            .take(16)
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
             val locale =
                 when (app.env.locale) {
                     "ja" -> "ja"
@@ -776,22 +809,6 @@ fun EmojiPicker(
                     .sortedBy { it.text("order").toIntOrNull() ?: Int.MAX_VALUE }
             groups =
                 app.asset("/emojibase-data/$locale/messages.json").jsonObject.array("groups").rows()
-            val raw = app.platform.invoke("storageRead", "zoo-recent-emoji")
-            recents =
-                initialRecents
-                    ?: try {
-                        json
-                            .parseToJsonElement(raw)
-                            .jsonArray
-                            .mapNotNull {
-                                (it as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
-                            }
-                            .filter { it.isNotEmpty() }
-                            .distinct()
-                            .take(16)
-                    } catch (_: Exception) {
-                        emptyList()
-                    }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {} finally {
@@ -810,24 +827,24 @@ fun EmojiPicker(
                     .toString(),
             )
         }
-        select(value)
+        select(if (forMessage) kitchenShortcode(value) else value)
         close()
     }
     @Composable
     fun EmojiButton(value: String, label: String = value, modifier: Modifier = Modifier) {
         Box(
             modifier
-                .height(36.dp)
+                .heightIn(min = AndroidDesign.touchTarget)
                 .clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }
                 .semantics { contentDescription = label },
             contentAlignment = Alignment.Center,
         ) {
-            Text(value, size = 20.sp)
+            ReactionEmoji(value, size = AndroidDesign.icon)
         }
     }
     val content: @Composable ColumnScope.() -> Unit = pickerContent@{
         Row(
-            Modifier.fillMaxWidth()
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
                 .background(
                     MaterialTheme.colorScheme.surfaceVariant,
                     androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
@@ -835,64 +852,71 @@ fun EmojiPicker(
                 .padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            listOf(false to "reactions.tabEmoji", true to "reactions.tabKitchen").forEach {
-                (tab, key) ->
+            listOf("emoji" to "reactions.tabEmoji", "kitchen" to "reactions.tabKitchen", "custom" to "home.customEmojis").forEach { (tab, key) ->
                 Button(
                     app.t(key),
-                    modifier =
-                        Modifier.weight(1f)
-                            .then(webControlModifier("tab", selected = !custom && kitchen == tab))
-                            .background(
-                                if (!custom && kitchen == tab) MaterialTheme.colorScheme.background
-                                else androidx.compose.ui.graphics.Color.Transparent,
-                                androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
-                            ),
+                    variant = "tab",
+                    selected = if (tab == "custom") custom else !custom && kitchen == (tab == "kitchen"),
+                    role = androidx.compose.ui.semantics.Role.Tab,
                 ) {
-                    kitchen = tab
-                    custom = false
+                    custom = tab == "custom"
+                    kitchen = tab == "kitchen"
                 }
             }
-            Button(app.t("home.customEmojis"), modifier = Modifier.weight(1f).then(webControlModifier("tab", selected = custom))) { custom = true; kitchen = false }
         }
         if (kitchen) {
             KitchenPicker(app, ::choose, kitchenCatalogUrl)
             return@pickerContent
         }
         if (custom) {
-        Field(query, app.t("home.searchEmoji"), Modifier.fillMaxWidth()) { query = it }
-        val accountMatches = app.accountProfiles.filter { (it.text("username") + " " + it.text("display_name")).contains(query, ignoreCase = true) }
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            accountMatches.forEach { account ->
-                val value = ":@${account.text("username")}:"
-                Box(Modifier.height(36.dp).clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }.semantics { contentDescription = value }) { Avatar(account, size = 28.dp) }
-            }
-        }
-        val customMatches = customEmojis.filter { (listOf(it.text("name"), it.text("category")) + it.array("aliases").map { alias -> alias.jsonPrimitive.content }).any { text -> text.contains(query, ignoreCase = true) } }
-        if (customMatches.isNotEmpty()) {
-            Text(app.t("home.customEmojis"), small = true)
-            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                customMatches.groupBy { it.text("category") }.forEach { (category, items) ->
-                    Text(category.ifEmpty { app.t("customEmoji.uncategorized") }, Modifier.fillMaxWidth(), small = true)
-                    items.forEach { emoji ->
-                    val value = ":${emoji.text("name")}:"
-                    Box(Modifier.height(36.dp).clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }.semantics { contentDescription = value }) { ActivityPubEmoji(workspaceEmoji(emoji), 28.dp) }
+            Column(Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                Field(query, app.t("home.searchEmoji"), Modifier.fillMaxWidth()) { query = it }
+                val accountMatches = app.accountProfiles.filter {
+                    (it.text("username") + " " + it.text("display_name")).contains(query, ignoreCase = true)
+                }
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall)) {
+                    accountMatches.forEach { account ->
+                        val value = ":@${account.text("username")}:"
+                        Box(
+                            Modifier.sizeIn(minWidth = AndroidDesign.touchTarget, minHeight = AndroidDesign.touchTarget)
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }
+                                .semantics { contentDescription = value },
+                            contentAlignment = Alignment.Center,
+                        ) { Avatar(account, size = AndroidDesign.icon) }
                     }
                 }
+                val customMatches = customEmojis.filter {
+                    (listOf(it.text("name"), it.text("category")) + it.array("aliases").map { alias -> alias.jsonPrimitive.content })
+                        .any { text -> text.contains(query, ignoreCase = true) }
+                }
+                customMatches.groupBy { it.text("category") }.forEach { (category, items) ->
+                    Text(category.ifEmpty { app.t("customEmoji.uncategorized") }, small = true)
+                    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall)) {
+                        items.forEach { emoji ->
+                            val value = ":${emoji.text("name")}:"
+                            Box(
+                                Modifier.sizeIn(minWidth = AndroidDesign.touchTarget, minHeight = AndroidDesign.touchTarget)
+                                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }
+                                    .semantics { contentDescription = value },
+                                contentAlignment = Alignment.Center,
+                            ) { ActivityPubEmoji(workspaceEmoji(emoji), AndroidDesign.icon) }
+                        }
+                    }
+                }
+                if (app.workspaceEmojiLoading) Text(app.t("home.loading"), Modifier.then(webControlModifier("status")))
+                else if (app.workspaceEmojiError) {
+                    Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
+                    Button(app.t("home.refresh")) { app.run { app.loadWorkspaceEmojis(true) } }
+                } else if (customMatches.isEmpty() && accountMatches.isEmpty()) Text(app.t("home.noEmojis"))
             }
-        }
-        if (app.workspaceEmojiLoading) Text(app.t("home.loading"), Modifier.then(webControlModifier("status")))
-        else if (app.workspaceEmojiError) {
-            Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
-            Button(app.t("home.refresh")) { app.run { app.loadWorkspaceEmojis(true) } }
-        } else if (customMatches.isEmpty() && accountMatches.isEmpty()) Text(app.t("home.noEmojis"))
-        return@pickerContent
+            return@pickerContent
         }
         if (recents.isNotEmpty()) {
-            androidx.compose.foundation.layout.FlowRow(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
             ) {
-                recents.forEach { EmojiButton(it, modifier = Modifier.width(32.dp)) }
+                recents.forEach { EmojiButton(it, kitchenLabel(it), Modifier.width(AndroidDesign.touchTarget)) }
             }
             HorizontalDivider()
         }
@@ -920,98 +944,99 @@ fun EmojiPicker(
                         true,
                     )
             }
-        LazyColumn(
-            Modifier.fillMaxWidth()
-                .then(
-                    webControlModifier(
-                        "grid",
-                        attributes = mapOf("aria-label" to app.t("reactions.tabEmoji")),
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val columns = emojiPickerColumns(maxWidth.value)
+            LazyColumn(
+                Modifier.fillMaxWidth()
+                    .then(
+                        webControlModifier(
+                            "grid",
+                            attributes = mapOf("aria-label" to app.t("reactions.tabEmoji")),
+                        )
                     )
-                )
-                .height(320.dp)
-                .border(
-                    1.dp,
-                    MaterialTheme.colorScheme.outline,
-                    androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
-                )
-        ) {
-            if (loading)
-                item {
-                    Text(
-                        app.t("reactions.emojiLoading"),
-                        Modifier.fillMaxWidth().padding(12.dp),
-                        small = true,
-                        muted = true,
+                    .heightIn(max = 320.dp)
+                    .border(
+                        1.dp,
+                        MaterialTheme.colorScheme.outline,
+                        androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
                     )
-                }
-            else if (filtered.isEmpty())
-                item {
-                    Text(
-                        app.t("reactions.noSearchResults"),
-                        Modifier.fillMaxWidth().padding(12.dp),
-                        small = true,
-                        muted = true,
-                    )
-                }
-            filtered
-                .groupBy { it.text("group") }
-                .forEach { (group, rows) ->
-                    item("group:$group") {
+            ) {
+                if (loading)
+                    item {
                         Text(
-                            groups.find { it.text("order") == group }?.text("message").orEmpty(),
-                            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                            app.t("reactions.emojiLoading"),
+                            Modifier.fillMaxWidth().padding(12.dp),
                             small = true,
                             muted = true,
-                            weight = FontWeight.Medium,
                         )
                     }
-                    itemsIndexed(rows.chunked(8)) { rowIndex, row ->
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .then(
-                                    webControlModifier(
-                                        "row",
-                                        attributes =
-                                            mapOf("aria-rowindex" to (rowIndex + 1).toString()),
-                                    )
-                                )
-                                .padding(horizontal = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            row.forEachIndexed { columnIndex, emoji ->
-                                val value =
-                                    if (tone.isEmpty()) emoji.text("emoji")
-                                    else
-                                        emoji["skins"]
-                                            ?.rows()
-                                            ?.find { it.text("emoji").contains(tone) }
-                                            ?.text("emoji") ?: emoji.text("emoji")
-                                Box(
-                                    Modifier.weight(1f)
-                                        .then(
-                                            webControlModifier(
-                                                "gridcell",
-                                                attributes =
-                                                    mapOf(
-                                                        "aria-colindex" to
-                                                            (columnIndex + 1).toString()
-                                                    ),
-                                            )
+                else if (filtered.isEmpty())
+                    item {
+                        Text(
+                            app.t("reactions.noSearchResults"),
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            small = true,
+                            muted = true,
+                        )
+                    }
+                filtered
+                    .groupBy { it.text("group") }
+                    .forEach { (group, rows) ->
+                        item("group:$group") {
+                            Text(
+                                groups.find { it.text("order") == group }?.text("message").orEmpty(),
+                                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                                small = true,
+                                muted = true,
+                                weight = FontWeight.Medium,
+                            )
+                        }
+                        itemsIndexed(rows.chunked(columns)) { rowIndex, row ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .then(
+                                        webControlModifier(
+                                            "row",
+                                            attributes =
+                                                mapOf("aria-rowindex" to (rowIndex + 1).toString()),
                                         )
-                                ) {
-                                    EmojiButton(value, emoji.text("label"), Modifier.fillMaxWidth())
+                                    ),
+                            ) {
+                                row.forEachIndexed { columnIndex, emoji ->
+                                    val value =
+                                        if (tone.isEmpty()) emoji.text("emoji")
+                                        else
+                                            emoji["skins"]
+                                                ?.rows()
+                                                ?.find { it.text("emoji").contains(tone) }
+                                                ?.text("emoji") ?: emoji.text("emoji")
+                                    Box(
+                                        Modifier.weight(1f)
+                                            .then(
+                                                webControlModifier(
+                                                    "gridcell",
+                                                    attributes =
+                                                        mapOf(
+                                                            "aria-colindex" to
+                                                                (columnIndex + 1).toString()
+                                                        ),
+                                                )
+                                            )
+                                    ) {
+                                        EmojiButton(value, emoji.text("label"), Modifier.fillMaxWidth())
+                                    }
                                 }
+                                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                             }
-                            repeat(8 - row.size) { Spacer(Modifier.weight(1f)) }
                         }
                     }
-                }
+            }
         }
     }
     if (embedded) Column(Modifier.fillMaxWidth(), content = content)
     else
         Panel(
-            app.t("reactions.add"),
+            app.t(if (forMessage) "reactions.tabEmoji" else "reactions.add"),
             close,
             448.dp,
             description =

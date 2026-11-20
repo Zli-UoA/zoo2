@@ -1,0 +1,17 @@
+From: Zoo Sender <sender@example.test>
+To: Zoo Reader <reader@example.test>
+Subject: =?UTF-8?B?44OX44Os44OT44Ol44O856K66KqN?=
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="zoo"
+
+--zoo
+Content-Type: text/html; charset=utf-8
+
+<p>Hello from email.</p><img src="https://tracking.example.test/pixel"><script>alert(1)</script>
+--zoo
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: attachment; filename="note.txt"
+Content-Transfer-Encoding: base64
+
+5re75LuY44OV44Kh44Kk44Or44Gu5pys5paH
+--zoo--

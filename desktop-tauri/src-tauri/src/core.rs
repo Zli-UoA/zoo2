@@ -18,13 +18,14 @@ use jiff::{civil::DateTime, tz::TimeZone};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     sync::{Mutex, mpsc},
-    task::JoinHandle,
+    task::{AbortHandle, JoinHandle},
 };
 use zoo2_client_core::{
     api::ApiClient,
     auth::{
         self,
-        device::{self, Poller},
+        device::{self, DeviceAuthorization, Poller},
+        reauth::{LoopbackReauth, REAUTH_HTTP_TIMEOUT, REAUTH_TIMEOUT, ReauthError},
         token::{self, StoredTokens, TokenManager},
     },
     config::{AuthConfig, Config, OidcConfig, config_dir_for},
@@ -62,9 +63,84 @@ pub struct Core {
     ui: UiMode,
     config: Result<Config, String>,
     http: reqwest::Client,
+    /// ログイン URL の自動起動前リダイレクト検証専用クライアント（自動リダイレクト無効）。
+    no_redirect_http: Option<reqwest::Client>,
     inner: Mutex<Inner>,
+    /// ブラウザー起動とキャンセルを順序付ける同期ゲート（`inner` とは別に保ち、ブロッキング I/O で `inner` を止めない）。
+    browser_launch: Arc<BrowserLaunchGate>,
     /// OS の通知を出すか (`notifications.json` に保存する)。
     notifications: std::sync::Mutex<NotificationSettings>,
+    /// 待っている E2EE の再認証。新しく始めたら、前のものは取り消す。
+    reauth: std::sync::Mutex<Option<AbortHandle>>,
+}
+
+#[derive(Default)]
+struct BrowserLaunchGate {
+    state: std::sync::Mutex<BrowserLaunchState>,
+}
+
+#[derive(Default)]
+struct BrowserLaunchState {
+    active_gen: Option<u64>,
+    cancelled_through: u64,
+}
+
+impl BrowserLaunchGate {
+    fn arm(&self, generation: u64) {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if generation > guard.cancelled_through
+            && guard.active_gen.is_none_or(|cur| generation > cur)
+        {
+            guard.active_gen = Some(generation);
+        }
+    }
+
+    fn is_active(&self, generation: u64) -> bool {
+        let guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.active_gen == Some(generation) && generation > guard.cancelled_through
+    }
+
+    fn cancel(&self, generation: u64) {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.cancelled_through = guard.cancelled_through.max(generation);
+        if guard.active_gen.is_some_and(|cur| cur <= generation) {
+            guard.active_gen = None;
+        }
+    }
+
+    /// 状態遷移・通知より先にゲートを無効化し、遷移通知後に旧試行の起動タスクが走っても抑止される順序を保証する。
+    fn cancel_before_transition<F>(&self, generation: u64, transition: F)
+    where
+        F: FnOnce(),
+    {
+        self.cancel(generation);
+        transition();
+    }
+
+    fn launch_if_active<F>(&self, generation: u64, launcher: F) -> bool
+    where
+        F: FnOnce(),
+    {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.active_gen != Some(generation) || generation <= guard.cancelled_through {
+            return false;
+        }
+        guard.active_gen = None;
+        launcher();
+        true
+    }
 }
 
 struct Inner {
@@ -125,7 +201,10 @@ impl Core {
             ui,
             config: config.map_err(|err| format!("{err:#}")),
             http: reqwest::Client::new(),
+            no_redirect_http: build_no_redirect_http_client(),
+            browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),
+            reauth: std::sync::Mutex::new(None),
             inner: Mutex::new(Inner {
                 generation: 0,
                 state: SessionState::Starting,
@@ -149,6 +228,14 @@ impl Core {
     /// backend の起点。設定が読めなかったときは None。
     pub fn api_base_url(&self) -> Option<&str> {
         self.config.as_ref().ok().map(|c| c.api_base_url.as_str())
+    }
+
+    /// OIDC の発行者 (`https://account.zli.works/...` など)。dev ログインや設定のエラーでは None。
+    pub fn oidc_issuer(&self) -> Option<&str> {
+        match &self.config.as_ref().ok()?.auth {
+            AuthConfig::Oidc(oidc) => Some(oidc.issuer.as_str()),
+            AuthConfig::Dev { .. } => None,
+        }
     }
 
     fn info(&self, state: &SessionState) -> SessionInfo {
@@ -701,33 +788,70 @@ impl Core {
             if let Some(task) = inner.login_task.take() {
                 task.abort();
             }
+            let prev = inner.generation;
             inner.generation += 1;
+            // 前の試行がまだブラウザー起動待ちにあれば、置き換え時点で失効させる。
+            self.browser_launch.cancel(prev);
             inner.generation
         };
-        let discovery = auth::discover(&self.http, &oidc.issuer)
-            .await
-            .map_err(to_ipc)?;
-        let authorization = device::start(&self.http, &discovery, oidc)
-            .await
-            .map_err(to_ipc)?;
-        let login = DeviceLogin {
-            user_code: authorization.user_code.clone(),
-            verification_uri: authorization.verification_uri.clone(),
-            verification_uri_complete: authorization.verification_uri_complete.clone(),
-            expires_at: token::now() + authorization.expires_in as i64,
-        };
+        let discovery = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            auth::discover(&self.http, &oidc.issuer),
+        )
+        .await
+        .map_err(|_| {
+            IpcError::new(
+                ErrorCode::Timeout,
+                "認証サーバーの応答がタイムアウトしました",
+            )
+        })?
+        .map_err(to_ipc)?;
+        let authorization = tokio::time::timeout(
+            REAUTH_HTTP_TIMEOUT,
+            device::start(&self.http, &discovery, oidc),
+        )
+        .await
+        .map_err(|_| {
+            IpcError::new(
+                ErrorCode::Timeout,
+                "認証サーバーの応答がタイムアウトしました",
+            )
+        })?
+        .map_err(to_ipc)?;
+        let authorized_at = Instant::now();
+        let authorized_unix = token::now();
+        let (login, auto_open_url, deadline) = prepare_verified_device_login(
+            self.no_redirect_http.as_ref(),
+            &authorization,
+            &oidc.issuer,
+            authorized_at,
+            authorized_unix,
+        )
+        .await?;
+        let expires_at = login.expires_at;
 
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return Err(IpcError::new(ErrorCode::Internal, "ログインを中止しました"));
         }
+        // inner.lock().await の待機中に有効期限が切れた場合は LoggingIn への遷移やポーリング・ブラウザー起動へ進まない。
+        ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())?;
         let core = self.clone();
         let (config, oidc) = (config.clone(), oidc.clone());
         inner.login_task = Some(tokio::spawn(async move {
             let result = async {
-                let response = Poller::default()
-                    .poll(&core.http, &discovery, &oidc, &authorization)
-                    .await?;
+                let (http, discovery_ref, oidc_ref) = (&core.http, &discovery, &oidc);
+                let response = poll_device_authorization_until(
+                    deadline,
+                    expires_at,
+                    &authorization,
+                    |bounded| async move {
+                        Poller::default()
+                            .poll(http, discovery_ref, oidc_ref, &bounded)
+                            .await
+                    },
+                )
+                .await?;
                 let tokens = StoredTokens::new(&oidc, &config.api_base_url, response, token::now());
                 let path = core.token_path()?;
                 token::save(&path, &tokens)?;
@@ -741,6 +865,7 @@ impl Core {
             .await;
             match result {
                 Ok(manager) => {
+                    core.browser_launch.cancel(generation);
                     core.finish_login(
                         generation,
                         Credentials::Bearer(manager.clone()),
@@ -750,18 +875,69 @@ impl Core {
                 }
                 Err(_) => {
                     let mut inner = core.inner.lock().await;
-                    if inner.generation == generation {
-                        core.set_state(&mut inner, SessionState::LoggedOut);
-                    }
+                    core.browser_launch
+                        .cancel_before_transition(generation, || {
+                            if inner.generation == generation {
+                                core.set_state(&mut inner, SessionState::LoggedOut);
+                            }
+                        });
                 }
             }
         }));
+        if auto_open_url.is_some() {
+            // 状態遷移・通知前にゲートを有効化し、直後の cancel_login と順序を揃える。
+            self.browser_launch.arm(generation);
+        }
         self.set_state(
             &mut inner,
             SessionState::LoggingIn {
                 login: login.clone(),
             },
         );
+        drop(inner);
+        // 既定のブラウザーを自動で開く。開けなくても画面上のコードとリンクから手動で進められる。
+        // 確認済みオリジンかつ GET リダイレクト先検証を通過した URL のみ自動で開き、中止済みまたは期限切れなら実行時にも抑止する。
+        if let Some(url) = auto_open_url {
+            let gate = self.browser_launch.clone();
+            let app = self.app.clone();
+            tauri::async_runtime::spawn(async move {
+                if !gate.is_active(generation) {
+                    return;
+                }
+                if ensure_device_login_not_expired(
+                    deadline,
+                    expires_at,
+                    Instant::now(),
+                    token::now(),
+                )
+                .is_err()
+                {
+                    gate.cancel(generation);
+                    return;
+                }
+                if let Err(err) = tokio::task::spawn_blocking(move || {
+                    gate.launch_if_active(generation, || {
+                        if ensure_device_login_not_expired(
+                            deadline,
+                            expires_at,
+                            Instant::now(),
+                            token::now(),
+                        )
+                        .is_err()
+                        {
+                            return;
+                        }
+                        if let Err(err) = open_in_browser(&app, &url) {
+                            eprintln!("ログイン URL をブラウザーで開けませんでした: {err}");
+                        }
+                    });
+                })
+                .await
+                {
+                    eprintln!("ログイン URL をブラウザーで開く処理が失敗しました: {err}");
+                }
+            });
+        }
         Ok(login)
     }
 
@@ -771,15 +947,21 @@ impl Core {
             task.abort();
         }
         if matches!(inner.state, SessionState::LoggingIn { .. }) {
+            let cancelled = inner.generation;
             inner.generation += 1;
-            self.set_state(&mut inner, SessionState::LoggedOut);
+            self.browser_launch.cancel_before_transition(cancelled, || {
+                self.set_state(&mut inner, SessionState::LoggedOut);
+            });
         }
     }
 
     pub async fn logout(&self) -> Result<(), IpcError> {
         let mut inner = self.inner.lock().await;
         let ending = self.prepare_end_session(&mut inner).map_err(to_ipc)?;
-        self.set_state(&mut inner, SessionState::LoggedOut);
+        let cancelled = inner.generation;
+        self.browser_launch.cancel_before_transition(cancelled, || {
+            self.set_state(&mut inner, SessionState::LoggedOut);
+        });
         drop(inner);
         self.finish_end_session(ending).await.map_err(to_ipc)
     }
@@ -801,7 +983,14 @@ impl Core {
     /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
     /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
     /// 後から終わっても、`token.json` は作り直されない。
+    ///
+    /// 待っている E2EE の再認証も取り消す (ループバックの待ち受けも閉じる)。ログアウトと 401 の
+    /// 失効の両方がここを通る。`inner` のロックの下で取り消すので、`reauthenticate` が
+    /// 同じロックの下で始めた再認証とは前後が決まる。
     fn prepare_end_session(&self, inner: &mut Inner) -> Result<EndingSession> {
+        if let Some(reauth) = self.reauth.lock().expect("reauth の lock").take() {
+            reauth.abort();
+        }
         let oidc = matches!(
             self.config.as_ref().map(|c| &c.auth),
             Ok(AuthConfig::Oidc(_))
@@ -919,6 +1108,105 @@ impl Core {
         };
         tokens.access_token_with_expiry().await.map_err(to_ipc)
     }
+
+    /// E2EE の直前の再認証 (`docs/e2ee.md` の「初回設定と解錠の流れ」の 7)。ID トークンを返す。
+    ///
+    /// (b) の Web の画面は、Web 版と同じ別のウィンドウ (`window.open`) を開けない (wry は新しい
+    /// ウィンドウを作らない)。また、AuthZ が再認証として認めるのはパスキーでのログインだけで、
+    /// アプリの WebView ではパスキーを使えない。そこで TUI と同じく、既定のブラウザーで
+    /// `max_age=0` の認可リクエストを開き、ループバックのリダイレクトで受け取る
+    /// (`client-core` の `auth/reauth.rs`)。今のセッションのトークンは変えない。
+    ///
+    /// 新しく始めたら、待っている前の再認証は取り消す (Web で同じ名前のウィンドウを開き直すのと同じ)。
+    pub async fn reauthenticate(self: &Arc<Self>) -> Result<String, IpcError> {
+        let (_, oidc) = self.oidc()?;
+        let oidc = oidc.clone();
+        // ログイン中かを確かめてから、始めたタスクを `reauth` に置くまでを、`inner` と `reauth` の
+        // ロックの下で行う (どちらも、その間に await しない)。ログアウトや 401 の失効
+        // (`prepare_end_session`) と、ほかの再認証の開始が、間に入らないようにするため。
+        // これで、後から始めた再認証が必ず残り、セッションが終わったら必ず取り消される。
+        let task = {
+            let inner = self.inner.lock().await;
+            if !matches!(inner.state, SessionState::Ready { .. }) {
+                return Err(not_logged_in());
+            }
+            let mut pending = self.reauth.lock().expect("reauth の lock");
+            if let Some(previous) = pending.take() {
+                previous.abort();
+            }
+            let core = self.clone();
+            let task = tokio::spawn(async move {
+                let discovery = tokio::time::timeout(
+                    REAUTH_HTTP_TIMEOUT,
+                    auth::discover(&core.http, &oidc.issuer),
+                )
+                .await
+                .map_err(|_| ReauthError::Timeout)??;
+                let pending = LoopbackReauth::start(&discovery, &oidc).await?;
+                open_in_browser(&core.app, pending.url())?;
+                pending
+                    .finish(&core.http, &discovery, &oidc, REAUTH_TIMEOUT)
+                    .await
+            });
+            *pending = Some(task.abort_handle());
+            drop(inner);
+            task
+        };
+        let attempt = task.id();
+        let result = task.await;
+        // 終わったタスクには `abort()` が効かないので、終わってからここに戻るまでの間に、新しい
+        // 再認証やセッションの終わりで取り消されていたら、結果を使わない。まだ今の試行なら、
+        // `reauth` から外す。
+        let current = {
+            let _inner = self.inner.lock().await;
+            let mut pending = self.reauth.lock().expect("reauth の lock");
+            let current = pending
+                .as_ref()
+                .is_some_and(|handle| handle.id() == attempt);
+            if current {
+                pending.take();
+            }
+            current
+        };
+        if !current && matches!(result, Ok(Ok(_))) {
+            return Err(IpcError::new(
+                ErrorCode::Cancelled,
+                "新しい再認証を始めたか、ログアウトしたので、取り消しました",
+            ));
+        }
+        match result {
+            Ok(Ok(id_token)) => {
+                crate::window::show_main(&self.app);
+                Ok(id_token)
+            }
+            Ok(Err(error)) => Err(reauth_error(error)),
+            Err(join) if join.is_cancelled() => Err(IpcError::new(
+                ErrorCode::Cancelled,
+                "新しい再認証を始めたので、取り消しました",
+            )),
+            Err(join) => Err(IpcError::new(ErrorCode::Internal, join.to_string())),
+        }
+    }
+}
+
+/// 再認証の認可リクエストを既定のブラウザーで開く。URL は IdP の認可エンドポイントなので、
+/// 外部のサイトの確認 (`window::open_external`) はしない。
+fn open_in_browser(app: &AppHandle, url: &str) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| anyhow!("ブラウザーを開けませんでした: {error}"))
+}
+
+/// 再認証の失敗を、Web の画面が見分けられる IPC のエラーにする。
+fn reauth_error(error: anyhow::Error) -> IpcError {
+    match error.downcast_ref::<ReauthError>() {
+        Some(ReauthError::Timeout) => IpcError::new(ErrorCode::Timeout, format!("{error:#}")),
+        Some(ReauthError::Denied(_) | ReauthError::InvalidIdToken(_)) => {
+            IpcError::new(ErrorCode::Rejected, format!("{error:#}"))
+        }
+        None => to_ipc(error),
+    }
 }
 
 fn now_utc() -> DateTime {
@@ -966,4 +1254,1034 @@ fn load_notification_settings() -> NotificationSettings {
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
+}
+
+const MAX_LOGIN_REDIRECT_HOPS: usize = 5;
+const LOGIN_REDIRECT_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn build_no_redirect_http_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(LOGIN_REDIRECT_CHECK_TIMEOUT)
+        .timeout(LOGIN_REDIRECT_CHECK_TIMEOUT)
+        .build()
+        .ok()
+}
+
+fn is_loopback_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+/// ログイン URL が IdP (`issuer`) と同じオリジンの HTTPS URL（開発用ループバックのみ HTTP 許可）かを確かめる。
+fn is_same_issuer_origin(url: &str, issuer: &str) -> bool {
+    let (Ok(target), Ok(issuer)) = (url::Url::parse(url), url::Url::parse(issuer)) else {
+        return false;
+    };
+    if target.origin() != issuer.origin() {
+        return false;
+    }
+    match target.scheme() {
+        "https" => true,
+        // 開発時のローカル検証のみ HTTP を許可し、リモートでの平文送信を防ぐ。
+        "http" => is_loopback_host(&target),
+        _ => false,
+    }
+}
+
+/// 未認証時・認証後の承認画面遷移まで含めて `http://` や外部オリジンへリダイレクトしないことが
+/// IdP 実装 (`Zli-UoA/AuthZ`)・実機で確認済みの `issuer` オリジン（公式 AuthZ または開発用ループバック）かを返す。
+const CONFIRMED_OIDC_ISSUER_ORIGIN: &str = "https://account.zli.works";
+
+fn is_confirmed_login_issuer(issuer: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(issuer) else {
+        return false;
+    };
+    if let Ok(confirmed) = url::Url::parse(CONFIRMED_OIDC_ISSUER_ORIGIN)
+        && parsed.origin() == confirmed.origin()
+    {
+        return true;
+    }
+    matches!(parsed.scheme(), "http" | "https") && is_loopback_host(&parsed)
+}
+
+fn resolve_and_validate_redirect(
+    current: &url::Url,
+    location: &str,
+    issuer: &str,
+) -> std::result::Result<url::Url, String> {
+    let next = current
+        .join(location.trim())
+        .map_err(|err| format!("リダイレクト先 URL を解釈できませんでした: {err}"))?;
+    if !is_same_issuer_origin(next.as_str(), issuer) {
+        return Err(format!(
+            "リダイレクト先のスキームまたはオリジンが不正です: {}",
+            next.origin().ascii_serialization()
+        ));
+    }
+    Ok(next)
+}
+
+/// ブラウザー自動起動およびコード付き URL 採用の前に、`GET` リクエストの `Location` リダイレクトを
+/// 最大 `MAX_LOGIN_REDIRECT_HOPS` 回まで手動追跡し、すべての遷移先が IdP と同一オリジンの
+/// HTTPS（開発用ループバックのみ HTTP）に留まることを確認する。
+async fn verify_login_redirect_chain(
+    client: &reqwest::Client,
+    url: &str,
+    issuer: &str,
+) -> std::result::Result<(), String> {
+    if !is_same_issuer_origin(url, issuer) {
+        return Err("初期 URL のスキームまたはオリジンが不正です".to_string());
+    }
+    let mut current = url::Url::parse(url)
+        .map_err(|err| format!("ログイン URL を解釈できませんでした: {err}"))?;
+    for hop in 0..=MAX_LOGIN_REDIRECT_HOPS {
+        let res = client.get(current.clone()).send().await.map_err(|err| {
+            format!(
+                "ログイン URL の事前確認 (GET) に失敗しました: {}",
+                err.without_url()
+            )
+        })?;
+        let status = res.status();
+        if matches!(status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+            if hop == MAX_LOGIN_REDIRECT_HOPS {
+                return Err("リダイレクト回数が上限を超えました".to_string());
+            }
+            let location = res
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .ok_or_else(|| "リダイレクト応答に Location ヘッダーがありません".to_string())?
+                .to_str()
+                .map_err(|_| "Location ヘッダーに不正な文字が含まれています".to_string())?;
+            current = resolve_and_validate_redirect(&current, location, issuer)?;
+            continue;
+        }
+        if status.is_success() {
+            return Ok(());
+        }
+        return Err(format!(
+            "ログイン URL の事前確認が予期しないステータスを返しました (HTTP {})",
+            status.as_u16()
+        ));
+    }
+    Err("リダイレクト回数が上限を超えました".to_string())
+}
+
+/// 認可応答の受信時刻 (`authorized_at`) を基準に定めた `deadline` / `expires_at` がまだ有効かを確認し、
+/// 残りの有効期間 (`Duration`) を返す。
+fn ensure_device_login_not_expired(
+    deadline: Instant,
+    expires_at: i64,
+    now_instant: Instant,
+    now_unix: i64,
+) -> Result<Duration, IpcError> {
+    let Some(remaining) = deadline.checked_duration_since(now_instant) else {
+        return Err(IpcError::new(
+            ErrorCode::Timeout,
+            "コードの有効期限が切れました。もう一度ログインしてください",
+        ));
+    };
+    if remaining.is_zero() || now_unix >= expires_at {
+        return Err(IpcError::new(
+            ErrorCode::Timeout,
+            "コードの有効期限が切れました。もう一度ログインしてください",
+        ));
+    }
+    Ok(remaining)
+}
+
+/// 認可応答の受信時刻 (`authorized_at`) を基準にした `deadline` / `expires_at` の範囲内でのみポーリングを行う。
+/// ロック待ちやタスク実行待ちでポーリング開始が遅れた分も `deadline` から差し引き、
+/// 開始時点で期限切れなら即座に終了し、ポーリング中も `timeout_at(deadline)` で期限超過を防ぐ。
+async fn poll_device_authorization_until<F, Fut, T>(
+    deadline: Instant,
+    expires_at: i64,
+    authorization: &DeviceAuthorization,
+    poll_fn: F,
+) -> Result<T>
+where
+    F: FnOnce(DeviceAuthorization) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let remaining =
+        ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())
+            .map_err(|err| anyhow!(err.message))?;
+    let mut bounded = authorization.clone();
+    // 秒単位の切り上げで最低 1 秒を与えつつ、外側の timeout_at(deadline) で実際の期限時刻を厳密に強制する。
+    let remaining_secs = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
+    bounded.expires_in = remaining_secs.max(1);
+    let tokio_deadline = tokio::time::Instant::from_std(deadline);
+    match tokio::time::timeout_at(tokio_deadline, poll_fn(bounded)).await {
+        Ok(res) => res,
+        Err(_) => Err(anyhow!(
+            "コードの有効期限が切れました。もう一度ログインしてください"
+        )),
+    }
+}
+
+fn percent_decode_once(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `verification_uri` 自体に IdP が `user_code`（クエリ・フラグメント・パス、パーセント符号化を含む）を
+/// 含めて返した場合でも、手動リンクの `verification_uri` から `user_code` を確実に除去してコードなし URL に正規化する。
+fn strip_user_code_from_verification_uri(uri: &str, user_code: &str) -> String {
+    let code_trimmed = user_code.trim();
+    let code_lower = code_trimmed.to_ascii_lowercase();
+    let code_compact: String = code_trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let matches_raw_or_compact = |candidate: &str| -> bool {
+        if !code_lower.is_empty() && candidate.to_ascii_lowercase().contains(&code_lower) {
+            return true;
+        }
+        if !code_compact.is_empty() {
+            let candidate_compact: String = candidate
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .map(|c| c.to_ascii_lowercase())
+                .collect();
+            if candidate_compact.contains(&code_compact) {
+                return true;
+            }
+        }
+        false
+    };
+    let contains_code = |s: &str| -> bool {
+        if matches_raw_or_compact(s) {
+            return true;
+        }
+        let decoded1 = percent_decode_once(s);
+        if matches_raw_or_compact(&decoded1) {
+            return true;
+        }
+        let decoded2 = percent_decode_once(&decoded1);
+        matches_raw_or_compact(&decoded2)
+    };
+
+    let Ok(mut parsed) = url::Url::parse(uri) else {
+        return if !code_trimmed.is_empty() && contains_code(uri) {
+            percent_decode_once(uri).replace(code_trimmed, "")
+        } else {
+            uri.to_string()
+        };
+    };
+
+    if parsed.query().is_some() {
+        let kept: Vec<(String, String)> = parsed
+            .query_pairs()
+            .filter(|(k, v)| {
+                !k.eq_ignore_ascii_case("user_code")
+                    && !k.eq_ignore_ascii_case("code")
+                    && !contains_code(k)
+                    && !contains_code(v)
+            })
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        if kept.is_empty() {
+            parsed.set_query(None);
+        } else {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for (k, v) in kept {
+                serializer.append_pair(&k, &v);
+            }
+            let query = serializer.finish();
+            parsed.set_query(Some(&query));
+        }
+    }
+    if let Some(fragment) = parsed.fragment() {
+        let decoded_fragment = percent_decode_once(&percent_decode_once(fragment));
+        if fragment.to_ascii_lowercase().contains("user_code")
+            || decoded_fragment.to_ascii_lowercase().contains("user_code")
+            || contains_code(fragment)
+        {
+            parsed.set_fragment(None);
+        }
+    }
+    let filtered_segments = parsed.path_segments().and_then(|segments| {
+        let mut kept = Vec::new();
+        let mut removed = false;
+        for seg in segments {
+            if contains_code(seg) {
+                removed = true;
+            } else {
+                kept.push(seg.to_string());
+            }
+        }
+        removed.then_some(kept)
+    });
+    if let Some(mut segments) = filtered_segments {
+        if segments.is_empty() {
+            segments.push(String::new());
+        }
+        let new_path = format!("/{}", segments.join("/"));
+        parsed.set_path(&new_path);
+    }
+    parsed.into()
+}
+
+/// デバイス認可応答の URL を検証し、UI へ渡す `DeviceLogin`・自動起動対象 URL・`authorized_at` 基準の `deadline` を返す。
+/// - `verification_uri` 自体に `user_code` が含まれていた場合でも `strip_user_code_from_verification_uri` で除去し、
+///   手動リンク用の `login.verification_uri` は常にコードなし URL とする。
+/// - `verification_uri` が `issuer` と別オリジン（または非ループバック HTTP）の場合や、
+///   リダイレクト安全性が未確認の外部カスタム `issuer` では、ログイン自体は失敗させず
+///   ユーザーコードとコードなしの手動リンク表示へフォールバックし、ブラウザー自動起動と `verification_uri_complete` を抑止する。
+/// - 確認済み `issuer` かつ同一オリジンの場合のみ、自動起動および `verification_uri_complete` の採用前に
+///   `GET` でリダイレクト先を検証する。
+/// - 事前検証完了時点で認可コードの有効期限が切れていた場合は、`LoggingIn` 遷移やブラウザー自動起動へ進まず
+///   タイムアウトエラーを返す。
+async fn prepare_verified_device_login(
+    no_redirect_http: Option<&reqwest::Client>,
+    authorization: &DeviceAuthorization,
+    issuer: &str,
+    authorized_at: Instant,
+    authorized_unix: i64,
+) -> Result<(DeviceLogin, Option<String>, Instant), IpcError> {
+    let sanitized_verification_uri = strip_user_code_from_verification_uri(
+        &authorization.verification_uri,
+        &authorization.user_code,
+    );
+    let mut verification_uri_complete = None;
+    let mut auto_open_url = None;
+
+    if !is_same_issuer_origin(&sanitized_verification_uri, issuer) {
+        eprintln!(
+            "ログイン確認 URL のスキームまたはオリジンが issuer と一致しないため、コード付き URL とブラウザー自動起動を抑止します"
+        );
+    } else if !is_confirmed_login_issuer(issuer) {
+        eprintln!(
+            "リダイレクト挙動が未確認のカスタム issuer のため、コード付き URL とブラウザー自動起動を抑止します"
+        );
+    } else if let Some(client) = no_redirect_http {
+        match authorization.verification_uri_complete.as_deref() {
+            Some(complete) => match verify_login_redirect_chain(client, complete, issuer).await {
+                Ok(()) => {
+                    verification_uri_complete = Some(complete.to_string());
+                    auto_open_url = Some(complete.to_string());
+                }
+                Err(err) => {
+                    eprintln!(
+                        "コード付きログイン URL のリダイレクト先検証に失敗したため、コード付き URL と自動起動を抑止します: {err}"
+                    );
+                }
+            },
+            None => {
+                match verify_login_redirect_chain(client, &sanitized_verification_uri, issuer).await
+                {
+                    Ok(()) => {
+                        auto_open_url = Some(sanitized_verification_uri.clone());
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "ログイン URL のリダイレクト先検証に失敗したため、自動では開きません: {err}"
+                        );
+                    }
+                }
+            }
+        }
+    } else {
+        eprintln!(
+            "リダイレクト検証クライアントを初期化できないため、コード付き URL とブラウザー自動起動をスキップします"
+        );
+    }
+
+    let deadline = authorized_at
+        .checked_add(Duration::from_secs(authorization.expires_in))
+        .ok_or_else(|| {
+            IpcError::new(
+                ErrorCode::Internal,
+                "認証サーバーが不正な有効期限を返しました",
+            )
+        })?;
+    let expires_at = i64::try_from(authorization.expires_in)
+        .ok()
+        .and_then(|secs| authorized_unix.checked_add(secs))
+        .ok_or_else(|| {
+            IpcError::new(
+                ErrorCode::Internal,
+                "認証サーバーが不正な有効期限を返しました",
+            )
+        })?;
+    ensure_device_login_not_expired(deadline, expires_at, Instant::now(), token::now())?;
+
+    let login = DeviceLogin {
+        user_code: authorization.user_code.clone(),
+        verification_uri: sanitized_verification_uri,
+        verification_uri_complete,
+        auto_open: auto_open_url.is_some(),
+        expires_at,
+    };
+    Ok((login, auto_open_url, deadline))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        BrowserLaunchGate, DeviceAuthorization, Duration, ErrorCode, Instant,
+        build_no_redirect_http_client, ensure_device_login_not_expired, is_confirmed_login_issuer,
+        is_same_issuer_origin, poll_device_authorization_until, prepare_verified_device_login,
+        resolve_and_validate_redirect, strip_user_code_from_verification_uri, token,
+        verify_login_redirect_chain,
+    };
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    #[test]
+    fn login_url_origin_validation_requires_same_https_or_loopback_origin() {
+        assert!(is_same_issuer_origin(
+            "https://account.zli.works/device?user_code=ABCD-1234",
+            "https://account.zli.works/realms/zli"
+        ));
+        assert!(is_same_issuer_origin(
+            "http://localhost:8080/device",
+            "http://localhost:8080"
+        ));
+        assert!(is_same_issuer_origin(
+            "http://127.0.0.1:8080/device",
+            "http://127.0.0.1:8080"
+        ));
+        assert!(is_same_issuer_origin(
+            "http://[::1]:8080/device",
+            "http://[::1]:8080"
+        ));
+        assert!(!is_same_issuer_origin(
+            "http://account.zli.works/device",
+            "http://account.zli.works/realms/zli"
+        ));
+        assert!(!is_same_issuer_origin(
+            "http://localhost.evil.example:8080/device",
+            "http://localhost.evil.example:8080"
+        ));
+        assert!(!is_same_issuer_origin(
+            "https://evil.example/device",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "https://account.zli.works:8443/device",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "http://account.zli.works/device",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "file:///C:/Windows/System32/calc.exe",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "javascript:alert(1)",
+            "https://account.zli.works"
+        ));
+        assert!(!is_same_issuer_origin(
+            "not a url",
+            "https://account.zli.works"
+        ));
+
+        assert!(is_confirmed_login_issuer(
+            "https://account.zli.works/api/auth"
+        ));
+        assert!(is_confirmed_login_issuer("http://127.0.0.1:8080/api/auth"));
+        assert!(is_confirmed_login_issuer("http://localhost:8080/api/auth"));
+        assert!(is_confirmed_login_issuer("https://[::1]:8443/api/auth"));
+        assert!(!is_confirmed_login_issuer(
+            "https://custom-idp.example/api/auth"
+        ));
+        assert!(!is_confirmed_login_issuer(
+            "http://account.zli.works/api/auth"
+        ));
+        assert!(!is_confirmed_login_issuer(
+            "https://account.zli.works:8443/api/auth"
+        ));
+    }
+
+    #[tokio::test]
+    async fn login_redirect_validation_allows_same_origin_and_blocks_downgrade_or_cross_origin() {
+        let base = url::Url::parse("https://account.zli.works/device?user_code=ABCD-1234").unwrap();
+        let issuer = "https://account.zli.works/api/auth";
+        assert_eq!(
+            resolve_and_validate_redirect(&base, "/login?next=%2Fdevice", issuer)
+                .unwrap()
+                .as_str(),
+            "https://account.zli.works/login?next=%2Fdevice"
+        );
+        assert!(
+            resolve_and_validate_redirect(&base, "http://account.zli.works/login", issuer).is_err()
+        );
+        assert!(
+            resolve_and_validate_redirect(&base, "https://evil.example/login", issuer).is_err()
+        );
+        assert!(resolve_and_validate_redirect(&base, "//evil.example/login", issuer).is_err());
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_server = stop.clone();
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            while !stop_server.load(Ordering::SeqCst) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                // Windows では nonblocking なリスナーから accept したソケットも nonblocking を継承する。
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut req_bytes = Vec::new();
+                let mut buf = [0u8; 2048];
+                while !req_bytes.windows(4).any(|w| w == b"\r\n\r\n") && req_bytes.len() < 8192 {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req_bytes.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let req = String::from_utf8_lossy(&req_bytes);
+                let first_line = req.lines().next().unwrap_or("");
+                let mut parts = first_line.split_whitespace();
+                let method = parts.next().unwrap_or("");
+                let path = parts.next().unwrap_or("/");
+                let resp = match (method, path) {
+                    ("GET", "/device") => {
+                        "HTTP/1.1 303 See Other\r\nLocation: /login?next=%2Fdevice\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("GET", "/device?user_code=OK") => {
+                        "HTTP/1.1 303 See Other\r\nLocation: /login?next=%2Fdevice\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("GET", "/login?next=%2Fdevice") => {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    // HEAD では 200 を返すが GET では http:// へダウングレードするケースも GET 検査で拒否する。
+                    ("HEAD", "/get-only-downgrade?user_code=LEAK") => {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    ("GET", "/get-only-downgrade?user_code=LEAK") => {
+                        "HTTP/1.1 302 Found\r\nLocation: http://account.zli.works/login?user_code=LEAK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/downgrade") => {
+                        "HTTP/1.1 302 Found\r\nLocation: http://account.zli.works/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/cross-origin") => {
+                        "HTTP/1.1 302 Found\r\nLocation: https://evil.example/device\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    (_, "/loop") => {
+                        "HTTP/1.1 302 Found\r\nLocation: /loop\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    }
+                    _ => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                };
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        let client = build_no_redirect_http_client().unwrap();
+        let local_issuer = format!("http://{addr}/api/auth");
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/device?user_code=OK"),
+                &local_issuer
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/get-only-downgrade?user_code=LEAK"),
+                &local_issuer
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/downgrade"),
+                &local_issuer
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            verify_login_redirect_chain(
+                &client,
+                &format!("http://{addr}/cross-origin"),
+                &local_issuer
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            verify_login_redirect_chain(&client, &format!("http://{addr}/loop"), &local_issuer)
+                .await
+                .is_err()
+        );
+
+        // 1) 確認済み issuer + GET リダイレクト検証通過時は verification_uri_complete と自動起動 URL を保持する
+        let now_unix = token::now();
+        let ok_started = Instant::now();
+        let ok_auth = DeviceAuthorization {
+            device_code: "dev-ok".to_string(),
+            user_code: "OK".to_string(),
+            verification_uri: format!("http://{addr}/device"),
+            verification_uri_complete: Some(format!("http://{addr}/device?user_code=OK")),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (ok_login, ok_auto_open, ok_deadline) = prepare_verified_device_login(
+            Some(&client),
+            &ok_auth,
+            &local_issuer,
+            ok_started,
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ok_login.verification_uri_complete.as_deref(),
+            Some(format!("http://{addr}/device?user_code=OK").as_str())
+        );
+        assert_eq!(
+            ok_auto_open.as_deref(),
+            Some(format!("http://{addr}/device?user_code=OK").as_str())
+        );
+        assert!(ok_login.auto_open);
+        assert_eq!(ok_deadline, ok_started + Duration::from_secs(600));
+
+        // 1b) verification_uri_complete がなくても、確認済み issuer + GET 検証通過なら verification_uri を自動で開く
+        let no_complete_auth = DeviceAuthorization {
+            device_code: "dev-no-complete".to_string(),
+            user_code: "NOCOMP".to_string(),
+            verification_uri: format!("http://{addr}/device"),
+            verification_uri_complete: None,
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (no_complete_login, no_complete_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &no_complete_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert!(no_complete_login.verification_uri_complete.is_none());
+        assert!(no_complete_login.auto_open);
+        assert_eq!(
+            no_complete_auto_open.as_deref(),
+            Some(format!("http://{addr}/device").as_str())
+        );
+
+        // 2) GET でダウングレードが発生するコード付き URL は、UI 向け verification_uri_complete から除外し自動起動も抑止する
+        let downgrade_auth = DeviceAuthorization {
+            device_code: "dev-downgrade".to_string(),
+            user_code: "LEAK".to_string(),
+            verification_uri: format!("http://{addr}/device"),
+            verification_uri_complete: Some(format!(
+                "http://{addr}/get-only-downgrade?user_code=LEAK"
+            )),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (downgrade_login, downgrade_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &downgrade_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert!(downgrade_login.verification_uri_complete.is_none());
+        assert!(!downgrade_login.auto_open);
+        assert!(downgrade_auto_open.is_none());
+
+        // 3) リダイレクト挙動が未確認の外部カスタム issuer では、自動起動を抑止し verification_uri_complete も落とす
+        let unconfirmed_issuer = "https://custom-idp.example/api/auth";
+        let unconfirmed_auth = DeviceAuthorization {
+            device_code: "dev-custom".to_string(),
+            user_code: "CUSTOM12".to_string(),
+            verification_uri: "https://custom-idp.example/device".to_string(),
+            verification_uri_complete: Some(
+                "https://custom-idp.example/device?user_code=CUSTOM12".to_string(),
+            ),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (unconfirmed_login, unconfirmed_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &unconfirmed_auth,
+            unconfirmed_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            unconfirmed_login.verification_uri,
+            "https://custom-idp.example/device"
+        );
+        assert!(unconfirmed_login.verification_uri_complete.is_none());
+        assert!(!unconfirmed_login.auto_open);
+        assert!(unconfirmed_auto_open.is_none());
+
+        // 4) 別オリジンの verification_uri を返す IdP でもログインは失敗させず、手動リンクのみ表示して自動起動と verification_uri_complete を抑止する。
+        //    さらに IdP が verification_uri 自体に user_code を含めていた場合も、手動リンクから user_code を除去する。
+        let cross_origin_auth = DeviceAuthorization {
+            device_code: "dev-cross".to_string(),
+            user_code: "CROSS-123".to_string(),
+            verification_uri:
+                "https://login.custom-idp.example/device?user_code=CROSS-123&lang=ja#user_code=CROSS-123"
+                    .to_string(),
+            verification_uri_complete: Some(
+                "https://login.custom-idp.example/device?user_code=CROSS-123".to_string(),
+            ),
+            expires_in: 600,
+            interval: Some(5),
+        };
+        let (cross_login, cross_auto_open, _) = prepare_verified_device_login(
+            Some(&client),
+            &cross_origin_auth,
+            unconfirmed_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cross_login.user_code, "CROSS-123");
+        assert_eq!(
+            cross_login.verification_uri,
+            "https://login.custom-idp.example/device?lang=ja"
+        );
+        assert!(!cross_login.verification_uri.contains("CROSS"));
+        assert!(cross_login.verification_uri_complete.is_none());
+        assert!(!cross_login.auto_open);
+        assert!(cross_auto_open.is_none());
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/device/CROSS123?code=CROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/device"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/device/CROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/device"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "http://custom-idp.example/device/%43ROSS-123",
+                "CROSS-123"
+            ),
+            "http://custom-idp.example/device"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/tenant%20a/device/%43ROSS-123?lang=ja&user_code=CROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/tenant%20a/device?lang=ja"
+        );
+        assert_eq!(
+            strip_user_code_from_verification_uri(
+                "https://login.custom-idp.example/device?lang=ja#%43ROSS-123",
+                "CROSS-123"
+            ),
+            "https://login.custom-idp.example/device?lang=ja"
+        );
+
+        // 5) 事前検証完了時点で認可コードの有効期限が切れている場合は Timeout エラーを返し、
+        //    Instant / i64 の表現範囲を超える expires_in (u64::MAX 等) は panic せず IpcError (Internal) を返す
+        let expired_start = Instant::now() - Duration::from_secs(600);
+        let expired_err = prepare_verified_device_login(
+            Some(&client),
+            &ok_auth,
+            &local_issuer,
+            expired_start,
+            now_unix - 600,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(expired_err.code, ErrorCode::Timeout);
+
+        let mut overflow_auth = ok_auth.clone();
+        overflow_auth.expires_in = u64::MAX;
+        let overflow_err = prepare_verified_device_login(
+            Some(&client),
+            &overflow_auth,
+            &local_issuer,
+            Instant::now(),
+            now_unix,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(overflow_err.code, ErrorCode::Internal);
+
+        stop.store(true, Ordering::SeqCst);
+        let _ = server.join();
+
+        // 通信エラー時のログ用エラー文字列に user_code 付き URL が含まれないことを確認する。
+        let net_err = verify_login_redirect_chain(
+            &client,
+            &format!("http://{addr}/device?user_code=SECRET-CODE-999"),
+            &local_issuer,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            !net_err.contains("SECRET-CODE-999"),
+            "error leaked user_code: {net_err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn device_login_deadline_blocks_expired_transition_launch_and_poller_after_lock_or_task_wait()
+     {
+        let auth = DeviceAuthorization {
+            device_code: "dev-short".to_string(),
+            user_code: "SHORT1".to_string(),
+            verification_uri: "https://account.zli.works/device".to_string(),
+            verification_uri_complete: Some(
+                "https://account.zli.works/device?user_code=SHORT1".to_string(),
+            ),
+            expires_in: 10,
+            interval: Some(1),
+        };
+        let authorized_at = Instant::now();
+        let authorized_unix = token::now();
+        let deadline = authorized_at + Duration::from_secs(auth.expires_in);
+        let expires_at = authorized_unix + auth.expires_in as i64;
+
+        // 1) inner.lock().await のロック待ちやブラウザー起動タスク待機中に期限に達した場合、
+        //    LoggingIn 遷移およびブラウザー起動の直前チェックが Timeout で阻止する
+        let after_lock_wait = deadline + Duration::from_millis(1);
+        let lock_wait_err = ensure_device_login_not_expired(
+            deadline,
+            expires_at,
+            after_lock_wait,
+            authorized_unix + 10,
+        )
+        .unwrap_err();
+        assert_eq!(lock_wait_err.code, ErrorCode::Timeout);
+
+        let gate = BrowserLaunchGate::default();
+        gate.arm(42);
+        let launched = Arc::new(AtomicUsize::new(0));
+        let launched_check = launched.clone();
+        gate.launch_if_active(42, || {
+            if ensure_device_login_not_expired(
+                deadline,
+                expires_at,
+                after_lock_wait,
+                authorized_unix + 10,
+            )
+            .is_err()
+            {
+                return;
+            }
+            launched_check.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(launched.load(Ordering::SeqCst), 0);
+
+        // 2) タスク実行待ちの間に期限が切れた場合、Poller::poll 自体を呼ばずに即座に期限切れエラーを返す
+        let expired_deadline = Instant::now() - Duration::from_millis(10);
+        let poll_calls = Arc::new(AtomicUsize::new(0));
+        let poll_calls_check = poll_calls.clone();
+        let expired_poll = poll_device_authorization_until(
+            expired_deadline,
+            token::now() - 1,
+            &auth,
+            |_| async move {
+                poll_calls_check.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(expired_poll.is_err());
+        assert_eq!(
+            poll_calls.load(Ordering::SeqCst),
+            0,
+            "Poller must not start when deadline expired during lock/task wait"
+        );
+
+        // 3) ロック待ち・タスク実行待ちで開始が遅れた場合、authorized_at 基準の残り時間だけが Poller に渡り、
+        //    deadline 到達時点で timeout_at により打ち切られる（待機時間分だけ期限が延びない）
+        let delayed_authorized_at = Instant::now() - Duration::from_secs(8);
+        let delayed_deadline = delayed_authorized_at + Duration::from_secs(10);
+        let observed_expires_in = Arc::new(AtomicUsize::new(0));
+        let observed_clone = observed_expires_in.clone();
+        let res = poll_device_authorization_until(
+            delayed_deadline,
+            token::now() + 2,
+            &auth,
+            |bounded| async move {
+                observed_clone.store(bounded.expires_in as usize, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert!(res.is_ok());
+        let passed_secs = observed_expires_in.load(Ordering::SeqCst);
+        assert!(
+            (1..=2).contains(&passed_secs),
+            "bounded.expires_in should reflect remaining time after 8s delay, got {passed_secs}"
+        );
+
+        let tight_start = Instant::now();
+        let tight_deadline = tight_start + Duration::from_millis(60);
+        let timed_out = poll_device_authorization_until(
+            tight_deadline,
+            token::now() + 5,
+            &auth,
+            |_| async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok(())
+            },
+        )
+        .await;
+        assert!(timed_out.is_err());
+        assert!(
+            tight_start.elapsed() < Duration::from_millis(350),
+            "poll_device_authorization_until must stop at deadline without extending lifetime"
+        );
+    }
+
+    #[test]
+    fn browser_launch_gate_skips_launch_when_cancelled_before_blocking_task_runs() {
+        let gate = BrowserLaunchGate::default();
+        let launched = Arc::new(AtomicUsize::new(0));
+
+        // 状態確認後にブロッキングタスク実行前に中止されたケース
+        gate.arm(1);
+        gate.cancel(1);
+        assert!(!gate.launch_if_active(1, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 0);
+
+        // 中止されていないログイン試行は通常どおり起動し、同一世代は二重起動しない
+        gate.arm(2);
+        assert!(gate.launch_if_active(2, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert!(!gate.launch_if_active(2, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 1);
+
+        // 先行世代の中止通知が遅れて届いても新しい世代の起動を妨げない
+        gate.arm(3);
+        gate.cancel(2);
+        assert!(gate.launch_if_active(3, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 2);
+
+        // 次の試行へ置き換えられた (new arm の前に prev を失効させた) 直後の旧タスクも拒否される
+        gate.arm(4);
+        gate.cancel(4);
+        assert!(!gate.launch_if_active(4, || {
+            launched.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(launched.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn browser_launch_gate_orders_cancel_before_state_transition_and_blocks_concurrent_launch() {
+        // 1) cancel_before_transition 内の状態変更・通知コールバック実行中に別スレッドが起動を試みても拒否される
+        let gate = Arc::new(BrowserLaunchGate::default());
+        gate.arm(10);
+        let launched = Arc::new(AtomicUsize::new(0));
+        let (tx_transition, rx_transition) = mpsc::channel();
+        let (tx_attempt_done, rx_attempt_done) = mpsc::channel();
+
+        let gate_worker = gate.clone();
+        let launched_worker = launched.clone();
+        let worker = std::thread::spawn(move || {
+            rx_transition.recv().unwrap();
+            let ran = gate_worker.launch_if_active(10, || {
+                launched_worker.fetch_add(1, Ordering::SeqCst);
+            });
+            tx_attempt_done.send(ran).unwrap();
+        });
+
+        gate.cancel_before_transition(10, || {
+            // LoggedOut 通知と同タイミングで起動タスクが走っても、既にゲートが無効化されている。
+            tx_transition.send(()).unwrap();
+            let ran = rx_attempt_done.recv().unwrap();
+            assert!(
+                !ran,
+                "cancelled generation must not launch during LoggedOut transition"
+            );
+        });
+        worker.join().unwrap();
+        assert_eq!(launched.load(Ordering::SeqCst), 0);
+
+        // 2) 既に launch_if_active が起動処理に入っている場合は、その完了後に状態遷移コールバックが走る
+        gate.arm(11);
+        let entered = Arc::new(Barrier::new(2));
+        let release_launch = Arc::new(Barrier::new(2));
+        let transitioned = Arc::new(AtomicBool::new(false));
+
+        let gate_launch = gate.clone();
+        let entered_launch = entered.clone();
+        let release_worker = release_launch.clone();
+        let transitioned_check = transitioned.clone();
+        let launcher_thread = std::thread::spawn(move || {
+            assert!(gate_launch.launch_if_active(11, || {
+                entered_launch.wait();
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                assert!(
+                    !transitioned_check.load(Ordering::SeqCst),
+                    "LoggedOut transition must wait for in-flight launch gate lock"
+                );
+                release_worker.wait();
+            }));
+        });
+
+        entered.wait();
+        let gate_cancel = gate.clone();
+        let transitioned_cancel = transitioned.clone();
+        let cancel_thread = std::thread::spawn(move || {
+            gate_cancel.cancel_before_transition(11, || {
+                transitioned_cancel.store(true, Ordering::SeqCst);
+            });
+        });
+
+        release_launch.wait();
+        launcher_thread.join().unwrap();
+        cancel_thread.join().unwrap();
+        assert!(transitioned.load(Ordering::SeqCst));
+    }
 }

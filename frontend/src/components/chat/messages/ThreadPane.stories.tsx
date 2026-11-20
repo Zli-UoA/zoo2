@@ -1,7 +1,7 @@
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { StoryShell } from "../../../../.storybook/shell";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
@@ -125,13 +125,13 @@ export const WithReplies: Story = {
 export const Archived: Story = {
   parameters: { a11y: { test: "error" } },
   args: { replies, isArchived: true, currentUserId: null, canReact: false },
-  play: playForImplementation(async ({ canvasElement, args }) => {
-    const canvas = within(canvasElement);
-    await expect(await canvas.findByText("アーカイブ済み")).toBeVisible();
-    await expect(canvas.queryByRole("button", { name: "スレッドを再開" })).not.toBeInTheDocument();
-    const input = canvas.getByRole("textbox", { name: "返信を送信" });
+  play: playForImplementation(async ({ args }) => {
+    // 狭幅ではダイアログが Portal に出るため canvasElement ではなく screen で探す。
+    await expect(await screen.findByText("アーカイブ済み")).toBeVisible();
+    await expect(screen.queryByRole("button", { name: "スレッドを再開" })).not.toBeInTheDocument();
+    const input = screen.getByRole("textbox", { name: "返信を送信" });
     await userEvent.type(input, "このスレッドで続きを話します");
-    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
     await expect(args.onSendReply).toHaveBeenCalledWith("このスレッドで続きを話します");
   }),
 };
@@ -186,6 +186,19 @@ export const Mobile: Story = {
       </div>
     ),
   ],
+};
+
+// 狭幅のオーバーレイはダイアログとして開く。Escape で閉じる要求が呼び出し元に届くことを確認する。
+export const MobileDialog: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
+  args: { replies },
+  play: playForImplementation(async ({ args }) => {
+    const dialog = await screen.findByRole("dialog", { name: "スレッド" });
+    await expect(dialog).toHaveAttribute("aria-modal", "true");
+    await userEvent.keyboard("{Escape}");
+    await expect(args.onClose).toHaveBeenCalled();
+  }),
 };
 
 export const Completions: Story = {

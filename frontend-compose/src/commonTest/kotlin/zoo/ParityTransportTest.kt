@@ -50,14 +50,17 @@ class ParityTransportTest {
     }
 
     private class Browser : Platform {
+        override var messageEncryption: MessageEncryption? = null
+        var channelCache: String? = null
+        val cache = mutableMapOf<String, String>()
         val exits = mutableListOf<Row>()
         private var sequence = 0
 
         override suspend fun headers() = mapOf("X-Dev-User" to "alice")
 
-        override suspend fun readCache(key: String): String? = null
+        override suspend fun readCache(key: String): String? = if (":channels:" in key) channelCache else cache[key]
 
-        override suspend fun writeCache(key: String, value: String) {}
+        override suspend fun writeCache(key: String, value: String) { cache[key] = value }
 
         override fun uuid() = "id-${++sequence}"
 
@@ -79,6 +82,75 @@ class ParityTransportTest {
             if (name == "bubbleExit") exits += json.parseToJsonElement(payload).jsonObject
             return "{}"
         }
+    }
+
+    @Test
+    fun creationIntentPreventsPlaintextAfterDowngradeAndRestart() = runTest {
+        val platform = Browser()
+        var messageWrites = 0
+        var downgrade = true
+        val attempted = mutableListOf<String>()
+        fun client() = HttpClient(MockEngine { request ->
+            if (request.url.encodedPath in listOf("/api/channels", "/api/dms")) {
+                val body = json.parseToJsonElement((request.body as TextContent).text).jsonObject
+                val id = body.text("id")
+                assertTrue(platform.cache.values.any { id in it }) // HTTP より前に永続化する。
+                val returned = if (request.url.encodedPath == "/api/dms") "existing-dm" else id
+                attempted += returned
+                respond(obj("data" to obj("id" to returned, "encrypted" to !downgrade)).toString())
+            } else { messageWrites++; error("No plaintext write is allowed") }
+        })
+        val connection = Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none")
+        fun session(config: Config = connection) = Session(Repository(config, platform, client(), backgroundScope, synchronize = false), backgroundScope, Environment())
+        val first = session()
+        assertFailsWith<IllegalStateException> { first.createChannel(obj("is_private" to true, "encrypted" to true, "channel_name" to "secret")) }
+        assertFailsWith<IllegalStateException> { first.createDm(setOf("bob"), true) }
+        attempted.forEach { assertFalse(first.send(it, "secret", null)) }
+        first.close()
+        val reopened = session()
+        attempted.forEach { assertFalse(reopened.send(it, "still secret", null)) }
+        assertEquals(0, messageWrites)
+        assertTrue(attempted.all { reopened.isEncryptedChannel(it) })
+        downgrade = false
+        val created = reopened.createChannel(obj("is_private" to true, "encrypted" to true, "channel_name" to "valid"))
+        assertTrue(reopened.isEncryptedChannel(created.jsonObject.getValue("data").jsonObject.text("id")))
+        val anotherAccount = session(connection.copy(userId = "bob"))
+        anotherAccount.requirePlaintextChannel(attempted.first()) // 別アカウントに記録を流用しない。
+        anotherAccount.close()
+        reopened.close()
+    }
+
+    @Test
+    fun encryptedChannelUsesOnlyEncryptionAndNeverFallsBackToCommandsOrPlaintext() = runTest {
+        val platform = Browser().apply { channelCache = """[{"id":"secret","encrypted":"t"}]""" }
+        var sent = ""
+        var fail = false
+        var writes = 0
+        platform.messageEncryption = object : MessageEncryption {
+            override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+            override suspend fun send(channel: String, id: String, parent: String?, body: String) {
+                if (fail) error("e2ee.sendNeedsUnlock")
+                sent = body
+            }
+            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
+        }
+        val http = HttpClient(MockEngine { request ->
+            if (request.method != HttpMethod.Get) writes++
+            awaitCancellation()
+        })
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), platform, http, backgroundScope), backgroundScope, Environment())
+        runCurrent()
+        assertTrue(app.send("secret", "/echo secret text", "parent"))
+        assertEquals("/echo secret text", sent)
+        fail = true
+        assertFalse(app.send("secret", "never send plaintext", null))
+        assertEquals("e2ee.sendNeedsUnlock", app.toast)
+        assertFalse(app.send("secret", "file", null, attachmentIds = listOf("plaintext-file")))
+        assertFalse(app.send("secret", "/echo secret text", null, commandAppId = "echo"))
+        assertEquals(0, writes)
+        app.close()
+        http.close()
     }
 
     @Test

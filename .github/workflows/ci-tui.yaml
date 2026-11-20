@@ -7,6 +7,7 @@ on:
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop/**"
       # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
       # アイコンのテストは frontend/src の lucide-react の import を読む。
@@ -15,6 +16,8 @@ on:
       # TUI は E2EE の暗号コアを path で依存する（#359）。
       - "crates/zoo-crypto/**"
       - "rust-toolchain.toml"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/*test-selection*.mjs"
       - ".github/workflows/ci-tui.yaml"
       - ".github/workflows/select-runner.yaml"
   push:
@@ -22,6 +25,7 @@ on:
     paths:
       - "client-core/**"
       - "client-types/**"
+      - "crates/zoo-components/**"
       - "desktop/**"
       # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
       # アイコンのテストは frontend/src の lucide-react の import を読む。
@@ -30,22 +34,32 @@ on:
       # TUI は E2EE の暗号コアを path で依存する（#359）。
       - "crates/zoo-crypto/**"
       - "rust-toolchain.toml"
+      - ".github/workflows/select-tests.yaml"
+      - ".github/scripts/*test-selection*.mjs"
       - ".github/workflows/ci-tui.yaml"
       - ".github/workflows/select-runner.yaml"
 permissions:
   contents: read
 concurrency:
+  # PR と merge queue は新しい実行で古いものを止める。main は実行中のものを止めない（待機中の古いものは最新に置き換わる）。
+  # 止めると、成功したジョブの最後に保存する Rust などのキャッシュが main に残らず、PR が cold build になる。
   group: tui-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 # TUI は DB や Electric を使わないので、Docker 不要の実行先で fmt・clippy・テストをまとめて行います。
 jobs:
+  test-selection:
+    uses: ./.github/workflows/select-tests.yaml
+    with:
+      workflow: ci-tui
+
   runner:
     uses: ./.github/workflows/select-runner.yaml
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   check:
-    needs: runner
+    if: fromJSON(needs.test-selection.outputs.clients).tui
+    needs: [runner, test-selection]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 20
     defaults:
@@ -74,6 +88,19 @@ jobs:
           # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: tui
+      # メッセージ部品のモデル。backend と client-types（GPUI・Tauri・TUI）が使う。
+      - name: format check (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo fmt --check
+      - name: lint check (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo test --locked
+      - name: wasm32 build check (zoo-components)
+        working-directory: ./crates/zoo-components
+        run: cargo check --locked --target wasm32-unknown-unknown
       - name: format check (client-types)
         working-directory: ./client-types
         run: cargo fmt --check
@@ -105,7 +132,9 @@ jobs:
         run: cargo build --locked --release
 
   desktop:
+    if: fromJSON(needs.test-selection.outputs.clients).desktop
     # GPUI のビルドには Wayland / X11 / xkbcommon などの apt パッケージが要るため、GitHub ホストの実行先を使う。
+    needs: test-selection
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:

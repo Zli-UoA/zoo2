@@ -8,8 +8,9 @@ use std::sync::Arc;
 use tauri::{State, Webview};
 use zoo2_client_types::{
     ipc::{
-        AccessToken, DeviceLogin, ErrorCode, FocusState, IpcError, NotificationSettings,
-        ObservedNotifications, OpenChannel, SendMessage, SendResult, SessionInfo, UiMode,
+        AccessToken, DeviceLogin, ErrorCode, FocusState, InvokeAppAction, IpcError,
+        NotificationSettings, ObservedNotifications, OpenChannel, SendMessage, SendResult,
+        SessionInfo, UiMode,
     },
     shape::ShapeId,
 };
@@ -78,6 +79,19 @@ pub async fn zoo_set_focus(
     Ok(())
 }
 
+/// Dock やランチャーのアイコンの未読数。`count <= 0` で消す。
+/// 同期のコマンドにして、届いた順に適用する。IPC の到着順は保証されないので、WebView 側が
+/// 前の呼び出しの完了を待ってから次を送る（`desktopSetBadge`）。
+/// 数は React が計算済みのもの（ActivityPub を含む）を、そのまま使う。
+#[tauri::command]
+pub fn zoo_set_badge(webview: Webview, core: Core_<'_>, count: i64) -> Result<(), IpcError> {
+    require(&webview, &core, ANY)?;
+    let badge = (count > 0).then_some(count);
+    // Windows など、未対応の環境ではエラーになるが、表示が出ないだけなので無視する。
+    let _ = webview.window().set_badge_count(badge);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn zoo_notification_settings(
     webview: Webview,
@@ -138,6 +152,27 @@ pub async fn zoo_send_message(
 }
 
 #[tauri::command]
+pub async fn zoo_invoke_app_action(
+    webview: Webview,
+    core: Core_<'_>,
+    action: InvokeAppAction,
+) -> Result<(), IpcError> {
+    require(&webview, &core, BUNDLED)?;
+    leptos_only(&core)?;
+    let api = core.api().await?;
+    api.invoke_app_action(
+        &action.app_id,
+        &action.channel_id,
+        &action.message_id,
+        &action.custom_id,
+        action.value,
+    )
+    .await
+    .map_err(to_ipc)?;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn zoo_access_token(webview: Webview, core: Core_<'_>) -> Result<AccessToken, IpcError> {
     require(&webview, &core, REMOTE)?;
     let (access_token, expires_at) = core.access_token().await?;
@@ -158,6 +193,14 @@ pub async fn zoo_notifications_observed(
     core.handle_batch(generation, ShapeId::Notifications, observed.batch)
         .await;
     Ok(())
+}
+
+/// E2EE の再認証。既定のブラウザーで AuthZ にログインし直してもらい、ID トークンを返す。
+/// (b) の画面だけが呼べる。
+#[tauri::command]
+pub async fn zoo_reauthenticate(webview: Webview, core: Core_<'_>) -> Result<String, IpcError> {
+    require(&webview, &core, REMOTE)?;
+    core.inner().reauthenticate().await
 }
 
 /// トーストの「応答」を押した招待の ID を、一度だけ返す（なければ `None`）。(b) の画面だけが呼べる。

@@ -35,6 +35,18 @@ export const Filled: Story = {
   }),
 };
 
+export const InvalidName: Story = {
+  play: playForImplementation(async () => {
+    const input = await screen.findByPlaceholderText("新しいチャンネル名");
+    await userEvent.type(input, "Invalid Name");
+    await expect(input).toHaveAttribute("aria-invalid", "true");
+    await userEvent.keyboard("{Enter}");
+    const error = document.getElementById("create-channel-name-help");
+    await expect(error).toHaveTextContent("半角ハイフン");
+    await expect(error).toHaveFocus();
+  }),
+};
+
 export const Closed: Story = {
   args: {
     open: false,

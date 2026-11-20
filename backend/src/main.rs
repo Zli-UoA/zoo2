@@ -19,7 +19,10 @@ async fn main() -> anyhow::Result<()> {
         "Starting backend service"
     );
 
+    backend::apns::ApnsConfig::from_env("sandbox")?;
+    backend::apns::ApnsConfig::from_env("production")?;
     backend::push::PushConfig::from_env()?;
+    backend::push::fcm::FcmConfig::from_env()?;
     if std::env::var("ACTIVITYPUB_BASE_URL").is_ok_and(|v| !v.is_empty()) {
         backend::activitypub::base_url()?;
     }
