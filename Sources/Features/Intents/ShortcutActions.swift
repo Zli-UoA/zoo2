@@ -28,6 +28,10 @@ struct ShortcutActions {
     func recipients() async throws -> [ShortcutRecipient] {
         try check()
         let people = try await workspace.client.people()
+        return try recipients(in: people)
+    }
+
+    func recipients(in people: [Person]) throws -> [ShortcutRecipient] {
         try check()
         return people.filter { !$0.is_bot && !$0.is_deactivated && $0.id != workspace.user.id }.map {
             ShortcutRecipient(id: identifier($0.id), personID: $0.id, name: $0.name, username: $0.user_name)
@@ -58,7 +62,7 @@ struct ShortcutActions {
         return channel
     }
 
-    static func validateMessage(_ content: String) throws {
+    nonisolated static func validateMessage(_ content: String) throws {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, content.unicodeScalars.count <= 40_000 else {
             throw ZooError.auth("メッセージは1文字以上、40,000文字以内で入力してください。")
         }

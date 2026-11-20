@@ -193,6 +193,7 @@ final class WorkspaceStore {
                     unread = Set(cached.readStates.filter(\.has_unread).map(\.channel_id))
                     joinedChannelIDs = Set(cached.readStates.map(\.channel_id))
                     hasLoaded = true
+                    onPeopleChanged?()
                 }
             } catch { report(error) }
         }

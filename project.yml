@@ -53,6 +53,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: このバージョンではカメラを使用しません。音声通話はマイクのみを使用します。
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
+        NSSiriUsageDescription: SiriからDMを送信するため、宛先の名前と送信するメッセージをSiriと共有します。
+        INIntentsSupported: [INSendMessageIntent]
+        INIntentsRestrictedWhileLocked: [INSendMessageIntent]
+        INIntentsRestrictedWhileProtectedDataUnavailable: [INSendMessageIntent]
         NSPhotoLibraryAddUsageDescription: アップロードされた画像や動画を写真に保存します。
         UIBackgroundModes: [audio, voip]
         APNSEnvironment: $(APNS_ENVIRONMENT)

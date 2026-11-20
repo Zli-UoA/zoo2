@@ -197,6 +197,7 @@ private struct ProfileSettingsView: View {
                     Link("iOSの通知設定を開く", destination: url)
                 }
             }
+            SiriSettingsSection(workspace: session.workspace)
             if let webSettings {
                 Section { Link("Web版の設定を開く", destination: webSettings) }
             }
