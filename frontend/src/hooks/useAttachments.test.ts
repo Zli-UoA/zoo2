@@ -59,3 +59,37 @@ it("shares one URL request across image copies and reuses the signed URL", async
   expect(mocks.requestWithTx).toHaveBeenCalledTimes(2);
   expect(results[0].url).toBe("https://other.test/image.png");
 });
+
+it("returns the URL to a download even when the row unmounts mid-request", async () => {
+  let finish!: (value: unknown) => void;
+  mocks.requestWithTx.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  await act(async () => root.render(tree()));
+  const getFreshUrl = results[0].getFreshUrl;
+  const pending = getFreshUrl();
+  // 仮想スクロールなどで、URL の取得中に行が外れる。
+  await act(async () => root.render(null));
+  await act(async () => {
+    finish({ data: { download_url: "https://files.test/image.png" }, txid: null });
+  });
+  await expect(pending).resolves.toBe("https://files.test/image.png");
+  expect(mocks.requestWithTx).toHaveBeenCalledTimes(1);
+});
+
+it("refetches only when getFreshUrl is asked to refresh", async () => {
+  mocks.requestWithTx.mockResolvedValue({
+    data: { download_url: "https://files.test/image.png" },
+    txid: null,
+  });
+  await act(async () => root.render(tree()));
+  await expect(results[0].getFreshUrl()).resolves.toBe("https://files.test/image.png");
+  expect(mocks.requestWithTx).toHaveBeenCalledTimes(1);
+  await expect(results[0].getFreshUrl({ refresh: true })).resolves.toBe(
+    "https://files.test/image.png",
+  );
+  expect(mocks.requestWithTx).toHaveBeenCalledTimes(2);
+});

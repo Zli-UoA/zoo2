@@ -25,7 +25,11 @@ export interface AttachmentUrlState {
   status: AttachmentUrlStatus;
   expiresAt: number | null;
   reload: () => void;
-  getFreshUrl: () => Promise<string | null>;
+  /**
+   * ダウンロードなど、表示の状態に左右されずに URL が必要なときに使う。
+   * `refresh` を渡すとキャッシュを捨てて取り直す（ダウンロードの再試行用）。
+   */
+  getFreshUrl: (options?: { refresh?: boolean }) => Promise<string | null>;
 }
 
 export function useMessageAttachments(channelId: string | null, enabled = true) {
@@ -116,13 +120,31 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
     void load(false);
   }, [attachmentId, load, config]);
 
-  const getFreshUrl = useCallback(() => {
-    const cachedEntry = cachedAttachmentUrl(config, attachmentId);
-    if (cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
-      return Promise.resolve(cachedEntry.url);
-    }
-    return load(false);
-  }, [attachmentId, load, config]);
+  // 表示用の `load()` は `requestId` で古い応答を捨てるが、ダウンロードは利用者の操作なので
+  // 取得できた URL を必ず返す。行の再マウントや仮想スクロールで `load()` の結果が捨てられても、
+  // 押したダウンロードが失敗しないようにする（#640）。
+  const getFreshUrl = useCallback(
+    async (options: { refresh?: boolean } = {}): Promise<string | null> => {
+      if (options.refresh) {
+        forgetAttachmentUrl(config, attachmentId);
+      } else {
+        const cachedEntry = cachedAttachmentUrl(config, attachmentId);
+        if (cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
+          return cachedEntry.url;
+        }
+      }
+      try {
+        const value = await requestAttachmentUrl(client, config, attachmentId);
+        setUrl(value.url);
+        setExpiresAt(value.expiresAt);
+        setStatus("ready");
+        return value.url;
+      } catch {
+        return null;
+      }
+    },
+    [attachmentId, client, config],
+  );
 
   return { url, status, expiresAt, reload, getFreshUrl };
 }
