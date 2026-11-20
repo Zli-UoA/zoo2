@@ -160,6 +160,14 @@ pub fn participants_sql() -> &'static str {
          SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text"
 }
 
+/// The participants of a thread, read in a transaction of their own (after a write committed).
+async fn read_participants(db: &mut toasty::Db, root_id: &str) -> Result<Value, AppError> {
+    let mut tx = db.transaction().await?;
+    let participants = crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?;
+    tx.commit().await?;
+    Ok(participants)
+}
+
 async fn thread_operation(
     state: AppState,
     auth: AuthUser,
@@ -241,16 +249,41 @@ async fn thread_operation(
     //   chosen. A plain `JOIN keys` with `id = ANY(ARRAY(keys))` was seen to become a Nested Loop
     //   with a Join Filter on PostgreSQL 16 (P x P `users` rows), or a Hash Join over all users.
     // The list sorts the live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
-    let participants = crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?;
-    row["tracked"] = participants["tracked"].clone();
-    row["participant_count"] = participants["count"].clone();
-    row["participants"] = participants["items"].clone();
+    // A write holds the root lock (it serializes replies, joins and leaves of this thread) until
+    // it commits, so its O(P) read runs after the commit, in its own transaction: the lock is held
+    // for the write only, whatever P is. A read has no lock and stays in its transaction.
+    let participants = if operation == "read" {
+        Some(crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?)
+    } else {
+        None
+    };
     let txid = if changed.is_empty() {
         None
     } else {
         Some(get_current_txid(&mut tx).await?)
     };
     tx.commit().await?;
+    let participants = match participants {
+        Some(participants) => Some(participants),
+        // The write is already committed. If only this read fails, answer without the list
+        // (the client keeps what it has and refreshes) instead of reporting a failed write.
+        None => match read_participants(&mut db, root_id).await {
+            Ok(participants) => Some(participants),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    thread = root_id,
+                    "reading participants after a write failed"
+                );
+                None
+            }
+        },
+    };
+    if let Some(participants) = participants {
+        row["tracked"] = participants["tracked"].clone();
+        row["participant_count"] = participants["count"].clone();
+        row["participants"] = participants["items"].clone();
+    }
     Ok(Json(ApiResponse::new(row, txid)))
 }
 

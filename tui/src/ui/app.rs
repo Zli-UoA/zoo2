@@ -2711,6 +2711,15 @@ mod tests {
         .into();
         let notice = send_failure_notice(&Target::Reply("root".into()), &join_required);
         assert!(notice.contains("J で参加"), "{notice}");
+        // 暗号化チャンネルの API は ApiError でエラーを返す。
+        let coded: anyhow::Error = zoo2_client_core::http::ApiError {
+            status: reqwest::StatusCode::FORBIDDEN,
+            code: None,
+            message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+            body: serde_json::Value::Null,
+        }
+        .into();
+        assert!(send_failure_notice(&Target::Reply("root".into()), &coded).contains("J で参加"));
         // 返信以外では参加しても直らないので、原因をそのまま出す。
         let notice = send_failure_notice(&Target::Channel, &join_required);
         assert!(notice.starts_with("送信に失敗しました"), "{notice}");

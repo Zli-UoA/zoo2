@@ -118,7 +118,17 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
                 .any(|v| v["id"] == root)
         );
     }
-    ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
+    // A write answers with the participants read after it committed, so they include the change.
+    let joined = ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
+    assert_eq!(joined["data"]["membership"], "joined");
+    assert!(
+        joined["data"]["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == users[2].as_str())
+    );
+    assert_eq!(joined["data"]["tracked"], true);
     let repeat = ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
     assert!(repeat["txid"].is_null());
     ok(&app, &users[1], "POST", &format!("{path}/leave"), json!({})).await?;

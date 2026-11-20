@@ -93,14 +93,18 @@ pub enum HttpError {
 pub const THREAD_JOIN_REQUIRED_MESSAGE: &str = "Join the thread before replying";
 
 /// `error` が「スレッドに参加してから返信する」ことを求める 403 か。投稿権限がないなど、
-/// ほかの 403 は含まない（参加しても送れない）。
+/// ほかの 403 は含まない（参加しても送れない）。暗号化チャンネルの API は [`ApiError`]、
+/// ほかは [`HttpError::Status`] でエラーを返すので、どちらも見る。
 pub fn is_thread_join_required(error: &anyhow::Error) -> bool {
-    matches!(
+    let (status, message) = match (
         error.downcast_ref::<HttpError>(),
-        Some(HttpError::Status { status, message })
-            if *status == reqwest::StatusCode::FORBIDDEN
-                && message.contains(THREAD_JOIN_REQUIRED_MESSAGE)
-    )
+        error.downcast_ref::<ApiError>(),
+    ) {
+        (Some(HttpError::Status { status, message }), _) => (*status, message.as_str()),
+        (_, Some(api)) => (api.status, api.message.as_str()),
+        _ => return false,
+    };
+    status == reqwest::StatusCode::FORBIDDEN && message.contains(THREAD_JOIN_REQUIRED_MESSAGE)
 }
 
 /// backend のエラー応答 `{"error": "..."}` から本文を取り出す。
@@ -210,5 +214,32 @@ mod tests {
             THREAD_JOIN_REQUIRED_MESSAGE,
         )));
         assert!(!is_thread_join_required(&anyhow::anyhow!("network down")));
+    }
+
+    fn coded(status: reqwest::StatusCode, message: &str) -> anyhow::Error {
+        ApiError {
+            status,
+            code: None,
+            message: message.to_string(),
+            body: serde_json::json!({ "error": message }),
+        }
+        .into()
+    }
+
+    /// 暗号化チャンネルの API（`error_for_status_coded`）は `ApiError` を返す。
+    #[test]
+    fn the_coded_error_of_the_e2ee_api_is_recognised_too() {
+        assert!(is_thread_join_required(&coded(
+            reqwest::StatusCode::FORBIDDEN,
+            THREAD_JOIN_REQUIRED_MESSAGE,
+        )));
+        assert!(!is_thread_join_required(&coded(
+            reqwest::StatusCode::FORBIDDEN,
+            "Only channel managers may post here",
+        )));
+        assert!(!is_thread_join_required(&coded(
+            reqwest::StatusCode::CONFLICT,
+            THREAD_JOIN_REQUIRED_MESSAGE,
+        )));
     }
 }
