@@ -7,6 +7,7 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
     let session = AppSession.shared
     var controller: NotificationController?
     let systemCalls = SystemCallController()
+    private var watchCompanion: WatchCompanionController?
     private var pendingMessageTap: PushDestination?
     private var pendingTest: PushNotice?
     func application(_ application: UIApplication, handlerFor intent: INIntent) -> Any? {
@@ -25,6 +26,8 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
             systemCalls.bind(session)
             systemCalls.setForeground(application.applicationState == .active)
             systemCalls.start()
+            watchCompanion = WatchCompanionController(session: session, calls: systemCalls)
+            watchCompanion?.start()
         }
         return true
     }

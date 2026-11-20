@@ -52,6 +52,42 @@ final class SystemCallController: NSObject {
     private var callID: UUID? { current?.id ?? outgoingID }
     var isManagingCall: Bool { callID != nil }
     var incomingInvitationID: UUID? { current?.id }
+    var onWatchStateChanged: (() -> Void)?
+
+    var watchCall: WatchCall? {
+        guard let workspace, workspace.active, let callID else { return nil }
+        if let current, phase == .ringing {
+            guard current.canAnswer(userID: workspace.user.id) else { return nil }
+            return WatchCall(id: callID, title: String(current.callerName.prefix(80)), phase: .incoming,
+                             status: "着信中", muted: false, canSetMuted: false, expiresAt: current.expiresAt)
+        }
+        let calls = workspace.calls
+        let title = calls.channel.map { workspace.name(for: $0) } ?? current?.callerName ?? "通話"
+        return WatchCall(id: callID, title: String(title.prefix(80)), phase: calls.ready ? .connected : .connecting,
+                         status: calls.connectionStatus, muted: calls.muted,
+                         canSetMuted: calls.ready && !calls.changingMute)
+    }
+
+    func performWatchAction(_ request: WatchRequest) async throws {
+        guard let call = watchCall, request.callID == call.id, call.allows(request.action) else {
+            throw ZooError.invalidResponse
+        }
+        let action: CXCallAction
+        switch request.action {
+        case .answer: action = CXAnswerCallAction(call: call.id)
+        case .decline, .end: action = CXEndCallAction(call: call.id)
+        case .setMuted:
+            guard let muted = request.muted else { throw ZooError.invalidResponse }
+            action = CXSetMutedCallAction(call: call.id, muted: muted)
+        case .refresh: throw ZooError.invalidResponse
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            callController.request(CXTransaction(action: action)) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+        }
+    }
 
     @MainActor private final class Completion {
         let call: () -> Void
@@ -115,6 +151,7 @@ final class SystemCallController: NSObject {
             callController.request(CXTransaction(action: CXSetMutedCallAction(call: callID, muted: muted))) { _ in }
         }
         updateSync()
+        onWatchStateChanged?()
     }
 
     private func prepareOutgoingCall(id: UUID, channel: Channel) async throws {
@@ -122,6 +159,7 @@ final class SystemCallController: NSObject {
         outgoingID = id
         outgoingConnected = false
         startedCall = true
+        onWatchStateChanged?()
         let action = CXStartCallAction(call: id, handle: CXHandle(type: .generic, value: workspace.name(for: channel)))
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -204,6 +242,7 @@ final class SystemCallController: NSObject {
         if available {
             current = call; phase = .ringing; observedInShape = false
             startedCall = false
+            onWatchStateChanged?()
             updateSync()
             expiry?.cancel()
             expiry = Task { [weak self] in
@@ -271,6 +310,7 @@ final class SystemCallController: NSObject {
         }
         guard current != nil, startedCall, phase == .answering else { return }
         phase = .connected
+        onWatchStateChanged?()
         answerAction?.fulfill(); answerAction = nil
         updateSync()
     }
@@ -288,6 +328,7 @@ final class SystemCallController: NSObject {
         validationID = nil
         startedCall = false
         updateSync()
+        onWatchStateChanged?()
     }
 
     private func end(reason: CXCallEndedReason) {
@@ -305,6 +346,7 @@ final class SystemCallController: NSObject {
         workspace?.calls.prepareSystemCall = nil
         workspace?.calls.onPeerConnected = nil
         workspace = nil
+        onWatchStateChanged?()
     }
 
     private func validateUnseenCall(_ call: IncomingCall, workspace: WorkspaceStore) {
@@ -407,6 +449,7 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         guard let call = current, call.id == action.callUUID, phase == .ringing else { action.fail(); return }
         phase = .answering
+        onWatchStateChanged?()
         expiry?.cancel(); expiry = nil
         answerAction = action
         answering = Task { [weak self] in
