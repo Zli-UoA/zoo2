@@ -4,7 +4,7 @@ struct ReactionGlyph: View {
     let emoji: String
     let message: Message?
     let workspace: WorkspaceStore
-    @State private var kitchenImage: URL?
+    @State private var kitchenImage: (emoji: String, url: URL)?
     @ScaledMetric(relativeTo: .body) private var size = 24.0
 
     private var username: String? {
@@ -30,7 +30,9 @@ struct ReactionGlyph: View {
     }
 
     private var imageURL: URL? {
-        if emoji.hasPrefix("kitchen:") { return kitchenImage }
+        if emoji.hasPrefix("kitchen:") {
+            return ReactionEmoji.cachedKitchenImageURL(emoji) ?? (kitchenImage?.emoji == emoji ? kitchenImage?.url : nil)
+        }
         if let id = remoteImageID {
             return (try? ConnectionSettings.secureURL(workspace.client.serverURL))?.appending(path: "api/activitypub/emoji-images/\(id)")
         }
@@ -42,8 +44,8 @@ struct ReactionGlyph: View {
             if let username {
                 AccountStamp(account: workspace.emojiAccount(named: username), username: username, size: size)
             } else if let imageURL {
-                AsyncImage(url: imageURL) { phase in
-                    if let image = phase.image {
+                CachedRemoteImage(url: imageURL, policy: .stored) { image in
+                    if let image {
                         image.resizable().scaledToFit().frame(width: size, height: size)
                     } else { fallback }
                 }
@@ -53,7 +55,7 @@ struct ReactionGlyph: View {
         .task(id: emoji) {
             guard emoji.hasPrefix("kitchen:") else { return }
             let url = await ReactionEmoji.kitchenImageURL(emoji)
-            if !Task.isCancelled { kitchenImage = url }
+            if !Task.isCancelled, let url { kitchenImage = (emoji, url) }
         }
     }
 
@@ -69,8 +71,8 @@ struct AccountStamp: View {
     let size: CGFloat
 
     var body: some View {
-        AsyncImage(url: account?.avatarURL) { phase in
-            if let image = phase.image {
+        CachedRemoteImage(url: account?.avatarURL, policy: .stored) { image in
+            if let image {
                 image.resizable().scaledToFill()
             } else {
                 let name = account?.display_name ?? ""

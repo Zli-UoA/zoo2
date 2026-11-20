@@ -25,7 +25,7 @@ final class PreviewChatClient: ChatClient {
     static let messageID = "22222222-2222-4222-8222-222222222222"
     let currentUser = Person(id: "33333333-3333-4333-8333-333333333333", user_name: "you", display_name: "あなた")
     var previewProfile = PublicProfile(display_name: "", default_display_name: "あなた", summary: "")
-    private let colleague = Person(id: "44444444-4444-4444-8444-444444444444", user_name: "sakura", display_name: "さくら")
+    private let colleague = Person(id: "44444444-4444-4444-8444-444444444444", user_name: "sakura", display_name: "さくら", avatar_url: "https://ui.test.invalid/stamp.png")
     private let otherColleague = Person(id: "99999999-9999-4999-8999-999999999999", user_name: "aoi", display_name: "あおい")
     private let discoverableID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     private var joinedPublic = false
@@ -314,7 +314,7 @@ final class PreviewChatClient: ChatClient {
     }
 
     func emojiAccounts() async throws -> [EmojiAccount] {
-        [EmojiAccount(username: "sakura", display_name: "さくら", avatar_url: nil),
+        [EmojiAccount(username: "sakura", display_name: "さくら", avatar_url: "https://ui.test.invalid/stamp.png"),
          EmojiAccount(username: "zoo", display_name: "動物園", avatar_url: nil)]
     }
 

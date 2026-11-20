@@ -59,6 +59,7 @@ final class WorkspaceStore {
     let calls: CallStore
     @ObservationIgnored weak var systemCalls: SystemCallController?
     let videoPlayback = AttachmentVideoPlayback()
+    let images: RemoteImageStore
     let recentEmojis: RecentEmojiStore
     private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
@@ -135,6 +136,7 @@ final class WorkspaceStore {
     init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard, calls: CallStore? = nil) {
         self.client = client
         self.user = user
+        images = RemoteImageStore(namespace: client.serverURL + "|" + user.id)
         self.calls = calls ?? CallStore(client: client, userID: user.id)
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
@@ -549,6 +551,7 @@ final class WorkspaceStore {
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
         videoPlayback.stop()
+        images.close()
         calls.shutdown()
         inbox.shutdown()
         threads.shutdown()

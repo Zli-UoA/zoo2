@@ -9,6 +9,7 @@ struct RootView: View {
         Group {
             if let workspace = session.workspace {
                 WorkspaceView(workspace: workspace, session: session)
+                    .environment(\.remoteImages, workspace.images)
             } else if session.isStarting || session.restoring {
                 LaunchScreenView()
             } else {

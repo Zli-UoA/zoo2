@@ -80,13 +80,14 @@ struct ReactionPicker: View {
                         ForEach(custom) { emoji in
                             Button { select(":\(emoji.name):") } label: {
                                 HStack(spacing: AppDesign.spacing) {
-                                    AsyncImage(url: emoji.imageURL) { phase in
-                                        if let image = phase.image { image.resizable().scaledToFit() }
+                                    CachedRemoteImage(url: emoji.imageURL, policy: .stored) { image in
+                                        if let image { image.resizable().scaledToFit() }
                                         else { Image(systemName: "face.smiling").foregroundStyle(.secondary) }
                                     }
                                     .frame(width: 36, height: 32).accessibilityHidden(true)
                                     Text(":\(emoji.name):").foregroundStyle(.primary)
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                             }
                             .accessibilityIdentifier("pick-reaction-:\(emoji.name):")
                         }
@@ -103,6 +104,7 @@ struct ReactionPicker: View {
                                         Text("@\(account.username)").font(.caption).foregroundStyle(.secondary)
                                     }
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                             }
                             .accessibilityIdentifier("pick-reaction-:@\(account.username):")
                         }
