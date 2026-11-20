@@ -1,5 +1,5 @@
 import "../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vite-plus/test";
 import { http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../test/browser-setup";
@@ -35,11 +35,13 @@ it.each([16, "1.5em"])(
       </div>,
     );
     await document.fonts.ready;
-    const initial = screen
-      .getByRole("img", { name: ":wide:" })
-      .parentElement!.getBoundingClientRect();
+    const image = screen.getByRole("img", { name: ":wide:" });
+    const initial = image.parentElement!.getBoundingClientRect();
     const following = screen.getByTestId("following").getBoundingClientRect();
     expect(initial.width / initial.height).toBeCloseTo(3);
+    // Measure the reserved slot before the browser error event, independently
+    // of lazy-loading and network scheduling on the CI worker.
+    fireEvent.error(image);
     release();
     await waitFor(() =>
       expect(screen.queryByRole("img", { name: ":wide:" })).not.toBeInTheDocument(),
