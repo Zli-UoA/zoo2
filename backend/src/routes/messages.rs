@@ -878,7 +878,7 @@ pub(crate) async fn create_message_impl(
             let _ = tx.rollback().await;
             if supplied_id.is_some() {
                 let mut retry_db = state.db.clone();
-                if let Some(msg_res) = check_idempotent_existing_message(
+                match check_idempotent_existing_message(
                     &mut retry_db,
                     &id,
                     &auth_user.id,
@@ -890,9 +890,16 @@ pub(crate) async fn create_message_impl(
                     payload.metadata.as_ref(),
                     &attachment_ids,
                 )
-                .await?
+                .await
                 {
-                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                    Ok(Some(msg_res)) => {
+                        return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                    }
+                    // Not a retry of this author's stored post. A reused ID that belongs to
+                    // someone else (409) or to another channel (404) must not reveal that the
+                    // ID exists to a non-participant, so it falls through to the 403 below.
+                    Ok(None) | Err(AppError::Conflict(_) | AppError::NotFound(_)) => {}
+                    Err(error) => return Err(error),
                 }
             }
             return Err(AppError::Forbidden(
