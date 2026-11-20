@@ -156,7 +156,7 @@ async fn unarchive_thread(
 /// Shared with the scale test so it measures exactly the SQL the route runs.
 pub fn participants_sql() -> &'static str {
     "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at,p.left_at FROM thread_participants p WHERE p.thread_id=$1), \
-              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM users u JOIN keys k ON k.user_id=u.id WHERE u.id = ANY(ARRAY(SELECT user_id FROM keys WHERE left_at IS NULL)) AND k.left_at IS NULL AND NOT u.is_deactivated) \
+              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM keys k CROSS JOIN LATERAL (SELECT x.id,x.user_name,x.display_name,x.avatar_url FROM users x WHERE x.id=k.user_id AND NOT x.is_deactivated OFFSET 0) u WHERE k.left_at IS NULL) \
          SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text"
 }
 
@@ -236,8 +236,10 @@ async fn thread_operation(
     //   the count and the list are all derived from it; no second probe of the table. A separate
     //   `EXISTS`/`LIMIT 1` probe let the planner choose a sequential scan that skipped every
     //   other thread's rows before reaching the target.
-    // - `users` is read only through `u.id = ANY(ARRAY(keys))`, an index lookup per live key,
-    //   not a Hash Join that scans all users.
+    // - `users` is read through a LATERAL primary-key probe per live key (`OFFSET 0` keeps the
+    //   planner from flattening it into a join), so it costs P probes whichever join method is
+    //   chosen. A plain `JOIN keys` with `id = ANY(ARRAY(keys))` was seen to become a Nested Loop
+    //   with a Join Filter on PostgreSQL 16 (P x P `users` rows), or a Hash Join over all users.
     // The list sorts the live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
     let participants = crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?;
     row["tracked"] = participants["tracked"].clone();

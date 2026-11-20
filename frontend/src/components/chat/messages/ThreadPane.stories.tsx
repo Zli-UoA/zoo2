@@ -366,7 +366,10 @@ export const PostingForbidden: Story = {
     const canvas = within(canvasElement);
     // 閲覧はできるまま、入力欄だけが理由付きで止まる。
     await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeDisabled();
-    await expect(canvas.getByText("このチャンネルは管理者のみ投稿できます。")).toBeInTheDocument();
+    // 理由は入力欄の placeholder に出る（テキストノードではない）。
+    await expect(
+      canvas.getByPlaceholderText("このチャンネルは管理者のみ投稿できます。"),
+    ).toBeDisabled();
   }),
 };
 export const PostingForbiddenNotJoined: Story = {

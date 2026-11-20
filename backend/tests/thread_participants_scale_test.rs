@@ -4,7 +4,8 @@
 //! deactivated) ones. Bound: no Seq Scan on users/thread_participants, `thread_participants`
 //! rows <= P, `users` rows <= joined (not left), sort input <= L, logical blocks <= 5*joined + 2P + 64.
 //! The reply gate SQL (`reply_participation_sql`, run on every thread reply) is measured too:
-//! no Seq Scan, `thread_participants` rows <= 2, `users` rows <= 1, logical blocks <= 64.
+//! no Seq Scan, `thread_participants` rows <= 2, `users` not read, logical blocks <= 64.
+//! Each plan is written to `SCALE_PLAN_DIR` before the bounds are checked, so a failing plan survives.
 use backend::{
     config::Config,
     routes::{messages::reply_participation_sql, threads::participants_sql},
@@ -133,14 +134,22 @@ fn gate_work(name: &str, plan: &Value) -> Value {
         scanned("thread_participants")
     );
     assert!(
-        scanned("users") <= 1.,
-        "{name}: users scanned {} > 1: {relations:?}",
+        scanned("users") == 0.,
+        "{name}: users scanned {} > 0: {relations:?}",
         scanned("users")
     );
     let blocks = plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)
         + plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0);
     assert!(blocks <= 64, "{name}: {blocks} logical blocks > 64");
     json!({"relations":relations,"sort_input":0,"logical_blocks":blocks})
+}
+
+/// Writes a plan before its bounds are checked, so the plan of a failing case stays available.
+fn save_plan(dir: &Option<std::path::PathBuf>, file: &str, plan: &Value) -> anyhow::Result<()> {
+    if let Some(dir) = dir {
+        std::fs::write(dir.join(file), serde_json::to_vec_pretty(plan)?)?;
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -235,17 +244,12 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
                 ))
                 .await?;
             let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+            save_plan(&output, &format!("{}-{run}.json", case.name), &plan)?;
             let measured = work(case, run, &plan[0]);
             eprintln!(
                 "{users} {}/{run} work={measured} planning={} execution={}",
                 case.name, plan[0]["Planning Time"], plan[0]["Execution Time"]
             );
-            if let Some(dir) = &output {
-                std::fs::write(
-                    dir.join(format!("{}-{run}.json", case.name)),
-                    serde_json::to_vec_pretty(&plan)?,
-                )?;
-            }
             metrics.insert(format!("{}/{run}", case.name), measured);
         }
         client.batch_execute(&format!("DEALLOCATE ALL; PREPARE participants(text) AS {sql}; SET plan_cache_mode=force_generic_plan")).await?;
@@ -257,17 +261,12 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
                 ))
                 .await?;
             let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+            save_plan(&output, &format!("{}-{run}.json", case.name), &plan)?;
             let measured = work(case, run, &plan[0]);
             eprintln!(
                 "{users} {}/{run} work={measured} planning={} execution={}",
                 case.name, plan[0]["Planning Time"], plan[0]["Execution Time"]
             );
-            if let Some(dir) = &output {
-                std::fs::write(
-                    dir.join(format!("{}-{run}.json", case.name)),
-                    serde_json::to_vec_pretty(&plan)?,
-                )?;
-            }
             metrics.insert(format!("{}/{run}", case.name), measured);
         }
         client
@@ -286,6 +285,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             ))
             .await?;
         let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        save_plan(&output, &format!("{}-gate_custom.json", case.name), &plan)?;
         metrics.insert(
             format!("{}/gate_custom", case.name),
             gate_work(&format!("{}/gate_custom", case.name), &plan[0]),
@@ -303,6 +303,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             ))
             .await?;
         let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        save_plan(&output, &format!("{}-gate_generic.json", case.name), &plan)?;
         metrics.insert(
             format!("{}/gate_generic", case.name),
             gate_work(&format!("{}/gate_generic", case.name), &plan[0]),

@@ -407,16 +407,17 @@ async fn idempotent_existing_message_in_snapshot(
 }
 
 /// Reply gate lookup (`$1` = thread root, `$2` = author): whether the thread has participant
-/// rows, whether the author is joined, and whether the author is a bot. Shared with the scale
-/// test so it measures exactly the SQL the write path runs.
+/// rows and whether the author is joined. Shared with the scale test so it measures exactly the
+/// SQL the write path runs.
 ///
-/// Every term is bounded independent of other threads' rows: `joined` is one primary-key
-/// probe on (thread_id,user_id) and `bot` one `users` primary-key probe. `tracked` only asks
-/// whether any row exists; `ORDER BY user_id LIMIT 1` follows the primary-key order so the
-/// planner takes the first index entry of this thread instead of a sequential scan that skips
-/// every other thread's rows (the plan the participant list SQL was measured to choose).
+/// Both terms are bounded independent of other threads' rows. `joined` is one primary-key probe
+/// on (thread_id,user_id). `tracked` only asks whether any row exists, as a scalar subquery with
+/// a real `ORDER BY user_id LIMIT 1`: inside `EXISTS` the planner drops the `ORDER BY`, and for a
+/// thread that holds a few percent of the table it then chose a sequential scan that skipped
+/// every other thread's rows. With the `LIMIT` kept, it reads the first index entry of this
+/// thread instead.
 pub fn reply_participation_sql() -> &'static str {
-    "SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1),'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL),'bot',(SELECT is_bot FROM users WHERE id=$2))::text"
+    "SELECT json_build_object('tracked',(SELECT true FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1) IS NOT NULL,'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text"
 }
 
 pub(crate) async fn create_message_impl(
@@ -871,10 +872,7 @@ pub(crate) async fn create_message_impl(
         )
         .await?;
         // Bots (Apps API) have no way to join a thread, so they are not gated.
-        if participation["tracked"] == true
-            && participation["joined"] != true
-            && participation["bot"] != true
-        {
+        if participation["tracked"] == true && participation["joined"] != true && !bot_actor {
             // A concurrent request with the same ID may have committed (and its author then left)
             // while this one waited for the root lock. That is a retry of a stored post, not a
             // new reply, so return it instead of refusing.

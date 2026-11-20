@@ -202,12 +202,14 @@ export function HomeComposer({
       : "";
   // 投稿権限のないチャンネル（`posting_policy=managers`）には、閲覧はできても書き込めない。
   // 返信は返信先のチャンネル、新規投稿は選んだチャンネルが対象。
-  const { currentUserId, isAdmin } = useCurrentUser();
+  const { currentUserId, isAdmin, isLoading: currentUserLoading } = useCurrentUser();
   const targetChannelId = replyTo ? (replyTo.channel_id ?? null) : selectedChannelId || null;
   const targetChannel = targetChannelId
     ? (channelsQuery.data ?? []).find((channel) => channel.id === targetChannelId)
     : undefined;
+  // 現在のユーザー（管理者か）が確定するまでは止めない。
   const postingForbidden =
+    !currentUserLoading &&
     !!targetChannel &&
     !canPostInChannel({
       postingPolicy: targetChannel.posting_policy,

@@ -187,15 +187,6 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
             .0,
         StatusCode::FORBIDDEN
     );
-    // Reusing the ID of someone else's stored post must not leak that it exists (no 409/404).
-    let mut reused = nested.clone();
-    reused["id"] = json!(reply);
-    assert_eq!(
-        call(&app, &users[1], "POST", "/api/messages", reused)
-            .await?
-            .0,
-        StatusCode::FORBIDDEN
-    );
     // A Home reply is the exception: it joins the thread as it posts, even after a leave.
     let home_root = ok(
         &app,

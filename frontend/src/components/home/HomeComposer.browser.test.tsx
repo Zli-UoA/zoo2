@@ -31,6 +31,11 @@ vi.mock("../../lib/electric/collections-context", async (original) => ({
   useCollections: () => ({ config: {} }),
 }));
 vi.mock("../layout/useMediaQuery", () => ({ useMediaQuery: () => true }));
+// 現在のユーザーの取得は、このテストの対象ではない（毎回新しい config を返すモックと組み合わせると、
+// config ごとのストアが描画のたびに作り直される）。
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({ currentUserId: "me", isAdmin: false, isLoading: false, error: null }),
+}));
 
 beforeEach(() => {
   fixture.channels = [
