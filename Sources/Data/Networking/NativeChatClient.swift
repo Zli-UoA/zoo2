@@ -211,7 +211,8 @@ struct NativeChatClient: ChatClient {
     /// 参加が必要なスレッドへ参加する。参加できる状態でなければ false を返す。
     private func rejoinThread(messageID: String) async throws -> Bool {
         let path = "api/threads/\(try segment(messageID))"
-        let status: ThreadMembership = try await api.write(path, method: "GET")
+        // GET に本文を付けると URLSession が拒否するため、`write` ではなく本文なしの `data` で取得する。
+        let status = try JSONDecoder().decode(Envelope<ThreadMembership>.self, from: await api.data(path)).data
         guard status.can_participate, status.membership != "joined" else { return false }
         if status.thread_archive_at != nil {
             _ = try await api.data("\(path)/unarchive", method: "POST")
