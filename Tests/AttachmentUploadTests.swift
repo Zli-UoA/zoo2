@@ -360,6 +360,34 @@ struct AttachmentUploadTests {
         #expect(!FileManager.default.fileExists(atPath: converted.path))
     }
 
+    @Test("拡張子がHEICでも実データがGIFなら変換せず、全フレームと正しいMIMEタイプを保持する",
+          arguments: ["スタンプ.heic", "スタンプ.HEIF"])
+    func mislabeledGIF(name: String) async throws {
+        let context = try #require(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(data, UTType.gif.identifier as CFString, 2, nil))
+        CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        for color in [CGColor(red: 1, green: 0, blue: 0, alpha: 1), CGColor(red: 0, green: 0, blue: 1, alpha: 1)] {
+            context.setFillColor(color)
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+            CGImageDestinationAddImage(destination, try #require(context.makeImage()),
+                                      [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.1]] as CFDictionary)
+        }
+        try #require(CGImageDestinationFinalize(destination))
+        let original = data as Data
+        let source = try sourceFile(name: name, bytes: original)
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        let attachment = try #require(try await DraftAttachment.importing([source]).first)
+        #expect(attachment.fileName == name)
+        #expect(attachment.contentType == "image/gif")
+        #expect(attachment.byteCount == original.count)
+        #expect(try Data(contentsOf: attachment.file.url) == original)
+        let imageSource = try #require(CGImageSourceCreateWithURL(attachment.file.url as CFURL, nil))
+        #expect(CGImageSourceGetType(imageSource) as String? == UTType.gif.identifier)
+        #expect(CGImageSourceGetCount(imageSource) == 2)
+    }
+
     @Test("HEICの投稿・返信はJPEGの名前・サイズ・MIMEタイプと実データをアップロードする", arguments: [false, true])
     func heicUpload(reply: Bool) async throws {
         let harness = try ChatHarness()

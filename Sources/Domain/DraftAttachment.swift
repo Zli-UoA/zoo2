@@ -46,13 +46,14 @@ struct DraftAttachment: Identifiable, Sendable, Transferable {
                     let declaredType = UTType(filenameExtension: url.pathExtension)
                     let imageSource = CGImageSourceCreateWithURL(file.url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
                     let imageType = imageSource.flatMap { CGImageSourceGetType($0) }.flatMap { UTType($0 as String) }
-                    if [declaredType, imageType].contains(where: { $0?.conforms(to: .heic) == true || $0?.conforms(to: .heif) == true }) {
+                    let type = imageType ?? declaredType
+                    if type?.conforms(to: .heic) == true || type?.conforms(to: .heif) == true {
                         // ImageIOの遅延読み込みが終わるまで、一時ファイルを保持する。
                         return try withExtendedLifetime(file) {
                             try jpegAttachment(from: imageSource, name: name)
                         }
                     }
-                    let mimeType = declaredType?.preferredMIMEType ?? "application/octet-stream"
+                    let mimeType = type?.preferredMIMEType ?? "application/octet-stream"
                     return DraftAttachment(fileName: name, contentType: mimeType, byteCount: size, file: file)
                 }
             }
