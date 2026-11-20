@@ -7,6 +7,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
+import { EmojiKitchenPicker } from "../chat/messages/EmojiKitchenPicker";
 import { EmojiPicker } from "../chat/messages/EmojiPicker";
 import { ActivityPubEmoji, type CustomEmoji } from "./ActivityPubEmoji";
 import { panelTabClassName } from "../ui/control-panel";
@@ -30,6 +31,7 @@ export function HomeReactionPicker({
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [dialogElement, setDialogElement] = useState<HTMLDivElement | null>(null);
   const [emojis, setEmojis] = useState<CustomEmoji[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -73,7 +75,10 @@ export function HomeReactionPicker({
         if (!open) onClose();
       }}
     >
-      <DialogContent className="flex h-[min(36rem,calc(100dvh-2rem))] flex-col overflow-hidden sm:max-w-md">
+      <DialogContent
+        ref={setDialogElement}
+        className="flex h-[min(36rem,calc(100dvh-2rem))] flex-col overflow-hidden sm:max-w-md"
+      >
         <DialogTitle>{t("home.react")}</DialogTitle>
         <Tabs.Root
           className="flex min-h-0 flex-1 flex-col gap-3"
@@ -84,12 +89,22 @@ export function HomeReactionPicker({
             <Tabs.Tab value="unicode" className={panelTabClassName}>
               {t("reactions.tabEmoji")}
             </Tabs.Tab>
+            <Tabs.Tab value="kitchen" className={panelTabClassName}>
+              {t("reactions.tabKitchen")}
+            </Tabs.Tab>
             <Tabs.Tab value="custom" className={panelTabClassName}>
               {t("home.customEmojis")}
             </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="unicode" className="flex min-h-0 flex-1 flex-col">
             <EmojiPicker onSelect={(reaction) => select({ reaction })} />
+          </Tabs.Panel>
+          <Tabs.Panel value="kitchen" className="min-h-0 flex-1">
+            <EmojiKitchenPicker
+              active={tab === "kitchen"}
+              dialogElement={dialogElement}
+              onSelect={(reaction) => select({ reaction })}
+            />
           </Tabs.Panel>
           <Tabs.Panel value="custom" className="flex min-h-0 flex-1 flex-col gap-3">
             <Input

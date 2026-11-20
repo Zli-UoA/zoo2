@@ -5,6 +5,7 @@ mod emoji;
 pub(crate) mod emoji_cache;
 mod inbox;
 pub(crate) mod interactions;
+mod kitchen;
 mod note_identity;
 mod profile;
 mod public_profile;
@@ -149,7 +150,13 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         }
         note["tag"] = json!([{"type":"Mention","href":recipient,"name":recipient}]);
     }
-    if let Some(emojis) = post["emojis"].as_array() {
+    let mut emojis = post["emojis"].as_array().cloned().unwrap_or_default();
+    for kitchen in kitchen::content_emojis(string(post, "content")?) {
+        if !emojis.iter().any(|e| e["name"] == kitchen["name"]) {
+            emojis.push(kitchen);
+        }
+    }
+    if post["emojis"].is_array() || !emojis.is_empty() {
         let tags = note
             .as_object_mut()
             .unwrap()

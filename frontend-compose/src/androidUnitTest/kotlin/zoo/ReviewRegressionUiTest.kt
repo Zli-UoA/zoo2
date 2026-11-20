@@ -57,6 +57,61 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun kitchenFallbackConvertsTheDpSlotToSpOnceAtLargeFontScale() {
+        val fixture = Fixture()
+        try {
+            ui.setContent {
+                CompositionLocalProvider(
+                    LocalApp provides fixture.app,
+                    androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(2f, 1.8f),
+                ) {
+                    MaterialTheme {
+                        ReactionEmoji("kitchen:1f431_1f600", size = 24.dp, loadCatalog = false)
+                    }
+                }
+            }
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            ui.onNodeWithText("🐱", useUnmergedTree = true).performSemanticsAction(
+                androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult
+            ) { it(layouts) }
+            assertEquals(1, layouts.size)
+            val layout = layouts.single()
+            // Android 14+ uses nonlinear font scaling; verify the rendered dp
+            // size instead of assuming that sp = dp / fontScale.
+            val glyphDp = with(layout.layoutInput.density) { layout.layoutInput.style.fontSize.toDp() }
+            val lineDp = with(layout.layoutInput.density) { layout.layoutInput.style.lineHeight.toDp() }
+            assertEquals(24f, glyphDp.value, 0.1f)
+            assertEquals(24f, lineDp.value, 0.1f)
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun emojiPickerRecentsRenderKitchenImagesWithPhoneSizedTargets() {
+        val fixture = Fixture()
+        var width by mutableStateOf(256.dp)
+        var dark by mutableStateOf(false)
+        var chosen = ""
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(androidx.compose.ui.platform.LocalDensity.current.density, fontScale = 1.8f)) {
+                        MaterialTheme(colorScheme = zooColorScheme(dark)) {
+                            Box(Modifier.width(width)) {
+                                EmojiPicker(fixture.app, {}, initialRecents = listOf("kitchen:1f431_1f600", "😀"), embedded = true) { chosen = it }
+                            }
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithContentDescription("🐱 + 😀")
+                .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).performClick()
+            ui.runOnIdle { assertEquals("kitchen:1f431_1f600", chosen); width = 416.dp; dark = true }
+            ui.onNodeWithContentDescription("😀").assertIsDisplayed().performClick()
+            ui.runOnIdle { assertEquals("😀", chosen) }
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun mediaPreviewClosesAndReopensWithWebViewDetachedBeforeDestruction() {
         val fixture = Fixture()
         var open by mutableStateOf(true)

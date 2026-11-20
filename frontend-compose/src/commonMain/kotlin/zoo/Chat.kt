@@ -1767,7 +1767,7 @@ internal fun Composer(
                 focusReturn++
             }
             pickerSelection = null
-        }) {
+        }, forMessage = true) {
             val insertionRange = pickerSelection ?: textRange
             pickerSelection = null
             applyEdit(insertComposerText(value, insertionRange, it))

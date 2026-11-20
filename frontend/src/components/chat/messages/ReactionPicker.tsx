@@ -1,3 +1,4 @@
+import { kitchenShortcode } from "../../../lib/emoji/kitchen";
 import { Tabs } from "@base-ui/react/tabs";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -22,7 +23,9 @@ export function ReactionPicker({
   open,
   onOpenChange,
   onSelect,
+  purpose = "reaction",
 }: {
+  purpose?: "reaction" | "message";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (emoji: string) => void;
@@ -31,9 +34,8 @@ export function ReactionPicker({
   const [tab, setTab] = useState<ReactionTab>("emoji");
   const [dialogElement, setDialogElement] = useState<HTMLDivElement | null>(null);
   const select = (emoji: string) => {
-    // Unicode / カスタム / Kitchen の種別を問わず、リアクションとして使った値を最近に残す。
     addRecentEmoji(emoji);
-    onSelect(emoji);
+    onSelect(purpose === "message" ? kitchenShortcode(emoji) : emoji);
     onOpenChange(false);
   };
 
@@ -44,7 +46,9 @@ export function ReactionPicker({
         className="flex h-[min(36rem,calc(100dvh-2rem))] flex-col gap-3 overflow-hidden sm:max-w-md"
       >
         <DialogHeader className="shrink-0 pr-8">
-          <DialogTitle>{t("reactions.add")}</DialogTitle>
+          <DialogTitle>
+            {t(purpose === "message" ? "reactions.tabEmoji" : "reactions.add")}
+          </DialogTitle>
           <DialogDescription>
             {tab === "kitchen"
               ? t("reactions.kitchenDescription")
