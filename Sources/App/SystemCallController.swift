@@ -6,22 +6,36 @@ import UIKit
 @preconcurrency import WebRTC
 
 @MainActor
-protocol IncomingCallReporting: AnyObject {
+protocol SystemCallReporting: AnyObject {
     func reportNewIncomingCall(with UUID: UUID, update: CXCallUpdate, completion: @escaping @Sendable ((any Error)?) -> Void)
     func reportCall(with UUID: UUID, endedAt dateEnded: Date?, reason endedReason: CXCallEndedReason)
+    func reportCall(with UUID: UUID, updated update: CXCallUpdate)
+    func reportOutgoingCall(with UUID: UUID, startedConnectingAt dateStartedConnecting: Date?)
+    func reportOutgoingCall(with UUID: UUID, connectedAt dateConnected: Date?)
 }
 
-extension CXProvider: IncomingCallReporting {}
+extension CXProvider: SystemCallReporting {}
+
+@MainActor
+protocol SystemCallRequesting: AnyObject {
+    func request(_ transaction: CXTransaction, completion: @escaping @Sendable ((any Error)?) -> Void)
+}
+
+extension CXCallController: SystemCallRequesting {}
 
 @MainActor
 final class SystemCallController: NSObject {
     private enum Phase { case ringing, answering, connected }
-    private let provider: any IncomingCallReporting
-    private let callController = CXCallController()
+    private let provider: any SystemCallReporting
+    private let callController: any SystemCallRequesting
+    private let configureAudio: @MainActor () throws -> Void
     private var registry: PKPushRegistry?
     private weak var session: AppSession?
     private weak var workspace: WorkspaceStore?
     private var current: IncomingCall?
+    private var outgoingID: UUID?
+    private var outgoingConnected = false
+    private var outgoingStart: CheckedContinuation<Void, Error>?
     private var phase = Phase.ringing
     private var observedInShape = false
     private var retired: [UUID: Date] = [:]
@@ -35,7 +49,8 @@ final class SystemCallController: NSObject {
     private var token: Data?
     private var foreground = true
     private var audioActivated = false
-    var isManagingCall: Bool { current != nil }
+    private var callID: UUID? { current?.id ?? outgoingID }
+    var isManagingCall: Bool { callID != nil }
     var incomingInvitationID: UUID? { current?.id }
 
     @MainActor private final class Completion {
@@ -54,8 +69,11 @@ final class SystemCallController: NSObject {
         self.init(provider: CXProvider(configuration: configuration))
     }
 
-    init(provider: any IncomingCallReporting) {
+    init(provider: any SystemCallReporting, callController: any SystemCallRequesting = CXCallController(),
+         configureAudio: @escaping @MainActor () throws -> Void = NativeCallMedia.prepareSystemAudio) {
         self.provider = provider
+        self.callController = callController
+        self.configureAudio = configureAudio
         super.init()
         (provider as? CXProvider)?.setDelegate(self, queue: .main)
     }
@@ -81,17 +99,57 @@ final class SystemCallController: NSObject {
         self.workspace = workspace
         workspace.systemCalls = self
         // 着信中に通常の参加操作で別通話を開始し、CallKitの着信だけが残ることを防ぐ。
-        workspace.calls.canStart = { [weak self] systemAudio in systemAudio || self?.current == nil }
+        workspace.calls.canStart = { [weak self] systemAudio in systemAudio || self?.isManagingCall != true }
+        workspace.calls.prepareSystemCall = { [weak self] id, channel in
+            guard let self else { throw CancellationError() }
+            try await prepareOutgoingCall(id: id, channel: channel)
+        }
         workspace.calls.onInvitationsChanged = { [weak self] in self?.synchronize($0) }
         workspace.calls.onReady = { [weak self] in self?.connected() }
+        workspace.calls.onPeerConnected = { [weak self] in self?.outgoingDidConnect() }
         workspace.calls.onFinished = { [weak self] in
             if self?.startedCall == true { self?.end(reason: .remoteEnded) }
         }
         workspace.calls.onMutedChanged = { [weak self] muted in
-            guard let self, startedCall, let current else { return }
-            callController.request(CXTransaction(action: CXSetMutedCallAction(call: current.id, muted: muted))) { _ in }
+            guard let self, startedCall, let callID else { return }
+            callController.request(CXTransaction(action: CXSetMutedCallAction(call: callID, muted: muted))) { _ in }
         }
         updateSync()
+    }
+
+    private func prepareOutgoingCall(id: UUID, channel: Channel) async throws {
+        guard !isManagingCall, let workspace else { throw CancellationError() }
+        outgoingID = id
+        outgoingConnected = false
+        startedCall = true
+        let action = CXStartCallAction(call: id, handle: CXHandle(type: .generic, value: workspace.name(for: channel)))
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { continuation in
+                outgoingStart = continuation
+                callController.request(CXTransaction(action: action)) { [weak self] error in
+                    guard let error else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, outgoingID == id else { return }
+                        let pending = outgoingStart
+                        outgoingStart = nil
+                        pending?.resume(throwing: error)
+                        // CallStoreに失敗を渡し、通常の終了経路で通話とUIを解放する。
+                    }
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self, outgoingID == id else { return }
+                end(reason: .remoteEnded)
+            }
+        }
+    }
+
+    private func outgoingDidConnect() {
+        guard let outgoingID, !outgoingConnected else { return }
+        outgoingConnected = true
+        provider.reportOutgoingCall(with: outgoingID, connectedAt: .now)
     }
 
     func setForeground(_ value: Bool) { foreground = value; updateSync() }
@@ -113,7 +171,7 @@ final class SystemCallController: NSObject {
             else if phase == .ringing, !present { validateUnseenCall(current, workspace: workspace) }
             else { observedInShape = observedInShape || present }
         }
-        guard foreground, current == nil, workspace.calls.channel == nil else { return }
+        guard foreground, !isManagingCall, workspace.calls.channel == nil else { return }
         retired = retired.filter { $0.value > .now }
         for invitation in invitations {
             guard let call = IncomingCall(invitation: invitation,
@@ -142,7 +200,7 @@ final class SystemCallController: NSObject {
             return
         }
         retired = retired.filter { $0.value > .now }
-        let available = current == nil && workspace?.calls.channel == nil && retired[call.id] == nil
+        let available = !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
         if available {
             current = call; phase = .ringing; observedInShape = false
             startedCall = false
@@ -208,6 +266,9 @@ final class SystemCallController: NSObject {
     }
 
     private func connected() {
+        if let outgoingID, workspace?.calls.muted == true {
+            callController.request(CXTransaction(action: CXSetMutedCallAction(call: outgoingID, muted: true))) { _ in }
+        }
         guard current != nil, startedCall, phase == .answering else { return }
         phase = .connected
         answerAction?.fulfill(); answerAction = nil
@@ -217,6 +278,9 @@ final class SystemCallController: NSObject {
     private func clear() {
         if let current { retired[current.id] = max(current.expiresAt, .now.addingTimeInterval(60)) }
         current = nil
+        outgoingID = nil
+        outgoingConnected = false
+        outgoingStart?.resume(throwing: CancellationError()); outgoingStart = nil
         expiry?.cancel(); expiry = nil
         answering?.cancel(); answering = nil
         answerAction?.fail(); answerAction = nil
@@ -227,10 +291,10 @@ final class SystemCallController: NSObject {
     }
 
     private func end(reason: CXCallEndedReason) {
-        guard let call = current else { return }
+        guard let callID else { return }
         let hadCall = startedCall
         clear()
-        provider.reportCall(with: call.id, endedAt: .now, reason: reason)
+        provider.reportCall(with: callID, endedAt: .now, reason: reason)
         if hadCall { workspace?.calls.finish() }
     }
 
@@ -238,6 +302,8 @@ final class SystemCallController: NSObject {
         end(reason: .remoteEnded)
         invitationSync?.cancel(); invitationSync = nil
         workspace?.systemCalls = nil
+        workspace?.calls.prepareSystemCall = nil
+        workspace?.calls.onPeerConnected = nil
         workspace = nil
     }
 
@@ -309,12 +375,33 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
         let hadCall = startedCall
         clear()
         if hadCall { workspace?.calls.finish() }
+        workspace?.calls.setSystemAudioActive(false)
         guard hadCall || audioActivated else { return }
         let audio = RTCAudioSession.sharedInstance()
         audio.isAudioEnabled = false
         if audioActivated { audio.audioSessionDidDeactivate(AVAudioSession.sharedInstance()) }
         audioActivated = false
         audio.useManualAudio = false
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        guard outgoingID == action.callUUID, let pending = outgoingStart else { action.fail(); return }
+        outgoingStart = nil
+        do {
+            try configureAudio()
+            let update = CXCallUpdate()
+            update.remoteHandle = action.handle
+            update.localizedCallerName = action.handle.value
+            update.supportsHolding = false; update.supportsGrouping = false
+            update.supportsUngrouping = false; update.supportsDTMF = false
+            self.provider.reportCall(with: action.callUUID, updated: update)
+            self.provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: .now)
+            action.fulfill()
+            pending.resume()
+        } catch {
+            action.fail()
+            pending.resume(throwing: error)
+        }
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
@@ -351,12 +438,13 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        guard let call = current, call.id == action.callUUID else { action.fail(); return }
-        let decline = phase == .ringing
+        guard callID == action.callUUID else { action.fail(); return }
+        let call = current
+        let decline = call != nil && phase == .ringing
         let hadCall = startedCall
         clear()
         action.fulfill()
-        if decline, let session {
+        if decline, let session, let call {
             Task {
                 guard let workspace = await session.prepareForIncomingCall(),
                       call.canAnswer(userID: workspace.user.id) else { return }
@@ -366,7 +454,7 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     }
 
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
-        guard startedCall, current?.id == action.callUUID, let calls = workspace?.calls, calls.ready else { action.fail(); return }
+        guard startedCall, callID == action.callUUID, let calls = workspace?.calls, calls.ready else { action.fail(); return }
         if calls.muted != action.isMuted {
             guard !calls.changingMute else { action.fail(); return }
             calls.toggleMute()
@@ -375,23 +463,26 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     }
 
     func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
-        guard let callAction = action as? CXCallAction, current?.id == callAction.callUUID else { return }
+        guard let callAction = action as? CXCallAction, callID == callAction.callUUID else { return }
         if answerAction?.uuid == action.uuid { answerAction = nil }
         end(reason: .failed)
     }
 
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        guard isManagingCall else { return }
         audioActivated = true
         let audio = RTCAudioSession.sharedInstance()
         audio.audioSessionDidActivate(audioSession)
         audio.isAudioEnabled = true
+        workspace?.calls.setSystemAudioActive(true)
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         audioActivated = false
+        workspace?.calls.setSystemAudioActive(false)
         let audio = RTCAudioSession.sharedInstance()
         audio.isAudioEnabled = false
         audio.audioSessionDidDeactivate(audioSession)
-        if current == nil { audio.useManualAudio = false }
+        if !isManagingCall { audio.useManualAudio = false }
     }
 }

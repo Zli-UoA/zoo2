@@ -5,11 +5,17 @@ import Testing
 @testable import Zoo
 
 @MainActor
-private final class FakeCallReporting: IncomingCallReporting {
+private final class FakeCallReporting: SystemCallReporting {
     var incoming: [UUID] = []
     var ended: [UUID] = []
     var failure: Error?
     var onEnd: (() -> Void)?
+    var connecting: [UUID] = []
+    var connected: [UUID] = []
+    var names: [String] = []
+    func reportCall(with UUID: UUID, updated update: CXCallUpdate) { names.append(update.localizedCallerName ?? "") }
+    func reportOutgoingCall(with UUID: UUID, startedConnectingAt dateStartedConnecting: Date?) { connecting.append(UUID) }
+    func reportOutgoingCall(with UUID: UUID, connectedAt dateConnected: Date?) { connected.append(UUID) }
     func reportNewIncomingCall(with UUID: UUID, update: CXCallUpdate, completion: @escaping @Sendable ((any Error)?) -> Void) {
         incoming.append(UUID)
         completion(failure)
@@ -17,6 +23,183 @@ private final class FakeCallReporting: IncomingCallReporting {
     func reportCall(with UUID: UUID, endedAt dateEnded: Date?, reason endedReason: CXCallEndedReason) {
         ended.append(UUID)
         onEnd?()
+    }
+}
+
+@MainActor
+private final class FakeCallRequesting: SystemCallRequesting {
+    var requests: [CXTransaction] = []
+    var failure: Error?
+    var onRequest: ((CXTransaction) -> Void)?
+    func request(_ transaction: CXTransaction, completion: @escaping @Sendable ((any Error)?) -> Void) {
+        requests.append(transaction)
+        completion(failure)
+        if failure == nil { onRequest?(transaction) }
+    }
+}
+
+@MainActor @Suite("発信の標準通話画面とライフサイクル", .timeLimit(.minutes(1)))
+struct OutgoingCallTests {
+    @MainActor private final class Context {
+        let harness: ChatHarness
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        let reporting = FakeCallReporting()
+        let requesting = FakeCallRequesting()
+        let native = CXProvider(configuration: CXProviderConfiguration())
+        let calls: CallStore
+        let workspace: WorkspaceStore
+        let controller: SystemCallController
+        let channel = Channel(id: UUID().uuidString.lowercased(), channel_name: "待ち合わせ", is_private: false, is_dm: false)
+        var connection: Task<Void, Never>?
+
+        init(permission: Bool = true, audioFailure: Bool = false) throws {
+            harness = try ChatHarness()
+            let userID = UUID().uuidString.lowercased()
+            let media = self.media
+            calls = CallStore(client: client, userID: userID, makeMedia: { media }, permission: { permission })
+            client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+            workspace = WorkspaceStore(client: harness.client,
+                user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+            controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {
+                if audioFailure { throw ZooError.invalidResponse }
+            })
+            controller.setForeground(false)
+            controller.connect(workspace)
+        }
+
+        func requestStart(muted: Bool = false) async throws -> CXStartCallAction {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                requesting.onRequest = { [weak self] _ in
+                    self?.requesting.onRequest = nil
+                    continuation.resume()
+                }
+                connection = calls.start(channel: channel, initialMuted: muted)
+            }
+            let transaction = try #require(requesting.requests.last)
+            return try #require(transaction.actions.first as? CXStartCallAction)
+        }
+
+        func performStart(_ action: CXStartCallAction) async {
+            await withCheckedContinuation { continuation in
+                client.delivered = { [weak self] in
+                    self?.client.delivered = nil
+                    continuation.resume()
+                }
+                controller.provider(native, perform: action)
+            }
+        }
+
+        func close() {
+            controller.disconnect()
+            workspace.shutdown()
+            native.invalidate()
+            harness.close()
+        }
+    }
+
+    @Test("発信をCallKitへ登録し、相手の音声接続後だけ接続済みを報告する")
+    func registersOutgoingCall() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let action = try await context.requestStart()
+        #expect(context.controller.isManagingCall && context.controller.incomingInvitationID == nil)
+        #expect(!context.client.observed && !context.media.started)
+        #expect(action.handle.value == "待ち合わせ")
+        await context.performStart(action)
+        #expect(context.calls.ready && context.media.started)
+        #expect(context.reporting.connecting == [action.callUUID])
+        #expect(context.reporting.names == ["待ち合わせ"])
+        #expect(context.reporting.connected.isEmpty)
+        context.media.onPeerState?("相手", .connecting)
+        #expect(context.reporting.connected.isEmpty)
+        context.media.onPeerState?("相手", .connected)
+        context.media.onPeerState?("相手", .connected)
+        #expect(context.reporting.connected == [action.callUUID])
+        context.calls.finish()
+        #expect(context.reporting.ended == [action.callUUID])
+        #expect(context.media.closed && !context.controller.isManagingCall)
+    }
+
+    @Test("標準通話画面から発信通話をミュート・終了できる")
+    func controlsOutgoingCall() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let action = try await context.requestStart()
+        await context.performStart(action)
+        let mute = CXSetMutedCallAction(call: action.callUUID, muted: true)
+        context.controller.provider(context.native, perform: mute)
+        #expect(context.calls.muted && context.media.muted)
+        let end = CXEndCallAction(call: action.callUUID)
+        context.controller.provider(context.native, perform: end)
+        #expect(context.calls.channel == nil && context.media.closed)
+        #expect(!context.controller.isManagingCall)
+    }
+
+    @Test("発信要求の拒否と音声設定の失敗では入室せず、次の通話を妨げない", arguments: [false, true])
+    func rejectsFailedStart(audioFailure: Bool) async throws {
+        let context = try Context(audioFailure: audioFailure)
+        defer { context.close() }
+        if audioFailure {
+            let action = try await context.requestStart()
+            context.controller.provider(context.native, perform: action)
+        } else {
+            context.requesting.failure = ZooError.invalidResponse
+            context.connection = context.calls.start(channel: context.channel)
+        }
+        await context.connection?.value
+        #expect(!context.client.observed && !context.media.started)
+        #expect(context.calls.channel == nil && context.calls.error != nil)
+        #expect(!context.controller.isManagingCall)
+    }
+
+    @Test("CallKitの開始通知前に終了しても、遅れて届いた開始通知で通話が復活しない", arguments: [false, true])
+    func cancelsPendingStart(systemEnd: Bool) async throws {
+        let context = try Context()
+        defer { context.close() }
+        let action = try await context.requestStart()
+        if systemEnd { context.controller.provider(context.native, perform: CXEndCallAction(call: action.callUUID)) }
+        else { context.calls.finish() }
+        await context.connection?.value
+        context.controller.provider(context.native, perform: action)
+        #expect(!context.client.observed && !context.media.started)
+        #expect(context.reporting.connecting.isEmpty)
+        #expect(context.calls.channel == nil && !context.controller.isManagingCall)
+    }
+
+    @Test("発信の開始期限切れで待機を解放し、別通話への遅い期限切れを無視する")
+    func timesOutPendingStart() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let first = try await context.requestStart()
+        context.controller.provider(context.native, timedOutPerforming: first)
+        await context.connection?.value
+        #expect(context.calls.channel == nil && !context.controller.isManagingCall)
+        let next = try await context.requestStart()
+        context.controller.provider(context.native, timedOutPerforming: first)
+        #expect(context.controller.isManagingCall && context.calls.channel != nil)
+        await context.performStart(next)
+        #expect(context.calls.ready && context.reporting.connecting == [next.callUUID])
+    }
+
+    @Test("マイクを拒否した場合はCallKitへ発信しない")
+    func deniedMicrophone() async throws {
+        let context = try Context(permission: false)
+        defer { context.close() }
+        await context.calls.start(channel: context.channel)?.value
+        #expect(context.requesting.requests.isEmpty && !context.client.observed)
+        #expect(context.calls.channel == nil && context.calls.error != nil)
+    }
+
+    @Test("再接続で保持したミュートを標準通話画面にも反映する")
+    func restoresMutedState() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let action = try await context.requestStart(muted: true)
+        await context.performStart(action)
+        let mute = try #require(context.requesting.requests.last?.actions.first as? CXSetMutedCallAction)
+        #expect(mute.callUUID == action.callUUID && mute.isMuted)
+        #expect(context.calls.muted && context.media.muted)
     }
 }
 
@@ -136,16 +319,11 @@ struct IncomingCallTests {
     func preventsStartingAnotherChannelWhileRinging() async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
-        harness.stub { request in
-            if request.url?.path == "/api/shapes/call_invites" {
-                return (200, ["electric-handle": "calls", "electric-offset": "0_1", "electric-up-to-date": "true"], Data("[]".utf8))
-            }
-            #expect(request.url?.path.hasPrefix("/api/call-invites/") == true)
-            return (200, [:], Data(#"{"pending":true}"#.utf8))
-        }
         let call = try #require(IncomingCall(payload: payload))
+        let client = FakeCallClient()
+        client.invitationRows = [call.invitation]
         var requestedPermission = false
-        let calls = CallStore(client: harness.client, userID: call.userID, permission: {
+        let calls = CallStore(client: client, userID: call.userID, permission: {
             requestedPermission = true
             return false
         })
