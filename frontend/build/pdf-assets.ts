@@ -8,6 +8,10 @@ const packagePath = require.resolve("pdfjs-dist/package.json");
 const { version } = require("pdfjs-dist/package.json") as { version: string };
 const prefix = `assets/pdfjs/${version}/`;
 const directories = ["cmaps", "wasm", "standard_fonts"];
+// PDF.js は worker を module worker として読み込む。日本語 CMap などと同じ版付きの場所へ
+// 置き、ビルドごとのハッシュ付き .mjs に依存しない（#631）。本体と同じ legacy ビルドを使う。
+const worker = "pdf.worker.min.mjs";
+const workerPath = path.join(path.dirname(packagePath), "legacy", "build", worker);
 
 /** Same versioned, same-origin decoder/font assets in the app, Storybook and APK. */
 export function pdfAssets(): Plugin {
@@ -31,6 +35,11 @@ export function pdfAssets(): Plugin {
           });
         }
       }
+      this.emitFile({
+        type: "asset",
+        fileName: `${prefix}${worker}`,
+        source: await readFile(workerPath),
+      });
     },
     configureServer(server) {
       server.middlewares.use(async (request, response, next) => {
@@ -39,6 +48,16 @@ export function pdfAssets(): Plugin {
         const start = pathname.indexOf(marker);
         if (start < 0) return next();
         const relative = pathname.slice(start + marker.length);
+        if (relative === worker) {
+          try {
+            const bytes = await readFile(workerPath);
+            response.setHeader("Content-Type", "text/javascript");
+            response.end(bytes);
+          } catch {
+            next();
+          }
+          return;
+        }
         const [directory, name, extra] = relative.split("/");
         if (
           !directories.includes(directory) ||

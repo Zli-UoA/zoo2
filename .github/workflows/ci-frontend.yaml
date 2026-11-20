@@ -157,6 +157,19 @@ jobs:
             case "$images $connect" in *avater.zliusercontent.com*) echo "Avatar CSP override was ignored" >&2; exit 1 ;; esac
           done
 
+      - name: Check .mjs assets are served as JavaScript
+        run: |
+          # PDF.js の worker（.mjs）は module worker として読み込むため、JavaScript の
+          # MIME タイプで配信されている必要がある（#631）。
+          workers=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            find /usr/share/nginx/html/assets -name '*.mjs')
+          test -n "$workers"
+          for file in $workers; do
+            headers=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+              wget -S -O /dev/null "http://127.0.0.1:3000${file#/usr/share/nginx/html}" 2>&1)
+            printf "%s" "$headers" | grep -Eqi "Content-Type: (text|application)/javascript"
+          done
+
       - name: Check default avatar CSP in image and Compose
         run: |
           image=$(docker compose --project-directory . -f infra/compose.stack.yaml images -q frontend)

@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, expect, it, vi } from "vite-plus/test";
+import { afterEach, expect, it, vi } from "vite-plus/test";
 import { PdfPreview } from "./pdf-preview";
 import { LocaleProvider } from "../i18n/LocaleProvider";
 
@@ -15,9 +15,6 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   getDocument: mocked.getDocument,
 }));
 vi.mock("../../lib/documents/fetch", () => ({ fetchPreviewBytes: mocked.fetch }));
-beforeAll(async () => {
-  await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url");
-});
 afterEach(() => {
   vi.useRealTimers();
   vi.resetAllMocks();
