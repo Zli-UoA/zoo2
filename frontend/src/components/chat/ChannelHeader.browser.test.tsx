@@ -275,16 +275,21 @@ describe("ChannelHeader", () => {
       );
       await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
       await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
-      expect(await screen.findByText("このチャンネルを暗号化しますか？")).toBeVisible();
+      expect(
+        await screen.findByRole("alertdialog", { name: "このチャンネルを暗号化しますか？" }),
+      ).toHaveAttribute("data-open");
 
       rerender(
         <LocaleProvider>
           <ChannelHeader channel={privateB} memberCount={3} />
         </LocaleProvider>,
       );
-      await waitFor(() =>
-        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
-      );
+      await waitFor(() => {
+        const dialog = screen.queryByRole("alertdialog", {
+          name: "このチャンネルを暗号化しますか？",
+        });
+        expect(dialog?.hasAttribute("data-open") ?? false).toBe(false);
+      });
       expect(encryptApi.encryptChannel).not.toHaveBeenCalled();
     });
 
@@ -302,10 +307,16 @@ describe("ChannelHeader", () => {
       );
       await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
       await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
+      expect(
+        await screen.findByRole("alertdialog", { name: "このチャンネルを暗号化しますか？" }),
+      ).toHaveAttribute("data-open");
       await userEvent.click(await screen.findByRole("button", { name: "暗号化する" }));
-      await waitFor(() =>
-        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
-      );
+      await waitFor(() => {
+        const dialog = screen.queryByRole("alertdialog", {
+          name: "このチャンネルを暗号化しますか？",
+        });
+        expect(dialog?.hasAttribute("data-open") ?? false).toBe(false);
+      });
 
       expect(encryptApi.encryptChannel).toHaveBeenCalledWith(expect.anything(), "channel-a");
       // Shape はまだ `encrypted = false` のまま。それでも平文の送信を止める状態になる。
