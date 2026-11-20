@@ -14,6 +14,7 @@ import { addRecentEmoji, recentReactionValue } from "../../lib/emoji/recents";
 export interface ReactionChoice {
   reaction: string;
   emoji_id?: string;
+  local?: boolean;
 }
 export function HomeReactionPicker({
   postId,
@@ -61,7 +62,7 @@ export function HomeReactionPicker({
     ),
   );
   const select = (value: ReactionChoice) => {
-    addRecentEmoji(recentReactionValue(value.reaction, value.emoji_id));
+    addRecentEmoji(recentReactionValue(value.reaction, value.emoji_id, value.local));
     onSelect(value);
     onClose();
   };
@@ -127,7 +128,13 @@ export function HomeReactionPicker({
                               variant="ghost"
                               className="h-10 w-auto min-w-10 max-w-56"
                               aria-label={e.name}
-                              onClick={() => select({ reaction: e.name, emoji_id: e.image_id })}
+                              onClick={() =>
+                                select({
+                                  reaction: e.name,
+                                  emoji_id: e.image_id,
+                                  local: e.local,
+                                })
+                              }
                             >
                               <ActivityPubEmoji
                                 emoji={e}

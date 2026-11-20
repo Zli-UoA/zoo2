@@ -61,6 +61,7 @@ describe("recent emojis", () => {
     // ReactionEmoji の形式は apub:<image_id>:<:name:> なので区切りと名前にコロンが並ぶ。
     expect(recentReactionValue("party_parrot", hash)).toBe(`apub:${hash}::party_parrot:`);
     expect(recentReactionValue(":party_parrot:", hash)).toBe(`apub:${hash}::party_parrot:`);
+    expect(recentReactionValue("party_parrot", hash, true)).toBe(":party_parrot:");
   });
 
   it("keeps the in-memory list when writing storage fails", () => {
