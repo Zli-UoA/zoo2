@@ -25,21 +25,10 @@ test("editing, saving and cancelling preserve measured row positions", async ({
   await expectNoOverlap(page);
   const edit = async () => {
     if (isMobile) {
-      const body = row.locator(".mfm-body");
-      const box = await body.boundingBox();
-      expect(box).not.toBeNull();
-      const session = await page.context().newCDPSession(page);
-      try {
-        await session.send("Input.dispatchTouchEvent", {
-          type: "touchStart",
-          touchPoints: [{ x: box!.x + 10, y: box!.y + 10 }],
-        });
-        await expect(page.getByRole("menuitem", { name: "Edit", exact: true })).toBeVisible();
-        await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      } finally {
-        await session.detach();
-      }
-      await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+      await row.locator(".mfm-body").tap();
+      const sheet = page.getByRole("dialog", { name: "Message actions" });
+      await expect(sheet).toBeVisible();
+      await sheet.getByRole("button", { name: "Edit", exact: true }).click();
     } else {
       await row.hover();
       await row.getByRole("button", { name: "Edit", exact: true }).click();
@@ -225,25 +214,16 @@ test("App actions open from the upper-right menu", async ({ page, isMobile }) =>
   const more = row.getByRole("button", { name: "More actions" });
   await expect(row.locator("[data-message-toolbar]")).toHaveCSS("opacity", "0");
   if (isMobile) {
-    const box = await row.locator(".mfm-body").boundingBox();
-    expect(box).not.toBeNull();
-    const session = await page.context().newCDPSession(page);
-    try {
-      await session.send("Input.dispatchTouchEvent", {
-        type: "touchStart",
-        touchPoints: [{ x: box!.x + 10, y: box!.y + 10 }],
-      });
-      await expect(page.getByRole("menuitem", { name: "Message app actions" })).toBeVisible();
-      await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    } finally {
-      await session.detach();
-    }
+    await row.locator(".mfm-body").tap();
+    const sheet = page.getByRole("dialog", { name: "Message actions" });
+    await expect(sheet).toBeVisible();
+    await sheet.getByRole("button", { name: "Message app actions" }).click();
   } else {
     await row.hover();
     await expect(row.locator("[data-message-toolbar]")).toHaveCSS("opacity", "1");
     await more.click();
+    await page.getByRole("menuitem", { name: "Message app actions" }).click();
   }
-  await page.getByRole("menuitem", { name: "Message app actions" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-app-message-id", /.+/);
 });
 

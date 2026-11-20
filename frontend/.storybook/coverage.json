@@ -300,6 +300,7 @@
         "LongMessage",
         "Card",
         "Mobile",
+        "TouchActionSheet",
         "AppMessage",
         "CopyOriginalMenu",
         "Edited",

@@ -216,6 +216,7 @@
     "edit": "편집",
     "delete": "삭제",
     "more": "다른 조작",
+    "actions": "메시지 조작",
     "editLabel": "통보문 편집",
     "loadError": "통보문을 얻지 못했습니다",
     "retryHelp": "접속상태를 확인하고 다시 시도하십시오.",
