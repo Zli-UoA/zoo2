@@ -5,6 +5,7 @@ struct ConversationDirectory: View {
     let directMessages: Bool
     var isSidebar = false
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
     @State private var search = ""
     @State private var unreadOnly = false
     @State private var pinnedExpanded = true
@@ -149,7 +150,8 @@ struct ConversationDirectory: View {
                 channelLabel(channel).contentShape(Rectangle())
             }
                 .buttonStyle(.plain)
-                .listRowBackground(workspace.path.first?.channelID == channel.id ? AppDesign.selectionBackground : nil)
+                .listRowBackground(workspace.path.first?.channelID == channel.id ? AppDesign.selectionBackground
+                                   : (colorScheme == .dark ? AppDesign.background : nil))
                 .accessibilityAddTraits(workspace.path.first?.channelID == channel.id ? .isSelected : [])
         } else {
             NavigationLink(value: ChatRoute.channel(channel.id)) { channelLabel(channel) }
@@ -165,7 +167,7 @@ struct ConversationDirectory: View {
                     .font(.body.weight(.medium)).foregroundStyle(.secondary)
                     .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     .frame(width: AvatarView.size, height: AvatarView.size)
-                    .background(Color(.secondarySystemBackground), in: Circle())
+                    .background(AppDesign.surface, in: Circle())
             }
             let title = HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(workspace.name(for: channel))

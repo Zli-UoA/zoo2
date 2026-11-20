@@ -40,7 +40,6 @@ targets:
         TARGETED_DEVICE_FAMILY: '1,2'
         INFOPLIST_KEY_CFBundleDisplayName: Zoo
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.social-networking
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
       configs:
@@ -61,6 +60,7 @@ targets:
         UIBackgroundModes: [audio, voip]
         APNSEnvironment: $(APNS_ENVIRONMENT)
         ZooPreviewKeychainGroup: $(AppIdentifierPrefix)works.zli.zoo.preview
+        UILaunchStoryboardName: LaunchScreen
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UISupportedInterfaceOrientations:

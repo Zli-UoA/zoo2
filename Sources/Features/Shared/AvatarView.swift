@@ -18,7 +18,7 @@ struct AvatarView: View {
         }
         .id(url)
         .frame(width: dimension, height: dimension)
-        .background(Color(.secondarySystemBackground))
+        .background(AppDesign.surface)
         .clipShape(Circle())
         .accessibilityHidden(true)
     }

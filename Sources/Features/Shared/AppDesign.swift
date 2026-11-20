@@ -8,9 +8,12 @@ enum AppDesign {
     // ライト表示のガラス製タブでも文字が薄くならないよう、本体の濃いアクセント文字色を使う。
     static let navigationTint = adaptiveColor(light: 0x424242, dark: 0xD9D9D9)
     static let link = adaptiveColor(light: 0x1D4ED8, dark: 0x8AB4FF)
-    static let selectionBackground = adaptiveColor(light: 0xFFF6CC, dark: 0x303030)
+    // 背景・カード・選択状態に明度差をつけ、真っ黒の強い対比を和らげる。
+    static let background = Color("AppBackground")
+    static let surface = adaptiveColor(light: .secondarySystemBackground, dark: 0x242427)
+    static let selectionBackground = adaptiveColor(light: 0xFFF6CC, dark: 0x36363A)
     static let selectionForeground = adaptiveColor(light: 0x000000, dark: 0xE5E5E5)
-    static let accentBackground = adaptiveColor(light: 0xFFFBE8, dark: 0x2E2E2E)
+    static let accentBackground = adaptiveColor(light: 0xFFFBE8, dark: 0x303034)
     static let horizontalInset: CGFloat = 12
     static let spacing: CGFloat = 8
     static let cornerRadius: CGFloat = 16
@@ -18,23 +21,35 @@ enum AppDesign {
     static let rowInsets = EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
 
     private static func adaptiveColor(light: UInt32, dark: UInt32) -> Color {
+        adaptiveColor(light: uiColor(light), dark: dark)
+    }
+
+    private static func adaptiveColor(light: UIColor, dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
-            let rgb = traits.userInterfaceStyle == .dark ? dark : light
-            return UIColor(red: CGFloat((rgb >> 16) & 0xFF) / 255,
-                           green: CGFloat((rgb >> 8) & 0xFF) / 255,
-                           blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+            traits.userInterfaceStyle == .dark ? uiColor(dark) : light.resolvedColor(with: traits)
         })
+    }
+
+    private static func uiColor(_ rgb: UInt32) -> UIColor {
+        UIColor(red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
     }
 }
 
 struct AppList<Content: View>: View {
     @ViewBuilder var content: Content
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         List {
-            content.listRowInsets(AppDesign.rowInsets)
+            content
+                .listRowInsets(AppDesign.rowInsets)
+                .listRowBackground(colorScheme == .dark ? AppDesign.background : nil)
         }
         .listStyle(.plain)
+        .scrollContentBackground(colorScheme == .dark ? .hidden : .automatic)
+        .background((colorScheme == .dark ? AppDesign.background : .clear).ignoresSafeArea())
         .listSectionSpacing(AppDesign.spacing)
         .contentMargins(.horizontal, 0, for: .scrollContent)
         .contentMargins(.top, AppDesign.spacing, for: .scrollContent)
@@ -44,10 +59,15 @@ struct AppList<Content: View>: View {
 
 struct AppForm<Content: View>: View {
     @ViewBuilder var content: Content
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Form { content }
+        Form {
+            content.listRowBackground(colorScheme == .dark ? AppDesign.surface : nil)
+        }
             .listSectionSpacing(12)
+            .scrollContentBackground(colorScheme == .dark ? .hidden : .automatic)
+            .background((colorScheme == .dark ? AppDesign.background : .clear).ignoresSafeArea())
     }
 }
 

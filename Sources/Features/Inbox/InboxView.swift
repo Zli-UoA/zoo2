@@ -43,7 +43,7 @@ struct InboxView: View {
             }
             .padding(.top, AppDesign.spacing)
         }
-        .background(Color(.systemBackground))
+        .background(AppDesign.background.ignoresSafeArea())
         .navigationTitle("通知")
         .navigationBarTitleDisplayMode(.large)
         .accessibilityIdentifier("inbox-list")

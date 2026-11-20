@@ -500,15 +500,30 @@ struct DeviceAuthorizationTests {
         try receipts.save(receipt)
         defer { transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
         let attempts = Mutex(0)
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
         stub { request in
             #expect(request.url?.path == "/api/push/apns/revoke")
             #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
             let attempt = attempts.withLock { $0 += 1; return $0 }
-            if attempt == 1 { throw URLError(.notConnectedToInternet) }
+            if attempt == 1 {
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                throw URLError(.notConnectedToInternet)
+            }
             return (200, [:], Data(#"{"ok":true}"#.utf8))
         }
         let session = AppSession(settings: settings, transport: transport, notificationStore: receipts, previewKeys: InMemoryNotificationPreviewKeys())
-        await session.resume()
+        #expect(session.isStarting)
+        let resuming = Task { await session.resume() }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        #expect(!session.isStarting)
+        #expect(!session.restoring)
+        release.continuation.yield(())
+        await resuming.value
         #expect(try receipts.load()?.secret == receipt.secret)
         #expect(try receipts.load()?.revocationPending == true)
         await session.resume()
@@ -574,9 +589,12 @@ struct DeviceAuthorizationTests {
         let restoring = Task { await session.resume() }
         var iterator = started.stream.makeAsyncIterator()
         _ = await iterator.next()
+        #expect(session.restoring)
         session.cancelLogin()
         release.continuation.yield(())
         await restoring.value
+        #expect(!session.isStarting)
+        #expect(!session.restoring)
         #expect(!session.connecting)
         #expect(session.error == nil)
         #expect(try TokenVault.load(settings.storageKey)?.access == "test-access")

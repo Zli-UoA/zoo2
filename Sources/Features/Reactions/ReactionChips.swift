@@ -20,7 +20,7 @@ struct ReactionChips: View {
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .foregroundStyle(selected ? AppDesign.selectionForeground : .primary)
-                    .background(selected ? AppDesign.selectionBackground : Color(.secondarySystemBackground), in: Capsule())
+                    .background(selected ? AppDesign.selectionBackground : AppDesign.surface, in: Capsule())
                     .overlay { Capsule().strokeBorder(selected ? AppDesign.navigationTint : Color(.separator), lineWidth: 1) }
                     .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     .highPriorityGesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture()).onEnded { value in

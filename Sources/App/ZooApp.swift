@@ -10,7 +10,8 @@ struct ZooApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(session: session)
-                .preferredColorScheme(appearance.colorScheme)
+                .preferredColorScheme(session.workspace == nil && (session.isStarting || session.restoring)
+                                      ? nil : appearance.colorScheme)
                 .environment(\.locale, Locale(identifier: "ja_JP"))
                 .tint(AppDesign.navigationTint)
                 .task {
@@ -20,7 +21,7 @@ struct ZooApp: App {
                 }
                 .onChange(of: scenePhase) { _, value in
                     if !AppSession.isUITesting { delegate.systemCalls.setForeground(value == .active) }
-                    if value == .active, !AppSession.isUITesting { Task { await session.resume() } }
+                    if value == .active, !session.isStarting, !AppSession.isUITesting { Task { await session.resume() } }
                 }
                 .onChange(of: session.notifications.destination) { _, _ in
                     Task { await session.deliverDestination() }
