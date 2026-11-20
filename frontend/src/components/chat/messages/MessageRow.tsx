@@ -412,7 +412,7 @@ export function MessageRow({
     tapOrigin.current = null;
     // pointerdown がタッチで、移動していないシングルタップだけを対象にする。
     // シートは click で開く（pointerup で開くと直後の click が外側扱いになり閉じるため）。
-    if (!origin) return;
+    if (isEditing || !origin) return;
     if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) return;
     // リンク・操作ボタン・メニュー項目のタップは従来どおり動かす。
     if (

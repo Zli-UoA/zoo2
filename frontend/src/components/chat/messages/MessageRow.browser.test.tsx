@@ -417,6 +417,12 @@ describe("MessageRow", () => {
     expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
   });
 
+  it("does not open the sheet while the message is being edited", () => {
+    const { container } = renderRow(buildItem(), false, { isEditing: true });
+    tapTouch(container.querySelector("div.group\\/row")!);
+    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+  });
+
   it("does not open the sheet when a blurred span is tapped to reveal it", async () => {
     const { container } = renderRow(buildItem({ content: "$[blur secret]" }));
     const blur = container.querySelector(".mfm-blur");
