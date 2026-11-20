@@ -106,7 +106,9 @@ struct ZooChannelQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [ZooChannelEntity] {
         Self.logger.notice("チャンネルのID検索: \(identifiers.count)件")
         let ids = Set(identifiers)
-        return try await channels().filter { ids.contains($0.id) }.map(ZooChannelEntity.init)
+        let result = try await channels().filter { ids.contains($0.id) }.map(ZooChannelEntity.init)
+        Self.logger.notice("チャンネルのID検索結果: \(result.count)件、未解決ID: \(ids.subtracting(result.map(\.id)).count)件")
+        return result
     }
 
     func entities(matching string: String) async throws -> [ZooChannelEntity] {
@@ -127,6 +129,7 @@ struct ZooChannelQuery: EntityStringQuery {
 }
 
 struct SendZooChannelMessageIntent: AppIntent {
+    private static let logger = Logger(subsystem: "works.zli.zoo", category: "Siri")
     static let title: LocalizedStringResource = "Zooのチャンネルに投稿する"
     static let description = IntentDescription("Zooのチャンネルにメッセージを投稿します。")
     static var supportedModes: IntentModes { .foreground }
@@ -138,11 +141,14 @@ struct SendZooChannelMessageIntent: AppIntent {
     static var parameterSummary: some ParameterSummary { Summary("\(\.$channel)に\(\.$content)を投稿する") }
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        Self.logger.notice("チャンネル投稿の実行を開始しました。")
         let workspace = try await AppSession.shared.prepareForShortcut()
         let actions = ShortcutActions(workspace: workspace)
         try ShortcutActions.validateMessage(content)
         let target = try await actions.resolve(channel.channel)
+        Self.logger.notice("チャンネル投稿の送信先を解決し、確認を要求します。")
         try await requestConfirmation(dialog: "#\(target.channel_name)に「\(content)」を投稿しますか？")
+        Self.logger.notice("チャンネル投稿の確認が完了しました。")
         try await actions.send(content, to: channel.channel)
         return .result(dialog: "#\(target.channel_name)に投稿しました。")
     }
