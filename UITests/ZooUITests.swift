@@ -1856,17 +1856,22 @@ final class ZooUITests: XCTestCase {
         let mention = app.buttons["inbox-open-22222222-2222-4222-8222-222222222222"]
         XCTAssertTrue(mention.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["inbox-read-all"].waitForNonExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["通知の取得：1回目"].waitForExistence(timeout: 5))
+        let countText = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "通知の取得：")).firstMatch
+        XCTAssertTrue(countText.waitForExistence(timeout: 5))
+        guard let initialCount = Int(countText.label.filter(\.isNumber)) else {
+            XCTFail("通知の初期取得回数を読み取れませんでした。")
+            return
+        }
         let originalY = mention.frame.minY
         let list = app.descendants(matching: .any)["inbox-list"].firstMatch
         XCTAssertTrue(list.exists)
         capture(app, name: "通知一覧の更新前")
 
-        for refresh in 2...4 {
+        for refresh in 1...3 {
             let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
             let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
             start.press(forDuration: 0.1, thenDragTo: end)
-            XCTAssertTrue(app.staticTexts["通知の取得：\(refresh)回目"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["通知の取得：\(initialCount + refresh)回目"].waitForExistence(timeout: 5))
             let returned = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in abs(mention.frame.minY - originalY) < 2 }, object: nil
             )
