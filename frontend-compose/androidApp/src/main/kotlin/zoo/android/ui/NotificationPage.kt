@@ -145,7 +145,7 @@ internal fun NotificationPage(
                     }
                     item.destination?.let {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            UiGlyph(if (it.startsWith("#")) UiIcon.Channels else UiIcon.Public, colors.secondary, iconSize = 14.dp)
+                            UiGlyph(if (it.startsWith("#")) UiIcon.Channels else UiIcon.Public, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                             Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }

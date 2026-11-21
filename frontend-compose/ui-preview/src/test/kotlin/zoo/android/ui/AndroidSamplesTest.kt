@@ -182,6 +182,12 @@ class AndroidSamplesTest {
                         "Expected 4dp between send action and screen edges: $bounds / $root"
                     }
                 }
+                if (name == "channels") {
+                    for (label in listOf("チャンネルを作成", "DMを作成")) {
+                        ui.onNodeWithContentDescription(label).assertHasClickAction()
+                            .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
+                    }
+                }
                 if (name == "notifications") {
                     ui.onNodeWithText("未読").assertDoesNotExist()
                     ui.onNodeWithText("リアクション · 2件").assertIsDisplayed()

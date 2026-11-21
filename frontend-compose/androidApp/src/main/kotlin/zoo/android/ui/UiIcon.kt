@@ -27,7 +27,8 @@ internal object AndroidControlSize {
     val postToolbarHeight = 36.dp
     val postToolbarIcon = 14.dp
     val icon = 24.dp
-    val inlineIcon = 18.dp
+    val inlineIcon = 16.dp
+    val metadataIcon = 12.dp
     val navigationHeight = 60.dp
     val navigationIndicatorHeight = 32.dp
     val textInset = 24.dp

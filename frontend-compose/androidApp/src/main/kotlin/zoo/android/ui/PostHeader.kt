@@ -63,7 +63,7 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
             Text(data.dateTime, color = colors.secondary, fontSize = 11.sp, maxLines = 1)
             data.audience?.let { audience ->
                 Box(Modifier.semantics { contentDescription = audience.label }) {
-                    UiGlyph(audience.icon, colors.secondary, iconSize = 15.dp)
+                    UiGlyph(audience.icon, colors.secondary, iconSize = AndroidControlSize.metadataIcon)
                 }
             }
         }
@@ -80,7 +80,7 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
                 .background(Brush.horizontalGradient(listOf(start, Color.Transparent)), RoundedCornerShape(5.dp))
                 .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                UiGlyph(UiIcon.Public, colors.foreground, iconSize = 12.dp)
+                UiGlyph(UiIcon.Public, colors.foreground, iconSize = AndroidControlSize.metadataIcon)
                 Text(server, Modifier.height(sourceHeight), color = colors.foreground, fontSize = sourceFontSize, lineHeight = sourceLineHeight, fontWeight = AndroidWeights.emphasis,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }

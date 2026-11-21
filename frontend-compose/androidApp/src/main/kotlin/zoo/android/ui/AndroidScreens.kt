@@ -408,8 +408,11 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                     Text(section.label, Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp,
                         fontWeight = AndroidWeights.label)
                     val dm = section.label == "ダイレクトメッセージ"
-                    UiIconButton(if (dm) UiIcon.Create else UiIcon.Add, if (dm) "DMを作成" else "チャンネルを作成", colors.secondary,
-                        { dispatch(if (dm) AndroidUiAction.CreateDm else AndroidUiAction.CreateChannel) })
+                    UiIconButton(
+                        UiIcon.Add, if (dm) "DMを作成" else "チャンネルを作成", colors.secondary,
+                        { dispatch(if (dm) AndroidUiAction.CreateDm else AndroidUiAction.CreateChannel) },
+                        iconSize = AndroidControlSize.inlineIcon,
+                    )
                 }
             }
             items(section.channels, key = { it.id }) { channel ->
