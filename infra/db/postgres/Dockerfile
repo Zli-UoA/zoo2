@@ -6,10 +6,15 @@
 ARG BASE=postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
 
 FROM ${BASE} AS build
+# Headers must match the server already in the image, not the newest in PGDG;
+# apt.postgresql.org drops older versions once a new minor is out, so the
+# build stage also reads the PGDG archive, which keeps every version.
 ARG PG_BIGM_VERSION=1.2-20250903
 ARG PG_BIGM_SHA256=4d4fb48161e3f9e99207851299379c83b3e5d1d3c1a07c35f6a3153d577b3142
 RUN set -eux; \
     pg_version=$(dpkg-query -W -f='${Version}' postgresql-16); \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt-archive.postgresql.org/pub/repos/apt trixie-pgdg-archive main" \
+      > /etc/apt/sources.list.d/pgdg-archive.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gcc libicu-dev make \
       "postgresql-server-dev-16=${pg_version}"; \

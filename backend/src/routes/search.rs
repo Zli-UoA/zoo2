@@ -123,6 +123,10 @@ fn parse_day(value: Option<&str>, name: &str) -> Result<Option<jiff::civil::Date
 fn parse_cursor(value: &str) -> Result<Cursor, AppError> {
     let invalid = || AppError::BadRequest("Invalid search cursor".into());
     let cursor: Cursor = serde_json::from_str(value).map_err(|_| invalid())?;
+    // 月は SQL で int に変換する。範囲外は DB のエラー（500）ではなく 400 にする。
+    if i32::try_from(cursor.m).is_err() {
+        return Err(invalid());
+    }
     match (&cursor.at, &cursor.id) {
         (None, None) => {}
         (Some(at), Some(_)) => {
@@ -159,15 +163,32 @@ pub fn snippet(text: &str, terms: &[String]) -> String {
 }
 
 /// 語の数だけ LIKE を並べる。値はすべてバインドする。`first` は最初の語のパラメーター番号。
-fn like_clauses(column: &str, terms: usize, first: usize) -> String {
-    (0..terms)
-        .map(|i| {
-            format!(
-                " AND lower({column}) LIKE public.likequery(lower(${}))",
-                first + i
-            )
+///
+/// 1 文字の語は、pg_bigm がその文字を含むすべてのキーを部分一致で読むため、月の列と突き合わせても
+/// 読み飛ばせず、索引の読み取りが総履歴に比例する。そこで 1 文字の語は `|| ''` で索引の条件から外し、
+/// 月のキーで絞った行に対するヒープの確認だけにする（走査はその月の行数で頭打ち）。
+fn like_clauses(column: &str, terms: &[&str], first: usize) -> String {
+    terms
+        .iter()
+        .enumerate()
+        .map(|(i, term)| {
+            let target = if term.chars().count() < 2 {
+                format!("(lower({column}) || '')")
+            } else {
+                format!("lower({column})")
+            };
+            format!(" AND {target} LIKE public.likequery(lower(${}))", first + i)
         })
         .collect()
+}
+
+/// スニペットの元。最初の語が当たった位置の少し前から切り出す（長い本文の後ろで当たっても語を含む）。
+/// 前を省いたら `…` を付ける。
+fn snippet_source(column: &str) -> String {
+    format!(
+        "(CASE WHEN strpos(lower({column}), lower($9)) > 201 THEN '…' ELSE '' END \
+          || substr({column}, greatest(1, strpos(lower({column}), lower($9)) - 200), 1000))"
+    )
 }
 
 /// 1 か月分を引く SQL。
@@ -178,7 +199,7 @@ fn like_clauses(column: &str, terms: usize, first: usize) -> String {
 /// （予算テストで 100 万件中 22 万行を読んだ）。条件はヒープの行の絞り込みとしてだけ使う。
 ///パラメーター: $1 月、$2 見えるチャンネル（JSON 配列）、$3 投稿者、
 /// $4/$5 keyset（作成日時・ID）、$6/$7 期間、$8 件数、$9 以降が語。
-pub fn month_sql(kind: SearchKind, terms: usize) -> String {
+pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
     const MONTH: &str = "(date_part('year', {t}.created_at) * 12 + date_part('month', {t}.created_at))::integer = $1::int";
     let common = |t: &str, author: &str| {
         format!(
@@ -196,10 +217,11 @@ pub fn month_sql(kind: SearchKind, terms: usize) -> String {
             "SELECT json_build_object('id', m.id, 'channel_id', m.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'parent_id', m.parent_id, 'user_id', m.user_id, \
                'author', m.display_data->'author', 'emojis', COALESCE(m.display_data->'emojis', '{{}}'::jsonb), \
-               'text', left(m.content, 4000), 'created_at', m.created_at)::text \
+               'text', {text}, 'created_at', m.created_at)::text \
              FROM (SELECT m.* FROM messages m WHERE m.deleted_at IS NULL AND m.content <> ''{likes} AND {common}) m \
              JOIN channels c ON c.id = m.channel_id ORDER BY m.created_at DESC, m.id DESC",
             likes = like_clauses("m.content", terms, 9),
+            text = snippet_source("m.content"),
             common = common("m", "user_id"),
         ),
         SearchKind::Files => format!(
@@ -220,10 +242,11 @@ pub fn month_sql(kind: SearchKind, terms: usize) -> String {
         SearchKind::Notes => format!(
             "SELECT json_build_object('id', n.id, 'channel_id', n.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'user_id', n.created_user_id, 'title', n.title, \
-               'text', left(n.content, 4000), 'created_at', n.created_at, 'updated_at', n.updated_at)::text \
+               'text', {text}, 'created_at', n.created_at, 'updated_at', n.updated_at)::text \
              FROM (SELECT n.* FROM channel_notes n WHERE n.deleted_at IS NULL{likes} AND {common}) n \
              JOIN channels c ON c.id = n.channel_id ORDER BY n.created_at DESC, n.id DESC",
             likes = like_clauses("(n.title || E'\\n' || n.content)", terms, 9),
+            text = snippet_source("(n.title || E'\\n' || n.content)"),
             common = common("n", "created_user_id"),
         ),
     }
@@ -293,7 +316,8 @@ async fn search(
         .unwrap_or_else(|| before_month.map_or(now, |b| b.min(now)));
     let after_ts = after.map(|d| d.to_string()).unwrap_or_default();
     let before_ts = before.map(|d| d.to_string()).unwrap_or_default();
-    let sql = month_sql(query.kind, terms.len());
+    let term_refs: Vec<&str> = terms.iter().map(String::as_str).collect();
+    let sql = month_sql(query.kind, &term_refs);
 
     let mut items: Vec<Value> = Vec::new();
     let mut month = start;
@@ -403,8 +427,17 @@ mod tests {
 
     #[test]
     fn month_sql_binds_every_term() {
-        let sql = month_sql(SearchKind::Messages, 3);
+        let sql = month_sql(SearchKind::Messages, &["会議", "資料", "x"]);
         assert!(sql.contains("lower($9)") && sql.contains("lower($11)"));
         assert!(!sql.contains("$12"));
+        // 1 文字の語だけ索引の条件から外す。
+        assert!(sql.contains("(lower(m.content) || '') LIKE public.likequery(lower($11))"));
+        assert!(sql.contains("lower(m.content) LIKE public.likequery(lower($9))"));
+    }
+
+    #[test]
+    fn cursor_month_must_fit_in_int() {
+        assert!(parse_cursor(r#"{"m":3000000000}"#).is_err());
+        assert!(parse_cursor(r#"{"m":24323}"#).is_ok());
     }
 }

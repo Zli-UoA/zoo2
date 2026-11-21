@@ -112,6 +112,8 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
             insert(&m(6), &public, "消した会議", "6 minutes"),
             insert(&m(7), &public, "三か月前の会議", "95 days"),
             insert(&m(8), &public, "二十か月前の会議", "610 days"),
+            insert(&m(9), &public, "ボブの会議", "7 minutes")
+                .replace(&format!("'{alice}'"), &format!("'{bob}'")),
         ]
         .concat(),
     )
@@ -223,7 +225,56 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         &format!("q={}&limit=50&after={today}", q("会議")),
     )
     .await);
-    assert_eq!(recent, vec![m(1), m(2), m(3), m(4)]);
+    assert_eq!(recent, vec![m(1), m(2), m(3), m(4), m(9)]);
+
+    // 投稿者で絞る。
+    assert_eq!(
+        ids(&search(&app, &alice, &format!("q={}&user_id={bob}", q("会議"))).await),
+        vec![m(9)]
+    );
+    assert!(
+        !ids(&search(
+            &app,
+            &alice,
+            &format!("q={}&limit=50&user_id={alice}", q("会議"))
+        )
+        .await)
+        .contains(&m(9))
+    );
+    // before はその日を含まない。月初なら前の月から探す（今月の行は出ない）。
+    let month_start = sql
+        .query_one(
+            "SELECT date_trunc('month', LOCALTIMESTAMP)::date::text",
+            &[],
+        )
+        .await?
+        .get::<_, String>(0);
+    let before_month = ids(&search(
+        &app,
+        &alice,
+        &format!("q={}&limit=50&before={month_start}", q("会議")),
+    )
+    .await);
+    assert!(
+        before_month.contains(&m(7)) && !before_month.contains(&m(1)),
+        "{before_month:?}"
+    );
+    let tomorrow = sql
+        .query_one(
+            "SELECT (LOCALTIMESTAMP + interval '1 day')::date::text",
+            &[],
+        )
+        .await?
+        .get::<_, String>(0);
+    assert!(
+        ids(&search(
+            &app,
+            &alice,
+            &format!("q={}&limit=50&before={tomorrow}", q("会議"))
+        )
+        .await)
+        .contains(&m(1))
+    );
 
     // ファイル名とノート。
     sql.batch_execute(&format!(
@@ -246,9 +297,49 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         ids(&search(&app, &bob, &format!("type=notes&q={}", q("障害"))).await),
         vec!["n1"]
     );
+    // ファイルはアップロードした人、ノートは作った人で絞る。
+    assert_eq!(
+        ids(&search(&app, &alice, &format!("type=files&q=pdf&user_id={alice}")).await),
+        vec!["a1"]
+    );
+    assert!(
+        ids(&search(&app, &alice, &format!("type=files&q=pdf&user_id={bob}")).await).is_empty()
+    );
+    assert!(
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=notes&q={}&user_id={bob}", q("障害"))
+        )
+        .await)
+        .is_empty()
+    );
+    // タイトルだけに当たったノートも、スニペットに語を含む。
+    let notes = search(&app, &alice, &format!("type=notes&q={}", q("運用"))).await;
+    assert!(
+        notes["items"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("運用"),
+        "{notes}"
+    );
+    // 長い本文の後ろで当たっても、スニペットに語を含む。
+    let long = format!("{}末尾の会議メモ", "あ".repeat(5000));
+    sql.batch_execute(&insert(&m(10), &public, &long, "8 minutes"))
+        .await?;
+    let hit = search(&app, &alice, &format!("q={}", q("末尾の会議"))).await;
+    assert!(
+        hit["items"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("末尾の会議"),
+        "{hit}"
+    );
 
     // 入力の検証。
+    let bad_cursor = format!("q=x&cursor={}", q(r#"{"m":3000000000}"#));
     for bad in [
+        bad_cursor.as_str(),
         "q=",
         "q=a%20b%20c%20d%20e%20f",
         "q=x&cursor=nope",

@@ -15,6 +15,10 @@ const PRIVATE: usize = 100;
 const ENCRYPTED: usize = 20;
 const ACTOR: &str = "550e8400-e29b-41d4-a716-4466554400b1";
 const NOISE: &str = "550e8400-e29b-41d4-a716-4466554400b2";
+/// 所属のないゲスト（見えるチャンネルが 0）。
+const LONELY: &str = "550e8400-e29b-41d4-a716-4466554400b3";
+/// actor が所属しない非公開チャンネル。ここにだけ「機密語」を置く（見えない結果だけに当たる語）。
+const HIDDEN: &str = "sc-301";
 
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -84,6 +88,7 @@ async fn search_queries_have_bounded_work() -> anyhow::Result<()> {
     db.batch_execute(&format!(r#"
 SET session_replication_role = replica;
 INSERT INTO users(id,user_name,display_name) VALUES('{ACTOR}','search-actor','A'),('{NOISE}','search-noise','N');
+INSERT INTO users(id,user_name,display_name,is_guest) VALUES('{LONELY}','search-lonely','G',true);
 INSERT INTO channels(id,channel_name,created_user_id,is_private,encrypted,created_at)
 SELECT 'sc-'||i,'search-'||i,'{NOISE}',i>{PUBLIC},i>{PUBLIC}+{PRIVATE},LOCALTIMESTAMP-interval '60 months' FROM generate_series(1,{channels}) i;
 INSERT INTO channel_user(channel_id,user_id,joined_at)
@@ -101,6 +106,12 @@ SELECT 'h-'||lpad(i::text,8,'0'),'{NOISE}','sc-'||(1+i%{channels}),{content},
   date_trunc('month',LOCALTIMESTAMP)-interval '1 second'-i*(interval '30 days'/{R}),
   CASE WHEN i%7=0 THEN LOCALTIMESTAMP END
 FROM generate_series(1,{history}) i;
+-- 見えないチャンネルにだけある語。今月 300 件と、先月までの 6 か月に 1200 件（規模によらず同じ）。
+INSERT INTO messages(id,user_id,channel_id,content,created_at)
+SELECT 'x-'||lpad(i::text,8,'0'),'{NOISE}','{HIDDEN}','機密語の記録 '||i,
+  CASE WHEN i<=300 THEN date_trunc('month',LOCALTIMESTAMP)+i*interval '1 second'
+       ELSE date_trunc('month',LOCALTIMESTAMP)-i*interval '3 hours' END
+FROM generate_series(1,1500) i;
 INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at)
 SELECT 'a'||m.id,m.id,m.user_id,m.channel_id,CASE WHEN i%3=0 THEN '議事録_'||i||'.pdf' ELSE 'photo_'||i||'.jpg' END,10,'application/pdf','k'||m.id,m.created_at
 FROM (SELECT row_number() OVER () i,* FROM messages WHERE id LIKE 'r-%' OR id LIKE 'h-%') m WHERE m.i%10=0;
@@ -154,6 +165,11 @@ SET session_replication_role = DEFAULT;
         "scope".into(),
         bind(SCOPE_SQL, &[ACTOR.into(), String::new()]),
         scope_bound,
+    ));
+    queries.push((
+        "scope-guest-without-channels".into(),
+        bind(SCOPE_SQL, &[LONELY.into(), String::new()]),
+        (3 * channels + 64) as f64,
     ));
     queries.push((
         "scope-channel".into(),
@@ -253,8 +269,14 @@ SET session_replication_role = DEFAULT;
             ["", ""],
         ),
     ];
+    // 1 文字の語は索引の条件に入れないので、その月の生きている行をすべて確かめる。
+    let month_rows: f64 = one(&db, &hits("messages", "content", &[])).await?.parse()?;
     for (name, kind, table, column, terms, author, [at, id]) in &cases {
-        let h: f64 = one(&db, &hits(table, column, terms)).await?.parse()?;
+        let h: f64 = if terms.iter().any(|t| t.chars().count() < 2) {
+            month_rows
+        } else {
+            one(&db, &hits(table, column, terms)).await?.parse()?
+        };
         let mut params = vec![
             now.to_string(),
             ids.clone(),
@@ -269,7 +291,7 @@ SET session_replication_role = DEFAULT;
         // 対象の表は「今月のヒット」の定数倍、それ以外（JOIN 先）はページの件数に比例。
         queries.push((
             name.to_string(),
-            bind(&month_sql(*kind, terms.len()), &params),
+            bind(&month_sql(*kind, terms), &params),
             3. * h + 64.,
         ));
     }
@@ -287,7 +309,7 @@ SET session_replication_role = DEFAULT;
     ];
     queries.push((
         "messages-empty-month".into(),
-        bind(&month_sql(SearchKind::Messages, 1), &empty),
+        bind(&month_sql(SearchKind::Messages, &["です"]), &empty),
         8.,
     ));
     empty[0] = (now - 1).to_string();
@@ -300,9 +322,43 @@ SET session_replication_role = DEFAULT;
     .parse()?;
     queries.push((
         "messages-previous-month".into(),
-        bind(&month_sql(SearchKind::Messages, 1), &empty),
+        bind(&month_sql(SearchKind::Messages, &["です"]), &empty),
         3. * h + 64.,
     ));
+
+    // 見えない結果だけに当たる語（その月のヒットは見えないチャンネルの 300 件）と、
+    // 見えるチャンネルが 0 の閲覧者（API はここで返すが、SQL 単体でも上限内であることを見る）。
+    for (name, ids, term) in [
+        ("messages-invisible-only", ids.clone(), "機密語"),
+        ("messages-no-visible-channels", "[]".to_string(), "です"),
+    ] {
+        let h: f64 = one(&db, &hits("messages", "content", &[term]))
+            .await?
+            .parse()?;
+        let params = vec![
+            now.to_string(),
+            ids,
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            "21".into(),
+            term.into(),
+        ];
+        queries.push((
+            name.into(),
+            bind(&month_sql(SearchKind::Messages, &[term]), &params),
+            3. * h + 64.,
+        ));
+    }
+    let lonely: Value =
+        serde_json::from_str(&one(&db, &bind(SCOPE_SQL, &[LONELY.into(), String::new()])).await?)?;
+    assert_eq!(
+        lonely["ids"],
+        json!([]),
+        "a guest without memberships sees nothing"
+    );
 
     let queries = Arc::new(queries);
     let metrics = Arc::new(Mutex::new(Vec::<Value>::new()));
