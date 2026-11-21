@@ -9,7 +9,9 @@
 //! `DATABASE_URL=postgres://… ACTIVITYPUB_BASE_URL=https://zoo.test cargo test --test
 //! thread_participants_api_latency_test -- --ignored --nocapture`. CI does not run it; the numbers
 //! and their premises are in `docs/request-design.md`. Repeated runs differ by 20-50%.
-//! `API_LATENCY_USERS` (default P; at least P, not a multiple of 37) sizes the `users` table.
+//! `API_LATENCY_USERS` (default P; at least P) sizes the `users` table.
+#[path = "support/spread.rs"]
+mod spread;
 #[path = "support/thread_db.rs"]
 mod thread_db;
 use axum::{
@@ -162,11 +164,12 @@ async fn thread_detail_latency_with_many_participants() -> anyhow::Result<()> {
     tokio::spawn(connection);
     let tag = uuid::Uuid::new_v4().simple().to_string();
     // `users` holds `users_total` rows (API_LATENCY_USERS, at least P), and the participants are
-    // spread over their ids (37 is coprime with 10,000, 300,000 and 3,000,000), as in the scale test.
+    // spread over the whole id range (`spread::stride`), as in the scale test.
     let users_total: i32 = std::env::var("API_LATENCY_USERS")
         .map(|value| value.parse())
         .unwrap_or(Ok(P))?;
-    assert!(users_total >= P && users_total % 37 != 0);
+    assert!(users_total >= P);
+    let stride = spread::stride(users_total);
     eprintln!("users={users_total} participants={P}");
     let tx = admin.transaction().await?;
     tx.batch_execute("SET LOCAL session_replication_role=replica")
@@ -177,8 +180,8 @@ async fn thread_detail_latency_with_many_participants() -> anyhow::Result<()> {
     )
     .await?;
     tx.execute(
-        "INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+(n*37)%$5::integer)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$4::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$3::integer)n",
-        &[&root, &tag, &P, &LEFT, &users_total],
+        "INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+(n::bigint*$6::bigint)%($5::integer)::bigint)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$4::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$3::integer)n",
+        &[&root, &tag, &P, &LEFT, &users_total, &stride],
     )
     .await?;
     tx.execute(

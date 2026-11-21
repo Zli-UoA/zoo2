@@ -19,6 +19,8 @@ use backend::{
         threads::{participants_sql, thread_tracked_sql},
     },
 };
+#[path = "support/spread.rs"]
+mod spread;
 use serde_json::{Value, json};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
 
@@ -220,16 +222,17 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     tx.batch_execute("SET LOCAL session_replication_role=replica")
         .await?;
     tx.execute("INSERT INTO users(id,user_name,display_name) SELECT $1||'-u-'||lpad(n::text,9,'0'),$1||'-u-'||lpad(n::text,9,'0'),'U' FROM generate_series(1,$2::integer)n", &[&tag, &users]).await?;
+    let stride = spread::stride(users);
     let mut cases = Vec::new();
     for (name, p, left, deactivated, non_members) in specs {
         let thread = format!("{tag}-thread-{name}");
         tx.execute("INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'root','2025-01-01')", &[&thread, &owner, &channel]).await?;
-        // Spread participants over the whole id space (37 is coprime with 300k/1m), so
+        // Spread participants over the whole id space (`spread::stride`), so
         // index leaves and heap pages are not shared more than in production.
         // Rows 1..=left are left; the next `deactivated` users are deactivated.
         // `many_left` uses other users than the cases above, whose fixtures deactivate or remove some.
         let user_offset: i32 = if name == "many_left" { 100_000 } else { 0 };
-        tx.execute("INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+((n+$6::integer)*37)%$3::integer)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$5::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$4::integer)n", &[&thread, &tag, &users, &p, &left, &user_offset]).await?;
+        tx.execute("INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+((n+$6::integer)::bigint*$7::bigint)%($3::integer)::bigint)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$5::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$4::integer)n", &[&thread, &tag, &users, &p, &left, &user_offset, &stride]).await?;
         if deactivated > 0 {
             tx.execute("UPDATE users SET is_deactivated=true WHERE id IN (SELECT user_id FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT $2::integer)", &[&thread, &deactivated]).await?;
         }
@@ -256,7 +259,8 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         tx.execute("INSERT INTO thread_participants(thread_id,user_id) SELECT $1||'-noise-'||(n%($2::integer/30)),$1||'-u-'||lpad((1+(n*37)%$2::integer)::text,9,'0') FROM generate_series(1,$2::integer)n", &[&tag, &users]).await?;
     } else {
         // Row n is the (n/T)-th user of thread n%T, T = history/30: the 30 users of one thread
-        // differ, so the primary key holds for any history, and the ids stay spread over `users`.
+        // differ, so the primary key holds for any history. (The noise rows are never probed; only the
+        // thread_participants index grows with them.)
         tx.execute("INSERT INTO thread_participants(thread_id,user_id) SELECT $1||'-noise-'||(n%($2::integer/30)),$1||'-u-'||lpad((1+((n%($2::integer/30))*37+(n/($2::integer/30))*1013)%$3::integer)::text,9,'0') FROM generate_series(1,$2::integer)n", &[&tag, &history, &users]).await?;
     }
     tx.batch_execute("SET LOCAL session_replication_role=origin")
