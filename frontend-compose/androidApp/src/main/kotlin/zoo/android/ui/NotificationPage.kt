@@ -27,6 +27,9 @@ import kotlinx.coroutines.delay
 
 internal data class InboxActor(val id: String, val name: String, val avatar: String? = null)
 
+internal data class InboxReactionEmoji(val emoji: String, val image: String? = null)
+internal data class InboxReactionContext(val id: String, val actorIds: Set<String>)
+
 internal data class InboxItem(
     val id: String,
     val actors: List<InboxActor>,
@@ -37,6 +40,8 @@ internal data class InboxItem(
     val target: String? = null,
     val followActor: String? = null, val followActivity: String? = null,
     val kind: String = "", val unreadIds: List<String> = emptyList(), val destination: String? = null,
+    val reactions: List<InboxReactionEmoji> = emptyList(),
+    val reactionContext: InboxReactionContext? = null,
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -47,6 +52,7 @@ internal fun NotificationPage(
     colors: AndroidColors,
     nextCursor: String?,
     loadAvatar: suspend (String) -> ImageBitmap?,
+    loadReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji>,
     onViewed: (String) -> Unit,
     onOpen: (String) -> Unit,
     loadMore: () -> Unit,
@@ -109,7 +115,22 @@ internal fun NotificationPage(
                                     .semantics { contentDescription = "未読" },
                             )
                         }
-                        Text(item.summary, color = colors.secondary, fontSize = 13.sp)
+                        val channelReactions by key(item.reactionContext) {
+                            produceState(emptyList<InboxReactionEmoji>(), foreground && item.id in visible) {
+                                if (foreground && item.id in visible) {
+                                    value = item.reactionContext?.let { loadReactions(it) }.orEmpty()
+                                }
+                            }
+                        }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            itemVerticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(item.summary, color = colors.secondary, fontSize = 13.sp)
+                            (item.reactions + channelReactions).distinct().forEach { reaction ->
+                                key(reaction) { InboxReaction(reaction, colors, loadAvatar) }
+                            }
+                        }
                     }
                     if (item.actors.size > 1) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -138,6 +159,20 @@ internal fun NotificationPage(
             }
         }
     }
+}
+
+@Composable
+private fun InboxReaction(
+    reaction: InboxReactionEmoji,
+    colors: AndroidColors,
+    loadImage: suspend (String) -> ImageBitmap?,
+) {
+    val bitmap by produceState<ImageBitmap?>(null, reaction.image) {
+        value = reaction.image?.let { loadImage(it) }
+    }
+    val image = bitmap
+    if (image != null) Image(image, reaction.emoji, Modifier.size(18.dp), contentScale = ContentScale.Fit)
+    else Text(reaction.emoji, color = colors.foreground, fontSize = 14.sp)
 }
 
 @Composable

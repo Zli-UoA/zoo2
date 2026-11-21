@@ -296,6 +296,7 @@ internal fun ConnectedScreens(
         },
         language = env.locale, interaction = state.interaction.snapshot(),
         remoteAudioLevel = { phone.remoteAudioLevel },
+        loadNotificationReactions = state.inbox::loadReactions,
         loadNotificationAvatar = { url ->
             try { session.imageBitmap(url) }
             catch (cancelled: CancellationException) { throw cancelled }

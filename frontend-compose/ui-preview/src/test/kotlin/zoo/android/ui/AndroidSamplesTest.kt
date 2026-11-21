@@ -66,7 +66,8 @@ class AndroidSamplesTest {
             InboxItem("mention", listOf(InboxActor("yui", "ゆい")),
                 "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kind = "mention", destination = "#開発"),
             InboxItem("reaction", listOf(InboxActor("mizuki", "みずき", "fixture-avatar"), InboxActor("nagi", "なぎ")),
-                "リアクション · 2件", null, "11:22", false, kind = "like", destination = "misskey.io"),
+                "リアクション · 2件", null, "11:22", false, kind = "like", destination = "misskey.io",
+                reactions = listOf(InboxReactionEmoji("🎉"), InboxReactionEmoji(":star:", "fixture-emoji"))),
             InboxItem("follow", listOf(InboxActor("rin", "りん")), "フォローを申請しました", null, "11:15", false,
                 followActor = "https://example.test/rin", followActivity = "https://example.test/follow", kind = "follow_request"),
         ))
@@ -78,6 +79,14 @@ class AndroidSamplesTest {
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xff38594b.toInt() }
             canvas.drawCircle(64f, 48f, 24f, paint)
             canvas.drawOval(22f, 77f, 106f, 160f, paint)
+        }.asImageBitmap()
+        val reactionEmoji = Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888).apply {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xffedab00.toInt()
+                textSize = 44f
+                textAlign = Paint.Align.CENTER
+            }
+            Canvas(this).drawText("★", 24f, 38f, paint)
         }.asImageBitmap()
         val cases = listOf(
             "home" to AndroidScreen.Home(homePosts),
@@ -149,7 +158,7 @@ class AndroidSamplesTest {
                 if (action == AndroidUiAction.OpenChannelSettings("dev")) {
                     screen = AndroidScreen.ChannelSettings("開発", settings)
                 }
-            }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { avatar }) { item, modifier ->
+            }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
         }
@@ -173,6 +182,8 @@ class AndroidSamplesTest {
                 if (name == "notifications") {
                     ui.onNodeWithText("未読").assertDoesNotExist()
                     ui.onNodeWithText("リアクション · 2件").assertIsDisplayed()
+                    ui.onNodeWithText("🎉").assertIsDisplayed()
+                    ui.onNodeWithContentDescription(":star:").assertIsDisplayed()
                     ui.onNodeWithContentDescription("みずき", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithContentDescription("なぎ", useUnmergedTree = true).assertIsDisplayed()
                     ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)

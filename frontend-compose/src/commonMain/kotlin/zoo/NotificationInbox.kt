@@ -1,5 +1,14 @@
 package zoo
 
+import io.ktor.http.encodeURLPathPart
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonObject
+
+private val proxiedReaction = Regex("apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)")
+
+data class NotificationReaction(val emoji: String, val image: String? = null)
+data class NotificationReactionContext(val id: String, val actorIds: Set<String>)
+
 data class NotificationActor(val id: String, val name: String, val avatar: String?)
 
 data class NotificationDisplay(
@@ -15,6 +24,8 @@ data class NotificationDisplay(
     val kind: String,
     val unreadIds: List<String> = emptyList(),
     val destination: String? = null,
+    val reactions: List<NotificationReaction> = emptyList(),
+    val reactionContext: NotificationReactionContext? = null,
 )
 
 private fun UnifiedNotificationEntry.representative(): Row = item ?: channel!!.first()
@@ -47,6 +58,7 @@ class NotificationInbox(private val session: Session) {
             val unreadIds = entries.flatMap { entry ->
                 (entry.channel ?: listOf(entry.representative())).filterNot { it.flag("is_read") }.map { it.text("id") }
             }
+            val channelReactions = rows.filter { it.text("notification_type") == "reaction" }
             NotificationDisplay(
                 id, actors,
                 summary, item.text("content").ifBlank { item.nested("display_data").nested("message").text("content") }
@@ -60,8 +72,55 @@ class NotificationInbox(private val session: Session) {
                 kind, unreadIds,
                 item.nested("display_data").nested("channel").text("channel_name").takeIf { it.isNotBlank() }
                     ?.let { "#${it.trimStart('#')}" } ?: publicUrl(item.text("post_id"))?.host,
+                reactions = entries.mapNotNull { entry ->
+                    entry.item?.takeIf { noticeKind(it) == "like" }?.let(::federatedReaction)
+                }.distinct(),
+                reactionContext = channelReactions.firstOrNull()?.text("id")?.takeIf { it.isNotBlank() }?.let { id ->
+                    NotificationReactionContext(id, channelReactions.map { it.text("actor_id") }.toSet())
+                },
             )
         }
+    }
+
+    suspend fun loadReactions(context: NotificationReactionContext): List<NotificationReaction> {
+        val response = try {
+            session.api.request("/api/notifications/${context.id.encodeURLPathPart()}/context")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return emptyList()
+        }
+        val emojis = (response as? JsonObject)?.array("reactions")?.rows().orEmpty()
+            .filter { it.text("user_id") in context.actorIds }
+            .map { it.text("emoji") }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (emojis.any { it.startsWith(":") && it.endsWith(":") }) {
+            try {
+                session.loadWorkspaceEmojis()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Keep Unicode reactions and show the shortcode if its image is unavailable.
+            }
+        }
+        return emojis.map { emoji ->
+            proxiedReaction.matchEntire(emoji)?.let { match ->
+                val (id, label) = match.destructured
+                return@map NotificationReaction(label, "/api/activitypub/emoji-images/$id")
+            }
+            val name = emoji.removeSurrounding(":")
+            val image = session.workspaceEmojis.firstOrNull {
+                name != emoji && (it.text("name") == name || it.array("aliases").any { alias -> alias.toString().trim('"') == name })
+            }?.text("url")?.takeIf { it.isNotBlank() }
+            NotificationReaction(emoji, image)
+        }
+    }
+
+    private fun federatedReaction(row: Row): NotificationReaction {
+        val emoji = row.text("reaction").ifBlank { "❤️" }
+        val imageId = row.nested("emoji").text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
+        return NotificationReaction(emoji, imageId?.let { "/api/activitypub/emoji-images/$it" })
     }
 
     private fun notificationActor(item: Row, users: Map<String, Row>): NotificationActor {

@@ -1,5 +1,6 @@
 package zoo.android.ui
 
+
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -178,6 +179,7 @@ internal fun AndroidScreens(
     interaction: AndroidInteractionSettings = AndroidInteractionSettings(),
     remoteAudioLevel: () -> Float = { 0f },
     loadNotificationAvatar: suspend (String) -> ImageBitmap? = { null },
+    loadNotificationReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji> = { emptyList() },
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
@@ -203,11 +205,11 @@ internal fun AndroidScreens(
             if (visibleScreen is AndroidScreen.Conversation) {
                 conversationState.SaveableStateProvider(visibleScreen.id) {
                     RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                        dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, photo)
+                        dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
                 }
             } else {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, photo)
+                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
             }
         }
     }
@@ -230,6 +232,7 @@ private fun RenderAndroidScreen(
     interaction: AndroidInteractionSettings,
     remoteAudioLevel: () -> Float,
     loadNotificationAvatar: suspend (String) -> ImageBitmap?,
+    loadNotificationReactions: suspend (InboxReactionContext) -> List<InboxReactionEmoji>,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val top = when (screen) {
@@ -248,7 +251,7 @@ private fun RenderAndroidScreen(
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)
             is AndroidScreen.Notifications -> NotificationPage(screen.items, foreground, colors,
-                nextCursor = screen.nextCursor, loadAvatar = loadNotificationAvatar,
+                nextCursor = screen.nextCursor, loadAvatar = loadNotificationAvatar, loadReactions = loadNotificationReactions,
                 onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
                 onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
                 loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },
