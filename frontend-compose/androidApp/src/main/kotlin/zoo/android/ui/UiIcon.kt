@@ -33,7 +33,7 @@ internal object AndroidControlSize {
 }
 
 internal enum class UiIcon {
-    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy,
+    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff,
 }
 
 @Composable
@@ -105,6 +105,14 @@ internal fun UiGlyph(icon: UiIcon, color: Color) {
                 lines(5 to 16, 3 to 16, 3 to 3, 16 to 3, 16 to 5)
                 lines(8 to 8, 21 to 8, 21 to 21, 8 to 21, 8 to 8)
             }
+            UiIcon.Phone -> lines(
+                5 to 3, 9 to 3, 11 to 8, 8 to 10, 10 to 14, 14 to 16, 16 to 13,
+                21 to 15, 21 to 19, 19 to 21, 13 to 20, 8 to 17, 4 to 12, 3 to 7, 5 to 3,
+            )
+            UiIcon.PhoneOff -> lines(
+                3 to 12, 5 to 9, 9 to 7, 15 to 7, 19 to 9, 21 to 12, 21 to 16,
+                16 to 16, 15 to 12, 9 to 12, 8 to 16, 3 to 16, 3 to 12,
+            )
         }
     }
 }
