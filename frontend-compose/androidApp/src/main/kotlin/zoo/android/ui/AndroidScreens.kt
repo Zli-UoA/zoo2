@@ -127,13 +127,13 @@ internal fun AndroidScreens(
             is AndroidScreen.Conversation -> {
                 PageHeader(screen.name, colors, screen.description, onBack = back,
                     onOpen = { dispatch(AndroidUiAction.OpenChannelSettings(screen.id)) })
-                TimelineWithInput(screen.entries, screen.input, colors, dispatch)
+                TimelineWithInput(screen.entries, screen.input, colors, dispatch, showDividers = false)
             }
             is AndroidScreen.Thread -> {
                 PageHeader("スレッド", colors, onBack = back)
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
-                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch)
+                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, showDividers = false)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -225,8 +225,9 @@ private fun ColumnScope.TimelineWithInput(
     input: InputState,
     colors: AndroidColors,
     dispatch: (AndroidUiAction) -> Unit,
+    showDividers: Boolean = true,
 ) {
-    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch)
+    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch, showDividers = showDividers)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
         { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier)
 }
@@ -234,7 +235,7 @@ private fun ColumnScope.TimelineWithInput(
 @Composable
 private fun Timeline(
     entries: List<TimelineItem>, colors: AndroidColors, modifier: Modifier,
-    dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false,
+    dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false, showDividers: Boolean = true,
 ) {
     LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 16.dp)) {
         items(entries, key = { it.id }) { entry ->
@@ -261,7 +262,7 @@ private fun Timeline(
                     Text(entry.body, color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)
                 }
             }
-            HorizontalDivider(color = colors.inputBoundary)
+            if (showDividers) HorizontalDivider(color = colors.inputBoundary)
         }
     }
 }
