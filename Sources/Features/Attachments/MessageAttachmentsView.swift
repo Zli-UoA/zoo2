@@ -130,6 +130,7 @@ private struct AttachmentView: View {
                     }
                 } else {
                     Button { opening = true } label: { Label("添付を開く", systemImage: "doc") }
+                        .tint(AppDesign.externalLink)
                         .disabled(opening)
                 }
                 if !isInGallery {

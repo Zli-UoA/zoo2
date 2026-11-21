@@ -38,6 +38,7 @@ struct ProfileView: View {
                 .padding(.vertical, 4)
                 if let url = workspace.client.accountProfileURL {
                     Link("名前・アイコンを編集", destination: url)
+                        .tint(AppDesign.externalLink)
                 }
             }
             Section("公開プロフィール") {
@@ -54,6 +55,7 @@ struct ProfileView: View {
                 }
                 if let server {
                     Link("公開ページを見る", destination: server.appending(path: "public/users").appending(component: user.id))
+                        .tint(AppDesign.externalLink)
                 }
             }
             Section {
@@ -184,23 +186,27 @@ private struct ProfileSettingsView: View {
                 }
                 if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
                     Link("iOSの通知設定を開く", destination: url)
+                        .tint(AppDesign.externalLink)
                 }
             }
             SiriSettingsSection(workspace: session.workspace)
             if let webSettings {
-                Section { Link("Web版の設定を開く", destination: webSettings) }
+                Section {
+                    Link("Web版の設定を開く", destination: webSettings)
+                        .tint(AppDesign.externalLink)
+                }
             }
             Section {
                 Button("ログアウト", role: .destructive) { confirmingLogout = true }
                     .accessibilityIdentifier("logout")
+                    .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {
+                        Button("ログアウト", role: .destructive) { session.logout() }
+                        Button("キャンセル", role: .cancel) {}
+                    } message: { Text("この端末のログイン情報と下書きを削除します。") }
             }
         }
         .navigationTitle("設定")
         .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {
-            Button("ログアウト", role: .destructive) { session.logout() }
-            Button("キャンセル", role: .cancel) {}
-        } message: { Text("この端末のログイン情報と下書きを削除します。") }
         .task(id: enabling) {
             if enabling { await session.notifications.enable(); enabling = false }
         }

@@ -1697,10 +1697,24 @@ final class ZooUITests: XCTestCase {
         app.buttons["create-channel"].tap()
         XCTAssertTrue(app.navigationBars["新しい会話"].waitForExistence(timeout: 5))
         selectTab("プロフィール", in: app)
+        capture(app, name: "プロフィールの外部リンク")
         app.buttons["workspace-settings"].tap()
-        app.buttons["logout"].tap()
-        let confirmation = app.sheets.buttons["ログアウト"]
+        let logout = app.buttons["logout"]
+        if !logout.isHittable { app.swipeUp() }
+        XCTAssertTrue(logout.wait(for: \.isHittable, toEqual: true, timeout: 5))
+        capture(app, name: "設定の外部リンク")
+        let sourceFrame = logout.frame
+        logout.tap()
+        let confirmation = app.buttons.matching(NSPredicate(format: "label == 'ログアウト' AND identifier != 'logout'")).firstMatch
         XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        let title = app.staticTexts["ログアウトしますか？"]
+        let dialogFrame = title.frame.union(confirmation.frame)
+        XCTAssertTrue(dialogFrame.insetBy(dx: -32, dy: -32).intersects(sourceFrame), "確認表示を押したボタンの位置に表示する")
+        capture(app, name: "ログアウトボタンに紐づく確認表示")
+        app.navigationBars["設定"].staticTexts["設定"].tap()
+        XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(logout.isEnabled)
+        logout.tap()
         confirmation.tap()
         XCTAssertTrue(app.buttons["login"].waitForExistence(timeout: 5))
     }

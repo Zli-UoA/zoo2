@@ -89,7 +89,7 @@ struct MessageContentView: View {
         let states = Dictionary(uniqueKeysWithValues: urls.map { ($0, workspace.images.state(for: $0)) })
         let images = states.compactMapValues { $0.inlineImage(height: emojiHeight) }
         MessageContentText.render(parts, images: images, emojiHeight: emojiHeight)
-        .tint(AppDesign.link)
+        .tint(AppDesign.externalLink)
         .task(id: ImageLoadKey(stateID: renderState.id, urls: urls, active: scenePhase == .active)) {
             guard scenePhase == .active, !urls.isEmpty else { return }
             await workspace.images.watch(states, policy: .stored)
