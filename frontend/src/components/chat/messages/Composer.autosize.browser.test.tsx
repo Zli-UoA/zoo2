@@ -7,17 +7,17 @@ import "../../../styles.css";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { Composer } from "./Composer";
 
-function renderComposer(width: number) {
-  const { container } = render(
+function renderComposer(width: number, placeholder?: string) {
+  render(
     <LocaleProvider>
       <div data-testid="host" style={{ width }}>
-        <Composer onSend={async () => true} />
+        <Composer onSend={async () => true} placeholder={placeholder} />
       </div>
     </LocaleProvider>,
   );
   return {
     textarea: screen.getByRole("textbox"),
-    host: container.querySelector<HTMLElement>('[data-testid="host"]')!,
+    host: screen.getByTestId("host"),
   };
 }
 
@@ -33,6 +33,12 @@ describe("Composer autosize", () => {
     const wideHeight = textarea.getBoundingClientRect().height;
 
     expect(wideHeight).toBeLessThan(narrowHeight);
+  });
+
+  it("keeps an empty textarea at one line even when the placeholder wraps", () => {
+    const { textarea } = renderComposer(320, "ここに入力するとリアルタイムに表示されます…");
+
+    expect(textarea.getBoundingClientRect().height).toBeLessThanOrEqual(45);
   });
 
   it("caps the height and scrolls instead of growing without bound", async () => {
