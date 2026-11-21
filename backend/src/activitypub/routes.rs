@@ -52,6 +52,10 @@ pub fn router() -> Router<AppState> {
             get(follows).post(follow).delete(unfollow),
         )
         .route("/api/activitypub/status", get(status))
+        .route(
+            "/api/activitypub/instance-colors",
+            get(instance_colors::read),
+        )
         .route("/api/activitypub/search", get(search))
 }
 pub(super) async fn local_user(state: &AppState, id: &str) -> Result<Value, AppError> {

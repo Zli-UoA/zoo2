@@ -176,6 +176,11 @@
     "invalidState": "目前狀態無法執行此操作。"
   },
   "settings": {
+    "appearance": "外觀",
+    "interaction": "操作方式",
+    "swipeReply": "滑動回覆",
+    "operationHaptics": "觸覺回饋",
+    "navTitle": "設定",
     "admin": "管理員",
     "member": "成員",
     "makeAdmin": "設為管理員",
@@ -246,6 +251,10 @@
     "edited": "已編輯"
   },
   "attachments": {
+    "recentPhotos": "最近的照片",
+    "systemPhotos": "開啟照片選擇器",
+    "allowRecentPhotos": "允許存取照片",
+    "noRecentPhotos": "沒有可顯示的照片",
     "play": "播放",
     "pause": "暫停",
     "add": "附加檔案",
@@ -393,6 +402,8 @@
     "channels": "頻道建議"
   },
   "notifications": {
+    "filterAll": "全部通知",
+    "filterMentions": "提及",
     "label": "通知",
     "close": "關閉通知",
     "title": "通知",
@@ -590,6 +601,7 @@
     "micNotFound": "未找到麥克風設備。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "輸入的文字會即時顯示在此房間中",
     "emptyTitle": "目前沒有人在輸入",
@@ -803,6 +815,7 @@
     "showLess": "收合"
   },
   "home": {
+    "navTitle": "首頁",
     "back": "返回",
     "deleted": "已刪除貼文",
     "newPosts": "查看新貼文（{{count}}）",
@@ -1718,6 +1731,9 @@
     "description": "選擇建立帳號時自動加入的公開頻道。不會影響現有帳號。",
     "empty": "沒有可用的公開頻道。",
     "saved": "已儲存。"
+  },
+  "androidUpdate": {
+    "title": "應用程式更新"
   },
   "androidNotifications": {
     "enable": "啟用通知",

@@ -2,11 +2,11 @@ package zoo
 
 import androidx.compose.ui.text.TextRange
 
-internal enum class ComposerFormat(val label: String, val title: String, val open: String, val close: String) {
-    Bold("B", "composer.bold", "<b>", "</b>"),
-    Italic("I", "composer.italic", "<i>", "</i>"),
-    Strike("S", "composer.strike", "<s>", "</s>"),
-    Code("</>", "composer.code", "```\n", "\n```"),
+internal enum class ComposerFormat(val icon: String, val title: String, val open: String, val close: String) {
+    Bold("bold", "composer.bold", "<b>", "</b>"),
+    Italic("italic", "composer.italic", "<i>", "</i>"),
+    Strike("strikethrough", "composer.strike", "<s>", "</s>"),
+    Code("code", "composer.code", "```\n", "\n```"),
 }
 
 internal data class ComposerEdit(val text: String, val selection: TextRange)

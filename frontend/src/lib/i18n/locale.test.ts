@@ -76,6 +76,7 @@ describe("translations", () => {
     "reactions.chip",
     "reactions.kitchen",
     "bubbleChat.title",
+    "bubbleChat.navTitle",
     "home.title", // The navigation name is explicitly Home in Japanese too.
     "reactions.tabKitchen",
     "webhooks.url",

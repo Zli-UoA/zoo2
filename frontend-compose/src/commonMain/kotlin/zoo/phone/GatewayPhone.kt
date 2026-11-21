@@ -103,6 +103,7 @@ internal class GatewayPhone(
             if (current === attempt && !closed) when (event) {
                 "signal" -> signal(attempt, payload)
                 "connected" -> { attempt.connected = true; active(attempt) }
+                "remote_audio_level" -> if (attempt.notified) events(event, payload)
                 "failed" -> events("failed", obj())
             }
         }

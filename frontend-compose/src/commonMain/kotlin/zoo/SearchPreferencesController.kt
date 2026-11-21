@@ -82,3 +82,22 @@ class SearchPreferencesController(private val app: Session, parent: CoroutineSco
         lifetime.cancel()
     }
 }
+
+val searchEngines =
+    linkedMapOf(
+        "google" to "Google",
+        "duckduckgo" to "DuckDuckGo",
+        "yandex" to "Yandex",
+        "baidu" to "Baidu",
+    )
+
+fun searchUrl(engine: String, query: String): String {
+    val (url, key) =
+        when (engine) {
+            "duckduckgo" -> "https://duckduckgo.com/" to "q"
+            "yandex" -> "https://yandex.com/search/" to "text"
+            "baidu" -> "https://www.baidu.com/s" to "wd"
+            else -> "https://www.google.com/search" to "q"
+        }
+    return io.ktor.http.URLBuilder(url).apply { parameters[key] = query }.buildString()
+}

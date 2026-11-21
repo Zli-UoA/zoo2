@@ -50,6 +50,15 @@ internal class DeviceAuth(
         return discovery
     }
 
+    suspend fun acceptBrowserLogin(connection: LoginConnection, grant: BrowserAuthorization) =
+        lock.withLock {
+            require(Url(grant.tokenEndpoint).protocol == URLProtocol.HTTPS)
+            clientId = connection.client
+            resource = connection.resource
+            endpoint = grant.tokenEndpoint
+            accept(grant.tokens)
+        }
+
     suspend fun restore(issuer: String, client: String, audience: String, savedRefresh: String) =
         lock.withLock {
             require(savedRefresh.isNotBlank())

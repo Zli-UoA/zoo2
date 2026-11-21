@@ -193,7 +193,11 @@ class TelecomIntegrationTest {
             assertNull(it.shadow.nextStartedService)
             val incoming = it.notifications.activeNotifications.single().notification
             assertEquals(2, incoming.actions.size)
-            assertTrue(it.host.open(shadowOf(incoming.contentIntent).savedIntent))
+            var presented = 0
+            assertTrue(it.host.open(Intent("zoo.phone.OPEN")) { presented++ })
+            assertEquals(0, presented)
+            assertTrue(it.host.open(shadowOf(incoming.contentIntent).savedIntent) { presented++ })
+            assertEquals(1, presented)
             val answer = incoming.actions.single { action ->
                 shadowOf(action.actionIntent).savedIntent.action == "zoo.phone.ANSWER"
             }

@@ -116,3 +116,5 @@ class HomeLive(private val app: Session) {
         listeners.clear()
     }
 }
+
+internal expect fun nativeAbsoluteUrl(url: String): String

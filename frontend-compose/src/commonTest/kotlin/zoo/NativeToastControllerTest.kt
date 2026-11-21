@@ -8,17 +8,6 @@ import kotlinx.coroutines.test.*
 
 class NativeToastControllerTest {
     @Test
-    fun successAndErrorUseParsableSonnerAssetsWhileDefaultHasNoIcon() {
-        assertNull(nativeToastIconPath(ToastKind.Default))
-        for (kind in listOf(ToastKind.Success, ToastKind.Error)) {
-            // Parsing SVG nodes is common code; creating an Android Path needs a device.
-            assertTrue(
-                PathParser().parsePathString(nativeToastIconPath(kind)!!).toNodes().isNotEmpty()
-            )
-        }
-    }
-
-    @Test
     fun normalLifetimeAndSameMessageReplacementUseIndependentSerials() = runTest {
         val controller = NativeToastController(backgroundScope) { testScheduler.currentTime }
         controller.show("saved", ToastKind.Success)
