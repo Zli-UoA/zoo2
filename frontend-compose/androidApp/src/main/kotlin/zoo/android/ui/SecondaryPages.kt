@@ -101,7 +101,9 @@ internal fun NewPostPage(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().background(colors.inputSurface).padding(horizontal = 8.dp),
+        Row(Modifier.fillMaxWidth().background(colors.inputSurface)
+            .padding(start = AndroidControlSize.inputEdgeInset, end = AndroidControlSize.inputEdgeInset,
+                bottom = AndroidControlSize.inputEdgeInset),
             verticalAlignment = Alignment.CenterVertically) {
             UiIconButton(UiIcon.Attach, "写真", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })

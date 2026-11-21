@@ -38,7 +38,7 @@ internal fun ConversationInput(
     val full = state.expanded
     val showTools = full || focused || state.text.isNotEmpty() || drag > 0f
     val expand by rememberUpdatedState { onTool(InputTool.Expand) }
-    Column(modifier.fillMaxWidth().background(colors.inputSurface)) {
+    Column(modifier.fillMaxWidth().background(colors.inputSurface).padding(bottom = AndroidControlSize.inputEdgeInset)) {
         HorizontalDivider(color = colors.inputBoundary)
         Box(
             Modifier.fillMaxWidth().height(24.dp)
@@ -82,7 +82,9 @@ internal fun ConversationInput(
             Spacer(Modifier.height(height))
         }
         Row(
-            Modifier.fillMaxWidth().then(if (full) Modifier.weight(1f) else Modifier),
+            Modifier.fillMaxWidth()
+                .padding(horizontal = if (showTools) 0.dp else AndroidControlSize.inputEdgeInset)
+                .then(if (full) Modifier.weight(1f) else Modifier),
             verticalAlignment = if (full) Alignment.Top else Alignment.CenterVertically,
         ) {
             if (!showTools) UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
@@ -90,7 +92,10 @@ internal fun ConversationInput(
             if (!showTools) SendAction(state, colors, onTool)
         }
         if (showTools) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = AndroidControlSize.inputEdgeInset),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
                 UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) })
                 UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) })
