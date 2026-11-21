@@ -11,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -44,12 +46,22 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 
-internal data class TimelineItem(val id: String, val author: String, val body: String, val time: String)
+internal enum class EntryOperation { Edit, Delete, React, Repost, Attachment, Link, Media }
+
+internal data class TimelineItem(
+    val id: String, val author: String, val body: String, val time: String,
+    val editable: Boolean = false, val canReact: Boolean = false, val canRepost: Boolean = false,
+    val reposted: Boolean = false, val reactions: List<Pair<String, Boolean>> = emptyList(),
+    val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
+    val preview: String? = null, val entryKey: String = id,
+    val media: List<Pair<String, String>> = emptyList(),
+)
 internal data class ChannelItem(
     val id: String,
     val title: String,
@@ -59,10 +71,10 @@ internal data class ChannelItem(
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
-    data class Home(val posts: List<TimelineItem>, val timeline: String? = null) : AndroidScreen
+    data class Home(val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
     data class Notifications(val items: List<InboxItem>) : AndroidScreen
-    data class Bubble(val entries: List<TimelineItem>, val input: InputState) : AndroidScreen
+    data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
     data class Conversation(
         val id: String, val name: String, val description: String,
@@ -82,11 +94,18 @@ internal sealed interface AndroidScreen {
         val description: String,
         val submitLabel: String,
         val canSubmit: Boolean,
+        val privateChannel: Boolean? = null,
+        val sensitive: Boolean? = null,
+        val encrypted: Boolean? = null,
     ) : AndroidScreen
-    data class Directory(val title: String, val query: String, val results: List<SelectionItem>) : AndroidScreen
-    data class Profile(val name: String, val bio: String, val posts: List<TimelineItem>) : AndroidScreen
+    data class Directory(
+        val title: String, val query: String, val results: List<SelectionItem>,
+        val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
+    ) : AndroidScreen
+    data class EditEntry(val input: InputState) : AndroidScreen
+    data class Profile(val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
-        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList()) : AndroidScreen
+        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
     data class SignIn(val restoring: Boolean) : AndroidScreen
     data class Call(val caller: String, val incoming: Boolean, val active: Boolean = false,
         val muted: Boolean = false, val speaker: Boolean = false, val avatar: ImageBitmap? = null,
@@ -97,6 +116,11 @@ internal sealed interface AndroidUiAction {
     data class Navigate(val page: TopPage) : AndroidUiAction
     data class OpenNotification(val path: String) : AndroidUiAction
     data object LoadMoreNotifications : AndroidUiAction
+    data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "") : AndroidUiAction
+    data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
+    data class RemoveFile(val id: String) : AndroidUiAction
+    data class SelectInput(val range: TextRange) : AndroidUiAction
+    data class Mention(val name: String) : AndroidUiAction
     data class ViewedNotification(val id: String) : AndroidUiAction
     data class OpenChannel(val id: String) : AndroidUiAction
     data class OpenChannelSettings(val id: String) : AndroidUiAction
@@ -120,6 +144,7 @@ internal sealed interface AndroidUiAction {
     data object ComposePost : AndroidUiAction
     data object CreateChannel : AndroidUiAction
     data object CreateDm : AndroidUiAction
+    data object LoadOlderPosts : AndroidUiAction
     data class SelectTimeline(val id: String) : AndroidUiAction
     data class SelectPostVisibility(val id: String) : AndroidUiAction
     data object StartCall : AndroidUiAction
@@ -219,9 +244,13 @@ private fun RenderAndroidScreen(
                 onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
                 onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
                 loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },
+                respond = { actor, activity, accept -> dispatch(AndroidUiAction.RespondFollow(actor, activity, accept)) },
             )
             is AndroidScreen.Bubble -> {
-                PageHeader("Bubble", colors)
+                PageHeader("Bubble", colors) {
+                    if (screen.participants.isNotEmpty()) UiIconButton(UiIcon.Bubble, "参加者", colors.foreground,
+                        { dispatch(AndroidUiAction.OpenSetting("bubble-participants")) })
+                }
                 Text("入力中の内容がリアルタイムに表示されます", Modifier.padding(16.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(screen.entries, screen.input, colors, dispatch)
@@ -239,7 +268,8 @@ private fun RenderAndroidScreen(
                 }
             }
             is AndroidScreen.Thread -> {
-                PageHeader("スレッド", colors, onBack = back)
+                PageHeader("スレッド", colors, onBack = back,
+                    onOpen = { dispatch(AndroidUiAction.OpenSetting("thread-settings")) })
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
@@ -247,7 +277,13 @@ private fun RenderAndroidScreen(
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
-                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch)
+                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, posts = true)
+            }
+            is AndroidScreen.EditEntry -> {
+                PageHeader("編集", colors, onBack = back)
+                ConversationInput(screen.input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
+                    { dispatch(AndroidUiAction.UseInputTool(it)) }, Modifier.weight(1f),
+                    onSelection = { dispatch(AndroidUiAction.SelectInput(it)) })
             }
             is AndroidScreen.SettingsDetail -> SettingsPage(screen.groups, colors, openSetting, toggle, screen.title, back)
             is AndroidScreen.ChannelSettings -> SettingsPage(screen.groups, colors, openSetting, toggle, screen.channel, back)
@@ -255,10 +291,18 @@ private fun RenderAndroidScreen(
             is AndroidScreen.Directory -> DirectoryPage(
                 screen.title, screen.query, screen.results, colors, back,
                 { dispatch(AndroidUiAction.Search(it)) }, { dispatch(AndroidUiAction.SelectResult(it)) },
+                screen.submit, screen.canSubmit, screen.encryption,
+                { dispatch(AndroidUiAction.OpenSetting("submit-dm")) },
+                { dispatch(AndroidUiAction.OpenSetting("encrypted-dm")) },
             )
             is AndroidScreen.Profile -> {
                 PageHeader(screen.name, colors, onBack = back, titleWeight = AndroidWeights.userName)
-                Text(screen.bio, Modifier.padding(16.dp), color = colors.secondary, fontSize = 15.sp)
+                if (screen.bio.isNotBlank()) Text(screen.bio, Modifier.padding(16.dp), color = colors.secondary, fontSize = 15.sp)
+                screen.follow?.let { label ->
+                    Box(Modifier.padding(horizontal = 16.dp)) {
+                        TextAction(label, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                    }
+                }
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true)
             }
             is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
@@ -307,7 +351,10 @@ private fun RenderAndroidScreen(
 private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     CollapsingHeader(header = {
         Column {
-            PageHeader("ホーム", colors)
+            PageHeader("ホーム", colors) {
+                UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
+                    { dispatch(AndroidUiAction.OpenSetting("people")) })
+            }
             if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
                 for ((id, title) in listOf("home" to "フォロー中", "local" to "ローカル", "social" to "連合")) {
                     TextAction(title, colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
@@ -317,7 +364,8 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
         }
     }) {
         Box(Modifier.fillMaxSize()) {
-            Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true)
+            Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true,
+                loadOlder = if (screen.loadOlder) { { dispatch(AndroidUiAction.LoadOlderPosts) } } else null)
             Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                 UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
                     action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
@@ -383,11 +431,15 @@ private fun ColumnScope.TimelineWithInput(
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
     focusMessage: String? = null,
+    posts: Boolean = false,
 ) {
-    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch,
+    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch, posts = posts,
         swipeReply = swipeReply, allowThreads = allowThreads, focusMessage = focusMessage)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
-        { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier)
+        { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier,
+        onMention = { dispatch(AndroidUiAction.Mention(it)) },
+        onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
+        onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) })
 }
 
 @Composable
@@ -397,10 +449,16 @@ private fun Timeline(
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
     focusMessage: String? = null,
+    loadOlder: (() -> Unit)? = null,
 ) {
     var menuId by remember { mutableStateOf<String?>(null) }
     val scroll = rememberLazyListState()
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
+    val lastVisible = scroll.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+    val requestOlder by rememberUpdatedState(loadOlder)
+    LaunchedEffect(lastVisible, entries.size, loadOlder != null) {
+        if (entries.isNotEmpty() && lastVisible == entries.lastIndex) requestOlder?.invoke()
+    }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(focusMessage, focusedIndex) {
         if (focusMessage == null) openedTarget = null
@@ -410,7 +468,7 @@ private fun Timeline(
         }
     }
     LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(horizontal = 16.dp)) {
-        items(entries, key = { it.id }) { entry ->
+        items(entries, key = { it.entryKey }) { entry ->
             Row(
                 Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
                     .then(if (posts) Modifier.combinedClickable(
@@ -432,7 +490,31 @@ private fun Timeline(
                         Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.userName, fontSize = 14.sp)
                         Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                     }
-                    Text(entry.body, color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)
+                    Text(formatEntry(entry.body), color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)
+                    entry.attachments.forEach { (id, name) ->
+                        Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
+                            .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
+                    }
+                    entry.media.forEach { (url, name) ->
+                        Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, url)) }
+                            .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
+                    }
+                    entry.link?.let { url ->
+                        Text(entry.preview ?: url,
+                            Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
+                                .heightIn(min = 48.dp).padding(vertical = 12.dp),
+                            color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (entry.reactions.isNotEmpty()) {
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            entry.reactions.forEach { (label, selected) ->
+                                Text(label, Modifier.heightIn(min = 48.dp)
+                                    .background(if (selected) colors.headerLight else colors.background, CircleShape)
+                                    .clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, label.substringBeforeLast(" "))) }
+                                    .padding(horizontal = 10.dp, vertical = 12.dp), color = colors.foreground)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -443,6 +525,10 @@ private fun Timeline(
             colors = colors,
             posts = posts,
             dismiss = { menuId = null },
+            action = { operation, value ->
+                menuId = null
+                dispatch(AndroidUiAction.ActOnEntry(entry, operation, value))
+            },
             open = if (posts || allowThreads) ({
                 menuId = null
                 dispatch(if (posts) AndroidUiAction.OpenPost(entry.id) else AndroidUiAction.OpenThread(entry.id))

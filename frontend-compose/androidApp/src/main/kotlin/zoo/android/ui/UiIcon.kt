@@ -33,7 +33,7 @@ internal object AndroidControlSize {
 }
 
 internal enum class UiIcon {
-    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff,
+    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff, Delete, Repost, Search,
 }
 
 @Composable
@@ -100,6 +100,21 @@ internal fun UiGlyph(icon: UiIcon, color: Color) {
                 lines(14 to 3, 14 to 8, 19 to 8)
                 lines(9 to 12, 16 to 12)
                 lines(9 to 16, 16 to 16)
+            }
+            UiIcon.Search -> {
+                drawCircle(color, radius = size.width * .24f, center = point(10f, 10f), style = Stroke(width))
+                lines(14 to 14, 20 to 20)
+            }
+            UiIcon.Delete -> {
+                lines(6 to 7, 18 to 7)
+                lines(9 to 5, 15 to 5)
+                lines(8 to 9, 9 to 19, 15 to 19, 16 to 9)
+            }
+            UiIcon.Repost -> {
+                lines(5 to 9, 19 to 9, 16 to 6)
+                lines(19 to 9, 16 to 12)
+                lines(19 to 15, 5 to 15, 8 to 12)
+                lines(5 to 15, 8 to 18)
             }
             UiIcon.Copy -> {
                 lines(5 to 16, 3 to 16, 3 to 3, 16 to 3, 16 to 5)

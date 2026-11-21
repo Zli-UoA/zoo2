@@ -393,6 +393,10 @@ class MainActivity : ComponentActivity() {
                 setupApi = e2eeApi,
             )
             platform.e2ee = e2ee
+            platform.reauthenticate = reauthenticator::reauthenticate
+            runCatching { io.ktor.http.Url(connection.issuer) }.getOrNull()
+                ?.takeIf { it.protocol == io.ktor.http.URLProtocol.HTTPS && it.host.isNotBlank() }
+                ?.let { platform.passkey = zoo.crypto.UnlockMethod.Passkey(AndroidPasskeys(this), it.host) }
             platform.messageEncryption = zoo.crypto.AndroidMessageEncryption(e2ee, session.api, lifetime)
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()

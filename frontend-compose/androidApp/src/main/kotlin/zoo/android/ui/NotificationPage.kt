@@ -22,6 +22,7 @@ internal data class InboxItem(
     val time: String,
     val unread: Boolean,
     val target: String? = null,
+    val followActor: String? = null, val followActivity: String? = null,
 )
 
 @Composable
@@ -32,6 +33,7 @@ internal fun NotificationPage(
     onViewed: (String) -> Unit,
     onOpen: (String) -> Unit,
     loadMore: () -> Unit,
+    respond: (String, String, Boolean) -> Unit,
 ) {
     PageHeader("通知", colors)
     val scroll = rememberLazyListState()
@@ -74,6 +76,12 @@ internal fun NotificationPage(
                 }
                 Text(item.summary, color = colors.foreground, fontSize = 15.sp)
                 item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
+                if (item.followActor != null && item.followActivity != null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextAction("承認", colors) { respond(item.followActor, item.followActivity, true) }
+                        TextAction("拒否", colors, style = TextActionStyle.Neutral) { respond(item.followActor, item.followActivity, false) }
+                    }
+                }
             }
         }
     }

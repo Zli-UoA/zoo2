@@ -59,6 +59,8 @@ class AndroidSamplesTest {
             InboxItem("reply", "はる", "投稿に返信しました", "次のテストでも確認します。", "12:03", true),
             InboxItem("mention", "ゆい", "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true),
             InboxItem("reaction", "みずき", "投稿にリアクションしました", null, "11:22", false),
+            InboxItem("follow", "りん", "フォローを申請しました", null, "11:15", false,
+                followActor = "https://example.test/rin", followActivity = "https://example.test/follow"),
         ))
         val conversation = AndroidScreen.Conversation("dev", "開発", "Zoo の開発と通話のテストについて相談するチャンネルです。",
             posts, InputState("確認しました。"))
@@ -73,17 +75,39 @@ class AndroidSamplesTest {
             "home" to AndroidScreen.Home(posts),
             "channels" to channels,
             "notifications" to inbox,
-            "bubble" to AndroidScreen.Bubble(posts.take(2), InputState()),
+            "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
             "settings" to AndroidScreen.Settings(settings),
             "conversation-idle" to conversation.copy(input = InputState()),
             "conversation" to conversation,
             "composer" to conversation.copy(input = InputState("確認しました。", expanded = true)),
             "thread" to AndroidScreen.Thread("開発", posts.first(), posts.drop(1), InputState()),
+            "thread-settings" to AndroidScreen.SettingsDetail("スレッド設定", listOf(
+                SettingsGroup("スレッド", listOf(SettingsEntry.Destination("thread-leave", "退出"),
+                    SettingsEntry.Destination("thread-members", "参加者", "2"))),
+            )),
+            "thread-members" to AndroidScreen.Directory("スレッドの参加者", "", listOf(
+                SelectionItem("haru", "はる", isUserName = true),
+                SelectionItem("yui", "ゆい", isUserName = true),
+            )),
+            "group-dm" to AndroidScreen.Directory("ダイレクトメッセージを作成", "", listOf(
+                SelectionItem("haru", "はる", isUserName = true, selected = true),
+                SelectionItem("yui", "ゆい", isUserName = true, selected = true),
+                SelectionItem("mizuki", "みずき", isUserName = true, selected = false),
+            ), "開始", canSubmit = true, encryption = false),
+            "entry-edit" to AndroidScreen.EditEntry(InputState("次のテストでも確認します。", expanded = true)),
+            "people-search" to AndroidScreen.Directory("ユーザーを検索", "はる", listOf(
+                SelectionItem("haru", "はる", "@haru", isUserName = true),
+            )),
+            "bubble-participants" to AndroidScreen.Directory("参加者", "", listOf(
+                SelectionItem("haru", "はる", isUserName = true),
+                SelectionItem("yui", "ゆい", isUserName = true),
+            )),
             "post" to AndroidScreen.Post(posts.first(), posts.drop(1), InputState()),
             "post-compose" to AndroidScreen.NewPost(InputState("新しい画面を共有します。"), emptyList(), true),
-            "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。", posts),
+            "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。", posts, "フォロー"),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
-            "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true),
+            "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
+                privateChannel = true, sensitive = false, encrypted = true),
             "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
                 SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
                 SettingsEntry.Destination("members", "メンバー"),
@@ -153,7 +177,14 @@ class AndroidSamplesTest {
                 capture("$name-${if (night) "dark" else "light"}")
             }
         }
-        ui.runOnIdle { screen = conversation }
+        ui.runOnIdle { screen = cases.first { it.first == "group-dm" }.second }
+        ui.onNodeWithText("はる").performClick()
+        ui.onNodeWithText("開始").performClick()
+        ui.runOnIdle {
+            check(AndroidUiAction.SelectResult("haru") in actions)
+            check(AndroidUiAction.OpenSetting("submit-dm") in actions)
+            screen = conversation
+        }
         ui.onNodeWithText("開発").assertHasClickAction().performClick()
         ui.onNodeWithText("テーマ").assertIsDisplayed()
         ui.runOnIdle {
@@ -173,7 +204,8 @@ class AndroidSamplesTest {
 
     @Test
     fun opensContextSheetAndSlidesToThreadWithOptionalHaptics() {
-        val root = TimelineItem("root", "はる", "スレッドを試すメッセージ", "12:08")
+        val root = TimelineItem("root", "はる", "スレッドを試すメッセージ", "12:08",
+            editable = true, canReact = true)
         val conversation = AndroidScreen.Conversation("dev", "開発", "テスト用",
             listOf(root), InputState())
         val thread = AndroidScreen.Thread("開発", root, emptyList(), InputState())
@@ -200,6 +232,9 @@ class AndroidSamplesTest {
         val message = ui.onNodeWithTag("timeline-entry-root")
         message.performTouchInput { longClick() }
         ui.onNodeWithText("本文をコピー").assertIsDisplayed()
+        ui.onNodeWithText("編集").assertIsDisplayed()
+        ui.onNodeWithText("削除").assertIsDisplayed()
+        ui.onNodeWithText("リアクション").assertIsDisplayed()
         capture("message-menu-light", withSheet = true)
         ui.runOnIdle { dark = true; check(pulses.isEmpty()) }
         ui.onNodeWithText("本文をコピー").assertIsDisplayed()
@@ -215,9 +250,10 @@ class AndroidSamplesTest {
         ui.runOnIdle { check(pulses.size == 1) { "Expected a single threshold pulse: $pulses" } }
         ui.onNodeWithContentDescription("戻る").performClick()
         ui.onNodeWithText("開発").assertIsDisplayed()
-        ui.runOnIdle { screen = AndroidScreen.Home(listOf(root)); dark = false }
+        ui.runOnIdle { screen = AndroidScreen.Home(listOf(root.copy(canRepost = true))); dark = false }
         message.performTouchInput { longClick() }
         ui.onNodeWithText("投稿を開く").assertIsDisplayed()
+        ui.onNodeWithText("再投稿").assertIsDisplayed()
         capture("post-menu-light", withSheet = true)
         ui.runOnIdle { dark = true }
         capture("post-menu-dark", withSheet = true)

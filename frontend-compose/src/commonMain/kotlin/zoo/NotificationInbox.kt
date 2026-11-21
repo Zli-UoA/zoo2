@@ -8,6 +8,7 @@ data class NotificationDisplay(
     val time: String,
     val unread: Boolean,
     val target: String? = null,
+    val followActor: String? = null, val followActivity: String? = null,
 )
 
 class NotificationInbox(private val session: Session) {
@@ -32,7 +33,10 @@ class NotificationInbox(private val session: Session) {
                 session.platform.notificationTime(entry.createdAt),
                 entry.channel?.any { !it.flag("is_read") } ?: !item.flag("is_read"),
                 item.text("channel_id").takeIf { it.isNotBlank() }
-                    ?.let { "/channels/$it?message=${item.text("message_id")}" },
+                    ?.let { "/channels/$it?message=${item.text("message_id")}" }
+                    ?: item.text("post_id").takeIf { it.isNotBlank() }?.let { "post:$it" },
+                item.text("actor_id").takeIf { kind == "follow_request" && item.flag("pending") && it.isNotBlank() },
+                item.text("activity_id").takeIf { kind == "follow_request" && item.flag("pending") && it.isNotBlank() },
             )
         }
     }

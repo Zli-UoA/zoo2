@@ -39,6 +39,8 @@ internal class AndroidPlatform(
 ) : Platform {
     /** E2EE の端末（#359）。ログインしたあとに設定する。 */
     override var messageEncryption: zoo.MessageEncryption? = null
+    var reauthenticate: (suspend () -> String)? = null
+    var passkey: zoo.crypto.UnlockMethod.Passkey? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)
@@ -127,6 +129,13 @@ internal class AndroidPlatform(
 
     fun online(value: Boolean) {
         env = env.copy(online = value)
+    }
+
+    fun protectScreen(): () -> Unit {
+        val flag = android.view.WindowManager.LayoutParams.FLAG_SECURE
+        val alreadyProtected = activity.window.attributes.flags and flag != 0
+        if (!alreadyProtected) activity.window.addFlags(flag)
+        return { if (!alreadyProtected) activity.window.clearFlags(flag) }
     }
 
     fun visible(value: Boolean) {

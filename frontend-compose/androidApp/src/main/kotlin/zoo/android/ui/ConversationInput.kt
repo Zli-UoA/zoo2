@@ -2,6 +2,8 @@ package zoo.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -18,10 +20,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false)
+internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false, val mentions: List<String> = emptyList(),
+    val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false)
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
 @Composable
@@ -31,13 +36,28 @@ internal fun ConversationInput(
     textChanged: (String) -> Unit,
     onTool: (InputTool) -> Unit,
     modifier: Modifier = Modifier,
+    onMention: (String) -> Unit = {},
+    onSelection: (TextRange) -> Unit = {},
+    onRemoveFile: (String) -> Unit = {},
 ) {
+    var fieldValue by remember { mutableStateOf(TextFieldValue(state.text, state.selection ?: TextRange(state.text.length))) }
+    val value = if (fieldValue.text == state.text && (state.selection == null || fieldValue.selection == state.selection)) {
+        fieldValue
+    } else TextFieldValue(state.text, state.selection ?: TextRange(state.text.length))
     var focused by remember { mutableStateOf(false) }
     var drag by remember { mutableFloatStateOf(0f) }
     val full = state.expanded
     val showTools = full || focused || state.text.isNotEmpty() || drag > 0f
     val expand by rememberUpdatedState { onTool(InputTool.Expand) }
     Column(modifier.fillMaxWidth().background(colors.inputSurface).padding(bottom = AndroidControlSize.inputEdgeInset)) {
+        if (state.mentions.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                state.mentions.forEach { name ->
+                    TextAction("@$name", colors, style = TextActionStyle.Plain) { onMention(name) }
+                }
+            }
+        }
         Box(
             Modifier.fillMaxWidth().height(24.dp)
                 .pointerInput(full) {
@@ -59,8 +79,12 @@ internal fun ConversationInput(
         }
         val field: @Composable (Modifier) -> Unit = { placement ->
             BasicTextField(
-                value = state.text,
-                onValueChange = textChanged,
+                value = value,
+                onValueChange = {
+                    fieldValue = it
+                    if (it.text != state.text) textChanged(it.text)
+                    if (state.selection != it.selection) onSelection(it.selection)
+                },
                 modifier = placement.onFocusChanged { focused = it.isFocused }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp, lineHeight = 23.sp),
@@ -69,7 +93,7 @@ internal fun ConversationInput(
                 maxLines = if (full) Int.MAX_VALUE else if (showTools) 6 else 1,
                 decorationBox = { inner ->
                     Box {
-                        if (state.text.isEmpty()) Text("メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
+                        if (state.text.isEmpty()) Text(if (state.live) "入力内容を共有" else "メッセージを送信", color = colors.inputHint, fontSize = 16.sp)
                         inner()
                     }
                 },
@@ -85,18 +109,28 @@ internal fun ConversationInput(
                 .then(if (full) Modifier.weight(1f) else Modifier),
             verticalAlignment = if (full) Alignment.Top else Alignment.CenterVertically,
         ) {
-            if (!showTools) UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
+            if (!showTools && !state.live) UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
             field(Modifier.weight(1f))
             if (!showTools) SendAction(state, colors, onTool)
+        }
+        if (state.files.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
+                .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                state.files.forEach { (id, name) ->
+                    TextAction("$name ×", colors, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                }
+            }
         }
         if (showTools) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = AndroidControlSize.inputEdgeInset),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
-                UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) })
-                UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) })
+                if (!state.live) {
+                    UiIconButton(UiIcon.Attach, "添付", colors.inputText, { onTool(InputTool.Attach) })
+                    UiIconButton(UiIcon.Format, "書式", colors.inputText, { onTool(InputTool.Format) })
+                    UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { onTool(InputTool.Emoji) })
+                }
                 Spacer(Modifier.weight(1f))
                 SendAction(state, colors, onTool)
             }
@@ -108,7 +142,8 @@ internal fun ConversationInput(
 private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputTool) -> Unit) {
     val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend
     UiIconButton(
-        UiIcon.Send, "送信", if (enabled) Color.Black else colors.inputHint,
+        if (state.live) UiIcon.Delete else UiIcon.Send,
+        if (state.live) "入力を消去" else "送信", if (enabled) Color.Black else colors.inputHint,
         action = { onTool(InputTool.Send) },
         enabled = enabled,
         fill = if (enabled) colors.accent else Color.Transparent,
