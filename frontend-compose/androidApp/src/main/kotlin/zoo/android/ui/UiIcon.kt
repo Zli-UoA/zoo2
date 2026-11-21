@@ -72,7 +72,8 @@ internal fun UiGlyph(icon: UiIcon, color: Color) {
             UiIcon.Next -> lines(9 to 6, 15 to 12, 9 to 18)
             UiIcon.Home -> { lines(3 to 11, 12 to 3, 21 to 11); lines(5 to 10, 5 to 21, 19 to 21, 19 to 10) }
             UiIcon.Channels -> {
-                lines(9 to 4, 6 to 20); lines(18 to 4, 15 to 20)
+                lines(10 to 4, 7 to 20)
+                lines(17 to 4, 14 to 20)
                 lines(4 to 9, 21 to 9); lines(3 to 15, 20 to 15)
             }
             UiIcon.Bell -> { lines(5 to 17, 7 to 13, 7 to 8, 10 to 5, 14 to 5, 17 to 8, 17 to 13, 19 to 17, 5 to 17); lines(10 to 20, 14 to 20) }
