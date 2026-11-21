@@ -97,16 +97,19 @@ internal fun NotificationPage(
                     ) { UiGlyph(item.kind.activityIcon(), colors.foreground, iconSize = 12.dp) }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        val author = item.actors.firstOrNull()?.name.orEmpty()
-                        Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
-                            color = colors.foreground, fontWeight = AndroidWeights.userName, maxLines = 1,
-                            overflow = TextOverflow.Ellipsis)
-                        Text(item.time, color = colors.secondary, fontSize = 12.sp)
-                        if (item.unread) Box(
-                            Modifier.size(8.dp).background(colors.accent, CircleShape).border(1.dp, colors.secondary, CircleShape)
-                                .semantics { contentDescription = "未読" },
-                        )
+                    Column {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val author = item.actors.firstOrNull()?.name.orEmpty()
+                            Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
+                                color = colors.foreground, fontWeight = AndroidWeights.userName, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis)
+                            Text(item.time, color = colors.secondary, fontSize = 12.sp)
+                            if (item.unread) Box(
+                                Modifier.size(8.dp).background(colors.accent, CircleShape).border(1.dp, colors.secondary, CircleShape)
+                                    .semantics { contentDescription = "未読" },
+                            )
+                        }
+                        Text(item.summary, color = colors.secondary, fontSize = 13.sp)
                     }
                     if (item.actors.size > 1) {
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -115,7 +118,6 @@ internal fun NotificationPage(
                             }
                         }
                     }
-                    Text(item.summary, color = colors.secondary, fontSize = 13.sp)
                     item.detail?.let {
                         Text(formatEntry(it), color = colors.foreground, fontSize = 14.sp,
                             maxLines = 3, overflow = TextOverflow.Ellipsis)
