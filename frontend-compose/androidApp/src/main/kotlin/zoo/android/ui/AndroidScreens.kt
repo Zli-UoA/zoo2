@@ -96,6 +96,7 @@ internal fun AndroidScreens(
     dark: Boolean,
     foreground: Boolean,
     dispatch: (AndroidUiAction) -> Unit,
+    language: String? = null,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val top = when (screen) {
@@ -109,7 +110,7 @@ internal fun AndroidScreens(
     val back = { dispatch(AndroidUiAction.Back) }
     val openSetting = { id: String -> dispatch(AndroidUiAction.OpenSetting(id)) }
     val toggle = { id: String, value: Boolean -> dispatch(AndroidUiAction.Toggle(id, value)) }
-    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }) { colors ->
+    AndroidShell(top, dark, { dispatch(AndroidUiAction.Navigate(it)) }, language) { colors ->
         when (screen) {
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)

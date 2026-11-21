@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -19,7 +20,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,7 +36,7 @@ internal fun DirectoryPage(
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         BasicTextField(
             query, search, modifier = Modifier.fillMaxWidth().background(colors.inputSurface, CircleShape).padding(14.dp),
-            singleLine = true, textStyle = TextStyle(color = colors.inputText, fontSize = 16.sp),
+            singleLine = true, textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
                 Box {
@@ -75,7 +75,7 @@ internal fun NewPostPage(
         BasicTextField(
             input.text, { dispatch(AndroidUiAction.TextChanged(it)) },
             Modifier.weight(1f).fillMaxWidth().padding(16.dp),
-            textStyle = TextStyle(color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp),
+            textStyle = LocalTextStyle.current.copy(color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp),
             cursorBrush = SolidColor(colors.inputText),
             decorationBox = { field ->
                 Box {
@@ -170,7 +170,7 @@ private fun ChannelField(
             value, change,
             Modifier.fillMaxWidth().background(colors.inputSurface, RoundedCornerShape(10.dp)).padding(12.dp),
             singleLine = singleLine, minLines = if (singleLine) 1 else 3,
-            textStyle = TextStyle(color = colors.inputText, fontSize = 16.sp),
+            textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
             cursorBrush = SolidColor(colors.inputText),
         )
     }

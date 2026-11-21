@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,7 +19,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -65,7 +65,7 @@ internal fun ConversationInput(
                 onValueChange = textChanged,
                 modifier = placement.onFocusChanged { focused = it.isFocused }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                textStyle = TextStyle(color = colors.inputText, fontSize = 16.sp, lineHeight = 23.sp),
+                textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp, lineHeight = 23.sp),
                 cursorBrush = SolidColor(colors.inputText),
                 minLines = 1,
                 maxLines = if (full) Int.MAX_VALUE else if (showTools) 6 else 1,
