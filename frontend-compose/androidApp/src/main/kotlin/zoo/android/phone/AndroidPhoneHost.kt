@@ -82,7 +82,7 @@ internal class AndroidPhoneHost(
         check(controller.call?.id == call.id)
         val ready = CompletableDeferred<Unit>(); connectionReady = ready
         val options = Bundle().apply { putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle); putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, extras(call)) }
-        val address = if (call.kind == "sip") Uri.fromParts("tel", call.peer, null) else Uri.fromParts("sip", "dm-${call.target}@zoo.invalid", null)
+        val address = if (call.kind == "sip") Uri.fromParts("tel", call.peer, null) else Uri.fromParts("sip", "dm@zoo.invalid", null)
         try { manager.placeCall(address, options); withTimeout(10_000) { ready.await() } }
         catch (_: SecurityException) { throw IllegalStateException("Telecom permission unavailable") }
         finally { if (connectionReady === ready) connectionReady = null }
@@ -114,8 +114,12 @@ internal class AndroidPhoneHost(
         connectionReady?.cancel(); connectionReady = null; pendingMute = null
         dismissIncomingCall(context)
         if (audioCallId == id) {
-            audioCallId = null; audioReady?.cancel(); audioReady = null; service = null
-            context.stopService(Intent(context, PhoneService::class.java))
+            audioCallId = null
+            audioReady?.cancel()
+            audioReady = null
+            // A queued foreground-service start must be acknowledged by onStartCommand.
+            if (service != null) context.stopService(Intent(context, PhoneService::class.java))
+            service = null
         }
     }
     @Suppress("DEPRECATION")
@@ -185,7 +189,6 @@ internal class AndroidPhoneHost(
         connection?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL)); connection?.destroy(); connection = null
         runCatching { manager.unregisterPhoneAccount(handle) }
         dismissIncomingCall(context)
-        context.stopService(Intent(context, PhoneService::class.java))
     }
     companion object { var current: AndroidPhoneHost? = null; private set }
 }

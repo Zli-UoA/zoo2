@@ -18,7 +18,8 @@ import zoo.phone.PhoneCall
 private const val INCOMING_NOTIFICATION = 604
 private const val CALL_NOTIFICATION = 600
 private const val INCOMING_CHANNEL = "zoo.phone.incoming"
-private const val CALL_CHANNEL = "zoo.phone.ongoing"
+// Reuse the existing channel to preserve notification settings across upgrades.
+private const val CALL_CHANNEL = "zoo.phone.waiting"
 
 /** The foreground service exists only while a call needs access to the microphone. */
 class PhoneService : Service() {
@@ -33,7 +34,10 @@ class PhoneService : Service() {
         if (current == null || id == null ||
             !current.matches(intent.getStringExtra(PHONE_SESSION), id) || current.audioCall(id) == null
         ) {
-            stopSelf(startId)
+            if (host !== current || current?.audioCall(callId) == null) {
+                acknowledgeStart()
+                stopSelf(startId)
+            }
             return START_NOT_STICKY
         }
 
@@ -41,6 +45,29 @@ class PhoneService : Service() {
         callId = id
         if (refresh()) current.audioStarted(this, id)
         return START_NOT_STICKY
+    }
+
+    private fun acknowledgeStart() {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager.getNotificationChannel(CALL_CHANNEL) == null) {
+            manager.createNotificationChannel(NotificationChannel(
+                CALL_CHANNEL, "Zoo", NotificationManager.IMPORTANCE_LOW,
+            ))
+        }
+        val builder = Notification.Builder(this, CALL_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Zoo")
+            .setCategory(Notification.CATEGORY_CALL)
+            .setGroup("zoo.phone.starting")
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+        if (Build.VERSION.SDK_INT >= 31) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_DEFERRED)
+        }
+        val notification = builder.build()
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(CALL_NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+        } else startForeground(CALL_NOTIFICATION, notification)
     }
 
     internal fun refresh(): Boolean {
@@ -66,6 +93,8 @@ class PhoneService : Service() {
             } else startForeground(CALL_NOTIFICATION, notification)
             true
         } catch (_: RuntimeException) {
+            // While-in-use microphone access may be denied for a background answer.
+            acknowledgeStart()
             current.audioFailed(call.id)
             stopSelf()
             false
