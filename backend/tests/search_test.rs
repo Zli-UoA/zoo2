@@ -394,24 +394,29 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
                   ('n2', '{private}', '秘密のメモ', '障害の記録', '{alice}');",
         m1 = m(1), m6 = m(6)
     )).await?;
-    // 既定（type なし）はメッセージとファイルをまとめて新しい順。種類をまたいで続きを取れる。
+    // type=all はメッセージとファイルをまとめて新しい順。種類をまたいで続きを取れる。type なしは今までどおりメッセージだけ。
     sql.batch_execute(&format!(
         "INSERT INTO messages (id, user_id, channel_id, content, created_at) \
            VALUES ('{m40}', '{alice}', '{public}', '議事録を共有しました', LOCALTIMESTAMP - interval '1 hour');",
         m40 = m(40)
     ))
     .await?;
-    let mixed = search(&app, &alice, &format!("q={}", q("議事録"))).await;
+    assert_eq!(
+        ids(&search(&app, &alice, &format!("q={}", q("議事録"))).await),
+        vec![m(40)],
+        "no type keeps the messages-only default"
+    );
+    let mixed = search(&app, &alice, &format!("type=all&q={}", q("議事録"))).await;
     assert_eq!(ids(&mixed), vec!["a1".to_string(), m(40)], "{mixed}");
     assert_eq!(mixed["items"][0]["kind"], json!("file"));
     assert_eq!(mixed["items"][1]["kind"], json!("message"));
-    let first = search(&app, &alice, &format!("q={}&limit=1", q("議事録"))).await;
+    let first = search(&app, &alice, &format!("type=all&q={}&limit=1", q("議事録"))).await;
     assert_eq!(ids(&first), vec!["a1"]);
     let rest = search(
         &app,
         &alice,
         &format!(
-            "q={}&limit=1&cursor={}",
+            "type=all&q={}&limit=1&cursor={}",
             q("議事録"),
             q(first["next_cursor"].as_str().unwrap())
         ),

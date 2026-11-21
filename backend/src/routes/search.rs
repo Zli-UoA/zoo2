@@ -44,9 +44,10 @@ pub fn router() -> Router<AppState> {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchKind {
-    /// メッセージと添付ファイル名をまとめて、新しい順に（既定。ノートは含めない）。
-    #[default]
+    /// メッセージと添付ファイル名をまとめて、新しい順に（ノートは含めない）。クライアントは明示して使う。
     All,
+    /// 既定。`type` を省いた呼び出しの意味は #643 のときのまま変えない（`id` は常にメッセージの ID）。
+    #[default]
     Messages,
     Files,
     Notes,

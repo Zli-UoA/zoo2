@@ -490,11 +490,11 @@ SET session_replication_role = DEFAULT;
             "api-messages-12-months",
             "/api/search?type=messages&q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
         ),
-        // 既定（メッセージとファイル）。月ごとに 2 本。
-        ("api-all", "/api/search?q=%E3%81%A7%E3%81%99"),
+        // メッセージとファイル（クライアントの既定）。月ごとに 2 本。
+        ("api-all", "/api/search?type=all&q=%E3%81%A7%E3%81%99"),
         (
             "api-all-12-months",
-            "/api/search?q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
+            "/api/search?type=all&q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
         ),
         ("api-files", "/api/search?type=files&q=pdf"),
         ("api-notes", "/api/search?type=notes&q=%E9%9A%9C%E5%AE%B3"),
