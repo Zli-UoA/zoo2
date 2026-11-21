@@ -1,6 +1,8 @@
 import "../../../styles.css";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { expect, it, vi } from "vite-plus/test";
+import { toast } from "sonner";
+import { afterEach, expect, it, vi } from "vite-plus/test";
+import { AttachmentDownloadError } from "../../../lib/api/attachments";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageAttachments } from "./MessageAttachments";
 import type { AttachmentUrlState } from "../../../hooks/useAttachments";
@@ -12,6 +14,33 @@ vi.mock("../../../hooks/useAttachments", () => ({
     return link.state;
   },
 }));
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
+function textAttachment() {
+  return {
+    id: "notes",
+    message_id: "message",
+    uploader_id: "alice",
+    channel_id: "channel",
+    file_name: "notes.txt",
+    file_size: 12,
+    content_type: "text/plain",
+    storage_key: "notes",
+    created_at: "2026-11-02 00:00:00.000",
+  };
+}
+
+function renderDownload() {
+  return render(
+    <LocaleProvider>
+      <MessageAttachments attachments={[textAttachment()]} />
+    </LocaleProvider>,
+  );
+}
 
 it.each([160, 640])(
   "keeps attachment geometry through signed URL loading, wide image decode and failure at %ipx",
@@ -95,4 +124,57 @@ it("shows BlurHash without requesting the original image until a sensitive image
   expect(link.load).toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "画像を隠す" }));
   expect(screen.queryByRole("img")).toBeNull();
+});
+
+it("reports a /url failure with its reason and re-enables the download button", async () => {
+  const resolve = vi.fn().mockRejectedValue(new AttachmentDownloadError("url", { status: 503 }));
+  link.state = {
+    url: null,
+    status: "ready",
+    expiresAt: null,
+    reload: vi.fn(),
+    getFreshUrl: resolve as AttachmentUrlState["getFreshUrl"],
+  };
+  const toastError = vi.spyOn(toast, "error").mockReturnValue("download-error");
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  renderDownload();
+  const button = screen.getByRole("button", { name: "notes.txtをダウンロード" });
+  fireEvent.click(button);
+  expect(button).toBeDisabled();
+  await waitFor(() => expect(toastError).toHaveBeenCalled(), { timeout: 5_000 });
+  // `/url` の失敗は、署名付き URL の HTTP 詳細（description）の対象外。
+  expect(toastError).toHaveBeenCalledWith("ダウンロードできませんでした。", undefined);
+  expect(consoleError).toHaveBeenCalledWith(
+    "添付のダウンロードに失敗しました",
+    expect.objectContaining({ attachmentId: "notes", reason: "url", status: 503 }),
+  );
+  // 1回目と、URL を取り直した再試行の2回。
+  expect(resolve).toHaveBeenCalledTimes(2);
+  expect(button).not.toBeDisabled();
+});
+
+it("shows the HTTP status when the signed URL returns an error", async () => {
+  link.state = {
+    url: null,
+    status: "ready",
+    expiresAt: null,
+    reload: vi.fn(),
+    getFreshUrl: vi.fn().mockResolvedValue("https://files.test/notes.txt"),
+  };
+  const fetchMock = vi.fn(async () => new Response(null, { status: 403 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const toastError = vi.spyOn(toast, "error").mockReturnValue("download-error");
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  renderDownload();
+  fireEvent.click(screen.getByRole("button", { name: "notes.txtをダウンロード" }));
+  await waitFor(() => expect(toastError).toHaveBeenCalled(), { timeout: 5_000 });
+  expect(toastError).toHaveBeenCalledWith("ダウンロードできませんでした。", {
+    description: "HTTP 403",
+  });
+  expect(consoleError).toHaveBeenCalledWith(
+    "添付のダウンロードに失敗しました",
+    expect.objectContaining({ attachmentId: "notes", reason: "http", status: 403 }),
+  );
+  // 403 の応答は再試行でも同じなので、2回取得する。
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });

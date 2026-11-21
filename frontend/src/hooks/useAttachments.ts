@@ -143,7 +143,8 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
           return cachedEntry.url;
         }
       }
-      if (current === requestId.current) {
+      // ダウンロードのための取り直し（`refresh`）は、表示中のプレビューをスケルトンにしない。
+      if (!options.refresh && current === requestId.current) {
         setStatus("loading");
       }
       try {
@@ -156,14 +157,18 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
         return value.url;
       } catch (error) {
         if (current === requestId.current) {
-          setUrl(null);
-          setExpiresAt(null);
-          setStatus("error");
+          // ダウンロードの再試行が失敗しても、まだ使える URL を表示しているプレビューは壊さない。
+          // 期限切れの URL だけは `ready` のまま残さず、読み込み直せるようにする。
+          if (!options.refresh || shouldRefreshAttachmentUrl(expiresAt)) {
+            setUrl(null);
+            setExpiresAt(null);
+            setStatus("error");
+          }
         }
         throw attachmentUrlError(error);
       }
     },
-    [attachmentId, client, config],
+    [attachmentId, client, config, expiresAt],
   );
 
   return { url, status, expiresAt, reload, getFreshUrl };

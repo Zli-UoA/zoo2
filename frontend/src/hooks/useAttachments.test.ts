@@ -110,6 +110,70 @@ it("keeps the /url status and marks the preview as failed", async () => {
   expect(results[0].status).toBe("error");
 });
 
+it("keeps the visible preview while a download refresh is running", async () => {
+  mocks.requestWithTx.mockResolvedValueOnce({
+    data: { download_url: "https://files.test/image.png" },
+    txid: null,
+  });
+  await act(async () => root.render(tree()));
+  let finish!: (value: unknown) => void;
+  mocks.requestWithTx.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let pending!: Promise<string>;
+  await act(async () => {
+    pending = results[0].getFreshUrl({ refresh: true });
+  });
+  // ダウンロードのための取り直しで、表示中の画像をスケルトンに戻さない。
+  expect(results[0].url).toBe("https://files.test/image.png");
+  expect(results[0].status).toBe("ready");
+  await act(async () => {
+    finish({ data: { download_url: "https://files.test/image.png" }, txid: null });
+  });
+  await expect(pending).resolves.toBe("https://files.test/image.png");
+  expect(results[0].status).toBe("ready");
+});
+
+it("keeps the visible preview when a download refresh fails but the URL is still usable", async () => {
+  mocks.requestWithTx.mockResolvedValueOnce({
+    data: { download_url: "https://files.test/image.png" },
+    txid: null,
+  });
+  await act(async () => root.render(tree()));
+  mocks.requestWithTx.mockRejectedValue(
+    Object.assign(new Error("Request failed"), { status: 503 }),
+  );
+  let error: unknown;
+  await act(async () => {
+    error = await results[0].getFreshUrl({ refresh: true }).catch((cause: unknown) => cause);
+  });
+  expect(error).toMatchObject({ reason: "url", status: 503 });
+  expect(results[0].url).toBe("https://files.test/image.png");
+  expect(results[0].status).toBe("ready");
+});
+
+it("marks the preview as failed when a download refresh fails after the URL expired", async () => {
+  mocks.requestWithTx.mockResolvedValueOnce({
+    data: {
+      download_url: "https://files.test/image.png?X-Amz-Date=20200101T000000Z&X-Amz-Expires=60",
+    },
+    txid: null,
+  });
+  await act(async () => root.render(tree()));
+  expect(results[0].status).toBe("ready");
+  mocks.requestWithTx.mockRejectedValue(
+    Object.assign(new Error("Request failed"), { status: 503 }),
+  );
+  await act(async () => {
+    await results[0].getFreshUrl({ refresh: true }).catch(() => undefined);
+  });
+  expect(results[0].url).toBeNull();
+  expect(results[0].status).toBe("error");
+});
+
 it("does not overwrite the display state with a URL fetched for an old config", async () => {
   let finishFirst!: (value: unknown) => void;
   mocks.requestWithTx.mockImplementationOnce(
