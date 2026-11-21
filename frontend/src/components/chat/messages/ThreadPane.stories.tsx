@@ -270,12 +270,26 @@ export const NotParticipating: Story = {
     await expect(canvas.queryByRole("button", { name: "スレッドを開く" })).not.toBeInTheDocument();
   }),
 };
+const memberPeople = [
+  { id: "user-bob", user_name: "bob", display_name: null, avatar_url: null },
+  { id: "user-alice", user_name: "alice", display_name: "Alice", avatar_url: null },
+  { id: "user-carol", user_name: "carol", display_name: "Carol", avatar_url: null },
+];
+async function closeMembers() {
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+}
 export const Participating: Story = {
   parameters: { a11y: { test: "error" } },
   args: { replies, membership: "joined", onLeaveThread: fn() },
   play: playForImplementation(async ({ canvasElement, args }) => {
-    await userEvent.click(within(canvasElement).getByRole("button", { name: "退出する" }));
+    // 人数をまだ読み込めていなくても、メンバーのダイアログから退出できる。
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "メンバー" }));
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    await expect(within(dialog).getByText("参加中")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
     await expect(args.onLeaveThread).toHaveBeenCalledOnce();
+    await closeMembers();
   }),
 };
 export const WithParticipants: Story = {
@@ -285,31 +299,60 @@ export const WithParticipants: Story = {
     membership: "joined",
     onLeaveThread: fn(),
     participantCount: 53,
-    participants: [
-      { id: "u1", user_name: "alice", display_name: "Alice", avatar_url: null },
-      { id: "u2", user_name: "bob", display_name: null, avatar_url: null },
-    ],
+    participants: memberPeople,
   },
-  play: playForImplementation(async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     const toggle = canvas.getByRole("button", { name: "参加者 53人" });
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(toggle);
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // 参加者は、ヘッダーの人数ボタンから開くポップアウトに出す（ペインの縦の並びを押し下げない）。
-    const popup = await screen.findByRole("dialog", { name: "参加者 53人" });
-    const list = within(within(popup).getByRole("list", { name: "参加者 53人" }));
-    await expect(list.getByText("Alice")).toBeVisible();
-    await expect(list.getByText("@alice")).toBeVisible();
-    // 表示名がないときは、ユーザー名を表示名として出し、`@` の行は重ねない。
-    await expect(list.getByText("bob")).toBeVisible();
-    await expect(list.queryByText("@bob")).not.toBeInTheDocument();
-    await expect(list.getByText("ほか 51人")).toBeVisible();
-    // Escape でポップアウトだけが閉じ、ボタンへフォーカスが戻る。
-    await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "参加者 53人" })).toBeNull());
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // ほかのポップアウトと同じ、画面の中央に出すダイアログ。中身はチャンネルのメンバー一覧にそろえる。
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    const list = within(within(dialog).getByRole("list", { name: "参加者 53人" }));
+    const rows = list.getAllByRole("listitem");
+    // 親メッセージの投稿者（Carol）が先頭で、「親メッセージ」の印が付く。自分（Alice）には「あなた」の印が付く。
+    await expect(rows).toHaveLength(3);
+    await expect(rows[0]).toHaveTextContent("Carol");
+    await expect(within(rows[0]!).getByText("親メッセージ")).toBeVisible();
+    await expect(rows[1]).toHaveTextContent("Alice");
+    await expect(within(rows[1]!).getByText("あなた")).toBeVisible();
+    // 表示名がないときは、ユーザー名を表示名として出す。
+    await expect(rows[2]).toHaveTextContent("bob");
+    await expect(within(dialog).getByText("ほか 50人")).toBeVisible();
+    // 名前で絞り込める。絞り込み中は「ほか」を出さない。
+    const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
+    await userEvent.type(search, "ALI");
+    await expect(list.getAllByRole("listitem")).toHaveLength(1);
+    await expect(within(dialog).queryByText("ほか 50人")).not.toBeInTheDocument();
+    await userEvent.clear(search);
+    await userEvent.type(search, "zzz");
+    await expect(await within(dialog).findByText("該当するユーザーがいません。")).toBeVisible();
+    await userEvent.clear(search);
+    await expect(list.getAllByRole("listitem")).toHaveLength(3);
+    // 参加状態と退出の操作も、ここにある。
+    await expect(within(dialog).getByText("参加中")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
+    await expect(args.onLeaveThread).toHaveBeenCalledOnce();
+    // Escape で一覧だけを閉じ、ボタンへフォーカスが戻る。
+    await closeMembers();
     await expect(toggle).toHaveFocus();
+  }),
+};
+export const ParticipantsJoinFromDialog: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "none",
+    participantCount: 3,
+    participants: memberPeople,
+    onJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "参加者 3人" }));
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    await expect(within(dialog).getByText("未参加")).toBeVisible();
+    await userEvent.click(within(dialog).getByRole("button", { name: "参加する" }));
+    await expect(args.onJoinThread).toHaveBeenCalledOnce();
+    await closeMembers();
   }),
 };
 export const ReopenAndJoin: Story = {

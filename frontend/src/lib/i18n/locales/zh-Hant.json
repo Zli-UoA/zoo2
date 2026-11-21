@@ -320,6 +320,9 @@
     "participants_other": "參與者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
     "participantsEmpty": "沒有參與者",
+    "parentMessage": "原訊息",
+    "participantsSearch": "搜尋姓名",
+    "participantsDescription": "已加入此討論串的人。",
     "joinToReply": "參與後才能回覆此討論串。",
     "reopenAndJoin": "重新開啟並參與"
   },

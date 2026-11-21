@@ -320,6 +320,9 @@
     "participants_other": "{{count}} participants",
     "participantsMore": "and {{count}} more",
     "participantsEmpty": "No participants",
+    "parentMessage": "Parent message",
+    "participantsSearch": "Search by name",
+    "participantsDescription": "People who have joined this thread.",
     "joinToReply": "Join the thread to reply.",
     "reopenAndJoin": "Reopen and join"
   },

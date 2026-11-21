@@ -1,7 +1,6 @@
-import { Popover } from "@base-ui/react/popover";
 import { useTranslation } from "react-i18next";
-import { ArrowLeftIcon, LogOutIcon, UsersIcon, XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { ArrowLeftIcon, UsersIcon, XIcon } from "lucide-react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -9,7 +8,6 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
-import { AppAvatar } from "../AppIdentity";
 import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
 import { useMediaQuery } from "../../layout/useMediaQuery";
@@ -18,6 +16,11 @@ import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
 import { JoinPrompt } from "./JoinPrompt";
+import {
+  ThreadParticipantsDialog,
+  type ThreadParticipantsAction,
+  type ThreadParticipantsStatus,
+} from "./ThreadParticipantsDialog";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
@@ -181,6 +184,32 @@ export function ThreadPane({
     }
   }, [needsJoin, membershipError]);
   const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
+  // 参加者は、ヘッダーの人数ボタンから開く、中央のダイアログに出す。参加・退出の操作もそこに置く。
+  const [participantsOpen, setParticipantsOpen] = useState(false);
+  const participantsStatus: ThreadParticipantsStatus =
+    readOnly || !isMember
+      ? null
+      : membership === "joined"
+        ? "joined"
+        : membership === "none" || membership === "left"
+          ? "notJoined"
+          : "checking";
+  // 参加ボタンの出し方は、入力欄の代わりの案内（`ThreadJoinPrompt`）と同じ。アーカイブ済みの再Openは
+  // 投稿権限が要るので、権限がないときは出さない。
+  // 人数をまだ読み込めていなくても、自分の参加状態があれば、参加・退出の操作のために出す。
+  const showParticipants = participantCount !== undefined || participantsStatus !== null;
+  const participantsAction: ThreadParticipantsAction | null =
+    participantsStatus === "joined"
+      ? onLeaveThread
+        ? { kind: "leave", onClick: onLeaveThread, disabled: membershipPending || isOffline }
+        : null
+      : participantsStatus === "notJoined" && joinThread && !(isArchived && postingForbidden)
+        ? {
+            kind: isArchived ? "reopenAndJoin" : "join",
+            onClick: joinThread,
+            disabled: membershipPending || isOffline,
+          }
+        : null;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -321,39 +350,20 @@ export function ThreadPane({
         {isArchived ? (
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
-        {participantCount !== undefined ? (
-          <Popover.Root>
-            <Popover.Trigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-label={t("threads.participants", { count: participantCount })}
-                />
-              }
-            >
-              <UsersIcon aria-hidden="true" />
-              <span className="tabular-nums">{participantCount}</span>
-            </Popover.Trigger>
-            <ThreadParticipants
-              count={participantCount}
-              participants={participants ?? []}
-              // 狭幅ではペインが aria-modal のダイアログになる。外へ描画すると読み上げ・フォーカス移動の範囲から
-              // 外れるので、ペインの中へ描画する。広幅のサイドペインは、隣の列に隠れないよう body へ描画する。
-              container={isWidePane ? undefined : paneRef}
-            />
-          </Popover.Root>
-        ) : null}
-        {!readOnly && isMember && membership === "joined" && onLeaveThread ? (
+        {showParticipants ? (
           <Button
             variant="ghost"
-            size="icon-sm"
-            aria-label={t("threads.leave")}
-            title={t("threads.leave")}
-            disabled={membershipPending || isOffline}
-            onClick={onLeaveThread}
+            size="sm"
+            aria-haspopup="dialog"
+            aria-label={
+              participantCount === undefined
+                ? t("members.title")
+                : t("threads.participants", { count: participantCount })
+            }
+            onClick={() => setParticipantsOpen(true)}
           >
-            <LogOutIcon />
+            <UsersIcon aria-hidden="true" />
+            <span className="tabular-nums">{participantCount ?? "…"}</span>
           </Button>
         ) : null}
         <Button
@@ -366,6 +376,19 @@ export function ThreadPane({
           <XIcon />
         </Button>
       </PaneHeader>
+
+      {showParticipants ? (
+        <ThreadParticipantsDialog
+          open={participantsOpen}
+          onOpenChange={setParticipantsOpen}
+          count={participantCount}
+          participants={participants ?? []}
+          creatorId={root.user_id}
+          currentUserId={currentUserId}
+          status={participantsStatus}
+          action={participantsAction}
+        />
+      ) : null}
 
       {!readOnly &&
       isMember &&
@@ -572,68 +595,6 @@ export function ThreadPane({
     >
       {paneContent}
     </div>
-  );
-}
-
-/**
- * 参加者の一覧。ヘッダーの人数ボタンから開くポップアウトで、ペインの縦の並びを押し下げない。
- * ポップアップは `role="dialog"` なので、Escape は一覧だけを閉じ、スレッドのペインは閉じない
- * （`handlePaneKeyDown` が、子のダイアログ内のキー操作に干渉しない）。
- */
-function ThreadParticipants({
-  count,
-  participants,
-  container,
-}: {
-  count: number;
-  participants: ThreadParticipant[];
-  container?: React.ComponentProps<typeof Popover.Portal>["container"];
-}) {
-  const { t } = useTranslation();
-  return (
-    <Popover.Portal container={container}>
-      <Popover.Positioner
-        side="bottom"
-        align="end"
-        sideOffset={8}
-        collisionPadding={8}
-        className="z-[60]"
-      >
-        <Popover.Popup className="w-[min(20rem,calc(100vw-2rem))] rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl outline-none">
-          <Popover.Title className="mb-2 text-sm font-semibold">
-            {t("threads.participants", { count })}
-          </Popover.Title>
-          <ul
-            aria-label={t("threads.participants", { count })}
-            className="max-h-[min(15rem,50dvh)] overflow-y-auto text-xs"
-          >
-            {participants.length === 0 ? (
-              <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
-            ) : (
-              participants.map((participant) => {
-                const label = participant.display_name || participant.user_name;
-                return (
-                  <li key={participant.id} className="flex items-center gap-2 py-0.5">
-                    <AppAvatar label={label} src={participant.avatar_url} size="sm" aria-hidden />
-                    <span className="min-w-0 flex-1 truncate">{label}</span>
-                    {label !== participant.user_name ? (
-                      <span className="max-w-[40%] shrink-0 truncate text-muted-foreground">
-                        @{participant.user_name}
-                      </span>
-                    ) : null}
-                  </li>
-                );
-              })
-            )}
-            {count > participants.length ? (
-              <li className="text-muted-foreground">
-                {t("threads.participantsMore", { count: count - participants.length })}
-              </li>
-            ) : null}
-          </ul>
-        </Popover.Popup>
-      </Popover.Positioner>
-    </Popover.Portal>
   );
 }
 

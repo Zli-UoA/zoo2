@@ -320,6 +320,9 @@
     "participants_other": "参加者 {{count}}人",
     "participantsMore": "ほか {{count}}人",
     "participantsEmpty": "参加者はいません",
+    "parentMessage": "親メッセージ",
+    "participantsSearch": "名前で検索",
+    "participantsDescription": "このスレッドに参加している人です。",
     "joinToReply": "参加するとこのスレッドに返信できます。",
     "reopenAndJoin": "再Openして参加する"
   },

@@ -388,6 +388,7 @@
         "MembershipFailed",
         "ReopenArchived",
         "WithParticipants",
+        "ParticipantsJoinFromDialog",
         "ReopenAndJoin",
         "MembershipLoadingBlocksComposer",
         "LeftWithNoParticipants",
@@ -1213,6 +1214,18 @@
       "story": "src/components/chat/messages/ThreadPane.stories.tsx",
       "composed": true,
       "reason": "ThreadPaneのNotParticipating・ReopenAndJoin・PostingForbiddenNotJoinedで、参加の案内・再Openして参加・権限がないときの理由だけの表示を確認する。チャンネルの参加案内はMessagePaneのNotJoinedで確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/ThreadParticipantsDialog.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "ThreadPaneのWithParticipantsで、画面中央のダイアログの並び（親メッセージの投稿者が先頭）・「親メッセージ」「あなた」の印・名前の絞り込み・退出・Escapeで閉じてフォーカスが戻ることを、ParticipantsJoinFromDialogで未参加の「参加する」を、Participatingで人数が未取得でも退出できることを確認する。ThreadPane.browser.test.tsxで、狭幅・再Openして参加・投稿権限がないとき・メンバーでないときを検証する。"
+    },
+    {
+      "file": "src/components/chat/MemberRow.tsx",
+      "story": "src/components/chat/MembersPanel.stories.tsx",
+      "composed": true,
+      "reason": "チャンネルのメンバー一覧（MembersPanel）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。MembersPanelのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsで親メッセージ・あなたの印を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPaneStatus.tsx",

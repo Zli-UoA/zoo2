@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -181,21 +181,30 @@ describe("ThreadPane のダイアログ挙動", () => {
     await waitFor(() => expect(input).toHaveFocus());
   });
 
-  describe("参加者のポップアウト", () => {
+  describe("メンバーのダイアログ", () => {
     const participants = [
-      { id: "u1", user_name: "alice", display_name: "Alice", avatar_url: null },
-      { id: "u2", user_name: "bob", display_name: null, avatar_url: null },
+      { id: "user-1", user_name: "alice", display_name: "Alice", avatar_url: null },
+      { id: "user-2", user_name: "bob", display_name: null, avatar_url: null },
+      { id: "user-3", user_name: "carol", display_name: "Carol", avatar_url: null },
     ];
-    function ParticipantsHarness({ onClose }: { onClose?: () => void }) {
+    function MembersHarness({
+      onClose,
+      onLeaveThread,
+    }: {
+      onClose?: () => void;
+      onLeaveThread?: () => void;
+    }) {
       return (
         <LocaleProvider>
           <ThreadPane
             {...paneProps({
+              // 親メッセージの投稿者は bob、自分は alice (`currentUserId` は user-1)。
+              root: message({ user_id: "user-2", user_name: "bob", display_name: null }),
               replies: [message({ id: "reply-1", parent_id: "root-1", content: "a reply" })],
               membership: "joined",
-              participantCount: 3,
+              participantCount: 53,
               participants,
-              onLeaveThread: noop,
+              onLeaveThread: onLeaveThread ?? noop,
               onClose: onClose ?? noop,
             })}
           />
@@ -203,53 +212,170 @@ describe("ThreadPane のダイアログ挙動", () => {
       );
     }
 
-    it("広幅では人数ボタンから開き、ペインの中身を押し下げずに、Escape で一覧だけを閉じる", async () => {
+    it("画面の中央に出るダイアログに、親メッセージ・あなたの印、検索窓、退出ボタンを出す", async () => {
       await page.viewport(1280, 900);
       const onClose = vi.fn();
-      render(<ParticipantsHarness onClose={onClose} />);
-      const toggle = screen.getByRole("button", { name: "参加者 3人" });
+      const onLeaveThread = vi.fn();
+      render(<MembersHarness onClose={onClose} onLeaveThread={onLeaveThread} />);
+      const toggle = screen.getByRole("button", { name: "参加者 53人" });
       const reply = screen.getByText("a reply");
       const before = reply.getBoundingClientRect().top;
-      expect(toggle).toHaveAttribute("aria-expanded", "false");
 
       await userEvent.click(toggle);
-      const popup = await screen.findByRole("dialog", { name: "参加者 3人" });
-      expect(toggle).toHaveAttribute("aria-expanded", "true");
-      expect(popup.textContent).toMatch(/Alice/);
-      expect(popup.textContent).toMatch(/@alice/);
-      expect(popup.textContent).toMatch(/bob/);
-      expect(popup.textContent).toMatch(/ほか 1人/);
-      // インラインの帯ではなくポップアウト: 返信の位置は変わらず、一覧はペインの外側（body）に重なる。
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      // ほかのポップアウトと同じ、画面の中央のダイアログ。ペインの中身は動かない。
+      const rect = dialog.getBoundingClientRect();
+      expect(Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2)).toBeLessThan(2);
+      expect(Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2)).toBeLessThan(2);
       expect(reply.getBoundingClientRect().top).toBe(before);
-      expect(screen.getByRole("complementary", { name: "スレッド" }).contains(popup)).toBe(false);
+
+      // 並びは、親メッセージの投稿者 (bob) が先頭、残りは名前順。印は、親メッセージと自分。
+      const rows = within(within(dialog).getByRole("list", { name: "参加者 53人" })).getAllByRole(
+        "listitem",
+      );
+      expect(rows.map((row) => row.textContent)).toEqual([
+        expect.stringMatching(/^.*bob.*親メッセージ$/),
+        expect.stringMatching(/^.*Alice.*あなた$/),
+        expect.stringMatching(/Carol/),
+      ]);
+      expect(within(dialog).getByText("ほか 50人")).toBeTruthy();
+
+      // 名前で絞り込む。
+      const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
+      await userEvent.type(search, "car");
+      expect(
+        within(within(dialog).getByRole("list"))
+          .getAllByRole("listitem")
+          .map((row) => row.textContent),
+      ).toEqual([expect.stringMatching(/Carol/)]);
+      await userEvent.clear(search);
+
+      // 参加状態と退出。
+      expect(within(dialog).getByText("参加中")).toBeTruthy();
+      await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
+      expect(onLeaveThread).toHaveBeenCalledOnce();
 
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: "参加者 3人" })).toBeNull());
-      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
       await waitFor(() => expect(toggle).toHaveFocus());
       expect(onClose).not.toHaveBeenCalled();
     });
 
-    it("狭幅では一覧をダイアログの中へ描画し、Escape でスレッドのペインを閉じずに一覧だけを閉じる", async () => {
-      await page.viewport(390, 844);
-      const onClose = vi.fn();
-      render(<ParticipantsHarness onClose={onClose} />);
-      const pane = screen.getByRole("dialog", { name: "スレッド" });
-      const toggle = screen.getByRole("button", { name: "参加者 3人" });
+    it("閉じたあとに開き直すと、検索語は空に戻る", async () => {
+      await page.viewport(1280, 900);
+      render(<MembersHarness />);
+      const toggle = screen.getByRole("button", { name: "参加者 53人" });
+      await userEvent.click(toggle);
+      let dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      await userEvent.type(within(dialog).getByRole("searchbox", { name: "名前で検索" }), "car");
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
 
       await userEvent.click(toggle);
-      const popup = await screen.findByRole("dialog", { name: "参加者 3人" });
-      // aria-modal のペインの外に出ると、読み上げ・フォーカス移動の範囲から外れる。
-      expect(pane.contains(popup)).toBe(true);
-      expect(popup.textContent).toMatch(/Alice/);
-      const rect = popup.getBoundingClientRect();
+      dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      expect(within(dialog).getByRole("searchbox", { name: "名前で検索" })).toHaveValue("");
+      expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
+    });
+
+    it("狭幅でも中央のダイアログで、Escape でスレッドのペインを閉じずにダイアログだけを閉じる", async () => {
+      await page.viewport(390, 844);
+      const onClose = vi.fn();
+      render(<MembersHarness onClose={onClose} />);
+      await userEvent.click(screen.getByRole("button", { name: "参加者 53人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      const rect = dialog.getBoundingClientRect();
       expect(rect.left).toBeGreaterThanOrEqual(0);
       expect(rect.right).toBeLessThanOrEqual(window.innerWidth);
+      expect(Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2)).toBeLessThan(2);
 
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: "参加者 3人" })).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
       expect(screen.getByRole("dialog", { name: "スレッド" })).toBeVisible();
       expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("人数を読み込めていなくても、参加状態があれば、メンバーのダイアログから退出できる", async () => {
+      await page.viewport(1280, 900);
+      const onLeaveThread = vi.fn();
+      render(
+        <LocaleProvider>
+          <ThreadPane {...paneProps({ membership: "joined", onLeaveThread })} />
+        </LocaleProvider>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "メンバー" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
+      expect(onLeaveThread).toHaveBeenCalledOnce();
+    });
+
+    it("未参加では参加ボタンを出し、アーカイブ済みは再Openして参加する（投稿権限がなければ出さない）", async () => {
+      await page.viewport(1280, 900);
+      const onJoinThread = vi.fn();
+      const onReopenAndJoinThread = vi.fn();
+      const view = (extra: Partial<ThreadPaneProps>) => (
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({
+              membership: "none",
+              participantCount: 3,
+              participants,
+              onJoinThread,
+              onReopenAndJoinThread,
+              ...extra,
+            })}
+          />
+        </LocaleProvider>
+      );
+      const { rerender } = render(view({}));
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      let dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      expect(within(dialog).getByText("未参加")).toBeTruthy();
+      await userEvent.click(within(dialog).getByRole("button", { name: "参加する" }));
+      expect(onJoinThread).toHaveBeenCalledOnce();
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+
+      rerender(view({ isArchived: true }));
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      await userEvent.click(within(dialog).getByRole("button", { name: "再Openして参加する" }));
+      expect(onReopenAndJoinThread).toHaveBeenCalledOnce();
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+
+      rerender(
+        view({
+          isArchived: true,
+          postingForbidden: true,
+          composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+        }),
+      );
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      expect(within(dialog).queryByRole("button", { name: /参加/ })).toBeNull();
+      expect(within(dialog).getByText("未参加")).toBeTruthy();
+    });
+
+    it("メンバーでない人や読み取り専用では、参加・退出の操作を出さない", async () => {
+      await page.viewport(1280, 900);
+      render(
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({
+              isMember: false,
+              membership: "none",
+              participantCount: 3,
+              participants,
+              onJoinThread: noop,
+              onLeaveThread: noop,
+            })}
+          />
+        </LocaleProvider>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      expect(within(dialog).queryByRole("button", { name: /参加|退出/ })).toBeNull();
+      expect(within(dialog).queryByText("未参加")).toBeNull();
     });
   });
 });
