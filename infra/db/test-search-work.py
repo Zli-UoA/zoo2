@@ -12,10 +12,10 @@ spec.loader.exec_module(module)
 
 
 class BudgetTest(unittest.TestCase):
-    def fixture(self, rows, blocks=100, work=1000, api_blocks=500):
+    def fixture(self, rows, blocks=100, work=1000, api_blocks=500, statements=20):
         return {
             'api_sql': [{'name': name, 'month_sql': 12 if name == 'api-messages-12-months' else 1,
-                         'statements': 20, 'blocks': api_blocks, 'db_ms': 1}
+                         'statements': statements, 'blocks': api_blocks, 'db_ms': 1}
                         for name in module.API for _ in range(5)],
             'rows': rows, 'recent_rows': 20000, 'queries': 1,
             'api_samples': [{'name': name, 'concurrency': n, 'roundtrip_ms': 1}
@@ -35,6 +35,10 @@ class BudgetTest(unittest.TestCase):
 
     def test_bounded_work_passes(self):
         self.compare(self.fixture(300000), self.fixture(1000000, 110, 1050))
+
+    def test_more_api_statements_fail(self):
+        with self.assertRaises(AssertionError):
+            self.compare(self.fixture(300000), self.fixture(1000000, statements=67))
 
     def test_linear_api_buffers_fail(self):
         with self.assertRaises(AssertionError):
