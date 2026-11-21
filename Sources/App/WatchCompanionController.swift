@@ -64,6 +64,8 @@ final class WatchSnapshotPublisher {
 final class WatchCompanionController: NSObject {
     private let service: WatchCompanionService
     private let calls: SystemCallController
+    private let notifications: NotificationController
+    private let incomingAlerts = IncomingCallNotifications()
     private let connectivity: WCSession
     private var observationID = UUID()
     private lazy var publisher = WatchSnapshotPublisher(snapshot: { [weak self] in
@@ -81,11 +83,13 @@ final class WatchCompanionController: NSObject {
         guard WCSession.isSupported() else { return nil }
         service = WatchCompanionService(session: session, calls: calls)
         self.calls = calls
+        notifications = session.notifications
         connectivity = .default
         super.init()
     }
 
     func start() {
+        Task { await incomingAlerts.removePreviousNotifications() }
         connectivity.delegate = self
         connectivity.activate()
         calls.onWatchStateChanged = { [weak self] in self?.observe() }
@@ -97,6 +101,7 @@ final class WatchCompanionController: NSObject {
         observationID = id
         withObservationTracking {
             _ = service.snapshot()
+            _ = notifications.enabled
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard self?.observationID == id else { return }
@@ -104,6 +109,9 @@ final class WatchCompanionController: NSObject {
             }
         }
         publish()
+        // Watchアプリの到達性に依存せず、閉じている間もOSの通知転送を使う。
+        incomingAlerts.update(calls.incomingNotification, enabled: notifications.enabled &&
+            connectivity.activationState == .activated && connectivity.isPaired)
     }
 
     private func publish(force: Bool = false) {
@@ -114,10 +122,14 @@ final class WatchCompanionController: NSObject {
 extension WatchCompanionController: WCSessionDelegate {
     nonisolated func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState,
                              error: (any Error)?) {
-        Task { @MainActor [weak self] in self?.publish(force: true) }
+        Task { @MainActor [weak self] in self?.observe(); self?.publish(force: true) }
     }
 
     nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
+
+    nonisolated func sessionWatchStateDidChange(_ session: WCSession) {
+        Task { @MainActor [weak self] in self?.observe() }
+    }
 
     nonisolated func sessionDidDeactivate(_ session: WCSession) {
         session.activate()

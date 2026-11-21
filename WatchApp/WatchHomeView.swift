@@ -1,8 +1,14 @@
 import SwiftUI
+import WatchKit
 
 struct WatchHomeView: View {
     let state: WatchCompanionState
     let send: (WatchAction, Bool?) -> Void
+
+    private var incomingCallID: UUID? {
+        guard let call = state.snapshot?.call, call.allows(.answer) else { return nil }
+        return call.id
+    }
 
     var body: some View {
         NavigationStack {
@@ -54,6 +60,9 @@ struct WatchHomeView: View {
             }
             .navigationTitle("Zoo")
             .privacySensitive()
+        }
+        .onChange(of: incomingCallID) { _, current in
+            if current != nil { WKInterfaceDevice.current().play(.notification) }
         }
     }
 

@@ -33,6 +33,7 @@ final class SystemCallController: NSObject {
     private weak var session: AppSession?
     private weak var workspace: WorkspaceStore?
     private var current: IncomingCall?
+    private var incomingReported = false
     private var outgoingID: UUID?
     private var outgoingConnected = false
     private var outgoingStart: CheckedContinuation<Void, Error>?
@@ -54,10 +55,26 @@ final class SystemCallController: NSObject {
     var incomingInvitationID: UUID? { current?.id }
     var onWatchStateChanged: (() -> Void)?
 
+    var incomingNotification: IncomingCall? {
+        guard incomingReported, phase == .ringing, let current,
+              let workspace, workspace.active, current.canAnswer(userID: workspace.user.id) else { return nil }
+        return current
+    }
+
+    func performNotificationAction(_ response: IncomingCallNotificationAction) async {
+        guard let call = incomingNotification, response.callID == call.id,
+              response.userID.caseInsensitiveCompare(call.userID) == .orderedSame else { return }
+        do {
+            try await performWatchAction(WatchRequest(action: response.action, callID: call.id))
+        } catch {
+            workspace?.calls.error = "通話を操作できませんでした。iPhoneで着信を確認してください。"
+        }
+    }
+
     var watchCall: WatchCall? {
         guard let workspace, workspace.active, let callID else { return nil }
         if let current, phase == .ringing {
-            guard current.canAnswer(userID: workspace.user.id) else { return nil }
+            guard incomingReported, current.canAnswer(userID: workspace.user.id) else { return nil }
             return WatchCall(id: callID, title: String(current.callerName.prefix(80)), phase: .incoming,
                              status: "着信中", muted: false, canSetMuted: false, expiresAt: current.expiresAt)
         }
@@ -130,7 +147,7 @@ final class SystemCallController: NSObject {
     }
 
     func connect(_ workspace: WorkspaceStore) {
-        guard self.workspace !== workspace else { updateSync(); return }
+        guard self.workspace !== workspace else { updateSync(); onWatchStateChanged?(); return }
         invitationSync?.cancel(); invitationSync = nil
         self.workspace = workspace
         workspace.systemCalls = self
@@ -241,6 +258,7 @@ final class SystemCallController: NSObject {
         let available = !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
         if available {
             current = call; phase = .ringing; observedInShape = false
+            incomingReported = false
             startedCall = false
             onWatchStateChanged?()
             updateSync()
@@ -267,6 +285,8 @@ final class SystemCallController: NSObject {
                     return
                 }
                 guard call.expiresAt > .now else { self.end(reason: .unanswered); return }
+                self.incomingReported = true
+                self.onWatchStateChanged?()
                 self.wake()
             }
         }
@@ -318,6 +338,7 @@ final class SystemCallController: NSObject {
     private func clear() {
         if let current { retired[current.id] = max(current.expiresAt, .now.addingTimeInterval(60)) }
         current = nil
+        incomingReported = false
         outgoingID = nil
         outgoingConnected = false
         outgoingStart?.resume(throwing: CancellationError()); outgoingStart = nil
