@@ -8,7 +8,7 @@
 
 backendの `EMOJI_ACCOUNT_PROFILE_URL` は内部サービスの `http://emoji.emoji.svc.cluster.local:3001/accounts` を指定する。未設定なら空の一覧を返す。専用AuthZ tokenはアプリへ渡さない。画像URLは集中基盤からAuthZの公開画像ホストへ転送されるため、CSPには `https://emoji.zli.works` と `https://avater.zliusercontent.com` を許可する。
 
-Web・Android・TUI・GPUI・Tauriが同じ配信元を使う。TUIは画像を表示できないためショートコードとアイコン記号を残し、メンション表示名をAuthZから解決する。各段は60秒で再取得し、失敗時はアプリ固有プロフィールや期限切れプロフィールへ戻さない。
+Web・Android・TUI・Tauriが同じ配信元を使う。TUIは画像を表示できないためショートコードとアイコン記号を残し、メンション表示名をAuthZから解決する。各段は60秒で再取得し、失敗時はアプリ固有プロフィールや期限切れプロフィールへ戻さない。
 
 配備はAuthZ API、emojiサービスの発行済みmainイメージと内部Service/NetworkPolicy、利用側の順に行う。設定とSOPS Secretはzoo2-infraで管理する。
 
@@ -18,7 +18,7 @@ Web・AndroidのチャンネルとHomeの本文入力では、共通ピッカー
 `:kitchen_1f431_1f600:` の形式で選択範囲へ挿入する。リアクションの `kitchen:1f431_1f600` と区別し、
 本文は通常のMFMショートコードとして解析する。コード・plainの中では変換しない。
 Web・Androidは共有カタログから画像を解決し、取得中・失敗時は元の絵文字2つを表示する。
-TUIとGPUIの共有テキスト解析器も、画像の代わりに元の絵文字2つを表示する。
+TUIのテキスト解析器も、画像の代わりに元の絵文字2つを表示する。
 
 ActivityPubへ送るNoteとLikeには、同じカタログで実在を確認した組み合わせのEmojiタグを付ける。
 画像URLはカタログの向きと日付からGoogleの固定ホストへ組み立て、利用者からURLを受け取らない。

@@ -22,7 +22,7 @@ use tauri::Manager;
 use zoo2_client_core::config::{AuthConfig, Config, desktop_ui_for};
 use zoo2_client_types::ipc::UiMode;
 
-/// 設定ディレクトリとトークンの置き場所の名前。GPUI 版 (`zoo2-desktop`) や TUI とは分ける。
+/// 設定ディレクトリとトークンの置き場所の名前。TUI とは分ける。
 pub const APP_NAME: &str = "zoo2-desktop-tauri";
 
 /// 画面の種類。`desktop_ui` (`ZOO_DESKTOP_UI`) で `remote` か `leptos` を選ぶ。
