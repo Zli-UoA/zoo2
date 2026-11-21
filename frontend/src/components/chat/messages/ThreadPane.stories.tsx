@@ -275,6 +275,15 @@ const memberPeople = [
   { id: "user-alice", user_name: "alice", display_name: "Alice", avatar_url: null },
   { id: "user-carol", user_name: "carol", display_name: "Carol", avatar_url: null },
 ];
+/**
+ * メンバーのダイアログを見つけ、開くアニメーション（フェードイン）が進んで、見えるようになるまで待つ。
+ * ダイアログが DOM に現れた直後は、不透明度が 0 で、`toBeVisible` が失敗する（CI の描画で再現した）。
+ */
+async function findMembersDialog() {
+  const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+  await waitFor(() => expect(dialog).toBeVisible(), { timeout: 5000 });
+  return dialog;
+}
 async function closeMembers() {
   await userEvent.keyboard("{Escape}");
   // 負荷の高い環境でも安定するよう、閉じる処理の完了を待つ時間を長めにする（既定は1秒）。
@@ -288,7 +297,7 @@ export const Participating: Story = {
   play: playForImplementation(async ({ canvasElement, args }) => {
     // 人数をまだ読み込めていなくても、メンバーのダイアログから退出できる。
     await userEvent.click(within(canvasElement).getByRole("button", { name: "メンバー" }));
-    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    const dialog = await findMembersDialog();
     await expect(within(dialog).getByText("参加中")).toBeVisible();
     await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
     await expect(args.onLeaveThread).toHaveBeenCalledOnce();
@@ -309,7 +318,7 @@ export const WithParticipants: Story = {
     const toggle = canvas.getByRole("button", { name: "参加者 53人" });
     await userEvent.click(toggle);
     // ほかのポップアウトと同じ、画面の中央に出すダイアログ。中身はチャンネルのメンバー一覧にそろえる。
-    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    const dialog = await findMembersDialog();
     const list = within(within(dialog).getByRole("list", { name: "参加者 53人" }));
     const rows = list.getAllByRole("listitem");
     // スレ主（Carol）が先頭で、「スレ主」の印が付く。自分（Alice）には「あなた」の印が付く。
@@ -360,7 +369,7 @@ export const ParticipantsMembershipFailed: Story = {
   },
   play: playForImplementation(async ({ canvasElement, args }) => {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "参加者 3人" }));
-    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    const dialog = await findMembersDialog();
     // 参加・退出の失敗は、背面のペインではなく、ダイアログの中に出る。
     const alert = within(dialog).getByRole("alert");
     await expect(alert).toHaveTextContent("スレッドの参加状態を更新できませんでした。");
@@ -380,7 +389,7 @@ export const ParticipantsJoinFromDialog: Story = {
   },
   play: playForImplementation(async ({ canvasElement, args }) => {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "参加者 3人" }));
-    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    const dialog = await findMembersDialog();
     await expect(within(dialog).getByText("未参加")).toBeVisible();
     await userEvent.click(within(dialog).getByRole("button", { name: "参加する" }));
     await expect(args.onJoinThread).toHaveBeenCalledOnce();
