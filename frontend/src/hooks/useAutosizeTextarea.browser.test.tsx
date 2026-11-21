@@ -4,7 +4,7 @@ import { expect, it } from "vite-plus/test";
 
 import { useAutosizeTextarea } from "./useAutosizeTextarea";
 
-function Field({ hidden, value }: { hidden: boolean; value: string }) {
+function Field({ hidden, value, width = 200 }: { hidden: boolean; value: string; width?: number }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useAutosizeTextarea(ref, value, 160);
   return (
@@ -15,7 +15,7 @@ function Field({ hidden, value }: { hidden: boolean; value: string }) {
         readOnly
         rows={1}
         value={value}
-        style={{ width: 200, lineHeight: "20px", padding: 0, border: 0, boxSizing: "content-box" }}
+        style={{ width, lineHeight: "20px", padding: 0, border: 0, boxSizing: "content-box" }}
       />
     </div>
   );
@@ -42,6 +42,22 @@ it("grows with the draft while it is shown", async () => {
   await waitFor(() => expect(heightOf(field)).toBeGreaterThan(one));
   view.rerender(<Field hidden={false} value="1" />);
   await waitFor(() => expect(heightOf(field)).toBe(one));
+});
+
+// What matters is that the draft is not cut off, not an exact height (fonts differ): the field is as
+// tall as its content, or it is at the cap and scrolls.
+const clipped = (field: HTMLElement) =>
+  field.scrollHeight > field.clientHeight + 1 && getComputedStyle(field).overflowY !== "auto";
+
+it("fits the same draft again when a narrower field wraps it onto more lines", async () => {
+  const draft = "word ".repeat(60);
+  const view = render(<Field hidden={false} value={draft} width={800} />);
+  const field = view.getByLabelText("draft");
+  await waitFor(() => expect(clipped(field)).toBe(false));
+  const wide = heightOf(field);
+  view.rerender(<Field hidden={false} value={draft} width={120} />);
+  await waitFor(() => expect(heightOf(field)).toBeGreaterThan(wide), { timeout: 3000 });
+  expect(clipped(field)).toBe(false);
 });
 
 it("keeps a draft that fits unchanged across renders", async () => {
