@@ -379,20 +379,29 @@ class AttachmentDrafts(
         return handled
     }
 
+    private var picking = false
+
     fun pick(photos: Boolean = false) {
+        if (picking || !enabled) return
+        picking = true
         scope.launch {
-            add(
-                app.platform.invoke(
+            try {
+                add(app.platform.invoke(
                     "pickFiles",
                     buildJsonObject {
-                            put("owner", owner)
-                            put("accept", acceptedTypes?.joinToString(",").orEmpty())
-                            put("multiple", true)
-                            put("photos", photos)
-                        }
-                        .toString(),
-                )
-            )
+                        put("owner", owner)
+                        put("accept", acceptedTypes?.joinToString(",").orEmpty())
+                        put("multiple", true)
+                        put("photos", photos)
+                    }.toString(),
+                ))
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                error = app.t("attachments.uploadError")
+            } finally {
+                picking = false
+            }
         }
     }
 
@@ -559,7 +568,7 @@ fun MessageAttachments(app: Session, values: List<Row>) {
 }
 
 @Composable
-private fun AttachmentItem(
+internal fun AttachmentItem(
     app: Session,
     file: Row,
     modifier: Modifier,

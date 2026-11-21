@@ -41,11 +41,14 @@ internal class AndroidPlatform(
     override var messageEncryption: zoo.MessageEncryption? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
-    var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true))
+    private val prefs = activity.getSharedPreferences("preferences", 0)
+    var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true,
+        swipeReply = prefs.getBoolean("swipe-reply", true),
+        operationHaptics = prefs.getBoolean("operation-haptics", true),
+    ))
         private set
 
     private val history = NavigationHistory(env.path)
-    private val prefs = activity.getSharedPreferences("preferences", 0)
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
     private val cache = AccountCache(cacheDirectory)
@@ -171,8 +174,12 @@ internal class AndroidPlatform(
     override fun action(name: String) {
         when {
             name == "back" -> back()
-            name == "haptic:longPress" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            name == "haptic:threshold" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            name == "haptic:longPress" && env.operationHaptics ->
+                activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            name == "haptic:threshold" && env.operationHaptics ->
+                activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            name == "toggleSwipeReply" -> updateInteraction("swipe-reply", !env.swipeReply)
+            name == "toggleOperationHaptics" -> updateInteraction("operation-haptics", !env.operationHaptics)
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -188,6 +195,11 @@ internal class AndroidPlatform(
             name.startsWith("locale:") -> env = env.copy(locale = name.removePrefix("locale:"))
             name.startsWith("fileRelease:") -> files.remove(name.removePrefix("fileRelease:"))
         }
+    }
+
+    private fun updateInteraction(key: String, enabled: Boolean) {
+        prefs.edit().putBoolean(key, enabled).apply()
+        env = if (key == "swipe-reply") env.copy(swipeReply = enabled) else env.copy(operationHaptics = enabled)
     }
 
     private fun open(url: String) {

@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
@@ -35,11 +36,17 @@ internal fun ChannelComposerSheet(
         editor(false)
         return
     }
+    var drag by remember(expanded) { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
     if (!expanded) {
+        val stretch = with(density) { (-drag).coerceAtLeast(0f).toDp().coerceAtMost(144.dp) }
         Column(Modifier.fillMaxWidth().semantics { testTag = "channel-composer-dock" }
             .background(MaterialTheme.colorScheme.surface)) {
             androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            ComposerDragHandle(app, expanded = false, enabled = enabled) { changeExpanded(true) }
+            ComposerDragHandle(app, expanded = false, enabled = enabled, onDrag = { drag = it }) {
+                changeExpanded(true)
+            }
+            Spacer(Modifier.height(stretch))
             editor(false)
         }
     }
@@ -48,11 +55,14 @@ internal fun ChannelComposerSheet(
         visible = expanded, fullScreen = true, customChrome = true,
     ) {
         if (expanded) {
-            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            val displacement = with(density) { drag.coerceAtLeast(0f).toDp().coerceAtMost(144.dp) }
+            Column(Modifier.fillMaxSize().offset(y = displacement).background(MaterialTheme.colorScheme.background)) {
                 PaneHeader {
                     IconButton("arrow-left", app.t("composer.collapse")) { changeExpanded(false) }
                 }
-                ComposerDragHandle(app, expanded = true, enabled = true) { changeExpanded(false) }
+                ComposerDragHandle(app, expanded = true, enabled = true, onDrag = { drag = it }) {
+                    changeExpanded(false)
+                }
                 Box(Modifier.weight(1f).fillMaxWidth()) { editor(true) }
             }
         }
@@ -60,8 +70,11 @@ internal fun ChannelComposerSheet(
 }
 
 @Composable
-private fun ComposerDragHandle(app: Session, expanded: Boolean, enabled: Boolean, change: () -> Unit) {
+private fun ComposerDragHandle(
+    app: Session, expanded: Boolean, enabled: Boolean, onDrag: (Float) -> Unit, change: () -> Unit,
+) {
     val latestChange by rememberUpdatedState(change)
+    val latestDrag by rememberUpdatedState(onDrag)
     val action = app.t(if (expanded) "composer.collapse" else "composer.expand")
     Box(
         Modifier.fillMaxWidth().height(AndroidDesign.sectionGap)
@@ -74,15 +87,20 @@ private fun ComposerDragHandle(app: Session, expanded: Boolean, enabled: Boolean
             }
             .clickable(enabled = enabled, onClickLabel = action, onClick = { latestChange() })
             .pointerInput(expanded, enabled) {
+                if (!enabled) return@pointerInput
                 var distance = 0f
                 detectVerticalDragGestures(
                     onDragStart = { distance = 0f },
-                    onDragCancel = { distance = 0f },
+                    onDragCancel = { distance = 0f; latestDrag(0f) },
                     onDragEnd = {
-                        val threshold = 24.dp.toPx()
-                        if (enabled && if (expanded) distance >= threshold else distance <= -threshold) latestChange()
+                        val threshold = AndroidDesign.sectionGap.toPx()
+                        if (if (expanded) distance >= threshold else distance <= -threshold) latestChange()
+                        latestDrag(0f)
                     },
-                    onVerticalDrag = { _, delta -> distance += delta },
+                    onVerticalDrag = { _, delta ->
+                        distance += delta
+                        latestDrag(distance)
+                    },
                 )
             },
         contentAlignment = Alignment.Center,

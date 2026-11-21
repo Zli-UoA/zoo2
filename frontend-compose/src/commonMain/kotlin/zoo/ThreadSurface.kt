@@ -30,6 +30,20 @@ internal fun ThreadSurface(
     val windowWidth =
         with(LocalDensity.current) { LocalWindowInfo.current.containerSize.width.toDp() }
     val compact = windowWidth < 640.dp
+    if (LocalTouchUi.current) {
+        AndroidThreadLayout(
+            title = app.t("threads.title"),
+            backLabel = app.t("threads.close"),
+            replyLabel = app.t(if (loading) "threads.loading" else "threads.replyCount", "count" to count.toString()),
+            modifier = modifier.then(if (windowWidth < 1024.dp) Modifier.fillMaxWidth() else Modifier.width(384.dp)),
+            back = close,
+            parent = root,
+            actions = { ThreadActions(app, canParticipate = composer != null, replyCount = count) },
+            replies = replies,
+            compose = composer,
+        )
+        return
+    }
     Column(
         modifier
             .then(

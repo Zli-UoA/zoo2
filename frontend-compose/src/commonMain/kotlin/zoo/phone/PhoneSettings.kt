@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -173,7 +174,23 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
         return
     }
     SettingsSection(call.label.ifBlank { app.t("sip.title") }, app.t("sip.status.${call.status}") + call.peer.let { if (it.isBlank()) "" else " · $it" }) {
-        CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
+        if (LocalTouchUi.current) {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (call.status == "incoming") {
+                    Button(app.t("sip.answer"), enabled = !controller.busy, primary = true,
+                        contentInset = 24.dp) { controller.answer() }
+                }
+                if (call.status == "active") Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconButton(if (call.muted) "mic-off" else "mic",
+                        app.t(if (call.muted) "sip.unmute" else "sip.mute"), enabled = !controller.busy,
+                        selected = call.muted) { controller.mute() }
+                    IconButton("volume-2", app.t("androidPhone.speaker"), selected = call.speaker) {
+                        controller.speaker()
+                    }
+                }
+                Button(app.t("sip.hangup"), destructive = true, contentInset = 24.dp) { controller.hangup() }
+            }
+        } else CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
             if (call.status == "incoming") Button(app.t("sip.answer"), enabled = !controller.busy) { controller.answer() }
             Button(app.t("sip.hangup"), destructive = true) { controller.hangup() }
             if (call.status == "active") {

@@ -17,6 +17,9 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.semantics.SemanticsProperties
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.encodedPath
+import io.ktor.http.HttpMethod
 import kotlinx.coroutines.*
 import kotlin.test.*
 import org.junit.Rule
@@ -31,7 +34,11 @@ import org.robolectric.annotation.GraphicsMode
 class ReviewRegressionUiTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
 
-    private class Fixture(initial: Environment = Environment(touch = true)) {
+    private class Fixture(
+        initial: Environment = Environment(touch = true),
+        private val labels: Map<String, String> = emptyMap(),
+        response: ((String, HttpMethod) -> String)? = null,
+    ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val platform = object : Platform {
             override suspend fun headers() = emptyMap<String, String>()
@@ -42,18 +49,187 @@ class ReviewRegressionUiTest {
             override fun now() = "2026-11-15T00:00:00Z"
             override fun navigate(path: String) { app.update(app.env.copy(path = path)) }
             override fun action(name: String) {}
-            override fun translate(key: String, args: Map<String, String>) = key
+            override fun translate(key: String, args: Map<String, String>) = labels[key] ?: key
             override fun relativeTimestamp(timestamp: String) = "5分前"
             override fun notificationTime(timestamp: String) = "11/15 09:00"
             override fun time(timestamp: String) = timestamp
-            override fun day(timestamp: String) = timestamp
+            override fun day(timestamp: String) = if (labels.isEmpty()) timestamp else timestamp.substringBefore('T')
         }
         val app: Session = Session(
             Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform,
-                HttpClient(MockEngine { error("Unexpected API request") }), scope, synchronize = false),
+                HttpClient(MockEngine { request ->
+                    respond(response?.invoke(request.url.encodedPath, request.method) ?: error("Unexpected API request"))
+                }), scope, synchronize = false),
             scope, initial,
         )
         fun close() { app.close(); scope.cancel() }
+    }
+
+    @Test
+    fun androidShellShowsFiveRootDestinationsAndHidesTabsInSettingsDetails() {
+        val tabs = mapOf(
+            "/home" to ("home.navTitle" to "ホーム"),
+            "/" to ("channels.title" to "チャンネル"),
+            "/notifications" to ("notifications.title" to "通知"),
+            "/bubble" to ("bubbleChat.navTitle" to "Bubble"),
+            "/settings" to ("settings.navTitle" to "設定"),
+        )
+        val translations = tabs.values.toMap() + mapOf(
+            "nav.main" to "メインナビゲーション",
+            "home.title" to "ホーム",
+            "settings.zooTitle" to "設定",
+            "bubbleChat.title" to "Bubble",
+            "bubbleChat.description" to "入力中の内容がリアルタイムに表示されます",
+            "settings.general" to "一般",
+            "apps.title" to "アプリ",
+            "members.title" to "メンバー",
+            "home.customEmojis" to "カスタム絵文字",
+            "slackLink.tab" to "Slack連携",
+            "theme.title" to "テーマ", "theme.system" to "端末に従う",
+            "settings.appearance" to "外観", "settings.interaction" to "操作",
+            "settings.swipeReply" to "スワイプで返信", "settings.operationHaptics" to "触覚フィードバック",
+            "language.title" to "言語",
+            "search.engine" to "検索エンジン",
+            "channels.empty" to "参加中のチャンネルはありません",
+            "channels.noJoined" to "参加中のチャンネルはありません",
+            "channels.browseTitle" to "チャンネルを探す",
+            "members.joined" to "参加中",
+            "channels.createAction" to "チャンネルを作成",
+            "dms.title" to "ダイレクトメッセージ",
+            "dms.empty" to "ダイレクトメッセージはありません",
+            "bubbleChat.emptyTitle" to "現在入力中のユーザーはいません",
+            "bubbleChat.emptyDescription" to "入力すると、リアルタイムに吹き出しが表示されます。",
+            "bubbleChat.placeholder" to "入力して共有",
+            "notifications.empty" to "まだ通知はありません",
+            "notifications.filterAll" to "すべて",
+            "notifications.filterMentions" to "メンション",
+            "notifications.unreadStatus" to "未読",
+            "home.readAll" to "すべて既読",
+            "home.notificationKinds.reply" to "が返信しました",
+            "home.notificationKinds.mention" to "がメンションしました",
+            "home.notificationKinds.like" to "がリアクションしました",
+            "dates.today" to "今日",
+            "notifications.emptyDescription" to "新しい通知があるとここに表示されます。",
+            "home.timelineLabels.home" to "フォロー中",
+            "home.timelineLabels.local" to "ローカル",
+            "home.timelineLabels.social" to "連合",
+        )
+        val posts = (1..4).map { index ->
+            obj("id" to "post-$index", "user_id" to "haru", "user_name" to "haru",
+                "display_name" to if (index % 2 == 1) "はる" else "みずき",
+                "created_at" to "2026-11-15T00:00:00Z",
+                "content" to listOf(
+                    "リリースノートの下書きを共有しました。",
+                    "着信画面のライト版を試しました。",
+                    "今日の通話テストは夕方からです。",
+                    "次の変更は #開発 で話しましょう。",
+                )[index - 1],
+            )
+        }
+        val notifications = listOf(
+            obj("id" to "reply", "actor_id" to "local:haru", "display_name" to "はる",
+                "kind" to "reply", "post_id" to "post-1", "created_at" to "2026-11-15T10:10:00Z",
+                "content" to "ライト版も読みやすいね。", "is_read" to false),
+            obj("id" to "mention", "actor_id" to "local:yui", "display_name" to "ゆい",
+                "kind" to "mention", "post_id" to "post-2", "created_at" to "2026-11-15T10:04:00Z",
+                "content" to "次のテストでも確認します。", "is_read" to false),
+            obj("id" to "reaction", "actor_id" to "local:sora", "display_name" to "そら",
+                "kind" to "like", "reaction" to "🎉", "post_id" to "post-3",
+                "created_at" to "2026-11-15T09:52:00Z", "is_read" to true),
+        )
+        val bubbles = listOf(
+            obj("user_id" to "haru", "display_name" to "はる", "content" to "今日の通話テスト、16時からです。"),
+            obj("user_id" to "yui", "display_name" to "ゆい", "content" to "参加できます！"),
+        )
+        val fixture = Fixture(Environment(path = "/home", touch = true, focused = false), translations) { path, method ->
+            when (path) {
+                "/api/home" -> kotlinx.serialization.json.JsonArray(posts).toString()
+                "/api/activitypub/status" -> obj("enabled" to false).toString()
+                "/api/activitypub/notifications" -> obj(
+                    "items" to kotlinx.serialization.json.JsonArray(notifications), "unread_count" to 2,
+                ).toString()
+                "/api/bubble" -> if (method == HttpMethod.Get) kotlinx.serialization.json.JsonArray(bubbles).toString()
+                    else obj("ok" to true).toString()
+                else -> "[]"
+            }
+        }
+        fixture.app.homeTimelines.save("home\u0000\u0000",
+            HomeTimelineSnapshot(posts, false, 0, 0, kotlin.time.Clock.System.now().toEpochMilliseconds()))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    ZooTheme(dark = fixture.app.env.dark) {
+                        Box(Modifier.size(360.dp, 760.dp).testTag("android-top")) {
+                            NativeWindow(fixture.app) { ZooApp(fixture.app) }
+                        }
+                    }
+                }
+            }
+            for ((index, entry) in tabs.entries.withIndex()) {
+                val (path, label) = entry
+                ui.runOnIdle {
+                    fixture.app.update(fixture.app.env.copy(path = path, dark = index % 2 == 1))
+                    if (path == "/") fixture.app.pane = "sidebar"
+                }
+                ui.onNode(hasContentDescription(label.second) and isSelected()).assertIsDisplayed()
+                ui.onNodeWithContentDescription("メインナビゲーション").assertIsDisplayed()
+                if (path == "/bubble") ui.waitUntil(5_000) {
+                    ui.onAllNodesWithText("参加できます！").fetchSemanticsNodes().isNotEmpty()
+                }
+                captureAndroidUi(ui, { ui.activity }, "android-top", "android-root-$index")
+            }
+            ui.onNodeWithText("メンバー").performClick()
+            ui.onNodeWithContentDescription("メインナビゲーション").assertDoesNotExist()
+            ui.runOnIdle { assertTrue(fixture.app.env.path.contains("tab=members")) }
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun androidThreadScreenUsesFlatConversationLayoutAndReturnsToItsParent() {
+        val fixture = Fixture(Environment(touch = true, online = false), mapOf(
+            "threads.title" to "スレッド", "threads.close" to "会話に戻る",
+            "threads.replyCount" to "2件の返信", "threads.compose" to "スレッドに返信",
+        ))
+        val root = obj("id" to "root", "user_id" to "haru", "content" to "リリースノートの下書きを共有しました。",
+            "created_at" to "2026-11-15T12:00:00Z")
+        val replies = listOf(
+            obj("id" to "reply-1", "user_id" to "mizuki", "parent_id" to "root",
+                "content" to "Androidのキャプチャを追加します。", "created_at" to "2026-11-15T12:01:00Z"),
+            obj("id" to "reply-2", "user_id" to "haru", "parent_id" to "root",
+                "content" to "確認しました。", "created_at" to "2026-11-15T12:02:00Z"),
+        )
+        val people = listOf(
+            obj("id" to "haru", "display_name" to "はる"),
+            obj("id" to "mizuki", "display_name" to "みずき"),
+        )
+        val channel = obj("id" to "dev", "channel_name" to "開発")
+        var opened by mutableStateOf(true)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    ZooTheme(dark = true) {
+                        Box(Modifier.size(360.dp, 760.dp).testTag("android-thread")) {
+                            NativeWindow(fixture.app) {
+                                if (opened) ThreadSurface(
+                                    fixture.app, replies.size, false, close = { opened = false },
+                                    root = { Message(fixture.app, channel, root, replies + root, emptyList(), people,
+                                        grouped = false, wide = false, canOpenThread = false) },
+                                    replies = { MessageList(fixture.app, channel, replies, emptyList(), people,
+                                        parent = "root", wide = false, modifier = Modifier.fillMaxSize(), readState = false) },
+                                    composer = { Composer(fixture.app, "dev", "root", people, enabled = true,
+                                        showTyping = false, onTyping = {}) },
+                                ) else Text("開発")
+                            }
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithText("2件の返信").assertIsDisplayed()
+            ui.onNodeWithText("Androidのキャプチャを追加します。").assertIsDisplayed()
+            captureAndroidUi(ui, { ui.activity }, "android-thread", "android-thread")
+            ui.onNodeWithContentDescription("会話に戻る").performClick()
+            ui.onNodeWithText("開発").assertIsDisplayed()
+        } finally { fixture.close() }
     }
 
     @Test
@@ -301,7 +477,7 @@ class ReviewRegressionUiTest {
                 assertEquals(with(ui.density) { 12.dp.toPx() }, avatars[0].boundsInRoot.left, 1f)
                 assertEquals(avatars[0].boundsInRoot.left, avatars[1].boundsInRoot.left, 1f)
                 avatars.zip(names).forEach { (avatar, name) ->
-                    assertEquals(with(ui.density) { 40.dp.toPx() }, avatar.boundsInRoot.width, 1f)
+                    assertEquals(with(ui.density) { AndroidDesign.avatar.toPx() }, avatar.boundsInRoot.width, 1f)
                     assertEquals(avatar.boundsInRoot.top, name.boundsInRoot.top, 1f)
                 }
                 val grouped = ui.onNodeWithText("Grouped body").fetchSemanticsNode().boundsInRoot
@@ -401,6 +577,47 @@ class ReviewRegressionUiTest {
             ui.runOnIdle { rows = emptyList() }
             ui.onNodeWithText("channels.loadError").assertIsDisplayed()
             ui.onNodeWithText("channels.empty").assertDoesNotExist()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun androidChannelListRendersSearchJoinedAndDmWithoutAccordion() {
+        val fixture = Fixture(labels = mapOf(
+            "channels.title" to "チャンネル", "channels.browseTitle" to "チャンネルを探す",
+            "channels.createTitle" to "チャンネルを作成", "members.joined" to "参加中",
+            "dms.title" to "ダイレクトメッセージ", "dms.createTitle" to "DMを作成",
+            "channels.unread" to "未読", "home.navTitle" to "ホーム",
+            "notifications.title" to "通知", "bubbleChat.navTitle" to "Bubble", "settings.navTitle" to "設定",
+        ))
+        val channels = listOf(
+            obj("id" to "dev", "channel_name" to "開発", "description" to "着信と通話中の画面を確認"),
+            obj("id" to "chat", "channel_name" to "雑談", "description" to "ランチいきませんか？"),
+            obj("id" to "staff", "channel_name" to "運営", "description" to "鍵付きチャンネル", "is_private" to true),
+            obj("id" to "news", "channel_name" to "お知らせ", "description" to "今週のリリースノート"),
+            obj("id" to "dm", "channel_name" to "はる", "is_dm" to true),
+        )
+        val memberships = channels.map { obj("channel_id" to it.text("id"), "user_id" to "alice") } +
+            obj("channel_id" to "dm", "user_id" to "haru")
+        val users = listOf(obj("id" to "haru", "user_name" to "haru", "display_name" to "はる"))
+        try {
+            ui.runOnIdle { fixture.app.unread = setOf("dev") }
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    ZooTheme(dark = false) {
+                        Column(Modifier.size(360.dp, 760.dp).testTag("channel-index")) {
+                            Sidebar(fixture.app, channels, users, memberships, false,
+                                Modifier.weight(1f), narrow = true)
+                            MobileNavigation("/", 2, { fixture.app.t(it) }, "未読通知2件") {}
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithText("チャンネルを探す").assertIsDisplayed()
+            ui.onNodeWithText("着信と通話中の画面を確認").assertIsDisplayed()
+            ui.onNodeWithContentDescription("はる").assertIsDisplayed()
+            captureAndroidUi(ui, { ui.activity }, "channel-index", "android-channel-index")
+            ui.onNodeWithText("チャンネルを探す").performClick()
+            ui.runOnIdle { assertEquals("browse", fixture.app.dialog) }
         } finally { fixture.close() }
     }
 

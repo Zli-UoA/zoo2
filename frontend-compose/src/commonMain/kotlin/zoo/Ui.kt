@@ -404,6 +404,16 @@ fun Button(
     accessibleLabel: String? = null,
     click: () -> Unit,
 ) {
+    if (LocalTouchUi.current) {
+        AndroidAction(
+            label, accessibleLabel ?: label, icon, size.startsWith("icon"), enabled, selected, expanded,
+            variant, modifier, role, minimumTouchTarget ?: AndroidDesign.touchTarget,
+            iconSize ?: AndroidDesign.icon, contentInset ?: AndroidDesign.controlInset,
+            contentGap ?: AndroidDesign.controlGap, textStyle, onClick = click,
+        )
+        return
+    }
+
     val activation = LocalControlActivation.current
     val colors = MaterialTheme.colorScheme
     val dark = colors.background == Color.Black
@@ -416,7 +426,7 @@ fun Button(
     val isHovered = enabled && hovered
     val density = LocalDensity.current
     var labelAdvance by remember(label, size, textStyle) { mutableStateOf(Float.NaN) }
-    val minimumTarget = minimumTouchTarget ?: if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp
+    val minimumTarget = minimumTouchTarget ?: 0.dp
     val controlHeight = maxOf(
         if (variant == "tab") 36.dp
         else
@@ -430,26 +440,23 @@ fun Button(
     )
     val iconOnly = size.startsWith("icon")
     val radius =
-        if (LocalTouchUi.current) AndroidDesign.controlRadius
-        else if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
+        if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
         else 10.dp
     val horizontalPadding =
-        contentInset ?: if (LocalTouchUi.current) {
-            if (iconOnly) 0.dp else AndroidDesign.controlInset
-        } else if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
+        contentInset ?: if (variant == "tab") 12.dp else if (iconOnly) 0.dp else if (size == "xs") 9.dp else 11.dp
     val startPadding =
-        if (!LocalTouchUi.current && inlineStartIcon && icon != null && !iconOnly) horizontalPadding - 2.dp
+        if (inlineStartIcon && icon != null && !iconOnly) horizontalPadding - 2.dp
         else horizontalPadding
     val endPadding = horizontalPadding
     val resolvedIconSize =
         iconSize
-            ?: if (LocalTouchUi.current) AndroidDesign.icon else when (size) {
+            ?: when (size) {
                 "xs",
                 "icon-xs" -> 12.dp
                 "sm" -> 14.dp
                 else -> 16.dp
             }
-    val gap = contentGap ?: if (LocalTouchUi.current) AndroidDesign.controlGap else if (size == "xs" || size == "sm") 4.dp else 6.dp
+    val gap = contentGap ?: if (size == "xs" || size == "sm") 4.dp else 6.dp
     val contentWidth =
         with(density) {
             if (iconOnly) controlHeight.toPx()
@@ -459,12 +466,7 @@ fun Button(
                     endPadding.toPx() +
                     if (icon != null) resolvedIconSize.toPx() + gap.toPx() else 0f
         }
-    val preferredWidth = if (LocalTouchUi.current) maxOf(contentWidth, with(density) { minimumTarget.toPx() }) else contentWidth
-    val compactChrome = LocalTouchUi.current
-    val minimumChromeHeight = with(density) {
-        maxOf(AndroidDesign.controlVisualSize.toPx(),
-            (textStyle?.lineHeight?.takeIf { it.isSpecified } ?: MaterialTheme.typography.bodyMedium.lineHeight).toPx())
-    }
+    val preferredWidth = contentWidth
     val shape = RoundedCornerShape(radius)
     val destructiveColor = if (dark) Color(0xffff6467) else Color(0xffc2000f)
     val focusBorder =
@@ -541,21 +543,14 @@ fun Button(
             .focusVisibleRing(radius, focusRing, focusVisible, preferredWidth = preferredWidth)
             .clip(shape)
             .drawBehind {
-                val width = if (compactChrome) this.size.width else cssPaintWidth(this.size.width, preferredWidth)
-                val insetY = if (compactChrome) minOf(8.dp.toPx(), ((this.size.height - minimumChromeHeight) / 2).coerceAtLeast(0f)) else 0f
-                val paintedWidth = if (compactChrome) {
-                    val chromeWidth = if (iconOnly) AndroidDesign.controlVisualSize.toPx()
-                        else maxOf(AndroidDesign.controlVisualSize.toPx(), contentWidth.takeIf { it.isFinite() } ?: width)
-                    minOf(width, chromeWidth)
-                } else width
-                val insetX = (width - paintedWidth) / 2
-                val paintedHeight = (this.size.height - insetY * 2).coerceAtLeast(0f)
+                val paintedWidth = cssPaintWidth(this.size.width, preferredWidth)
+                val paintedHeight = this.size.height
                 val border = if (variant == "tab") 0f else 1.dp.toPx()
                 val corner = radius.toPx()
                 // React's bg-clip-padding excludes the transparent one-pixel border.
                 drawRoundRect(
                     background,
-                    Offset(insetX + border, insetY + border),
+                    Offset(border, border),
                     androidx.compose.ui.geometry.Size(
                         (paintedWidth - 2 * border).coerceAtLeast(0f),
                         (paintedHeight - 2 * border).coerceAtLeast(0f),
@@ -570,7 +565,7 @@ fun Button(
                 if (variant != "tab")
                     drawRoundRect(
                         borderColor,
-                        Offset(insetX + border / 2, insetY + border / 2),
+                        Offset(border / 2, border / 2),
                         androidx.compose.ui.geometry.Size(
                             paintedWidth - border,
                             paintedHeight - border,
@@ -582,7 +577,7 @@ fun Button(
             .hoverable(interaction, enabled)
             .clickable(
                 interactionSource = interaction,
-                indication = if (LocalTouchUi.current) LocalIndication.current else null,
+                indication = null,
                 enabled = enabled,
                 role = role,
                 onClick = {
@@ -616,7 +611,7 @@ fun Button(
                         lineHeight = textStyle?.lineHeight ?: TextUnit.Unspecified,
                         size =
                             textStyle?.fontSize?.takeIf { it.isSpecified }
-                                ?: if (LocalTouchUi.current) AndroidDesign.buttonSize else when (size) {
+                                ?: when (size) {
                                     "xs" -> 12.sp
                                     "sm" -> 12.8.sp
                                     else -> 14.sp
@@ -715,9 +710,18 @@ fun IconButton(
     minimumTouchTarget: Dp? = null,
     click: () -> Unit,
 ) {
+    if (LocalTouchUi.current) {
+        AndroidAction(
+            "", label, name, true, enabled, selected, null, "ghost", modifier,
+            Role.Button, maxOf(size, minimumTouchTarget ?: AndroidDesign.touchTarget), AndroidDesign.icon,
+            0.dp, 0.dp, null, foregroundOverride = color, onClick = click,
+        )
+        return
+    }
+
     Box(
         modifier
-            .size(maxOf(size, minimumTouchTarget ?: if (LocalTouchUi.current) AndroidDesign.touchTarget else 0.dp))
+            .size(maxOf(size, minimumTouchTarget ?: 0.dp))
             .then(webControlModifier("button", enabled))
             .clickable(enabled, role = Role.Button, onClick = { if (enabled) click() })
             .semantics {
@@ -727,14 +731,14 @@ fun IconButton(
         contentAlignment = Alignment.Center,
     ) {
         Box(
-            Modifier.size(if (LocalTouchUi.current) AndroidDesign.controlVisualSize else size)
-                .clip(RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.controlRadius else 8.dp))
+            Modifier.size(size)
+                .clip(RoundedCornerShape(8.dp))
                 .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 name,
-                modifier = Modifier.size(if (LocalTouchUi.current) AndroidDesign.icon else if (size >= 40.dp) 20.dp else 16.dp),
+                modifier = Modifier.size(if (size >= 40.dp) 20.dp else 16.dp),
                 color = color.copy(alpha = color.alpha * if (enabled) 1f else .4f),
             )
         }
@@ -809,7 +813,11 @@ fun Field(
         if (invalid && !singleLine) errorColor.copy(alpha = if (dark) .5f else 1f)
         else if (focused) if (dark) Color(0xffbdbdbd) else Color(0xff737373)
         else if (singleLine) colors.outline else inputColor
-    val fieldRadius = if (LocalTouchUi.current) AndroidDesign.controlRadius else 10.dp
+    val android = LocalTouchUi.current
+    val nativeDecoration = if (android) Modifier.androidInputDecoration(
+        chrome, focused, invalid, leadingIcon != null && singleLine,
+    ) else Modifier
+    val fieldRadius = 10.dp
     val shape = RoundedCornerShape(fieldRadius)
     val type =
         MaterialTheme.typography.bodyMedium
@@ -929,8 +937,9 @@ fun Field(
                                 )
                         )
                         .graphicsLayer { alpha = if (!enabled && !singleLine) .5f else 1f }
+                        .then(nativeDecoration)
                         .drawBehind {
-                            if (chrome && (focused || invalid && !singleLine))
+                            if (!android && chrome && (focused || invalid && !singleLine))
                                 drawRoundRect(
                                     ringColor,
                                     Offset((-1.5).dp.toPx(), (-1.5).dp.toPx()),
@@ -945,7 +954,7 @@ fun Field(
                                 )
                         }
                         .then(
-                            if (chrome)
+                            if (!android && chrome)
                                 Modifier.background(
                                         if (singleLine) colors.background
                                         else if (dark)
@@ -1084,9 +1093,33 @@ fun Panel(
     description: String = "",
     footer: (@Composable () -> Unit)? = null,
     onEscape: (() -> Boolean)? = null,
+    androidPage: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    OverlayRegistration(
+    if (androidPage && LocalTouchUi.current && !alert) {
+        val app = LocalApp.current
+        OverlayRegistration(title, close, width, fullScreen = true, customChrome = true, onEscape = onEscape) {
+            Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                PaneHeader {
+                    IconButton("arrow-left", app.t("common.close"), click = close)
+                    Text(title, Modifier.weight(1f).semantics { heading() },
+                        weight = FontWeight.SemiBold, size = AndroidDesign.titleSize, maxLines = 1)
+                }
+                Column(
+                    Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                        .padding(AndroidDesign.screenInset),
+                    verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceLarge),
+                ) {
+                    if (description.isNotBlank()) Text(description, small = true, muted = true)
+                    content()
+                }
+                if (footer != null) {
+                    androidx.compose.material3.HorizontalDivider()
+                    Column(Modifier.fillMaxWidth().padding(AndroidDesign.spaceLarge)) { footer() }
+                }
+            }
+        }
+    } else OverlayRegistration(
         title,
         close,
         width,

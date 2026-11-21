@@ -248,6 +248,7 @@ fun ChannelDialog(
             } else false
         },
         alert = kind == "leave" || kind == "moderate",
+        androidPage = kind in setOf("browse", "dm", "create", "rename"),
         description =
             if (kind == "create") app.t("channels.visibilityHelp")
             else if (kind == "rename") app.t("channels.editHelp")

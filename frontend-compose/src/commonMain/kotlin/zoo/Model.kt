@@ -149,6 +149,8 @@ data class Environment(
     val historyState: Row = JsonObject(emptyMap()),
     val visualViewportHeight: Float? = null,
     val visualViewportTop: Float = 0f,
+    val swipeReply: Boolean = true,
+    val operationHaptics: Boolean = true,
 )
 
 fun endpoint(base: String, path: String): String = base.trimEnd('/') + "/" + path.trimStart('/')

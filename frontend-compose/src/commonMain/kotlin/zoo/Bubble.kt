@@ -221,11 +221,13 @@ fun BubbleChat(app: Session, users: List<Row>, initialParticipants: Boolean = fa
         ownFade = input.trim()
         controller.edit("")
     }
+    val android = LocalTouchUi.current
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(
             "message-circle-more",
-            app.t("bubbleChat.title"),
-            app.t("bubbleChat.description"),
+            app.t(if (android) "bubbleChat.navTitle" else "bubbleChat.title"),
+            app.t("bubbleChat.description").takeUnless { android },
+            brand = true,
         ) {
             Spacer(Modifier.width(12.dp))
             Button(
@@ -250,7 +252,12 @@ fun BubbleChat(app: Session, users: List<Row>, initialParticipants: Boolean = fa
                 participants = !participants
             }
         }
-        HorizontalDivider()
+        if (android) Text(
+            app.t("bubbleChat.description"),
+            Modifier.padding(horizontal = AndroidDesign.screenInset, vertical = AndroidDesign.spaceSmall),
+            small = true, muted = true,
+        )
+        else HorizontalDivider()
         BoxWithConstraints(Modifier.weight(1f)) {
             val wide = maxWidth >= 768.dp
             Row(Modifier.fillMaxSize()) {

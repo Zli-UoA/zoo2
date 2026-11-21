@@ -79,7 +79,7 @@ fun HomePostCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        // Reserve a 48dp profile hit target while keeping the visible 40 + 12dp keyline.
+        // Reserve a 48dp profile hit target while keeping the shared Android avatar keyline.
         val authorGap = if (LocalTouchUi.current)
             AndroidDesign.avatarGap - (AndroidDesign.touchTarget - AndroidDesign.avatar)
         else 12.dp
@@ -247,55 +247,65 @@ fun HomePostCard(
                                 attributes = mapOf("aria-label" to app.t("home.actions")),
                             )
                         ),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = if (touch) Arrangement.spacedBy(AndroidDesign.screenInset) else Arrangement.SpaceBetween,
                     verticalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
                     itemVerticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Button(
-                        post.text("replies").ifEmpty { "0" },
-                        icon = "reply",
-                        accessibleLabel =
-                            "${app.t("home.reply")} ${post.text("replies").ifEmpty{"0"}}",
-                        variant = "ghost",
-                        size = "xs",
-                        minimumTouchTarget = AndroidDesign.controlVisualSize,
-                        contentInset = AndroidDesign.spaceSmall,
-                        contentGap = AndroidDesign.spaceSmall,
-                        click = reply,
-                    )
-                    Button(
-                        post.text("reposts").ifEmpty { "0" },
-                        icon = "repeat-2",
-                        accessibleLabel =
-                            "${app.t(if(post.flag("reposted"))"home.undoRepost" else "home.repost")} ${post.text("reposts").ifEmpty{"0"}}",
-                        selected = post.flag("reposted"),
-                        enabled = !pending && post.text("visibility") != "followers",
-                        variant = "ghost",
-                        size = "xs",
-                        minimumTouchTarget = AndroidDesign.controlVisualSize,
-                        contentInset = AndroidDesign.spaceSmall,
-                        contentGap = AndroidDesign.spaceSmall,
-                        click = repost,
-                    )
-                    Button(
-                        post.text("likes").ifEmpty { "0" },
-                        icon = "smile-plus",
-                        accessibleLabel =
-                            "${app.t("home.react")} ${post.text("likes").ifEmpty{"0"}}",
-                        enabled = !pending,
-                        variant = "ghost",
-                        size = "xs",
-                        minimumTouchTarget = AndroidDesign.controlVisualSize,
-                        contentInset = AndroidDesign.spaceSmall,
-                        contentGap = AndroidDesign.spaceSmall,
-                        click = react,
-                    )
+                    if (touch) {
+                        AndroidPostCount("message-circle", app.t("home.reply"), post.text("replies"))
+                        AndroidPostCount("repeat-2", app.t("home.repost"), post.text("reposts"))
+                        AndroidPostCount("heart", app.t("home.react"), post.text("likes"))
+                    } else {
+                        Button(
+                            post.text("replies").ifEmpty { "0" },
+                            icon = "reply",
+                            accessibleLabel =
+                                "${app.t("home.reply")} ${post.text("replies").ifEmpty{"0"}}",
+                            variant = "ghost",
+                            size = "xs",
+                            minimumTouchTarget = AndroidDesign.controlVisualSize,
+                            contentInset = AndroidDesign.spaceSmall,
+                            contentGap = AndroidDesign.spaceSmall,
+                            click = reply,
+                        )
+                        Button(
+                            post.text("reposts").ifEmpty { "0" },
+                            icon = "repeat-2",
+                            accessibleLabel =
+                                "${app.t(if(post.flag("reposted"))"home.undoRepost" else "home.repost")} ${post.text("reposts").ifEmpty{"0"}}",
+                            selected = post.flag("reposted"),
+                            enabled = !pending && post.text("visibility") != "followers",
+                            variant = "ghost",
+                            size = "xs",
+                            minimumTouchTarget = AndroidDesign.controlVisualSize,
+                            contentInset = AndroidDesign.spaceSmall,
+                            contentGap = AndroidDesign.spaceSmall,
+                            click = repost,
+                        )
+                        Button(
+                            post.text("likes").ifEmpty { "0" },
+                            icon = "smile-plus",
+                            accessibleLabel =
+                                "${app.t("home.react")} ${post.text("likes").ifEmpty{"0"}}",
+                            enabled = !pending,
+                            variant = "ghost",
+                            size = "xs",
+                            minimumTouchTarget = AndroidDesign.controlVisualSize,
+                            contentInset = AndroidDesign.spaceSmall,
+                            contentGap = AndroidDesign.spaceSmall,
+                            click = react,
+                        )
+                    }
                     Menu(
                         app.t("home.postActions"),
                         buildList {
                             if (touch) {
                                 add(MenuAction("message-circle", app.t("home.reply"), !pending, reply))
                                 add(MenuAction("smile-plus", app.t("home.react"), !pending, react))
+                                add(MenuAction(
+                                    "repeat-2", app.t(if (post.flag("reposted")) "home.undoRepost" else "home.repost"),
+                                    !pending && post.text("visibility") != "followers", repost,
+                                ))
                             }
                             if (own) {
                                 add(
@@ -333,4 +343,17 @@ fun HomePostCard(
         }
     }
     HorizontalDivider()
+}
+
+@Composable
+private fun AndroidPostCount(icon: String, label: String, value: String) {
+    val count = value.ifBlank { "0" }
+    Row(
+        Modifier.clearAndSetSemantics { contentDescription = "$label $count" },
+        horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, modifier = Modifier.size(16.dp))
+        Text(count, small = true, muted = true)
+    }
 }

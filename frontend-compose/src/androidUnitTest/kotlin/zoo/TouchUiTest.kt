@@ -14,14 +14,12 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import java.io.File
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlin.math.roundToInt
 import kotlin.test.*
 import org.junit.Rule
 import org.junit.runner.RunWith
@@ -36,9 +34,9 @@ import org.robolectric.annotation.GraphicsMode
 class TouchUiTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val labels = mapOf(
-        "nav.main" to "メインナビゲーション", "home.title" to "Home",
+        "nav.main" to "メインナビゲーション", "home.navTitle" to "ホーム",
         "channels.title" to "チャンネル", "notifications.title" to "通知",
-        "settings.zooTitle" to "Zoo設定", "bubbleChat.title" to "Bubble Chat",
+        "settings.navTitle" to "設定", "bubbleChat.navTitle" to "Bubble",
     )
 
     @Test
@@ -55,7 +53,7 @@ class TouchUiTest {
                 }
             }
         }
-        ui.onNodeWithContentDescription("Home").assertIsSelected()
+        ui.onNodeWithContentDescription("ホーム").assertIsSelected()
         ui.onNodeWithContentDescription("通知")
             .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).performClick()
         ui.onNodeWithContentDescription("通知").assertIsSelected()
@@ -66,8 +64,8 @@ class TouchUiTest {
         screenshot("navigation", "navigation-320-light")
         ui.runOnIdle { width = 600.dp; dark = true }
         ui.onNodeWithContentDescription("チャンネル").performClick().assertIsSelected()
-        ui.onNodeWithContentDescription("Zoo設定").assertIsDisplayed()
-        ui.onNodeWithContentDescription("Bubble Chat").assertIsDisplayed()
+        ui.onNodeWithContentDescription("設定").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Bubble").assertIsDisplayed()
         screenshot("navigation", "navigation-600-dark")
     }
 
@@ -169,31 +167,7 @@ class TouchUiTest {
         ui.runOnIdle { assertEquals("日本語の名前", value) }
     }
 
-    private fun screenshot(tag: String, name: String) {
-        val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/ui").apply { mkdirs() }
-        val bounds = ui.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
-        // PixelCopy used by captureToImage waits for a compositor frame on Robolectric API 35.
-        // Draw the real content View with the native graphics backend instead.
-        ui.runOnIdle {
-            val content = ui.activity.findViewById<android.view.View>(android.R.id.content)
-            val full = android.graphics.Bitmap.createBitmap(content.width, content.height, android.graphics.Bitmap.Config.ARGB_8888)
-            try {
-                content.draw(android.graphics.Canvas(full))
-                val bitmap = android.graphics.Bitmap.createBitmap(
-                    full, bounds.left.roundToInt(), bounds.top.roundToInt(),
-                    bounds.width.roundToInt(), bounds.height.roundToInt(),
-                )
-                try {
-                    val pixels = IntArray(bitmap.width * bitmap.height)
-                    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-                    check(pixels.any { it != pixels.first() }) { "UI capture is blank: $name" }
-                    File(directory, "$name.png").outputStream().use {
-                        check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
-                    }
-                } finally { if (bitmap !== full) bitmap.recycle() }
-            } finally { full.recycle() }
-        }
-    }
+    private fun screenshot(tag: String, name: String) = captureAndroidUi(ui, { ui.activity }, tag, name)
 
     @Test
     fun offlineComposerAllowsDraftingButNeverSendsOrUploads() {

@@ -5,6 +5,8 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -94,6 +96,20 @@ internal fun unifiedNotificationFeed(rows: List<Row>, federated: List<Row>, hasO
     return UnifiedNotificationFeed(entries.filter { notificationTimestamp(it.createdAt) >= cutoff }.sortedWith(compareByDescending<UnifiedNotificationEntry> { notificationTimestamp(it.createdAt) }.thenByDescending { it.key }), mirrors, mirrors.count { !it.item.flag("is_read") && it.channelUnread })
 }
 
+/** A preview may reuse the active channel, but must not open a new sync subscription. */
+fun notificationCachedMessage(channel: Row, messageId: String, cached: List<Row>): Row? =
+    cached.firstOrNull {
+        it.text("id") == messageId && !it.present("deleted_at") &&
+            it["ciphertext"].let { value -> value == null || value == kotlinx.serialization.json.JsonNull } &&
+            !channel.flag("encrypted")
+    }
+
+fun notificationPreviewImage(message: Row?): Row? =
+    message?.nested("display_data")?.array("attachments")?.rows()?.firstOrNull {
+        it.text("id").isNotEmpty() && !it.flag("is_sensitive") &&
+            it.text("content_type") in imageTypes
+    }
+
 @Composable
 internal fun Modifier.notificationSurface(read: Boolean): Modifier {
     val colors = MaterialTheme.colorScheme
@@ -116,6 +132,19 @@ internal fun NotificationReadStatus(app: Session, read: Boolean) {
     else Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape).then(webControlModifier("img", attributes = mapOf("aria-label" to app.t("notifications.unreadStatus")))))
 }
 
+private enum class InboxFilter(val label: String) {
+    All("notifications.filterAll"),
+    Unread("notifications.unreadStatus"),
+    Mentions("notifications.filterMentions");
+
+    fun matches(entry: UnifiedNotificationEntry): Boolean = when (this) {
+        All -> true
+        Unread -> entry.channel?.any { !it.flag("is_read") } ?: (entry.item?.flag("is_read") == false)
+        Mentions -> entry.channel?.any { it.text("notification_type") == "mention" }
+            ?: (entry.item?.text("kind") == "mention")
+    }
+}
+
 @Composable
 fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
     val apub = app.activityPubNotifications
@@ -123,6 +152,10 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
         unifiedNotificationFeed(notifications, apub.items, apub.nextCursor != null)
     }
     val groups = remember(feed) { feed.entries.mapNotNull { it.channel } }
+    val android = LocalTouchUi.current
+    var filter by remember { mutableStateOf(InboxFilter.All) }
+    val filtered = remember(feed, filter) { feed.entries.filter(filter::matches) }
+    val dateGroups = remember(filtered) { filtered.groupBy { it.createdAt.take(10) } }
     var reading by remember { mutableStateOf(false) }
     val attempted = remember { mutableSetOf<String>() }
     val pendingReads = remember { mutableSetOf<String>() }
@@ -203,17 +236,60 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
         }
     ) {
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader("bell", app.t("notifications.title"), primaryIcon = true) {
-                if (notifications.count { !it.flag("is_read") } + apub.unreadCount - feed.duplicateUnreadCount > 0)
-                    Button(app.t("home.readAll"), variant = "ghost", size = "sm", enabled = !reading) {
-                        reading = true
-                        app.scope.launch {
-                            try { app.api.request("/api/notifications/read-all", "POST", obj()); apub.markRead() }
-                            catch (e: CancellationException) { throw e }
-                            catch (_: Exception) { app.toast = app.t("notifications.readError") }
-                            finally { reading = false }
+            val showReadAll = notifications.count { !it.flag("is_read") } +
+                apub.unreadCount - feed.duplicateUnreadCount > 0
+            fun markAll() {
+                if (reading) return
+                reading = true
+                app.scope.launch {
+                    try {
+                        app.api.request("/api/notifications/read-all", "POST", obj())
+                        apub.markRead()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        app.toast = app.t("notifications.readError")
+                    } finally {
+                        reading = false
+                    }
+                }
+            }
+            ScreenHeader("bell", app.t("notifications.title"), primaryIcon = true, brand = true) {
+                if (!android && showReadAll) Button(
+                    app.t("home.readAll"), variant = "ghost", size = "sm", enabled = !reading,
+                    click = ::markAll,
+                )
+            }
+            if (android) Row(
+                Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val colors = MaterialTheme.colorScheme
+                Row(
+                    Modifier.weight(1f).horizontalScroll(rememberScrollState()).selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                ) {
+                    InboxFilter.entries.forEach { option ->
+                        val active = filter == option
+                        Box(
+                            Modifier.heightIn(min = AndroidDesign.touchTarget)
+                                .selectable(active, role = Role.Tab) { filter = option }
+                                .drawBehind {
+                                    if (active) drawLine(colors.primary, Offset(0f, size.height - 2.dp.toPx()),
+                                        Offset(size.width, size.height - 2.dp.toPx()), 3.dp.toPx())
+                                }.padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(app.t(option.label), small = true,
+                                weight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                muted = !active, maxLines = 1)
                         }
                     }
+                }
+                if (showReadAll) Button(
+                    app.t("home.readAll"), variant = "ghost", size = "sm", enabled = !reading,
+                    contentInset = AndroidDesign.spaceSmall, click = ::markAll,
+                )
             }
             HorizontalDivider()
             Box(Modifier.weight(1f)) {
@@ -260,24 +336,32 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
-                    items(feed.entries, key = { it.key }) { entry ->
-                        if (entry.channel != null) NotificationCard(
-                            app, entry.channel, users, entry.key in visible, !loading,
-                            onLoading = { contextLoading[entry.channel.first().text("id")] = it },
-                            contextCache = contextCache, interactive = !initialMask, onRead = ::read,
-                        ) else ActivityPubNotificationCard(app, entry.item!!, apub, entry.key in visible, !loading, ::read)
+                    fun addEntries(entries: List<UnifiedNotificationEntry>) {
+                        items(entries, key = { it.key }) { entry ->
+                            val autoRead = !loading && filter != InboxFilter.Unread
+                            if (entry.channel != null) NotificationCard(
+                                app, entry.channel, users, entry.key in visible, autoRead,
+                                onLoading = { contextLoading[entry.channel.first().text("id")] = it },
+                                contextCache = contextCache, interactive = !initialMask, onRead = ::read,
+                            ) else ActivityPubNotificationCard(app, entry.item!!, apub, entry.key in visible, autoRead, ::read)
+                        }
                     }
+                    if (android) dateGroups.forEach { (date, entries) ->
+                        item("day:$date") {
+                            Text(app.dayLabel(entries.first().createdAt), small = true, muted = true)
+                        }
+                        addEntries(entries)
+                    } else addEntries(filtered)
                     if (apub.nextCursor != null) item("older-notifications") {
                         Button(app.t(if (apub.loadingMore) "home.loading" else "home.moreNotifications"), variant = "outline", enabled = !apub.loadingMore) { apub.loadMore() }
                     }
                 }
                 if (
                     loadError == null &&
-                        groups.isEmpty() &&
+                        filtered.isEmpty() &&
                         !initialLoading &&
                         !apub.loading &&
-                        !apub.error &&
-                        apub.items.isEmpty()
+                        !apub.error
                 )
                     Column(
                         Modifier.fillMaxWidth().heightIn(min = 288.dp).padding(24.dp),
@@ -389,6 +473,13 @@ fun NotificationCard(
     var locallyRead by remember(id) { mutableStateOf(false) }
     val read = locallyRead || rows.all { it.flag("is_read") }
     val message = context?.get("message") as? JsonObject
+    val cached = if (LocalTouchUi.current && visible && channel != null)
+        app.repo.cachedMessages(row.text("channel_id")) else emptyList()
+    val cachedMessage = channel?.let { notificationCachedMessage(it, row.text("message_id"), cached) }
+    val replyContext = channel?.let {
+        notificationCachedMessage(it, cachedMessage?.text("parent_id").orEmpty(), cached)
+    }
+    val previewImage = notificationPreviewImage(cachedMessage)
     val destination = "/channels/${row.text("channel_id")}?message=${row.text("message_id")}"
     val actor = user?.let(::author) ?: row.text("actor_id")
     var attempted by remember(id) { mutableStateOf(false) }
@@ -548,6 +639,13 @@ fun NotificationCard(
                     NotificationTimestamp(app, row.text("created_at"))
                     NotificationReadStatus(app, read)
                 }
+                replyContext?.text("content")?.takeIf { it.isNotBlank() }?.let { parent ->
+                    Text(
+                        quotePreview(parent),
+                        Modifier.padding(start = AndroidDesign.spaceMedium),
+                        small = true, muted = true, maxLines = 2,
+                    )
+                }
                 if (message != null && channel != null)
                     Box(Modifier.fillMaxWidth()) {
                         CompositionLocalProvider(
@@ -571,6 +669,9 @@ fun NotificationCard(
                         ),
                         muted = true,
                     )
+                previewImage?.let {
+                    AttachmentItem(app, it, Modifier.size(96.dp, 64.dp), image = true)
+                }
                 @Composable
                 fun destinationContent() {
                     NotificationDestination(

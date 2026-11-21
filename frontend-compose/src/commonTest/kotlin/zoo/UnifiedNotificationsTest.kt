@@ -31,4 +31,19 @@ class UnifiedNotificationsTest {
         assertEquals(listOf("activitypub:remote"), unifiedNotificationFeed(rows, federated, true).entries.map { it.key })
         assertEquals(2, unifiedNotificationFeed(rows, federated, false).entries.size)
     }
+
+    @Test fun notificationThumbnailsExcludeSensitiveAndEncryptedContent() {
+        val publicPhoto = obj("id" to "public", "content_type" to "image/jpeg")
+        val sensitive = obj("id" to "sensitive", "content_type" to "image/jpeg", "is_sensitive" to true)
+        val message = obj("id" to "message", "display_data" to obj(
+            "attachments" to kotlinx.serialization.json.JsonArray(listOf(sensitive, publicPhoto)),
+        ))
+        assertEquals(publicPhoto, notificationPreviewImage(message))
+        assertNull(notificationCachedMessage(obj("encrypted" to true), "message", listOf(message)))
+        val encrypted = kotlinx.serialization.json.JsonObject(message + ("ciphertext" to obj()))
+        assertNull(notificationCachedMessage(obj(), "message", listOf(encrypted)))
+        val deleted = kotlinx.serialization.json.JsonObject(message + ("deleted_at" to kotlinx.serialization.json.JsonPrimitive("2026-11-21")))
+        assertNull(notificationCachedMessage(obj(), "message", listOf(deleted)))
+        assertEquals(message, notificationCachedMessage(obj(), "message", listOf(message)))
+    }
 }

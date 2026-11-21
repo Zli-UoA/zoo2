@@ -770,7 +770,7 @@ internal fun Message(
         canOpenThread && (callbacks == null || callbacks.openThread != null)
     var swipeOffset by remember(id) { mutableFloatStateOf(0f) }
     val latestOpenThread by rememberUpdatedState(openThread)
-    val swipe = if (LocalTouchUi.current && showThread && !editing) Modifier.messageSwipe(
+    val swipe = if (LocalTouchUi.current && app.env.swipeReply && showThread && !editing) Modifier.messageSwipe(
         onOffset = { swipeOffset = it },
         onThreshold = { app.platform.action("haptic:threshold") },
         onCommit = { latestOpenThread() },
@@ -1346,6 +1346,12 @@ internal fun Composer(
     var expanded by remember(key) { mutableStateOf(false) }
     var formatting by remember(key) { mutableStateOf(false) }
     var editorFocused by remember(key) { mutableStateOf(false) }
+    var usedKeyboard by remember(key) { mutableStateOf(false) }
+    val keyboardVisible = LocalTouchUi.current && WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    LaunchedEffect(editorFocused, keyboardVisible) {
+        if (!editorFocused) usedKeyboard = false
+        else if (keyboardVisible) usedKeyboard = true
+    }
     var textRange by remember(key) { mutableStateOf(TextRange(initialValue.length)) }
     var requestedRange by remember(key) { mutableStateOf<TextRange?>(null) }
     var focusSelection by remember(key) { mutableStateOf<TextRange?>(null) }
@@ -1780,7 +1786,7 @@ internal fun Composer(
                 AndroidComposerLayout(
                     fullScreen = fullScreen,
                     scrollEditor = scrollEditor,
-                    showTools = fullScreen || editorFocused || formatting,
+                    showTools = fullScreen || formatting || editorFocused && (!usedKeyboard || keyboardVisible),
                     showFormatting = formatting,
                     editor = editor,
                     attach = attach,
