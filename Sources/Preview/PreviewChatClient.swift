@@ -114,7 +114,7 @@ final class PreviewChatClient: ChatClient {
                 file_name: "確認資料.pdf", content_type: "application/pdf",
                 is_sensitive: ProcessInfo.processInfo.arguments.contains("--uitesting-sensitive-pdf"))]
         }
-        if ProcessInfo.processInfo.arguments.contains("--uitesting-thread-directory") {
+        if ProcessInfo.processInfo.arguments.contains("--uitesting-joined-thread") {
             allMessages.append(Message(id: "77777777-7777-4777-8777-777777777777", user_id: currentUser.id,
                                        channel_id: Self.channelID, content: "参加中のスレッドです",
                                        created_at: "2026-11-18T09:02:00Z", parent_id: Self.messageID))
@@ -242,7 +242,7 @@ final class PreviewChatClient: ChatClient {
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await people().map { ChannelMembership(channel_id: channelID, user_id: $0.id) }
     }
-    func readState(channelID: String) async throws -> ChannelReadState {
+    func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-read-retry"), !failedReadOnce {
             failedReadOnce = true
             throw URLError(.notConnectedToInternet)
@@ -285,17 +285,6 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channels() async throws -> [Channel] { allChannels }
-    func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage {
-        let replies = Dictionary(grouping: allMessages.filter { $0.parent_id != nil && $0.deleted_at == nil }, by: \.parent_id)
-        let rows = allMessages.compactMap { message -> ChannelThreadSummary? in
-            guard message.parent_id == nil, message.deleted_at == nil, let children = replies[message.id],
-                  allChannels.contains(where: { $0.id == message.channel_id && !$0.is_dm }),
-                  message.user_id == currentUser.id || children.contains(where: { $0.user_id == currentUser.id }) else { return nil }
-            return ChannelThreadSummary(id: message.id, channel_id: message.channel_id, content: message.content,
-                                        thread_archive_at: nil, reply_count: children.count)
-        }
-        return ChannelThreadPage(items: rows, next_cursor: nil)
-    }
     func channel(id: String) async throws -> Channel {
         guard let value = allChannels.first(where: { $0.id == id }) else { throw ZooError.rejected(404, "チャンネルがありません。") }
         return value
@@ -305,7 +294,7 @@ final class PreviewChatClient: ChatClient {
         guard let person = [currentUser, colleague, otherColleague].first(where: { $0.id == id }) else { throw ZooError.rejected(404, "ユーザーがいません。") }
         return person
     }
-    func readStates() async throws -> [ChannelReadState] {
+    func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
         allChannels.filter { $0.id != discoverableID || joinedPublic }
             .map { ChannelReadState(channel_id: $0.id, has_unread: $0.id == Self.channelID && readPositions[$0.id] == nil, last_read_at: readPositions[$0.id]) }
     }

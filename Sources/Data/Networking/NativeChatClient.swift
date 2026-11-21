@@ -44,7 +44,10 @@ struct NativeChatClient: ChatClient {
         return people
     }
     func person(id: String) async throws -> Person { try await api.get("api/users/\(try segment(id))") }
-    func readStates() async throws -> [ChannelReadState] { try await cachedGet("api/channel-read-states") }
+    func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
+        if allowCached { return try await cachedGet("api/channel-read-states") }
+        return try await api.get("api/channel-read-states")
+    }
 
     func cachedWorkspace() async throws -> CachedWorkspace? {
         guard let sync,
@@ -78,8 +81,10 @@ struct NativeChatClient: ChatClient {
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await shapes.snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
     }
-    func readState(channelID: String) async throws -> ChannelReadState {
-        try await cachedGet("api/channels/\(try segment(channelID))/read-state")
+    func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
+        let path = "api/channels/\(try segment(channelID))/read-state"
+        if allowCached { return try await cachedGet(path) }
+        return try await api.get(path)
     }
     func attachmentURL(id: String) async throws -> URL {
         let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")

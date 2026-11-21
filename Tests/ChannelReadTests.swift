@@ -172,8 +172,8 @@ struct ChannelReadTests {
         #expect(store.readUpdateError == nil)
     }
 
-    @Test("一覧の古い取得結果で確定済みの既読や新着の未読を巻き戻さない", arguments: [false, true])
-    func staleRefresh(hasNewMessage: Bool) async throws {
+    @Test("一覧取得中の既読保存後は新着を含む最新状態を取り直す", arguments: [false, true], [false, true])
+    func overlappingRefresh(hasNewMessage: Bool, snapshotUnread: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let started = AsyncStream<Void>.makeStream()
@@ -181,13 +181,17 @@ struct ChannelReadTests {
         defer { started.continuation.finish(); release.continuation.finish() }
         let reads = Mutex(0)
         harness.stub { request in
-            if request.httpMethod == "POST" { return (200, [:], try readResponse(unread: hasNewMessage)) }
-            if request.url?.path == "/api/channel-read-states", reads.withLock({ $0 += 1; return $0 }) == 2 {
-                started.continuation.yield(())
-                var iterator = release.stream.makeAsyncIterator()
-                _ = await iterator.next()
+            if request.httpMethod == "POST" { return (200, [:], try readResponse()) }
+            if request.url?.path == "/api/channel-read-states" {
+                let count = reads.withLock { $0 += 1; return $0 }
+                if count == 2 {
+                    started.continuation.yield(())
+                    var iterator = release.stream.makeAsyncIterator()
+                    _ = await iterator.next()
+                }
+                let unread = count == 1 || (count == 2 ? snapshotUnread : hasNewMessage)
                 return (200, [:], try JSONEncoder().encode([readChannel, readOtherChannel].map {
-                    ChannelReadState(channel_id: $0.id, has_unread: $0.id == readOtherChannel.id || !hasNewMessage, last_read_at: nil)
+                    ChannelReadState(channel_id: $0.id, has_unread: $0.id == readOtherChannel.id || unread, last_read_at: nil)
                 }))
             }
             return try readWorkspaceResponse(request)
@@ -203,6 +207,66 @@ struct ChannelReadTests {
         await refreshing.value
         #expect(store.unread.contains(readChannel.id) == hasNewMessage)
         #expect(store.unread.contains(readOtherChannel.id))
+        #expect(reads.withLock { $0 } == 3)
+        #expect(store.error == nil)
+    }
+
+    @Test("遅れて届く既読応答で一覧が反映した新着を消さない", arguments: [false, true])
+    func delayedMarkResponse(reconciliationFails: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let reconciliations = Mutex(0)
+        harness.stub { request in
+            if request.httpMethod == "POST" {
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                return (200, [:], try readResponse())
+            }
+            if request.url?.path == "/api/channels/\(readChannel.id)/read-state" {
+                reconciliations.withLock { $0 += 1 }
+                if reconciliationFails { throw URLError(.notConnectedToInternet) }
+                return (200, [:], try JSONEncoder().encode(ChannelReadState(channel_id: readChannel.id, has_unread: true, last_read_at: nil)))
+            }
+            return try readWorkspaceResponse(request)
+        }
+        let store = workspace(harness)
+        defer { store.shutdown() }
+        await store.refresh()
+        let pending = Task { await store.markChannelRead(readChannel) }
+        var iterator = started.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        await store.refresh()
+        release.continuation.yield(())
+        await pending.value
+        #expect(store.unread.contains(readChannel.id))
+        #expect(store.unread.contains(readOtherChannel.id))
+        #expect(reconciliations.withLock { $0 } == 1)
+        #expect((store.readUpdateError != nil) == reconciliationFails)
+        #expect(store.markingReadChannelIDs.isEmpty)
+    }
+
+    @Test("競合解消の取得ではオフラインの古い既読キャッシュを採用しない")
+    func reconciliationRequiresFreshState() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let cache = try await SyncCache.open(inMemory: true)
+        let user = Person(id: "33333333-3333-4333-8333-333333333333", user_name: "you", display_name: "あなた")
+        let lease = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: user)
+        let sync = SyncSession(cache: cache, lease: lease)
+        let state = ChannelReadState(channel_id: readChannel.id, has_unread: false, last_read_at: nil)
+        try await sync.store(state, key: "rest:api/channels/\(readChannel.id)/read-state")
+        try await sync.store([state], key: "rest:api/channel-read-states")
+        harness.stub { _ in throw URLError(.notConnectedToInternet) }
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        #expect(try await !client.readState(channelID: readChannel.id).has_unread)
+        #expect(try await client.readStates().count == 1)
+        await #expect(throws: (any Error).self) { _ = try await client.readState(channelID: readChannel.id, allowCached: false) }
+        await #expect(throws: (any Error).self) { _ = try await client.readStates(allowCached: false) }
+        try await sync.close().value
     }
 
     @Test("再参加したチャンネルを再認可してから既読にする")

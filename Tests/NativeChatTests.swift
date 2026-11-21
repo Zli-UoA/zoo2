@@ -418,6 +418,9 @@ struct NativeChatTests {
         let readData = try JSONEncoder().encode([
             ChannelReadState(channel_id: Self.channelID, has_unread: true, last_read_at: nil)
         ])
+        let savedReadData = try JSONEncoder().encode([
+            ChannelReadState(channel_id: Self.channelID, has_unread: false, last_read_at: nil)
+        ])
         harness.stub { request in
             switch request.url?.path {
             case "/api/channels": return (200, [:], channelData)
@@ -425,11 +428,13 @@ struct NativeChatTests {
                 return (200, ["electric-handle": "users", "electric-offset": "0_1"],
                         Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
             case "/api/channel-read-states":
-                if reads.withLock({ $0 += 1; return $0 }) == 2 {
+                let count = reads.withLock { $0 += 1; return $0 }
+                if count == 2 {
                     started.continuation.yield(())
                     var iterator = release.stream.makeAsyncIterator()
                     _ = await iterator.next()
                 }
+                if count == 3 { return (200, [:], savedReadData) }
                 return (200, [:], readData)
             default: return (200, [:], Data())
             }
@@ -446,8 +451,11 @@ struct NativeChatTests {
         release.continuation.yield(())
         await refresh.value
         #expect(!workspace.unread.contains(Self.channelID))
+        #expect(reads.withLock { $0 } == 3)
         await workspace.refresh()
         #expect(workspace.unread.contains(Self.channelID))
+        #expect(reads.withLock { $0 } == 4)
+        workspace.shutdown()
     }
 
     @Test("送信失敗で下書きを保持し、同じ ID で再送する")

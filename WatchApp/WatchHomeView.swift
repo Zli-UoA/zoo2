@@ -40,6 +40,9 @@ struct WatchHomeView: View {
                                     Label(notice.title, systemImage: notice.unread ? "circle.fill" : "circle")
                                         .font(.headline)
                                     Text(notice.detail).font(.subheadline)
+                                    Text(.currentDate, format: .offset(to: notice.date,
+                                        allowedFields: [.year, .month, .week, .day, .hour, .minute], sign: .never))
+                                        .font(.caption2).foregroundStyle(.secondary)
                                 }
                             }
                         }

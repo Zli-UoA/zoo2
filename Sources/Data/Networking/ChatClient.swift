@@ -6,18 +6,17 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func publicProfile() async throws -> PublicProfile
     func updatePublicProfile(name: String, summary: String) async throws -> PublicProfile
     func channels() async throws -> [Channel]
-    func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
     func channelPins() async throws -> ChannelPins
     func setChannelPinned(id: String, pinned: Bool, expectedVersion: Int64) async throws -> ChannelPins
     func members(channelID: String) async throws -> [ChannelMembership]
-    func readState(channelID: String) async throws -> ChannelReadState
+    func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState
     func attachmentURL(id: String) async throws -> URL
     func attachmentData(from url: URL) async throws -> Data
     func attachmentData(_ attachment: MessageAttachment, channelID: String?, reload: Bool) async throws -> Data
-    func readStates() async throws -> [ChannelReadState]
+    func readStates(allowCached: Bool) async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws
     func cachedWorkspace() async throws -> CachedWorkspace?
@@ -48,6 +47,12 @@ struct CachedWorkspace: Sendable {
 }
 
 extension ChatClient {
+    func readState(channelID: String) async throws -> ChannelReadState {
+        try await readState(channelID: channelID, allowCached: true)
+    }
+    func readStates() async throws -> [ChannelReadState] {
+        try await readStates(allowCached: true)
+    }
     func attachmentData(_ attachment: MessageAttachment, channelID: String? = nil, reload: Bool = false) async throws -> Data {
         let url = try await attachmentURL(id: attachment.id)
         try Task.checkCancellation()
