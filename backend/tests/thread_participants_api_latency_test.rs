@@ -1,9 +1,14 @@
 //! Measurement only: `GET /api/threads/{id}` of a thread with ~10,000 participant rows, through the
 //! router (extractors, the pool, the SQL round trips, JSON), alone, concurrently, and while the
-//! thread's writers (reply, leave, join) hold its row lock. Reports p50 / p95 / max per operation;
+//! thread's writers (reply, leave, join), which take its row lock, run. Reports p50 / p95 / max per operation;
 //! it asserts only that every call succeeds and the answers are right. The build is unoptimized and
 //! the database is local, so the numbers are an upper bound of the CPU and a lower bound of the
 //! network. The SQL work itself is bounded by `thread_participants_scale_test`.
+//!
+//! Run (a database whose role may `SET session_replication_role`; the test makes its own schema):
+//! `DATABASE_URL=postgres://… ACTIVITYPUB_BASE_URL=https://zoo.test cargo test --test
+//! thread_participants_api_latency_test -- --ignored --nocapture`. CI does not run it; the numbers
+//! and their premises are in `docs/request-design.md`. Repeated runs differ by 20-30%.
 #[path = "support/thread_db.rs"]
 mod thread_db;
 use axum::{
