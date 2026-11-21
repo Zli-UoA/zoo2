@@ -239,6 +239,7 @@ internal class AndroidPushRegistration(
                 val endpoint = "fcm:$token:$binding$suffix"
                 registration.cleanup()
                 if (endpoint != registeredEndpoint) {
+                    registeredEndpoint = null
                     registration.register(endpoint)
                     if (!closed) registeredEndpoint = endpoint
                 }
