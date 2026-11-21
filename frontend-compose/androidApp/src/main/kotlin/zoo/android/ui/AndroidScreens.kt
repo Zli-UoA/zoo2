@@ -268,7 +268,7 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, hideIdleHandle = true)
                 }
             }
             is AndroidScreen.Thread -> {
@@ -277,7 +277,7 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage)
+                    focusMessage = screen.focusMessage, hideIdleHandle = true)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -441,6 +441,7 @@ private fun ColumnScope.TimelineWithInput(
     allowThreads: Boolean = false,
     focusMessage: String? = null,
     posts: Boolean = false,
+    hideIdleHandle: Boolean = false,
 ) {
     if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch, posts = posts,
         swipeReply = swipeReply, allowThreads = allowThreads, focusMessage = focusMessage)
@@ -448,7 +449,8 @@ private fun ColumnScope.TimelineWithInput(
         { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier,
         onMention = { dispatch(AndroidUiAction.Mention(it)) },
         onSelection = { dispatch(AndroidUiAction.SelectInput(it)) },
-        onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) })
+        onRemoveFile = { dispatch(AndroidUiAction.RemoveFile(it)) },
+        hideIdleHandle = hideIdleHandle)
 }
 
 @Composable
