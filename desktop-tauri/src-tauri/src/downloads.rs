@@ -2009,6 +2009,27 @@ mod tests {
     }
 
     #[test]
+    fn prepare_part_accepts_a_destination_that_can_move_without_replacing() {
+        let dir = temp_dir();
+        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+
+        // 実際の保存先で `.part` を作り、検査を通す。検査用の名前は記録に残らず、
+        // 書き込み中の `.part` だけが確定まで記録される。
+        let file = prepare_part(&journal, &part, &target, true).unwrap();
+        drop(file);
+        assert!(part.exists());
+        assert_eq!(journal.snapshot(), vec![part.clone()]);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            2,
+            "`.part` と記録だけ"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_write_error_is_not_blamed_on_the_destination() {
         let dir = temp_dir();
         let target = dir.join("x.txt");
