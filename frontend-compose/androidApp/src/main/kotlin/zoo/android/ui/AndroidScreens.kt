@@ -1,5 +1,12 @@
 package zoo.android.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -12,13 +19,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -69,7 +83,6 @@ internal sealed interface AndroidUiAction {
     data class OpenChannel(val id: String) : AndroidUiAction
     data class OpenChannelSettings(val id: String) : AndroidUiAction
     data class OpenPost(val id: String) : AndroidUiAction
-    data class EntryMenu(val id: String) : AndroidUiAction
     data class OpenThread(val id: String) : AndroidUiAction
     data class OpenSetting(val id: String) : AndroidUiAction
     data class Toggle(val id: String, val value: Boolean) : AndroidUiAction
@@ -90,6 +103,16 @@ internal sealed interface AndroidUiAction {
     data object Back : AndroidUiAction
 }
 
+internal data class AndroidInteractionSettings(
+    val swipeReply: Boolean = true,
+    val haptics: Boolean = true,
+    val reducedMotion: Boolean = false,
+)
+
+private val SilentHaptics = object : HapticFeedback {
+    override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) = Unit
+}
+
 @Composable
 internal fun AndroidScreens(
     screen: AndroidScreen,
@@ -97,6 +120,57 @@ internal fun AndroidScreens(
     foreground: Boolean,
     dispatch: (AndroidUiAction) -> Unit,
     language: String? = null,
+    interaction: AndroidInteractionSettings = AndroidInteractionSettings(),
+    photo: @Composable (RecentPhoto, Modifier) -> Unit,
+) {
+    val systemHaptics = LocalHapticFeedback.current
+    val conversationState = rememberSaveableStateHolder()
+    CompositionLocalProvider(LocalHapticFeedback provides if (interaction.haptics) systemHaptics else SilentHaptics) {
+        AnimatedContent(
+            targetState = screen,
+            contentKey = { it.routeKey() },
+            transitionSpec = {
+                val opening = initialState is AndroidScreen.Conversation && targetState is AndroidScreen.Thread
+                val closing = initialState is AndroidScreen.Thread && targetState is AndroidScreen.Conversation
+                when {
+                    interaction.reducedMotion -> EnterTransition.None togetherWith ExitTransition.None
+                    opening -> slideInHorizontally(tween(240)) { it } togetherWith
+                        slideOutHorizontally(tween(240)) { -it / 4 }
+                    closing -> slideInHorizontally(tween(240)) { -it / 4 } togetherWith
+                        slideOutHorizontally(tween(240)) { it }
+                    else -> EnterTransition.None togetherWith ExitTransition.None
+                }
+            },
+            label = "Android screen",
+        ) { visibleScreen ->
+            if (visibleScreen is AndroidScreen.Conversation) {
+                conversationState.SaveableStateProvider(visibleScreen.id) {
+                    RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
+                        dispatch, language, interaction.swipeReply, photo)
+                }
+            } else {
+                RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
+                    dispatch, language, interaction.swipeReply, photo)
+            }
+        }
+    }
+}
+
+private fun AndroidScreen.routeKey(): String = when (this) {
+    is AndroidScreen.Conversation -> "channel:$id"
+    is AndroidScreen.Thread -> "thread:${root.id}"
+    is AndroidScreen.Post -> "post:${root.id}"
+    else -> this::class.simpleName.orEmpty()
+}
+
+@Composable
+private fun RenderAndroidScreen(
+    screen: AndroidScreen,
+    dark: Boolean,
+    foreground: Boolean,
+    dispatch: (AndroidUiAction) -> Unit,
+    language: String?,
+    swipeReply: Boolean,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val top = when (screen) {
@@ -127,7 +201,7 @@ internal fun AndroidScreens(
             is AndroidScreen.Conversation -> {
                 PageHeader(screen.name, colors, screen.description, onBack = back,
                     onOpen = { dispatch(AndroidUiAction.OpenChannelSettings(screen.id)) })
-                TimelineWithInput(screen.entries, screen.input, colors, dispatch, showDividers = false)
+                TimelineWithInput(screen.entries, screen.input, colors, dispatch, showDividers = false, swipeReply = swipeReply, allowThreads = true)
             }
             is AndroidScreen.Thread -> {
                 PageHeader("スレッド", colors, onBack = back)
@@ -226,8 +300,11 @@ private fun ColumnScope.TimelineWithInput(
     colors: AndroidColors,
     dispatch: (AndroidUiAction) -> Unit,
     showDividers: Boolean = true,
+    swipeReply: Boolean = false,
+    allowThreads: Boolean = false,
 ) {
-    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch, showDividers = showDividers)
+    if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch,
+        showDividers = showDividers, swipeReply = swipeReply, allowThreads = allowThreads)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
         { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier)
 }
@@ -236,17 +313,21 @@ private fun ColumnScope.TimelineWithInput(
 private fun Timeline(
     entries: List<TimelineItem>, colors: AndroidColors, modifier: Modifier,
     dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false, showDividers: Boolean = true,
+    swipeReply: Boolean = false,
+    allowThreads: Boolean = false,
 ) {
+    var menuId by remember { mutableStateOf<String?>(null) }
     LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 16.dp)) {
         items(entries, key = { it.id }) { entry ->
             Row(
-                Modifier.fillMaxWidth()
+                Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
                     .then(if (posts) Modifier.combinedClickable(
                         onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
-                        onLongClick = { dispatch(AndroidUiAction.EntryMenu(entry.id)) },
+                        onLongClick = { menuId = entry.id },
                     ) else conversationGestures(
-                        open = { dispatch(AndroidUiAction.OpenThread(entry.id)) },
-                        menu = { dispatch(AndroidUiAction.EntryMenu(entry.id)) },
+                        open = if (allowThreads) ({ dispatch(AndroidUiAction.OpenThread(entry.id)) }) else null,
+                        menu = { menuId = entry.id },
+                        swipeReply = swipeReply,
                     ))
                     .padding(vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -265,22 +346,39 @@ private fun Timeline(
             if (showDividers) HorizontalDivider(color = colors.inputBoundary)
         }
     }
+    entries.firstOrNull { it.id == menuId }?.let { entry ->
+        EntryActionSheet(
+            entry = entry,
+            colors = colors,
+            posts = posts,
+            dismiss = { menuId = null },
+            open = if (posts || allowThreads) ({
+                menuId = null
+                dispatch(if (posts) AndroidUiAction.OpenPost(entry.id) else AndroidUiAction.OpenThread(entry.id))
+            }) else null,
+        )
+    }
 }
 
 @Composable
-private fun conversationGestures(open: () -> Unit, menu: () -> Unit): Modifier {
+private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeReply: Boolean): Modifier {
     val currentOpen by rememberUpdatedState(open)
     val currentMenu by rememberUpdatedState(menu)
     val haptics = LocalHapticFeedback.current
     return Modifier
-        .pointerInput(Unit) { detectTapGestures(onLongPress = { currentMenu() }) }
         .pointerInput(haptics) {
+            detectTapGestures(onLongPress = {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                currentMenu()
+            })
+        }
+        .then(if (!swipeReply || open == null) Modifier else Modifier.pointerInput(haptics) {
             val threshold = 64.dp.toPx()
             var travel = 0f
             var reached = false
             detectHorizontalDragGestures(
                 onDragStart = { travel = 0f; reached = false },
-                onDragEnd = { if (travel <= -threshold) currentOpen() },
+                onDragEnd = { if (travel <= -threshold) currentOpen?.invoke() },
             ) { change, dx ->
                 change.consume()
                 travel += dx
@@ -289,11 +387,17 @@ private fun conversationGestures(open: () -> Unit, menu: () -> Unit): Modifier {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                 }
             }
-        }
+        })
         .semantics {
-            customActions = listOf(
-                CustomAccessibilityAction("スレッドを開く") { currentOpen(); true },
-                CustomAccessibilityAction("メッセージの操作") { currentMenu(); true },
-            )
+            customActions = buildList {
+                if (open != null) add(CustomAccessibilityAction("スレッドを開く") {
+                    currentOpen?.invoke()
+                    true
+                })
+                add(CustomAccessibilityAction("メッセージの操作") {
+                    currentMenu()
+                    true
+                })
+            }
         }
 }

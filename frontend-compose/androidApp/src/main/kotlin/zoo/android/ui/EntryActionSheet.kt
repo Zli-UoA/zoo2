@@ -1,0 +1,53 @@
+package zoo.android.ui
+
+import android.content.ClipData
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun EntryActionSheet(
+    entry: TimelineItem, colors: AndroidColors, posts: Boolean,
+    dismiss: () -> Unit, open: (() -> Unit)?,
+) {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    ModalBottomSheet(onDismissRequest = dismiss, containerColor = colors.background) {
+        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
+            Text(entry.body, color = colors.secondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(12.dp))
+            if (open != null) SheetAction(if (posts) "投稿を開く" else "スレッドを開く", colors, open)
+            SheetAction("本文をコピー", colors) {
+                scope.launch {
+                    clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, entry.body)))
+                    dismiss()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetAction(title: String, colors: AndroidColors, click: () -> Unit) {
+    Box(
+        Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
+            .clickable(role = Role.Button, onClick = click),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(title, color = colors.foreground, fontWeight = AndroidWeights.label)
+    }
+}
