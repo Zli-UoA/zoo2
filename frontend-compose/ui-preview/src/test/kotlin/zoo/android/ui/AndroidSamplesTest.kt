@@ -105,6 +105,15 @@ class AndroidSamplesTest {
                         "Expected 4dp between send action and screen edges: $bounds / $root"
                     }
                 }
+                if (name == "post-compose") {
+                    val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()
+                    val post = ui.onNodeWithText("投稿").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
+                    val photos = ui.onNodeWithContentDescription("写真").getUnclippedBoundsInRoot()
+                    check(
+                        post.top - toolbar.top == 8.dp && toolbar.bottom - post.bottom == 8.dp &&
+                            toolbar.right - post.right == 8.dp && photos.left - toolbar.left == 8.dp,
+                    ) { "Expected an 8dp inset around the post actions: $post / $photos / $toolbar" }
+                }
                 capture("$name-${if (night) "dark" else "light"}")
             }
         }
