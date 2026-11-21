@@ -314,8 +314,9 @@ export function MessageList({
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
       if (anchor && index < 0 && slid) {
-        // アンカー行そのものがウィンドウから押し出された場合、今の先頭行を
-        // 新しいアンカーとしてそのままスクロール位置を保つ (読む行は消えた分だけ進む)。
+        // アンカー行がウィンドウから押し出された場合は、消えた行の実測高さを
+        // 正確に取れないため scrollTop を推測で動かさない。今の先頭行を新しい
+        // アンカーとして記録し、次の押し出しからは追従できるようにする。
         captureScrollAnchor();
       } else if (anchor && index >= 0) {
         restoringAnchorRef.current = true;
@@ -523,6 +524,19 @@ export function MessageList({
 
   return (
     <div className="relative min-h-0 flex-1">
+      {isLoadingOlder && !showSkeleton && !showOffline && !showError && !showEmpty ? (
+        <div
+          role="status"
+          aria-label={t("messages.loadingOlder")}
+          data-testid="loading-older"
+          className="pointer-events-none absolute inset-x-0 top-0 z-10 flex h-6 items-center justify-center text-xs text-muted-foreground"
+        >
+          <LoaderCircleIcon
+            className="size-4 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        </div>
+      ) : null}
       {showSkeleton ? (
         <MessageSkeleton />
       ) : showOffline ? (
@@ -562,18 +576,6 @@ export function MessageList({
           data-testid="message-scroll"
           className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
-          {isLoadingOlder ? (
-            <div
-              role="status"
-              aria-label={t("attachments.loading")}
-              className="pointer-events-none sticky top-0 z-10 flex h-6 items-center justify-center text-xs text-muted-foreground"
-            >
-              <LoaderCircleIcon
-                className="size-4 animate-spin motion-reduce:animate-none"
-                aria-hidden="true"
-              />
-            </div>
-          ) : null}
           <div role="list" className="relative w-full" style={{ height: totalSize }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];

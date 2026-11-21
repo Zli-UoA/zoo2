@@ -130,13 +130,19 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
 
   // 控えの最新行がライブにまだ届いていなければ、控えの古い行を前置きして一覧を保つ。
   const needsMerge = !!cachedRows && !isCacheCoveredByLive(cachedRows, live);
-  const displayedRows = needsMerge
-    ? mergeCachedAndLive(cachedRows!, live)
-    : live.length > 0
-      ? live
-      : (cachedRows ?? live);
+  const displayedRows = useMemo(
+    () =>
+      needsMerge
+        ? mergeCachedAndLive(cachedRows!, live)
+        : live.length > 0
+          ? live
+          : (cachedRows ?? live),
+    [needsMerge, cachedRows, live],
+  );
   const data = useOptimisticDisplay(channelId, displayedRows);
-  const fromCache = needsMerge || (cachedRows !== null && live.length === 0);
+  // ライブが 1 行も無く、控えだけを表示しているときだけ「控え表示中」とする。
+  // needsMerge (ライブ到着後) は含まない。含めると hasOlder が偽になり過去ページを読めなくなる。
+  const fromCache = cachedRows !== null && live.length === 0;
   return {
     ...query,
     data,
@@ -147,7 +153,7 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
       !(query.isPersistedReady && query.data?.length) &&
       !(fromCache && !isOnline),
     loadOlder: query.fetchNextPage,
-    // 控えには、古いページがない。
+    // 控えだけを表示しているときは、古いページがない。
     hasOlder: fromCache ? false : query.hasNextPage,
     isLoadingOlder: query.isFetchingNextPage,
   };

@@ -214,6 +214,7 @@
     "description": "從左側列表選擇頻道，即可查看對話。"
   },
   "messages": {
+    "loadingOlder": "正在載入較早的訊息…",
     "typing": "{{names}}正在輸入…",
     "typingSeparator": "、",
     "compose": "輸入訊息",
