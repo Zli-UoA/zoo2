@@ -1193,7 +1193,10 @@ fn check_destination_with(
 /// 作ったものだけを消せるようにする。
 fn create_probe(path: &Path) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    let written = file.write_all(PROBE_MARKER).and_then(|()| file.sync_all());
+    let written = file.write_all(PROBE_MARKER);
+    // 目印は、消してよいかの判定にだけ使う。同期できないファイルシステムでも保存を
+    // 止めないよう、同期の失敗は無視する。
+    let _ = file.sync_all();
     drop(file);
     if let Err(err) = written {
         // 書きかけのファイルは自分が作ったものなので、残さない。
