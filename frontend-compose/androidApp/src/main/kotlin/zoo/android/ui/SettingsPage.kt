@@ -11,7 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -46,7 +45,7 @@ internal fun SettingsPage(
                     Modifier.padding(bottom = 4.dp),
                     color = colors.secondary,
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = AndroidWeights.label,
                 )
                 for (entry in group.entries) {
                     val action = when (entry) {

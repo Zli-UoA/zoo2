@@ -10,7 +10,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -55,7 +54,7 @@ internal fun NotificationPage(
             }
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(item.author, Modifier.weight(1f), color = colors.foreground, fontWeight = FontWeight.SemiBold)
+                    Text(item.author, Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.label)
                     Text(item.time, color = colors.secondary, fontSize = 12.sp)
                     if (item.unread) {
                         Text("未読", Modifier.background(colors.headerLight, CircleShape).padding(horizontal = 6.dp),

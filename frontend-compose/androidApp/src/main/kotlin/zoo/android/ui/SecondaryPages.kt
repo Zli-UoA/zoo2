@@ -20,7 +20,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -125,7 +124,7 @@ internal fun BrandPage(
     ) {
         Spacer(Modifier.weight(2f))
         ZooBadge(colors, Modifier.size(88.dp))
-        Text(title, color = colors.foreground, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text(title, color = colors.foreground, fontSize = 32.sp, fontWeight = AndroidWeights.emphasis)
         if (detail.isNotEmpty()) Text(detail, color = colors.secondary, fontSize = 16.sp, textAlign = TextAlign.Center)
         if (loading) CircularProgressIndicator(Modifier.size(22.dp), color = colors.accent, strokeWidth = 2.dp)
         Spacer(Modifier.weight(3f))
@@ -141,7 +140,7 @@ internal fun PrimaryAction(title: String, colors: AndroidColors, enabled: Boolea
             .clickable(enabled = enabled, role = Role.Button, onClick = click).padding(horizontal = 24.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(title, color = if (enabled) Color.Black else colors.inputHint, fontWeight = FontWeight.SemiBold)
+        Text(title, color = if (enabled) Color.Black else colors.inputHint, fontWeight = AndroidWeights.label)
     }
 }
 
