@@ -41,28 +41,6 @@ export function useActiveChannels() {
   };
 }
 
-/**
- * オフライン控えからライブへ差し替えるとき、両者に共通する id の区間は控え側を残す。
- * 配列ごと差し替えると、ライブの 1 ページ目が届いた瞬間に一覧が短くなり、
- * classifyScrollChange が prepend / replace と誤判定してアンカー復元が暴れる。
- */
-export function mergeCachedAndLive(cached: FeedRow[], live: FeedRow[]): FeedRow[] {
-  if (cached.length === 0) return live;
-  if (live.length === 0) return cached;
-  const liveIds = new Set(live.map((row) => row.id));
-  const firstLiveIndex = cached.findIndex((row) => liveIds.has(row.id));
-  if (firstLiveIndex < 0) return live;
-  // 控えの中でライブより古い行だけを前置きし、共通以降はライブの順序・内容を使う。
-  return [...cached.slice(0, firstLiveIndex), ...live];
-}
-
-/** 控えの最新行がライブに届いているか。届いていれば控えは不要。 */
-export function isCacheCoveredByLive(cached: FeedRow[] | null, live: FeedRow[]): boolean {
-  if (!cached || cached.length === 0) return true;
-  const newest = cached[cached.length - 1]!.id;
-  return live.some((row) => row.id === newest);
-}
-
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
@@ -93,11 +71,11 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const liveReady = !query.isLoading && live.length > 0;
   const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
   // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
-  // ライブの行が届くまで (読み込み中・失敗) は、控えを読み込んで表示しておく。
-  // live.length は見ない。オフライン中の楽観送信で live が 1 行になっても控えを保持するため。
-  const shouldLoadCache = cacheable && (!isOnline || query.isLoading || query.isError);
+  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
+  const wantCache =
+    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
   useEffect(() => {
-    if (!shouldLoadCache) return;
+    if (!wantCache) return;
     let cancelled = false;
     void loadFeedCache<FeedRow>(namespace, channelId).then((entry) => {
       if (!cancelled) setCached({ channelId, rows: entry?.rows ?? null });
@@ -105,8 +83,8 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => {
       cancelled = true;
     };
-  }, [shouldLoadCache, namespace, channelId]);
-  const cachedRows = cached?.channelId === channelId ? cached.rows : null;
+  }, [wantCache, namespace, channelId]);
+  const cachedRows = wantCache && cached?.channelId === channelId ? cached.rows : null;
 
   // オンラインで読み込めたら、最新ページを控える (書き込みが続くときのために、間引く)。
   const latest = useRef(live);
@@ -128,21 +106,8 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => clearTimeout(timer);
   }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
 
-  // 控えの最新行がライブにまだ届いていなければ、控えの古い行を前置きして一覧を保つ。
-  const needsMerge = !!cachedRows && !isCacheCoveredByLive(cachedRows, live);
-  const displayedRows = useMemo(
-    () =>
-      needsMerge
-        ? mergeCachedAndLive(cachedRows!, live)
-        : live.length > 0
-          ? live
-          : (cachedRows ?? live),
-    [needsMerge, cachedRows, live],
-  );
-  const data = useOptimisticDisplay(channelId, displayedRows);
-  // ライブが 1 行も無く、控えだけを表示しているときだけ「控え表示中」とする。
-  // needsMerge (ライブ到着後) は含まない。含めると hasOlder が偽になり過去ページを読めなくなる。
-  const fromCache = cachedRows !== null && live.length === 0;
+  const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
+  const fromCache = cachedRows !== null;
   return {
     ...query,
     data,
@@ -153,7 +118,7 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
       !(query.isPersistedReady && query.data?.length) &&
       !(fromCache && !isOnline),
     loadOlder: query.fetchNextPage,
-    // 控えだけを表示しているときは、古いページがない。
+    // 控えには、古いページがない。
     hasOlder: fromCache ? false : query.hasNextPage,
     isLoadingOlder: query.isFetchingNextPage,
   };
