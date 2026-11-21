@@ -348,6 +348,25 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
             .starts_with("資料"),
         "{both}"
     );
+    // 一致の判定は SQL の lower() だけで行う（ASCII 以外の大文字も、SQL が当たったものはスニペットに入る）。
+    let accented = format!("{}ÉTÉ の予定", "う".repeat(600));
+    sql.batch_execute(&insert(&m(14), &public, &accented, "10 minutes"))
+        .await?;
+    let lower_matches: bool = sql
+        .query_one("SELECT lower('ÉTÉ') = 'été'", &[])
+        .await?
+        .get(0);
+    let summer = search(
+        &app,
+        &alice,
+        &format!("q={}", q(if lower_matches { "été" } else { "ÉTÉ" })),
+    )
+    .await;
+    let summer_snippet = summer["items"][0]["snippet"].as_str().unwrap();
+    assert!(
+        summer_snippet.contains("ÉTÉ") && summer_snippet.starts_with('…'),
+        "{summer}"
+    );
     assert!(
         hit["items"][0]["snippet"]
             .as_str()

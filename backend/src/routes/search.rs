@@ -182,16 +182,34 @@ fn like_clauses(column: &str, terms: &[&str], first: usize) -> String {
         .collect()
 }
 
-/// スニペットの元。どれかの語が最初に当たった位置の少し前から切り出す（長い本文の後ろで当たっても語を
-/// 含み、語の順番にもよらない）。前を省いたら `…` を付ける。語は `$9` から `terms` 個。
+/// スニペットを SQL で切り出す json の列（`'text', …, 'cut_start', …, 'cut_end', …`）。
+///
+/// どれかの語が最初に当たった位置の [`SNIPPET_BEFORE`] 文字前から [`SNIPPET_CHARS`] 文字。当たった位置は
+/// 検索条件と同じ `lower()` で求め、Rust では探し直さない（`lower()` はロケールによって ASCII 以外も
+/// 小文字にするので、Rust の判定とずれることがある）。語の順番にも、長い本文の後ろで当たったかにもよらない。
+/// 語は `$9` から `terms` 個。
 fn snippet_source(column: &str, terms: usize) -> String {
     let positions: Vec<String> = (0..terms)
         .map(|i| format!("NULLIF(strpos(lower({column}), lower(${})), 0)", 9 + i))
         .collect();
-    let first = format!("COALESCE(LEAST({}), 1)", positions.join(", "));
+    let start = format!(
+        "greatest(1, COALESCE(LEAST({}), 1) - {SNIPPET_BEFORE})",
+        positions.join(", ")
+    );
     format!(
-        "(CASE WHEN {first} > 201 THEN '…' ELSE '' END \
-          || substr({column}, greatest(1, {first} - 200), 1000))"
+        "'text', substr({column}, {start}, {SNIPPET_CHARS}), \
+         'cut_start', {start} > 1, \
+         'cut_end', {start} + {SNIPPET_CHARS} <= char_length({column})"
+    )
+}
+
+/// SQL で切り出した本文をスニペットにする（空白をまとめ、省いた側に `…`）。
+fn cut_snippet(text: &str, cut_start: bool, cut_end: bool) -> String {
+    format!(
+        "{}{}{}",
+        if cut_start { "…" } else { "" },
+        text.split_whitespace().collect::<Vec<_>>().join(" "),
+        if cut_end { "…" } else { "" }
     )
 }
 
@@ -221,7 +239,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
             "SELECT json_build_object('id', m.id, 'channel_id', m.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'parent_id', m.parent_id, 'user_id', m.user_id, \
                'author', m.display_data->'author', 'emojis', COALESCE(m.display_data->'emojis', '{{}}'::jsonb), \
-               'text', {text}, 'created_at', m.created_at)::text \
+               {text}, 'created_at', m.created_at)::text \
              FROM (SELECT m.* FROM messages m WHERE m.deleted_at IS NULL AND m.content <> ''{likes} AND {common}) m \
              JOIN channels c ON c.id = m.channel_id ORDER BY m.created_at DESC, m.id DESC",
             likes = like_clauses("m.content", terms, 9),
@@ -246,7 +264,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
         SearchKind::Notes => format!(
             "SELECT json_build_object('id', n.id, 'channel_id', n.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'user_id', n.created_user_id, 'title', n.title, \
-               'text', {text}, 'created_at', n.created_at, 'updated_at', n.updated_at)::text \
+               {text}, 'created_at', n.created_at, 'updated_at', n.updated_at)::text \
              FROM (SELECT n.* FROM channel_notes n WHERE n.deleted_at IS NULL{likes} AND {common}) n \
              JOIN channels c ON c.id = n.channel_id ORDER BY n.created_at DESC, n.id DESC",
             likes = like_clauses("(n.title || E'\\n' || n.content)", terms, 9),
@@ -386,11 +404,18 @@ async fn search(
         if let Some(object) = item.as_object_mut() {
             let text = object
                 .remove("text")
-                .and_then(|t| t.as_str().map(str::to_string));
-            object.insert(
-                "snippet".into(),
-                Value::String(snippet(text.as_deref().unwrap_or(""), &terms)),
-            );
+                .and_then(|t| t.as_str().map(str::to_string))
+                .unwrap_or_default();
+            // メッセージ・ノートは SQL が当たった位置で切り出してある。ファイル名は短いのでそのまま探す。
+            let value = match (object.remove("cut_start"), object.remove("cut_end")) {
+                (Some(start), Some(end)) => cut_snippet(
+                    &text,
+                    start.as_bool().unwrap_or(false),
+                    end.as_bool().unwrap_or(false),
+                ),
+                _ => snippet(&text, &terms),
+            };
+            object.insert("snippet".into(), Value::String(value));
         }
     }
     Ok(Json(json!({
