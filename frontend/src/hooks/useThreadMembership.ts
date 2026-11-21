@@ -24,7 +24,8 @@ export interface ThreadMembership {
 /**
  * 書き込み（参加・退出・再Open）や他の画面の通知で届いた値を、いまの値へ重ねる。応答に参加者の項目が
  * ない（コミット後の読み取りに失敗した、など）ときは、前の値を残す。値が消えると、参加人数のボタンが
- * 隠れ、`tracked` が不明になって、参加が必要なスレッドに入力欄が開いてしまう。
+ * 隠れ、`tracked` が不明になって、参加が必要なスレッドに入力欄が開いてしまう。書き込みの応答は再取得せず
+ * 反映する方針（docs/request-design.md）なので、残した人数のずれは、次の定期取得（60秒）で直る。
  */
 function mergeMembership(
   previous: ThreadMembership | null,
@@ -106,8 +107,6 @@ function createStore(
         window.dispatchEvent(
           new CustomEvent(THREADS_CHANGED, { detail: { ...result.data, userId, config } }),
         );
-        // 参加者の項目がない応答は、前の値を残したうえで、すぐ取り直して正しい値にする。
-        if (result.data.participants === undefined) queued = true;
         return true;
       } catch {
         set({ ...state, pending: false, error: true });
@@ -133,7 +132,6 @@ function createStore(
               pending: state.pending,
               error: false,
             });
-            if (detail.participants === undefined) void refresh();
             return;
           }
           void refresh();

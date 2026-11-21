@@ -133,7 +133,7 @@ it("keeps data on a failed operation and allows retry", async () => {
   expect(value.data?.membership).toBe("left");
 });
 
-it("keeps the participant fields when a write answers without them, and refetches", async () => {
+it("keeps the participant fields when a write answers without them", async () => {
   const withParticipants: ThreadMembership = {
     ...data,
     tracked: true,
@@ -154,6 +154,6 @@ it("keeps the participant fields when a write answers without them, and refetche
   expect(value.data?.participant_count).toBe(3);
   expect(value.data?.tracked).toBe(true);
   expect(value.data?.participants).toHaveLength(1);
-  // The write answered without a list, so the thread is fetched again for the right values.
-  expect(fixture.api.get).toHaveBeenCalledTimes(2);
+  // A write is reflected without a refetch; the next periodic read corrects the kept count.
+  expect(fixture.api.get).toHaveBeenCalledTimes(1);
 });
