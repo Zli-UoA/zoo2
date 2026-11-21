@@ -878,8 +878,8 @@ fn remove_stale_entry_with(path: &Path, probe: impl Fn(&Path) -> ProbeState) -> 
         }
     }
     // 目印を読んでから削除するまでの間に、同じ名前へ別のファイルが置かれると、
-    // それを消してしまう。読み取ったものと同じファイルを、名前ではなく開いたもの
-    // として消す方法は 3 つの OS に無いため、この短い区間は残る（docs にも書いた）。
+    // それを消してしまう。いまは名前を指定して削除しているため、この短い区間は
+    // 残る（docs にも書いた）。
     match std::fs::remove_file(path) {
         Ok(()) => true,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
@@ -2294,14 +2294,13 @@ mod tests {
     #[test]
     fn startup_cleanup_keeps_a_preexisting_probe_socket() {
         // `sun_path` は 104 バイト（macOS）で、Rust は 103 バイトを超えるパスを
-        // 拒否する。`TMPDIR` が長い環境でも入るよう、短いパスに置く。
-        let base = std::env::temp_dir();
-        let base = if base.as_os_str().len() + 1 + 26 <= 100 {
-            base
-        } else {
-            PathBuf::from("/tmp")
-        };
-        let probe = base.join(format!(".zoo-{}.probe", new_download_id()));
+        // 拒否する。`TMPDIR` が長い環境でも入るよう、組み立てたパスの長さで
+        // 判断し、収まらなければ短い `/tmp` に置く。
+        let name = format!(".zoo-{}.probe", new_download_id());
+        let mut probe = std::env::temp_dir().join(&name);
+        if probe.as_os_str().len() >= 100 {
+            probe = PathBuf::from("/tmp").join(&name);
+        }
         assert!(
             probe.as_os_str().len() < 100,
             "ソケットのパスが長すぎます: {probe:?}"
