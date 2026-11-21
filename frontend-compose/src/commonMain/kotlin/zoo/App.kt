@@ -80,11 +80,13 @@ fun ZooApp(app: Session) {
     val isNotifications = app.env.path.startsWith("/notifications")
     val isSettings = app.env.path.startsWith("/settings")
     val isBubble = app.env.path.startsWith("/bubble")
+    val isSearch = isGlobalSearchPath(app.env.path)
     val fullPage =
         isHome ||
             isNotifications ||
             isSettings ||
             isBubble ||
+            isSearch ||
             app.env.path.startsWith("/apps-authorize")
     BoxWithConstraints(
         Modifier.fillMaxSize().focusInputModality().background(MaterialTheme.colorScheme.background)
@@ -135,6 +137,7 @@ fun ZooApp(app: Session) {
                             isSettings -> ZooSettings(app, users)
                             isBubble -> BubbleChat(app, users)
                             isNotifications -> Notifications(app, notifications, users)
+                            isSearch -> GlobalSearchScreen(app, users, members)
                             app.env.path.startsWith("/apps-authorize") -> AppConsent(app)
                             app.channelId == null -> Welcome(app)
                             channel == null ->
@@ -356,6 +359,7 @@ internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
         RailLink(app, "/", "hash", app.t("channels.title"))
         NotificationsButton(app, unread + app.activityPubNotifications.unreadCount - unifiedNotificationFeed(androidNotificationRows(app.repo.notifications.rows.value), app.activityPubNotifications.items).duplicateUnreadCount)
         RailLink(app, "/bubble", "message-circle-more", app.t("bubbleChat.title"))
+        RailLink(app, "/search", "search", app.t("globalSearch.openNav"))
         if (app.env.development) RailLink(app, "/realtime", "activity", app.t("sync.title"))
         Spacer(Modifier.weight(1f))
         Column(
@@ -405,7 +409,17 @@ internal fun Sidebar(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 4.dp)
         ) {
             if (narrow) {
-                ScreenHeader("hash", app.t("channels.title"))
+                ScreenHeader("hash", app.t("channels.title")) {
+                    // Searches message and file contents. The channel section's smaller
+                    // search button only browses channels (channels.browseTitle).
+                    IconButton(
+                        "search",
+                        app.t("globalSearch.openNav"),
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        app.navigate("/search")
+                    }
+                }
                 HorizontalDivider()
             }
             CollapsibleSection(
