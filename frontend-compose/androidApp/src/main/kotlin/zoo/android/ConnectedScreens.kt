@@ -17,6 +17,7 @@ import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import zoo.*
 import zoo.android.ui.*
@@ -353,28 +354,71 @@ internal fun ConnectedScreens(
             confirmButton = { TextButton(onClick = phone::clearError) { Text(session.t("common.close")) } },
         )
     }
-    state.inputMenu?.let { tool ->
-        InputToolDialog(tool, onDismiss = { state.inputMenu = null }) { value ->
+    val reaction = state.confirmingEntry?.takeIf { it.operation == EntryOperation.React }
+    val insertingEmoji = state.inputMenu == InputTool.Emoji
+    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val emojiCatalog = remember(context) { AndroidEmojiCatalog(context) }
+    val recentEmojis = remember(session) { mutableStateListOf<EmojiChoice>() }
+    if (insertingEmoji || reaction != null) {
+        val unicode by produceState(emptyList<EmojiChoice>(), emojiCatalog) { value = emojiCatalog.unicode() }
+        val allowAccountEmoji = reaction == null || screen !is AndroidScreen.Home &&
+            screen !is AndroidScreen.Post && screen !is AndroidScreen.Profile
+        LaunchedEffect(session, env.online, allowAccountEmoji) {
+            if (env.online) {
+                if (allowAccountEmoji) launch { session.loadAccountProfiles() }
+                try {
+                    session.loadWorkspaceEmojis()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // The bundled Unicode list remains available when the workspace catalog fails.
+                }
+            }
+        }
+        val dismiss = { state.inputMenu = null; state.confirmingEntry = null }
+        EmojiPicker(
+            title = if (reaction == null) "絵文字" else "リアクション",
+            colors = AndroidColors(env.dark),
+            unicode = unicode,
+            custom = remember(session.workspaceEmojis, session.accountProfiles, allowAccountEmoji) {
+                workspaceEmojiChoices(session.workspaceEmojis) +
+                    (if (allowAccountEmoji) accountEmojiChoices(session.accountProfiles) else emptyList())
+            },
+            recent = recentEmojis.toList(),
+            customLoading = session.workspaceEmojiLoading,
+            customError = session.workspaceEmojiError,
+            loadKitchen = emojiCatalog::kitchen,
+            loadImage = { url ->
+                try { session.imageBitmap(url) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+            },
+            dismiss = dismiss,
+        ) { choice ->
+            recentEmojis.removeAll { it.value == choice.value }
+            recentEmojis.add(0, choice)
+            if (recentEmojis.size > 24) recentEmojis.removeAt(recentEmojis.lastIndex)
+            if (reaction != null) {
+                dismiss()
+                state.dispatch(reaction.copy(value = choice.value), screen, channel, rows, dmPeer, null, enableNotifications)
+            } else {
+                val value = if (choice.value.startsWith("kitchen:")) ":kitchen_${choice.value.removePrefix("kitchen:")}:" else choice.value
+                state.insertText(screen, channelId.orEmpty(), value)
+            }
+        }
+    }
+    if (state.inputMenu == InputTool.Format) {
+        FormattingDialog(onDismiss = { state.inputMenu = null }) { value ->
             state.insertText(screen, channelId.orEmpty(), value)
         }
     }
-    state.confirmingEntry?.let { action ->
-        val deleting = action.operation == EntryOperation.Delete
+    state.confirmingEntry?.takeIf { it.operation == EntryOperation.Delete }?.let { action ->
         AlertDialog(
             onDismissRequest = { state.confirmingEntry = null },
-            title = { Text(if (deleting) "削除しますか？" else "リアクション") },
-            text = {
-                if (deleting) Text(action.item.body, maxLines = 3)
-                else Row {
-                    listOf("👍", "❤️", "🎉", "😊").forEach { emoji ->
-                        TextButton(onClick = {
-                            state.dispatch(action.copy(value = emoji), screen, channel, rows, dmPeer, null, enableNotifications)
-                        }) { Text(emoji) }
-                    }
-                }
-            },
+            title = { Text("削除しますか？") },
+            text = { Text(action.item.body, maxLines = 3) },
             confirmButton = {
-                if (deleting) DialogAction("削除", UiIcon.Delete) {
+                DialogAction("削除", UiIcon.Delete) {
                     state.confirmDelete(screen is AndroidScreen.Home || screen is AndroidScreen.Post || screen is AndroidScreen.Profile)
                 }
             },

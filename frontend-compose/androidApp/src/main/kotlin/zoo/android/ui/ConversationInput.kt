@@ -161,13 +161,11 @@ private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputT
 
 
 @Composable
-internal fun InputToolDialog(tool: InputTool, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
-    val emoji = tool == InputTool.Emoji
-    val options = if (emoji) listOf("👍" to "👍", "😊" to "😊", "🎉" to "🎉", "❤️" to "❤️")
-        else listOf("B" to "**太字**", "I" to "*斜体*", "‹/›" to "`コード`", "❝" to "\n> 引用")
+internal fun FormattingDialog(onDismiss: () -> Unit, onSelect: (String) -> Unit) {
+    val options = listOf("B" to "**太字**", "I" to "*斜体*", "‹/›" to "`コード`", "❝" to "\n> 引用")
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (emoji) "絵文字" else "文字装飾") },
+        title = { Text("文字装飾") },
         text = {
             Row {
                 options.forEach { (label, value) ->

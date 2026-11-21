@@ -96,9 +96,16 @@ val translations by
         into(layout.buildDirectory.dir("generated/assets/locales"))
     }
 
+val emojiCatalogs by tasks.registering(Sync::class) {
+    from("../src/commonMain/composeResources/files") {
+        include("shortcodes.json", "emoji-kitchen.json")
+    }
+    into(layout.buildDirectory.dir("generated/assets/emoji"))
+}
+
 android.sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/assets"))
 
-tasks.named("preBuild") { dependsOn(translations) }
+tasks.named("preBuild") { dependsOn(translations, emojiCatalogs) }
 
 dependencies {
     testImplementation(kotlin("test-junit"))

@@ -174,7 +174,21 @@ class AndroidSamplesTest {
             }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
-            if (emojiPicker) InputToolDialog(InputTool.Emoji, onDismiss = { emojiPicker = false }) { emojiPicker = false }
+            if (emojiPicker) {
+                val choices = remember {
+                    listOf("👍", "😊", "🎉", "❤️", "😀", "😂", "🥰", "😎", "🥳", "🙌", "👏", "👋", "✨", "🔥",
+                        "🌈", "🚀", "🌍", "🍕", "🍩", "☕", "⚽", "🎮", "🎵", "🎁", "🎂", "💡", "💯", "✅",
+                        "🐶", "🦊", "🐼", "🐻", "🐸", "🐵", "🦁", "🐯", "🐧", "🦄", "🦋", "🐙", "🌸", "🌻")
+                        .map { EmojiChoice(it, it, it) } + EmojiChoice("🐱", "🐱", "cat", keywords = "ねこ")
+                }
+                EmojiPicker("絵文字", AndroidColors(dark), choices,
+                    custom = listOf(EmojiChoice(":party:", "", "party", "fixture-emoji")),
+                    loadKitchen = {
+                        KitchenChoices(listOf(EmojiChoice("1f431", "🐱", "cat"))) {
+                            listOf(EmojiChoice("kitchen:1f431_1f431", "🐱🐱", "cat duo", "fixture-emoji"))
+                        }
+                    }, loadImage = { reactionEmoji }, dismiss = { emojiPicker = false }) { emojiPicker = false }
+            }
         }
         for ((name, example) in cases) {
             for (night in listOf(false, true)) {
@@ -277,10 +291,19 @@ class AndroidSamplesTest {
         for (night in listOf(false, true)) {
             ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second; dark = night }
             ui.onNodeWithContentDescription("絵文字").performClick()
-            ui.onNodeWithText("絵文字").assertIsDisplayed()
             ui.onNodeWithText("🎉").assertIsDisplayed()
-            capture("emoji-picker-${if (night) "dark" else "light"}", centeredDialog = true)
-            ui.onNodeWithText("🎉").performClick()
+            capture("emoji-picker-${if (night) "dark" else "light"}", bottomDialog = true)
+            ui.onNodeWithTag("emoji-search").performTextInput("cat")
+            ui.onNodeWithContentDescription("cat").assertIsDisplayed()
+            ui.onNodeWithText("🎉").assertDoesNotExist()
+            ui.onNodeWithText("カスタム").performClick()
+            ui.onNodeWithContentDescription("party").assertIsDisplayed()
+            capture("emoji-picker-custom-${if (night) "dark" else "light"}", bottomDialog = true)
+            ui.onNodeWithText("Emoji Kitchen").performClick()
+            ui.onNodeWithContentDescription("cat").performClick()
+            ui.onNodeWithContentDescription("cat duo").assertIsDisplayed()
+            capture("emoji-picker-kitchen-${if (night) "dark" else "light"}", bottomDialog = true)
+            ui.onNodeWithContentDescription("cat duo").performClick()
         }
         ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second }
         ui.onNodeWithContentDescription("公開範囲：公開").performClick()
@@ -394,20 +417,19 @@ class AndroidSamplesTest {
         capture("post-menu-dark", withSheet = true)
     }
 
-    private fun capture(name: String, withSheet: Boolean = false, centeredDialog: Boolean = false) {
+    private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
             try {
                 val canvas = Canvas(bitmap)
                 view.draw(canvas)
-                if (withSheet || centeredDialog) {
+                if (withSheet || bottomDialog) {
                     val window = checkNotNull(ShadowDialog.getLatestDialog()?.window)
                     val dialog = window.decorView
-                    if (centeredDialog) {
+                    if (bottomDialog) {
                         // Robolectric exposes dialog decor before WindowManager positions it.
-                        canvas.drawColor((window.attributes.dimAmount * 255).toInt().coerceIn(0, 255) shl 24)
-                        canvas.translate((view.width - dialog.width) / 2f, (view.height - dialog.height) / 2f)
+                        canvas.translate((view.width - dialog.width) / 2f, (view.height - dialog.height).toFloat())
                     } else {
                         val location = IntArray(2)
                         dialog.getLocationOnScreen(location)
