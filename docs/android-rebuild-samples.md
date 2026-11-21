@@ -21,6 +21,8 @@
 | チャンネル検索 | [ライト](images/android-design/rebuild/directory-light.png) | [ダーク](images/android-design/rebuild/directory-dark.png) |
 | チャンネル作成 | [ライト](images/android-design/rebuild/channel-edit-light.png) | [ダーク](images/android-design/rebuild/channel-edit-dark.png) |
 | チャンネル設定 | [ライト](images/android-design/rebuild/channel-settings-light.png) | [ダーク](images/android-design/rebuild/channel-settings-dark.png) |
+| チャンネルのメンバー | [ライト](images/android-design/rebuild/channel-members-light.png) | [ダーク](images/android-design/rebuild/channel-members-dark.png) |
+| チャンネルのメンバー追加 | [ライト](images/android-design/rebuild/channel-add-member-light.png) | [ダーク](images/android-design/rebuild/channel-add-member-dark.png) |
 | 設定の子画面 | [ライト](images/android-design/rebuild/settings-detail-light.png) | [ダーク](images/android-design/rebuild/settings-detail-dark.png) |
 | ログイン | [ライト](images/android-design/rebuild/login-light.png) | [ダーク](images/android-design/rebuild/login-dark.png) |
 | ログイン復元中 | [ライト](images/android-design/rebuild/login-restoring-light.png) | [ダーク](images/android-design/rebuild/login-restoring-dark.png) |

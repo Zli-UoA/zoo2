@@ -127,6 +127,7 @@ internal fun PageHeader(
     onBack: (() -> Unit)? = null,
     onOpen: (() -> Unit)? = null,
     titleWeight: FontWeight = AndroidWeights.emphasis,
+    actions: @Composable RowScope.() -> Unit = {},
 ) {
     Row(
         Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(colors.headerLight, colors.background)))
@@ -155,6 +156,7 @@ internal fun PageHeader(
             }
             if (onOpen != null) UiGlyph(UiIcon.Next, colors.secondary)
         }
+        actions()
     }
 }
 

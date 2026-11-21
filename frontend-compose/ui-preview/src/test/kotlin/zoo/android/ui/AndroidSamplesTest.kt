@@ -75,12 +75,25 @@ class AndroidSamplesTest {
             "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。", posts),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true),
-            "channel-settings" to AndroidScreen.ChannelSettings("開発", settings),
+            "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
+                SettingsEntry.Information("description", "Zoo の開発と通話のテストについて相談するチャンネルです。"),
+                SettingsEntry.Destination("members", "メンバー"),
+                SettingsEntry.Destination("add-member", "メンバーを追加"),
+                SettingsEntry.Destination("rename", "名前と説明を編集"),
+                SettingsEntry.Destination("archive", "アーカイブ"),
+            )))),
+            "channel-members" to AndroidScreen.Directory("メンバー", "", listOf(
+                SelectionItem("haru", "はる", isUserName = true),
+                SelectionItem("yui", "ゆい", isUserName = true),
+            )),
+            "channel-add-member" to AndroidScreen.Directory("メンバーを追加", "", listOf(
+                SelectionItem("mizuki", "みずき", isUserName = true),
+            )),
             "settings-detail" to AndroidScreen.SettingsDetail("通知", settings.take(1)),
             "login" to AndroidScreen.SignIn(false),
             "login-restoring" to AndroidScreen.SignIn(true),
             "call" to AndroidScreen.Call("はる", true),
-            "call-active" to AndroidScreen.Call("はる", false),
+            "call-active" to AndroidScreen.Call("はる", false, active = true),
         )
         var screen by mutableStateOf<AndroidScreen>(cases.first().second)
         var dark by mutableStateOf(false)
@@ -184,7 +197,7 @@ class AndroidSamplesTest {
         ui.onNodeWithText("開発").assertIsDisplayed()
         ui.runOnIdle { haptics = true }
         ui.waitForIdle()
-        message.performTouchInput { swipeLeft() }
+        message.performTouchInput { swipeLeft(startX = width * .8f, endX = width * .15f) }
         ui.onNodeWithText("スレッド").assertIsDisplayed()
         ui.runOnIdle { check(pulses.size == 1) { "Expected a single threshold pulse: $pulses" } }
         ui.onNodeWithContentDescription("戻る").performClick()

@@ -15,13 +15,17 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
@@ -39,7 +43,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 
 internal data class TimelineItem(val id: String, val author: String, val body: String, val time: String)
@@ -52,17 +58,19 @@ internal data class ChannelItem(
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
-    data class Home(val posts: List<TimelineItem>) : AndroidScreen
+    data class Home(val posts: List<TimelineItem>, val timeline: String? = null) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
     data class Notifications(val items: List<InboxItem>) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
     data class Conversation(
         val id: String, val name: String, val description: String,
-        val entries: List<TimelineItem>, val input: InputState,
+        val entries: List<TimelineItem>, val input: InputState, val canCall: Boolean = false,
+        val focusMessage: String? = null,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
+        val focusMessage: String? = null,
     ) : AndroidScreen
     data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>) : AndroidScreen
@@ -76,13 +84,17 @@ internal sealed interface AndroidScreen {
     ) : AndroidScreen
     data class Directory(val title: String, val query: String, val results: List<SelectionItem>) : AndroidScreen
     data class Profile(val name: String, val bio: String, val posts: List<TimelineItem>) : AndroidScreen
-    data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean) : AndroidScreen
+    data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
+        val visibility: String? = null, val attached: List<RecentPhoto> = emptyList()) : AndroidScreen
     data class SignIn(val restoring: Boolean) : AndroidScreen
-    data class Call(val caller: String, val incoming: Boolean) : AndroidScreen
+    data class Call(val caller: String, val incoming: Boolean, val active: Boolean = false,
+        val muted: Boolean = false, val speaker: Boolean = false) : AndroidScreen
 }
 
 internal sealed interface AndroidUiAction {
     data class Navigate(val page: TopPage) : AndroidUiAction
+    data class OpenNotification(val path: String) : AndroidUiAction
+    data object LoadMoreNotifications : AndroidUiAction
     data class ViewedNotification(val id: String) : AndroidUiAction
     data class OpenChannel(val id: String) : AndroidUiAction
     data class OpenChannelSettings(val id: String) : AndroidUiAction
@@ -104,6 +116,13 @@ internal sealed interface AndroidUiAction {
     data object HangUp : AndroidUiAction
     data object Browse : AndroidUiAction
     data object ComposePost : AndroidUiAction
+    data object CreateChannel : AndroidUiAction
+    data object CreateDm : AndroidUiAction
+    data class SelectTimeline(val id: String) : AndroidUiAction
+    data class SelectPostVisibility(val id: String) : AndroidUiAction
+    data object StartCall : AndroidUiAction
+    data object MuteCall : AndroidUiAction
+    data object SpeakerCall : AndroidUiAction
     data object Back : AndroidUiAction
 }
 
@@ -192,9 +211,11 @@ private fun RenderAndroidScreen(
         when (screen) {
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)
-            is AndroidScreen.Notifications -> NotificationPage(screen.items, foreground, colors) {
-                dispatch(AndroidUiAction.ViewedNotification(it))
-            }
+            is AndroidScreen.Notifications -> NotificationPage(screen.items, foreground, colors,
+                onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
+                onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
+                loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },
+            )
             is AndroidScreen.Bubble -> {
                 PageHeader("Bubble", colors)
                 Text("入力中の内容がリアルタイムに表示されます", Modifier.padding(16.dp),
@@ -203,15 +224,22 @@ private fun RenderAndroidScreen(
             }
             is AndroidScreen.Settings -> SettingsPage(screen.groups, colors, openSetting, toggle)
             is AndroidScreen.Conversation -> {
-                PageHeader(screen.name, colors, screen.description, onBack = back,
-                    onOpen = { dispatch(AndroidUiAction.OpenChannelSettings(screen.id)) })
-                TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = swipeReply, allowThreads = true)
+                CollapsingHeader(header = {
+                    PageHeader(screen.name, colors, screen.description, onBack = back,
+                        onOpen = { dispatch(AndroidUiAction.OpenChannelSettings(screen.id)) }) {
+                        if (screen.canCall) UiIconButton(UiIcon.Phone, "通話を開始", colors.foreground,
+                            { dispatch(AndroidUiAction.StartCall) })
+                    }
+                }) {
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = swipeReply, allowThreads = true, focusMessage = screen.focusMessage)
+                }
             }
             is AndroidScreen.Thread -> {
                 PageHeader("スレッド", colors, onBack = back)
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
-                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch)
+                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
+                    focusMessage = screen.focusMessage)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -229,7 +257,7 @@ private fun RenderAndroidScreen(
                 Text(screen.bio, Modifier.padding(16.dp), color = colors.secondary, fontSize = 15.sp)
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true)
             }
-            is AndroidScreen.NewPost -> NewPostPage(screen.input, screen.recent, screen.showPhotos, colors, dispatch, photo)
+            is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
             is AndroidScreen.SignIn -> BrandPage(
                 "Zoo", if (screen.restoring) "" else "ブラウザーで認証を完了すると、Zooに戻ります。",
                 colors, loading = screen.restoring,
@@ -243,6 +271,15 @@ private fun RenderAndroidScreen(
                 detailWeight = AndroidWeights.userName,
             ) {
                 Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (screen.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        TextAction(if (screen.muted) "ミュートを解除" else "ミュート", colors, style = TextActionStyle.Plain) {
+                            dispatch(AndroidUiAction.MuteCall)
+                        }
+                        TextAction(if (screen.speaker) "スピーカーをオフ" else "スピーカー", colors, style = TextActionStyle.Plain) {
+                            dispatch(AndroidUiAction.SpeakerCall)
+                        }
+                    }
+
                     if (screen.incoming) {
                         TextAction("応答", colors, modifier = Modifier.fillMaxWidth(),
                             icon = UiIcon.Phone, labelWeight = AndroidWeights.emphasis) {
@@ -261,12 +298,23 @@ private fun RenderAndroidScreen(
 
 @Composable
 private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    PageHeader("ホーム", colors)
-    Box(Modifier.fillMaxSize()) {
-        Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true)
-        Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
-            UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
-                action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
+    CollapsingHeader(header = {
+        Column {
+            PageHeader("ホーム", colors)
+            if (screen.timeline != null) Row(Modifier.fillMaxWidth()) {
+                for ((id, title) in listOf("home" to "フォロー中", "local" to "ローカル", "social" to "連合")) {
+                    TextAction(title, colors, style = if (id == screen.timeline) TextActionStyle.Neutral else TextActionStyle.Plain,
+                        modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectTimeline(id)) }
+                }
+            }
+        }
+    }) {
+        Box(Modifier.fillMaxSize()) {
+            Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true)
+            Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+                UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
+                    action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
+            }
         }
     }
 }
@@ -284,8 +332,13 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
         }
         screen.sections.forEach { section ->
             item {
-                Text(section.label, Modifier.padding(top = 16.dp, bottom = 4.dp), color = colors.secondary,
-                    fontSize = 13.sp, fontWeight = AndroidWeights.label)
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(section.label, Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp,
+                        fontWeight = AndroidWeights.label)
+                    val dm = section.label == "ダイレクトメッセージ"
+                    UiIconButton(UiIcon.Create, if (dm) "DMを作成" else "チャンネルを作成", colors.secondary,
+                        { dispatch(if (dm) AndroidUiAction.CreateDm else AndroidUiAction.CreateChannel) })
+                }
             }
             items(section.channels, key = { it.id }) { channel ->
                 Row(
@@ -322,9 +375,10 @@ private fun ColumnScope.TimelineWithInput(
     dispatch: (AndroidUiAction) -> Unit,
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
+    focusMessage: String? = null,
 ) {
     if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch,
-        swipeReply = swipeReply, allowThreads = allowThreads)
+        swipeReply = swipeReply, allowThreads = allowThreads, focusMessage = focusMessage)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
         { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier)
 }
@@ -335,9 +389,20 @@ private fun Timeline(
     dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false,
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
+    focusMessage: String? = null,
 ) {
     var menuId by remember { mutableStateOf<String?>(null) }
-    LazyColumn(modifier, contentPadding = PaddingValues(horizontal = 16.dp)) {
+    val scroll = rememberLazyListState()
+    val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
+    var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(focusMessage, focusedIndex) {
+        if (focusMessage == null) openedTarget = null
+        else if (focusedIndex >= 0 && openedTarget != focusMessage) {
+            scroll.scrollToItem(focusedIndex)
+            openedTarget = focusMessage
+        }
+    }
+    LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(horizontal = 16.dp)) {
         items(entries, key = { it.id }) { entry ->
             Row(
                 Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
@@ -384,7 +449,8 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
     val currentOpen by rememberUpdatedState(open)
     val currentMenu by rememberUpdatedState(menu)
     val haptics = LocalHapticFeedback.current
-    return Modifier
+    var drag by remember { mutableFloatStateOf(0f) }
+    return Modifier.offset { IntOffset(drag.roundToInt(), 0) }
         .pointerInput(haptics) {
             detectTapGestures(onLongPress = {
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -393,17 +459,30 @@ private fun conversationGestures(open: (() -> Unit)?, menu: () -> Unit, swipeRep
         }
         .then(if (!swipeReply || open == null) Modifier else Modifier.pointerInput(haptics) {
             val threshold = 64.dp.toPx()
-            var travel = 0f
+            val maxDrag = 96.dp.toPx()
+            val edge = 8.dp.toPx()
             var reached = false
+            var allowed = false
             detectHorizontalDragGestures(
-                onDragStart = { travel = 0f; reached = false },
-                onDragEnd = { if (travel <= -threshold) currentOpen?.invoke() },
+                onDragStart = { start ->
+                    drag = 0f
+                    reached = false
+                    allowed = start.x in edge..(size.width - edge)
+                },
+                onDragCancel = { drag = 0f },
+                onDragEnd = {
+                    val openThread = drag <= -threshold
+                    drag = 0f
+                    if (openThread) currentOpen?.invoke()
+                },
             ) { change, dx ->
-                change.consume()
-                travel += dx
-                if (!reached && travel <= -threshold) {
-                    reached = true
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (allowed) {
+                    change.consume()
+                    drag = (drag + dx).coerceIn(-maxDrag, 0f)
+                    if (!reached && drag <= -threshold) {
+                        reached = true
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
                 }
             }
         })

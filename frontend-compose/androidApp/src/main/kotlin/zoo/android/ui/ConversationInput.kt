@@ -21,7 +21,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true)
+internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false)
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
 @Composable
@@ -106,7 +106,7 @@ internal fun ConversationInput(
 
 @Composable
 private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputTool) -> Unit) {
-    val enabled = state.text.isNotBlank() && state.canSend
+    val enabled = (state.text.isNotBlank() || state.hasAttachments) && state.canSend
     UiIconButton(
         UiIcon.Send, "送信", if (enabled) Color.Black else colors.inputHint,
         action = { onTool(InputTool.Send) },

@@ -21,6 +21,7 @@ internal sealed interface SettingsEntry {
     val title: String
 
     data class Destination(override val id: String, override val title: String, val value: String? = null) : SettingsEntry
+    data class Information(override val id: String, override val title: String) : SettingsEntry
     data class Toggle(override val id: String, override val title: String, val enabled: Boolean) : SettingsEntry
 }
 
@@ -49,6 +50,7 @@ internal fun SettingsPage(
                 )
                 for (entry in group.entries) {
                     val action = when (entry) {
+                        is SettingsEntry.Information -> Modifier
                         is SettingsEntry.Destination -> Modifier.clickable(role = Role.Button) { open(entry.id) }
                         is SettingsEntry.Toggle -> Modifier.toggleable(entry.enabled, role = Role.Switch) { toggle(entry.id, it) }
                     }
@@ -64,6 +66,7 @@ internal fun SettingsPage(
                             }
                         }
                         when (entry) {
+                            is SettingsEntry.Information -> Unit
                             is SettingsEntry.Destination -> UiGlyph(UiIcon.Next, colors.secondary)
                             is SettingsEntry.Toggle -> Switch(checked = entry.enabled, onCheckedChange = null)
                         }

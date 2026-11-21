@@ -1,6 +1,7 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +21,7 @@ internal data class InboxItem(
     val detail: String?,
     val time: String,
     val unread: Boolean,
+    val target: String? = null,
 )
 
 @Composable
@@ -28,6 +30,8 @@ internal fun NotificationPage(
     foreground: Boolean,
     colors: AndroidColors,
     onViewed: (String) -> Unit,
+    onOpen: (String) -> Unit,
+    loadMore: () -> Unit,
 ) {
     PageHeader("通知", colors)
     val scroll = rememberLazyListState()
@@ -41,6 +45,11 @@ internal fun NotificationPage(
             }.toSet()
         }
     }
+    val nextPage by rememberUpdatedState(loadMore)
+    val lastVisible = items.lastOrNull()?.id?.takeIf { it in visible }
+    LaunchedEffect(lastVisible, foreground) {
+        if (foreground && lastVisible != null) nextPage()
+    }
     val viewed by rememberUpdatedState(onViewed)
     LazyColumn(state = scroll, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp)) {
         items(items, key = { it.id }) { item ->
@@ -51,7 +60,10 @@ internal fun NotificationPage(
                     viewed(item.id)
                 }
             }
-            Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val target = item.target
+            Column(Modifier.fillMaxWidth()
+                .then(if (target != null) Modifier.clickable { onOpen(target) } else Modifier)
+                .padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(item.author, Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.userName)
                     Text(item.time, color = colors.secondary, fontSize = 12.sp)
