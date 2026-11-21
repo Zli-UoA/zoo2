@@ -231,8 +231,8 @@ class PhoneController(
                 sip?.command("phone.answer")
             } else {
                 val pending = invite ?: error("Invite ended")
-                val accepted = data(api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/accept", "POST"))
-                if (accepted.text("channel_id") != next.target) error("Invalid invitation")
+                val accepted = api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/accept", "POST").jsonObject
+                if (!accepted.flag("ok") || accepted.text("channel_id") != next.target) error("Invalid invitation")
                 if (epoch == callEpoch) {
                     inviteExpiry?.cancel(); invite = null; answeringInvite = null
                     call = call?.copy(status = "dialing"); joinDm(next, epoch)

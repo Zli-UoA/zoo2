@@ -7,15 +7,21 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.pm.ServiceInfo
 import android.content.Intent
+import android.media.ToneGenerator
+import androidx.compose.runtime.snapshots.Snapshot
 import android.telecom.CallAudioState
 import android.telecom.Connection
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.encodedPath
 import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -30,11 +36,14 @@ import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowActivity
 import org.robolectric.shadows.ShadowService
 import org.robolectric.shadows.ShadowToast
+import org.robolectric.shadows.ShadowToneGenerator
 import org.robolectric.util.ReflectionHelpers
 import zoo.Environment
 import zoo.Platform
 import zoo.Repository
 import zoo.Session
+import zoo.Row
+import zoo.SyncedTable
 import zoo.android.PushBinding
 import zoo.obj
 import zoo.phone.PhoneCall
@@ -43,7 +52,7 @@ import zoo.phone.PhoneCall
 @Config(sdk = [28, 35])
 @OptIn(ExperimentalCoroutinesApi::class)
 class TelecomIntegrationTest {
-    private class Fixture(scope: CoroutineScope) : AutoCloseable {
+    private class Fixture(scope: CoroutineScope, holdDmStream: Boolean = false) : AutoCloseable {
         val context = RuntimeEnvironment.getApplication()
         val shadow = shadowOf(context)
         val notifications = context.getSystemService(NotificationManager::class.java)
@@ -60,7 +69,10 @@ class TelecomIntegrationTest {
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
         }
-        val http = HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) })
+        val http = HttpClient(MockEngine { request ->
+            if (holdDmStream && request.url.encodedPath.endsWith("/call/stream")) awaitCancellation()
+            respondError(HttpStatusCode.ServiceUnavailable)
+        })
         val config = zoo.Config("https://zoo.test", "/api/shapes", "alice", false)
         val session = Session(Repository(config, platform, http, scope, synchronize = false),
             scope, Environment(visible = false))
@@ -77,10 +89,15 @@ class TelecomIntegrationTest {
 
         fun activePictureInPictureIntent(): Intent {
             val call = PhoneCall("active-call", "dm", "target-dm", "Bob", "active")
-            ReflectionHelpers.callInstanceMethod<Unit>(host.controller, "setCall",
-                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            setCall(call)
             return Intent(context, PhonePictureInPictureActivity::class.java)
                 .putExtra(PHONE_SESSION, host.token).putExtra(PHONE_CALL, call.id)
+        }
+
+        fun setCall(call: PhoneCall) {
+            ReflectionHelpers.callInstanceMethod<Unit>(host.controller, "setCall",
+                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            Snapshot.sendApplyNotifications()
         }
 
         override fun close() {
@@ -187,6 +204,7 @@ class TelecomIntegrationTest {
             val service = Robolectric.buildService(PhoneService::class.java).create().get()
             assertTrue(it.host.controller.busy)
             service.onStartCommand(start, 0, 1)
+            assertTrue(ShadowToneGenerator.getPlayedTones().isEmpty())
             assertNotNull(shadowOf(service).lastForegroundNotification)
             assertTrue(it.notifications.activeNotifications.none { n -> n.id == 604 })
 
@@ -308,6 +326,157 @@ class TelecomIntegrationTest {
         override fun incomingUi(id: String) { calls.add("incoming:$id") }
         override fun audio(id: String, speaker: Boolean, muted: Boolean?) { calls.add("audio:$speaker:$muted"); if (muted != null) appMuted = muted }
     }
+    @Implements(ToneGenerator::class)
+    class RingbackShadow : ShadowToneGenerator() {
+        @Implementation fun release() { releases++ }
+
+        companion object {
+            var releases = 0
+        }
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.startOutgoingService(f: Fixture, kind: String = "dm"): PhoneService {
+        f.host.controller.callDm("target-dm", "Bob")
+        runCurrent()
+        val native = f.host.connection(incoming = false, address = null)
+        assertEquals(Connection.STATE_DIALING, native.state)
+        assertFalse(native.isRingbackRequested)
+        runCurrent()
+        val start = assertNotNull(f.shadow.nextStartedService)
+        if (kind != "dm") f.setCall(assertNotNull(f.host.controller.call).copy(kind = kind))
+        return Robolectric.buildService(PhoneService::class.java).create().get().also {
+            it.onStartCommand(start, 0, 1)
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun outgoingDmRingbackIsReleasedWhenTheCallConnects() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                assertEquals(ToneGenerator.TONE_SUP_RINGTONE, ShadowToneGenerator.getPlayedTones().single().type())
+                assertEquals(0, RingbackShadow.releases)
+                f.setCall(assertNotNull(f.host.controller.call).copy(status = "active"))
+                runCurrent()
+                assertEquals(1, RingbackShadow.releases)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun outgoingDmRingbackIsReleasedWhenDialingEnds() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                assertEquals(0, RingbackShadow.releases)
+                f.host.controller.hangup()
+                assertEquals(1, RingbackShadow.releases)
+            } finally {
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun ringbackStopsWhenTheLastOutgoingInviteDisappears() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                val invite = obj("channel_id" to "target-dm", "inviter_id" to "alice",
+                    "status" to "pending", "expires_at" to "2099-01-01T00:00:00Z")
+                f.host.updateRingbackInvites(emptyList())
+                f.host.updateRingbackInvites(listOf(invite))
+                assertEquals(0, RingbackShadow.releases)
+                f.host.updateRingbackInvites(emptyList())
+                assertEquals(1, RingbackShadow.releases)
+                assertEquals("dialing", f.host.controller.call?.status)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun ringbackTimesOutEvenWithoutInviteSync() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                advanceTimeBy(30_000)
+                runCurrent()
+                assertEquals(1, RingbackShadow.releases)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test fun enablingWaitingReevaluatesTheLatestSnapshotOnTheRetainedRingbackSubscription() = runTest {
+        Fixture(backgroundScope, holdDmStream = true).use { f ->
+            val service = startOutgoingService(f)
+            try {
+                f.host.controller.receiveDmCalls(true)
+                runCurrent()
+                val table = assertNotNull(ReflectionHelpers.getField<SyncedTable?>(f.host, "inviteTable"))
+                f.host.controller.receiveDmCalls(false)
+                runCurrent()
+                Snapshot.sendApplyNotifications()
+                runCurrent()
+                assertSame(table, ReflectionHelpers.getField<SyncedTable>(f.host, "inviteTable"))
+
+                val channels = ReflectionHelpers.getField<MutableStateFlow<List<Row>>>(f.session.repo.channels, "serverRows")
+                val invites = ReflectionHelpers.getField<MutableStateFlow<List<Row>?>>(table, "successfulSnapshot")
+                channels.value = listOf(obj("id" to "other-dm", "is_dm" to true))
+                invites.value = listOf(obj("id" to "pending", "channel_id" to "other-dm",
+                    "inviter_id" to "bob", "invitee_id" to "alice", "status" to "pending",
+                    "expires_at" to "2099-01-01T00:00:00Z"))
+                runCurrent()
+                val seen = ReflectionHelpers.getField<Set<String>>(f.host.controller, "seenInvites")
+                assertFalse("pending" in seen)
+
+                f.host.controller.receiveDmCalls(true)
+                runCurrent()
+                Snapshot.sendApplyNotifications()
+                runCurrent()
+                assertSame(table, ReflectionHelpers.getField<SyncedTable>(f.host, "inviteTable"))
+                assertTrue("pending" in seen)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test fun outgoingSipDoesNotPlayLocalRingback() = runTest {
+        Fixture(backgroundScope).use { f ->
+            val service = startOutgoingService(f, kind = "sip")
+            try {
+                assertTrue(ShadowToneGenerator.getPlayedTones().isEmpty())
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
     @Test fun telecomAnswerHeadsetDisconnectAndDtmfReachOnlyTheCurrentCall() {
         val actions = Actions(); val call = ZooConnection(actions, "call", true)
         assertEquals(Connection.STATE_RINGING, call.state)

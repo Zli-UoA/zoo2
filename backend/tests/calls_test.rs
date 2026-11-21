@@ -1061,6 +1061,20 @@ async fn put_presence(db: &mut toasty::Db, channel: &str, user: &str) -> anyhow:
     Ok(())
 }
 
+async fn invite_joined(db: &mut toasty::Db, id: &str) -> anyhow::Result<bool> {
+    let rows = toasty::sql::query(
+        "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
+    )
+    .bind(id)
+    .exec(db)
+    .await?;
+    Ok(matches!(
+        rows.into_iter().next(),
+        Some(toasty::stmt::Value::Record(r))
+            if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true")
+    ))
+}
+
 async fn invite_status(db: &mut toasty::Db, id: &str) -> anyhow::Result<String> {
     let rows = toasty::sql::query("SELECT status FROM call_invites WHERE id = $1::uuid")
         .bind(id)
@@ -1482,6 +1496,44 @@ async fn test_dm_call_rings_the_other_member_and_join_accepts() -> anyhow::Resul
 }
 
 #[tokio::test]
+async fn test_explicit_dm_accept_returns_channel_and_join_is_recorded() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let channel = w.dm_ch.clone();
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    put_presence(&mut w.db, &channel, &alice).await?;
+    let created = backend::call_invites::create_dm_invites(&mut w.db, &channel, &alice).await?;
+    assert_eq!(created.len(), 1);
+    let id = &created[0].id;
+    let path = format!("/api/call-invites/{id}/accept");
+
+    let (status, result) = request(&w.app, &bob, "POST", &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        result,
+        serde_json::json!({"ok": true, "channel_id": channel})
+    );
+    assert_eq!(invite_status(&mut w.db, id).await?, "accepted");
+    assert!(!invite_joined(&mut w.db, id).await?);
+    assert_eq!(
+        request(&w.app, &bob, "POST", &path, None).await?.0,
+        StatusCode::CONFLICT
+    );
+
+    w.state.call_registry.set_listening(true);
+    let join = Request::builder()
+        .uri(format!(
+            "/api/channels/{channel}/call/stream?session_id={}",
+            uuid::Uuid::new_v4()
+        ))
+        .header("X-Dev-User", bob)
+        .body(Body::empty())?;
+    let stream = w.app.clone().oneshot(join).await?;
+    assert_eq!(stream.status(), StatusCode::OK);
+    assert!(invite_joined(&mut w.db, id).await?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_call_invites_never_exceed_the_room_capacity() -> anyhow::Result<()> {
     let mut w = invite_world().await?;
     let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
@@ -1858,32 +1910,17 @@ async fn test_accept_on_join_records_the_join_whether_the_invite_was_pending_or_
     .await?;
     assert_eq!(status, StatusCode::OK);
 
-    let joined = |db: &mut toasty::Db, id: String| {
-        let mut db = db.clone();
-        async move {
-            let rows = toasty::sql::query(
-                "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
-            )
-            .bind(id)
-            .exec(&mut db)
-            .await?;
-            let value = rows.into_iter().next();
-            anyhow::Ok(
-                matches!(value, Some(toasty::stmt::Value::Record(r)) if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true")),
-            )
-        }
-    };
-    assert!(!joined(&mut w.db, bob_invite.clone()).await?);
+    assert!(!invite_joined(&mut w.db, &bob_invite).await?);
     // 応答済みの bob の入室: 終わった招待としては返さない（応答のときに、通知は閉じている）が、入室を記録する
     let ended =
         backend::call_invites::accept_on_join(&mut w.db, &w.public_ch.clone(), &bob).await?;
     assert!(ended.is_empty());
-    assert!(joined(&mut w.db, bob_invite).await?);
+    assert!(invite_joined(&mut w.db, &bob_invite).await?);
     // 応答していない carol の入室: 終わった招待として返し、入室を記録する
     let ended =
         backend::call_invites::accept_on_join(&mut w.db, &w.public_ch.clone(), &carol).await?;
     assert_eq!(ended.len(), 1);
-    assert!(joined(&mut w.db, ended[0].id.clone()).await?);
+    assert!(invite_joined(&mut w.db, &ended[0].id).await?);
     assert_eq!(invite_status(&mut w.db, &ended[0].id).await?, "accepted");
     // 2 回目は何もしない
     assert!(
