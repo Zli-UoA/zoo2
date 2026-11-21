@@ -1208,13 +1208,17 @@ async fn test_api_initial_history_sync_does_not_reopen_threads() -> anyhow::Resu
     let before = count_messages(&f.state, &f.channel).await;
 
     let recent = format!("{}.000600", now_secs() - 30);
+    // Slack の時計が DB より進んでいて、時刻が先の返信 (`created_at >= トランザクションの開始時刻`) も、履歴の取り込みでは
+    // ライブにしない
+    let ahead = format!("{}.000700", now_secs() + 30);
     Mock::given(method("GET"))
         .and(path("/conversations.replies"))
         .and(query_param("ts", parent.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
             "messages": [
-                {"type":"message","ts":&parent,"user":"UA","text":"new post","thread_ts":&parent,"reply_count":2},
-                {"type":"message","ts":&recent,"user":"UA","text":"history reply","thread_ts":&parent}],
+                {"type":"message","ts":&parent,"user":"UA","text":"new post","thread_ts":&parent,"reply_count":3},
+                {"type":"message","ts":&recent,"user":"UA","text":"history reply","thread_ts":&parent},
+                {"type":"message","ts":&ahead,"user":"UA","text":"history reply ahead of the DB clock","thread_ts":&parent}],
             "has_more": false})))
         .up_to_n_times(1)
         .with_priority(1)
@@ -1237,9 +1241,12 @@ async fn test_api_initial_history_sync_does_not_reopen_threads() -> anyhow::Resu
     .await?;
     drain(&f.state).await;
 
-    assert_eq!(count_messages(&f.state, &f.channel).await, before + 1);
+    assert_eq!(count_messages(&f.state, &f.channel).await, before + 2);
     let (archived, left) = thread_state(&f, &parent_id).await?;
-    assert!(archived, "a recent reply in the initial history is history");
+    assert!(
+        archived,
+        "a recent reply, even one dated ahead of the DB clock, in the initial history is history"
+    );
     assert!(
         left.iter().all(|l| *l),
         "the initial history does not rejoin: {left:?}"

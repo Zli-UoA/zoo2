@@ -354,6 +354,14 @@ it("shows the thread tree under a pinned channel as well as in the channel list,
       thread_archive_at: "2020-01-01T00:00:00Z",
       reply_count: 4,
     },
+    // 参加済みの DM に、アクティブなスレッドがあっても、ピン留めの下にツリーを出さない。
+    {
+      id: "dm-thread",
+      channel_id: dmChannel.id,
+      content: "DM conversation",
+      thread_archive_at: null,
+      reply_count: 1,
+    },
   ];
   render(
     <LocaleProvider>
@@ -369,8 +377,10 @@ it("shows the thread tree under a pinned channel as well as in the channel list,
   expect(within(section).queryByRole("link", { name: /Archived conversation/ })).toBeNull();
   // 通常のチャンネル一覧の行のツリーも残る。
   expect(await screen.findAllByRole("link", { name: /Pinned conversation/ })).toHaveLength(2);
-  // ピン留めした DM にはスレッドのツリーを出さない。
+  // ピン留めした DM にはスレッドのツリーを出さない（DM のスレッドは、どこにも出ない）。
   expect(within(section).getAllByRole("link")).toHaveLength(3);
+  expect(within(section).queryByRole("link", { name: /DM conversation/ })).toBeNull();
+  expect(screen.queryByRole("link", { name: /DM conversation/ })).toBeNull();
   // スレッド一覧はサイドバー全体で共有し、ピン留めのために取り直さない。
   expect(fixture.get.mock.calls.filter(([path]) => path.startsWith("/api/threads"))).toHaveLength(
     1,
