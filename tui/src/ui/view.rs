@@ -272,7 +272,8 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("検索: ", accent),
-            Span::raw(search.query.clone()),
+            // 検索語は残したまま、入力欄は 1 行にする。長ければ末尾（入力位置）が見えるよう先頭を省く。
+            Span::raw(tail_width(&search.query, inner.saturating_sub(7))),
             Span::styled("▏", accent),
         ]),
         Line::from(vec![
@@ -383,6 +384,25 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
 }
 
 /// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
+/// 幅 `width` に収まるよう末尾を残し、先頭を省いたら `…` を付ける（全角は 2）。
+fn tail_width(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 1; // `…`
+    for ch in text.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
+}
+
 /// 幅 `width` に収まるよう、はみ出す span を `…` で切り、その後ろを捨てる。
 fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
     use unicode_width::UnicodeWidthStr;
@@ -2326,11 +2346,23 @@ mod tests {
         assert!(screen.contains("親なしの返信"), "{screen}");
     }
 
+    #[test]
+    fn tail_width_keeps_the_end_of_a_long_query() {
+        use unicode_width::UnicodeWidthStr;
+        let text = tail_width(&"a".repeat(1000), 20);
+        assert_eq!(text.width(), 20);
+        assert!(text.starts_with('…') && text.ends_with('a'));
+        assert_eq!(tail_width("会議", 20), "会議");
+        assert_eq!(tail_width("あいうえお", 5), "…えお");
+    }
+
     #[tokio::test]
     async fn global_search_keeps_the_help_line_on_a_small_terminal() {
         let mut app = app();
         press(&mut app, KeyCode::Char('S'));
         app.global_search.searched = Some(("会議".into(), SearchKind::All));
+        // 長い検索語を貼り付けても、入力欄は 1 行で、末尾の案内は残る。
+        app.global_search.query = "x".repeat(1000);
         app.global_search.items = (0..6)
             .map(|i| {
                 serde_json::from_value(json!({

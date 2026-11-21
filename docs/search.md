@@ -84,6 +84,25 @@ CREATE INDEX messages_search_month ON messages USING gin (
 - 拡張は `public` スキーマに置き、SQL では `public.likequery`・`public.gin_bigm_ops` と書く。テストは別スキーマを `search_path` にして `schema.sql` を流すため。
 - インデックスは `CREATE INDEX CONCURRENTLY` で作る（書き込みを止めない）。
 
+### 索引の作成に失敗したとき
+
+`CREATE INDEX CONCURRENTLY` が途中で失敗すると、INVALID の索引が残る。Atlas（txmode none）は失敗した文から再開し、`IF NOT EXISTS` は名前だけを見て飛ばす。
+
+- `20261130000000_search_bigm.sql` で残った INVALID は、次の `20261130000001_search_index_recheck.sql` が消して作り直すので、適用し直すだけでよい。
+- `20261130000001_search_index_recheck.sql` の作成（後半の `CREATE INDEX CONCURRENTLY`）でも失敗した場合は、適用し直しても最後の確認（`search index … is missing or invalid`）で止まり続ける。次の手順で戻す。
+  1. INVALID の索引を確かめる。対象は `messages_search_month`・`attachments_search_month`・`channel_notes_search_month`・`messages_search_reply_floor` だけ。
+
+     ```sql
+     SELECT c.relname, i.indisvalid
+     FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE c.relname IN ('messages_search_month', 'attachments_search_month',
+                         'channel_notes_search_month', 'messages_search_reply_floor');
+     ```
+  2. 同じ索引を作っている処理がないことを確かめる（`SELECT pid, query FROM pg_stat_activity WHERE query ILIKE '%CREATE INDEX%'`。進行中の作成は `pg_stat_progress_create_index` にも出る）。
+  3. `indisvalid = false` の索引だけを `DROP INDEX CONCURRENTLY <名前>;` で消す（有効な索引は消さない）。
+  4. マイグレーションを適用し直す（本番と preview は、マイグレーションの Job が作り直されたときに `atlas migrate apply` が流れる）。作成から再開し、最後の確認を通る。
+- 失敗の原因（ロック待ちの打ち切り、ディスク不足など）を先に取り除く。原因が残っていると、同じ所でまた失敗する。
+
 ## 手元と CI の DB
 
 `pg_bigm` は PGDG の apt リポジトリにない。`infra/db/postgres/Dockerfile` で、`postgres:16.15-trixie` の上にソースからビルドする。ghcr.io/zli-uoa のイメージは private で、zoo2（public）の CI や手元からは pull できない。そのため、このリポジトリでビルドする。

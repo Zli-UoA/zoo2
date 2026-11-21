@@ -73,7 +73,7 @@ export function parseSearchRouteParams(search: Record<string, unknown>): SearchR
   const q = normalizeSearchQuery(raw);
   const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
   const day = (value: unknown) =>
-    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value) ? value : undefined;
+    typeof value === "string" && isSearchDay(value) ? value : undefined;
   return {
     q: q || undefined,
     type: search.type === "files" || search.type === "messages" ? search.type : undefined,
@@ -100,6 +100,13 @@ const PERIOD_DAYS: Record<"last7" | "last30" | "last365", number> = {
   last30: 30,
   last365: 365,
 };
+
+/** 実在する UTC の日付（`YYYY-MM-DD`）か。`2026-13-01` や `2026-02-30` は除く。 */
+export function isSearchDay(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
 
 /** UTC の日付（`YYYY-MM-DD`）を `days` 日ずらす。 */
 export function shiftDay(day: string, days: number): string {

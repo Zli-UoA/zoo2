@@ -50,6 +50,12 @@ describe("parseSearchRouteParams", () => {
     expect(parseSearchRouteParams({ q: "x", type: "messages" }).type).toBe("messages");
     expect(parseSearchRouteParams({ q: "x", type: "all" }).type).toBeUndefined();
   });
+  it("drops dates that do not exist", () => {
+    expect(parseSearchRouteParams({ q: "x", before: "2026-13-01", after: "2026-02-30" })).toEqual({
+      q: "x",
+    });
+    expect(parseSearchRouteParams({ q: "x", after: "2024-02-29" }).after).toBe("2024-02-29");
+  });
   it("keeps the filters and drops malformed dates", () => {
     expect(
       parseSearchRouteParams({
