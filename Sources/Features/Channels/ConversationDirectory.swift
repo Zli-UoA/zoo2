@@ -61,7 +61,10 @@ struct ConversationDirectory: View {
             if let error = workspace.pinsError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
             }
-            if !directMessages { ChannelThreadPagination(store: workspace.threads) }
+            if !directMessages {
+                ChannelThreadPagination(store: workspace.threads)
+                    .listRowSeparator(.hidden)
+            }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { drag in
             guard canReopenChannel, drag.translation.width < -80,
@@ -139,6 +142,7 @@ struct ConversationDirectory: View {
             .accessibilityIdentifier("channel-section-\(id)")
             .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
         }
+        .listSectionSeparator(.hidden)
     }
 
     @ViewBuilder
@@ -210,6 +214,7 @@ struct ConversationDirectory: View {
     private func channelRows(_ channels: [Channel]) -> some View {
         ForEach(channels) { channel in
             channelLink(channel)
+                .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: directMessages ? 10 : 8, leading: 12,
                                          bottom: directMessages ? 10 : 8, trailing: 12))
                 .accessibilityIdentifier("channel-\(channel.id)")
@@ -219,6 +224,7 @@ struct ConversationDirectory: View {
                 ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
                     workspace.openListedThread(parentID, in: channel)
                 }
+                .listRowSeparator(.hidden)
             }
         }
     }
