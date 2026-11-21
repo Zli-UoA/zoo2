@@ -230,6 +230,8 @@
       "file": "src/components/chat/messages/Composer.stories.tsx",
       "states": [
         "Default",
+        "SingleLineActionsAlignWithText",
+        "SingleLineActionsAlignWithTextMobile",
         "Disabled",
         "Multiline",
         "MentionSuggestions",
