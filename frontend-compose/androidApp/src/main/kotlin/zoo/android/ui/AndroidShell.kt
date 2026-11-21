@@ -2,6 +2,7 @@ package zoo.android.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -20,12 +21,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal enum class TopPage(val title: String, val symbol: String) {
-    Home("ホーム", "⌂"),
-    Channels("チャンネル", "#"),
-    Notifications("通知", "♧"),
-    Bubble("Bubble", "○"),
-    Settings("設定", "⚙"),
+internal enum class TopPage(val title: String, val icon: UiIcon) {
+    Home("ホーム", UiIcon.Home),
+    Channels("チャンネル", UiIcon.Channels),
+    Notifications("通知", UiIcon.Bell),
+    Bubble("Bubble", UiIcon.Bubble),
+    Settings("設定", UiIcon.Settings),
 }
 
 internal class AndroidColors(dark: Boolean) {
@@ -34,6 +35,10 @@ internal class AndroidColors(dark: Boolean) {
     val secondary = if (dark) Color(0xffaaa79b) else Color(0xff66635a)
     val quietSurface = if (dark) Color(0xff181712) else Color(0xfff7f5eb)
     val headerLight = if (dark) Color(0xff282103) else Color(0xfffff0b9)
+    val inputSurface = if (dark) Color(0xff151515) else Color(0xfff7f7f7)
+    val inputText = if (dark) Color(0xfff5f5f5) else Color(0xff202020)
+    val inputHint = if (dark) Color(0xffa6a6a6) else Color(0xff616161)
+    val inputBoundary = if (dark) Color(0xff363636) else Color(0xffdedede)
     val accent = Color(0xffffd400)
 }
 
@@ -58,13 +63,12 @@ internal fun AndroidShell(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
-                            Text(
-                                page.symbol,
+                            Box(
                                 Modifier.background(if (active) colors.headerLight else Color.Transparent, CircleShape)
-                                    .padding(horizontal = 13.dp),
-                                color = colors.foreground,
-                                fontSize = 22.sp,
-                            )
+                                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                            ) {
+                                UiGlyph(page.icon, if (active) colors.foreground else colors.secondary)
+                            }
                             Text(
                                 page.title, color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
                                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
@@ -78,20 +82,42 @@ internal fun AndroidShell(
 }
 
 @Composable
-internal fun PageHeader(title: String, colors: AndroidColors) {
+internal fun PageHeader(
+    title: String,
+    colors: AndroidColors,
+    description: String? = null,
+    onBack: (() -> Unit)? = null,
+    onOpen: (() -> Unit)? = null,
+) {
     Row(
         Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(colors.headerLight, colors.background)))
             .heightIn(min = 56.dp).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Canvas(Modifier.size(26.dp)) {
-            drawCircle(colors.accent)
-            drawOval(Color.Black, Offset(size.width * .28f, size.height * .43f), Size(size.width * .46f, size.height * .40f))
-            for ((x, y) in listOf(.29f to .37f, .50f to .27f, .71f to .37f)) {
-                drawCircle(Color.Black, size.width * .105f, Offset(size.width * x, size.height * y))
+        if (onBack != null) {
+            UiIconButton(UiIcon.Back, "戻る", colors.foreground, onBack)
+        } else ZooBadge(colors, Modifier.size(26.dp))
+        Column(Modifier.weight(1f).then(
+            if (onOpen == null) Modifier else Modifier.heightIn(min = 48.dp).clickable(onClick = onOpen),
+        ), verticalArrangement = Arrangement.Center) {
+            Text(title, color = colors.foreground, fontSize = if (description == null) 20.sp else 16.sp,
+                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            if (!description.isNullOrEmpty()) {
+                Text(description, color = colors.secondary, fontSize = 13.sp, maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             }
         }
-        Text(title, color = colors.foreground, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+internal fun ZooBadge(colors: AndroidColors, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        drawCircle(colors.accent)
+        drawOval(Color.Black, Offset(size.width * .28f, size.height * .43f), Size(size.width * .46f, size.height * .40f))
+        for ((x, y) in listOf(.29f to .37f, .50f to .27f, .71f to .37f)) {
+            drawCircle(Color.Black, size.width * .105f, Offset(size.width * x, size.height * y))
+        }
     }
 }
