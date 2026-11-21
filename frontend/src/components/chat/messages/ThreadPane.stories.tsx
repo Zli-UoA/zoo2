@@ -262,7 +262,7 @@ export const RootLoadError: Story = {
 
 export const NotParticipating: Story = {
   parameters: { a11y: { test: "error" } },
-  args: { replies, membership: "none", onJoinThread: fn() },
+  args: { replies, membership: "none", participantCount: 2, onJoinThread: fn() },
   play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "参加する" }));
@@ -276,6 +276,119 @@ export const Participating: Story = {
   play: playForImplementation(async ({ canvasElement, args }) => {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "退出する" }));
     await expect(args.onLeaveThread).toHaveBeenCalledOnce();
+  }),
+};
+export const WithParticipants: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    onLeaveThread: fn(),
+    participantCount: 53,
+    participants: [
+      { id: "u1", user_name: "alice", display_name: "Alice", avatar_url: null },
+      { id: "u2", user_name: "bob", display_name: null, avatar_url: null },
+    ],
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: "参加者 53人" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const list = within(canvas.getByRole("list", { name: "参加者 53人" }));
+    await expect(list.getByText("Alice")).toBeVisible();
+    await expect(list.getByText("@alice")).toBeVisible();
+    // 表示名がないときは、ユーザー名を表示名として出し、`@` の行は重ねない。
+    await expect(list.getByText("bob")).toBeVisible();
+    await expect(list.queryByText("@bob")).not.toBeInTheDocument();
+    await expect(list.getByText("ほか 51人")).toBeVisible();
+  }),
+};
+export const ReopenAndJoin: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    isArchived: true,
+    membership: "none",
+    participantCount: 2,
+    onReopenAndJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+    // 入力欄が無いので「送信すると再Openして参加します」の注記も出さない。
+    await expect(canvas.queryByText("送信すると再Openします。")).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "再Openして参加する" }));
+    await expect(args.onReopenAndJoinThread).toHaveBeenCalledOnce();
+  }),
+};
+export const MembershipLoadingBlocksComposer: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, membershipLoading: true },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("textbox", { name: "返信を送信" }),
+    ).toBeDisabled();
+  }),
+};
+export const LeftWithNoParticipants: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies: [], membership: "left", participantCount: 0, onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+  }),
+};
+// 返信がまだないメッセージも、最初の返信の前に参加する（入力欄の代わりに参加ボタンを出す）。
+export const NoRepliesYet: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies: [], membership: "none", participantCount: 0, onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "参加する" }));
+    await expect(args.onJoinThread).toHaveBeenCalledOnce();
+  }),
+};
+export const PostingForbidden: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    participantCount: 2,
+    postingForbidden: true,
+    composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 閲覧はできるまま、入力欄だけが理由付きで止まる。
+    await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeDisabled();
+    // 理由は入力欄の placeholder に出る（テキストノードではない）。
+    await expect(
+      canvas.getByPlaceholderText("このチャンネルは管理者のみ投稿できます。"),
+    ).toBeDisabled();
+  }),
+};
+export const PostingForbiddenNotJoined: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "left",
+    participantCount: 2,
+    postingForbidden: true,
+    composeDisabledReason: "このチャンネルは管理者のみ投稿できます。",
+    onJoinThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("このチャンネルは管理者のみ投稿できます。")).toBeVisible();
+    // 参加は投稿権限と無関係にできる。返信を促す文は出さない。
+    await expect(canvas.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(
+      canvas.queryByText("参加するとこのスレッドに返信できます。"),
+    ).not.toBeInTheDocument();
   }),
 };
 export const LeftThread: Story = {
@@ -305,7 +418,7 @@ export const ReopenArchived: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "再Open" }));
     await expect(args.onReopenThread).toHaveBeenCalledOnce();
-    await expect(canvas.getByText("送信すると再Openして参加します。")).toBeVisible();
+    await expect(canvas.getByText("送信すると再Openします。")).toBeVisible();
   }),
 };
 

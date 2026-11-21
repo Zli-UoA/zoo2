@@ -60,6 +60,7 @@
     "notFound": "Channel not found.",
     "duplicateName": "A channel with this name already exists.",
     "privateMessages": "This channel is private. You can view messages once you are invited.",
+    "postingManagersOnly": "Only channel managers can post in this channel.",
     "back": "Back to channels",
     "noDescription": "No description yet",
     "visibilityHelp": "Anyone can join a public channel. Private channels are invite-only.",
@@ -214,6 +215,7 @@
     "description": "Select a channel from the list to view the conversation."
   },
   "messages": {
+    "loadingOlder": "Loading older messages…",
     "typing": "{{names}} typing…",
     "typingSeparator": ", ",
     "compose": "Write a message",
@@ -312,8 +314,14 @@
     "join": "Join thread",
     "leave": "Leave thread",
     "reopen": "Reopen",
-    "reopenOnSend": "Sending a reply will reopen this thread and join it.",
-    "membershipError": "Could not update thread participation."
+    "reopenOnSend": "Sending a reply will reopen this thread.",
+    "membershipError": "Could not update thread participation.",
+    "participants_one": "{{count}} participant",
+    "participants_other": "{{count}} participants",
+    "participantsMore": "and {{count}} more",
+    "participantsEmpty": "No participants",
+    "joinToReply": "Join the thread to reply.",
+    "reopenAndJoin": "Reopen and join"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",
@@ -810,6 +818,7 @@
     "post": "Post",
     "sending": "Posting…",
     "sendError": "Could not post. Your draft is still here; try again.",
+    "postForbidden": "You can't post in this channel.",
     "loadError": "Could not load the timeline.",
     "loading": "Loading…",
     "empty": "No posts yet",

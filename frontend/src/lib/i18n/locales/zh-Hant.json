@@ -60,6 +60,7 @@
     "notFound": "找不到頻道。",
     "duplicateName": "同名頻道已存在。",
     "privateMessages": "此頻道為私人頻道，受邀後即可查看訊息。",
+    "postingManagersOnly": "此頻道僅管理員可以發文。",
     "back": "返回頻道列表",
     "noDescription": "尚無說明",
     "visibilityHelp": "任何人都可以加入公開頻道。私人頻道僅限建立者邀請的人加入。",
@@ -214,6 +215,7 @@
     "description": "從左側列表選擇頻道，即可查看對話。"
   },
   "messages": {
+    "loadingOlder": "正在載入較早的訊息…",
     "typing": "{{names}}正在輸入…",
     "typingSeparator": "、",
     "compose": "輸入訊息",
@@ -312,8 +314,14 @@
     "join": "加入討論串",
     "leave": "退出討論串",
     "reopen": "重新開啟",
-    "reopenOnSend": "傳送回覆將重新開啟並加入此討論串。",
-    "membershipError": "無法更新討論串參與狀態。"
+    "reopenOnSend": "傳送回覆將重新開啟此討論串。",
+    "membershipError": "無法更新討論串參與狀態。",
+    "participants_one": "參與者 {{count}} 人",
+    "participants_other": "參與者 {{count}} 人",
+    "participantsMore": "另有 {{count}} 人",
+    "participantsEmpty": "沒有參與者",
+    "joinToReply": "參與後才能回覆此討論串。",
+    "reopenAndJoin": "重新開啟並參與"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
@@ -810,6 +818,7 @@
     "post": "發佈",
     "sending": "發佈中…",
     "sendError": "發佈失敗，草稿已保留，請重試。",
+    "postForbidden": "你無法在此頻道發佈。",
     "loadError": "無法載入時間軸。",
     "loading": "載入中…",
     "empty": "還沒有貼文",

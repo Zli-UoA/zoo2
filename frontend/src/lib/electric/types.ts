@@ -51,6 +51,8 @@ export type ChannelRow = {
    * 正準な整数にする。
    */
   membership_epoch?: string;
+  /** 投稿できる人。`managers` はチャンネル作成者とワークスペース管理者だけ。読み書きの権限は別（閲覧は誰でもできる）。 */
+  posting_policy?: "members" | "managers";
 };
 
 export type MessageRow = {
