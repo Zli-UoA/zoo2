@@ -163,7 +163,6 @@ final class AppSession {
                 SiriVocabulary.update(workspace)
             }
         }
-        workspace.onChannelsChanged = workspace.onPeopleChanged
         self.workspace = workspace
         systemCalls?.connect(workspace)
         notifications.connect(api: api, userID: user.id)

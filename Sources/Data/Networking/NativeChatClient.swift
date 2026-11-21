@@ -7,9 +7,6 @@ struct NativeChatClient: ChatClient {
     var serverURL: String { api.settings.server }
     var shapes: ShapeStream { ShapeStream(api: api, sync: sync) }
 
-    // 音声で投稿先を決める検索では、オフライン時に古い名前や権限を候補へ戻さない。
-    func currentChannels() async throws -> [Channel] { try await api.get("api/channels") }
-
     func channels() async throws -> [Channel] {
         guard let sync else { return try await api.get("api/channels") }
         let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self)

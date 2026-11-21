@@ -61,10 +61,7 @@ final class WorkspaceStore {
     let videoPlayback = AttachmentVideoPlayback()
     let images: RemoteImageStore
     let recentEmojis: RecentEmojiStore
-    private(set) var channels: [Channel] = [] {
-        didSet { if channels != oldValue { onChannelsChanged?() } }
-    }
-    @ObservationIgnored var onChannelsChanged: (() -> Void)?
+    private(set) var channels: [Channel] = []
     private(set) var people: [String: Person] = [:]
     @ObservationIgnored var onPeopleChanged: (() -> Void)?
     private(set) var unread: Set<String> = []

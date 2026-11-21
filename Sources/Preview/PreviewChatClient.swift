@@ -285,7 +285,6 @@ final class PreviewChatClient: ChatClient {
     }
 
     func channels() async throws -> [Channel] { allChannels }
-    func currentChannels() async throws -> [Channel] { allChannels }
     func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage {
         let replies = Dictionary(grouping: allMessages.filter { $0.parent_id != nil && $0.deleted_at == nil }, by: \.parent_id)
         let rows = allMessages.compactMap { message -> ChannelThreadSummary? in

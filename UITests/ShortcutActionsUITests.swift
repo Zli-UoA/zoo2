@@ -16,7 +16,7 @@ final class ShortcutActionsUITests: XCTestCase {
         guide.tap()
         XCTAssertTrue(app.navigationBars["宛先を固定して使う"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["open-zoo-shortcuts"].exists)
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "チャンネルを選びます", "DMには")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "DMの宛先を選びます")).firstMatch.exists)
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "毎回尋ねる")).firstMatch.exists)
     }
 

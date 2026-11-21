@@ -74,105 +74,6 @@ struct SendZooMessageIntent: AppIntent {
     }
 }
 
-struct ZooChannelEntity: IndexedEntity {
-    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Zooのチャンネル"
-    static let defaultQuery = ZooChannelQuery()
-    let id: String
-    let channelID: String
-    @Property(title: "チャンネル名") var name: String
-
-    init(_ channel: ShortcutChannel) {
-        id = channel.id; channelID = channel.channelID; name = channel.name
-    }
-
-    var channel: ShortcutChannel { .init(id: id, channelID: channelID, name: name) }
-    var displayRepresentation: DisplayRepresentation { .init(title: "#\(name)") }
-}
-
-struct ZooChannelQuery: EntityStringQuery, EnumerableEntityQuery {
-    private static let logger = Logger(subsystem: "works.zli.zoo", category: "Siri")
-    private let prepare: @MainActor @Sendable () async throws -> WorkspaceStore
-
-    init() {
-        self.init { try await AppSession.shared.prepareForShortcut() }
-    }
-
-    init(prepare: @escaping @MainActor @Sendable () async throws -> WorkspaceStore) {
-        self.prepare = prepare
-    }
-
-    @MainActor private func channels(suggested: Bool = false) async throws -> [ShortcutChannel] {
-        do {
-            let workspace = try await prepare()
-            let actions = ShortcutActions(workspace: workspace)
-            let channels = try await suggested ? actions.suggestedChannels() : actions.channels()
-            Self.logger.notice("チャンネル検索の最新一覧: \(channels.count)件")
-            return channels
-        } catch {
-            Self.logger.error("チャンネル検索の一覧取得に失敗: \(String(describing: type(of: error)), privacy: .public)")
-            throw error
-        }
-    }
-
-    func entities(for identifiers: [String]) async throws -> [ZooChannelEntity] {
-        Self.logger.notice("チャンネルのID検索: \(identifiers.count)件")
-        let ids = Set(identifiers)
-        let result = try await channels().filter { ids.contains($0.id) }.map(ZooChannelEntity.init)
-        Self.logger.notice("チャンネルのID検索結果: \(result.count)件、未解決ID: \(ids.subtracting(result.map(\.id)).count)件")
-        return result
-    }
-
-    func entities(matching string: String) async throws -> [ZooChannelEntity] {
-        Self.logger.notice("チャンネルの名前検索を開始しました。検索語: \(string, privacy: .private(mask: .hash))")
-        let result = try await ShortcutChannel.matching(identifier: nil, name: string, in: channels()).map(ZooChannelEntity.init)
-        Self.logger.notice("チャンネルの名前検索結果: \(result.count)件")
-        return result
-    }
-
-    func suggestedEntities() async throws -> [ZooChannelEntity] {
-        Self.logger.notice("チャンネルの候補一覧を要求されました。")
-        do { return try await channels(suggested: true).map(ZooChannelEntity.init) }
-        catch {
-            if await AppSession.shared.userID == nil { return [] }
-            throw error
-        }
-    }
-
-    func allEntities() async throws -> [ZooChannelEntity] {
-        try await channels().map(ZooChannelEntity.init)
-    }
-}
-
-struct SendZooChannelMessageIntent: AppIntent {
-    private static let logger = Logger(subsystem: "works.zli.zoo", category: "Siri")
-    static let title: LocalizedStringResource = "Zooのチャンネルに投稿する"
-    static let description = IntentDescription("Zooのチャンネルを名前で指定し、テキストを投稿します。DMではなくチャンネルへの投稿に使います。")
-    // Siriの投稿確認を終えるまでアプリを前面に出さない。
-    static var supportedModes: IntentModes { .foreground(.deferred) }
-    static var authenticationPolicy: IntentAuthenticationPolicy { .requiresAuthentication }
-
-    @Parameter(title: "チャンネル", description: "投稿先のZooのチャンネル。名前または#付きの名前で指定します。",
-               requestValueDialog: "どのチャンネルに投稿しますか？") var channel: ZooChannelEntity
-    @Parameter(title: "メッセージ", description: "チャンネルに投稿するテキストの本文。",
-               requestValueDialog: "どんなメッセージを投稿しますか？") var content: String
-
-    static var parameterSummary: some ParameterSummary { Summary("\(\.$channel)に\(\.$content)を投稿する") }
-
-    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
-        Self.logger.notice("チャンネル投稿の実行を開始しました。")
-        let workspace = try await AppSession.shared.prepareForShortcut()
-        let actions = ShortcutActions(workspace: workspace)
-        try ShortcutActions.validateMessage(content)
-        let target = try await actions.resolve(channel.channel)
-        Self.logger.notice("チャンネル投稿の送信先を解決し、確認を要求します。")
-        try await requestConfirmation(dialog: "Zooの#\(target.channel_name)に「\(content)」を投稿しますか？")
-        Self.logger.notice("チャンネル投稿の確認が完了しました。")
-        try await actions.send(content, to: channel.channel)
-        Self.logger.notice("チャンネル投稿が完了しました。")
-        return .result(dialog: "#\(target.channel_name)に投稿しました。")
-    }
-}
-
 struct StartZooCallIntent: AudioPlaybackIntent {
     private static let logger = Logger(subsystem: "works.zli.zoo", category: "Siri")
     static let title: LocalizedStringResource = "Zooで電話をかける"
@@ -216,10 +117,6 @@ struct ZooShortcuts: AppShortcutsProvider {
             "\(.applicationName)で\(\.$recipient)にメッセージを送って",
             "\(.applicationName)でメッセージを送って"
         ], shortTitle: "メッセージを送る", systemImageName: "paperplane")
-        AppShortcut(intent: SendZooChannelMessageIntent(), phrases: [
-            "\(.applicationName)の\(\.$channel)に投稿して",
-            "\(.applicationName)のチャンネルに投稿して"
-        ], shortTitle: "チャンネルに投稿", systemImageName: "number")
         AppShortcut(intent: StartZooCallIntent(), phrases: [
             "\(.applicationName)で\(\.$recipient)に電話をかけて",
             "\(.applicationName)で電話をかけて"

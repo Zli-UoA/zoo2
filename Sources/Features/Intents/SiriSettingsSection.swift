@@ -12,7 +12,7 @@ struct SiriSettingsSection: View {
         Section {
             switch status {
             case .authorized:
-                Text("SiriからDM・チャンネルへの送信や音声通話を利用できます。")
+                Text("SiriからDMへの送信や音声通話を利用できます。")
             case .notDetermined:
                 Button("SiriでZooを使えるようにする") { requesting = true }
                     .disabled(requesting)
@@ -32,7 +32,7 @@ struct SiriSettingsSection: View {
         } header: {
             Text("Siri")
         } footer: {
-            Text("対応するSiri AIでは「Zooで○○に電話して」「Zooで○○にこんにちはと送って」「Zooの一般チャンネルにこんにちはと投稿して」のように話しかけます。チャンネルへの下書きも作成でき、ショートカットの手動作成は不要です。メンバー名・チャンネル名と依頼内容をSiriと共有します。")
+            Text("対応するSiri AIでは「Zooで○○に電話して」「Zooで○○にこんにちはと送って」のように話しかけます。DMの下書きも作成でき、ショートカットの手動作成は不要です。メンバー名と依頼内容をSiriと共有します。")
         }
         .task(id: requesting) {
             guard requesting else { return }
@@ -55,19 +55,18 @@ private struct FixedRecipientShortcutGuide: View {
     var body: some View {
         AppForm {
             Section {
-                Text("Siriにはその都度宛先を指定できます。よく使うチャンネルやDMの相手を固定したい場合は、任意でショートカットを保存できます。")
+                Text("Siriにはその都度宛先を指定できます。よく使うDMの相手を固定したい場合は、任意でショートカットを保存できます。")
                 ShortcutsLink()
                     .accessibilityIdentifier("open-zoo-shortcuts")
             }
             Section("最初に設定すること") {
                 Text("1.「ショートカット」アプリで新規ショートカットを作成します。")
-                Text("2. Zooの「Zooのチャンネルに投稿する」を追加し、チャンネルを選びます。DMには「Zooでメッセージを送る」を追加し、宛先を選びます。")
+                Text("2. Zooの「Zooでメッセージを送る」を追加し、DMの宛先を選びます。")
                 Text("3. メッセージ欄を長押しし、変数の「毎回尋ねる」を選びます。宛先は選んだままにします。")
                 Text("4.「作業報告」など、呼びやすいショートカット名で保存します。")
             }
             Section("普段の使い方") {
                 Text("「Hey Siri、作業報告」のように保存した名前を呼び、聞き返されたら本文を答えます。送信先と本文を確認して送信します。")
-                Text("チャンネル候補はピン留め、最近既読にした順、参加中の順に優先します。名前検索では利用可能な全チャンネルを検索できます。")
                 Text("別のアカウントへ切り替えた場合や、宛先が利用できなくなった場合は、ショートカットで宛先を選び直してください。")
             }
         }

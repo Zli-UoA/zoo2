@@ -21,46 +21,6 @@ struct ShortcutRecipient: Identifiable, Hashable, Sendable {
     }
 }
 
-struct ShortcutChannel: Identifiable, Hashable, Sendable {
-    let id: String
-    let channelID: String
-    let name: String
-
-    static func matching(identifier: String?, name: String, in channels: [Self]) -> [Self] {
-        if let identifier { return channels.filter { $0.id == identifier } }
-        let query = normalizedName(name)
-        guard !query.isEmpty else { return [] }
-        let exact = channels.filter { normalizedName($0.name) == query }
-        return exact.isEmpty ? channels.filter { normalizedName($0.name).contains(query) } : exact
-    }
-
-    static func normalizedName(_ name: String) -> String {
-        var result = name.folding(options: .widthInsensitive, locale: .current)
-            .folding(options: .caseInsensitive, locale: .current).precomposedStringWithCanonicalMapping
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.hasPrefix("#") { result.removeFirst() }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func suggestedOrder(_ channels: [Self], pinnedIDs: [String], readStates: [ChannelReadState],
-                               joinedIDs: Set<String>) -> [Self] {
-        let pins = Dictionary(pinnedIDs.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
-        let recent = Dictionary(readStates.compactMap { state -> (String, Date)? in
-            guard let date = state.last_read_at.flatMap(ZooDate.parse) else { return nil }
-            return (state.channel_id, date)
-        }, uniquingKeysWith: max)
-        return channels.sorted { lhs, rhs in
-            let leftPin = pins[lhs.channelID] ?? Int.max, rightPin = pins[rhs.channelID] ?? Int.max
-            if leftPin != rightPin { return leftPin < rightPin }
-            let leftDate = recent[lhs.channelID] ?? .distantPast, rightDate = recent[rhs.channelID] ?? .distantPast
-            if leftDate != rightDate { return leftDate > rightDate }
-            if joinedIDs.contains(lhs.channelID) != joinedIDs.contains(rhs.channelID) { return joinedIDs.contains(lhs.channelID) }
-            let order = lhs.name.localizedStandardCompare(rhs.name)
-            return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
-        }
-    }
-}
-
 @MainActor
 struct ShortcutActions {
     let workspace: WorkspaceStore
@@ -93,64 +53,6 @@ struct ShortcutActions {
         return people.filter { !$0.is_bot && !$0.is_deactivated && $0.id != workspace.user.id }.map {
             ShortcutRecipient(id: identifier($0.id), personID: $0.id, name: $0.name, username: $0.user_name)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    func channels() async throws -> [ShortcutChannel] {
-        try check()
-        return try await channels(in: workspace.client.currentChannels())
-    }
-
-    func suggestedChannels() async throws -> [ShortcutChannel] {
-        try check()
-        async let latest = channels()
-        async let pins = workspace.client.channelPins()
-        async let states = workspace.client.readStates()
-        let channels = try await latest
-        // 優先順位の取得失敗だけで候補を隠さない。宛先の有効性は最新一覧で確認する。
-        let preferences = await (try? pins, try? states)
-        try check()
-        let pinnedIDs = preferences.0?.pins.sorted {
-            $0.position == $1.position ? $0.channel_id < $1.channel_id : $0.position < $1.position
-        }.map(\.channel_id) ?? workspace.pinnedChannelIDs
-        let joinedIDs = preferences.1.map { Set($0.map(\.channel_id)) } ?? workspace.joinedChannelIDs
-        return ShortcutChannel.suggestedOrder(channels, pinnedIDs: pinnedIDs,
-                                             readStates: preferences.1 ?? [], joinedIDs: joinedIDs)
-    }
-
-    func channelTarget(identifier: String, name: String) throws -> ShortcutChannel {
-        try check()
-        let prefix = self.identifier("channel|")
-        guard identifier.hasPrefix(prefix) else {
-            throw ZooError.auth("このチャンネルは別のアカウントのものです。宛先を選び直してください。")
-        }
-        let channelID = String(identifier.dropFirst(prefix.count))
-        guard UUID(uuidString: channelID) != nil else { throw ZooError.invalidResponse }
-        return ShortcutChannel(id: identifier, channelID: channelID, name: name)
-    }
-
-    func channels(in channels: [Channel]) throws -> [ShortcutChannel] {
-        try check()
-        return channels.filter { !$0.is_dm && $0.canPost }.map {
-            ShortcutChannel(id: identifier("channel|\($0.id)"), channelID: $0.id, name: $0.channel_name)
-        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    func resolve(_ target: ShortcutChannel) async throws -> Channel {
-        try check()
-        guard target.id == identifier("channel|\(target.channelID)") else {
-            throw ZooError.auth("このチャンネルは別のアカウントのものです。宛先を選び直してください。")
-        }
-        // 候補のキャッシュだけでは、アーカイブや閲覧権限の取り消しを検出できない。
-        let channel = try await workspace.client.channel(id: target.channelID)
-        try check()
-        guard channel.id == target.channelID, !channel.is_dm, channel.canPost else {
-            throw ZooError.auth("このチャンネルには投稿できません。宛先を選び直してください。")
-        }
-        // 検索・確認後の改名を、以前の名前への投稿として扱わない。
-        guard target.name.isEmpty || ShortcutChannel.normalizedName(target.name) == ShortcutChannel.normalizedName(channel.channel_name) else {
-            throw ZooError.auth("チャンネル名が変更されました。宛先を選び直してください。")
-        }
-        return channel
     }
 
     func resolve(_ recipient: ShortcutRecipient) async throws -> Person {
@@ -188,16 +90,6 @@ struct ShortcutActions {
         try Self.validateMessage(content)
         let channel = try await directMessage(to: recipient)
         guard channel.canPost else { throw ZooError.auth("暗号化された会話にはSiriから送信できません。") }
-        return try await send(content, in: channel)
-    }
-
-    @discardableResult
-    func send(_ content: String, to target: ShortcutChannel) async throws -> Message {
-        try Self.validateMessage(content)
-        return try await send(content, in: resolve(target))
-    }
-
-    private func send(_ content: String, in channel: Channel) async throws -> Message {
         let message: Message
         do {
             message = try await workspace.client.send(id: UUID().uuidString.lowercased(), channelID: channel.id,
@@ -230,18 +122,6 @@ struct ShortcutActions {
             return
         }
         let channel = try await directMessage(to: recipient)
-        try draft(content, in: channel)
-    }
-
-    func draft(_ content: String, to target: ShortcutChannel) async throws {
-        try check()
-        guard content.unicodeScalars.count <= 40_000 else {
-            throw ZooError.auth("メッセージは40,000文字以内で入力してください。")
-        }
-        try await draft(content, in: resolve(target))
-    }
-
-    private func draft(_ content: String, in channel: Channel) throws {
         guard channel.canPost else { throw ZooError.auth("この会話には下書きを作成できません。") }
         let conversation = workspace.conversation(for: channel)
         let key = conversation.draftKey(nil)

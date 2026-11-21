@@ -57,7 +57,7 @@ targets:
         NSCameraUsageDescription: このバージョンではカメラを使用しません。音声通話はマイクのみを使用します。
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
         NSLocalNetworkUsageDescription: 同じWi-Fiに接続している通話相手と音声を直接送受信します。
-        NSSiriUsageDescription: SiriからZooのメッセージ送信・下書き・音声通話を使うため、メンバー名・チャンネル名と依頼内容をSiriと共有します。
+        NSSiriUsageDescription: SiriからZooのDM送信・下書き・音声通話を使うため、メンバー名と依頼内容をSiriと共有します。
         NSSupportsLiveActivities: true
         INIntentsSupported: [INSendMessageIntent]
         INIntentsRestrictedWhileLocked: [INSendMessageIntent]
