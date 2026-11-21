@@ -4,6 +4,8 @@ import { AttachmentDownloadError } from "./api/attachments";
 
 const desktop = vi.hoisted(() => ({
   detect: vi.fn(),
+  detectionFailure: vi.fn<() => unknown>(() => null),
+  hasBridge: vi.fn(() => true),
   settings: vi.fn(),
   probe: vi.fn(),
   begin: vi.fn(),
@@ -14,6 +16,8 @@ const desktop = vi.hoisted(() => ({
 
 vi.mock("./desktop", () => ({
   detectDesktop: desktop.detect,
+  desktopDetectionFailure: desktop.detectionFailure,
+  hasDesktopBridge: desktop.hasBridge,
   desktopDownloadSettings: desktop.settings,
   probeDesktopDownloadSettings: desktop.probe,
   desktopDownloadBegin: desktop.begin,
@@ -47,6 +51,8 @@ afterEach(() => {
   resetDesktopDownloadsForTest();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  desktop.hasBridge.mockReturnValue(true);
+  desktop.detectionFailure.mockReturnValue(null);
 });
 
 describe("desktopDownloadsAvailable", () => {
@@ -57,8 +63,9 @@ describe("desktopDownloadsAvailable", () => {
   });
 
   it("is false in a browser", async () => {
-    desktop.detect.mockResolvedValue(false);
+    desktop.hasBridge.mockReturnValue(false);
     await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+    expect(desktop.detect).not.toHaveBeenCalled();
   });
 
   it("stays false when the command is missing from an older app", async () => {
@@ -73,10 +80,28 @@ describe("desktopDownloadsAvailable", () => {
   it("retries after a temporary failure instead of falling back for the whole session", async () => {
     desktop.detect.mockResolvedValue(true);
     desktop.probe.mockRejectedValueOnce(new Error("設定を読めませんでした"));
-    await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+    await expect(desktopDownloadsAvailable()).rejects.toThrow("設定を読めませんでした");
     desktop.probe.mockResolvedValueOnce({ ask_every_time: true, directory: null });
     await expect(desktopDownloadsAvailable()).resolves.toBe(true);
     expect(desktop.probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back to the browser save when the session check fails temporarily", async () => {
+    desktop.detect.mockResolvedValue(false);
+    desktop.detectionFailure.mockReturnValue(new Error("通信に失敗しました"));
+    await expect(desktopDownloadsAvailable()).rejects.toThrow("通信に失敗しました");
+
+    // 次に呼ばれたときは、もう一度セッションを確かめる。
+    desktop.detectionFailure.mockReturnValue(null);
+    desktop.detect.mockResolvedValue(true);
+    desktop.probe.mockResolvedValue({ ask_every_time: true, directory: null });
+    await expect(desktopDownloadsAvailable()).resolves.toBe(true);
+  });
+
+  it("treats a protocol mismatch as an older app", async () => {
+    desktop.detect.mockResolvedValue(false);
+    await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+    expect(desktop.probe).not.toHaveBeenCalled();
   });
 });
 
@@ -107,6 +132,20 @@ describe("downloadUrlToDesktop", () => {
     expect(desktopDownloadState("a1")).toBeUndefined();
     expect(fractions.at(-1)).toBe(1);
     expect(Math.max(...fractions.filter((value): value is number => value !== null))).toBe(1);
+  });
+
+  it("passes the attachment size to the app so the app can set the limit", async () => {
+    desktop.begin.mockResolvedValue(started());
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => blobResponse([1])),
+    );
+
+    await downloadUrlToDesktop("a1b", "a.txt", vi.fn().mockResolvedValue("u"), { size: 1234 });
+
+    expect(desktop.begin).toHaveBeenCalledWith("a.txt", 1234);
   });
 
   it("refreshes the URL and retries once when the first response fails", async () => {

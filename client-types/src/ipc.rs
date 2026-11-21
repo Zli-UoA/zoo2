@@ -86,6 +86,7 @@ pub mod command {
     /// [`super::DownloadSettings`] を返す。閉じたら `null`。パスは JS に決めさせない。
     pub const PICK_DOWNLOAD_DIRECTORY: &str = "zoo_pick_download_directory";
     /// [`super::DownloadBegin`]。保存ダイアログを出し、書き込み先の ID を返す。
+    /// 添付の大きさを受け取り、1 件の上限に使う。
     pub const DOWNLOAD_BEGIN: &str = "zoo_download_begin";
     /// 本文は octet-stream。`x-zoo-download-id` ヘッダーの ID に追記する。
     pub const DOWNLOAD_WRITE: &str = "zoo_download_write";
@@ -219,6 +220,10 @@ impl Default for DownloadSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DownloadBegin {
     pub file_name: String,
+    /// 添付の大きさ（平文のバイト数）。分からなければ `None`。Rust 側はこの値から
+    /// 1 件の上限を決める（サーバーの添付の上限を上げても、ここが連動する）。
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 /// [`command::DOWNLOAD_BEGIN`] の結果。保存先が決まったか、利用者がダイアログを閉じたか。
@@ -422,6 +427,22 @@ mod tests {
         assert_eq!(
             serde_json::to_value(DownloadStart::Cancelled).unwrap(),
             json!({ "status": "cancelled" })
+        );
+        // 添付の大きさは任意。古い画面が大きさを送らなくても読める。
+        assert_eq!(
+            serde_json::from_value::<DownloadBegin>(json!({ "file_name": "a.pdf" })).unwrap(),
+            DownloadBegin {
+                file_name: "a.pdf".into(),
+                size: None
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<DownloadBegin>(json!({ "file_name": "a.pdf", "size": 1234 }))
+                .unwrap(),
+            DownloadBegin {
+                file_name: "a.pdf".into(),
+                size: Some(1234)
+            }
         );
         // 古い設定ファイルに項目がなくても、既定 (都度確認する) で読める。
         assert_eq!(

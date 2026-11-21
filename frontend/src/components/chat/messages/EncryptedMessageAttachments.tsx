@@ -355,6 +355,7 @@ function EncryptedDownloadButton({
                 report(total && total > 0 ? Math.min(1, received / total) : null),
             });
           },
+          attachment.size,
         );
       } else {
         // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。

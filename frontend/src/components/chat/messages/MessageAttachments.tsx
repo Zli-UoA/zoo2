@@ -184,7 +184,9 @@ function AttachmentDownloadButton({
       // デスクトップ版では OS の保存ダイアログと保存先の設定を使う。古い版のアプリでは
       // コマンドがないので、ブラウザーの保存に戻す。
       if (await desktopDownloadsAvailable()) {
-        await downloadUrlToDesktop(attachment.id, attachment.file_name, state.getFreshUrl);
+        await downloadUrlToDesktop(attachment.id, attachment.file_name, state.getFreshUrl, {
+          size: Number(attachment.file_size),
+        });
       } else {
         await downloadAttachmentWithRetry(state.getFreshUrl, attachment.file_name);
       }

@@ -54,21 +54,39 @@ export function hasDesktopBridge(): boolean {
 
 let detected: Promise<boolean> | null = null;
 let isDesktop = false;
+/** 直前の `detectDesktop` が失敗した理由。成功したか、まだ確かめていなければ null。 */
+let detectFailure: unknown = null;
 
-/** デスクトップ版の (b) として動くかを確かめる。結果は覚えておく。 */
+/**
+ * デスクトップ版の (b) として動くかを確かめる。結果は覚えておく。
+ * `zoo_session` の一時的な失敗は覚えず、次に呼ばれたらもう一度確かめる
+ * （失敗を「デスクトップ版ではない」として固定すると、通信が戻ってもブラウザーの保存に切り替わったままになる）。
+ */
 export function detectDesktop(): Promise<boolean> {
   detected ??= (async () => {
     const bridge = internals();
     if (!bridge) return false;
     try {
-      const info = (await bridge.invoke("zoo_session")) as DesktopSessionInfo;
+      // まずマイクロタスクへ移してから呼ぶ。`invoke` が同期的に投げても、
+      // 下の catch が「覚えた失敗」を残さないようにするため。
+      const info = (await Promise.resolve().then(() =>
+        bridge.invoke("zoo_session"),
+      )) as DesktopSessionInfo;
+      detectFailure = null;
       isDesktop = info.protocol === DESKTOP_PROTOCOL_VERSION && info.ui === "remote";
-    } catch {
+    } catch (error) {
+      detectFailure = error;
+      detected = null;
       isDesktop = false;
     }
     return isDesktop;
   })();
   return detected;
+}
+
+/** 直前の `detectDesktop` が失敗した理由（[`detectDesktop`] が false を返したときだけ使う）。 */
+export function desktopDetectionFailure(): unknown {
+  return detectFailure;
 }
 
 /** `detectDesktop` が済んだ後の結果。済む前は false。 */
@@ -230,9 +248,16 @@ export async function desktopPickDownloadDirectory(): Promise<DesktopDownloadSet
   return (await invoke<DesktopDownloadSettings | null>("zoo_pick_download_directory")) ?? null;
 }
 
-/** OS の保存ダイアログを出し、書き込み先を決める。 */
-export async function desktopDownloadBegin(fileName: string): Promise<DesktopDownloadStart> {
-  return invoke<DesktopDownloadStart>("zoo_download_begin", { begin: { file_name: fileName } });
+/** OS の保存ダイアログを出し、書き込み先を決める。`size` は添付の大きさ（分かれば）。 */
+export async function desktopDownloadBegin(
+  fileName: string,
+  size?: number | null,
+): Promise<DesktopDownloadStart> {
+  const begin: { file_name: string; size?: number } = { file_name: fileName };
+  if (typeof size === "number" && Number.isFinite(size) && size > 0) {
+    begin.size = Math.floor(size);
+  }
+  return invoke<DesktopDownloadStart>("zoo_download_begin", { begin });
 }
 
 function invokeRaw(
@@ -337,6 +362,7 @@ export function resetDesktopForTest(): void {
   badgeInFlight = false;
   badgePending = null;
   detected = null;
+  detectFailure = null;
   isDesktop = false;
   cachedToken = null;
 }

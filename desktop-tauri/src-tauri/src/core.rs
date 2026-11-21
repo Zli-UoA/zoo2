@@ -199,8 +199,8 @@ impl Drop for Session {
 impl Core {
     pub fn new(app: AppHandle, ui: UiMode, config: Result<Config>) -> Self {
         let downloads = crate::downloads::Downloads::new();
-        // 前回のクラッシュなどで残った `.part` を、起動時に消す。
-        downloads.cleanup_stale_parts(&app);
+        // 前回のクラッシュなどで残った `.part` を、起動時に消す（削除は裏のスレッド）。
+        downloads.spawn_stale_part_cleanup();
         Self {
             app,
             ui,

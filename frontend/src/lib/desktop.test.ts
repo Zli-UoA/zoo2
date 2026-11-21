@@ -8,6 +8,7 @@ import {
   desktopDownloadFinish,
   desktopDownloadSettings,
   desktopDownloadWrite,
+  desktopDetectionFailure,
   desktopNotificationSettings,
   desktopPickDownloadDirectory,
   desktopSetBadge,
@@ -67,6 +68,20 @@ describe("detectDesktop", () => {
     resetDesktopForTest();
     install(() => session(DESKTOP_PROTOCOL_VERSION, "leptos"));
     await expect(detectDesktop()).resolves.toBe(false);
+  });
+
+  it("does not remember a temporary failure of the session check", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") throw new Error("通信に失敗しました");
+      return undefined;
+    });
+    await expect(detectDesktop()).resolves.toBe(false);
+    expect(desktopDetectionFailure()).toBeInstanceOf(Error);
+
+    // 失敗を覚えないので、次はもう一度確かめる。
+    install(() => session(DESKTOP_PROTOCOL_VERSION, "remote"));
+    await expect(detectDesktop()).resolves.toBe(true);
+    expect(desktopDetectionFailure()).toBeNull();
   });
 });
 
@@ -138,13 +153,13 @@ describe("download commands", () => {
     });
     await detectDesktop();
 
-    await expect(desktopDownloadBegin("b.pdf")).resolves.toEqual({
+    await expect(desktopDownloadBegin("b.pdf", 1234)).resolves.toEqual({
       status: "started",
       id: "d1",
       path: "C:\\a\\b.pdf",
     });
     expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_begin", {
-      begin: { file_name: "b.pdf" },
+      begin: { file_name: "b.pdf", size: 1234 },
     });
 
     const bytes = new Uint8Array([1, 2, 3]);

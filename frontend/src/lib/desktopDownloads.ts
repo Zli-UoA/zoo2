@@ -13,11 +13,13 @@ import { useSyncExternalStore } from "react";
 
 import { AttachmentDownloadError, type AttachmentUrlResolver } from "./api/attachments";
 import {
+  desktopDetectionFailure,
   desktopDownloadBegin,
   desktopDownloadCancel,
   desktopDownloadFinish,
   desktopDownloadWrite,
   detectDesktop,
+  hasDesktopBridge,
   probeDesktopDownloadSettings,
 } from "./desktop";
 
@@ -109,15 +111,24 @@ function isMissingCommandError(error: unknown): boolean {
 
 /**
  * この版のアプリが保存のコマンドを持つか。古い版のアプリでは false（ブラウザーの保存に戻す）。
- * 「コマンドが無い」と分かったときだけ結果を覚え、それ以外の失敗は次回また試す。
+ * 「コマンドが無い」と分かったときだけ結果を覚え、それ以外の失敗は呼び出し側へ返す
+ * （一時的な失敗でブラウザーの保存に切り替えない）。
  */
 export async function desktopDownloadsAvailable(): Promise<boolean> {
   if (available !== null) return available;
-  const running =
-    probe ??
-    (probe = (async () => {
+  if (!probe) {
+    probe = (async () => {
+      if (!hasDesktopBridge()) {
+        available = false;
+        return false;
+      }
       const desktop = await detectDesktop();
       if (!desktop) {
+        // セッションを確かめられなかっただけなら、保存の可否はまだ分からない。
+        // ブラウザーの保存に切り替えず、一時的な失敗として呼び出し側に返す。
+        const failure = desktopDetectionFailure();
+        if (failure) throw failure;
+        // プロトコルが合わない古い版のアプリ。保存のコマンドも無い。
         available = false;
         return false;
       }
@@ -126,15 +137,19 @@ export async function desktopDownloadsAvailable(): Promise<boolean> {
         available = true;
         return true;
       } catch (error) {
-        if (isMissingCommandError(error)) available = false;
-        return false;
+        if (isMissingCommandError(error)) {
+          available = false;
+          return false;
+        }
+        throw error;
       }
-    })());
+    })();
+  }
+  const running = probe;
   try {
     return await running;
   } finally {
-    // 判定を覚えられなかったときは、次の保存でもう一度試せるようにする。
-    if (available === null && probe === running) probe = null;
+    if (probe === running) probe = null;
   }
 }
 
@@ -150,7 +165,12 @@ type ProgressReporter = (fraction: number | null) => void;
 
 type Runner = (downloadId: string, signal: AbortSignal, report: ProgressReporter) => Promise<void>;
 
-async function run(id: string, fileName: string, runner: Runner): Promise<void> {
+async function run(
+  id: string,
+  fileName: string,
+  size: number | null | undefined,
+  runner: Runner,
+): Promise<void> {
   // 同じ添付を二重に保存しない（円を押したときは中止になる）。
   if (states.has(id)) return;
   const controller = new AbortController();
@@ -158,7 +178,10 @@ async function run(id: string, fileName: string, runner: Runner): Promise<void> 
   setState(id, { status: "preparing" });
   let downloadId: string | null = null;
   try {
-    const started = await desktopDownloadBegin(fileName);
+    const started =
+      size == null
+        ? await desktopDownloadBegin(fileName)
+        : await desktopDownloadBegin(fileName, size);
     if (started.status === "cancelled") throw new DesktopDownloadCancelledError();
     downloadId = started.id;
     if (controller.signal.aborted) {
@@ -247,10 +270,10 @@ export async function downloadUrlToDesktop(
   id: string,
   fileName: string,
   resolveUrl: AttachmentUrlResolver,
-  options: { retryDelayMs?: number } = {},
+  options: { retryDelayMs?: number; size?: number | null } = {},
 ): Promise<void> {
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
-  await run(id, fileName, async (downloadId, signal, report) => {
+  await run(id, fileName, options.size, async (downloadId, signal, report) => {
     const open = async (refresh: boolean): Promise<Response> => {
       const url = await resolveUrl({ refresh });
       let response: Response;
@@ -285,8 +308,9 @@ export async function downloadBlobToDesktop(
   id: string,
   fileName: string,
   load: (signal: AbortSignal, onProgress: (fraction: number | null) => void) => Promise<Blob>,
+  size?: number | null,
 ): Promise<void> {
-  await run(id, fileName, async (downloadId, signal, report) => {
+  await run(id, fileName, size, async (downloadId, signal, report) => {
     const blob = await load(signal, (fraction) =>
       report(fraction === null ? null : Math.min(0.8, fraction * 0.8)),
     );

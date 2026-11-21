@@ -251,10 +251,14 @@ pub async fn zoo_download_settings(
 pub async fn zoo_set_download_settings(
     webview: Webview,
     core: Core_<'_>,
+    app: AppHandle,
     settings: DownloadSettingsUpdate,
 ) -> Result<DownloadSettings, IpcError> {
     require(&webview, &core, ANY)?;
-    core.downloads().set_settings(settings).map_err(to_ipc)
+    core.downloads()
+        .set_settings(&app, settings)
+        .await
+        .map_err(to_ipc)
 }
 
 /// OS のフォルダーの選択。選ばれたら、Rust 側で保存先として保存し、新しい設定を返す。
@@ -284,12 +288,7 @@ pub async fn zoo_download_begin(
     begin: DownloadBegin,
 ) -> Result<DownloadStart, IpcError> {
     require(&webview, &core, ANY)?;
-    match core
-        .downloads()
-        .begin(&app, &begin.file_name)
-        .await
-        .map_err(to_ipc)?
-    {
+    match core.downloads().begin(&app, &begin).await.map_err(to_ipc)? {
         Some((id, path)) => Ok(DownloadStart::Started {
             id,
             path: path.display().to_string(),
