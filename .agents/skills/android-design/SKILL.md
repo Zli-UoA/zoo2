@@ -8,6 +8,7 @@ description: Zoo Androidの画面、Compose部品、ナビゲーション、ジ�
 ## 先に読む
 
 - [Android デザイン](../../../docs/android-design.md) の画面別ルール・検証条件
+- [UI デザインサンプル](../../../docs/android-design-samples.md) のデザインモックと実キャプチャ
 - `frontend-compose/src/commonMain/kotlin/zoo/AndroidDesign.kt` の共通トークン
 - [Frontend consistency](../frontend-consistency/SKILL.md) と [Storybook coverage](../storybook-coverage/SKILL.md)
 
@@ -39,4 +40,5 @@ description: Zoo Androidの画面、Compose部品、ナビゲーション、ジ�
 - `Session`、`Repository`、下書き、添付、送信の所有者を再利用する。画面の状態・描画と通信を分ける。
 - Androidの既存部品は合意した見た目と操作仕様に合う場合に使う。汎用入口にも変更が必要なら `Ui.kt` などからAndroidの描画を分ける。通常のタップ対象は48dp以上。表示サイズと区別し、文字倍率や訳文に合わせて折り返す。
 - 320dpと600dp、ライト・ダーク、大きな文字、オフライン、IME・TalkBackを確認する。
+- デザインや操作を更新したら、サンプル集の該当画面と実キャプチャも更新する。合意したデザインの変更はモックにも反映し、端末検証が必要な箇所を明記する。
 - [Android ビルド](../../../docs/android.md#ビルド)のテストとlintを実行する。PRに実際のCompose画面のスクリーンショットを添付し、実機で未確認の動作を明記する。

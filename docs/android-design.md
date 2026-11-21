@@ -140,6 +140,8 @@ Homeのプロフィールリンクの48dp操作領域を検査する。
 
 ## 表示確認用キャプチャ
 
+画面別のデザインモック、Compose 実キャプチャ、再生成手順は [UI デザインサンプル](android-design-samples.md) にまとめる。
+
 Robolectric / API 35で実際のCompose部品を描画したキャプチャ。
 主要画面は実際のComposeとローカルのテストデータで撮影しています。
 
