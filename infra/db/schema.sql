@@ -4282,3 +4282,25 @@ CREATE TABLE user_channel_pin_states (
 );
 
 ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;
+
+-- 全文検索（メッセージ・添付ファイル名・チャンネルノート）。docs/search.md を参照。
+-- pg_bigm は trusted ではないので、本番では CNPG の Database リソースがスーパーユーザーとして作る。
+-- ここは IF NOT EXISTS なので、作成済みなら zoo2 ロールでも通る。
+-- 拡張は public に置き、opclass と関数は public. を付けて呼ぶ（テストは別スキーマの search_path で動くため）。
+CREATE EXTENSION IF NOT EXISTS pg_bigm WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS btree_gin WITH SCHEMA public;
+-- 先頭の列は作成月（年*12+月）。検索は新しい月から 1 か月ずつ、月の等価条件で引く。
+-- GIN は月とバイグラムの posting を突き合わせるので、1 回の走査は「その月のヒット」に限られ、総履歴に比例しない。
+-- 本文は lower() で英字の大文字・小文字を区別しない（C ロケールなので日本語には影響しない）。
+CREATE INDEX messages_search_month ON messages USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(content) public.gin_bigm_ops
+) WHERE deleted_at IS NULL AND content <> '';
+CREATE INDEX attachments_search_month ON attachments USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(file_name) public.gin_bigm_ops
+) WHERE message_id IS NOT NULL;
+CREATE INDEX channel_notes_search_month ON channel_notes USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(title || E'\n' || content) public.gin_bigm_ops
+) WHERE deleted_at IS NULL;
