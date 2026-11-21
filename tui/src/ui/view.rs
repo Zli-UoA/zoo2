@@ -307,7 +307,8 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         if item.parent_id.is_some() {
             head.push(Span::styled("  スレッドの返信", DIM));
         }
-        lines.push(Line::from(head));
+        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
+        lines.push(Line::from(truncate_spans(head, inner)));
         let text = item.file_name.as_deref().unwrap_or(&item.snippet);
         let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
         let text = truncate_width(&text, inner.saturating_sub(4));
@@ -366,6 +367,27 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
 }
 
 /// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
+/// 幅 `width` に収まるよう、はみ出す span を `…` で切り、その後ろを捨てる。
+fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let w = span.content.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        out.push(Span::styled(
+            truncate_width(&span.content, width - used),
+            span.style,
+        ));
+        break;
+    }
+    out
+}
+
 fn truncate_width(text: &str, width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     let mut out = String::new();
@@ -2236,6 +2258,22 @@ mod tests {
                 .collect();
             assert_eq!(ids, expected);
         }
+    }
+
+    #[test]
+    fn truncate_spans_keeps_the_heading_on_one_line() {
+        use unicode_width::UnicodeWidthStr;
+        let spans = vec![
+            Span::raw("▶ "),
+            Span::raw("#とても長いチャンネル名"),
+            Span::raw("  投稿者"),
+        ];
+        let out = truncate_spans(spans, 16);
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= 16, "{text}");
+        assert!(text.ends_with('…'), "{text}");
+        let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
+        assert_eq!(short.len(), 2);
     }
 
     #[tokio::test]

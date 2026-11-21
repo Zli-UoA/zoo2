@@ -570,6 +570,8 @@ export function MessagePane({
     }
     if (threadRootRow && !threadRootRow.deleted_at) return;
     if (deletedRootForTarget) return;
+    // 検索・リンクの対象（返信）を取り終えるまでは決めない。先に閉じると対象の指定も消え、開き直せない。
+    if (resolvedTargetId && targetQuery.isLoading) return;
     closeThread();
     if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
@@ -580,6 +582,8 @@ export function MessagePane({
     threadRootQuery.isLoading,
     threadRootQuery.isError,
     deletedRootForTarget,
+    resolvedTargetId,
+    targetQuery.isLoading,
     closeThread,
     t,
   ]);
