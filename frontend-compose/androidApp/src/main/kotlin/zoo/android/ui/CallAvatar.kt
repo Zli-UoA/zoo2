@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -98,5 +99,20 @@ internal fun CallToggle(label: String, icon: UiIcon, active: Boolean, colors: An
             UiGlyph(icon, if (active) Color.Black else colors.foreground)
         }
         Text(label, color = colors.foreground, fontSize = 12.sp, fontWeight = AndroidWeights.label)
+    }
+}
+
+@Composable
+internal fun IncomingCallAction(label: String, icon: UiIcon, fill: Color, colors: AndroidColors, action: () -> Unit) {
+    Column(
+        Modifier.clickable(role = Role.Button, onClick = action),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.size(76.dp).testTag("incoming-call-$label").background(fill, CircleShape),
+            contentAlignment = Alignment.Center) {
+            UiGlyph(icon, Color.White, iconSize = 36.dp)
+        }
+        Text(label, color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.label)
     }
 }

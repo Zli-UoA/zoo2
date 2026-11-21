@@ -171,10 +171,13 @@ class AndroidSamplesTest {
                     ) { "Expected an 8dp inset around the post actions: $post / $photos / $toolbar" }
                 }
                 if (name == "call") {
-                    val answer = ui.onNodeWithText("応答").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
-                    val hangUp = ui.onNodeWithText("通話を終了").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
-                    check(answer.left == hangUp.left && answer.right == hangUp.right &&
-                        hangUp.top - answer.bottom == 12.dp) { "Incoming call actions should align: $answer / $hangUp" }
+                    ui.onNodeWithText("応答").assertHasClickAction()
+                    ui.onNodeWithText("拒否").assertHasClickAction()
+                    val answer = ui.onNodeWithTag("incoming-call-応答", useUnmergedTree = true)
+                        .assertWidthIsEqualTo(76.dp).assertHeightIsEqualTo(76.dp).getUnclippedBoundsInRoot()
+                    val decline = ui.onNodeWithTag("incoming-call-拒否", useUnmergedTree = true)
+                        .assertWidthIsEqualTo(76.dp).assertHeightIsEqualTo(76.dp).getUnclippedBoundsInRoot()
+                    check(answer.right < decline.left && answer.top == decline.top)
                 }
                 if (name == "call-active") {
                     ui.onNodeWithText("ミュート").assertIsOff()

@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 internal object AndroidControlSize {
@@ -56,8 +57,8 @@ internal fun UiIconButton(
 }
 
 @Composable
-internal fun UiGlyph(icon: UiIcon, color: Color) {
-    Canvas(Modifier.size(AndroidControlSize.icon)) {
+internal fun UiGlyph(icon: UiIcon, color: Color, iconSize: Dp = AndroidControlSize.icon) {
+    Canvas(Modifier.size(iconSize)) {
         fun point(x: Float, y: Float) = Offset(x * size.width / 24, y * size.height / 24)
         val width = 1.75.dp.toPx()
         fun lines(vararg points: Pair<Int, Int>) {
