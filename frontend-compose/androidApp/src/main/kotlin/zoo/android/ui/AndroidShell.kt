@@ -8,6 +8,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -19,7 +20,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.intl.Locale
+import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -55,6 +59,7 @@ internal fun AndroidShell(
     selected: TopPage?,
     dark: Boolean,
     onSelect: (TopPage) -> Unit,
+    language: String? = null,
     screen: @Composable ColumnScope.(AndroidColors) -> Unit,
 ) {
     val colors = AndroidColors(dark)
@@ -71,30 +76,40 @@ internal fun AndroidShell(
         outline = colors.inputHint,
         outlineVariant = colors.inputBoundary,
     )
+    val locale = when (language) {
+        null -> Locale.current
+        "yue" -> Locale("yue-Hant-HK")
+        else -> Locale(language)
+    }
     MaterialTheme(colorScheme = scheme) {
-        Column(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
-            Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
-            if (selected != null) {
-                Row(Modifier.fillMaxWidth().background(colors.quietSurface).selectableGroup()) {
-                    for (page in TopPage.entries) {
-                        val active = page == selected
-                        Column(
-                            Modifier.weight(1f).heightIn(min = AndroidControlSize.navigationHeight)
-                                .selectable(active, role = Role.Tab) { onSelect(page) },
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            Box(
-                                Modifier.background(if (active) colors.headerLight else Color.Transparent, CircleShape)
-                                    .size(width = AndroidControlSize.target, height = AndroidControlSize.navigationIndicatorHeight),
-                                contentAlignment = Alignment.Center,
+        ProvideTextStyle(MaterialTheme.typography.bodyLarge.copy(
+            fontFamily = FontFamily.SansSerif,
+            localeList = LocaleList(locale),
+        )) {
+            Column(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
+                Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
+                if (selected != null) {
+                    Row(Modifier.fillMaxWidth().background(colors.quietSurface).selectableGroup()) {
+                        for (page in TopPage.entries) {
+                            val active = page == selected
+                            Column(
+                                Modifier.weight(1f).heightIn(min = AndroidControlSize.navigationHeight)
+                                    .selectable(active, role = Role.Tab) { onSelect(page) },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
                             ) {
-                                UiGlyph(page.icon, if (active) colors.foreground else colors.secondary)
+                                Box(
+                                    Modifier.background(if (active) colors.headerLight else Color.Transparent, CircleShape)
+                                        .size(width = AndroidControlSize.target, height = AndroidControlSize.navigationIndicatorHeight),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    UiGlyph(page.icon, if (active) colors.foreground else colors.secondary)
+                                }
+                                Text(
+                                    page.title, color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
+                                    fontWeight = if (active) AndroidWeights.label else AndroidWeights.body,
+                                )
                             }
-                            Text(
-                                page.title, color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
-                                fontWeight = if (active) AndroidWeights.label else AndroidWeights.body,
-                            )
                         }
                     }
                 }

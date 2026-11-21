@@ -24,7 +24,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], qualifiers = "w360dp-h760dp-xhdpi")
+@Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidSamplesTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
@@ -80,7 +80,7 @@ class AndroidSamplesTest {
         var foreground by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
-            AndroidScreens(screen, dark, foreground, actions::add) { item, modifier ->
+            AndroidScreens(screen, dark, foreground, actions::add, language = "ja") { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
         }
