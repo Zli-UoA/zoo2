@@ -282,7 +282,11 @@ class SyncedTable(
                     },
                 )
             materialized.subscribe { change ->
-                if (materialized.isUpToDate && materialized.error == null) {
+                val failure = materialized.error
+                if (failure != null) {
+                    error.value = failure
+                    loading.value = false
+                } else if (materialized.isUpToDate) {
                     acceptSnapshot(change.rows)
                 }
             }
@@ -367,16 +371,17 @@ class SyncedTable(
     fun refresh() {
         if (refreshJob?.isActive == true) return
         refreshJob = tableScope.launch {
-            val source = stream ?: return@launch
-            if (source.error != null) {
+            val source = stream
+            if (synchronize && (source?.error != null || !worker.isActive)) {
                 // A terminal Electric4k runner cannot be restarted by forceDisconnectAndRefresh.
                 worker.cancelAndJoin()
+                stream = null
                 loading.value = true
+                error.value = null
                 worker = startSync(readCache = false)
-                loading.first { !it }
                 return@launch
             }
-            if (source.isPaused()) return@launch
+            if (source == null || source.isPaused() || loading.value) return@launch
             try {
                 source.forceDisconnectAndRefresh()
             } catch (e: CancellationException) {

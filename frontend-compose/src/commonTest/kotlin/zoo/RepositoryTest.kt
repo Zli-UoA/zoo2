@@ -313,6 +313,72 @@ class RepositoryTest {
     }
 
     @Test
+    fun liveFailureRetainsRowsAndFailedReloadCanBeRetried() = runTest {
+        val failLive = CompletableDeferred<Unit>()
+        val retryStarted = CompletableDeferred<Unit>()
+        val failRetry = CompletableDeferred<Unit>()
+        var initialRequests = 0
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.parameters["offset"] != "-1") {
+                if (initialRequests != 1) awaitCancellation()
+                failLive.await()
+                respond("live denied", HttpStatusCode.Forbidden)
+            } else {
+                val attempt = ++initialRequests
+                if (attempt == 2) {
+                    retryStarted.complete(Unit)
+                    failRetry.await()
+                    respond("reload denied", HttpStatusCode.Unauthorized)
+                } else {
+                    val id = if (attempt == 1) "old" else "new"
+                    respond(
+                        """[{"key":"channel","value":{"id":"$id"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]""",
+                        headers = headersOf(
+                            "electric-handle" to listOf("handle-$attempt"),
+                            "electric-offset" to listOf("1_0"),
+                            "electric-cursor" to listOf("1"),
+                            "electric-schema" to listOf("""{"id":{"type":"text"}}"""),
+                            "content-type" to listOf("application/json"),
+                        ),
+                    )
+                }
+            }
+        })
+        val table = SyncedTable("channels", config, FakePlatform(), http, backgroundScope,
+            streamOptions = options)
+        try {
+            val original = assertNotNull(table.synchronizedRows.first { it != null })
+            assertEquals(listOf("old"), original.map { it.text("id") })
+            failLive.complete(Unit)
+            table.error.first { it != null }
+            assertFalse(table.loading.value)
+            assertEquals(original, table.replicatedRows.value)
+            assertSame(original, table.synchronizedRows.value)
+
+            table.refresh()
+            retryStarted.await()
+            assertTrue(table.loading.value)
+            assertNull(table.error.value)
+            failRetry.complete(Unit)
+            table.error.first { it != null }
+            assertFalse(table.loading.value)
+            assertEquals(original, table.replicatedRows.value)
+            assertSame(original, table.synchronizedRows.value)
+
+            table.refresh()
+            val recovered = assertNotNull(table.synchronizedRows.first { it != original })
+            assertEquals(listOf("new"), recovered.map { it.text("id") })
+            assertEquals(recovered, table.replicatedRows.value)
+            assertFalse(table.loading.value)
+            assertNull(table.error.value)
+            assertEquals(3, initialRequests)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
     fun cancellationStopsTheTableAndReleasesItsLiveRequest() = runTest {
         val platform = FakePlatform()
         val started = CompletableDeferred<Unit>()
