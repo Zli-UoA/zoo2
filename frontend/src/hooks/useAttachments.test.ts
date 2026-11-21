@@ -229,6 +229,33 @@ it("keeps a URL that is still valid near its expiry when a download refresh fail
   expect(results[0].status).toBe("ready");
 });
 
+it("keeps a valid preview while a non-refresh lookup is running and after it fails", async () => {
+  vi.useFakeTimers({ now: Date.parse("2026-01-01T00:00:00Z"), toFake: ["Date"] });
+  const url = "https://files.test/image.png?X-Amz-Date=20260101T000000Z&X-Amz-Expires=3";
+  mocks.requestWithTx.mockResolvedValueOnce({ data: { download_url: url }, txid: null });
+  await act(async () => root.render(tree()));
+  expect(results[0].status).toBe("ready");
+  let reject!: (error: unknown) => void;
+  mocks.requestWithTx.mockImplementationOnce(
+    () =>
+      new Promise((_, fail) => {
+        reject = fail;
+      }),
+  );
+  let pending!: Promise<unknown>;
+  await act(async () => {
+    pending = results[0].getFreshUrl().catch((cause: unknown) => cause);
+  });
+  // 期限前の表示 URL があるため、取得中もスケルトンに戻さない。
+  expect(results[0].status).toBe("ready");
+  await act(async () => {
+    reject(Object.assign(new Error("Request failed"), { status: 503 }));
+  });
+  expect(await pending).toMatchObject({ reason: "url", status: 503 });
+  expect(results[0].url).toBe(url);
+  expect(results[0].status).toBe("ready");
+});
+
 it("does not overwrite the display state with a URL fetched for an old config", async () => {
   let finishFirst!: (value: unknown) => void;
   mocks.requestWithTx.mockImplementationOnce(

@@ -84,6 +84,14 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
     setUrl(nextUrl);
     setExpiresAt(nextExpiresAt);
   }, []);
+  // 表示中の URL が実際の期限前で、まだ取得に使えるか。更新マージンは含めない。
+  const hasUsableUrl = useCallback(
+    () =>
+      visible.current.url !== null &&
+      visible.current.expiresAt !== null &&
+      visible.current.expiresAt > Date.now(),
+    [],
+  );
 
   const load = useCallback(
     async (useCache: boolean): Promise<string | null> => {
@@ -145,8 +153,8 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
           return cachedEntry.url;
         }
       }
-      // ダウンロードのための取り直し（`refresh`）は、表示中のプレビューをスケルトンにしない。
-      if (!options.refresh && current === requestId.current) {
+      // 表示中の URL がまだ実際に使える間は、取得のやり直しでスケルトンに戻さない。
+      if (!hasUsableUrl() && current === requestId.current) {
         setStatus("loading");
       }
       try {
@@ -162,11 +170,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
           // 期限切れの URL だけは `ready` のまま残さず、読み込み直せるようにする。
           // 1回目の取得で表示 URL が更新されている場合は、その新しい期限で判定する。
           // 取得開始の判定と違い、ここでは更新マージンではなく実際の期限だけを見る。
-          if (
-            !options.refresh ||
-            visible.current.expiresAt === null ||
-            visible.current.expiresAt <= Date.now()
-          ) {
+          if (!hasUsableUrl()) {
             show(null, null);
             setStatus("error");
           }
@@ -174,7 +178,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
         throw attachmentUrlError(error);
       }
     },
-    [attachmentId, client, config, show],
+    [attachmentId, client, config, hasUsableUrl, show],
   );
 
   return { url, status, expiresAt, reload, getFreshUrl };
