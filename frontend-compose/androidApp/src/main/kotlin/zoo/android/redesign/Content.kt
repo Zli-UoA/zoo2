@@ -6,6 +6,11 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.currentStateAsState
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
@@ -41,7 +46,8 @@ internal fun TopContent(destination: Destination, state: SceneState, palette: Pa
                 Glyph("pencil", "新しい投稿", palette.copy(ink = Color.Black)) { dispatch(Action.NewPost) }
             }
         }
-        Destination.Notifications -> Entries(state, state.entries, palette, Modifier.fillMaxSize(), dispatch)
+        Destination.Notifications ->
+            Entries(state, state.entries, palette, Modifier.fillMaxSize(), dispatch, readOnView = true)
         Destination.Bubble -> {
             Text("入力中の内容がリアルタイムに表示されます", Modifier.padding(16.dp), color = palette.quiet, fontSize = 13.sp)
             Entries(state, state.entries, palette, Modifier.weight(1f), dispatch)
@@ -58,10 +64,37 @@ internal fun Entries(
     palette: Palette,
     modifier: Modifier,
     dispatch: (Action) -> Unit,
+    readOnView: Boolean = false,
 ) {
     if (state.expanded) return
-    LazyColumn(modifier.fillMaxWidth().background(palette.canvas), contentPadding = PaddingValues(horizontal = 16.dp)) {
-        items(entries) { entry ->
+    val scroll = rememberLazyListState()
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val visible by remember {
+        derivedStateOf {
+            val layout = scroll.layoutInfo
+            layout.visibleItemsInfo.filter { item ->
+                val overlap = minOf(item.offset + item.size, layout.viewportEndOffset) -
+                    maxOf(item.offset, layout.viewportStartOffset)
+                overlap > 0 && overlap >= item.size * .1f
+            }.map { it.index }.toSet()
+        }
+    }
+    LazyColumn(
+        modifier.fillMaxWidth().background(palette.canvas),
+        state = scroll,
+        contentPadding = PaddingValues(horizontal = 16.dp),
+    ) {
+        items(entries.size, key = { entries[it].notificationId ?: it }) { index ->
+            val entry = entries[index]
+            val id = entry.notificationId
+            val active = readOnView && id != null && entry.unread && index in visible &&
+                lifecycle.isAtLeast(Lifecycle.State.RESUMED)
+            LaunchedEffect(id, active) {
+                if (active && id != null) {
+                    delay(500)
+                    dispatch(Action.ViewNotification(id))
+                }
+            }
             Row(
                 Modifier.fillMaxWidth().combinedClickable(onLongClick = { dispatch(Action.OpenThread(entry)) }, onClick = {})
                     .padding(vertical = 10.dp),
@@ -74,6 +107,10 @@ internal fun Entries(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(entry.author, color = palette.ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(entry.time, color = palette.quiet, fontSize = 11.sp)
+                        if (readOnView && entry.unread) {
+                            Text("未読", Modifier.background(palette.light, CircleShape).padding(horizontal = 6.dp),
+                                color = palette.ink, fontSize = 11.sp)
+                        }
                     }
                     Text(entry.body, color = palette.ink, fontSize = 16.sp, lineHeight = 22.sp)
                 }

@@ -33,7 +33,13 @@ internal enum class Destination(val label: String, val icon: String) {
 }
 
 internal data class Channel(val id: String, val name: String, val icon: String = "hash", val unread: Boolean = false)
-internal data class Entry(val author: String, val body: String, val time: String = "")
+internal data class Entry(
+    val author: String,
+    val body: String,
+    val time: String = "",
+    val notificationId: String? = null,
+    val unread: Boolean = false,
+)
 
 internal sealed interface Scene {
     data class Top(val destination: Destination) : Scene
@@ -58,6 +64,7 @@ internal sealed interface Action {
     data class OpenChannel(val id: String) : Action
     data class OpenThread(val entry: Entry) : Action
     data class Draft(val value: String) : Action
+    data class ViewNotification(val id: String) : Action
     data class Setting(val key: String) : Action
     data object Back : Action
     data object Browse : Action
