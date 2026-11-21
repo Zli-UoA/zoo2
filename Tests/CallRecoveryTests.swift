@@ -7,10 +7,12 @@ import Testing
 private final class MemoryCallSessionJournal: CallSessionJournal {
     var records: [CallSessionRecord] = []
     var saveError: Error?
+    var didSave: (() -> Void)?
     func load() throws -> [CallSessionRecord] { records }
     func save(_ records: [CallSessionRecord]) throws {
         if let saveError { throw saveError }
         self.records = records
+        didSave?()
     }
 }
 
@@ -165,7 +167,11 @@ struct CallRecoveryTests {
         calls.start(channel: channel, invitationID: "invitation")
         for await _ in entered.stream { break }
         #expect(calls.ready && client.accepted && journal.records.contains(previous))
+        let recovered = AsyncStream<Void>.makeStream()
+        journal.didSave = { if !journal.records.contains(previous) { recovered.continuation.yield(()) } }
+        defer { journal.didSave = nil; recovered.continuation.finish() }
         release.continuation.yield(())
+        for await _ in recovered.stream { break }
         await recovery.value
         #expect(!journal.records.contains(previous) && journal.records.count == 1)
     }
@@ -225,6 +231,49 @@ struct CallRecoveryTests {
         await calls.refreshActiveCalls()
         #expect(!calls.hasActiveCall(in: "other-channel"))
         #expect(calls.hasActiveCall(in: "new-channel"))
+    }
+
+    @Test("退出応答が止まっていても別チャンネルを表示し、期限後も回収を続ける")
+    func listsCallsWhileRecoveryWaits() async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.record(previous)
+        let client = FakeCallClient()
+        let release = AsyncStream<Void>.makeStream()
+        let recovered = AsyncStream<Void>.makeStream()
+        client.beforeCommand = { _ in for await _ in release.stream { break } }
+        client.activeCallRows = [ActiveCallSummary(channel_id: "other-channel", participant_count: 1)]
+        journal.didSave = { recovered.continuation.yield(()) }
+        let calls = store(client, journal: journal, recoveryWaitLimit: .milliseconds(10))
+        defer {
+            calls.shutdown(); journal.didSave = nil
+            release.continuation.finish(); recovered.continuation.finish()
+        }
+        await calls.refreshActiveCalls()
+        #expect(calls.hasActiveCall(in: "other-channel") && journal.records == [previous])
+        #expect(client.commands == ["leave"])
+        release.continuation.yield(())
+        for await _ in recovered.stream { break }
+        #expect(journal.records.isEmpty)
+    }
+
+    @Test("一覧更新のキャンセルは退出応答を待たず、古い一覧を反映しない")
+    func cancelsListWhileRecoveryWaits() async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.record(previous)
+        let client = FakeCallClient()
+        let started = AsyncStream<Void>.makeStream()
+        client.beforeCommand = { _ in
+            started.continuation.yield(())
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        client.beforeActiveCallsResult = { Issue.record("キャンセル後に一覧を取得してはいけません") }
+        let calls = store(client, journal: journal, recoveryWaitLimit: .seconds(60))
+        defer { calls.shutdown(); started.continuation.finish() }
+        let pending = Task { await calls.refreshActiveCalls() }
+        for await _ in started.stream { break }
+        pending.cancel()
+        await pending.value
+        #expect(journal.records == [previous] && calls.activeChannelIDs.isEmpty)
     }
 
     @Test("退出済み・権限喪失は完了扱いにし、認証切れやサーバー障害は記録を残す", arguments: [400, 403, 404, 409, 410, 422, 401, 500])
