@@ -21,11 +21,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal data class SelectionItem(val id: String, val title: String, val detail: String? = null)
+internal data class SelectionItem(
+    val id: String,
+    val title: String,
+    val detail: String? = null,
+    val isUserName: Boolean = false,
+)
 internal data class RecentPhoto(val id: String, val label: String)
 
 @Composable
@@ -55,7 +61,8 @@ internal fun DirectoryPage(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
-                        Text(item.title, color = colors.foreground, fontSize = 16.sp)
+                        Text(item.title, color = colors.foreground, fontSize = 16.sp,
+                            fontWeight = if (item.isUserName) AndroidWeights.userName else AndroidWeights.body)
                         item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
                     }
                     UiGlyph(UiIcon.Next, colors.secondary)
@@ -119,6 +126,7 @@ internal fun NewPostPage(
 @Composable
 internal fun BrandPage(
     title: String, detail: String, colors: AndroidColors, loading: Boolean = false,
+    detailWeight: FontWeight = AndroidWeights.body,
     actions: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
@@ -130,7 +138,7 @@ internal fun BrandPage(
         Spacer(Modifier.weight(2f))
         ZooBadge(colors, Modifier.size(88.dp))
         Text(title, color = colors.foreground, fontSize = 32.sp, fontWeight = AndroidWeights.emphasis)
-        if (detail.isNotEmpty()) Text(detail, color = colors.secondary, fontSize = 16.sp, textAlign = TextAlign.Center)
+        if (detail.isNotEmpty()) Text(detail, color = colors.secondary, fontSize = 16.sp, fontWeight = detailWeight, textAlign = TextAlign.Center)
         if (loading) CircularProgressIndicator(Modifier.size(22.dp), color = colors.accent, strokeWidth = 2.dp)
         Spacer(Modifier.weight(3f))
         actions()

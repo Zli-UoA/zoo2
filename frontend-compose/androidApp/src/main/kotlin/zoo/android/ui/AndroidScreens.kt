@@ -44,7 +44,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 internal data class TimelineItem(val id: String, val author: String, val body: String, val time: String)
-internal data class ChannelItem(val id: String, val title: String, val unread: Boolean = false)
+internal data class ChannelItem(
+    val id: String,
+    val title: String,
+    val unread: Boolean = false,
+    val isUserName: Boolean = false,
+)
 internal data class ChannelSection(val label: String, val channels: List<ChannelItem>)
 
 internal sealed interface AndroidScreen {
@@ -221,7 +226,7 @@ private fun RenderAndroidScreen(
                 { dispatch(AndroidUiAction.Search(it)) }, { dispatch(AndroidUiAction.SelectResult(it)) },
             )
             is AndroidScreen.Profile -> {
-                PageHeader(screen.name, colors, onBack = back)
+                PageHeader(screen.name, colors, onBack = back, titleWeight = AndroidWeights.userName)
                 Text(screen.bio, Modifier.padding(16.dp), color = colors.secondary, fontSize = 15.sp)
                 Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true)
             }
@@ -234,7 +239,7 @@ private fun RenderAndroidScreen(
                     TextAction("ログイン画面を開く", colors, style = TextActionStyle.Plain, click = back)
                 } else TextAction("ログイン", colors) { dispatch(AndroidUiAction.SignIn) }
             }
-            is AndroidScreen.Call -> BrandPage(if (screen.incoming) "着信中" else "通話中", screen.caller, colors) {
+            is AndroidScreen.Call -> BrandPage(if (screen.incoming) "着信中" else "通話中", screen.caller, colors, detailWeight = AndroidWeights.userName) {
                 if (screen.incoming) TextAction("応答", colors) { dispatch(AndroidUiAction.Answer) }
                 TextAction("通話を終了", colors, style = TextActionStyle.Neutral) { dispatch(AndroidUiAction.HangUp) }
             }
@@ -283,7 +288,11 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                         channel.title,
                         Modifier.weight(1f),
                         color = colors.foreground,
-                        fontWeight = if (channel.unread) AndroidWeights.emphasis else AndroidWeights.body,
+                        fontWeight = when {
+                            channel.isUserName -> AndroidWeights.userName
+                            channel.unread -> AndroidWeights.emphasis
+                            else -> AndroidWeights.body
+                        },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -337,7 +346,7 @@ private fun Timeline(
                 }
                 Column(Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.label, fontSize = 14.sp)
+                        Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.userName, fontSize = 14.sp)
                         Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                     }
                     Text(entry.body, color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)

@@ -54,7 +54,7 @@ internal fun NotificationPage(
             }
             Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(item.author, Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.label)
+                    Text(item.author, Modifier.weight(1f), color = colors.foreground, fontWeight = AndroidWeights.userName)
                     Text(item.time, color = colors.secondary, fontSize = 12.sp)
                     if (item.unread) {
                         Text("未読", Modifier.background(colors.headerLight, CircleShape).padding(horizontal = 6.dp),
