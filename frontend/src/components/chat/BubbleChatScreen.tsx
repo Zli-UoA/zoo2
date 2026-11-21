@@ -8,15 +8,17 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useMediaQuery } from "../layout/useMediaQuery";
 import { AppAvatar } from "./AppIdentity";
-import { ComposerField, composerTextareaClassName } from "./messages/ComposerField";
-import { useAutosizeTextarea } from "../../hooks/useAutosizeTextarea";
+import {
+  ComposerField,
+  composerTextareaClassName,
+  composerTextareaFitClass,
+} from "./messages/ComposerField";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
 import { Textarea } from "../ui/textarea";
 import { PaneHeader, ScreenHeader } from "../layout/PaneHeader";
 
-const MAX_INPUT_HEIGHT = 180;
 export const FADE_DURATION_MS = 3000;
 export const POP_DURATION_MS = FADE_DURATION_MS;
 
@@ -213,8 +215,6 @@ export function BubbleChatScreen() {
     [setContent],
   );
 
-  useAutosizeTextarea(textareaRef, content, MAX_INPUT_HEIGHT);
-
   const participantsListContent = (
     <ul className="flex flex-col gap-1 p-2">
       {participants.map((p) => (
@@ -373,7 +373,7 @@ export function BubbleChatScreen() {
                   value={content}
                   placeholder={t("bubbleChat.placeholder")}
                   aria-label={t("bubbleChat.inputLabel")}
-                  className={`${composerTextareaClassName} min-h-11 px-2 py-2.5`}
+                  className={`${composerTextareaClassName} ${composerTextareaFitClass(content)} max-h-[180px] min-h-11 px-2 py-2.5`}
                   onCompositionStart={() => {
                     composingRef.current = true;
                   }}

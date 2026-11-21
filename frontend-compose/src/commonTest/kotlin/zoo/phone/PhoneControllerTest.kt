@@ -26,6 +26,7 @@ class PhoneControllerTest {
         var beforeRead: CompletableDeferred<Unit>? = null
         var streamEvent: (suspend (String, Row) -> Unit)? = null
         var phoneEvent: (suspend (String, Row) -> Unit)? = null
+        var pendingAudio: CompletableDeferred<Unit>? = null
         var pendingPhoneCall: CompletableDeferred<Unit>? = null
         val phoneActions = mutableListOf<String>()
         val line = obj("id" to "home", "name" to "Home", "can_connect" to true, "can_manage" to true)
@@ -59,6 +60,7 @@ class PhoneControllerTest {
             }
         }, telecom = object : PhoneTelecom {
             override suspend fun outgoing(call: PhoneCall) { native.add("outgoing:${call.kind}") }
+            override suspend fun startAudio(id: String) { pendingAudio?.await() }
             override fun incoming(call: PhoneCall) { native.add("incoming:${call.kind}") }
             override fun ended(id: String) { native.add("end:$id") }
             override fun speaker(id: String, enabled: Boolean) { native.add("speaker:$enabled") }
@@ -97,7 +99,7 @@ class PhoneControllerTest {
     }
     @Test fun permissionsAreRequiredBeforeCreatingAMediaEngine() = runTest {
         val f = Fixture(backgroundScope); f.permission = false; f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
-        assertTrue(f.events.isEmpty()); assertEquals("offline", f.controller.registration.status); assertTrue(f.controller.error)
+        assertTrue(f.events.isEmpty()); assertEquals("offline", f.controller.registration.status); assertEquals("home", f.controller.sipConnectionError)
         f.controller.close()
     }
     @Test fun inviteRemovalDuringAcceptDoesNotCancelTheAcceptedCall() = runTest {
@@ -114,6 +116,20 @@ class PhoneControllerTest {
         f.events.getValue("dm")("connected", obj()); assertEquals("active", f.controller.call?.status)
         f.controller.close(); runCurrent(); assertNull(f.controller.call); assertTrue("dm" in f.closed)
     }
+    @Test fun preferredInviteWaitsWhileAnUnrelatedInviteSyncsFirst() = runTest {
+        val f = Fixture(backgroundScope)
+        f.controller.restoreDmWaiting()
+        val first = f.invitation()
+        val selected = obj("id" to "selected", "channel_id" to "selected-dm",
+            "invitee_id" to "alice", "inviter_name" to "Carol", "status" to "pending",
+            "expires_at" to "2030-01-01T00:00:30Z")
+        f.controller.invites(listOf(first), "alice", 1893456000000, preferredInviteId = "selected")
+        assertNull(f.controller.call)
+        f.controller.invites(listOf(first, selected), "alice", 1893456000000, preferredInviteId = "selected")
+        assertEquals("selected-dm", f.controller.call?.target)
+        f.controller.close()
+    }
+
     @Test fun expiredForeignAndDuplicateInvitesNeverCreateAdditionalNativeCalls() = runTest {
         val f = Fixture(backgroundScope); f.controller.receiveDmCalls(true); runCurrent()
         f.controller.invites(listOf(f.invitation()), "bob", 1893456000000); assertNull(f.controller.call)
@@ -135,6 +151,32 @@ class PhoneControllerTest {
         advanceTimeBy(45_001); runCurrent(); assertNull(f.controller.call)
         assertTrue(f.requests.any { it.endsWith("/call/leave") }); f.controller.close()
     }
+    @Test fun outgoingDmDoesNotJoinUntilNativeAudioIsReady() = runTest {
+        val f = Fixture(backgroundScope)
+        val ready = CompletableDeferred<Unit>()
+        f.pendingAudio = ready
+        f.controller.callDm("dm", "Bob"); runCurrent()
+        assertEquals(listOf("outgoing:dm"), f.native)
+        assertNull(f.streamEvent)
+        ready.complete(Unit); runCurrent()
+        assertNotNull(f.streamEvent)
+    }
+
+    @Test fun failedAudioStartupDoesNotAcceptIncomingInvite() = runTest {
+        val f = Fixture(backgroundScope)
+        val ready = CompletableDeferred<Unit>()
+        f.pendingAudio = ready
+        f.controller.receiveDmCalls(true); runCurrent()
+        f.controller.invites(listOf(f.invitation()), "alice", 1893456000000)
+        f.controller.answer(); runCurrent()
+        assertFalse(f.requests.any { it.endsWith("/accept") })
+        ready.completeExceptionally(IllegalStateException("Foreground microphone unavailable")); runCurrent()
+        assertFalse(f.requests.any { it.endsWith("/accept") })
+        assertTrue(f.requests.any { it.endsWith("/decline") })
+        assertNull(f.controller.call)
+        assertTrue(f.controller.error)
+    }
+
     @Test fun earlySignalsAreBufferedUntilTheInitialRoomState() = runTest {
         val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
         f.streamEvent!!("signal", obj("from_session_id" to "remote", "signal" to obj("type" to "offer"))); runCurrent()
@@ -212,7 +254,7 @@ class PhoneControllerTest {
         val f=Fixture(backgroundScope); f.phoneStreamTimeout=true
         f.controller.refresh(); runCurrent(); f.controller.connectSip("home"); runCurrent()
         advanceTimeBy(2); runCurrent()
-        assertEquals("offline",f.controller.registration.status); assertTrue(f.controller.error)
+        assertEquals("offline",f.controller.registration.status); assertEquals("home",f.controller.sipConnectionError)
         f.controller.close()
     }
 

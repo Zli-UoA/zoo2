@@ -26,7 +26,7 @@ async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
     let config = PushConfig::from_env().map_err(AppError::Internal)?;
     let android = crate::push::fcm::FcmConfig::from_env().map_err(AppError::Internal)?;
     Ok(Json(
-        json!({"publicKey": config.map(|c| c.public_key), "fcmProjectId": android.map(|c| c.project_id)}),
+        json!({"publicKey": config.map(|c| c.public_key), "fcmDmCalls": android.is_some(), "fcmProjectId": android.map(|c| c.project_id)}),
     ))
 }
 

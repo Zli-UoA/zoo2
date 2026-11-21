@@ -1,5 +1,6 @@
 package zoo
 
+import android.icu.text.BreakIterator
 import android.icu.text.Collator
 import android.icu.util.ULocale
 import androidx.compose.ui.text.PlatformTextStyle
@@ -65,4 +66,13 @@ internal actual fun connectHomeSocket(
         client.dispatcher.executorService.shutdown()
         client.connectionPool.evictAll()
     }
+}
+
+
+actual fun takeGraphemes(text: String, count: Int): String {
+    val characters = BreakIterator.getCharacterInstance().apply { setText(text) }
+    repeat(count) {
+        if (characters.next() == BreakIterator.DONE) return text
+    }
+    return text.substring(0, characters.current())
 }

@@ -4283,6 +4283,36 @@ CREATE TABLE user_channel_pin_states (
 
 ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;
 
+-- 全文検索（メッセージ・添付ファイル名・チャンネルノート）。docs/search.md を参照。
+-- pg_bigm は trusted ではないので、本番では CNPG の Database リソースがスーパーユーザーとして作る。
+-- ここは IF NOT EXISTS なので、作成済みなら zoo2 ロールでも通る。
+-- 拡張は public に置き、opclass と関数は public. を付けて呼ぶ（テストは別スキーマの search_path で動くため）。
+CREATE EXTENSION IF NOT EXISTS pg_bigm WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS btree_gin WITH SCHEMA public;
+-- 先頭の列は作成月（年*12+月）。検索は新しい月から 1 か月ずつ、月の等価条件で引く。
+-- 2 文字以上の語では、GIN は月とバイグラムの posting を突き合わせるので、索引の読み取りはその月の、語の 2 文字の組の
+-- posting（候補が 0 件でも読む）に、ヒープの走査は「その月の候補」（2 文字の組をすべて含む行。再確認で除かれる行を
+-- 含む）に限られ、総履歴に比例しない。
+-- 1 文字の語は部分一致で読み飛ばせないため、検索側で索引の条件から外し、その月の行をヒープで確かめる（docs/search.md）。
+-- 本文は lower() で英字の大文字・小文字を区別しない（C ロケールなので日本語には影響しない）。
+-- fastupdate = off: 既定の pending list は、検索のたびに月によらず全体を読むので持たない（書き込みは索引に直接入れる）。
+CREATE INDEX messages_search_month ON messages USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(content) public.gin_bigm_ops
+) WITH (fastupdate = off) WHERE deleted_at IS NULL AND content <> '';
+CREATE INDEX attachments_search_month ON attachments USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(file_name) public.gin_bigm_ops
+) WITH (fastupdate = off) WHERE message_id IS NOT NULL;
+CREATE INDEX channel_notes_search_month ON channel_notes USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(title || E'\n' || content) public.gin_bigm_ops
+) WITH (fastupdate = off) WHERE deleted_at IS NULL;
+-- 検索範囲の下限（SCOPE_SQL の floor）に、生きている最古の返信も入れるため。親が削除されても返信は残り、
+-- 取り込みでチャンネルの作成日時より古い返信もありうる。チャンネルごとに先頭の 1 行だけ引く。
+CREATE INDEX messages_search_reply_floor ON messages (channel_id, created_at)
+  WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
+
 -- Slack の取り込み（差分同期・イベント）が、直近の返信を、zoo の返信と同じライブの投稿として扱えるようにする。
 -- 取り込みの返信は作成日時が Slack の投稿時刻なので、トランザクション開始時刻との比べだけでは、ライブと判定されない。
 -- `zoo.thread_live_import` が `on` のトランザクションの INSERT は、ライブの返信として、スレッドを再Openし、
