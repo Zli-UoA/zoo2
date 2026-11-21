@@ -174,6 +174,37 @@ it("marks the preview as failed when a download refresh fails after the URL expi
   expect(results[0].status).toBe("error");
 });
 
+it("keeps the URL refreshed by the first download attempt when the retry fails", async () => {
+  mocks.requestWithTx
+    .mockResolvedValueOnce({
+      data: {
+        download_url: "https://files.test/expired.png?X-Amz-Date=20200101T000000Z&X-Amz-Expires=60",
+      },
+      txid: null,
+    })
+    .mockResolvedValueOnce({
+      data: { download_url: "https://files.test/fresh.png" },
+      txid: null,
+    });
+  await act(async () => root.render(tree()));
+  expect(results[0].status).toBe("ready");
+  // ダウンロードは同じ resolver を2回使う。1回目で期限が新しい URL に更新される。
+  const getFreshUrl = results[0].getFreshUrl;
+  await act(async () => {
+    await expect(getFreshUrl()).resolves.toBe("https://files.test/fresh.png");
+  });
+  expect(results[0].url).toBe("https://files.test/fresh.png");
+  mocks.requestWithTx.mockRejectedValue(
+    Object.assign(new Error("Request failed"), { status: 503 }),
+  );
+  await act(async () => {
+    await getFreshUrl({ refresh: true }).catch(() => undefined);
+  });
+  // クリック時点の期限ではなく、いま表示している URL の期限で判定する。
+  expect(results[0].url).toBe("https://files.test/fresh.png");
+  expect(results[0].status).toBe("ready");
+});
+
 it("does not overwrite the display state with a URL fetched for an old config", async () => {
   let finishFirst!: (value: unknown) => void;
   mocks.requestWithTx.mockImplementationOnce(
