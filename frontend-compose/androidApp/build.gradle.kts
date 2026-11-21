@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "works.zli.zoo"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "works.zli.zoo"
         minSdk = 26
@@ -87,7 +87,7 @@ dependencies {
     // E2EE の初回設定と解錠（#360）。パスキーの PRF は Credential Manager、再認証は Custom Tabs。
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
-    implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.browser:browser:1.9.0")
 }
 
 val translations by

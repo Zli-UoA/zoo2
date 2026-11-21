@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.browser.auth.AuthTabIntent
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.material3.Text
@@ -120,6 +121,28 @@ class MainActivity : ComponentActivity() {
     /** 今のログインの E2EE の再認証（#360）。App Links で戻ったリダイレクトを渡す。 */
     @Volatile
     private var reauth: AndroidReauth? = null
+
+    private var authTabResult: ((AuthTabIntent.AuthResult) -> Unit)? = null
+    private val authTab = AuthTabIntent.registerActivityResultLauncher(this) { result ->
+        val receive = authTabResult
+        authTabResult = null
+        receive?.invoke(result)
+    }
+
+    private fun launchAuthTab(
+        tab: AuthTabIntent, url: Uri, redirect: Uri, receive: (AuthTabIntent.AuthResult) -> Unit,
+    ): Boolean {
+        // A canceled app coroutine can leave a browser activity open. Its result belongs to that launch.
+        if (authTabResult != null) return false
+        authTabResult = receive
+        try {
+            tab.launch(authTab, url, requireNotNull(redirect.host), requireNotNull(redirect.path))
+        } catch (failure: RuntimeException) {
+            authTabResult = null
+            throw failure
+        }
+        return true
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -347,7 +370,7 @@ class MainActivity : ComponentActivity() {
             consumeRefresh = { loginStore.consume(owner) },
             onExpired = onExpired,
         )
-        val reauthenticator = AndroidReauth(this, http, connection)
+        val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab)
         reauth = reauthenticator
         try {
             if (savedRefresh == null)

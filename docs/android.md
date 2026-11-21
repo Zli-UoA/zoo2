@@ -9,11 +9,11 @@ Android 用に別のチャット画面や同期クライアントは持ちませ
 
 ## ビルド
 
-JDK 21、Android SDK Platform 35、Build Tools 35.0.0、Node.js 24とリポジトリ指定のpnpmを用意してください。
+JDK 21、Android SDK Platform 35・36、Build Tools 35.0.0、Node.js 24とリポジトリ指定のpnpmを用意してください。
 初回は `pnpm --dir frontend install --frozen-lockfile` を実行します。
 Android Studio で `frontend-compose` を開き、Gradle プロパティに
 `zoo.android=true` を設定するか、コマンドで指定します。
-`nix develop .#android` は CI と同じ Android 35 / Build Tools 35.0.0 と NDK を含め、
+`nix develop .#android` は CI と同じ Android 35・36 / Build Tools 35.0.0 と NDK を含め、
 `ANDROID_HOME`・`ANDROID_NDK_HOME` を設定します。
 SDK の場所は `ANDROID_HOME` または Git 管理外の `local.properties` で指定します。
 
@@ -144,7 +144,7 @@ Homeの送信はSessionのスコープで実行し、画面を離れても応答
 
 PRの単体テストに加えて、配布前に次を端末で確認します。
 
-- API 26と35で、ログイン・キャンセル・復元・ログアウトを行う。
+- Auth Tab 対応と非対応のブラウザーで、ログイン・キャンセル・復元・ログアウトを行う。API 26 と 35 で起動を確認する。
 - ホーム→チャンネル→メンバー→戻る、同じ画面の再選択、ワイド画面への回転で履歴を確認する。
 - Wi-Fi切断・キャプティブポータル・通信復帰、バックグラウンドと復帰時の表示と取得回数を確認する。
 - 大きな縦長・横長画像、EXIFの回転画像、壊れた画像、20 MiBを超える応答でアプリが操作可能なことを確認する。
@@ -156,7 +156,7 @@ PRの単体テストに加えて、配布前に次を端末で確認します。
 
 ## ログイン
 
-初回ログインは Custom Tabs でOIDC認可コードフローを開始し、S256 PKCEと検証済み App Linksでアプリへ戻ります。コールバックの `state` とIDトークンの `nonce` を照合してからセッションを作ります。初回ログインは `offline_access` を要求し、暗号化の再認証は `max_age=0` を指定します。
+初回ログインと暗号化の再認証には OIDC 認可コードフローと S256 PKCE を使います。対応ブラウザーでは Auth Tab を開き、Digital Asset Links で検証された HTTPS リダイレクトをブラウザーの結果として受け取ります。Auth Tab 非対応時は Custom Tabs と検証済み App Links を使います。コールバックの `state` とIDトークンの `nonce` を照合してからセッションを作ります。初回ログインは `offline_access` を要求し、暗号化の再認証は `max_age=0` を指定します。
 
 「接続先の設定」でZooサーバーのHTTPS origin、OIDC issuer、Android用public client ID、resourceを設定できます。既定のサーバーは `https://zli.chat`、issuerは `https://account.zli.works/api/auth`、resourceは `https://zli.chat/api` です。初回にclient IDを設定してください。
 
@@ -202,9 +202,9 @@ IdP 全体のブラウザーセッションや他端末の認証は失効させ�
 ログアウトでは、鍵バックアップに送れていない鍵があれば件数を示して確かめ、暗号ストアを消してから
 サーバーの端末を削除します。オフラインなどで削除できなかった端末は、同じユーザーの次のログインで消し直します。
 設定の「暗号化」タブで、初回設定と、パスキーかリカバリーキーでの解錠を行います（[#360](https://github.com/Zli-UoA/zoo2/issues/360)）。
-初回設定では、リカバリーキーを控えたあと、保存の直前に Custom Tabs でログインし直します（再認証）。
-ログインが終わると `https://zli.chat/android/reauth-callback` の App Links でアプリに戻り、同じ画面のまま保存します。
-App Links の検証には、zli.chat の nginx が配る `/.well-known/assetlinks.json` が要ります。
+初回設定では、リカバリーキーを控えたあと、保存の直前に Auth Tab（非対応時は Custom Tabs）でログインし直します（再認証）。
+ログインが終わると Auth Tab の結果、または App Links が `https://zli.chat/android/reauth-callback` をアプリに渡し、同じ画面のまま保存します。
+Auth Tab と App Links の検証には、zli.chat の nginx が配る `/.well-known/assetlinks.json` が要ります。
 frontend のコンテナの `ANDROID_APP_CERT_SHA256` に、配布する APK の署名証明書の SHA-256 の指紋を入れてください
 （zoo2-infra。debug APK は署名が違うので、App Links で戻りません）。
 AuthZ の Android のクライアントには、認可コードのグラントと、このリダイレクト URI の登録が要ります。
