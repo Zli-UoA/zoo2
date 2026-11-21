@@ -113,6 +113,25 @@ struct CallRecoveryTests {
         #expect(journal.records.count == 1)
     }
 
+    @Test("退出だけが失敗しても別チャンネルの通話一覧を更新する", arguments: [false, true])
+    func listsCallsWhenRecoveryFails(storageFailure: Bool) async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.record(previous)
+        let client = FakeCallClient()
+        let calls = store(client, journal: journal)
+        defer { calls.shutdown() }
+        if storageFailure { journal.saveError = ZooError.auth("記録の削除失敗") }
+        else { client.commandFailure = { _ in ZooError.rejected(500, "退出失敗") } }
+        client.activeCallRows = [ActiveCallSummary(channel_id: "other-channel", participant_count: 1)]
+        await calls.refreshActiveCalls()
+        #expect(calls.hasActiveCall(in: "other-channel"))
+        #expect(journal.records == [previous])
+        client.activeCallRows = [ActiveCallSummary(channel_id: "new-channel", participant_count: 2)]
+        await calls.refreshActiveCalls()
+        #expect(!calls.hasActiveCall(in: "other-channel"))
+        #expect(calls.hasActiveCall(in: "new-channel"))
+    }
+
     @Test("退出済み・権限喪失は完了扱いにし、認証切れやサーバー障害は記録を残す", arguments: [403, 404, 401, 500])
     func recoveryErrors(status: Int) async throws {
         let journal = MemoryCallSessionJournal()

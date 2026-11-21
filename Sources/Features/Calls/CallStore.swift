@@ -100,7 +100,12 @@ final class CallStore {
         let generation = UUID()
         activeCallsGeneration = generation
         do {
-            try await recoverInterruptedCalls()
+            do {
+                try await recoverInterruptedCalls()
+            } catch {
+                // 自端末の退出失敗だけで、ほかの参加者の通話一覧まで取得不能にしない。
+                if case ZooError.expiredSession = error { throw error }
+            }
             try Task.checkCancellation()
             guard active else { return }
             let calls = try await client.activeCalls()
