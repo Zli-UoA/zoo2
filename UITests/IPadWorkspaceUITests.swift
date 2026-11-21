@@ -13,6 +13,8 @@ final class IPadWorkspaceUITests: XCTestCase {
         let general = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
         let development = app.buttons["channel-55555555-5555-4555-8555-555555555555"]
         XCTAssertTrue(general.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["channel-thread-22222222-2222-4222-8222-222222222222"].exists)
+        XCTAssertFalse(app.buttons["channel-thread-load-more"].exists)
         general.tap()
         let list = app.scrollViews["message-list"]
         XCTAssertTrue(list.waitForExistence(timeout: 5))
@@ -37,6 +39,7 @@ final class IPadWorkspaceUITests: XCTestCase {
         XCTAssertTrue(replies.wait(for: \.isHittable, toEqual: true, timeout: 5))
         replies.tap()
         XCTAssertTrue(input(app, reply: true).waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["channel-thread-22222222-2222-4222-8222-222222222222"].exists)
         XCTAssertTrue(development.isHittable)
         XCTAssertGreaterThan(input(app, reply: true).frame.minX, development.frame.maxX)
         development.tap()

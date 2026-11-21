@@ -6,7 +6,6 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func publicProfile() async throws -> PublicProfile
     func updatePublicProfile(name: String, summary: String) async throws -> PublicProfile
     func channels() async throws -> [Channel]
-    func joinedThreads(before: String?, through: String?) async throws -> ChannelThreadPage
     func channel(id: String) async throws -> Channel
     func people() async throws -> [Person]
     func person(id: String) async throws -> Person
