@@ -217,6 +217,33 @@ class GlobalSearchUiTest {
     }
 
     @Test
+    fun routeChangesUpdateTheQueryAndKindWithoutRefetchingOwnReplaces() {
+        val fixture = Fixture("/search?q=会議&type=messages")
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Box(Modifier.width(320.dp).height(640.dp)) {
+                            NativeWindow(fixture.app) {
+                                GlobalSearchScreen(fixture.app, users, emptyList(), fixture.controller)
+                            }
+                        }
+                    }
+                }
+            }
+            ui.waitUntil(5_000) { fixture.controller.loaded }
+            ui.runOnIdle { fixture.app.update(fixture.app.env.copy(path = "/search?q=資料&type=files")) }
+            ui.waitUntil(5_000) { fixture.controller.type == GlobalSearchType.Files && fixture.controller.loaded }
+            ui.waitForIdle()
+            assertEquals("資料", fixture.controller.query)
+            ui.onNode(hasSetTextAction() and hasText("資料"), useUnmergedTree = true).assertExists()
+            ui.onNodeWithText("ファイル").assertIsSelected()
+            // The screen's own replace (URL-encoded) does not start another request.
+            assertEquals(2, fixture.requests.size, fixture.requests.toString())
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun searchResultSharesTheNotificationAvatarGutterAndTopAlignment() {
         val fixture = Fixture("/search")
         var width by mutableStateOf(320.dp)

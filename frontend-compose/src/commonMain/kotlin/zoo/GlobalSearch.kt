@@ -32,9 +32,17 @@ fun GlobalSearchScreen(
     controller: GlobalSearchController = app.globalSearch,
 ) {
     val initialQuery = remember { app.query["q"] ?: controller.query }
-    val initialType = remember { app.query["type"]?.let(GlobalSearchType::from) ?: controller.type }
     var text by remember { mutableStateOf(initialQuery) }
-    LaunchedEffect(controller) { controller.search(initialQuery, initialType) }
+    // Follow the route: a link or `Session.update` may change `q`/`type` while this screen stays.
+    // Our own `replace` below writes the controller's values back, so `search` is a no-op for it
+    // and the loaded pages stay.
+    val routeQuery = app.query["q"]
+    val routeType = app.query["type"]?.let(GlobalSearchType::from)
+    LaunchedEffect(controller, routeQuery, routeType) {
+        val query = routeQuery ?: controller.query
+        if (query.trim() != text.trim()) text = query
+        controller.search(query, routeType ?: controller.type)
+    }
     LaunchedEffect(controller, text) {
         if (text.trim() == controller.query) return@LaunchedEffect
         delay(SEARCH_DEBOUNCE_MS)
