@@ -350,6 +350,15 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
                 ),
                 DIM,
             ),
+            // 最後まで見終わったときも、どこまで見たかは出す。
+            (None, Some(month), true) => Line::styled(
+                format!("{month} まで検索しました。見つかりませんでした。"),
+                DIM,
+            ),
+            (None, Some(month), false) => Line::styled(
+                format!("{} 件（{month} まで検索しました）", search.items.len()),
+                DIM,
+            ),
             (_, _, true) => Line::styled("見つかりませんでした。", DIM),
             _ => Line::styled(format!("{} 件", search.items.len()), DIM),
         }
@@ -373,6 +382,9 @@ fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
     let mut out = Vec::new();
     let mut used = 0;
     for span in spans {
+        if used >= width {
+            break;
+        }
         let w = span.content.width();
         if used + w <= width {
             used += w;
@@ -2274,6 +2286,10 @@ mod tests {
         assert!(text.ends_with('…'), "{text}");
         let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
         assert_eq!(short.len(), 2);
+        // 前の span が幅を使い切ったら、`…` も足さずに止める。
+        let full = truncate_spans(vec![Span::raw("ab"), Span::raw("c")], 2);
+        let text: String = full.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "ab");
     }
 
     #[tokio::test]
@@ -2301,6 +2317,16 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("親なしの返信"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn global_search_shows_the_searched_month_after_the_last_page() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), false));
+        app.global_search.searched_until = Some("2025-12".into());
+        app.global_search.next_cursor = None;
+        assert!(render(&mut app).contains("2025-12 まで検索しました。見つかりませんでした。"));
     }
 
     #[tokio::test]
