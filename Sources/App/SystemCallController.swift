@@ -29,6 +29,7 @@ final class SystemCallController: NSObject {
     private let provider: any SystemCallReporting
     private let callController: any SystemCallRequesting
     private let configureAudio: @MainActor () throws -> Void
+    private let loadChannel: @MainActor (any ChatClient, String) async throws -> Channel
     private let beginBackgroundTask: (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier
     private let endBackgroundTask: (UIBackgroundTaskIdentifier) -> Void
     private var answerBackgroundTask = UIBackgroundTaskIdentifier.invalid
@@ -45,8 +46,9 @@ final class SystemCallController: NSObject {
     private var retired: [UUID: Date] = [:]
     private var expiry: Task<Void, Never>?
     private var invitationSync: Task<Void, Never>?
-    private var answering: Task<Void, Never>?
+    private(set) var answering: Task<Void, Never>?
     private var answerAction: CXAnswerCallAction?
+    private var pendingAnswerError: (userID: String, message: String)?
     private var validation: Task<Void, Never>?
     private var validationID: UUID?
     private var startedCall = false
@@ -127,6 +129,7 @@ final class SystemCallController: NSObject {
 
     init(provider: any SystemCallReporting, callController: any SystemCallRequesting = CXCallController(),
          configureAudio: @escaping @MainActor () throws -> Void = NativeCallMedia.prepareSystemAudio,
+         loadChannel: @escaping @MainActor (any ChatClient, String) async throws -> Channel = { try await $0.channel(id: $1) },
          beginBackgroundTask: @escaping (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier = {
              UIApplication.shared.beginBackgroundTask(withName: "着信への応答準備", expirationHandler: $0)
          },
@@ -134,6 +137,7 @@ final class SystemCallController: NSObject {
         self.provider = provider
         self.callController = callController
         self.configureAudio = configureAudio
+        self.loadChannel = loadChannel
         self.beginBackgroundTask = beginBackgroundTask
         self.endBackgroundTask = endBackgroundTask
         super.init()
@@ -156,6 +160,7 @@ final class SystemCallController: NSObject {
     }
 
     func connect(_ workspace: WorkspaceStore) {
+        deliverPendingAnswerError(to: workspace)
         guard self.workspace !== workspace else { updateSync(); onWatchStateChanged?(); return }
         invitationSync?.cancel(); invitationSync = nil
         self.workspace = workspace
@@ -182,6 +187,7 @@ final class SystemCallController: NSObject {
 
     private func prepareOutgoingCall(id: UUID, channel: Channel) async throws {
         guard !isManagingCall, let workspace else { throw CancellationError() }
+        pendingAnswerError = nil
         outgoingID = id
         outgoingConnected = false
         startedCall = true
@@ -266,6 +272,7 @@ final class SystemCallController: NSObject {
         retired = retired.filter { $0.value > .now }
         let available = !isManagingCall && workspace?.calls.channel == nil && retired[call.id] == nil
         if available {
+            pendingAnswerError = nil
             current = call; phase = .ringing; observedInShape = false
             incomingReported = false
             startedCall = false
@@ -353,6 +360,7 @@ final class SystemCallController: NSObject {
     }
 
     private func clear() {
+        pendingAnswerError = nil
         finishAnswerBackgroundTask()
         if let current { retired[current.id] = max(current.expiresAt, .now.addingTimeInterval(60)) }
         current = nil
@@ -370,15 +378,30 @@ final class SystemCallController: NSObject {
         onWatchStateChanged?()
     }
 
-    private func end(reason: CXCallEndedReason) {
+    private func deliverPendingAnswerError(to workspace: WorkspaceStore) {
+        guard let pending = pendingAnswerError else { return }
+        pendingAnswerError = nil
+        guard workspace.active, pending.userID.caseInsensitiveCompare(workspace.user.id) == .orderedSame else { return }
+        workspace.calls.error = pending.message
+    }
+
+    private func end(reason: CXCallEndedReason, answerError: String? = nil) {
         guard let callID else { return }
         let hadCall = startedCall
+        let recipientID = current?.userID
         clear()
+        if let answerError, let recipientID {
+            // 認証復元より先に応答が失敗しても、着信先の接続時に一度だけ伝える。
+            pendingAnswerError = (recipientID, answerError)
+            if let workspace, workspace.active { deliverPendingAnswerError(to: workspace) }
+            onWatchStateChanged?()
+        }
         provider.reportCall(with: callID, endedAt: .now, reason: reason)
         if hadCall { workspace?.calls.finish() }
     }
 
     func disconnect() {
+        pendingAnswerError = nil
         end(reason: .remoteEnded)
         invitationSync?.cancel(); invitationSync = nil
         workspace?.systemCalls = nil
@@ -494,13 +517,11 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
         // Watchの通知操作が完了しても、CallKitが音声を有効にするまで応答準備を継続する。
         answerBackgroundTask = beginBackgroundTask { [weak self] in
             guard let self, current?.id == call.id else { return }
-            workspace?.calls.error = "通話の準備が時間内に完了しませんでした。もう一度お試しください。"
-            end(reason: .failed)
+            end(reason: .failed, answerError: "通話の準備が時間内に完了しませんでした。もう一度お試しください。")
         }
         do { try configureAudio() }
         catch {
-            workspace?.calls.error = "通話の音声を準備できませんでした。"
-            end(reason: .failed)
+            end(reason: .failed, answerError: "通話の音声を準備できませんでした。")
             return
         }
         answering = Task { [weak self] in
@@ -515,7 +536,7 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
             }
             connect(workspace)
             do {
-                let channel = try await workspace.client.channel(id: call.channelID)
+                let channel = try await loadChannel(workspace.client, call.channelID)
                 try Task.checkCancellation()
                 guard current?.id == call.id else { return }
                 guard call.canAnswer(userID: workspace.user.id) else { end(reason: .unanswered); return }

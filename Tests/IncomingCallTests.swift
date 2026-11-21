@@ -332,7 +332,9 @@ struct IncomingCallTests {
         let progress = AsyncStream<String>.makeStream()
         let preparation = AnswerPreparation()
 
-        init(payload: [String: String], permission: Bool = true, audioFailure: Bool = false) throws {
+        init(payload: [String: String], permission: Bool = true, audioFailure: Bool = false,
+             connectWorkspace: Bool = true,
+             loadChannel: @escaping @MainActor (any ChatClient, String) async throws -> Channel = { try await $0.channel(id: $1) }) throws {
             harness = try ChatHarness()
             call = try #require(IncomingCall(payload: payload))
             let channel = Channel(id: call.channelID, channel_name: "着信先", is_private: false, is_dm: false)
@@ -351,7 +353,7 @@ struct IncomingCallTests {
             controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {
                 preparation.configured = true
                 if audioFailure { throw ZooError.invalidResponse }
-            }, beginBackgroundTask: { expired in
+            }, loadChannel: loadChannel, beginBackgroundTask: { expired in
                 preparation.backgroundStarts += 1
                 preparation.expiration = expired
                 return UIBackgroundTaskIdentifier(rawValue: 1)
@@ -362,7 +364,7 @@ struct IncomingCallTests {
             client.delivered = { [weak self] in self?.progress.continuation.yield("入室") }
             reporting.onEnd = { [weak self] in self?.progress.continuation.yield("終了") }
             controller.setForeground(false)
-            controller.connect(workspace)
+            if connectWorkspace { controller.connect(workspace) }
         }
 
         func receive() async {
@@ -451,15 +453,76 @@ struct IncomingCallTests {
         #expect(service.snapshot().callError == context.calls.error)
     }
 
+    @Test("復元前の音声設定失敗・期限切れを宛先の接続後に一度だけWatchへ表示する", arguments: [true, false])
+    func retainsAnswerErrorUntilConnected(audioFailure: Bool) async throws {
+        let context = try AnswerContext(payload: payload, audioFailure: audioFailure, connectWorkspace: false)
+        defer { context.close() }
+        await context.receive()
+        let action = RecordingAnswerAction(call: context.call.id)
+        context.controller.provider(context.native, perform: action)
+        if !audioFailure {
+            let expire = try #require(context.preparation.expiration)
+            expire()
+        }
+        #expect(action.results == [false] && !context.controller.isManagingCall)
+        #expect(context.preparation.backgroundEnds == 1 && context.calls.error == nil)
+
+        context.controller.connect(context.workspace)
+        let message = audioFailure ? "通話の音声を準備できませんでした。"
+            : "通話の準備が時間内に完了しませんでした。もう一度お試しください。"
+        let service = WatchCompanionService(calls: context.controller, workspace: { context.workspace }, prepare: { context.workspace })
+        #expect(context.calls.error == message && service.snapshot().callError == message)
+        context.calls.error = nil
+        context.controller.connect(context.workspace)
+        #expect(service.snapshot().callError == nil)
+    }
+
+    @Test("保持した応答エラーをリセット・切断・次の着信・別アカウントへの接続で破棄する",
+          arguments: ["リセット", "切断", "次の着信", "別アカウント"])
+    func discardsPendingAnswerError(reason: String) async throws {
+        let context = try AnswerContext(payload: payload, audioFailure: true, connectWorkspace: false)
+        defer { context.close() }
+        await context.receive()
+        context.controller.provider(context.native, perform: RecordingAnswerAction(call: context.call.id))
+        switch reason {
+        case "リセット": context.controller.providerDidReset(context.native)
+        case "切断": context.controller.disconnect()
+        case "次の着信":
+            var nextPayload = payload
+            nextPayload["user_id"] = context.call.userID
+            let next = try #require(IncomingCall(payload: nextPayload))
+            await withCheckedContinuation { continuation in context.controller.receive(next) { continuation.resume() } }
+        default:
+            let other = WorkspaceStore(client: context.harness.client,
+                user: Person(id: UUID().uuidString, user_name: "別の利用者", display_name: "別の利用者"), recentEmojiDefaults: nil)
+            context.controller.connect(other)
+            #expect(other.calls.error == nil)
+            other.shutdown()
+        }
+        context.controller.connect(context.workspace)
+        #expect(context.calls.error == nil)
+    }
+
     @Test("応答準備の期限切れ・取消・リセットで遅い処理を無効にし、実行時間を一度だけ解放する",
           arguments: ["期限切れ", "取消", "リセット"])
     func interruptsAnswerPreparation(reason: String) async throws {
-        let context = try AnswerContext(payload: payload)
+        let requests = AsyncStream<CheckedContinuation<Channel, Never>>.makeStream()
+        defer { requests.continuation.finish() }
+        let incoming = payload
+        let context = try AnswerContext(payload: incoming, loadChannel: { _, id in
+            #expect(id == incoming["channel_id"])
+            // 取消を無視する取得処理から成功値が戻っても、応答準備を再開しないことを調べる。
+            return await withCheckedContinuation { requests.continuation.yield($0) }
+        })
         defer { context.close() }
+        let channel = Channel(id: context.call.channelID, channel_name: "着信先", is_private: false, is_dm: false)
         await context.receive()
         let action = try await context.requestAnswer()
         context.controller.provider(context.native, perform: action)
+        let preparation = try #require(context.controller.answering)
         let expire = try #require(context.preparation.expiration)
+        var pending = requests.stream.makeAsyncIterator()
+        let response = try #require(await pending.next())
         switch reason {
         case "期限切れ": expire()
         case "取消": context.controller.provider(context.native, perform: CXEndCallAction(call: context.call.id))
@@ -467,6 +530,12 @@ struct IncomingCallTests {
         }
         #expect(action.results == [false] && !context.controller.isManagingCall)
         #expect(context.preparation.backgroundEnds == 1 && !context.client.observed)
+        #expect(preparation.isCancelled)
+        response.resume(returning: channel)
+        await preparation.value
+        #expect(!context.controller.isManagingCall && context.calls.channel == nil && !context.media.started)
+        #expect(!context.client.observed && !context.client.accepted)
+        #expect(action.results == [false] && context.preparation.backgroundEnds == 1)
         expire()
         #expect(context.preparation.backgroundEnds == 1)
     }
