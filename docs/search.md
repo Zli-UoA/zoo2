@@ -86,3 +86,16 @@ CREATE INDEX messages_search_month ON messages USING gin (
 - 予算テストの CI と `ci-backend` の emoji のジョブは、service コンテナの代わりに、このイメージをビルドして `docker run` する。
 - 今まで `postgres:16-alpine` で作ったローカルのデータは、`make db-reset` で作り直す（alpine（musl）と Debian（glibc）で文字列の並び順が違い、インデックスが合わなくなるため）。
 - 本番（CNPG）と preview のイメージは Zli-UoA/zoo2-infra の `images/postgres-bigm` と `images/postgres-bigm-dev`。pg_bigm の版を上げるときは、3 つの Dockerfile をそろえる。
+
+## クライアント
+
+| クライアント | 入口 | 備考 |
+| --- | --- | --- |
+| Web（React） | 左のレールの検索、`/search?q=&type=` | メッセージとファイルの 2 つのタブ。続きは「さらに古い結果を検索」 |
+| Android（Compose） | チャンネル一覧の上の検索ボタン、広い画面ではレール | Web と同じ |
+| TUI | `S` / `Ctrl+F` | Tab で種類を切り替え、末尾で ↓ を押すと続きを読む |
+| デスクトップ（Tauri） | Web と同じ | 既定の Remote モードは React の画面を読むので、Web の検索がそのまま使える。開発用の Leptos の画面にはメッセージへ移動する手段がないので、検索は付けない |
+| iOS | Zli-UoA/zoo2-ios で対応 | |
+
+- ノート（`type=notes`）は、どのクライアントにもノートの画面がまだないので、クライアントからは使っていない。ノートの画面を作るときに、検索の種類に足す。
+- 暗号化チャンネルの検索は、今までどおり各クライアントが読み込んで復号した範囲だけで行う。
