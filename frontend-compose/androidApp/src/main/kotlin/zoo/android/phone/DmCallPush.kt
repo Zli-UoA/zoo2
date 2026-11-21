@@ -15,6 +15,7 @@ import zoo.android.MainActivity
 import zoo.android.PushBinding
 import zoo.android.notificationsAllowed
 
+internal const val DM_PUSH_OPEN_ACTION = "zoo.phone.PUSH_OPEN"
 internal const val DM_PUSH_ANSWER_ACTION = "zoo.phone.PUSH_ANSWER"
 internal const val DM_PUSH_DISMISS_ACTION = "zoo.phone.PUSH_DISMISS"
 
@@ -67,6 +68,9 @@ internal fun showDmCallPush(context: Context, store: PushBinding, user: String, 
         .putExtra("invite", id).putExtra("binding", binding).putExtra("expiresAt", answer.expiresAt)
         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    val openIntent = Intent(intent).setAction(DM_PUSH_OPEN_ACTION)
+        .setData(Uri.parse("zoo-phone://$binding/$id/push-open"))
+    val open = PendingIntent.getActivity(context, 0, openIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     val label = data["title"].orEmpty().take(200).ifBlank { "Zoo" }
     val dismissIntent = Intent(intent).setClass(context, PhoneActionReceiver::class.java)
         .setAction(DM_PUSH_DISMISS_ACTION).putExtra("user", user)
@@ -78,6 +82,7 @@ internal fun showDmCallPush(context: Context, store: PushBinding, user: String, 
     val builder = Notification.Builder(context, INCOMING_CHANNEL)
         .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle(label)
+        .setContentIntent(open)
         .setCategory(Notification.CATEGORY_CALL)
         .setTimeoutAfter(timeout).setOnlyAlertOnce(true)
         .setVisibility(Notification.VISIBILITY_PRIVATE)

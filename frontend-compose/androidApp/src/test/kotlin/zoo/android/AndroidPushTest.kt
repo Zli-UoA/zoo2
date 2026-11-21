@@ -12,6 +12,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import zoo.android.phone.DM_PUSH_ANSWER_ACTION
+import zoo.android.phone.DM_PUSH_OPEN_ACTION
 import zoo.android.phone.DmCallPushAnswer
 import zoo.android.phone.IncomingCallActivity
 
@@ -94,6 +95,9 @@ class AndroidPushTest {
         assertEquals(IncomingCallActivity::class.java.name, shadowOf(fullScreen).savedIntent.component?.className)
         val intent = notification.actions.map { shadowOf(it.actionIntent).savedIntent }
             .single { it.action == DM_PUSH_ANSWER_ACTION }
+        val open = shadowOf(notification.contentIntent).savedIntent
+        assertEquals(DM_PUSH_OPEN_ACTION, open.action)
+        assertEquals(id, DmCallPushAnswer.fromIntent(open)?.id)
         assertEquals(DM_PUSH_ANSWER_ACTION, intent.action)
         assertEquals(id, DmCallPushAnswer.fromIntent(intent)?.id)
         assertEquals(binding, DmCallPushAnswer.fromIntent(intent)?.binding)

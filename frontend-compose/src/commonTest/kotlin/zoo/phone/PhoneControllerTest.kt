@@ -116,6 +116,20 @@ class PhoneControllerTest {
         f.events.getValue("dm")("connected", obj()); assertEquals("active", f.controller.call?.status)
         f.controller.close(); runCurrent(); assertNull(f.controller.call); assertTrue("dm" in f.closed)
     }
+    @Test fun preferredInviteWaitsWhileAnUnrelatedInviteSyncsFirst() = runTest {
+        val f = Fixture(backgroundScope)
+        f.controller.restoreDmWaiting()
+        val first = f.invitation()
+        val selected = obj("id" to "selected", "channel_id" to "selected-dm",
+            "invitee_id" to "alice", "inviter_name" to "Carol", "status" to "pending",
+            "expires_at" to "2030-01-01T00:00:30Z")
+        f.controller.invites(listOf(first), "alice", 1893456000000, preferredInviteId = "selected")
+        assertNull(f.controller.call)
+        f.controller.invites(listOf(first, selected), "alice", 1893456000000, preferredInviteId = "selected")
+        assertEquals("selected-dm", f.controller.call?.target)
+        f.controller.close()
+    }
+
     @Test fun expiredForeignAndDuplicateInvitesNeverCreateAdditionalNativeCalls() = runTest {
         val f = Fixture(backgroundScope); f.controller.receiveDmCalls(true); runCurrent()
         f.controller.invites(listOf(f.invitation()), "bob", 1893456000000); assertNull(f.controller.call)

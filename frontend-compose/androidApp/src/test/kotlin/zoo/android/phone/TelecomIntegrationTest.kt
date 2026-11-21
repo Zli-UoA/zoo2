@@ -1,6 +1,9 @@
 package zoo.android.phone
 
+import android.app.Notification
 import android.app.NotificationManager
+import android.app.Service
+import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.telecom.CallAudioState
 import android.telecom.Connection
@@ -20,6 +23,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowService
 import zoo.Environment
 import zoo.Platform
 import zoo.Repository
@@ -136,6 +142,37 @@ class TelecomIntegrationTest {
             }
             assertTrue(shadowOf(service).isStoppedBySelf)
             assertNull(it.host.controller.call)
+            service.onDestroy()
+        }
+    }
+
+    @Implements(Service::class)
+    class MicrophoneDeniedServiceShadow : ShadowService() {
+        @Implementation
+        override fun startForeground(id: Int, notification: Notification, type: Int) {
+            if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0) {
+                throw SecurityException("Microphone access denied")
+            }
+            super.startForeground(id, notification, type)
+        }
+    }
+
+    @Test
+    @Config(sdk = [35], shadows = [MicrophoneDeniedServiceShadow::class])
+    fun nativeMicrophonePromotionFailureAcknowledgesStartAndEndsCall() = runTest {
+        Fixture(backgroundScope).use {
+            it.host.controller.receiveDmCalls(true)
+            runCurrent()
+            it.ring().onAnswer()
+            runCurrent()
+            val start = assertNotNull(it.shadow.nextStartedService)
+            val service = Robolectric.buildService(PhoneService::class.java).create().get()
+            service.onStartCommand(start, 0, 1)
+            assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL, service.foregroundServiceType)
+            assertNotNull(shadowOf(service).lastForegroundNotification)
+            assertTrue(shadowOf(service).isStoppedBySelf)
+            assertNull(it.host.controller.call)
+            assertTrue(it.host.controller.error)
             service.onDestroy()
         }
     }

@@ -190,11 +190,12 @@ class PhoneController(
     val ringingInviteId: String? get() = invite?.text("id")
 
     /** Only the session-wide network subscription supplies committed, private invite rows. */
-    fun invites(rows: List<Row>, userId: String, now: Long) {
+    fun invites(rows: List<Row>, userId: String, now: Long, preferredInviteId: String? = null) {
         if (!dmWaiting || !lifetime.isActive) return
         val current = invite
         if (current != null && call?.status == "incoming" && answeringInvite != current.text("id") && rows.none { it.text("id") == current.text("id") && it.text("status") == "pending" }) finishCall()
-        val pending = rows.firstOrNull { it.text("invitee_id") == userId && it.text("status") == "pending" && it.text("id") !in seenInvites && (timestampMillis(it.text("expires_at")) ?: 0L) > now } ?: return
+        if (preferredInviteId != null && call != null) return
+        val pending = rows.firstOrNull { (preferredInviteId == null || it.text("id") == preferredInviteId) && it.text("invitee_id") == userId && it.text("status") == "pending" && it.text("id") !in seenInvites && (timestampMillis(it.text("expires_at")) ?: 0L) > now } ?: return
         seenInvites.add(pending.text("id")); if (seenInvites.size > 1000) seenInvites.remove(seenInvites.first())
         if (call != null) { scope.launch { runCatching { api("/api/call-invites/${pending.text("id").encodeURLPathPart()}/decline", "POST") } }; return }
         val next = PhoneCall(uuid(), "dm", pending.text("channel_id"), pending.text("inviter_name").ifBlank { "Zoo" }, "incoming")

@@ -1811,7 +1811,7 @@
   "androidPhone": {
     "description": "Use personal or shared SIP lines and DM voice calls with your device’s calling features.",
     "nativeCalls": "Device call integration",
-    "nativeHelp": "A call notification appears when a call comes in. Allow notifications to receive DM calls in the background on supported devices. Keep Zoo open in the foreground while waiting for SIP calls. Device call controls support answering, ending calls and routing audio. Microphone permission is required.",
+    "nativeHelp": "A call notification appears when a call comes in. Allow notifications to receive DM calls in the background on supported devices. Keep Zoo open in the foreground while waiting for SIP calls or for DM calls on devices without FCM. Device call controls support answering, ending calls and routing audio. Microphone permission is required.",
     "incomingScreenSettings": "Full-screen call settings",
     "receiveDm": "Receive DM calls",
     "callError": "Could not prepare or control the call. Check microphone permission, device calling support, network and line configuration.",

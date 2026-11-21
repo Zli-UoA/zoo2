@@ -34,7 +34,7 @@ class PhoneService : Service() {
             !current.matches(intent.getStringExtra(PHONE_SESSION), id) || current.audioCall(id) == null
         ) {
             if (host !== current || current?.audioCall(callId) == null) {
-                acknowledgeStart()
+                runCatching { acknowledgeStart() }
                 stopSelf(startId)
             }
             return START_NOT_STICKY
@@ -93,9 +93,12 @@ class PhoneService : Service() {
             true
         } catch (_: RuntimeException) {
             // While-in-use microphone access may be denied for a background answer.
-            acknowledgeStart()
-            current.audioFailed(call.id)
-            stopSelf()
+            runCatching { acknowledgeStart() }
+            try {
+                current.audioFailed(call.id)
+            } finally {
+                stopSelf()
+            }
             false
         }
     }

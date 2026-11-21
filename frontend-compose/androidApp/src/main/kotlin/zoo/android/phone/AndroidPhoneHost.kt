@@ -34,7 +34,9 @@ internal class AndroidPhoneHost(
     private var invites: Job? = null
     private val pushBinding = PushBinding(context)
     private var incomingTag: String? = null
-    private var pushedAnswer: DmCallPushAnswer? = null
+    private data class PushedInvite(val invite: DmCallPushAnswer, val answer: Boolean)
+    private val pushedInvite = MutableStateFlow<PushedInvite?>(null)
+    private var pushedInviteExpiry: Job? = null
     private var audioReady: CompletableDeferred<Unit>? = null
     private var audioCallId: String? = null
     private var service: PhoneService? = null
@@ -106,9 +108,9 @@ internal class AndroidPhoneHost(
         native.setCallerDisplayName(call.label.ifBlank { "Zoo" }, TelecomManager.PRESENTATION_ALLOWED)
         address?.let { native.setAddress(it, TelecomManager.PRESENTATION_ALLOWED) }
         connection = native; connectionReady?.complete(Unit)
-        if (incoming && pushedAnswer != null) app.scope.launch {
+        if (incoming && pushedInvite.value?.answer == true) app.scope.launch {
             yield() // Telecom must receive the Connection before the call is answered.
-            answerPushedInviteIfReady()
+            openPushedInviteIfReady()
         }
         return native
     }
@@ -155,23 +157,38 @@ internal class AndroidPhoneHost(
     }
     private fun waiting(enabled: Boolean) {
         if (current === this) pushBinding.setDmCallsEnabled(app.config.userId, enabled)
-        if (!enabled) pushedAnswer = null
+        if (!enabled) clearPushedInvite()
         invites?.cancel(); invites = null; inviteTable?.close(); inviteTable = null
         if (enabled) {
             val table = SyncedTable("call_invites", app.config, app.platform, http, app.scope, persist = false)
             inviteTable = table
             invites = app.scope.launch {
-                combine(table.synchronizedRows.filterNotNull(), app.repo.channels.replicatedRows, app.repo.users.replicatedRows) { rows, channels, users ->
+                val dmRows = combine(table.synchronizedRows.filterNotNull(), app.repo.channels.replicatedRows, app.repo.users.replicatedRows) { rows, channels, users ->
                     val dmIds = channels.filter { it.flag("is_dm") }.map { it.text("id") }.toSet()
                     rows.filter { it.text("channel_id") in dmIds }.map { row ->
                         val user = users.find { it.text("id") == row.text("inviter_id") }
                         kotlinx.serialization.json.JsonObject(row + ("inviter_name" to kotlinx.serialization.json.JsonPrimitive(user?.text("display_name").orEmpty().ifBlank { "Zoo" })))
                     }
-                }.collect { rows ->
-                    val target = pushedAnswer?.takeIf { it.remainingMillis() > 0 }?.id
-                    controller.invites(rows.sortedBy { target != null && it.text("id") != target },
-                        app.config.userId, kotlin.time.Clock.System.now().toEpochMilliseconds())
                 }
+                combine(dmRows, pushedInvite) { rows, selection -> rows to selection }
+                    .collect { (rows, selection) ->
+                        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                        val target = selection?.invite?.takeIf {
+                            it.remainingMillis() > 0 && !pushBinding.dmInviteEnded(it.id)
+                        }?.id
+                        if (target != null && selection?.answer == false) {
+                            val row = rows.firstOrNull {
+                                it.text("id") == target && it.text("invitee_id") == app.config.userId &&
+                                    it.text("status") == "pending" && (timestampMillis(it.text("expires_at")) ?: 0L) > now
+                            }
+                            if (row != null) {
+                                clearPushedInvite()
+                                app.navigate("/channels/${row.text("channel_id").encodeURLPathPart()}")
+                            }
+                        }
+                        controller.invites(rows, app.config.userId, now,
+                            preferredInviteId = target?.takeIf { selection?.answer == true })
+                    }
             }
         }
     }
@@ -197,29 +214,42 @@ internal class AndroidPhoneHost(
         if (audioCall(id) != null) controller.nativeFailed(id)
     }
 
-    private fun answerPushedInviteIfReady() {
-        val answer = pushedAnswer ?: return
-        if (answer.remainingMillis() <= 0) {
-            pushedAnswer = null
+    private fun clearPushedInvite() {
+        pushedInviteExpiry?.cancel()
+        pushedInviteExpiry = null
+        pushedInvite.value = null
+    }
+
+    private fun openPushedInviteIfReady() {
+        val selection = pushedInvite.value?.takeIf { it.answer } ?: return
+        if (selection.invite.remainingMillis() <= 0 || pushBinding.dmInviteEnded(selection.invite.id)) {
+            clearPushedInvite()
             return
         }
         val call = controller.call ?: return
-        if (controller.ringingInviteId != answer.id || connection?.id != call.id) return
-        pushedAnswer = null
+        if (controller.ringingInviteId != selection.invite.id || connection?.id != call.id) return
+        clearPushedInvite()
         app.navigate("/channels/${call.target.encodeURLPathPart()}")
         controller.answer()
     }
 
     fun open(intent: Intent): Boolean {
-        if (intent.action == DM_PUSH_ANSWER_ACTION) {
-            val answer = DmCallPushAnswer.fromIntent(intent) ?: return true
-            if (available && pushBinding.matches(answer.binding, app.config.userId) &&
-                pushBinding.dmCallsEnabled(app.config.userId) && !pushBinding.dmInviteEnded(answer.id) &&
-                answer.remainingMillis() > 0
+        if (intent.action == DM_PUSH_ANSWER_ACTION || intent.action == DM_PUSH_OPEN_ACTION) {
+            val invite = DmCallPushAnswer.fromIntent(intent) ?: return true
+            val remaining = invite.remainingMillis()
+            if (available && pushBinding.matches(invite.binding, app.config.userId) &&
+                pushBinding.dmCallsEnabled(app.config.userId) && !pushBinding.dmInviteEnded(invite.id) &&
+                remaining > 0
             ) {
-                pushedAnswer = answer
+                pushedInviteExpiry?.cancel()
+                pushedInvite.value = PushedInvite(invite, intent.action == DM_PUSH_ANSWER_ACTION)
+                pushedInviteExpiry = app.scope.launch {
+                    delay(remaining)
+                    pushedInvite.value = null
+                    pushedInviteExpiry = null
+                }
                 controller.restoreDmWaiting()
-                answerPushedInviteIfReady()
+                openPushedInviteIfReady()
             }
             return true
         }
