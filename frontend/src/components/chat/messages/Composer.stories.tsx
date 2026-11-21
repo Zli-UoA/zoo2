@@ -94,24 +94,6 @@ export const SingleLineActionsAlignWithTextMobile: Story = {
   }),
 };
 
-export const MultilineActionsStayAtTop: Story = {
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const textbox = canvas.getByRole("textbox");
-    await userEvent.type(textbox, "1行目{Enter}2行目{Enter}3行目{Enter}4行目");
-    const frame = textbox.parentElement!;
-    const frameBox = frame.getBoundingClientRect();
-    // 複数行になってもアクションは入力枠の先頭行に固定され、下端に寄らない。
-    for (const name of ["絵文字", "送信"]) {
-      const button = canvas.getByRole("button", { name });
-      const box = button.getBoundingClientRect();
-      // 下端（複数行の最終行）に寄っていないことを確認する。中心の一致は 1 行の Story で検証。
-      await expect(box.top - frameBox.top).toBeLessThanOrEqual(12);
-      await expect(box.top - frameBox.top).toBeGreaterThanOrEqual(0);
-    }
-  }),
-};
-
 export const Disabled: Story = {
   args: {
     disabled: true,
@@ -128,6 +110,13 @@ export const Multiline: Story = {
     const textarea = await canvas.findByRole("textbox");
     await userEvent.type(textarea, "1行目{enter}2行目{enter}3行目");
     await expect(textarea).toHaveValue("1行目\n2行目\n3行目");
+    const frameBox = textarea.parentElement!.getBoundingClientRect();
+    for (const name of ["絵文字", "送信"]) {
+      const box = canvas.getByRole("button", { name }).getBoundingClientRect();
+      // 複数行になっても先頭行に固定され、下端に寄らない。
+      await expect(box.top - frameBox.top).toBeLessThanOrEqual(12);
+      await expect(box.top - frameBox.top).toBeGreaterThanOrEqual(0);
+    }
   }),
 };
 

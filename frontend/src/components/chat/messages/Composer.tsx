@@ -588,6 +588,7 @@ export function Composer({
       ) : null}
       <ComposerField>
         <ComposerEmojiButton
+          className="md:mt-1"
           textareaRef={textareaRef}
           value={value}
           disabled={disabled}

@@ -373,7 +373,7 @@ export function BubbleChatScreen() {
                   value={content}
                   placeholder={t("bubbleChat.placeholder")}
                   aria-label={t("bubbleChat.inputLabel")}
-                  className={`${composerTextareaClassName} min-h-9 px-2 py-1.5`}
+                  className={`${composerTextareaClassName} min-h-11 px-2 py-2.5 md:min-h-9 md:py-1.5`}
                   onCompositionStart={() => {
                     composingRef.current = true;
                   }}
@@ -407,7 +407,7 @@ export function BubbleChatScreen() {
                 <Button
                   type="button"
                   size="icon-lg"
-                  className="size-9!"
+                  className="size-11! md:size-9!"
                   disabled={content.trim().length === 0}
                   aria-label={t("bubbleChat.clear")}
                   title={t("bubbleChat.clear")}

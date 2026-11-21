@@ -7,6 +7,16 @@ import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../.storybook/shell";
 import { BubbleChatScreen } from "./BubbleChatScreen";
 
+async function expectClearButtonAlignedWithInput() {
+  const textbox = await screen.findByRole("textbox");
+  const box = textbox.getBoundingClientRect();
+  const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
+  const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
+  const textCenter = box.top + paddingTop + lineHeight / 2;
+  const clear = screen.getByRole("button", { name: "入力をクリア" }).getBoundingClientRect();
+  await expect(Math.abs(clear.top + clear.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+}
+
 const meta = {
   title: "Pages/BubbleChat",
   component: BubbleChatScreen,
@@ -50,6 +60,7 @@ export const ActiveConversation: Story = {
     await expect(input).toHaveValue("");
     // 入力欄は即座にクリアされるが、吹き出しは破裂アニメーションのため少しの間表示される
     await expect(await within(list).findByText("ありがとう！準備してきます")).toBeInTheDocument();
+    await expectClearButtonAlignedWithInput();
   }),
 };
 
@@ -69,13 +80,7 @@ export const Mobile: Story = {
     },
   },
   play: playForImplementation(async () => {
-    const textbox = await screen.findByRole("textbox");
-    const box = textbox.getBoundingClientRect();
-    const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
-    const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
-    const textCenter = box.top + paddingTop + lineHeight / 2;
-    const clear = screen.getByRole("button", { name: "入力をクリア" }).getBoundingClientRect();
-    await expect(Math.abs(clear.top + clear.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+    await expectClearButtonAlignedWithInput();
   }),
 };
 

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { cn } from "cn";
 import { SmileIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../ui/button";
@@ -11,12 +12,14 @@ export function ComposerEmojiButton({
   onChange,
   disabled,
   isComposing,
+  className,
 }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
   isComposing?: () => boolean;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -34,7 +37,7 @@ export function ComposerEmojiButton({
         type="button"
         variant="ghost"
         size="icon-lg"
-        className="mt-1"
+        className={cn("size-11! md:size-9!", className)}
         disabled={disabled}
         aria-label={t("reactions.tabEmoji")}
         title={t("reactions.tabEmoji")}
