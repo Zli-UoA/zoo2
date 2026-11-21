@@ -104,7 +104,7 @@ final class CallStore {
         activeCallsGeneration = generation
         do {
             do {
-                try await recoverInterruptedCalls()
+                try await prepareInterruptedCalls()
             } catch {
                 // 自端末の退出失敗だけで、ほかの参加者の通話一覧まで取得不能にしない。
                 if case ZooError.expiredSession = error { throw error }
@@ -391,7 +391,7 @@ final class CallStore {
         }
     }
 
-    private func prepareInterruptedCalls(in channelID: String) async throws {
+    private func prepareInterruptedCalls(in channelID: String? = nil) async throws {
         guard let sessionJournal, try sessionJournal.load().contains(where: { $0.sessionID != sessionID }) else { return }
         let completed = AsyncStream<Void>.makeStream()
         Task { [weak self] in
@@ -407,7 +407,7 @@ final class CallStore {
             completed.continuation.yield(())
         }
         defer { deadline.cancel(); completed.continuation.finish() }
-        // 通常は退出を先行させるが、応答期限を使い切らないよう回収の完了待ちを制限する。
+        // 通常は退出を先行させるが、一覧更新や着信応答を止め続けないよう待機を制限する。
         for await _ in completed.stream { break }
         try Task.checkCancellation()
     }
