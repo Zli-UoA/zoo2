@@ -7,6 +7,7 @@ data class NotificationDisplay(
     val snippet: String?,
     val time: String,
     val unread: Boolean,
+    val target: String? = null,
 )
 
 class NotificationInbox(private val session: Session) {
@@ -30,6 +31,8 @@ class NotificationInbox(private val session: Session) {
                 entry.key, name, summary, item.text("content").ifBlank { null },
                 session.platform.notificationTime(entry.createdAt),
                 entry.channel?.any { !it.flag("is_read") } ?: !item.flag("is_read"),
+                item.text("channel_id").takeIf { it.isNotBlank() }
+                    ?.let { "/channels/$it?message=${item.text("message_id")}" },
             )
         }
     }

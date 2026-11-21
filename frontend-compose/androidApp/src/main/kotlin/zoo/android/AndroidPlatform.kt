@@ -42,7 +42,16 @@ internal class AndroidPlatform(
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
     private val prefs = activity.getSharedPreferences("preferences", 0)
+    private val savedTheme = prefs.getString("theme", "system") ?: "system"
+    private fun reducedMotion() = android.provider.Settings.Global.getFloat(
+        activity.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
+    ) == 0f
+
     var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true,
+        theme = savedTheme,
+        locale = prefs.getString("locale", "ja") ?: "ja",
+        dark = savedTheme == "dark" || savedTheme == "system" && (activity.resources.configuration.uiMode and 48) == 32,
+        reducedMotion = reducedMotion(),
         swipeReply = prefs.getBoolean("swipe-reply", true),
         operationHaptics = prefs.getBoolean("operation-haptics", true),
     ))
@@ -121,7 +130,7 @@ internal class AndroidPlatform(
     }
 
     fun visible(value: Boolean) {
-        env = env.copy(visible = value)
+        env = env.copy(visible = value, reducedMotion = reducedMotion())
     }
 
     fun systemDark(value: Boolean) {
@@ -183,6 +192,7 @@ internal class AndroidPlatform(
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
+                prefs.edit().putString("theme", theme).apply()
                 env =
                     env.copy(
                         theme = theme,
@@ -192,7 +202,11 @@ internal class AndroidPlatform(
                                     (activity.resources.configuration.uiMode and 48) == 32,
                     )
             }
-            name.startsWith("locale:") -> env = env.copy(locale = name.removePrefix("locale:"))
+            name.startsWith("locale:") -> {
+                val locale = name.removePrefix("locale:")
+                prefs.edit().putString("locale", locale).apply()
+                env = env.copy(locale = locale)
+            }
             name.startsWith("fileRelease:") -> files.remove(name.removePrefix("fileRelease:"))
         }
     }

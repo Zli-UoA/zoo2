@@ -74,10 +74,11 @@ internal fun DirectoryPage(
 
 @Composable
 internal fun NewPostPage(
-    input: InputState, recent: List<RecentPhoto>, showPhotos: Boolean, colors: AndroidColors,
+    screen: AndroidScreen.NewPost, colors: AndroidColors,
     dispatch: (AndroidUiAction) -> Unit,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
+    val input = screen.input
     PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) })
     Column(Modifier.fillMaxSize().imePadding()) {
         BasicTextField(
@@ -92,7 +93,7 @@ internal fun NewPostPage(
                 }
             },
         )
-        if (showPhotos) {
+        if (screen.showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("最近の写真", Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
                 TextAction("写真を選択", colors, style = TextActionStyle.Plain) {
@@ -103,10 +104,24 @@ internal fun NewPostPage(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(recent, key = { it.id }) { item ->
+                items(screen.recent, key = { it.id }) { item ->
                     photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp))
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.SelectPhoto(item.id)) })
                 }
+            }
+        }
+        if (screen.attached.isNotEmpty()) LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            items(screen.attached, key = { it.id }) { item ->
+                photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+            }
+        }
+        if (screen.visibility != null) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+            for ((id, label) in listOf("public" to "公開", "unlisted" to "未収載", "followers" to "フォロワー")) {
+                TextAction(label, colors, style = if (id == screen.visibility) TextActionStyle.Neutral else TextActionStyle.Plain,
+                    modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectPostVisibility(id)) }
             }
         }
         Row(
@@ -117,7 +132,7 @@ internal fun NewPostPage(
             UiIconButton(UiIcon.Attach, "写真", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))
-            val enabled = input.canSend && input.text.isNotBlank()
+            val enabled = input.canSend && (input.text.isNotBlank() || screen.attached.isNotEmpty())
             TextAction("投稿", colors, enabled) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
         }
     }
