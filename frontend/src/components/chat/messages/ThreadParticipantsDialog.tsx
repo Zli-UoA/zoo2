@@ -32,8 +32,8 @@ export interface ThreadParticipantsAction {
 
 /**
  * スレッドのメンバー。ほかのポップアウト（チャンネルを探す・設定）と同じ、画面の中央に出すダイアログで、
- * 中身はチャンネルのメンバー一覧（`MembersPanel`）にそろえる。親メッセージの投稿者を先頭に固定して
- * 「親メッセージ」の印を、自分に「あなた」の印を付け、名前で絞り込め、参加・退出の操作を出す。
+ * 中身はチャンネルのメンバー一覧（`MembersPanel`）にそろえる。スレ主（親メッセージの投稿者）を先頭に固定して
+ * 「スレ主」の印を、自分に「あなた」の印を付け、名前で絞り込め、参加・退出の操作を出す。
  *
  * 一覧は、サーバーが返す先頭から最大50人。絞り込みは、その範囲に対して行う。
  */
@@ -54,7 +54,7 @@ export function ThreadParticipantsDialog({
   /** 参加中の人数（一覧に載る人数より多いことがある）。まだ読み込めていないときは `undefined`。 */
   count: number | undefined;
   participants: readonly ThreadParticipant[];
-  /** 親メッセージの投稿者。 */
+  /** スレ主（親メッセージの投稿者）。 */
   creatorId: string | null | undefined;
   currentUserId: string | null | undefined;
   status: ThreadParticipantsStatus;
@@ -126,7 +126,7 @@ export function ThreadParticipantsDialog({
               key={participant.id}
               label={participantLabel(participant)}
               avatarUrl={participant.avatar_url}
-              creatorTag={participant.id === creatorId ? t("threads.parentMessage") : undefined}
+              creatorTag={participant.id === creatorId ? t("threads.threadStarter") : undefined}
               isMe={participant.id === currentUserId}
             />
           ))}

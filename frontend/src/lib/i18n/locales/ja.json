@@ -320,7 +320,7 @@
     "participants_other": "参加者 {{count}}人",
     "participantsMore": "ほか {{count}}人",
     "participantsEmpty": "参加者はいません",
-    "parentMessage": "親メッセージ",
+    "threadStarter": "スレ主",
     "participantsSearch": "名前で検索",
     "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
     "participantsDescription": "このスレッドに参加している人です。",

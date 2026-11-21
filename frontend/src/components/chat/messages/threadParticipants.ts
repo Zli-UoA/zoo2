@@ -8,7 +8,7 @@ export function participantLabel(
 }
 
 /**
- * 親メッセージの投稿者を先頭に固定し、残りは表示名のABC順（チャンネルのメンバー一覧と同じ）。
+ * スレ主（親メッセージの投稿者）を先頭に固定し、残りは表示名のABC順（チャンネルのメンバー一覧と同じ）。
  * 同名はユーザー名・IDで安定させる。
  */
 export function sortThreadParticipants(

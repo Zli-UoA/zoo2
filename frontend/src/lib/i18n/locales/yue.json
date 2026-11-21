@@ -320,7 +320,7 @@
     "participants_other": "參加者 {{count}} 人",
     "participantsMore": "仲有 {{count}} 人",
     "participantsEmpty": "冇參加者",
-    "parentMessage": "原本訊息",
+    "threadStarter": "討論串發起人",
     "participantsSearch": "搜尋個名",
     "participantsFilterPartial": "淨係喺載入咗嘅頭 {{loaded}} 人入面搵（仲有 {{count}} 人搵唔到）。",
     "participantsDescription": "已經加入呢個討論串嘅人。",

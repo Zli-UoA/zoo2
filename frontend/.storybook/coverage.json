@@ -1220,13 +1220,13 @@
       "file": "src/components/chat/messages/ThreadParticipantsDialog.tsx",
       "story": "src/components/chat/messages/ThreadPane.stories.tsx",
       "composed": true,
-      "reason": "ThreadPaneのWithParticipantsで、画面中央のダイアログの並び（親メッセージの投稿者が先頭）・「親メッセージ」「あなた」の印・名前の絞り込み・退出・Escapeで閉じてフォーカスが戻ることを、ParticipantsJoinFromDialogで未参加の「参加する」を、ParticipantsMembershipFailedで参加・退出の失敗と再試行がダイアログの中に出ることを、WithParticipantsで50人を超えるときの検索の注記も、Participatingで人数が未取得でも退出できることを確認する。ThreadPane.browser.test.tsxで、狭幅・再Openして参加・投稿権限がないとき・メンバーでないときを検証する。"
+      "reason": "ThreadPaneのWithParticipantsで、画面中央のダイアログの並び（スレ主が先頭）・「スレ主」「あなた」の印・名前の絞り込み・退出・Escapeで閉じてフォーカスが戻ることを、ParticipantsJoinFromDialogで未参加の「参加する」を、ParticipantsMembershipFailedで参加・退出の失敗と再試行がダイアログの中に出ることを、WithParticipantsで50人を超えるときの検索の注記も、Participatingで人数が未取得でも退出できることを確認する。ThreadPane.browser.test.tsxで、狭幅・再Openして参加・投稿権限がないとき・メンバーでないときを検証する。"
     },
     {
       "file": "src/components/chat/MemberRow.tsx",
       "story": "src/components/chat/MembersPanel.stories.tsx",
       "composed": true,
-      "reason": "チャンネルのメンバー一覧（MembersPanel）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。MembersPanelのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsで親メッセージ・あなたの印を確認する。"
+      "reason": "チャンネルのメンバー一覧（MembersPanel）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。MembersPanelのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsでスレ主・あなたの印を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPaneStatus.tsx",

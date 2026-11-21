@@ -198,7 +198,7 @@ describe("ThreadPane のダイアログ挙動", () => {
         <LocaleProvider>
           <ThreadPane
             {...paneProps({
-              // 親メッセージの投稿者は bob、自分は alice (`currentUserId` は user-1)。
+              // スレ主（親メッセージの投稿者）は bob、自分は alice (`currentUserId` は user-1)。
               root: message({ user_id: "user-2", user_name: "bob", display_name: null }),
               replies: [message({ id: "reply-1", parent_id: "root-1", content: "a reply" })],
               membership: "joined",
@@ -212,7 +212,7 @@ describe("ThreadPane のダイアログ挙動", () => {
       );
     }
 
-    it("画面の中央に出るダイアログに、親メッセージ・あなたの印、検索窓、退出ボタンを出す", async () => {
+    it("画面の中央に出るダイアログに、スレ主・あなたの印、検索窓、退出ボタンを出す", async () => {
       await page.viewport(1280, 900);
       const onClose = vi.fn();
       const onLeaveThread = vi.fn();
@@ -229,12 +229,12 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2)).toBeLessThan(2);
       expect(reply.getBoundingClientRect().top).toBe(before);
 
-      // 並びは、親メッセージの投稿者 (bob) が先頭、残りは名前順。印は、親メッセージと自分。
+      // 並びは、スレ主 (bob) が先頭、残りは名前順。印は、スレ主と自分。
       const rows = within(within(dialog).getByRole("list", { name: "参加者 53人" })).getAllByRole(
         "listitem",
       );
       expect(rows.map((row) => row.textContent)).toEqual([
-        expect.stringMatching(/^.*bob.*親メッセージ$/),
+        expect.stringMatching(/^.*bob.*スレ主$/),
         expect.stringMatching(/^.*Alice.*あなた$/),
         expect.stringMatching(/Carol/),
       ]);

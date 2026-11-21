@@ -309,10 +309,10 @@ export const WithParticipants: Story = {
     const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
     const list = within(within(dialog).getByRole("list", { name: "参加者 53人" }));
     const rows = list.getAllByRole("listitem");
-    // 親メッセージの投稿者（Carol）が先頭で、「親メッセージ」の印が付く。自分（Alice）には「あなた」の印が付く。
+    // スレ主（Carol）が先頭で、「スレ主」の印が付く。自分（Alice）には「あなた」の印が付く。
     await expect(rows).toHaveLength(3);
     await expect(rows[0]).toHaveTextContent("Carol");
-    await expect(within(rows[0]!).getByText("親メッセージ")).toBeVisible();
+    await expect(within(rows[0]!).getByText("スレ主")).toBeVisible();
     await expect(rows[1]).toHaveTextContent("Alice");
     await expect(within(rows[1]!).getByText("あなた")).toBeVisible();
     // 表示名がないときは、ユーザー名を表示名として出す。

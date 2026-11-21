@@ -22,7 +22,7 @@ export function MemberRow({
   isBot?: boolean;
   /** Bot が App のときの ID。名前を押すと App の画面を開く。 */
   appId?: string | null;
-  /** 作成者の印の文言（チャンネルは「作成者」、スレッドは「親メッセージ」）。作成者でなければ省く。 */
+  /** 作成者の印の文言（チャンネルは「作成者」、スレッドは「スレ主」）。作成者でなければ省く。 */
   creatorTag?: string;
   isMe?: boolean;
   /** 名前と作成者の印の間に出す、そのほかの印（暗号化の警告など）。 */
