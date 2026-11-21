@@ -467,7 +467,7 @@ private fun Timeline(
     LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(horizontal = 16.dp)) {
         if (header != null) item { header() }
         items(entries, key = { it.entryKey }) { entry ->
-            Row(
+            Column(
                 Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")
                     .then(if (posts) Modifier.combinedClickable(
                         onClick = { dispatch(AndroidUiAction.OpenPost(entry.id)) },
@@ -478,51 +478,52 @@ private fun Timeline(
                         swipeReply = swipeReply,
                     ))
                     .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Box(Modifier.size(36.dp).background(colors.background, CircleShape), contentAlignment = Alignment.Center) {
-                    Text(entry.author.take(1), color = colors.secondary, fontSize = 13.sp)
-                }
-                Column(Modifier.weight(1f)) {
-                    entry.repostedBy?.let { RepostAttribution(it, colors) }
-                    if (posts && entry.postHeader != null) {
-                        PostHeader(entry.author, entry.postHeader, colors)
-                    } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(entry.author, color = colors.foreground, fontWeight = authorWeight, fontSize = authorSize)
-                        Text(entry.time, color = colors.secondary, fontSize = 12.sp)
+                entry.repostedBy?.let { RepostAttribution(it, colors) }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(Modifier.size(36.dp).background(colors.background, CircleShape), contentAlignment = Alignment.Center) {
+                        Text(entry.author.take(1), color = colors.secondary, fontSize = 13.sp)
                     }
-                    Text(formatEntry(entry.body), color = colors.foreground, fontSize = bodySize, lineHeight = 25.sp)
-                    entry.attachments.forEach { (id, name) ->
-                        Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
-                            .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
-                    }
-                    entry.media.forEach { media ->
-                        TimelineMediaTile(media, colors) {
-                            dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
+                    Column(Modifier.weight(1f)) {
+                        if (posts && entry.postHeader != null) {
+                            PostHeader(entry.author, entry.postHeader, colors)
+                        } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(entry.author, color = colors.foreground, fontWeight = authorWeight, fontSize = authorSize)
+                            Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                         }
-                    }
-                    entry.quote?.let { quote ->
-                        TimelineQuoteCard(quote, colors,
-                            open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
-                            openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
-                    }
-                    entry.link?.let { url ->
-                        Text(entry.preview ?: url,
-                            Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
-                                .heightIn(min = 48.dp).padding(vertical = 12.dp),
-                            color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    if (entry.reactions.isNotEmpty()) {
-                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            entry.reactions.forEach { (label, selected) ->
-                                Text(label, Modifier.heightIn(min = 48.dp)
-                                    .background(if (selected) colors.headerLight else colors.background, CircleShape)
-                                    .clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, label.substringBeforeLast(" "))) }
-                                    .padding(horizontal = 10.dp, vertical = 12.dp), color = colors.foreground)
+                        Text(formatEntry(entry.body), color = colors.foreground, fontSize = bodySize, lineHeight = 25.sp)
+                        entry.attachments.forEach { (id, name) ->
+                            Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
+                                .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
+                        }
+                        entry.media.forEach { media ->
+                            TimelineMediaTile(media, colors) {
+                                dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
                             }
                         }
+                        entry.quote?.let { quote ->
+                            TimelineQuoteCard(quote, colors,
+                                open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
+                                openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
+                        }
+                        entry.link?.let { url ->
+                            Text(entry.preview ?: url,
+                                Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
+                                    .heightIn(min = 48.dp).padding(vertical = 12.dp),
+                                color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        if (entry.reactions.isNotEmpty()) {
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                entry.reactions.forEach { (label, selected) ->
+                                    Text(label, Modifier.heightIn(min = 48.dp)
+                                        .background(if (selected) colors.headerLight else colors.background, CircleShape)
+                                        .clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React, label.substringBeforeLast(" "))) }
+                                        .padding(horizontal = 10.dp, vertical = 12.dp), color = colors.foreground)
+                                }
+                            }
+                        }
+                        if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                     }
-                    if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                 }
             }
         }

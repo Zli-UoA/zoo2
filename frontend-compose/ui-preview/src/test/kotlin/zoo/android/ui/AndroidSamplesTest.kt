@@ -237,7 +237,10 @@ class AndroidSamplesTest {
                     ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)
                 }
                 if (name == "home-media") {
-                    ui.onNodeWithText("みずきさんが再投稿").assertIsDisplayed()
+                    val repost = ui.onNodeWithText("みずきさんが再投稿", useUnmergedTree = true)
+                        .assertIsDisplayed().getUnclippedBoundsInRoot()
+                    val author = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                    check(repost.left < author.left && repost.bottom <= author.top)
                     ui.onNodeWithText("引用 · なぎ").assertIsDisplayed().performClick()
                     ui.onNodeWithText("センシティブな動画を開く").assertIsDisplayed().performClick()
                     ui.onNodeWithContentDescription("投稿画像").assertIsDisplayed()
