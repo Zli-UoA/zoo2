@@ -214,6 +214,7 @@
     "description": "喺左邊列表揀個頻道，就可以睇對話。"
   },
   "messages": {
+    "loadingOlder": "正在載入較早嘅訊息…",
     "typing": "{{names}}輸入緊…",
     "typingSeparator": "、",
     "compose": "輸入訊息",

@@ -214,6 +214,7 @@
     "description": "왼쪽 목록에서 통로를 선택하면 통보문 교환내용이 표시됩니다."
   },
   "messages": {
+    "loadingOlder": "이전 통보문을 불러오는 중…",
     "typing": "{{names}}이(가) 입력하는 중…",
     "typingSeparator": ", ",
     "compose": "통보문 보내기",

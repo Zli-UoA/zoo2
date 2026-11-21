@@ -214,6 +214,7 @@
     "description": "Select a channel from the list to view the conversation."
   },
   "messages": {
+    "loadingOlder": "Loading older messages…",
     "typing": "{{names}} typing…",
     "typingSeparator": ", ",
     "compose": "Write a message",

@@ -214,6 +214,7 @@
     "description": "从左侧列表选择频道，即可查看对话。"
   },
   "messages": {
+    "loadingOlder": "正在加载较早的消息…",
     "typing": "{{names}}正在输入…",
     "typingSeparator": "、",
     "compose": "输入消息",

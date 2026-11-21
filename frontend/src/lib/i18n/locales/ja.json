@@ -214,6 +214,7 @@
     "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
   },
   "messages": {
+    "loadingOlder": "古いメッセージを読み込み中…",
     "typing": "{{names}}が入力中…",
     "typingSeparator": "、",
     "compose": "メッセージを送信",
