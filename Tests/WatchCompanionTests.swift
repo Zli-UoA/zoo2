@@ -20,6 +20,19 @@ struct WatchCompanionTests {
         return state
     }
 
+    @Test("旧版の表示データも読み込み、応答後の通話エラーをWatchへ反映する")
+    func receivesCallFailure() throws {
+        let legacy = Data(#"{"notices":[],"unreadCount":0,"noticesLoading":false}"#.utf8)
+        #expect(try JSONDecoder().decode(WatchSnapshot.self, from: legacy).callError == nil)
+        let initial = snapshot()
+        let state = try connected(initial)
+        let failed = WatchSnapshot(sessionID: initial.sessionID, callError: "通話の音声を準備できませんでした。")
+        let data = try JSONEncoder().encode(WatchReply(createdAt: now.addingTimeInterval(1), snapshot: failed))
+        state.receive(try JSONDecoder().decode(WatchReply.self, from: data))
+        #expect(state.snapshot?.call == nil)
+        #expect(state.snapshot?.callError == failed.callError)
+    }
+
     @Test("切断中と非表示中は操作を送信せず、保持していた通知と着信を消す", arguments: [false, true])
     func disconnect(inactive: Bool) throws {
         let state = try connected(snapshot())

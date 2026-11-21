@@ -57,7 +57,7 @@ final class WatchCompanionService {
         }
         return WatchSnapshot(sessionID: sessionID, call: calls.watchCall, notices: notices,
                              unreadCount: workspace.inbox.unreadCount, noticesLoading: workspace.inbox.loading,
-                             noticeError: workspace.inbox.error)
+                             noticeError: workspace.inbox.error, callError: workspace.calls.error)
     }
 
     func respond(to request: WatchRequest) async -> WatchReply {
