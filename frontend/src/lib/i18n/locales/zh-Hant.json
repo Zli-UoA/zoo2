@@ -1843,6 +1843,7 @@
     "title": "搜尋",
     "placeholder": "搜尋訊息和檔案",
     "kinds": {
+      "all": "全部",
       "messages": "訊息",
       "files": "檔案"
     },
@@ -1856,6 +1857,22 @@
     "retry": "重試",
     "encryptedNote": "加密頻道不在搜尋範圍內。",
     "openNav": "搜尋",
-    "inThread": "子討論回覆"
+    "inThread": "子討論回覆",
+    "filters": {
+      "label": "篩選",
+      "from": "傳送者",
+      "anyone": "所有人",
+      "in": "頻道",
+      "anywhere": "所有頻道",
+      "period": "日期",
+      "anytime": "不限",
+      "last7": "過去 7 天",
+      "last30": "過去 30 天",
+      "last365": "過去 1 年",
+      "custom": "指定日期",
+      "after": "開始日期",
+      "before": "結束日期",
+      "reset": "重設條件"
+    }
   }
 }

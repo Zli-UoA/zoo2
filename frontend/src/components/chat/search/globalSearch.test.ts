@@ -4,6 +4,8 @@ import {
   appendSearchItems,
   normalizeSearchQuery,
   parseSearchRouteParams,
+  periodAfter,
+  periodOf,
   searchKindOf,
   searchRequestPath,
   searchResultLink,
@@ -42,19 +44,46 @@ describe("parseSearchRouteParams", () => {
       type: "files",
     });
     expect(parseSearchRouteParams({ q: "x", type: "notes" })).toEqual({ q: "x", type: undefined });
-    expect(parseSearchRouteParams({ q: "x", type: "messages" }).type).toBeUndefined();
+    expect(parseSearchRouteParams({ q: "x", type: "messages" }).type).toBe("messages");
+    expect(parseSearchRouteParams({ q: "x", type: "all" }).type).toBeUndefined();
+  });
+  it("keeps the filters and drops malformed dates", () => {
+    expect(
+      parseSearchRouteParams({
+        q: "x",
+        from: "u1",
+        in: "c1",
+        after: "2026-11-01",
+        before: "11/30",
+      }),
+    ).toEqual({ q: "x", from: "u1", in: "c1", after: "2026-11-01" });
   });
   it("restores numeric queries the router parsed as JSON", () => {
     expect(parseSearchRouteParams({ q: 2026 }).q).toBe("2026");
     expect(parseSearchRouteParams({ q: { nested: true } }).q).toBeUndefined();
   });
-  it("defaults the kind to messages", () => {
-    expect(searchKindOf({})).toBe("messages");
+  it("defaults the kind to messages and files together", () => {
+    expect(searchKindOf({})).toBe("all");
     expect(searchKindOf({ type: "files" })).toBe("files");
   });
 });
 
+describe("periods", () => {
+  const now = new Date("2026-11-21T12:00:00Z");
+  it("counts today as the first of the last N days", () => {
+    expect(periodAfter("last7", now)).toBe("2026-11-15");
+    expect(periodOf({ after: "2026-11-15" }, now)).toBe("last7");
+    expect(periodOf({}, now)).toBe("anytime");
+    expect(periodOf({ after: "2026-11-15", before: "2026-11-20" }, now)).toBe("custom");
+  });
+});
+
 describe("searchRequestPath", () => {
+  it("sends the filters as the API parameters", () => {
+    expect(
+      searchRequestPath("会議", "all", null, { from: "u1", in: "c1", after: "2026-11-01" }),
+    ).toBe("/api/search?q=%E4%BC%9A%E8%AD%B0&type=all&user_id=u1&channel_id=c1&after=2026-11-01");
+  });
   it("encodes the query, kind and cursor", () => {
     expect(searchRequestPath("a&b %", "messages", null)).toBe(
       "/api/search?q=a%26b+%25&type=messages",

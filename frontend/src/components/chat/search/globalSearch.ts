@@ -1,18 +1,32 @@
 import type { DisplayEmoji, MessageDisplayData } from "../../../lib/electric/types";
 
-/** クライアントで表示する種類。ノート（`type=notes`）は画面がないので扱わない。 */
-export const SEARCH_KINDS = ["messages", "files"] as const;
+/**
+ * クライアントで表示する種類。`all`（既定）はメッセージとファイルをまとめて探す。
+ * ノート（`type=notes`）は画面がないので扱わない。
+ */
+export const SEARCH_KINDS = ["all", "messages", "files"] as const;
 export type SearchKind = (typeof SEARCH_KINDS)[number];
 
-export interface SearchRouteParams {
+/** 絞り込み。送信者（`user_id`）・チャンネル（`channel_id`）・期間（UTC の `YYYY-MM-DD`）。 */
+export interface SearchFilters {
+  from?: string;
+  in?: string;
+  /** この日を含む。 */
+  after?: string;
+  /** この日を含まない。 */
+  before?: string;
+}
+
+export interface SearchRouteParams extends SearchFilters {
   q?: string;
-  type?: SearchKind;
+  type?: Exclude<SearchKind, "all">;
 }
 
 type SearchAuthor = NonNullable<MessageDisplayData["author"]>;
 
 interface SearchItemBase {
   id: string;
+  kind?: "message" | "file";
   channel_id: string;
   channel_name: string;
   is_dm: boolean;
@@ -47,7 +61,7 @@ export interface SearchPage {
   searched_until: string | null;
 }
 
-/** `/search` の URL の検索パラメーター。既定値（空の語・messages）は URL に出さない。 */
+/** `/search` の URL の検索パラメーター。既定値（空の語・all・絞り込みなし）は URL に出さない。 */
 export function parseSearchRouteParams(search: Record<string, unknown>): SearchRouteParams {
   // TanStack Router は `?q=123` を数値として読むので文字列へ戻す。
   const raw =
@@ -57,10 +71,55 @@ export function parseSearchRouteParams(search: Record<string, unknown>): SearchR
         ? String(search.q)
         : "";
   const q = normalizeSearchQuery(raw);
+  const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
+  const day = (value: unknown) =>
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(value) ? value : undefined;
   return {
     q: q || undefined,
-    type: search.type === "files" ? "files" : undefined,
+    type: search.type === "files" || search.type === "messages" ? search.type : undefined,
+    from: text(search.from),
+    in: text(search.in),
+    after: day(search.after),
+    before: day(search.before),
   };
+}
+
+export function searchFiltersOf(params: SearchRouteParams): SearchFilters {
+  return { from: params.from, in: params.in, after: params.after, before: params.before };
+}
+
+export function hasSearchFilters(filters: SearchFilters): boolean {
+  return !!(filters.from || filters.in || filters.after || filters.before);
+}
+
+/** 期間の選択肢。`custom` は日付を指定する。 */
+export const SEARCH_PERIODS = ["anytime", "last7", "last30", "last365", "custom"] as const;
+export type SearchPeriod = (typeof SEARCH_PERIODS)[number];
+const PERIOD_DAYS: Record<"last7" | "last30" | "last365", number> = {
+  last7: 7,
+  last30: 30,
+  last365: 365,
+};
+
+/** UTC の日付（`YYYY-MM-DD`）。 */
+export function utcDay(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/** 「過去 N 日間」の開始日（今日を含めて N 日）。 */
+export function periodAfter(period: "last7" | "last30" | "last365", now: Date): string {
+  return utcDay(new Date(now.getTime() - (PERIOD_DAYS[period] - 1) * 86_400_000));
+}
+
+/** 今の絞り込みが、どの期間の選択肢に当たるか。 */
+export function periodOf(filters: SearchFilters, now: Date): SearchPeriod {
+  if (!filters.after && !filters.before) return "anytime";
+  if (!filters.before) {
+    for (const period of ["last7", "last30", "last365"] as const) {
+      if (filters.after === periodAfter(period, now)) return period;
+    }
+  }
+  return "custom";
 }
 
 /** 前後の空白を除き、連続する空白を 1 つにする。サーバーも空白で語を区切る。 */
@@ -69,17 +128,26 @@ export function normalizeSearchQuery(value: string): string {
 }
 
 export function searchKindOf(params: SearchRouteParams): SearchKind {
-  return params.type ?? "messages";
+  return params.type ?? "all";
 }
 
-export function searchRequestPath(query: string, kind: SearchKind, cursor: string | null): string {
+export function searchRequestPath(
+  query: string,
+  kind: SearchKind,
+  cursor: string | null,
+  filters: SearchFilters = {},
+): string {
   const params = new URLSearchParams({ q: query, type: kind });
+  if (filters.from) params.set("user_id", filters.from);
+  if (filters.in) params.set("channel_id", filters.in);
+  if (filters.after) params.set("after", filters.after);
+  if (filters.before) params.set("before", filters.before);
   if (cursor) params.set("cursor", cursor);
   return `/api/search?${params}`;
 }
 
 export function isFileItem(item: SearchItem): item is SearchFileItem {
-  return "file_name" in item;
+  return item.kind === "file" || "file_name" in item;
 }
 
 /** 結果を開くリンク。返信はスレッドを開いたうえで、その返信へ移動する。 */

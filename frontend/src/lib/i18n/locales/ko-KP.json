@@ -1843,6 +1843,7 @@
     "title": "검색",
     "placeholder": "통보문과 화일 검색",
     "kinds": {
+      "all": "전체",
       "messages": "통보문",
       "files": "화일"
     },
@@ -1856,6 +1857,22 @@
     "retry": "다시 시도",
     "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
     "openNav": "검색",
-    "inThread": "타래 답글"
+    "inThread": "타래 답글",
+    "filters": {
+      "label": "거르기",
+      "from": "보낸 사람",
+      "anyone": "모든 사람",
+      "in": "통로",
+      "anywhere": "모든 통로",
+      "period": "기간",
+      "anytime": "지정하지 않음",
+      "last7": "지난 7일",
+      "last30": "지난 30일",
+      "last365": "지난 1년",
+      "custom": "날자 지정",
+      "after": "시작날자",
+      "before": "마감날자",
+      "reset": "조건 초기화"
+    }
   }
 }

@@ -193,7 +193,8 @@
       "states": [
         "Prompt",
         "SubmitQuery",
-        "Messages",
+        "All",
+        "Filters",
         "LoadOlder",
         "Files",
         "SwitchKind",
@@ -1133,7 +1134,7 @@
       "file": "src/components/chat/search/SearchResultRow.tsx",
       "story": "src/components/chat/search/SearchScreen.stories.tsx",
       "composed": true,
-      "reason": "MessagesとFilesでメッセージ・スレッドの返信・DM・Appの投稿者・ファイルの各行、LongJapaneseで長い名前と本文の折り返しを実描画する。"
+      "reason": "AllとFilesでメッセージ・スレッドの返信・DM・Appの投稿者・ファイルの各行、LongJapaneseで長い名前と本文の折り返しを実描画する。"
     },
     {
       "file": "src/components/chat/NotificationsScreen.tsx",

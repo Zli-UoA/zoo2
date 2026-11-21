@@ -180,7 +180,12 @@ const meta = {
           json(
             url.searchParams.get("cursor")
               ? { items: [olderMessage], next_cursor: null, searched_until: "2024-12" }
-              : { items: messageItems, next_cursor: "cursor-1", searched_until: "2025-12" },
+              : {
+                  // 既定（すべて）はメッセージとファイルが新しい順に混ざる。
+                  items: [fileItems[0]!, ...messageItems],
+                  next_cursor: "cursor-1",
+                  searched_until: "2025-12",
+                },
           ),
         ),
       ],
@@ -225,15 +230,17 @@ export const SubmitQuery: Story = {
   }),
 };
 
-export const Messages: Story = {
+export const All: Story = {
   play: playForImplementation(async () => {
     const region = await results();
-    const list = region.getByRole("list", { name: "メッセージ" });
-    await expect(within(list).getAllByRole("listitem")).toHaveLength(messageItems.length);
+    const list = region.getByRole("list", { name: "すべて" });
+    await expect(within(list).getAllByRole("listitem")).toHaveLength(messageItems.length + 1);
+    await expect(region.getByText("会議資料_2026年11月.pdf")).toBeVisible();
+    await expect(requests[0]!.searchParams.get("type")).toBe("all");
     await expect(region.getByText("スレッドの返信")).toBeVisible();
     await expect(region.getByText("2025-12 まで検索しました")).toBeVisible();
     // 返信はスレッドを開き、その返信へ移動する。
-    const reply = within(list.children[1] as HTMLElement).getByRole("link");
+    const reply = within(list.children[2] as HTMLElement).getByRole("link");
     await expect(reply.getAttribute("href")).toContain("thread=thread-root-1");
     await expect(reply.getAttribute("href")).toContain("message=search-message-2");
     await expect(requests).toHaveLength(1);
@@ -275,6 +282,28 @@ export const Files: Story = {
     )[0]!;
     await expect(fileLink.getAttribute("href")).toContain("message=message-with-file-1");
     await expect(requests.map((url) => url.searchParams.get("type"))).toEqual(["files"]);
+  }),
+};
+
+/** 送信者・チャンネル・期間で絞り込むと、その条件で 1 回ずつ取り直す。リセットで元に戻す。 */
+export const Filters: Story = {
+  play: playForImplementation(async () => {
+    const region = await results();
+    await userEvent.selectOptions(region.getByRole("combobox", { name: "送信者" }), "user-alice");
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("user_id")).toBe("user-alice"));
+    await userEvent.selectOptions(region.getByRole("combobox", { name: "チャンネル" }), general.id);
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("channel_id")).toBe(general.id));
+    await userEvent.selectOptions(region.getByRole("combobox", { name: "期間" }), "last7");
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toMatch(/^\d{4}-/));
+    await userEvent.selectOptions(region.getByRole("combobox", { name: "期間" }), "custom");
+    await expect(region.getByLabelText("開始日")).toBeVisible();
+    // リセットすると条件のない検索に戻る（最初の結果は手元にあるので取り直さない）。
+    const before = requests.length;
+    await userEvent.click(region.getByRole("button", { name: "条件をリセット" }));
+    await waitFor(() => expect(region.getByRole("combobox", { name: "送信者" })).toHaveValue(""));
+    await expect(region.getByRole("combobox", { name: "期間" })).toHaveValue("anytime");
+    await expect(region.queryByRole("button", { name: "条件をリセット" })).toBeNull();
+    await expect(requests).toHaveLength(before);
   }),
 };
 
@@ -385,7 +414,7 @@ export const LongJapanese: Story = {
   },
   play: playForImplementation(async () => {
     const region = await results();
-    const list = region.getByRole("list", { name: "メッセージ" });
+    const list = region.getByRole("list", { name: "すべて" });
     for (const row of Array.from(list.children))
       await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
   }),
@@ -393,5 +422,5 @@ export const LongJapanese: Story = {
 
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
-  play: Messages.play,
+  play: All.play,
 };

@@ -1843,6 +1843,7 @@
     "title": "Search",
     "placeholder": "Search messages and files",
     "kinds": {
+      "all": "All",
       "messages": "Messages",
       "files": "Files"
     },
@@ -1856,6 +1857,22 @@
     "retry": "Retry",
     "encryptedNote": "Encrypted channels are not included in search.",
     "openNav": "Search",
-    "inThread": "Thread reply"
+    "inThread": "Thread reply",
+    "filters": {
+      "label": "Filters",
+      "from": "From",
+      "anyone": "Anyone",
+      "in": "In",
+      "anywhere": "All channels",
+      "period": "Date",
+      "anytime": "Any time",
+      "last7": "Last 7 days",
+      "last30": "Last 30 days",
+      "last365": "Last year",
+      "custom": "Custom range",
+      "after": "From date",
+      "before": "To date",
+      "reset": "Reset filters"
+    }
   }
 }

@@ -3,6 +3,7 @@ import { useMemo, useSyncExternalStore } from "react";
 import {
   appendSearchItems,
   searchRequestPath,
+  type SearchFilters,
   type SearchItem,
   type SearchKind,
   type SearchPage,
@@ -43,7 +44,12 @@ type Config = Parameters<typeof createConfiguredApiClient>[0];
  * 1 つの検索語・種類の結果。ページは直列に取得し、取得中の追加要求は無視する。
  * 最後の購読が外れたら進行中の取得を中断する（StrictMode の再購読では中断しない）。
  */
-function createSearchEntry(config: Config, query: string, kind: SearchKind) {
+function createSearchEntry(
+  config: Config,
+  query: string,
+  kind: SearchKind,
+  filters: SearchFilters,
+) {
   const client = createConfiguredApiClient(config);
   let state: GlobalSearchState = IDLE;
   let fetchedAt = 0;
@@ -71,7 +77,7 @@ function createSearchEntry(config: Config, query: string, kind: SearchKind) {
     controller = request;
     set({ ...state, isLoading: true, isError: false });
     void client
-      .get<SearchPage>(searchRequestPath(query, kind, cursor), {
+      .get<SearchPage>(searchRequestPath(query, kind, cursor, filters), {
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       })
       .then(
@@ -146,7 +152,13 @@ function createSearchEntry(config: Config, query: string, kind: SearchKind) {
 type SearchEntry = ReturnType<typeof createSearchEntry>;
 const stores = new WeakMap<object, Map<string, SearchEntry>>();
 
-function entryFor(config: Config, key: string, query: string, kind: SearchKind) {
+function entryFor(
+  config: Config,
+  key: string,
+  query: string,
+  kind: SearchKind,
+  filters: SearchFilters,
+) {
   let scoped = stores.get(config);
   if (!scoped) {
     scoped = new Map();
@@ -157,7 +169,7 @@ function entryFor(config: Config, key: string, query: string, kind: SearchKind) 
     // 最近使ったものを後ろへ。
     scoped.delete(key);
   } else {
-    entry = createSearchEntry(config, query, kind);
+    entry = createSearchEntry(config, query, kind, filters);
   }
   scoped.set(key, entry);
   for (const [oldKey, old] of scoped) {
@@ -172,17 +184,19 @@ const idleSnapshot = () => IDLE;
 const noop = () => {};
 
 /**
- * `GET /api/search` を読む。語・種類・アカウントごとに結果を持ち、画面を離れて戻ったときは
+ * `GET /api/search` を読む。語・種類・絞り込み・アカウントごとに結果を持ち、画面を離れて戻ったときは
  * 5 分以内なら取り直さない。続きは利用者の操作（loadMore）でだけ読む。
  */
-export function useGlobalSearch(query: string, kind: SearchKind) {
+export function useGlobalSearch(query: string, kind: SearchKind, filters: SearchFilters = {}) {
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
   const enabled = !!currentUserId && query.length > 0;
-  const key = JSON.stringify([currentUserId, kind, query]);
+  const { from, in: channel, after, before } = filters;
+  const key = JSON.stringify([currentUserId, kind, query, from, channel, after, before]);
   const entry = useMemo(
-    () => (enabled ? entryFor(config, key, query, kind) : null),
-    [enabled, config, key, query, kind],
+    () =>
+      enabled ? entryFor(config, key, query, kind, { from, in: channel, after, before }) : null,
+    [enabled, config, key, query, kind, from, channel, after, before],
   );
   const state = useSyncExternalStore(
     entry?.subscribe ?? noSubscribe,
