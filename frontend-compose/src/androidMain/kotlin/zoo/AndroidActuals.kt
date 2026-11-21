@@ -2,15 +2,9 @@ package zoo
 
 import android.icu.text.Collator
 import android.icu.util.ULocale
-import androidx.compose.ui.text.PlatformTextStyle
 import okhttp3.*
 
-internal actual fun nativeSelectedText(): String = ""
-
 internal actual fun nativeAbsoluteUrl(url: String): String = url
-
-internal actual fun webTextStyle(): PlatformTextStyle =
-    PlatformTextStyle(includeFontPadding = false)
 
 actual fun compareLocaleText(
     left: String,
