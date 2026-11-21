@@ -13,11 +13,12 @@ import android.os.Build
 import androidx.annotation.RequiresApi
 import works.zli.zoo.R
 import zoo.android.MainActivity
+import zoo.android.PushBinding
 import zoo.phone.PhoneCall
 
-private const val INCOMING_NOTIFICATION = 604
+internal const val INCOMING_NOTIFICATION = 604
 private const val CALL_NOTIFICATION = 600
-private const val INCOMING_CHANNEL = "zoo.phone.incoming"
+internal const val INCOMING_CHANNEL = "zoo.phone.incoming"
 // Reuse the existing channel to preserve notification settings across upgrades.
 private const val CALL_CHANNEL = "zoo.phone.waiting"
 
@@ -108,7 +109,7 @@ class PhoneService : Service() {
     }
 }
 
-internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: PhoneCall) {
+internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: PhoneCall, tag: String? = null) {
     val manager = context.getSystemService(NotificationManager::class.java)
     manager.createNotificationChannel(NotificationChannel(
         INCOMING_CHANNEL, host.app.t("sip.status.incoming"), NotificationManager.IMPORTANCE_HIGH,
@@ -126,11 +127,14 @@ internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: Ph
         builder.setStyle(Notification.CallStyle.forIncomingCall(person(call), end, answer))
     } else builder.setActions(answerAction, endAction)
 
-    postIncomingNotification(builder, answerAction, endAction) { manager.notify(INCOMING_NOTIFICATION, it) }
+    synchronized(PushBinding.lock) {
+        if (tag != null && PushBinding(context).dmInviteEnded(tag.substringAfterLast(':'))) return
+        postIncomingNotification(builder, answerAction, endAction) { manager.notify(tag, INCOMING_NOTIFICATION, it) }
+    }
 }
 
-internal fun dismissIncomingCall(context: Context) =
-    context.getSystemService(NotificationManager::class.java).cancel(INCOMING_NOTIFICATION)
+internal fun dismissIncomingCall(context: Context, tag: String? = null) =
+    context.getSystemService(NotificationManager::class.java).cancel(tag, INCOMING_NOTIFICATION)
 
 @RequiresApi(28)
 private fun person(call: PhoneCall) = Person.Builder().setName(call.label.ifBlank { "Zoo" }).build()

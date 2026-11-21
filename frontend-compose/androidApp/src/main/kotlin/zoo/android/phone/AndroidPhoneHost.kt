@@ -14,6 +14,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.UUID
 import zoo.*
+import zoo.android.PushBinding
 import zoo.phone.*
 
 /** One owner per authenticated session, shared by all screens, notifications and Telecom. */
@@ -31,6 +32,9 @@ internal class AndroidPhoneHost(
     private var connectionReady: CompletableDeferred<Unit>? = null
     private var inviteTable: SyncedTable? = null
     private var invites: Job? = null
+    private val pushBinding = PushBinding(context)
+    private var incomingTag: String? = null
+    private var pushedAnswer: DmCallPushAnswer? = null
     private var audioReady: CompletableDeferred<Unit>? = null
     private var audioCallId: String? = null
     private var service: PhoneService? = null
@@ -60,6 +64,7 @@ internal class AndroidPhoneHost(
                 service?.refresh()
             }
         }
+        if (available && pushBinding.dmCallsEnabled(app.config.userId)) controller.restoreDmWaiting()
     }
     private fun mayCapture(kind: String) =
         service != null && audioCallId == controller.call?.id && controller.call?.kind == kind &&
@@ -87,7 +92,11 @@ internal class AndroidPhoneHost(
         catch (_: SecurityException) { throw IllegalStateException("Telecom permission unavailable") }
         finally { if (connectionReady === ready) connectionReady = null }
     }
-    override fun incoming(call: PhoneCall) { check(available); manager.addNewIncomingCall(handle, extras(call)) }
+    override fun incoming(call: PhoneCall) {
+        check(available)
+        incomingTag = controller.ringingInviteId?.let { dmNotificationTag(app.config.userId, it) }
+        manager.addNewIncomingCall(handle, extras(call))
+    }
     fun connection(incoming: Boolean, address: Uri?): Connection {
         val call = controller.call ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.CANCELED))
         if (connection != null || incoming != (call.status == "incoming")) {
@@ -97,6 +106,10 @@ internal class AndroidPhoneHost(
         native.setCallerDisplayName(call.label.ifBlank { "Zoo" }, TelecomManager.PRESENTATION_ALLOWED)
         address?.let { native.setAddress(it, TelecomManager.PRESENTATION_ALLOWED) }
         connection = native; connectionReady?.complete(Unit)
+        if (incoming && pushedAnswer != null) app.scope.launch {
+            yield() // Telecom must receive the Connection before the call is answered.
+            answerPushedInviteIfReady()
+        }
         return native
     }
     fun failed() { connectionReady?.completeExceptionally(IllegalStateException("Telecom rejected the call")); controller.call?.id?.let(controller::nativeFailed) }
@@ -104,15 +117,23 @@ internal class AndroidPhoneHost(
         val call = controller.call?.takeIf { it.id == id && it.status == "incoming" } ?: return
         if (audioCallId == id) return
         try {
-            showIncomingCall(context, this, call)
+            showIncomingCall(context, this, call, incomingTag)
         } catch (_: RuntimeException) {
             controller.nativeFailed(id)
         }
     }
+    private fun clearIncomingNotification() {
+        synchronized(PushBinding.lock) {
+            incomingTag?.substringAfterLast(':')?.let { pushBinding.rememberEndedDmInvite(app.config.userId, it) }
+            dismissIncomingCall(context, incomingTag)
+            incomingTag = null
+        }
+    }
+
     override fun ended(id: String) {
         connection?.takeIf { it.id == id }?.let { it.setDisconnected(DisconnectCause(DisconnectCause.LOCAL)); it.destroy(); connection = null }
         connectionReady?.cancel(); connectionReady = null; pendingMute = null
-        dismissIncomingCall(context)
+        clearIncomingNotification()
         if (audioCallId == id) {
             audioCallId = null
             audioReady?.cancel()
@@ -133,6 +154,8 @@ internal class AndroidPhoneHost(
         })
     }
     private fun waiting(enabled: Boolean) {
+        if (current === this) pushBinding.setDmCallsEnabled(app.config.userId, enabled)
+        if (!enabled) pushedAnswer = null
         invites?.cancel(); invites = null; inviteTable?.close(); inviteTable = null
         if (enabled) {
             val table = SyncedTable("call_invites", app.config, app.platform, http, app.scope, persist = false)
@@ -144,7 +167,11 @@ internal class AndroidPhoneHost(
                         val user = users.find { it.text("id") == row.text("inviter_id") }
                         kotlinx.serialization.json.JsonObject(row + ("inviter_name" to kotlinx.serialization.json.JsonPrimitive(user?.text("display_name").orEmpty().ifBlank { "Zoo" })))
                     }
-                }.collect { rows -> controller.invites(rows, app.config.userId, kotlin.time.Clock.System.now().toEpochMilliseconds()) }
+                }.collect { rows ->
+                    val target = pushedAnswer?.takeIf { it.remainingMillis() > 0 }?.id
+                    controller.invites(rows.sortedBy { target != null && it.text("id") != target },
+                        app.config.userId, kotlin.time.Clock.System.now().toEpochMilliseconds())
+                }
             }
         }
     }
@@ -162,7 +189,7 @@ internal class AndroidPhoneHost(
     fun audioStarted(instance: PhoneService, id: String) {
         if (audioCall(id) == null) return
         service = instance
-        dismissIncomingCall(context)
+        clearIncomingNotification()
         audioReady?.complete(Unit)
     }
 
@@ -170,7 +197,32 @@ internal class AndroidPhoneHost(
         if (audioCall(id) != null) controller.nativeFailed(id)
     }
 
+    private fun answerPushedInviteIfReady() {
+        val answer = pushedAnswer ?: return
+        if (answer.remainingMillis() <= 0) {
+            pushedAnswer = null
+            return
+        }
+        val call = controller.call ?: return
+        if (controller.ringingInviteId != answer.id || connection?.id != call.id) return
+        pushedAnswer = null
+        app.navigate("/channels/${call.target.encodeURLPathPart()}")
+        controller.answer()
+    }
+
     fun open(intent: Intent): Boolean {
+        if (intent.action == DM_PUSH_ANSWER_ACTION) {
+            val answer = DmCallPushAnswer.fromIntent(intent) ?: return true
+            if (available && pushBinding.matches(answer.binding, app.config.userId) &&
+                pushBinding.dmCallsEnabled(app.config.userId) && !pushBinding.dmInviteEnded(answer.id) &&
+                answer.remainingMillis() > 0
+            ) {
+                pushedAnswer = answer
+                controller.restoreDmWaiting()
+                answerPushedInviteIfReady()
+            }
+            return true
+        }
         if (intent.action != "zoo.phone.OPEN" && intent.action != "zoo.phone.ANSWER") return false
         if (!matches(intent.getStringExtra(PHONE_SESSION), intent.getStringExtra(PHONE_CALL))) return true
         val call = controller.call ?: return true
@@ -188,7 +240,7 @@ internal class AndroidPhoneHost(
         current = null; state.cancel(); invites?.cancel(); inviteTable?.close(); controller.close()
         connection?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL)); connection?.destroy(); connection = null
         runCatching { manager.unregisterPhoneAccount(handle) }
-        dismissIncomingCall(context)
+        clearIncomingNotification()
     }
     companion object { var current: AndroidPhoneHost? = null; private set }
 }

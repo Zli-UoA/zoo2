@@ -130,10 +130,11 @@ impl FcmConfig {
         endpoint: &str,
         user: &str,
         payload: &NotificationPayload,
+        ttl: u32,
     ) -> anyhow::Result<bool> {
         let (token, binding) = registration(endpoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid Android registration"))?;
-        let body = message(token, binding, user, payload);
+        let body = message(token, binding, user, payload, ttl);
         anyhow::ensure!(
             serde_json::to_vec(&body["message"]["data"])?.len() <= 4096,
             "FCM data payload too large"
@@ -190,12 +191,28 @@ pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
     Some((token, binding))
 }
 
-fn message(token: &str, binding: &str, user: &str, payload: &NotificationPayload) -> Value {
+fn message(
+    token: &str,
+    binding: &str,
+    user: &str,
+    payload: &NotificationPayload,
+    ttl: u32,
+) -> Value {
     // Data-only messages reach FirebaseMessagingService in the foreground and after process death.
     // Never attach E2EE ciphertext: Android displays the existing generic encrypted-message body.
-    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": "300s"},
-        "data": {"binding": binding, "userId": user, "title": payload.title, "body": payload.body,
-            "url": payload.url, "tag": payload.tag, "notificationType": payload.notification_type}}})
+    let mut data = json!({"binding": binding, "userId": user, "title": payload.title,
+        "body": payload.body, "url": payload.url, "tag": payload.tag,
+        "notificationType": payload.notification_type});
+    if let Some(id) = &payload.invite_id {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        data["inviteId"] = json!(id);
+        data["expiresAt"] = json!((now + u64::from(ttl)).to_string());
+    }
+    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": format!("{ttl}s")},
+        "data": data}})
 }
 
 fn is_unregistered(error: &Value) -> bool {
@@ -273,13 +290,36 @@ mod tests {
             e2ee: None,
             invite_id: None,
         };
-        let body = message("token", "binding", "user", &payload);
+        let body = message("token", "binding", "user", &payload, 300);
         assert_eq!(body["message"]["android"]["priority"], "HIGH");
         assert_eq!(body["message"]["data"]["binding"], "binding");
         assert_eq!(body["message"]["data"]["userId"], "user");
         assert!(body["message"].get("notification").is_none());
         assert!(body["message"]["data"].get("e2ee").is_none());
     }
+    #[test]
+    fn call_invite_carries_its_short_ttl_and_identifier() {
+        let payload = NotificationPayload {
+            title: "Caller".into(),
+            body: "Incoming call".into(),
+            url: "/channels/dm?call_invite=invite".into(),
+            tag: "zoo-call-invite".into(),
+            notification_type: "call_invite".into(),
+            e2ee: None,
+            invite_id: Some("invite".into()),
+        };
+        let body = message("token", "binding", "user", &payload, 17);
+        assert_eq!(body["message"]["android"]["ttl"], "17s");
+        assert_eq!(body["message"]["data"]["inviteId"], "invite");
+        assert!(
+            body["message"]["data"]["expiresAt"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .is_ok()
+        );
+    }
+
     #[tokio::test]
     async fn http_delivery_authenticates_and_preserves_devices_on_project_errors() {
         use wiremock::{

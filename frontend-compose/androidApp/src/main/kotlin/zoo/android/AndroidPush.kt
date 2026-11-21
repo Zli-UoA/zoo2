@@ -72,6 +72,38 @@ internal class PushBinding(private val context: Context) {
             prefs.getString("binding", null) == binding && prefs.getString("user", null) == user
     }
 
+    fun dmCallsEnabled(user: String): Boolean = synchronized(lock) {
+        prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false)
+    }
+
+    fun setDmCallsEnabled(user: String, enabled: Boolean) = synchronized(lock) {
+        if (prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false) != enabled) {
+            check(prefs.edit().putBoolean("dmCalls", enabled).commit())
+            if (!enabled) {
+                val manager = context.getSystemService(NotificationManager::class.java)
+                manager.activeNotifications.filter { it.tag?.startsWith("zoo:$user:call:") == true }
+                    .forEach { manager.cancel(it.tag, it.id) }
+            }
+        }
+    }
+
+    fun dmInviteEnded(id: String): Boolean = synchronized(lock) {
+        val now = System.currentTimeMillis() / 1000L
+        prefs.getStringSet("endedDmInvites", emptySet()).orEmpty().any {
+            it.substringBefore(':') == id && (it.substringAfter(':').toLongOrNull() ?: 0L) > now
+        }
+    }
+
+    fun rememberEndedDmInvite(user: String, id: String) = synchronized(lock) {
+        if (prefs.getString("user", null) != user) return@synchronized
+        val now = System.currentTimeMillis() / 1000L
+        val recent = prefs.getStringSet("endedDmInvites", emptySet()).orEmpty()
+            .filter { it.substringBefore(':') != id && (it.substringAfter(':').toLongOrNull() ?: 0L) > now }
+            .sortedByDescending { it.substringAfter(':').toLongOrNull() }
+            .take(63).toSet()
+        prefs.edit().putStringSet("endedDmInvites", recent + "$id:${now + 60}").apply()
+    }
+
     fun endpoint(binding: String): String? = synchronized(lock) {
         if (prefs.getString("binding", null) == binding) prefs.getString("endpoint", null) else null
     }
@@ -283,7 +315,13 @@ internal fun showPushNotification(context: Context, data: Map<String, String>) {
 private fun showBoundPushNotification(context: Context, data: Map<String, String>) {
     val binding = data["binding"]
     val user = data["userId"]
-    if (!PushBinding(context).matches(binding, user) || !notificationsAllowed(context)) return
+    val store = PushBinding(context)
+    if (!store.matches(binding, user)) return
+    if (data["notificationType"] in setOf("call_invite", "call_invite_end")) {
+        zoo.android.phone.showDmCallPush(context, store, user!!, binding!!, data)
+        return
+    }
+    if (!notificationsAllowed(context)) return
     val path = pushDestination(data["url"]) ?: return
     val kind = data["notificationType"]
     if (kind !in setOf("mention", "dm", "reply", "reaction")) return

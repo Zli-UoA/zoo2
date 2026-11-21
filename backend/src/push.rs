@@ -400,6 +400,14 @@ struct Delivery {
 }
 
 impl Delivery {
+    fn remaining_ttl(&self) -> u32 {
+        self.expires.map_or(self.ttl, |expires| {
+            expires
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs() as u32
+        })
+    }
+
     const NORMAL: Self = Self {
         ttl: 300,
         urgent: false,
@@ -481,10 +489,13 @@ async fn push_to_user(
         .await?;
     for subscription in subscriptions {
         if subscription.endpoint.starts_with("fcm:") {
-            // Calls are a Web-only feature; native Android subscribes to message notifications.
             if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
+                let ttl = delivery.remaining_ttl();
+                if ttl == 0 {
+                    continue;
+                }
                 match android
-                    .send(client, &subscription.endpoint, user_id, payload)
+                    .send(client, &subscription.endpoint, user_id, payload, ttl)
                     .await
                 {
                     Ok(true) => {
@@ -525,15 +536,10 @@ async fn push_to_user(
         };
         let result = send_current_web_push(db, &subscription, async {
             // 購読の照合を待つ間にも、着信の期限が過ぎることがある。
-            let remaining = delivery.expires.map(|expires| {
-                expires
-                    .saturating_duration_since(std::time::Instant::now())
-                    .as_secs()
-            });
-            if remaining == Some(0) {
+            let ttl = delivery.remaining_ttl();
+            if ttl == 0 {
                 return Ok(None);
             }
-            let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
             send_with(client, config, endpoint, body, delivery, ttl)
                 .await
                 .map(Some)
@@ -582,7 +588,7 @@ pub struct CallInvitePush {
     pub invitee_id: String,
 }
 
-/// 招待の着信を、呼ばれた人の Web Push へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
+/// 招待の着信を、呼ばれた人の Push 購読へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
 pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
     if invites.is_empty() {
         return;
@@ -590,7 +596,7 @@ pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
     crate::apns::dispatch_call_invites(db.clone(), invites.clone());
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, false).await.is_err() {
-            tracing::warn!("Web Push call invite delivery failed");
+            tracing::warn!("Push call invite delivery failed");
         }
     });
 }
@@ -602,7 +608,7 @@ pub fn dispatch_call_invite_ends(db: toasty::Db, invites: Vec<CallInvitePush>) {
     }
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, true).await.is_err() {
-            tracing::warn!("Web Push call invite end delivery failed");
+            tracing::warn!("Push call invite end delivery failed");
         }
     });
 }
@@ -616,14 +622,17 @@ async fn deliver_call_invites(
     invites: Vec<CallInvitePush>,
     end: bool,
 ) -> anyhow::Result<()> {
-    let Some(config) = PushConfig::from_env()? else {
+    let config = PushConfig::from_env()?;
+    let android = fcm::FcmConfig::from_env()?;
+    if config.is_none() && android.is_none() {
         return Ok(());
-    };
+    }
     let client = push_client()?;
     let started = std::time::Instant::now();
     for invite in invites {
         // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
         let result: anyhow::Result<()> = async {
+            let mut android_for_invite = android.as_ref();
             let payload = if end {
                 NotificationPayload {
                     title: String::new(),
@@ -637,6 +646,9 @@ async fn deliver_call_invites(
             } else {
                 let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
                 let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
+                if !channel.is_dm {
+                    android_for_invite = None;
+                }
                 let name: String = display_name(&actor).chars().take(60).collect();
                 NotificationPayload {
                     title: if channel.is_dm {
@@ -670,8 +682,8 @@ async fn deliver_call_invites(
             };
             push_to_user(
                 &client,
-                Some(&config),
-                None,
+                config.as_ref(),
+                android_for_invite,
                 &mut db,
                 &invite.invitee_id,
                 &payload,
@@ -682,7 +694,7 @@ async fn deliver_call_invites(
         }
         .await;
         if result.is_err() {
-            tracing::warn!("Web Push call invite delivery failed for one invite");
+            tracing::warn!("Push call invite delivery failed for one invite");
         }
     }
     Ok(())

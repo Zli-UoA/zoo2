@@ -24,6 +24,7 @@ import zoo.Environment
 import zoo.Platform
 import zoo.Repository
 import zoo.Session
+import zoo.android.PushBinding
 import zoo.obj
 
 @RunWith(RobolectricTestRunner::class)
@@ -54,9 +55,9 @@ class TelecomIntegrationTest {
         var microphoneAllowed = true
         val host = AndroidPhoneHost(context, session, http, prepare = { check(microphoneAllowed) })
 
-        fun ring(): ZooConnection {
+        fun ring(inviteId: String = "invite"): ZooConnection {
             host.controller.invites(listOf(obj(
-                "id" to "invite", "channel_id" to "target-dm", "invitee_id" to "alice",
+                "id" to inviteId, "channel_id" to "target-dm", "invitee_id" to "alice",
                 "inviter_name" to "Bob", "status" to "pending", "expires_at" to "2026-11-21T00:00:30Z",
             )), "alice", 1795219200000)
             return (host.connection(true, null) as ZooConnection).also { it.onShowIncomingCallUi() }
@@ -154,6 +155,26 @@ class TelecomIntegrationTest {
             assertNull(it.shadow.nextStartedService)
             assertNull(it.host.controller.call)
             assertTrue(it.host.controller.error)
+        }
+    }
+
+    @Test fun pushAnswerWaitsForTheMatchingAuthenticatedInviteAndTelecomConnection() = runTest {
+        Fixture(backgroundScope).use {
+            val store = PushBinding(it.context)
+            val binding = store.bind("https://zoo.test", "alice")
+            store.setDmCallsEnabled("alice", true)
+            val id = "5f3d960a-49bd-4ebf-beae-4090a7e96950"
+            val answer = Intent(DM_PUSH_ANSWER_ACTION).putExtra("invite", id)
+                .putExtra("binding", binding).putExtra("expiresAt", System.currentTimeMillis() / 1000L + 30)
+            assertTrue(it.host.open(answer))
+            runCurrent()
+            assertNull(it.shadow.nextStartedService)
+            assertTrue(it.routes.isEmpty())
+
+            it.ring(id)
+            runCurrent()
+            assertEquals(listOf("/channels/target-dm"), it.routes)
+            assertNotNull(it.shadow.nextStartedService)
         }
     }
 

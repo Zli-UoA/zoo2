@@ -11,6 +11,8 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import zoo.android.phone.DM_PUSH_ANSWER_ACTION
+import zoo.android.phone.DmCallPushAnswer
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -66,6 +68,32 @@ class AndroidPushTest {
         showPushNotification(context, data(binding) + ("notificationType" to "call_invite"))
         shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         showPushNotification(context, data(binding))
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun optedInDmCallPushRingsOnColdStartAndAnEndPreventsReorderedDelivery() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+        val payload = data(binding) + mapOf(
+            "notificationType" to "call_invite", "inviteId" to id,
+            "expiresAt" to (System.currentTimeMillis() / 1000L + 25).toString(),
+        )
+        showPushNotification(context, payload)
+        assertTrue(manager.activeNotifications.isEmpty())
+
+        store.setDmCallsEnabled(user, true)
+        repeat(2) { showPushNotification(context, payload) }
+        val notification = manager.activeNotifications.single().notification
+        assertEquals(Notification.CATEGORY_CALL, notification.category)
+        val intent = shadowOf(notification.actions.single().actionIntent).savedIntent
+        assertEquals(DM_PUSH_ANSWER_ACTION, intent.action)
+        assertEquals(id, DmCallPushAnswer.fromIntent(intent)?.id)
+        assertEquals(binding, DmCallPushAnswer.fromIntent(intent)?.binding)
+
+        showPushNotification(context, payload + ("notificationType" to "call_invite_end"))
+        showPushNotification(context, payload)
+        assertTrue(manager.activeNotifications.isEmpty())
+        showPushNotification(context, payload + mapOf("inviteId" to UUID.randomUUID().toString(), "expiresAt" to "1"))
         assertTrue(manager.activeNotifications.isEmpty())
     }
 

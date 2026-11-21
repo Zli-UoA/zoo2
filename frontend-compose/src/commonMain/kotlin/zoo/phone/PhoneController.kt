@@ -181,6 +181,14 @@ class PhoneController(
             catch (_: Exception) { dmWaiting = false; runCatching { waiting(false) }; dmWaitingError = true }
         }
     }
+    fun restoreDmWaiting() {
+        if (!lifetime.isActive || dmWaiting) return
+        dmWaiting = true
+        waiting(true)
+    }
+
+    val ringingInviteId: String? get() = invite?.text("id")
+
     /** Only the session-wide network subscription supplies committed, private invite rows. */
     fun invites(rows: List<Row>, userId: String, now: Long) {
         if (!dmWaiting || !lifetime.isActive) return
