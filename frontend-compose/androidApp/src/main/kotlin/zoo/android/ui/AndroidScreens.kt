@@ -451,6 +451,9 @@ private fun Timeline(
     focusMessage: String? = null,
     loadOlder: (() -> Unit)? = null,
 ) {
+    val authorSize = if (posts) 16.sp else 14.sp
+    val authorWeight = if (posts) AndroidWeights.emphasis else AndroidWeights.userName
+    val bodySize = if (posts) 16.sp else 17.sp
     var menuId by remember { mutableStateOf<String?>(null) }
     val scroll = rememberLazyListState()
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
@@ -487,10 +490,10 @@ private fun Timeline(
                 }
                 Column(Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.userName, fontSize = 14.sp)
+                        Text(entry.author, color = colors.foreground, fontWeight = authorWeight, fontSize = authorSize)
                         Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                     }
-                    Text(formatEntry(entry.body), color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)
+                    Text(formatEntry(entry.body), color = colors.foreground, fontSize = bodySize, lineHeight = 25.sp)
                     entry.attachments.forEach { (id, name) ->
                         Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                             .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
