@@ -71,7 +71,7 @@ jobs:
             SEARCH_SCALE_ROWS="$count" SEARCH_SCALE_OUTPUT="$PWD/performance-results/${count}.json" cargo test --manifest-path backend/Cargo.toml --test search_query_budget_test -- --ignored --nocapture 2>&1 | tee "performance-results/${count}.log"
           done
           python3 infra/db/compare-search-work.py performance-results/300000.json performance-results/1000000.json | tee performance-results/plan-comparison.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: search-query-budget

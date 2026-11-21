@@ -170,7 +170,7 @@ services:
 
   postgres:
     # pg_bigm for full-text search (same image as infra/db/compose.yml).
-    build: ./db/postgres
+    build: ./infra/db/postgres
     image: zoo2-postgres-bigm:16
     restart: unless-stopped
     networks:
