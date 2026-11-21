@@ -15,9 +15,12 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.encodedPath
 import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -39,6 +42,8 @@ import zoo.Environment
 import zoo.Platform
 import zoo.Repository
 import zoo.Session
+import zoo.Row
+import zoo.SyncedTable
 import zoo.android.PushBinding
 import zoo.obj
 import zoo.phone.PhoneCall
@@ -47,7 +52,7 @@ import zoo.phone.PhoneCall
 @Config(sdk = [28, 35])
 @OptIn(ExperimentalCoroutinesApi::class)
 class TelecomIntegrationTest {
-    private class Fixture(scope: CoroutineScope) : AutoCloseable {
+    private class Fixture(scope: CoroutineScope, holdDmStream: Boolean = false) : AutoCloseable {
         val context = RuntimeEnvironment.getApplication()
         val shadow = shadowOf(context)
         val notifications = context.getSystemService(NotificationManager::class.java)
@@ -64,7 +69,10 @@ class TelecomIntegrationTest {
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
         }
-        val http = HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) })
+        val http = HttpClient(MockEngine { request ->
+            if (holdDmStream && request.url.encodedPath.endsWith("/call/stream")) awaitCancellation()
+            respondError(HttpStatusCode.ServiceUnavailable)
+        })
         val config = zoo.Config("https://zoo.test", "/api/shapes", "alice", false)
         val session = Session(Repository(config, platform, http, scope, synchronize = false),
             scope, Environment(visible = false))
@@ -411,6 +419,43 @@ class TelecomIntegrationTest {
                 advanceTimeBy(30_000)
                 runCurrent()
                 assertEquals(1, RingbackShadow.releases)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test fun enablingWaitingReevaluatesTheLatestSnapshotOnTheRetainedRingbackSubscription() = runTest {
+        Fixture(backgroundScope, holdDmStream = true).use { f ->
+            val service = startOutgoingService(f)
+            try {
+                f.host.controller.receiveDmCalls(true)
+                runCurrent()
+                val table = assertNotNull(ReflectionHelpers.getField<SyncedTable?>(f.host, "inviteTable"))
+                f.host.controller.receiveDmCalls(false)
+                runCurrent()
+                Snapshot.sendApplyNotifications()
+                runCurrent()
+                assertSame(table, ReflectionHelpers.getField<SyncedTable>(f.host, "inviteTable"))
+
+                val channels = ReflectionHelpers.getField<MutableStateFlow<List<Row>>>(f.session.repo.channels, "serverRows")
+                val invites = ReflectionHelpers.getField<MutableStateFlow<List<Row>?>>(table, "successfulSnapshot")
+                channels.value = listOf(obj("id" to "other-dm", "is_dm" to true))
+                invites.value = listOf(obj("id" to "pending", "channel_id" to "other-dm",
+                    "inviter_id" to "bob", "invitee_id" to "alice", "status" to "pending",
+                    "expires_at" to "2099-01-01T00:00:00Z"))
+                runCurrent()
+                val seen = ReflectionHelpers.getField<Set<String>>(f.host.controller, "seenInvites")
+                assertFalse("pending" in seen)
+
+                f.host.controller.receiveDmCalls(true)
+                runCurrent()
+                Snapshot.sendApplyNotifications()
+                runCurrent()
+                assertSame(table, ReflectionHelpers.getField<SyncedTable>(f.host, "inviteTable"))
+                assertTrue("pending" in seen)
             } finally {
                 f.host.controller.hangup()
                 service.onDestroy()

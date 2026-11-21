@@ -37,6 +37,7 @@ internal class AndroidPhoneHost(
     private val pushBinding = PushBinding(context)
     private var incomingTag: String? = null
     private var currentInviteRows = emptyList<Row>()
+    private val inviteEvaluation = MutableStateFlow(0L)
     private data class PushedInvite(val invite: DmCallPushAnswer, val answer: Boolean)
     private val pushedInvite = MutableStateFlow<PushedInvite?>(null)
     private var pushedInviteExpiry: Job? = null
@@ -177,6 +178,7 @@ internal class AndroidPhoneHost(
             currentInviteRows = emptyList()
         }
         updateInviteSubscription()
+        if (enabled) inviteEvaluation.update { it + 1 }
     }
 
     private fun updateInviteSubscription() {
@@ -194,7 +196,7 @@ internal class AndroidPhoneHost(
                         kotlinx.serialization.json.JsonObject(row + ("inviter_name" to kotlinx.serialization.json.JsonPrimitive(user?.text("display_name").orEmpty().ifBlank { "Zoo" })))
                     }
                 }
-                combine(dmRows, pushedInvite) { rows, selection -> rows to selection }
+                combine(dmRows, pushedInvite, inviteEvaluation) { rows, selection, _ -> rows to selection }
                     .collect { (rows, selection) ->
                         if (!controller.dmWaiting) return@collect
                         currentInviteRows = rows
@@ -214,7 +216,7 @@ internal class AndroidPhoneHost(
                         }
                         controller.invites(rows, app.config.userId, now,
                             preferredInviteId = target?.takeIf { selection?.answer == true })
-                    }
+                }
             }
         }
     }
