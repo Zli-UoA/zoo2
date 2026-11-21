@@ -19,6 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -101,10 +102,11 @@ internal fun NewPostPage(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().background(colors.inputSurface)
-            .padding(start = AndroidControlSize.inputEdgeInset, end = AndroidControlSize.inputEdgeInset,
-                bottom = AndroidControlSize.inputEdgeInset),
-            verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().background(colors.inputSurface).testTag("post-actions")
+                .padding(AndroidControlSize.postActionInset),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             UiIconButton(UiIcon.Attach, "写真", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Attach)) })
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))

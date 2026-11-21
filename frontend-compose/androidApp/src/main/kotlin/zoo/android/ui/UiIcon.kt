@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 internal object AndroidControlSize {
     val target = 48.dp
     val inputEdgeInset = 4.dp
+    val postActionInset = 8.dp
     val icon = 24.dp
     val navigationHeight = 60.dp
     val navigationIndicatorHeight = 32.dp
