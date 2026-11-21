@@ -241,16 +241,8 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         .await)
         .contains(&m(9))
     );
-    // before はその日を含まない。月初なら前の月から探す。境界の行は月初ちょうどと、その 1 秒前に置く
-    // （実行時刻によらない）。
-    sql.batch_execute(&format!(
-        "INSERT INTO messages (id, user_id, channel_id, content, created_at) VALUES
-           ('{at_start}', '{alice}', '{public}', '月境界の記録', date_trunc('month', LOCALTIMESTAMP)),
-           ('{before_start}', '{alice}', '{public}', '月境界の記録', date_trunc('month', LOCALTIMESTAMP) - interval '1 second');",
-        at_start = m(11),
-        before_start = m(12),
-    ))
-    .await?;
+    // before はその日を含まない。月初なら前の月から探す。月初は 1 回だけ取り、境界の行（月初ちょうどと
+    // 1 秒前）と before の両方に使う（実行中に月が変わっても結果が変わらない）。
     let month_start = sql
         .query_one(
             "SELECT date_trunc('month', LOCALTIMESTAMP)::date::text",
@@ -258,6 +250,23 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         )
         .await?
         .get::<_, String>(0);
+    // 日の境界: 月初の 10 日前の 0 時ちょうどと、その 1 秒前（同じ月の中、時刻を固定）。
+    let day = sql
+        .query_one("SELECT ($1::text::date - 10)::text", &[&month_start])
+        .await?
+        .get::<_, String>(0);
+    sql.batch_execute(&format!(
+        "INSERT INTO messages (id, user_id, channel_id, content, created_at) VALUES
+           ('{at_start}', '{alice}', '{public}', '月境界の記録', '{month_start}'::timestamp),
+           ('{before_start}', '{alice}', '{public}', '月境界の記録', '{month_start}'::timestamp - interval '1 second'),
+           ('{at_day}', '{alice}', '{public}', '日境界の記録', '{day}'::timestamp),
+           ('{before_day}', '{alice}', '{public}', '日境界の記録', '{day}'::timestamp - interval '1 second');",
+        at_start = m(11),
+        before_start = m(12),
+        at_day = m(15),
+        before_day = m(16),
+    ))
+    .await?;
     let before_month = ids(&search(
         &app,
         &alice,
@@ -267,6 +276,15 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     assert_eq!(before_month, vec![m(12)], "{before_month:?}");
     let all_boundary = ids(&search(&app, &alice, &format!("q={}", q("月境界"))).await);
     assert_eq!(all_boundary, vec![m(11), m(12)]);
+    // 指定した日の 0 時ちょうどの行は出ず、その 1 秒前の行は出る。
+    assert_eq!(
+        ids(&search(&app, &alice, &format!("q={}&before={day}", q("日境界"))).await),
+        vec![m(16)]
+    );
+    assert_eq!(
+        ids(&search(&app, &alice, &format!("q={}&after={day}", q("日境界"))).await),
+        vec![m(15)]
+    );
     let tomorrow = sql
         .query_one(
             "SELECT (LOCALTIMESTAMP + interval '1 day')::date::text",
@@ -288,7 +306,8 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     sql.batch_execute(&format!(
         "INSERT INTO attachments (id, message_id, uploader_id, channel_id, file_name, file_size, content_type, storage_key)
            VALUES ('a1', '{m1}', '{alice}', '{public}', '議事録_2026.PDF', 10, 'application/pdf', 'k1'),
-                  ('a2', '{m6}', '{alice}', '{public}', '議事録_消した.pdf', 10, 'application/pdf', 'k2');
+                  ('a2', '{m6}', '{alice}', '{public}', '議事録_消した.pdf', 10, 'application/pdf', 'k2'),
+                  ('a3', '{m1}', '{bob}', '{public}', '見積書_bob.pdf', 10, 'application/pdf', 'k3');
          INSERT INTO channel_notes (id, channel_id, title, content, created_user_id)
            VALUES ('n1', '{public}', '運用メモ', '障害対応の手順', '{alice}'),
                   ('n2', '{private}', '秘密のメモ', '障害の記録', '{alice}');",
@@ -311,7 +330,7 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         vec!["a1"]
     );
     assert!(
-        ids(&search(&app, &alice, &format!("type=files&q=pdf&user_id={bob}")).await).is_empty()
+        ids(&search(&app, &alice, &format!("type=files&q=pdf&user_id={bob}")).await) == vec!["a3"]
     );
     assert!(
         ids(&search(
@@ -321,6 +340,17 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         )
         .await)
         .is_empty()
+    );
+    // 作った人で絞ると、その人のノートが返る（alice は n1・n2 の両方を見られる）。
+    assert_eq!(
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=notes&q={}&user_id={alice}", q("障害"))
+        )
+        .await)
+        .len(),
+        2
     );
     // タイトルだけに当たったノートも、スニペットに語を含む。
     let notes = search(&app, &alice, &format!("type=notes&q={}", q("運用"))).await;
@@ -366,6 +396,28 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     assert!(
         summer_snippet.contains("ÉTÉ") && summer_snippet.starts_with('…'),
         "{summer}"
+    );
+    // ファイル名も同じ: 160 文字より後ろの ÉTÉ がスニペットに入る。
+    let long_name = format!("{}ÉTÉ.pdf", "x".repeat(200));
+    sql.batch_execute(&format!(
+        "INSERT INTO attachments (id, message_id, uploader_id, channel_id, file_name, file_size, content_type, storage_key)
+           VALUES ('a-long', '{m1}', '{alice}', '{public}', '{long_name}', 10, 'application/pdf', 'k-long');",
+        m1 = m(1)
+    ))
+    .await?;
+    let summer_file = search(
+        &app,
+        &alice,
+        &format!(
+            "type=files&q={}",
+            q(if lower_matches { "été" } else { "ÉTÉ" })
+        ),
+    )
+    .await;
+    let file_snippet = summer_file["items"][0]["snippet"].as_str().unwrap();
+    assert!(
+        file_snippet.contains("ÉTÉ") && file_snippet.starts_with('…'),
+        "{summer_file}"
     );
     assert!(
         hit["items"][0]["snippet"]
