@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useTranslation } from "react-i18next";
 import { fetchPreviewBytes } from "../../lib/documents/fetch";
@@ -31,9 +40,84 @@ function isRenderCancelled(error: unknown): boolean {
   );
 }
 
+const PdfPageSlot = memo(function PdfPageSlot({
+  pageNumber,
+  label,
+  size,
+  mounted,
+  onSlotMount,
+  onSlotUnmount,
+  onCanvasMount,
+  onCanvasUnmount,
+}: {
+  pageNumber: number;
+  label: string;
+  size: PageSize | null;
+  mounted: boolean;
+  onSlotMount: (pageNumber: number, element: HTMLDivElement) => void;
+  onSlotUnmount: (pageNumber: number, element: HTMLDivElement) => void;
+  onCanvasMount: (pageNumber: number, element: HTMLCanvasElement) => void;
+  onCanvasUnmount: (pageNumber: number, element: HTMLCanvasElement) => void;
+}) {
+  const slotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = slotRef.current;
+    if (!element) return;
+    onSlotMount(pageNumber, element);
+    return () => onSlotUnmount(pageNumber, element);
+  }, [onSlotMount, onSlotUnmount, pageNumber]);
+
+  const slotStyle = size
+    ? { aspectRatio: `${size.width} / ${size.height}`, maxWidth: `${size.width}px` }
+    : { maxWidth: "100%", minHeight: "12rem" };
+
+  return (
+    <div
+      ref={slotRef}
+      data-pdf-page={pageNumber}
+      style={slotStyle}
+      className="relative mx-auto w-full overflow-hidden rounded-xs bg-white shadow-xs"
+    >
+      {mounted ? (
+        <PdfPageCanvas
+          pageNumber={pageNumber}
+          label={label}
+          onMount={onCanvasMount}
+          onUnmount={onCanvasUnmount}
+        />
+      ) : (
+        <div role="img" aria-label={label} className="size-full bg-white" />
+      )}
+    </div>
+  );
+});
+
+function PdfPageCanvas({
+  pageNumber,
+  label,
+  onMount,
+  onUnmount,
+}: {
+  pageNumber: number;
+  label: string;
+  onMount: (pageNumber: number, element: HTMLCanvasElement) => void;
+  onUnmount: (pageNumber: number, element: HTMLCanvasElement) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useLayoutEffect(() => {
+    const element = canvasRef.current;
+    if (!element) return;
+    onMount(pageNumber, element);
+    return () => onUnmount(pageNumber, element);
+  }, [onMount, onUnmount, pageNumber]);
+
+  return <canvas ref={canvasRef} role="img" aria-label={label} className="block size-full" />;
+}
+
 /** The same canvas viewer in browsers and Android, without depending on PDF plugins. */
 export function PdfPreview({ src, embedded = false }: { src: string; embedded?: boolean }) {
   const { t } = useTranslation();
+  const totalPagesId = useId();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const prevBtnRef = useRef<HTMLButtonElement>(null);
@@ -112,23 +196,43 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       if (clientHeight <= 0) return;
 
       const containerRect = container.getBoundingClientRect();
+      const viewportTop = containerRect.top;
+      const viewportBottom = viewportTop + clientHeight;
+
+      let low = 1;
+      let high = document.numPages;
+      let startPage = document.numPages + 1;
+      while (low <= high) {
+        const mid = (low + high) >> 1;
+        const element = pageRefs.current.get(mid);
+        if (!element) {
+          startPage = 1;
+          break;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom > viewportTop) {
+          startPage = mid;
+          high = mid - 1;
+        } else {
+          low = mid + 1;
+        }
+      }
+
       let firstVisible: number | null = null;
       let lastVisible: number | null = null;
       let bestPage: number | null = null;
       let bestOverlap = -1;
 
-      for (let p = 1; p <= document.numPages; p++) {
+      for (let p = startPage; p <= document.numPages; p++) {
         const element = pageRefs.current.get(p);
         if (!element) continue;
         const rect = element.getBoundingClientRect();
         if (rect.height <= 0) continue;
-        const relTop = rect.top - containerRect.top;
-        const relBottom = rect.bottom - containerRect.top;
-        if (relBottom > 0 && relTop < clientHeight) {
+        if (rect.top >= viewportBottom) break;
+        if (rect.bottom > viewportTop) {
           if (firstVisible === null) firstVisible = p;
           lastVisible = p;
-          const overlap =
-            Math.min(rect.bottom, containerRect.bottom) - Math.max(rect.top, containerRect.top);
+          const overlap = Math.min(rect.bottom, viewportBottom) - Math.max(rect.top, viewportTop);
           if (overlap > bestOverlap) {
             bestOverlap = overlap;
             bestPage = p;
@@ -187,7 +291,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       dirtyInputRef.current = false;
       setPage(clamped);
       setPageInput(String(clamped));
-      pendingAnchorRef.current = pageSizes[clamped] ? null : clamped;
+      pendingAnchorRef.current = clamped;
       alignScrollToPage(clamped);
       setVisibleRange((prev) =>
         clamped >= prev.start && clamped <= prev.end ? prev : { start: clamped, end: clamped },
@@ -200,7 +304,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         inputRef.current?.select();
       }
     },
-    [alignScrollToPage, document, measureViewport, pageInput, pageSizes],
+    [alignScrollToPage, document, measureViewport, pageInput],
   );
 
   useEffect(() => {
@@ -391,23 +495,30 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
 
         try {
           const pdfPage = await document.getPage(targetPage);
-          if (cancelled || taskAborted) {
+          if (cancelled) {
             clearTimeout(timeout);
-            continue;
+            break;
           }
           const natural = pdfPage.getViewport({ scale: 1 });
           const viewport = pdfPage.getViewport({
             scale: Math.min(2, 1600 / natural.width, 2400 / natural.height),
           });
-          const element = canvasRefs.current.get(targetPage);
-          if (cancelled || taskAborted || !element) {
-            clearTimeout(timeout);
-            continue;
-          }
           const size: PageSize = {
             width: Math.max(1, Math.ceil(viewport.width)),
             height: Math.max(1, Math.ceil(viewport.height)),
           };
+          setPageSizes((prev) =>
+            prev[targetPage]?.width === size.width && prev[targetPage]?.height === size.height
+              ? prev
+              : { ...prev, [targetPage]: size },
+          );
+          setDefaultSize((prev) => prev ?? size);
+
+          const element = canvasRefs.current.get(targetPage);
+          if (taskAborted || !element) {
+            clearTimeout(timeout);
+            continue;
+          }
           element.width = size.width;
           element.height = size.height;
 
@@ -423,23 +534,10 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           if (cancelled || taskAborted) continue;
 
           renderedCanvasesRef.current.set(targetPage, element);
-          setPageSizes((prev) =>
-            prev[targetPage]?.width === size.width && prev[targetPage]?.height === size.height
-              ? prev
-              : { ...prev, [targetPage]: size },
-          );
-          if (targetPage === 1) {
-            setDefaultSize((prev) =>
-              prev?.width === size.width && prev?.height === size.height ? prev : size,
-            );
-          }
           setPrimaryReady(true);
         } catch (error) {
           clearTimeout(timeout);
           if (cancelled) break;
-          if (taskAborted && isRenderCancelled(error)) {
-            continue;
-          }
           if (isRenderCancelled(error)) {
             continue;
           }
@@ -463,13 +561,13 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     };
   }, [document]);
 
-  // Wake renderer whenever the active window or canvas refs change.
+  // Wake renderer whenever the active window changes.
   useEffect(() => {
     kickRenderRef.current?.();
   }, [document, keptPages]);
 
-  // Re-align scroll anchor or re-measure visible pages when layout sizes settle or container resizes.
-  useEffect(() => {
+  // Re-align scroll anchor before paint when page slot dimensions settle.
+  useLayoutEffect(() => {
     if (!document) return;
     const container = scrollRef.current;
     const anchor = pendingAnchorRef.current;
@@ -480,9 +578,6 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         lastAlignedScrollTopRef.current = null;
       } else {
         alignScrollToPage(anchor);
-        if (pageSizes[anchor]) {
-          pendingAnchorRef.current = null;
-        }
       }
     }
     measureViewport(false);
@@ -498,28 +593,30 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     return () => observer.disconnect();
   }, [document, measureViewport]);
 
-  const setPageElement = useCallback((pageNumber: number, element: HTMLDivElement | null) => {
-    if (element) {
-      pageRefs.current.set(pageNumber, element);
-    } else {
+  const handleSlotMount = useCallback((pageNumber: number, element: HTMLDivElement) => {
+    pageRefs.current.set(pageNumber, element);
+  }, []);
+
+  const handleSlotUnmount = useCallback((pageNumber: number, element: HTMLDivElement) => {
+    if (pageRefs.current.get(pageNumber) === element) {
       pageRefs.current.delete(pageNumber);
     }
   }, []);
 
-  const setCanvasElement = useCallback((pageNumber: number, element: HTMLCanvasElement | null) => {
-    const existing = canvasRefs.current.get(pageNumber);
-    if (existing && existing !== element) {
-      existing.width = 0;
-      existing.height = 0;
-      renderedCanvasesRef.current.delete(pageNumber);
-    }
-    if (element) {
-      canvasRefs.current.set(pageNumber, element);
-      kickRenderRef.current?.();
-    } else {
+  const handleCanvasMount = useCallback((pageNumber: number, element: HTMLCanvasElement) => {
+    canvasRefs.current.set(pageNumber, element);
+    kickRenderRef.current?.();
+  }, []);
+
+  const handleCanvasUnmount = useCallback((pageNumber: number, element: HTMLCanvasElement) => {
+    if (canvasRefs.current.get(pageNumber) === element) {
       canvasRefs.current.delete(pageNumber);
+    }
+    if (renderedCanvasesRef.current.get(pageNumber) === element) {
       renderedCanvasesRef.current.delete(pageNumber);
     }
+    element.width = 0;
+    element.height = 0;
   }, []);
 
   const loading = !failed && (!document || !primaryReady);
@@ -558,7 +655,8 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
             disabled={!document || failed}
             value={pageInput}
             aria-label={t("attachments.pageNumber")}
-            className="h-7 w-14 px-1.5 text-center tabular-nums"
+            aria-describedby={document ? totalPagesId : undefined}
+            className="h-7 w-16 px-1.5 text-center tabular-nums"
             onCompositionStart={() => {
               composingRef.current = true;
             }}
@@ -612,7 +710,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
               }
             }}
           />
-          <span className="text-sm text-muted-foreground tabular-nums">
+          <span id={totalPagesId} className="text-sm tabular-nums">
             / {document?.numPages ?? "—"}
           </span>
         </form>
@@ -631,7 +729,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         </span>
       </div>
       {failed ? (
-        <p role="alert" className="text-center text-sm text-destructive">
+        <p role="alert" className="py-6 text-center text-sm">
           {t("attachments.loadError")}
         </p>
       ) : (
@@ -659,34 +757,18 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           <div className="flex flex-col items-center gap-3">
             {Array.from({ length: totalPages }, (_, index) => {
               const pageNumber = index + 1;
-              const size = pageSizes[pageNumber] ?? defaultSize;
-              const slotStyle = size
-                ? { aspectRatio: `${size.width} / ${size.height}`, maxWidth: `${size.width}px` }
-                : { maxWidth: "100%", minHeight: "12rem" };
-              const mounted = keptPagesSet.has(pageNumber);
               return (
-                <div
+                <PdfPageSlot
                   key={pageNumber}
-                  ref={(element) => setPageElement(pageNumber, element)}
-                  data-pdf-page={pageNumber}
-                  style={slotStyle}
-                  className="relative mx-auto w-full overflow-hidden rounded-xs bg-white shadow-xs"
-                >
-                  {mounted ? (
-                    <canvas
-                      ref={(element) => setCanvasElement(pageNumber, element)}
-                      role="img"
-                      aria-label={t("attachments.pdfPage", { page: pageNumber })}
-                      className="block size-full"
-                    />
-                  ) : (
-                    <div
-                      role="img"
-                      aria-label={t("attachments.pdfPage", { page: pageNumber })}
-                      className="size-full bg-white"
-                    />
-                  )}
-                </div>
+                  pageNumber={pageNumber}
+                  label={t("attachments.pdfPage", { page: pageNumber })}
+                  size={pageSizes[pageNumber] ?? defaultSize}
+                  mounted={keptPagesSet.has(pageNumber)}
+                  onSlotMount={handleSlotMount}
+                  onSlotUnmount={handleSlotUnmount}
+                  onCanvasMount={handleCanvasMount}
+                  onCanvasUnmount={handleCanvasUnmount}
+                />
               );
             })}
           </div>
