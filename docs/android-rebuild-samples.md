@@ -14,6 +14,7 @@
 | 全画面入力 | [ライト](images/android-design/rebuild/composer-light.png) | [ダーク](images/android-design/rebuild/composer-dark.png) |
 | スレッド | [ライト](images/android-design/rebuild/thread-light.png) | [ダーク](images/android-design/rebuild/thread-dark.png) |
 | メッセージの長押しメニュー | [ライト](images/android-design/rebuild/message-menu-light.png) | [ダーク](images/android-design/rebuild/message-menu-dark.png) |
+| ホーム投稿の長押しメニュー | [ライト](images/android-design/rebuild/post-menu-light.png) | [ダーク](images/android-design/rebuild/post-menu-dark.png) |
 | 投稿詳細 | [ライト](images/android-design/rebuild/post-light.png) | [ダーク](images/android-design/rebuild/post-dark.png) |
 | 新しい投稿 | [ライト](images/android-design/rebuild/post-compose-light.png) | [ダーク](images/android-design/rebuild/post-compose-dark.png) |
 | プロフィール | [ライト](images/android-design/rebuild/profile-light.png) | [ダーク](images/android-design/rebuild/profile-dark.png) |

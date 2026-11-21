@@ -183,6 +183,12 @@ class AndroidSamplesTest {
         ui.runOnIdle { check(pulses.size == 1) { "Expected a single threshold pulse: $pulses" } }
         ui.onNodeWithContentDescription("戻る").performClick()
         ui.onNodeWithText("開発").assertIsDisplayed()
+        ui.runOnIdle { screen = AndroidScreen.Home(listOf(root)); dark = false }
+        message.performTouchInput { longClick() }
+        ui.onNodeWithText("投稿を開く").assertIsDisplayed()
+        capture("post-menu-light", withSheet = true)
+        ui.runOnIdle { dark = true }
+        capture("post-menu-dark", withSheet = true)
     }
 
     private fun capture(name: String, withSheet: Boolean = false) {
