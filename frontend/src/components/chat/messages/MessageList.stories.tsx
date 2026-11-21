@@ -135,9 +135,8 @@ export const LoadingOlder: Story = {
     isLoadingOlder: true,
   },
   play: playForImplementation(async () => {
-    await expect(
-      await screen.findByRole("status", { name: "古いメッセージを読み込み中…" }),
-    ).toBeInTheDocument();
+    const status = await screen.findByTestId("loading-older-status");
+    await expect(status).toHaveTextContent(/読み込み中|Loading older messages/);
   }),
 };
 

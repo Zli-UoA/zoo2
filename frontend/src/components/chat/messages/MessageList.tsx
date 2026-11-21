@@ -524,17 +524,21 @@ export function MessageList({
 
   return (
     <div className="relative min-h-0 flex-1">
-      {isLoadingOlder && !showSkeleton && !showOffline && !showError && !showEmpty ? (
+      {!showSkeleton && !showOffline && !showError && !showEmpty ? (
         <div
           role="status"
-          aria-label={t("messages.loadingOlder")}
-          data-testid="loading-older"
+          data-testid="loading-older-status"
           className="pointer-events-none absolute inset-x-0 top-0 z-10 flex h-6 items-center justify-center text-xs text-muted-foreground"
         >
-          <LoaderCircleIcon
-            className="size-4 animate-spin motion-reduce:animate-none"
-            aria-hidden="true"
-          />
+          {isLoadingOlder ? (
+            <>
+              <LoaderCircleIcon
+                className="size-4 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              <span className="sr-only">{t("messages.loadingOlder")}</span>
+            </>
+          ) : null}
         </div>
       ) : null}
       {showSkeleton ? (

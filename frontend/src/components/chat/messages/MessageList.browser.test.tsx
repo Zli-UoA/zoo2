@@ -61,7 +61,9 @@ it("shows a loading indicator without shifting messages while older messages are
     </LocaleProvider>
   );
   const { rerender } = render(pane(true));
-  expect(screen.getByRole("status", { name: "古いメッセージを読み込み中…" })).toBeInTheDocument();
+  expect(screen.getByTestId("loading-older-status")).toHaveTextContent(
+    "古いメッセージを読み込み中…",
+  );
   const before = screen
     .getByText("Message 1")
     .closest<HTMLElement>("[data-message-id]")!
@@ -69,7 +71,7 @@ it("shows a loading indicator without shifting messages while older messages are
 
   // スピナーを消しても行の位置は変わらない (フローに高さを持たせない)。
   rerender(pane(false));
-  expect(screen.queryByTestId("loading-older")).toBeNull();
+  expect(screen.getByTestId("loading-older-status")).toBeEmptyDOMElement();
   expect(
     screen.getByText("Message 1").closest<HTMLElement>("[data-message-id]")!.getBoundingClientRect()
       .top,
