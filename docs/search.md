@@ -72,6 +72,8 @@ CREATE INDEX messages_search_month ON messages USING gin (
 
 - 各 SQL の対象の表の走査が「今月のヒット数×3+64」以内（1 文字の語は「今月の行数×3+64」）。見えないチャンネルにだけ当たる語と、見えるチャンネルが 0 の閲覧者も測る。
 - 30 万件と 100 万件で、表ごとの走査量とバッファが増えない（`infra/db/compare-search-work.py`）。
+- 結合で捨てた行（`Rows Removed by Join Filter`）とソートの入力行（メモリ内のソートも）も、同じ上限で見る。
+- API 1 リクエストごとに、SQL の回数・合計バッファ・DB 時間を `pg_stat_statements` で測る（手元の compose と CI で preload する）。該当なしのリクエストは月の SQL がちょうど 12 回、今月でそろう語は 1 回。合計バッファは 30 万件と 100 万件で増えない。
 - 単独と 8 並列を各 30 回。API 全体の p50・p95・最大値も記録する。
 
 ## 拡張とデプロイ
