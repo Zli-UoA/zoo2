@@ -13,7 +13,7 @@
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, PoisonError,
@@ -266,20 +266,9 @@ impl Downloads {
         std::thread::spawn(move || {
             let mut done = Vec::new();
             for path in stale {
-                let is_part = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(is_part_file_name);
-                if !is_part {
-                    // 記録の形が違うものは、ファイルには触れずに記録から外す。
+                // 消せなかったものは、次の起動でもう一度試す。
+                if remove_stale_entry(&path) {
                     done.push(path);
-                    continue;
-                }
-                match std::fs::remove_file(&path) {
-                    Ok(()) => done.push(path),
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => done.push(path),
-                    // 消せなかったものは、次の起動でもう一度試す。
-                    Err(_) => {}
                 }
             }
             for path in done {
@@ -851,6 +840,57 @@ fn is_part_file_name(name: &str) -> bool {
         && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// 検査用のファイルに書く目印。`.part` は中身が本体なので目印を書けないが、検査用の
+/// ファイルは空なので、起動時の掃除はこの目印があるものだけを消す。`.part` の名前から
+/// ID を読んだ第三者が、同じ名前の `.probe` を先に置くことができるため。
+const PROBE_MARKER: &[u8] = b"zoo2 probe\n";
+
+/// 検査用の名前か。中身（目印）を確かめてから消す対象。
+fn is_probe_name(name: &str) -> bool {
+    matches!(
+        name.rsplit_once('.').map(|(_, suffix)| suffix),
+        Some("probe" | "probe-moved")
+    )
+}
+
+/// 記録に残った名前を消す。消した、または触れる必要が無かったら `true`（記録から外す）。
+fn remove_stale_entry(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return true;
+    };
+    if !is_part_file_name(name) {
+        // 記録の形が違うものは、ファイルには触れずに記録から外す。
+        return true;
+    }
+    if is_probe_name(name) && !has_probe_marker(path) {
+        // 先にあった第三者のファイルかもしれない。リンクの先を消さないよう、自分が
+        // 書いた目印が無いものには触れず、記録から外すだけにする。
+        return true;
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
+}
+
+/// 検査用のファイルに、この保存が書いた目印があるか。リンクをたどるが、読む量は
+/// 目印の長さまでに限る。
+fn has_probe_marker(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut marker = Vec::with_capacity(PROBE_MARKER.len() + 1);
+    if file
+        .take(PROBE_MARKER.len() as u64 + 1)
+        .read_to_end(&mut marker)
+        .is_err()
+    {
+        return false;
+    }
+    marker == PROBE_MARKER
+}
+
 /// 拡張子を残して、名前がファイルシステムの上限（バイト数）に収まるようにする。
 /// 文字数ではなくバイト数で切るので、日本語などの名前でも収まる。
 fn truncate_name(name: String) -> String {
@@ -1103,7 +1143,8 @@ fn check_destination_with(
 ) -> Result<()> {
     let probe = part.with_extension("probe");
     let moved = part.with_extension("probe-moved");
-    // 検査の途中でアプリが終了しても、次の起動で片付けられるように記録する。
+    // 作る前に記録する。作成の直後に終了しても、次の起動で掃除できるようにするため。
+    // 記録だけが先に残っても、掃除は目印（[`PROBE_MARKER`]）のあるものしか消さない。
     journal.record(&probe)?;
     journal.record(&moved)?;
 
@@ -1148,9 +1189,17 @@ fn check_destination_with(
 /// 検査用の空のファイルを、既にあると失敗する形で作る。共有フォルダーでは、`.part` の
 /// 名前から ID を読んだ第三者が、同じ名前の `.probe` を別のファイルへのシンボリック
 /// リンクとして先に置ける。`std::fs::write` はリンクをたどってリンク先を空にするため、
-/// 使わない。
+/// 使わない。作ったファイルには目印（[`PROBE_MARKER`]）を書き、起動時の掃除が自分が
+/// 作ったものだけを消せるようにする。
 fn create_probe(path: &Path) -> std::io::Result<()> {
-    OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let written = file.write_all(PROBE_MARKER).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(err) = written {
+        // 書きかけのファイルは自分が作ったものなので、残さない。
+        let _ = std::fs::remove_file(path);
+        return Err(err);
+    }
     Ok(())
 }
 
@@ -2078,6 +2127,65 @@ mod tests {
         );
         assert!(probe.symlink_metadata().is_ok(), "先にあった名前を消さない");
         assert!(journal.snapshot().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // 起動時の掃除は、記録に名前が残っていても、自分が書いた目印が無いものには触れない。
+    // 記録してから検査用のファイルを作るので、終了のタイミングによっては第三者の名前が
+    // 記録に残りうる。
+    #[test]
+    fn startup_cleanup_keeps_a_preexisting_probe_name() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        std::fs::write(&probe, b"keep").unwrap();
+
+        assert!(remove_stale_entry(&probe));
+        assert_eq!(std::fs::read(&probe).unwrap(), b"keep");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_cleanup_keeps_a_preexisting_probe_link() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let moved = part.with_extension("probe-moved");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        symlink(&victim, &moved).unwrap();
+
+        assert!(remove_stale_entry(&moved));
+        assert!(moved.symlink_metadata().is_ok(), "リンクを消さない");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_removes_a_probe_it_wrote() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        let moved = part.with_extension("probe-moved");
+
+        // 検査の途中で終了した場合を再現する。目印があるものは消し、記録から外す。
+        create_probe(&probe).unwrap();
+        assert!(remove_stale_entry(&probe));
+        assert!(!probe.exists());
+        assert!(remove_stale_entry(&moved), "まだ無い名前は記録から外す");
+        assert!(remove_stale_entry(&part), "無い名前は記録から外す");
+        assert!(
+            remove_stale_entry(&dir.join("notes.txt")),
+            "形の違う名前は触らずに記録から外す"
+        );
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
