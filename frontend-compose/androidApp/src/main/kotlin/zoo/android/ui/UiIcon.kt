@@ -1,0 +1,77 @@
+package zoo.android.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+
+internal enum class UiIcon {
+    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create,
+}
+
+@Composable
+internal fun UiIconButton(icon: UiIcon, label: String, color: Color, action: () -> Unit, enabled: Boolean = true) {
+    Box(
+        Modifier.size(48.dp).clickable(enabled = enabled, role = Role.Button, onClick = action)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        UiGlyph(icon, color)
+    }
+}
+
+@Composable
+internal fun UiGlyph(icon: UiIcon, color: Color) {
+    Canvas(Modifier.size(22.dp)) {
+        fun point(x: Float, y: Float) = Offset(x * size.width / 24, y * size.height / 24)
+        val width = 1.65.dp.toPx()
+        fun lines(vararg points: Pair<Int, Int>) {
+            val path = Path()
+            points.forEachIndexed { index, (x, y) ->
+                val p = point(x.toFloat(), y.toFloat())
+                if (index == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+            }
+            drawPath(path, color, style = Stroke(width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        }
+        when (icon) {
+            UiIcon.Back -> { lines(13 to 5, 6 to 12, 13 to 19); lines(6 to 12, 21 to 12) }
+            UiIcon.Next -> lines(9 to 6, 15 to 12, 9 to 18)
+            UiIcon.Home -> { lines(3 to 11, 12 to 3, 21 to 11); lines(5 to 10, 5 to 21, 19 to 21, 19 to 10) }
+            UiIcon.Channels -> {
+                lines(9 to 4, 6 to 20); lines(18 to 4, 15 to 20)
+                lines(4 to 9, 21 to 9); lines(3 to 15, 20 to 15)
+            }
+            UiIcon.Bell -> { lines(5 to 17, 7 to 13, 7 to 8, 10 to 5, 14 to 5, 17 to 8, 17 to 13, 19 to 17, 5 to 17); lines(10 to 20, 14 to 20) }
+            UiIcon.Bubble -> lines(4 to 5, 20 to 5, 20 to 17, 10 to 17, 5 to 21, 5 to 17, 4 to 17, 4 to 5)
+            UiIcon.Settings -> {
+                drawCircle(color, size.width * .32f, style = Stroke(width))
+                drawCircle(color, size.width * .10f, style = Stroke(width))
+                lines(12 to 2, 12 to 4); lines(12 to 20, 12 to 22)
+                lines(2 to 12, 4 to 12); lines(20 to 12, 22 to 12)
+            }
+            UiIcon.Send -> { lines(3 to 4, 21 to 12, 3 to 20, 6 to 12, 3 to 4); lines(6 to 12, 21 to 12) }
+            UiIcon.Attach -> lines(14 to 6, 7 to 13, 7 to 17, 10 to 20, 14 to 20, 21 to 13, 21 to 8, 18 to 5, 15 to 5, 9 to 11, 9 to 14, 11 to 16, 13 to 16, 18 to 11)
+            UiIcon.Format -> { lines(4 to 19, 10 to 5, 16 to 19); lines(7 to 14, 13 to 14); lines(18 to 11, 21 to 11, 21 to 19, 18 to 19, 18 to 15, 21 to 15) }
+            UiIcon.Emoji -> {
+                drawCircle(color, size.width * .39f, style = Stroke(width))
+                drawCircle(color, width / 2, point(9f, 9f))
+                drawCircle(color, width / 2, point(15f, 9f))
+                drawArc(color, 0f, 180f, false, point(8f, 11f), Size(size.width / 3, size.height / 4), style = Stroke(width))
+            }
+            UiIcon.Create -> lines(5 to 15, 16 to 4, 20 to 8, 9 to 19, 4 to 20, 5 to 15)
+        }
+    }
+}

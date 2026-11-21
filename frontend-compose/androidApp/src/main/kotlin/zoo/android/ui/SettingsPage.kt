@@ -31,8 +31,10 @@ internal fun SettingsPage(
     colors: AndroidColors,
     open: (String) -> Unit,
     toggle: (String, Boolean) -> Unit,
+    title: String = "設定",
+    onBack: (() -> Unit)? = null,
 ) {
-    PageHeader("設定", colors)
+    PageHeader(title, colors, onBack = onBack)
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(24.dp),
