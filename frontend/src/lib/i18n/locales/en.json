@@ -264,6 +264,11 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
+    "downloading": "Downloading",
+    "saving": "Saving…",
+    "cancelDownload": "Cancel downloading {{name}}",
+    "cancelDownloadShort": "Cancel",
     "retry": "Try again",
     "sensitive": "Sensitive image",
     "markSensitive": "Mark images as sensitive",
@@ -483,6 +488,16 @@
     "desktopTitle": "Notifications",
     "desktopValue": "System notifications",
     "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
+  },
+  "downloads": {
+    "desktopTitle": "Downloads",
+    "desktopDescription": "Where the app saves attachments. Choose whether to confirm the location each time, or save to a folder you set in advance.",
+    "askEveryTime": "Ask where to save each time",
+    "defaultDirectory": "Downloads folder",
+    "chooseFolder": "Choose folder",
+    "resetDirectory": "Use the default folder",
+    "desktopValue": "OS save dialog",
+    "error": "Could not change the download settings. Please try again."
   },
   "mfm": {
     "suggestions": "MFM suggestions",

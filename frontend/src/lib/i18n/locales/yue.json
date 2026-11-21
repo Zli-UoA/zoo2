@@ -264,6 +264,11 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "下載唔到檔案。",
+    "downloadDestinationUnsupported": "呢個位置存唔到檔案。請揀第二個資料夾，或者喺設定嘅「下載」改儲存位置。",
+    "downloading": "下載緊",
+    "saving": "儲存緊…",
+    "cancelDownload": "取消下載 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "再試",
     "sensitive": "敏感圖片",
     "markSensitive": "將圖片標記為敏感內容",
@@ -483,6 +488,16 @@
     "desktopTitle": "通知",
     "desktopValue": "系統通知",
     "desktopDescription": "App 會用系統通知話你知有人提及你同埋收到 DM。如果你喺系統設定度熄咗 zoo2 嘅通知，請喺嗰度都開返。"
+  },
+  "downloads": {
+    "desktopTitle": "下載",
+    "desktopDescription": "附件檔案嘅儲存位置。你可以揀每次儲存都確認位置，或者預先設定資料夾。",
+    "askEveryTime": "每次儲存都確認",
+    "defaultDirectory": "下載資料夾",
+    "chooseFolder": "揀資料夾",
+    "resetDirectory": "還原預設資料夾",
+    "desktopValue": "系統儲存對話框",
+    "error": "未能更改下載設定，請再試一次。"
   },
   "mfm": {
     "suggestions": "MFM 建議",

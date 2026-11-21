@@ -12,8 +12,10 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 
+type InvokeOptions = { headers?: Record<string, string> };
+
 type TauriInternals = {
-  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  invoke: (cmd: string, args?: unknown, options?: InvokeOptions) => Promise<unknown>;
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
 };
 
@@ -52,21 +54,39 @@ export function hasDesktopBridge(): boolean {
 
 let detected: Promise<boolean> | null = null;
 let isDesktop = false;
+/** 直前の `detectDesktop` が失敗した理由。成功したか、まだ確かめていなければ null。 */
+let detectFailure: unknown = null;
 
-/** デスクトップ版の (b) として動くかを確かめる。結果は覚えておく。 */
+/**
+ * デスクトップ版の (b) として動くかを確かめる。結果は覚えておく。
+ * `zoo_session` の一時的な失敗は覚えず、次に呼ばれたらもう一度確かめる
+ * （失敗を「デスクトップ版ではない」として固定すると、通信が戻ってもブラウザーの保存に切り替わったままになる）。
+ */
 export function detectDesktop(): Promise<boolean> {
   detected ??= (async () => {
     const bridge = internals();
     if (!bridge) return false;
     try {
-      const info = (await bridge.invoke("zoo_session")) as DesktopSessionInfo;
+      // まずマイクロタスクへ移してから呼ぶ。`invoke` が同期的に投げても、
+      // 下の catch が「覚えた失敗」を残さないようにするため。
+      const info = (await Promise.resolve().then(() =>
+        bridge.invoke("zoo_session"),
+      )) as DesktopSessionInfo;
+      detectFailure = null;
       isDesktop = info.protocol === DESKTOP_PROTOCOL_VERSION && info.ui === "remote";
-    } catch {
+    } catch (error) {
+      detectFailure = error;
+      detected = null;
       isDesktop = false;
     }
     return isDesktop;
   })();
   return detected;
+}
+
+/** 直前の `detectDesktop` が失敗した理由（[`detectDesktop`] が false を返したときだけ使う）。 */
+export function desktopDetectionFailure(): unknown {
+  return detectFailure;
 }
 
 /** `detectDesktop` が済んだ後の結果。済む前は false。 */
@@ -176,6 +196,122 @@ export async function desktopSetNotifications(enabled: boolean): Promise<void> {
   await invoke("zoo_set_notifications", { settings: { enabled } });
 }
 
+/** 添付を保存するときの設定。`directory` は画面に出すためだけで、JS からは指定できない。 */
+export type DesktopDownloadSettings = {
+  ask_every_time: boolean;
+  directory: string | null;
+};
+
+/** 設定の変更。保存先のパスは送らず、変えられるのは確認の有無と既定への復帰だけ。 */
+export type DesktopDownloadSettingsUpdate = {
+  ask_every_time: boolean;
+  reset_directory?: boolean;
+};
+
+/** `zoo_download_begin` の結果。`path` は保存する場所（画面に出すためだけ）。 */
+export type DesktopDownloadStart =
+  | { status: "started"; id: string; path: string }
+  | { status: "cancelled" };
+
+/**
+ * 添付の保存の設定を読む。古い版のアプリにはこのコマンドがないので、呼べなかったら null
+ * （画面はブラウザーの保存に戻す）。
+ */
+export async function desktopDownloadSettings(): Promise<DesktopDownloadSettings | null> {
+  try {
+    return await invoke<DesktopDownloadSettings>("zoo_download_settings");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 保存の設定を読む。古い版のアプリ（コマンドがない）か、一時的な失敗かを呼び出し側で
+ * 分けられるよう、失敗をそのまま返す。
+ */
+export async function probeDesktopDownloadSettings(): Promise<DesktopDownloadSettings> {
+  return invoke<DesktopDownloadSettings>("zoo_download_settings");
+}
+
+/** 確認の有無を変える。Rust 側が保存し、新しい設定を返す。保存先のパスは送らない。 */
+export async function desktopSetDownloadSettings(
+  settings: DesktopDownloadSettingsUpdate,
+): Promise<DesktopDownloadSettings> {
+  return invoke<DesktopDownloadSettings>("zoo_set_download_settings", { settings });
+}
+
+/**
+ * OS のフォルダーの選択。選ばれた保存先は Rust 側が保存する。閉じられたら null。
+ * パスは返してもらうだけで、保存先として送ることはない。
+ */
+export async function desktopPickDownloadDirectory(): Promise<DesktopDownloadSettings | null> {
+  return (await invoke<DesktopDownloadSettings | null>("zoo_pick_download_directory")) ?? null;
+}
+
+/**
+ * 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
+ * Rust 側の `ErrorCode::UnsupportedDestination` を、画面が文言を変えられる形にしたもの。
+ */
+export class DesktopDownloadDestinationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopDownloadDestinationError";
+  }
+}
+
+function downloadError(error: unknown): unknown {
+  if ((error as { code?: unknown } | null)?.code !== "unsupported_destination") return error;
+  const message = (error as { message?: unknown } | null)?.message;
+  return new DesktopDownloadDestinationError(
+    typeof message === "string" ? message : "この保存先には保存できません",
+  );
+}
+
+/** OS の保存ダイアログを出し、書き込み先を決める。`size` は添付の大きさ（分かれば）。 */
+export async function desktopDownloadBegin(
+  fileName: string,
+  size?: number | null,
+): Promise<DesktopDownloadStart> {
+  const begin: { file_name: string; size?: number } = { file_name: fileName };
+  if (typeof size === "number" && Number.isFinite(size) && size > 0) {
+    begin.size = Math.floor(size);
+  }
+  try {
+    return await invoke<DesktopDownloadStart>("zoo_download_begin", { begin });
+  } catch (error) {
+    throw downloadError(error);
+  }
+}
+
+function invokeRaw(
+  cmd: string,
+  body: Uint8Array,
+  headers: Record<string, string>,
+): Promise<unknown> {
+  const bridge = internals();
+  if (!bridge || !isDesktop) return Promise.reject(new Error("デスクトップ版の中ではありません"));
+  return bridge.invoke(cmd, body, { headers });
+}
+
+/** 本文の一部を、書き込み中のファイルに追記する（octet-stream）。 */
+export async function desktopDownloadWrite(id: string, bytes: Uint8Array): Promise<void> {
+  await invokeRaw("zoo_download_write", bytes, { "x-zoo-download-id": id });
+}
+
+/** `.part` を本来の名前に置き換える。 */
+export async function desktopDownloadFinish(id: string): Promise<void> {
+  try {
+    await invoke("zoo_download_finish", { id });
+  } catch (error) {
+    throw downloadError(error);
+  }
+}
+
+/** 中止して、途中までのファイルを消す。 */
+export async function desktopDownloadCancel(id: string): Promise<void> {
+  await invoke("zoo_download_cancel", { id });
+}
+
 /** 着信のトーストの「応答」を押した、と Rust 側が知らせるイベント（中身なし）。印は `desktopTakeCallAccept` で取る。 */
 export const DESKTOP_CALL_ACCEPT_EVENT = "zoo://call-accept";
 
@@ -253,6 +389,7 @@ export function resetDesktopForTest(): void {
   badgeInFlight = false;
   badgePending = null;
   detected = null;
+  detectFailure = null;
   isDesktop = false;
   cachedToken = null;
 }

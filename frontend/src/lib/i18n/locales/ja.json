@@ -264,6 +264,11 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
+    "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+    "downloading": "ダウンロード中",
+    "saving": "保存しています…",
+    "cancelDownload": "{{name}}のダウンロードを中止",
+    "cancelDownloadShort": "中止",
     "retry": "再試行",
     "sensitive": "センシティブな画像",
     "markSensitive": "画像をセンシティブとして投稿",
@@ -483,6 +488,16 @@
     "desktopTitle": "通知",
     "desktopValue": "OS の通知",
     "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
+  },
+  "downloads": {
+    "desktopTitle": "ダウンロード",
+    "desktopDescription": "添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。",
+    "askEveryTime": "保存のたびに確認する",
+    "defaultDirectory": "ダウンロードフォルダー",
+    "chooseFolder": "フォルダーを選ぶ",
+    "resetDirectory": "既定のフォルダーに戻す",
+    "desktopValue": "OS の保存ダイアログ",
+    "error": "保存先の設定を変更できませんでした。もう一度お試しください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",

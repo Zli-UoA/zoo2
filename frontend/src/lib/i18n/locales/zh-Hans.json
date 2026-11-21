@@ -264,6 +264,11 @@
     "download": "下载{{name}}",
     "downloadShort": "下载",
     "downloadError": "无法下载文件。",
+    "downloadDestinationUnsupported": "无法保存到此位置。请选择其他文件夹，或在设置的“下载”中更改保存位置。",
+    "downloading": "正在下载",
+    "saving": "正在保存…",
+    "cancelDownload": "取消下载 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "重试",
     "sensitive": "敏感图片",
     "markSensitive": "将图片标记为敏感内容",
@@ -483,6 +488,16 @@
     "desktopTitle": "通知",
     "desktopValue": "系统通知",
     "desktopDescription": "应用会通过系统通知提醒你被提及和收到私信。如果在系统设置中关闭了 zoo2 的通知，请在那里也将其打开。"
+  },
+  "downloads": {
+    "desktopTitle": "下载",
+    "desktopDescription": "附件文件的保存位置。可以选择每次保存时确认位置，或保存到预先设置的文件夹。",
+    "askEveryTime": "每次保存时确认",
+    "defaultDirectory": "下载文件夹",
+    "chooseFolder": "选择文件夹",
+    "resetDirectory": "恢复默认文件夹",
+    "desktopValue": "系统保存对话框",
+    "error": "无法更改下载设置，请重试。"
   },
   "mfm": {
     "suggestions": "MFM 候选",

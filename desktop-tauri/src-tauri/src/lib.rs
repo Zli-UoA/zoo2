@@ -11,6 +11,7 @@ mod commands;
 #[cfg(test)]
 mod commands_list;
 mod core;
+mod downloads;
 mod toast;
 mod update;
 mod updater_window;
@@ -90,6 +91,13 @@ pub fn run() {
             commands::zoo_notifications_observed,
             commands::zoo_take_call_accept,
             commands::zoo_reauthenticate,
+            commands::zoo_download_settings,
+            commands::zoo_set_download_settings,
+            commands::zoo_pick_download_directory,
+            commands::zoo_download_begin,
+            commands::zoo_download_write,
+            commands::zoo_download_finish,
+            commands::zoo_download_cancel,
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -157,6 +165,13 @@ mod tests {
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
             command::REAUTHENTICATE,
+            command::DOWNLOAD_SETTINGS,
+            command::SET_DOWNLOAD_SETTINGS,
+            command::PICK_DOWNLOAD_DIRECTORY,
+            command::DOWNLOAD_BEGIN,
+            command::DOWNLOAD_WRITE,
+            command::DOWNLOAD_FINISH,
+            command::DOWNLOAD_CANCEL,
         ];
         assert_eq!(super::commands_list::COMMANDS, ipc);
     }

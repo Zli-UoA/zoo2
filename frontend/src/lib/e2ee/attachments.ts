@@ -130,6 +130,7 @@ export class EncryptedAttachmentError extends Error {
  *
  * 暗号文のハッシュが本文の値と合わなければ投げる（サーバーや S3 が中身を差し替えても、平文を返さない）。
  * `resolveUrl` を渡すと、署名付き URL をそこから得る（画面では `lib/api/attachmentUrls.ts` のキャッシュ）。
+ * `options.signal` で取得を中止でき、`options.onProgress` で暗号文を読んだ量を知らせる。
  */
 export async function fetchEncryptedAttachment(
   client: ApiClient,
@@ -143,15 +144,21 @@ export async function fetchEncryptedAttachment(
         { method: "GET" },
       )
     ).data.download_url,
+  options: {
+    signal?: AbortSignal;
+    onProgress?: (received: number, total: number | null) => void;
+  } = {},
 ): Promise<Blob> {
   let ciphertext: Uint8Array;
   try {
     const downloadUrl = await resolveUrl(info.attachment_id);
-    const response = await fetchImpl(downloadUrl, { credentials: "omit" });
+    const init: RequestInit = { credentials: "omit" };
+    if (options.signal) init.signal = options.signal;
+    const response = await fetchImpl(downloadUrl, init);
     if (!response.ok) {
       throw new Error(`Attachment download failed with status ${response.status}`);
     }
-    ciphertext = new Uint8Array(await response.arrayBuffer());
+    ciphertext = await readCiphertext(response, options.onProgress);
   } catch (error) {
     throw new EncryptedAttachmentError("download", error);
   }
@@ -166,6 +173,45 @@ export async function fetchEncryptedAttachment(
     throw new EncryptedAttachmentError("decrypt");
   }
   return new Blob([plaintext as BlobPart], { type: receivedAttachmentView(info).mimetype });
+}
+
+/** `content-length` から全体の大きさを読む。なければ null（進捗は不定）。 */
+function contentLength(response: Response): number | null {
+  const raw = response.headers.get("content-length");
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** 暗号文を読みながら、読んだ量を知らせる。読んだものは最後に 1 つの配列へまとめる。 */
+async function readCiphertext(
+  response: Response,
+  onProgress?: (received: number, total: number | null) => void,
+): Promise<Uint8Array> {
+  const total = contentLength(response);
+  onProgress?.(0, total);
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    onProgress?.(bytes.byteLength, total ?? bytes.byteLength);
+    return bytes;
+  }
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    onProgress?.(received, total);
+  }
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 /** 表示や保存の向きを変える双方向の制御文字（U+202E などで拡張子を偽装させない）。 */
