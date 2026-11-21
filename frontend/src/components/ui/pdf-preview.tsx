@@ -623,6 +623,19 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     return () => observer.disconnect();
   }, [document, measureViewport]);
 
+  // ボタン押下中に別の場所でポインタを離した場合もフラグを戻す。
+  useEffect(() => {
+    const clearPress = () => {
+      pageButtonPressRef.current = false;
+    };
+    window.addEventListener("pointerup", clearPress);
+    window.addEventListener("pointercancel", clearPress);
+    return () => {
+      window.removeEventListener("pointerup", clearPress);
+      window.removeEventListener("pointercancel", clearPress);
+    };
+  }, []);
+
   const handleSlotMount = useCallback((pageNumber: number, element: HTMLDivElement) => {
     pageRefs.current.set(pageNumber, element);
   }, []);
@@ -653,6 +666,38 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       }
     },
     [releasePageProxy],
+  );
+
+  // ページ枠はページ数分必要だが、入力欄の変更では作り直さない。
+  const pageSlots = useMemo(
+    () =>
+      Array.from({ length: totalPages }, (_, index) => {
+        const pageNumber = index + 1;
+        return (
+          <PdfPageSlot
+            key={pageNumber}
+            pageNumber={pageNumber}
+            label={t("attachments.pdfPage", { page: pageNumber })}
+            size={pageSizes[pageNumber] ?? defaultSize}
+            mounted={keptPagesSet.has(pageNumber)}
+            onSlotMount={handleSlotMount}
+            onSlotUnmount={handleSlotUnmount}
+            onCanvasMount={handleCanvasMount}
+            onCanvasUnmount={handleCanvasUnmount}
+          />
+        );
+      }),
+    [
+      defaultSize,
+      handleCanvasMount,
+      handleCanvasUnmount,
+      handleSlotMount,
+      handleSlotUnmount,
+      keptPagesSet,
+      pageSizes,
+      t,
+      totalPages,
+    ],
   );
 
   const loading = !failed && (!document || !primaryReady);
@@ -708,8 +753,11 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
             onKeyDown={(event) => {
               justFocusedRef.current = false;
               if (event.key === "Enter") {
+                // Safari では compositionend が keydown より先に来ることがあるため keyCode も見る。
                 lastEnterComposingRef.current =
-                  event.nativeEvent.isComposing || composingRef.current;
+                  event.nativeEvent.isComposing ||
+                  composingRef.current ||
+                  event.nativeEvent.keyCode === 229;
               }
             }}
             onFocus={(event) => {
@@ -800,24 +848,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
               <Spinner label={t("attachments.loading")} />
             </div>
           ) : null}
-          <div className="flex flex-col items-center gap-3">
-            {Array.from({ length: totalPages }, (_, index) => {
-              const pageNumber = index + 1;
-              return (
-                <PdfPageSlot
-                  key={pageNumber}
-                  pageNumber={pageNumber}
-                  label={t("attachments.pdfPage", { page: pageNumber })}
-                  size={pageSizes[pageNumber] ?? defaultSize}
-                  mounted={keptPagesSet.has(pageNumber)}
-                  onSlotMount={handleSlotMount}
-                  onSlotUnmount={handleSlotUnmount}
-                  onCanvasMount={handleCanvasMount}
-                  onCanvasUnmount={handleCanvasUnmount}
-                />
-              );
-            })}
-          </div>
+          <div className="flex flex-col items-center gap-3">{pageSlots}</div>
         </div>
       )}
     </div>

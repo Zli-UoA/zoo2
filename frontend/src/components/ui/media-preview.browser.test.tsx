@@ -124,6 +124,12 @@ it("does not jump while IME composition is active", async () => {
   expect(screen.getByRole("button", { name: "前のページ" })).toBeDisabled();
 
   fireEvent.compositionEnd(pageInput);
+  // Safari では compositionend が先に来ても keyCode 229 が残る。
+  fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false, keyCode: 229 });
+  fireEvent.submit(pageInput.closest("form")!);
+  expect(pageInput.value).toBe("5");
+  expect(screen.getByRole("button", { name: "前のページ" })).toBeDisabled();
+
   fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false });
   fireEvent.submit(pageInput.closest("form")!);
   await waitFor(
@@ -159,6 +165,22 @@ it("commits the draft page when tab moves focus to a page button", async () => {
   await userEvent.tab();
   await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
   expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled();
+});
+
+it("clears the page-button press flag when the pointer is released outside", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  fireEvent.pointerDown(screen.getByRole("button", { name: "次のページ" }));
+  fireEvent.pointerUp(window);
+  await userEvent.click(pageInput);
+  await userEvent.type(pageInput, "5");
+  await userEvent.tab();
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
 });
 
 it.each(["video/mp4", "audio/mpeg"])("provides controls without autoplay for %s", (contentType) => {
