@@ -26,12 +26,14 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowService
+import org.robolectric.util.ReflectionHelpers
 import zoo.Environment
 import zoo.Platform
 import zoo.Repository
 import zoo.Session
 import zoo.android.PushBinding
 import zoo.obj
+import zoo.phone.PhoneCall
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28, 35])
@@ -92,6 +94,35 @@ class TelecomIntegrationTest {
                     .putExtra(PHONE_SESSION, token).putExtra(PHONE_CALL, call)
                 val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, intent).create().get()
                 assertTrue(activity.isFinishing)
+            }
+        }
+    }
+
+    @Test fun expandedPictureInPictureCanReenterWhenTheActivityIsReused() = runTest {
+        Fixture(backgroundScope).use { f ->
+            val call = PhoneCall("active-call", "dm", "target-dm", "Bob", "active")
+            ReflectionHelpers.callInstanceMethod<Unit>(f.host.controller, "setCall",
+                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            val intent = Intent(f.context, PhonePictureInPictureActivity::class.java)
+                .putExtra(PHONE_SESSION, f.host.token).putExtra(PHONE_CALL, call.id)
+            val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, intent)
+                .create().start().resume().postResume()
+            try {
+                val screen = activity.get()
+                assertTrue(screen.isInPictureInPictureMode)
+
+                activity.newIntent(Intent(intent))
+                // Robolectric's shadow does not expose a public exit transition.
+                ReflectionHelpers.setField(shadowOf(screen), "isInPictureInPictureMode", false)
+                activity.postResume()
+                assertFalse(screen.isInPictureInPictureMode)
+
+                activity.newIntent(Intent(intent).putExtra(PHONE_SESSION, "stale-session")).postResume()
+                assertFalse(screen.isInPictureInPictureMode)
+                activity.newIntent(Intent(intent)).postResume()
+                assertTrue(screen.isInPictureInPictureMode)
+            } finally {
+                activity.pause().stop().destroy()
             }
         }
     }

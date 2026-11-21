@@ -89,11 +89,25 @@ class PhonePictureInPictureActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val session = intent.getStringExtra(PHONE_SESSION)
+        val id = intent.getStringExtra(PHONE_CALL)
+        val host = AndroidPhoneHost.current ?: return
+        if (session != this.intent.getStringExtra(PHONE_SESSION) || id != this.intent.getStringExtra(PHONE_CALL) ||
+            !host.matches(session, id) || host.controller.call?.status != "active"
+        ) return
+
+        setIntent(intent)
+        enterOnResume = !isInPictureInPictureMode
+    }
+
     override fun onPostResume() {
         super.onPostResume()
         val params = parameters ?: return
         if (!enterOnResume || isFinishing) return
         enterOnResume = false
+        if (isInPictureInPictureMode) return
         if (!runCatching { enterPictureInPictureMode(params) }.getOrDefault(false)) {
             Toast.makeText(this, phoneLabel(this, "androidPhone.pipUnavailable",
                 "Check Picture-in-picture in Android settings."), Toast.LENGTH_LONG).show()
