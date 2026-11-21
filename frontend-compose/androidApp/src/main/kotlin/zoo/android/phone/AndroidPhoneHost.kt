@@ -43,6 +43,8 @@ internal class AndroidPhoneHost(
     private var audioReady: CompletableDeferred<Unit>? = null
     private var audioCallId: String? = null
     private var ringback: ToneGenerator? = null
+    private var ringbackTimeout: Job? = null
+    private var ringbackInviteSeen = false
     private var service: PhoneService? = null
     internal var pendingMute: Boolean? = null
     val controller: PhoneController = PhoneController(
@@ -174,12 +176,18 @@ internal class AndroidPhoneHost(
             clearPushedInvite()
             currentInviteRows = emptyList()
         }
-        invites?.cancel(); invites = null; inviteTable?.close(); inviteTable = null
-        if (enabled) {
+        updateInviteSubscription()
+    }
+
+    private fun updateInviteSubscription() {
+        if (!controller.dmWaiting && ringback == null) {
+            invites?.cancel(); invites = null; inviteTable?.close(); inviteTable = null
+        } else if (inviteTable == null) {
             val table = SyncedTable("call_invites", app.config, app.platform, http, app.scope, persist = false)
             inviteTable = table
             invites = app.scope.launch {
-                val dmRows = combine(table.synchronizedRows.filterNotNull(), app.repo.channels.replicatedRows, app.repo.users.replicatedRows) { rows, channels, users ->
+                val inviteRows = table.synchronizedRows.filterNotNull().onEach(::updateRingbackInvites)
+                val dmRows = combine(inviteRows, app.repo.channels.replicatedRows, app.repo.users.replicatedRows) { rows, channels, users ->
                     val dmIds = channels.filter { it.flag("is_dm") }.map { it.text("id") }.toSet()
                     rows.filter { it.text("channel_id") in dmIds }.map { row ->
                         val user = users.find { it.text("id") == row.text("inviter_id") }
@@ -188,6 +196,7 @@ internal class AndroidPhoneHost(
                 }
                 combine(dmRows, pushedInvite) { rows, selection -> rows to selection }
                     .collect { (rows, selection) ->
+                        if (!controller.dmWaiting) return@collect
                         currentInviteRows = rows
                         val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
                         val target = selection?.invite?.takeIf {
@@ -223,20 +232,45 @@ internal class AndroidPhoneHost(
     fun audioStarted(instance: PhoneService, id: String) {
         val call = audioCall(id) ?: return
         service = instance
-        if (call.kind == "dm" && call.status == "dialing" && ringback == null) {
+        if (call.kind == "dm" && call.status == "dialing" && audioReady?.isCompleted == false) {
             ringback = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 55) }
                 .getOrNull()?.let { tone ->
                     if (runCatching { tone.startTone(ToneGenerator.TONE_SUP_RINGTONE) }.getOrDefault(false)) tone
                     else { tone.release(); null }
                 }
+            if (ringback != null) {
+                ringbackInviteSeen = false
+                ringbackTimeout = app.scope.launch {
+                    delay(30_000)
+                    stopRingback()
+                }
+                updateInviteSubscription()
+            }
         }
         clearIncomingNotification()
         audioReady?.complete(Unit)
     }
 
+    internal fun updateRingbackInvites(rows: List<Row>) {
+        if (ringback == null) return
+        val channel = controller.call?.target ?: return
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val pending = rows.any {
+            it.text("channel_id") == channel && it.text("inviter_id") == app.config.userId &&
+                it.text("status") == "pending" && (timestampMillis(it.text("expires_at")) ?: 0L) > now
+        }
+        if (pending) ringbackInviteSeen = true
+        else if (ringbackInviteSeen) stopRingback()
+    }
+
     private fun stopRingback() {
-        ringback?.release()
+        val tone = ringback ?: return
         ringback = null
+        ringbackTimeout?.cancel()
+        ringbackTimeout = null
+        ringbackInviteSeen = false
+        tone.release()
+        updateInviteSubscription()
     }
 
     fun audioFailed(id: String) {

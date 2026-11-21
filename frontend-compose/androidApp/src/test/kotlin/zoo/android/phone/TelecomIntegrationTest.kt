@@ -18,6 +18,7 @@ import io.ktor.http.HttpStatusCode
 import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -371,6 +372,47 @@ class TelecomIntegrationTest {
                 f.host.controller.hangup()
                 assertEquals(1, RingbackShadow.releases)
             } finally {
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun ringbackStopsWhenTheLastOutgoingInviteDisappears() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                val invite = obj("channel_id" to "target-dm", "inviter_id" to "alice",
+                    "status" to "pending", "expires_at" to "2099-01-01T00:00:00Z")
+                f.host.updateRingbackInvites(emptyList())
+                f.host.updateRingbackInvites(listOf(invite))
+                assertEquals(0, RingbackShadow.releases)
+                f.host.updateRingbackInvites(emptyList())
+                assertEquals(1, RingbackShadow.releases)
+                assertEquals("dialing", f.host.controller.call?.status)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun ringbackTimesOutEvenWithoutInviteSync() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                advanceTimeBy(30_000)
+                runCurrent()
+                assertEquals(1, RingbackShadow.releases)
+            } finally {
+                f.host.controller.hangup()
                 service.onDestroy()
                 runCurrent()
             }

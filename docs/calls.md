@@ -59,7 +59,7 @@
 - Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン（下の「Web の動き」）。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
 - デスクトップ版（Tauri）: トースト。Linux と Windows は応答/拒否のボタン付き（下の「デスクトップ版の動き」）。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
-- Compose（Android）: DMヘッダーから音声通話を開始する。「設定 → 電話（SIP）」でDM着信を有効にすると、セッション全体で招待Shapeを1本購読し、Android Telecomに着信を通知する。応答後に既存のaccept APIと通話SSEへ参加する。DM発信中の呼び出し音はZooが再生し、接続または終了すると停止する。音声はWebRTC。SIP通話との同時通話は受け付けない。バックグラウンド待ち受けの条件は [Android版](android.md#sipdm通話とandroid-telecom) を参照。不在着信は従来どおりAndroidの通知一覧・未読数から除く。
+- Compose（Android）: DMヘッダーから音声通話を開始する。「設定 → 電話（SIP）」でDM着信を有効にすると、セッション全体で招待Shapeを1本購読し、Android Telecomに着信を通知する。応答後に既存のaccept APIと通話SSEへ参加する。DM発信中の呼び出し音はZooが再生し、招待の終了または接続・切断で停止する。再生は最長30秒。音声はWebRTC。SIP通話との同時通話は受け付けない。バックグラウンド待ち受けの条件は [Android版](android.md#sipdm通話とandroid-telecom) を参照。不在着信は従来どおりAndroidの通知一覧・未読数から除く。
 
 ## Web の動き
 
