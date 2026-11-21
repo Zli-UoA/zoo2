@@ -52,7 +52,7 @@ CREATE INDEX messages_search_month ON messages USING gin (
 ) WHERE deleted_at IS NULL AND content <> '';
 ```
 
-検索は新しい月から 1 か月ずつ、月の**等価条件**で引く（`backend/src/routes/search.rs` の `month_sql`）。GIN は月の posting と語の posting を突き合わせ、短いほうに合わせて読み飛ばす。そのため、1 か月分の SQL が読むのは「その月のヒット」だけで、総履歴には比例しない。範囲条件（`created_at >= …`）にすると、GIN は範囲の全行をビットマップに広げるので、使わない。
+検索のトランザクションでは `plan_cache_mode = force_custom_plan` にして、値を埋めた計画だけを使う（generic plan では月と本文の GIN を使えないため。予算テストもこの計画を測る）。検索は新しい月から 1 か月ずつ、月の**等価条件**で引く（`backend/src/routes/search.rs` の `month_sql`）。GIN は月の posting と語の posting を突き合わせ、短いほうに合わせて読み飛ばす。そのため、1 か月分の SQL が読むのは「その月のヒット」だけで、総履歴には比例しない。範囲条件（`created_at >= …`）にすると、GIN は範囲の全行をビットマップに広げるので、使わない。
 
 変数: 総メッセージ数 N、見えるチャンネル数 V（全チャンネル数 C）、ある月の、その語のヒット数 H_m（見えないチャンネルの行も含む）、ページの件数 K、1 回のリクエストで見る月の数 B（最大 12）。
 

@@ -76,6 +76,12 @@ async fn one(db: &tokio_postgres::Client, sql: &str) -> anyhow::Result<String> {
 #[tokio::test]
 #[ignore = "requires an empty migrated disposable database and SEARCH_SCALE_ROWS"]
 async fn search_queries_have_bounded_work() -> anyhow::Result<()> {
+    // ここで測るのは値を埋めた custom plan。API も custom plan だけを使うことを確かめる（generic plan は測らない）。
+    assert!(
+        include_str!("../src/routes/search.rs")
+            .contains("SET LOCAL plan_cache_mode = force_custom_plan"),
+        "search must force custom plans to match what this budget measures"
+    );
     let n: usize = std::env::var("SEARCH_SCALE_ROWS")?.parse()?;
     assert!(n >= 300000);
     let url = std::env::var("DATABASE_URL")?;
