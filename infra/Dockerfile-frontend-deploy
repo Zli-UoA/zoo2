@@ -37,8 +37,6 @@ RUN set -eu; \
 COPY frontend/ ./
 ARG VITE_API_BASE_URL=""
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
-ARG VITE_ZOO_BUILD_SHA=""
-ENV VITE_ZOO_BUILD_SHA=$VITE_ZOO_BUILD_SHA
 ENV VITE_SHAPE_MODE=proxy
 ARG VITE_PREVIEW_AUTH="false"
 ENV VITE_PREVIEW_AUTH=$VITE_PREVIEW_AUTH
@@ -60,6 +58,9 @@ ENV VITE_OIDC_SCOPE=$VITE_OIDC_SCOPE
 ENV VITE_OIDC_RESOURCE=$VITE_OIDC_RESOURCE
 ENV VITE_OIDC_POST_LOGOUT_REDIRECT_URI=$VITE_OIDC_POST_LOGOUT_REDIRECT_URI
 RUN pnpm build
+# コミットごとの値を HTML にだけ入れ、JS のチャンクと Vite のビルドキャッシュを維持する。
+ARG ZOO_BUILD_SHA=""
+RUN node scripts/stamp-build-sha.mjs dist/client/index.html
 # CSP の script-src 用に、index.html に埋め込まれたインライン script の
 # SHA-256 を列挙する。index.html と同時に生成するため常に一致する。
 COPY infra/csp-hashes.mjs /tmp/csp-hashes.mjs

@@ -55,7 +55,8 @@ function RailLink({
  */
 export function LeftRail() {
   const { t } = useTranslation();
-  const version = import.meta.env.VITE_ZOO_BUILD_SHA?.slice(0, 12) || t("aboutZoo.versionUnknown");
+  const version =
+    document.documentElement.dataset.zooBuildSha?.slice(0, 12) || t("aboutZoo.versionUnknown");
   const shell = useShell();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();

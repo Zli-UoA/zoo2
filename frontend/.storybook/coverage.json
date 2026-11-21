@@ -438,7 +438,7 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile", "UserAvatar", "AboutZoo"]
+      "states": ["Default", "Mobile", "UserAvatar", "AboutZoo", "AboutZooUnknownVersion"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
@@ -1235,7 +1235,7 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで実験版切り替えボタンが表示されないこと、AboutZooでZooアイコンから版情報を開閉できることを確認する。"
+      "reason": "DefaultとMobileで実験版切り替えボタンが表示されないこと、AboutZooで版情報の表示と開閉、AboutZooUnknownVersionで版情報がない場合の表示を確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",

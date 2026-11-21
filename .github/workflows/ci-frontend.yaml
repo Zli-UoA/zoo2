@@ -128,6 +128,12 @@ jobs:
           if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
           docker compose --project-directory . "${files[@]}" up -d --build --wait --wait-timeout 60 frontend
 
+      - name: Check frontend build revision
+        run: |
+          html=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -q -O - http://127.0.0.1:3000/)
+          printf '%s' "$html" | grep -Fq "data-zoo-build-sha=\"$GITHUB_SHA\""
+
       - name: Check SPA routes and security headers
         run: |
           worker=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \

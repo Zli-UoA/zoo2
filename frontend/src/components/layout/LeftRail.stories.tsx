@@ -54,14 +54,21 @@ export const UserAvatar: Story = {
 };
 
 export const AboutZoo: Story = {
+  beforeEach: () => {
+    document.documentElement.dataset.zooBuildSha = "0123456789abcdef0123456789abcdef01234567";
+    return () => {
+      delete document.documentElement.dataset.zooBuildSha;
+    };
+  },
   play: playForImplementation(async ({ canvasElement }) => {
     const trigger = within(canvasElement).getByRole("button", { name: "Zooについて" });
     await userEvent.click(trigger);
 
     const dialog = await screen.findByRole("dialog", { name: "Zooについて" });
-    const version = import.meta.env.VITE_ZOO_BUILD_SHA?.substring(0, 12) || "不明";
     await waitFor(async () => {
-      await expect(within(dialog).getByText(`バージョン: ${version}`)).toBeVisible();
+      await expect(
+        within(dialog).getByText("バージョン: 0123456789ab", { exact: true }),
+      ).toBeVisible();
     });
 
     await userEvent.keyboard("{Escape}");
@@ -73,6 +80,18 @@ export const AboutZoo: Story = {
     await userEvent.keyboard("{Enter}");
     await waitFor(async () => {
       await expect(screen.getByRole("dialog", { name: "Zooについて" })).toBeVisible();
+    });
+  }),
+};
+
+export const AboutZooUnknownVersion: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: "Zooについて" });
+    await userEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "Zooについて" });
+    await waitFor(async () => {
+      await expect(within(dialog).getByText("バージョン: 不明", { exact: true })).toBeVisible();
     });
   }),
 };
