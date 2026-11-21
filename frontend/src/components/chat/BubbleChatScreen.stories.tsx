@@ -68,6 +68,15 @@ export const Mobile: Story = {
       handlers: bubbleChatHandlers,
     },
   },
+  play: playForImplementation(async () => {
+    const textbox = await screen.findByRole("textbox");
+    const box = textbox.getBoundingClientRect();
+    const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
+    const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
+    const textCenter = box.top + paddingTop + lineHeight / 2;
+    const clear = screen.getByRole("button", { name: "入力をクリア" }).getBoundingClientRect();
+    await expect(Math.abs(clear.top + clear.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+  }),
 };
 
 export const Participants: Story = {
