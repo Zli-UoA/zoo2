@@ -101,6 +101,7 @@
 		8975AFF122D272B5DC756483 /* AvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95CD8497F45D2ECAF97A769C /* AvatarView.swift */; };
 		89B6EA44041C4A78C390ABC6 /* ShortcutActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC7E1E2DC484C9EA1200EBB0 /* ShortcutActions.swift */; };
 		8A66A5BA1896D2E4E5C2DD13 /* AttachmentPreviewDismissTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F20737A6001F4DD1E16732 /* AttachmentPreviewDismissTests.swift */; };
+		8B5401D2433B44E3C9B12DE4 /* ChannelThreads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09596446B9C70A06C26AEF02 /* ChannelThreads.swift */; };
 		8B63EFD9224ABEA01A76DF21 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB9A5B575F132C8A8A643AF0 /* PushRegistration.swift */; };
 		8CB30A8B6C732AA7AFF96A90 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */; };
 		8DBF1BB17081BE6039BF81C7 /* MessageActionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F82BBED6F6E3E3ECFC06678 /* MessageActionsView.swift */; };
@@ -124,6 +125,7 @@
 		A5B3B2174411ED707B979BEF /* IncomingCall.caf in Resources */ = {isa = PBXBuildFile; fileRef = 01F4605EEE99FB8A46EE593A /* IncomingCall.caf */; };
 		A74D571581DA830C6D2CDBBE /* CallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5DD821D3B8BF904D7F0157B /* CallTests.swift */; };
 		A751479364BE32F5AE061E63 /* ZooNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 337CC9AC583295489E718778 /* ZooNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */; };
 		A8522D6851CF9438AD36DDB3 /* AttachmentVideoUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59342B1C0C9D168C816DD989 /* AttachmentVideoUITests.swift */; };
 		A8DF0B20DF528316E9CCAC3D /* WatchCompanionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB7A32EF6C9B7530C635D7E /* WatchCompanionController.swift */; };
 		AE377E7FE1484550FAEF7A53 /* AttachmentSave.swift in Sources */ = {isa = PBXBuildFile; fileRef = B687D2613398038DA26BABDD /* AttachmentSave.swift */; };
@@ -261,6 +263,7 @@
 		05000AC84EE5E734A2AFE311 /* Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport.swift; sourceTree = "<group>"; };
 		06C2582A361DB82A2A24585B /* WebRTC-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "WebRTC-LICENSE.txt"; sourceTree = "<group>"; };
 		06C33CC342CE1E346C9A61B0 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
+		09596446B9C70A06C26AEF02 /* ChannelThreads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelThreads.swift; sourceTree = "<group>"; };
 		0C1EAD4774E62106EA178697 /* AttachmentCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentCacheTests.swift; sourceTree = "<group>"; };
 		0C58BF4B7A5E7DDAB97714ED /* MessagePressFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagePressFeedback.swift; sourceTree = "<group>"; };
 		0D12A552929A7154204E90F7 /* emoji-shortcodes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "emoji-shortcodes.json"; sourceTree = "<group>"; };
@@ -329,6 +332,7 @@
 		6ABBF4DB653068B85AF91376 /* ZooWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZooWatchApp.swift; sourceTree = "<group>"; };
 		6D1B04C11A2D816B7C0D96E6 /* ReactionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionStoreTests.swift; sourceTree = "<group>"; };
 		6D95CB109EEB5106D7F5BA3B /* WatchCompanion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchCompanion.swift; sourceTree = "<group>"; };
+		6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelThreadsTests.swift; sourceTree = "<group>"; };
 		6EAF718542356B731B86C80C /* ReactionEmojiTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReactionEmojiTests.swift; sourceTree = "<group>"; };
 		6F3E57223E471CA7ADD4C698 /* CallClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallClient.swift; sourceTree = "<group>"; };
 		6F7B87B8B0F657CCE321046B /* CallSessionJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallSessionJournal.swift; sourceTree = "<group>"; };
@@ -514,6 +518,7 @@
 				B5DD821D3B8BF904D7F0157B /* CallTests.swift */,
 				EA60D7EE6FE8038A5F10D9A0 /* ChannelManagementTests.swift */,
 				FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */,
+				6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */,
 				B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */,
 				4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */,
 				659DEA088FB41035E2DEAF39 /* ElectricPersistenceTests.swift */,
@@ -650,6 +655,7 @@
 			children = (
 				D961E80DEF3F6F4A5185A447 /* ChannelBrowser.swift */,
 				E65D158B51FC23F55B9EF782 /* ChannelDetailsView.swift */,
+				09596446B9C70A06C26AEF02 /* ChannelThreads.swift */,
 				2404904C875E990F2DE45F43 /* ConversationDirectory.swift */,
 				5C1432176D2EE10E6E652F81 /* CreateChannelView.swift */,
 				56A4F9C874CC22CFE3F5EA06 /* PeopleView.swift */,
@@ -1094,6 +1100,7 @@
 				A74D571581DA830C6D2CDBBE /* CallTests.swift in Sources */,
 				3433B75975D40B3A19FC5392 /* ChannelManagementTests.swift in Sources */,
 				BCD3133A011897F76683ED45 /* ChannelReadTests.swift in Sources */,
+				A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */,
 				68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */,
 				0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */,
 				8838C2693D6E37CC008AB3FA /* ElectricPersistenceTests.swift in Sources */,
@@ -1188,6 +1195,7 @@
 				C45C537309681A0964E5077E /* Channel.swift in Sources */,
 				C1CAE5CD6841B0267CEAEC4F /* ChannelBrowser.swift in Sources */,
 				13196B1CFF49BD45CF03380D /* ChannelDetailsView.swift in Sources */,
+				8B5401D2433B44E3C9B12DE4 /* ChannelThreads.swift in Sources */,
 				405AACB7802EF4C664BD4491 /* ChatClient.swift in Sources */,
 				B635A30B0BE7156ADC361EC0 /* ChatPresentation.swift in Sources */,
 				E72E8CA5438987EC21E011E4 /* ComposerView.swift in Sources */,

@@ -55,6 +55,7 @@ final class WorkspaceStore {
     let user: Person
     let client: any ChatClient
     let inbox: InboxStore
+    let threads: ChannelThreads
     let calls: CallStore
     @ObservationIgnored weak var systemCalls: SystemCallController?
     let videoPlayback = AttachmentVideoPlayback()
@@ -141,9 +142,11 @@ final class WorkspaceStore {
         self.calls = calls ?? CallStore(client: client, userID: user.id)
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
+        threads = ChannelThreads(client: client)
         self.calls.onWillStart = { [weak self] in self?.videoPlayback.stop() }
         self.calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
+        threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
     func name(for channel: Channel) -> String {
@@ -514,6 +517,15 @@ final class WorkspaceStore {
         else { channelPath.removeLast() }
     }
 
+    func openListedThread(_ parentID: String, in channel: Channel) {
+        guard active, selectedTab == .channels, joinedChannelIDs.contains(channel.id),
+              !channel.is_dm, channel.encrypted != true else { return }
+        let store = conversation(for: channel)
+        guard !store.blocked else { report(ZooError.rejected(403, "この会話を閲覧できません。")); return }
+        store.prepareForThread(parentID)
+        channelPath = [.channel(channel.id), .thread(channelID: channel.id, parentID: parentID, focusComposer: false)]
+    }
+
     func resolveAuthors(in messages: [Message]) async {
         // 一覧 API に含まれない bot も、個別 API の閲覧権限を確認して補完する。
         let ids = Set(messages.map(\.user_id)).subtracting(people.keys)
@@ -581,6 +593,7 @@ final class WorkspaceStore {
         images.close()
         calls.shutdown()
         inbox.shutdown()
+        threads.shutdown()
         pinnedChannelIDs = []; pinsError = nil; channelMembers = [:]; memberErrors = [:]
         pinsVersion = nil; pinUpdateError = nil
         channels = []

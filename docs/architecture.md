@@ -15,7 +15,7 @@
 | `Sources/Data/Notifications` | プッシュ登録と通知プレビュー鍵の保存契約 |
 | `Sources/Data/Images` | 公開アイコン・スタンプ画像の取得、メモリとディスクのキャッシュ |
 | `Sources/Features/Workspace` | タブ・iPadの画面構成、会話のルーティング、ワークスペースの状態と同期の開始・停止 |
-| `Sources/Features/Channels` | チャンネル一覧・検索・作成・詳細・編集、DMの宛先選択 |
+| `Sources/Features/Channels` | チャンネル一覧・検索・作成・詳細・編集、DMの宛先選択、スレッド一覧 |
 | `Sources/Features/Conversation` | 会話・返信の画面、スクロール位置、入力欄、メッセージ操作と会話の状態 |
 | `Sources/Features/Attachments` | 添付の読み込み状態、画像・PDFの閲覧、動画再生と保存 |
 | `Sources/Features/Reactions` | スタンプの表示・選択と最近使ったスタンプ |
@@ -87,6 +87,7 @@ URL に含める識別子は UUID であることを検証します。
 | チャンネル・ユーザー・未読 | `GET /api/shapes/channels`、`GET /api/shapes/users`、`GET /api/channel-read-states` |
 | 通知の遷移先を確認 | `GET /api/channels/{id}` |
 | メッセージ同期 | `GET /api/shapes/messages?channel_id=...` |
+| 参加中のスレッド | `GET /api/threads` |
 | 公開チャンネルへの参加 | `POST /api/channels/{id}/join` |
 | アプリ内通知 | `GET /api/shapes/notifications`、`GET /api/activitypub/notifications` |
 | 通知の既読 | `POST /api/notifications/read`、`POST /api/notifications/read-all` |

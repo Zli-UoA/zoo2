@@ -4,11 +4,16 @@ struct ConversationDirectory: View {
     let workspace: WorkspaceStore
     let directMessages: Bool
     var isSidebar = false
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @State private var search = ""
     @State private var unreadOnly = false
     @State private var pinnedExpanded = true
     @State private var listExpanded = true
+
+    private var showsThreadIndex: Bool {
+        !directMessages && workspace.selectedTab == .channels && (isSidebar || workspace.channelPath.isEmpty) && scenePhase == .active
+    }
 
     private var canReopenChannel: Bool { !isSidebar && !directMessages && workspace.resumableChannel != nil }
 
@@ -56,6 +61,10 @@ struct ConversationDirectory: View {
             if let error = workspace.pinsError {
                 Text(error).font(.caption).foregroundStyle(.secondary)
             }
+            if !directMessages {
+                ChannelThreadPagination(store: workspace.threads)
+                    .listRowSeparator(.hidden)
+            }
         }
         .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { drag in
             guard canReopenChannel, drag.translation.width < -80,
@@ -90,7 +99,9 @@ struct ConversationDirectory: View {
             await workspace.refresh()
             await workspace.loadPins()
             await workspace.calls.refreshActiveCalls()
+            if showsThreadIndex { await workspace.threads.refresh() }
         }
+        .task(id: showsThreadIndex) { if showsThreadIndex { await workspace.threads.run() } }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("未読のみ", systemImage: unreadOnly ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") {
@@ -227,6 +238,12 @@ struct ConversationDirectory: View {
                 }
                 .accessibilityHint(!directMessages && channel.encrypted != true
                     ? "長押しで既読やピン留めを変更できます" : "長押しでピン留めを変更できます")
+            if !directMessages, channel.encrypted != true {
+                ChannelThreadRows(store: workspace.threads, channelID: channel.id) { parentID in
+                    workspace.openListedThread(parentID, in: channel)
+                }
+                .listRowSeparator(.hidden)
+            }
         }
     }
 }
