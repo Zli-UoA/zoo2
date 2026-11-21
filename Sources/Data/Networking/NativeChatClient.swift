@@ -198,31 +198,36 @@ struct NativeChatClient: ChatClient {
         }
         do {
             return try await api.write("api/messages", body: body)
-        } catch ZooError.rejected(403, let message) {
+        } catch ZooError.threadJoinRequired(let message) {
             // 参加行があるスレッドへ、未参加・退出済みの利用者は返信できない（サーバーが 403 を返す）。
             // 参加（アーカイブ済みは先に再Open）してから、同じ ID で一度だけ再送する。復旧できなければ元の 403 を返す。
-            // 投稿権限がないチャンネルなど、参加不足以外の 403 では参加せず、そのまま失敗にする。
-            guard let parentID, message.contains(Self.joinRequiredMessage),
-                  try await rejoinThread(messageID: parentID) else {
+            // 投稿権限がないチャンネルなど、参加不足以外の 403 は `threadJoinRequired` にならず、参加せずに失敗する
+            // （判定は `code` を優先し、`code` のない応答だけ本文で見る。`HTTPTransport.check`）。
+            guard let parentID, try await rejoinThread(messageID: parentID) else {
                 throw ZooError.rejected(403, message)
             }
-            return try await api.write("api/messages", body: body)
+            do {
+                return try await api.write("api/messages", body: body)
+            } catch ZooError.threadJoinRequired(let message) {
+                // 参加したのに、また参加が必要と言われた（直後に退出された）。ほかの 403 と同じ失敗にする。
+                throw ZooError.rejected(403, message)
+            }
         }
     }
-
-    /// サーバー（`create_message_impl`）が参加不足の 403 に付ける文言。
-    private static let joinRequiredMessage = "Join the thread before replying"
 
     /// 参加が必要なスレッドへ参加する。参加できる状態でなければ false を返す。
     private func rejoinThread(messageID: String) async throws -> Bool {
         let path = "api/threads/\(try segment(messageID))"
+        // 参加状態（`membership`・`can_participate`・`thread_archive_at`）だけが要る。参加者の一覧（人数に比例する
+        // 読み取り）は要らないので、3つの呼び出しすべてで省く（サーバーは `participants=none` を受け付ける）。
+        let lean = ["participants": "none"]
         // GET に本文を付けると URLSession が拒否するため、`write` ではなく本文なしの `data` で取得する。
-        let status = try JSONDecoder().decode(Envelope<ThreadMembership>.self, from: await api.data(path)).data
+        let status = try JSONDecoder().decode(Envelope<ThreadMembership>.self, from: await api.data(path, query: lean)).data
         guard status.can_participate, status.membership != "joined" else { return false }
         if status.thread_archive_at != nil {
-            _ = try await api.data("\(path)/unarchive", method: "POST")
+            _ = try await api.data("\(path)/unarchive", method: "POST", query: lean)
         }
-        _ = try await api.data("\(path)/join", method: "POST")
+        _ = try await api.data("\(path)/join", method: "POST", query: lean)
         return true
     }
 

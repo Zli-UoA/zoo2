@@ -70,8 +70,12 @@ final class HTTPTransport: Sendable {
         if response.statusCode == 401 { throw ZooError.expiredSession }
         guard (200..<300).contains(response.statusCode) else {
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let message = json?["message"] as? String ?? json?["error"] as? String ?? ""
-            throw ZooError.rejected(response.statusCode, String(message.prefix(240)))
+            let message = String((json?["message"] as? String ?? json?["error"] as? String ?? "").prefix(240))
+            if response.statusCode == 403,
+               ZooError.requiresThreadJoin(code: json?["code"] as? String, message: message) {
+                throw ZooError.threadJoinRequired(message)
+            }
+            throw ZooError.rejected(response.statusCode, message)
         }
     }
 

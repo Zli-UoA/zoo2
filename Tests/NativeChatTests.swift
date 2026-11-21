@@ -547,20 +547,26 @@ struct NativeChatTests {
         #expect(store.messages.first?.parent_id == parent)
     }
 
-    @Test("参加が必要なスレッドへの返信が403なら、参加して同じ ID で再送する", arguments: [false, true])
-    func replyRejoinsThreadAfterForbidden(archived: Bool) async throws {
+    // 参加不足の 403。`code` を返す前のサーバーは本文だけ。`code` を返すサーバーは、本文が違っても `code` で決まる。
+    @Test("参加が必要なスレッドへの返信が403なら、参加して同じ ID で再送する", arguments: [false, true], [
+        #"{"error":"Join the thread before replying"}"#,
+        #"{"error":"参加してから返信してください","code":"THREAD_JOIN_REQUIRED"}"#
+    ])
+    func replyRejoinsThreadAfterForbidden(archived: Bool, forbidden: String) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let parent = "22222222-2222-4222-8222-222222222222"
         let calls = Mutex<[String]>([])
+        let queries = Mutex<[String]>([])
         let ids = Mutex<[String]>([])
         harness.stub { request in
             let path = request.url?.path ?? ""
             calls.withLock { $0.append("\(request.httpMethod ?? "") \(path)") }
+            if path.hasPrefix("/api/threads/") { queries.withLock { $0.append(request.url?.query ?? "") } }
             if path == "/api/messages" {
                 let message = try Self.sentMessage(request)
                 let attempt = ids.withLock { $0.append(message.id); return $0.count }
-                if attempt == 1 { return (403, [:], Data(#"{"error":"Join the thread before replying"}"#.utf8)) }
+                if attempt == 1 { return (403, [:], Data(forbidden.utf8)) }
                 return (200, [:], try Self.envelope(message))
             }
             if path == "/api/threads/\(parent)" {
@@ -582,6 +588,8 @@ struct NativeChatTests {
             + (archived ? ["POST /api/threads/\(parent)/unarchive"] : [])
             + ["POST /api/threads/\(parent)/join", "POST /api/messages"]
         #expect(calls.withLock { $0 } == expected)
+        // 必要なのは参加状態だけ。参加者の一覧（人数に比例する読み取り）は、3つの呼び出しすべてで省く。
+        #expect(queries.withLock { $0 } == Array(repeating: "participants=none", count: archived ? 3 : 2))
     }
 
     @Test("参加不足以外の403（投稿権限なしなど）では参加せず、下書きを保持してエラーにする")
@@ -600,6 +608,35 @@ struct NativeChatTests {
         #expect(store.drafts[parent] == "送れない返信")
         #expect(store.sendErrors[parent] != nil)
         #expect(calls.withLock { $0 } == ["POST /api/messages"])
+    }
+
+    @Test("403の code が参加不足でなければ、本文が似ていても参加しない", arguments: [
+        #"{"error":"Join the thread before replying","code":"POSTING_RESTRICTED"}"#,
+        #"{"error":"Join the thread before replying","code":"OTHER"}"#
+    ])
+    func theCodeWinsOverTheMessage(forbidden: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let parent = "22222222-2222-4222-8222-222222222222"
+        let calls = Mutex<[String]>([])
+        harness.stub { request in
+            calls.withLock { $0.append("\(request.httpMethod ?? "") \(request.url?.path ?? "")") }
+            return (403, [:], Data(forbidden.utf8))
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        store.drafts[parent] = "送れない返信"
+        await store.send(parentID: parent)
+        #expect(store.drafts[parent] == "送れない返信")
+        #expect(store.sendErrors[parent] != nil)
+        #expect(calls.withLock { $0 } == ["POST /api/messages"])
+    }
+
+    @Test("参加不足の403の判定は、code を優先し、code のない応答だけ本文で見る")
+    func joinRequiredDecision() {
+        #expect(ZooError.requiresThreadJoin(code: "THREAD_JOIN_REQUIRED", message: "何でも"))
+        #expect(ZooError.requiresThreadJoin(code: nil, message: "Join the thread before replying"))
+        #expect(!ZooError.requiresThreadJoin(code: nil, message: "Only managers can post in this channel"))
+        #expect(!ZooError.requiresThreadJoin(code: "POSTING_RESTRICTED", message: "Join the thread before replying"))
     }
 
     @Test("暗号化・アーカイブ済みチャンネルには平文を送らない", arguments: [true, false])
