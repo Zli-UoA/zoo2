@@ -669,7 +669,7 @@ async fn confirm_automatic_save(app: &AppHandle) -> bool {
         .dialog()
         .message(
             "これからは、確認せずに保存します。保存先は、設定したフォルダーか、OS のダウンロード\
-             フォルダーです。実行できるファイルは、これまでどおり保存先を尋ねます。",
+             フォルダーです。実行や読み込みに進む形式のファイルは、これまでどおり保存先を尋ねます。",
         )
         .title("確認せずに保存しますか？")
         .kind(MessageDialogKind::Warning)
