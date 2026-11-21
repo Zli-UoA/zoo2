@@ -49,6 +49,13 @@
         <receiver android:name="zoo.android.phone.PhoneActionReceiver" android:exported="false" />
         <receiver android:name="zoo.android.NotificationActionReceiver" android:exported="false" />
         <activity
+            android:name="zoo.android.phone.PhonePictureInPictureActivity"
+            android:exported="false"
+            android:taskAffinity="${applicationId}.call-preview"
+            android:excludeFromRecents="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation" />
+        <activity
             android:name="zoo.android.phone.IncomingCallActivity"
             android:exported="false"
             android:taskAffinity="${applicationId}.incoming"

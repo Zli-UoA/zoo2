@@ -95,7 +95,8 @@ private fun showBoundDmCallPush(context: Context, store: PushBinding, user: Stri
         .setPublicVersion(Notification.Builder(context, INCOMING_CHANNEL)
             .setSmallIcon(R.drawable.ic_notification).setContentTitle("Zoo")
             .setContentText(phoneLabel(context, "sip.status.incoming", "Incoming call")).build())
-    incomingPresentation(context, builder, tag, id, pending, dismiss, dismissAction.title.toString(), timeout)
+    incomingPresentation(context, builder, tag, id, pending, dismiss, dismissAction.title.toString(), timeout,
+        callerName = label)
     if (Build.VERSION.SDK_INT >= 31) {
         builder.setStyle(Notification.CallStyle.forIncomingCall(Person.Builder().setName(label).build(), dismiss, pending))
     } else builder.setActions(answerAction, dismissAction)

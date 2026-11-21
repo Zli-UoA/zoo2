@@ -34,6 +34,7 @@ internal class AndroidPhoneHost(
     private var invites: Job? = null
     private val pushBinding = PushBinding(context)
     private var incomingTag: String? = null
+    private var currentInviteRows = emptyList<Row>()
     private data class PushedInvite(val invite: DmCallPushAnswer, val answer: Boolean)
     private val pushedInvite = MutableStateFlow<PushedInvite?>(null)
     private var pushedInviteExpiry: Job? = null
@@ -115,6 +116,13 @@ internal class AndroidPhoneHost(
         return native
     }
     fun failed() { connectionReady?.completeExceptionally(IllegalStateException("Telecom rejected the call")); controller.call?.id?.let(controller::nativeFailed) }
+    fun incomingCaller(id: String): Row? {
+        if (!valid(id) || controller.call?.status != "incoming") return null
+        val inviteId = controller.ringingInviteId ?: return null
+        val callerId = currentInviteRows.firstOrNull { it.text("id") == inviteId }?.text("inviter_id") ?: return null
+        return app.repo.users.replicatedRows.value.firstOrNull { it.text("id") == callerId }
+    }
+
     private fun showIncoming(id: String) {
         val call = controller.call?.takeIf { it.id == id && it.status == "incoming" } ?: return
         if (audioCallId == id) return
@@ -157,7 +165,10 @@ internal class AndroidPhoneHost(
     }
     private fun waiting(enabled: Boolean) {
         if (current === this) pushBinding.setDmCallsEnabled(app.config.userId, enabled)
-        if (!enabled) clearPushedInvite()
+        if (!enabled) {
+            clearPushedInvite()
+            currentInviteRows = emptyList()
+        }
         invites?.cancel(); invites = null; inviteTable?.close(); inviteTable = null
         if (enabled) {
             val table = SyncedTable("call_invites", app.config, app.platform, http, app.scope, persist = false)
@@ -172,6 +183,7 @@ internal class AndroidPhoneHost(
                 }
                 combine(dmRows, pushedInvite) { rows, selection -> rows to selection }
                     .collect { (rows, selection) ->
+                        currentInviteRows = rows
                         val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
                         val target = selection?.invite?.takeIf {
                             it.remainingMillis() > 0 && !pushBinding.dmInviteEnded(it.id)

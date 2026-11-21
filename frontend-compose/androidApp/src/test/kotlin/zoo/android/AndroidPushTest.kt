@@ -80,7 +80,7 @@ class AndroidPushTest {
         val store = PushBinding(context)
         val binding = store.bind("https://zoo.example", user)
         val payload = data(binding) + mapOf(
-            "notificationType" to "call_invite", "inviteId" to id,
+            "notificationType" to "call_invite", "inviteId" to id, "title" to "山田 葵",
             "expiresAt" to (System.currentTimeMillis() / 1000L + 25).toString(),
         )
         showPushNotification(context, payload)
@@ -95,7 +95,9 @@ class AndroidPushTest {
         assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
         assertTrue(channel.shouldVibrate())
         val fullScreen = assertNotNull(notification.fullScreenIntent)
-        assertEquals(IncomingCallActivity::class.java.name, shadowOf(fullScreen).savedIntent.component?.className)
+        val incomingScreen = shadowOf(fullScreen).savedIntent
+        assertEquals(IncomingCallActivity::class.java.name, incomingScreen.component?.className)
+        assertEquals("山田 葵", incomingScreen.getStringExtra("callerName"))
         val intent = notification.actions.map { shadowOf(it.actionIntent).savedIntent }
             .single { it.action == DM_PUSH_ANSWER_ACTION }
         val open = shadowOf(notification.contentIntent).savedIntent

@@ -36,6 +36,8 @@ import kotlinx.serialization.json.*
 import zoo.*
 import zoo.phone.LocalPhoneController
 import zoo.phone.LocalIncomingScreenSettings
+import zoo.phone.LocalPhonePictureInPicture
+import zoo.android.phone.PhonePictureInPictureActivity
 import zoo.phone.PhoneCallBanner
 import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
@@ -325,6 +327,9 @@ class MainActivity : ComponentActivity() {
                     LocalEncryptionSettings provides encryption,
                     LocalTouchUi provides true,
                     LocalPhoneController provides current.phone.controller,
+                    LocalPhonePictureInPicture provides if (packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+                        { id -> PhonePictureInPictureActivity.open(this, current.phone, id) }
+                    } else null,
                     LocalIncomingScreenSettings provides if (android.os.Build.VERSION.SDK_INT >= 34) {
                         {
                             try {

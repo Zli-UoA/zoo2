@@ -45,6 +45,8 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import zoo.LocalTouchUi
+import zoo.LocalApp
+import zoo.Avatar
 import zoo.Text
 import works.zli.zoo.R
 import zoo.ZooTheme
@@ -72,12 +74,16 @@ internal fun incomingPresentation(
     dismiss: PendingIntent,
     dismissLabel: String,
     timeoutMillis: Long = 0,
+    callerName: String? = null,
+    nativeSession: String? = null,
 ) {
     builder.setOngoing(true)
     val screen = Intent(context, IncomingCallActivity::class.java)
         .setData(Uri.parse("zoo-phone://incoming/$callId"))
         .putExtra("tag", tag).putExtra("answer", answer).putExtra("dismiss", dismiss)
         .putExtra("dismissLabel", dismissLabel)
+        .putExtra("callerName", callerName)
+        .putExtra(PHONE_CALL, callId).putExtra(PHONE_SESSION, nativeSession)
         .putExtra("deadline", if (timeoutMillis > 0) System.currentTimeMillis() + timeoutMillis else 0L)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
     builder.setFullScreenIntent(PendingIntent.getActivity(
@@ -122,6 +128,10 @@ class IncomingCallActivity : ComponentActivity() {
         val title = phoneLabel(this, "sip.status.incoming", "Incoming call")
         val answerLabel = phoneLabel(this, "sip.answer", "Answer")
         val dismissLabel = intent.getStringExtra("dismissLabel") ?: phoneLabel(this, "common.close", "Close")
+        val callerName = intent.getStringExtra("callerName")?.trim()?.takeIf { it.isNotEmpty() }
+        val callId = intent.getStringExtra(PHONE_CALL)
+        val host = AndroidPhoneHost.current?.takeIf { it.matches(intent.getStringExtra(PHONE_SESSION), callId) }
+        val caller = callId?.let { host?.incomingCaller(it) }
         setContent {
             CompositionLocalProvider(LocalTouchUi provides true) {
                 ZooTheme(dark = true) {
@@ -153,11 +163,25 @@ class IncomingCallActivity : ComponentActivity() {
                                             .background(colors.primary.copy(alpha = 0.08f), CircleShape),
                                         contentAlignment = Alignment.Center,
                                     ) {
-                                        Image(painterResource(R.drawable.zoo_launcher), contentDescription = null,
-                                            modifier = Modifier.size(88.dp).clip(CircleShape))
+                                        when {
+                                            caller != null && host != null -> CompositionLocalProvider(LocalApp provides host.app) {
+                                                Avatar(caller, size = 88.dp)
+                                            }
+                                            callerName != null -> Box(
+                                                Modifier.size(88.dp).background(colors.primary, CircleShape),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Text(callerName.takeWhile { !it.isWhitespace() }.take(2).uppercase(),
+                                                    color = colors.onPrimary, size = MaterialTheme.typography.headlineMedium.fontSize,
+                                                    weight = FontWeight.SemiBold)
+                                            }
+                                            else -> Image(painterResource(R.drawable.zoo_launcher), contentDescription = null,
+                                                modifier = Modifier.size(88.dp).clip(CircleShape))
+                                        }
                                     }
                                     Spacer(Modifier.height(24.dp))
-                                    Text("Zoo", color = colors.primary, weight = FontWeight.SemiBold)
+                                    Text(callerName ?: "Zoo", color = colors.primary, weight = FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center, maxLines = 2)
                                     Spacer(Modifier.height(8.dp))
                                     Text(title, size = MaterialTheme.typography.headlineMedium.fontSize,
                                         lineHeight = MaterialTheme.typography.headlineMedium.lineHeight,

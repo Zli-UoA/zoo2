@@ -2,7 +2,10 @@ package zoo.phone
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
@@ -10,6 +13,7 @@ import kotlinx.serialization.json.*
 import zoo.*
 
 val LocalPhoneController = staticCompositionLocalOf<PhoneController?> { null }
+val LocalPhonePictureInPicture = staticCompositionLocalOf<((String) -> Unit)?> { null }
 val LocalIncomingScreenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 private class PhoneDraft(row: Row? = null) {
@@ -137,6 +141,31 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
         }
         return
     }
+    var minimized by remember(call.id) { mutableStateOf(false) }
+    val status = app.t("sip.status.${call.status}")
+    val pip = LocalPhonePictureInPicture.current
+    if (minimized && call.status != "incoming" && !controller.error) {
+        Box(Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.screenInset),
+            contentAlignment = Alignment.CenterEnd) {
+            Surface(
+                shape = RoundedCornerShape(AndroidDesign.surfaceRadius),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Row(Modifier.widthIn(max = 400.dp).padding(horizontal = AndroidDesign.spaceMedium),
+                    horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f, fill = false)) {
+                        Text(call.label.ifBlank { app.t("sip.title") }, maxLines = 1)
+                        Text(status, small = true, muted = true, maxLines = 1)
+                    }
+                    Button(app.t("androidPhone.expandCall"), variant = "outline") { minimized = false }
+                    Button(app.t("sip.hangup"), destructive = true) { controller.hangup() }
+                }
+            }
+        }
+        return
+    }
     SettingsSection(call.label.ifBlank { app.t("sip.title") }, app.t("sip.status.${call.status}") + call.peer.let { if (it.isBlank()) "" else " · $it" }) {
         CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
             if (call.status == "incoming") Button(app.t("sip.answer"), enabled = !controller.busy) { controller.answer() }
@@ -144,6 +173,14 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
             if (call.status == "active") {
                 Button(app.t(if (call.muted) "sip.unmute" else "sip.mute"), enabled = !controller.busy, variant = "outline") { controller.mute() }
                 Button(app.t("androidPhone.speaker"), selected = call.speaker, variant = "outline") { controller.speaker() }
+            }
+        }
+        if (call.status != "incoming") {
+            CssFlowRow(horizontalGap = AndroidDesign.spaceMedium, verticalGap = AndroidDesign.spaceMedium) {
+                Button(app.t("androidPhone.minimizeCall"), variant = "outline") { minimized = true }
+                if (call.status == "active" && pip != null) {
+                    Button(app.t("androidPhone.floatCall"), variant = "outline") { pip(call.id) }
+                }
             }
         }
         if (call.kind == "sip" && call.status == "active") {

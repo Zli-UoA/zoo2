@@ -118,7 +118,8 @@ internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: Ph
     val answerAction = action(host.app.t("sip.answer"), answer)
     val endAction = action(host.app.t("sip.hangup"), end)
     val builder = callNotification(context, host, call, INCOMING_CHANNEL)
-    incomingPresentation(context, builder, tag, call.id, answer, end, endAction.title.toString())
+    incomingPresentation(context, builder, tag, call.id, answer, end, endAction.title.toString(),
+        callerName = call.label.takeIf { call.kind == "dm" }, nativeSession = host.token)
     if (Build.VERSION.SDK_INT >= 31) {
         builder.setStyle(Notification.CallStyle.forIncomingCall(person(call), end, answer))
     } else builder.setActions(answerAction, endAction)
@@ -158,11 +159,11 @@ private fun callIntent(context: Context, component: Class<*>, host: AndroidPhone
         .setData(Uri.parse("zoo-phone://${host.token}/$id/$action"))
         .putExtra(PHONE_SESSION, host.token).putExtra(PHONE_CALL, id)
 
-private fun callActivity(context: Context, host: AndroidPhoneHost, id: String, action: String): PendingIntent =
+internal fun callActivity(context: Context, host: AndroidPhoneHost, id: String, action: String): PendingIntent =
     PendingIntent.getActivity(context, 0, callIntent(context, MainActivity::class.java, host, id, action)
         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_IMMUTABLE)
 
-private fun endCall(context: Context, host: AndroidPhoneHost, id: String): PendingIntent =
+internal fun endCall(context: Context, host: AndroidPhoneHost, id: String): PendingIntent =
     PendingIntent.getBroadcast(context, 0, callIntent(context, PhoneActionReceiver::class.java, host, id, "END"),
         PendingIntent.FLAG_IMMUTABLE)
 

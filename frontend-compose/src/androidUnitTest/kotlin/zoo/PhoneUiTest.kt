@@ -112,6 +112,26 @@ class PhoneUiTest {
             ui.onNodeWithText("common.close").assertDoesNotExist()
         } finally { f.close() }
     }
+    @Test fun minimizedCallCanBeExpandedOrEndedWithoutInterruptingTheCall() {
+        val f = Fixture()
+        try {
+            ui.runOnIdle { f.controller.callDm("dm", "Bob") }
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
+                    MaterialTheme { Box(Modifier.width(320.dp)) { PhoneCallBanner(f.app, f.controller) } }
+                }
+            }
+            ui.onNodeWithText("androidPhone.minimizeCall").performClick()
+            ui.onNodeWithText("androidPhone.expandCall").assertIsDisplayed()
+            ui.runOnIdle { assertEquals("call", f.controller.call?.id) }
+            ui.onNodeWithText("androidPhone.expandCall").performClick()
+            ui.onNodeWithText("androidPhone.minimizeCall").performClick()
+            ui.onNodeWithText("sip.hangup").performClick()
+            ui.runOnIdle { assertNull(f.controller.call) }
+            ui.onNodeWithText("androidPhone.expandCall").assertDoesNotExist()
+        } finally { f.close() }
+    }
+
     @Test fun incomingBannerOffersAnswerAndEndWithoutOpeningTheMicrophone() {
         val f = Fixture()
         try {
