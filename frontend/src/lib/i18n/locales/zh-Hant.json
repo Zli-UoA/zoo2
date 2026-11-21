@@ -1732,6 +1732,9 @@
     "empty": "沒有可用的公開頻道。",
     "saved": "已儲存。"
   },
+  "androidUpdate": {
+    "title": "應用程式更新"
+  },
   "androidNotifications": {
     "enable": "啟用通知",
     "scope": "登入工作階段同步期間接收新通知。",

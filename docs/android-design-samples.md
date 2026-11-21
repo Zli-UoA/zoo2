@@ -42,6 +42,8 @@
 
 この表の画像はデザインモック。OS の認証復帰、写真のアクセス許可、通知シェードは端末で確認する。
 
+[Android エミュレーターでの照合結果](android-emulator-review.md) には、端末上のキャプチャとモックとの差分を記録する。
+
 ## Compose キャプチャの更新
 
 接続前の表示例は [設定のライト](images/android-design/android-ui-first-settings-light.png) と [ダーク](images/android-design/android-ui-first-settings-dark.png)。画面のテストデータと操作コールバックだけで描画する。

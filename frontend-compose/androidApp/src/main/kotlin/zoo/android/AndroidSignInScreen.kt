@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,6 +22,7 @@ import zoo.ZooMark
 internal fun AndroidSignInScreen(
     message: String,
     detailsVisible: Boolean,
+    busy: Boolean,
     details: @Composable ColumnScope.() -> Unit,
     actions: @Composable ColumnScope.() -> Unit,
 ) {
@@ -44,7 +46,8 @@ internal fun AndroidSignInScreen(
             ) {
                 ZooMark(size = 76.dp)
                 Text("Zoo", style = MaterialTheme.typography.headlineLarge)
-                Text(message, textAlign = TextAlign.Center)
+                if (message.isNotEmpty()) Text(message, textAlign = TextAlign.Center)
+                if (busy) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                 details()
             }
             Column(
