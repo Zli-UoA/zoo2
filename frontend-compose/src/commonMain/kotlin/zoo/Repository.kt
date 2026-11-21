@@ -166,20 +166,20 @@ class SyncedTable(
         withTimeout(timeout) { seenTxids.first { txid in it } }
     }
 
-    private var shape: Shape<JsonObject>? = null
     private var stream: ShapeStream? = null
-    private var client: ShapeClient? = null
-    private var unsubscribeTx: (() -> Unit)? = null
+    private var refreshJob: Job? = null
     private val cacheKey =
         "zoo-compose:v2:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
-    private val worker =
+    private var worker = startSync(readCache = true)
+
+    private fun startSync(readCache: Boolean): Job =
         tableScope.launch {
             if (!synchronize) {
                 loading.value = false
                 return@launch
             }
             try {
-                (if (persist) platform.readCache(cacheKey) else null)?.let { raw ->
+                (if (persist && readCache) platform.readCache(cacheKey) else null)?.let { raw ->
                     serverRows.value = json.parseToJsonElement(raw).jsonArray.map { it.jsonObject }
                     loading.value = false
                 }
@@ -219,16 +219,14 @@ class SyncedTable(
                     headers = { if (direct) emptyMap() else platform.headers() },
                     queryParams = { shapeParams },
                 )
-            client = shapeClient
-            val source = ShapeStream(shapeClient, scope = tableScope, options = streamOptions)
+            val source = ShapeStream(shapeClient, scope = this, options = streamOptions)
             stream = source
             val materialized = Shape(source)
-            shape = materialized
             val pendingTxids = mutableSetOf<String>()
             val snapshots = Channel<List<Row>>(Channel.CONFLATED)
             // Enqueue committed snapshots even before the writer starts, including an empty shape.
             // Observing serverRows with drop(1) could skip an already received initial snapshot.
-            launch {
+            val cacheWriter = launch {
                 for (rows in snapshots) {
                     try {
                         if (persist) platform.writeCache(cacheKey, JsonArray(rows).toString())
@@ -247,7 +245,7 @@ class SyncedTable(
                 snapshots.trySend(rows.toList())
             }
             // Shape is subscribed first, so this observes its consistent materialized snapshot.
-            unsubscribeTx =
+            val unsubscribeTx =
                 source.subscribe(
                     { batch ->
                         if (
@@ -284,9 +282,12 @@ class SyncedTable(
                     },
                 )
             materialized.subscribe { change ->
-                if (materialized.isUpToDate) {
+                val failure = materialized.error
+                if (failure != null) {
+                    error.value = failure
+                    loading.value = false
+                } else if (materialized.isUpToDate) {
                     acceptSnapshot(change.rows)
-                    error.value = materialized.error
                 }
             }
             try {
@@ -298,6 +299,12 @@ class SyncedTable(
             } catch (e: Exception) {
                 error.value = e
                 loading.value = false
+            } finally {
+                cacheWriter.cancel()
+                unsubscribeTx()
+                materialized.close()
+                source.close()
+                shapeClient.close()
             }
         }
 
@@ -359,14 +366,34 @@ class SyncedTable(
 
     fun close() {
         tableScope.cancel()
-        shape?.close()
-        unsubscribeTx?.invoke()
-        stream?.close()
-        client?.close()
     }
 
     fun refresh() {
-        tableScope.launch { stream?.forceDisconnectAndRefresh() }
+        if (refreshJob?.isActive == true) return
+        refreshJob = tableScope.launch {
+            val source = stream
+            if (synchronize && (source?.error != null || !worker.isActive)) {
+                // A terminal Electric4k runner cannot be restarted by forceDisconnectAndRefresh.
+                worker.cancelAndJoin()
+                stream = null
+                loading.value = true
+                error.value = null
+                worker = startSync(readCache = false)
+                return@launch
+            }
+            if (source == null || source.isPaused() || loading.value) return@launch
+            try {
+                source.forceDisconnectAndRefresh()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Visibility may pause the stream between the check and the refresh call.
+                if (!source.isPaused() || source.error != null) {
+                    error.value = e
+                    loading.value = false
+                }
+            }
+        }
     }
 }
 
