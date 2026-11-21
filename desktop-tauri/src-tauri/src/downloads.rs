@@ -883,7 +883,7 @@ fn remove_stale_entry(path: &Path) -> bool {
 enum ProbeState {
     /// 目印がある。消してよい。
     Ours,
-    /// 目印が無い、または通常のファイルではない。触らずに記録から外す。
+    /// 目印が無い、通常のファイルではない、または 0 バイト。触らずに記録から外す。
     NotOurs,
     /// 開けない、または読めない。次の起動でやり直す。
     Unreadable,
@@ -900,15 +900,12 @@ fn probe_state(path: &Path) -> ProbeState {
     if !metadata.file_type().is_file() {
         return ProbeState::NotOurs;
     }
-    // このアプリが作る検査用のファイルは、目印の長さか 0 バイト（目印を書く前に
-    // 終了した場合）。それ以外は中身を読むまでもない。0 バイトのファイルは、
-    // 先に置かれたものだとしても消して失われる中身が無い。
     let length = metadata.len();
-    if length != 0 && length != PROBE_MARKER.len() as u64 {
+    // 0 バイトのファイルは、目印を書く前にこちらが作ったものかもしれないが、先に
+    // 置かれたものかもしれない。名前だけでは所有者を確かめられないので消さない
+    // （目印を書く前に終了した自分のファイルは、空のまま残る）。
+    if length != PROBE_MARKER.len() as u64 {
         return ProbeState::NotOurs;
-    }
-    if length == 0 {
-        return ProbeState::Ours;
     }
     let Ok(file) = File::open(path) else {
         return ProbeState::Unreadable;
@@ -2225,17 +2222,17 @@ mod tests {
     }
 
     #[test]
-    fn startup_cleanup_removes_an_empty_probe() {
+    fn startup_cleanup_keeps_an_empty_probe() {
         let dir = temp_dir();
         let target = dir.join("x.txt");
         let part = part_path(&target, "0123456789abcdef");
         let probe = part.with_extension("probe");
-        // 目印を書く前に終了した場合。0 バイトなら、先に置かれたものだとしても
-        // 消して失われる中身が無い。
+        // 目印を書く前に終了すると 0 バイトで残るが、先に置かれたものと区別できない
+        // ので消さない。
         std::fs::write(&probe, b"").unwrap();
 
-        assert!(remove_stale_entry(&probe));
-        assert!(!probe.exists());
+        assert!(remove_stale_entry(&probe), "記録からは外す");
+        assert!(probe.exists(), "第三者のファイルかもしれないので消さない");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
