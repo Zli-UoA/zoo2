@@ -103,7 +103,11 @@ internal sealed interface AndroidScreen {
         val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
     ) : AndroidScreen
     data class EditEntry(val input: InputState) : AndroidScreen
-    data class Profile(val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null) : AndroidScreen
+    data class Profile(
+        val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null,
+        val handle: String? = null, val avatar: ImageBitmap? = null,
+        val originalAvailable: Boolean = false,
+    ) : AndroidScreen
     data class NewPost(val input: InputState, val recent: List<RecentPhoto>, val showPhotos: Boolean,
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList(), val federate: Boolean? = null) : AndroidScreen
     data class SignIn(val restoring: Boolean) : AndroidScreen
@@ -296,14 +300,13 @@ private fun RenderAndroidScreen(
                 { dispatch(AndroidUiAction.OpenSetting("encrypted-dm")) },
             )
             is AndroidScreen.Profile -> {
-                PageHeader(screen.name, colors, onBack = back, titleWeight = AndroidWeights.userName)
-                if (screen.bio.isNotBlank()) Text(screen.bio, Modifier.padding(16.dp), color = colors.secondary, fontSize = 15.sp)
-                screen.follow?.let { label ->
-                    Box(Modifier.padding(horizontal = 16.dp)) {
-                        TextAction(label, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
-                    }
+                PageHeader("プロフィール", colors, onBack = back, paintBackground = false) {
+                    if (screen.originalAvailable) UiIconButton(UiIcon.External, "公開プロフィールを開く", colors.foreground,
+                        { dispatch(AndroidUiAction.OpenSetting("profile-original")) })
                 }
-                Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true)
+                Timeline(screen.posts, colors, Modifier.weight(1f), dispatch, posts = true, header = {
+                    ProfileHeader(screen, colors) { dispatch(AndroidUiAction.OpenSetting("profile-follow")) }
+                })
             }
             is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
             is AndroidScreen.SignIn -> BrandPage(
@@ -450,6 +453,7 @@ private fun Timeline(
     allowThreads: Boolean = false,
     focusMessage: String? = null,
     loadOlder: (() -> Unit)? = null,
+    header: (@Composable () -> Unit)? = null,
 ) {
     val authorSize = if (posts) 16.sp else 14.sp
     val authorWeight = if (posts) AndroidWeights.emphasis else AndroidWeights.userName
@@ -471,6 +475,7 @@ private fun Timeline(
         }
     }
     LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(horizontal = 16.dp)) {
+        if (header != null) item { header() }
         items(entries, key = { it.entryKey }) { entry ->
             Row(
                 Modifier.fillMaxWidth().testTag("timeline-entry-${entry.id}")

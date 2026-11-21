@@ -218,16 +218,18 @@ internal class ConnectedScreenState(
         val id = person.text("id")
         val remote = person.flag("remote")
         profilePosts = app.api.request("/api/home?timeline=social&author=${id.encodeURLParameter()}&limit=40").rows()
-        if (!remote) {
-            val publicProfile = try {
-                app.api.request("/api/activitypub/users/${id.encodeURLParameter()}/profile").jsonObject.nested("account")
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { obj() }
-            if (publicProfile.isNotEmpty()) profile = publicProfile
-        }
-        followState = if (profile.text("id") == app.config.userId) null else {
-            if (remote) updateFollowState(id) else null
-        }
+        val account = try {
+            app.api.request("/api/activitypub/accounts?actor=${id.encodeURLParameter()}").jsonObject
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { obj() }
+        if (account.isNotEmpty()) profile = kotlinx.serialization.json.JsonObject(person + account)
+        followState = if (!remote || id == app.config.userId) null else if (account.isNotEmpty()) {
+            when {
+                !account.present("following") -> "フォロー"
+                account.flag("following") -> "フォローを解除"
+                else -> "申請を取り消す"
+            }
+        } else updateFollowState(id)
         overlay = "profile"
     }
 
@@ -449,6 +451,10 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.OpenSetting -> when {
                 action.id == "toggle-federation" -> if (federationAvailable) federatePost = !federatePost else Unit
+                action.id == "profile-original" -> {
+                    val url = profile.text("url")
+                    if (publicUrl(url) != null) platform.action("open:$url")
+                }
                 action.id == "profile-follow" && followState != null -> request {
                     val actor = profile.text("actor_id").ifBlank { profile.text("id") }
                     app.api.request("/api/activitypub/follows", if (followState == "フォロー") "POST" else "DELETE",
