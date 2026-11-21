@@ -13,6 +13,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import zoo.android.phone.DM_PUSH_ANSWER_ACTION
 import zoo.android.phone.DmCallPushAnswer
+import zoo.android.phone.IncomingCallActivity
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -85,7 +86,14 @@ class AndroidPushTest {
         repeat(2) { showPushNotification(context, payload) }
         val notification = manager.activeNotifications.single().notification
         assertEquals(Notification.CATEGORY_CALL, notification.category)
-        val intent = shadowOf(notification.actions.single().actionIntent).savedIntent
+        assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        val channel = manager.getNotificationChannel(notification.channelId)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
+        assertTrue(channel.shouldVibrate())
+        val fullScreen = assertNotNull(notification.fullScreenIntent)
+        assertEquals(IncomingCallActivity::class.java.name, shadowOf(fullScreen).savedIntent.component?.className)
+        val intent = notification.actions.map { shadowOf(it.actionIntent).savedIntent }
+            .single { it.action == DM_PUSH_ANSWER_ACTION }
         assertEquals(DM_PUSH_ANSWER_ACTION, intent.action)
         assertEquals(id, DmCallPushAnswer.fromIntent(intent)?.id)
         assertEquals(binding, DmCallPushAnswer.fromIntent(intent)?.binding)

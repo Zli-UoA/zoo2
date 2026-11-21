@@ -9,6 +9,7 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <application
@@ -47,6 +48,14 @@
         <service android:name="zoo.android.phone.PhoneService" android:exported="false" android:foregroundServiceType="phoneCall|microphone" />
         <receiver android:name="zoo.android.phone.PhoneActionReceiver" android:exported="false" />
         <receiver android:name="zoo.android.NotificationActionReceiver" android:exported="false" />
+        <activity
+            android:name="zoo.android.phone.IncomingCallActivity"
+            android:exported="false"
+            android:taskAffinity="${applicationId}.incoming"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
         <activity
             android:name="zoo.android.MainActivity"
             android:exported="true"

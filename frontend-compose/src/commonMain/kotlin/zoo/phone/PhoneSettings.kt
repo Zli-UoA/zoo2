@@ -10,6 +10,7 @@ import kotlinx.serialization.json.*
 import zoo.*
 
 val LocalPhoneController = staticCompositionLocalOf<PhoneController?> { null }
+val LocalIncomingScreenSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 private class PhoneDraft(row: Row? = null) {
     var name by mutableStateOf(row?.text("name").orEmpty())
@@ -38,6 +39,9 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
         SettingsSection(app.t("androidPhone.nativeCalls"), app.t("androidPhone.nativeHelp")) {
             Check(app.t("androidPhone.receiveDm"), controller.dmWaiting, enabled = !controller.busy) { controller.receiveDmCalls(it) }
             if (controller.dmWaitingError) PhoneErrorText(app.t("androidPhone.callError"))
+            LocalIncomingScreenSettings.current?.let { openSettings ->
+                Button(app.t("androidPhone.incomingScreenSettings"), variant = "outline", click = openSettings)
+            }
         }
         CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
             Button(app.t("sip.refresh"), enabled = !controller.loading, variant = "outline") { controller.refresh() }

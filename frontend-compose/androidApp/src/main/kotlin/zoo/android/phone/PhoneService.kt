@@ -6,8 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import androidx.annotation.RequiresApi
@@ -111,18 +109,13 @@ class PhoneService : Service() {
 
 internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: PhoneCall, tag: String? = null) {
     val manager = context.getSystemService(NotificationManager::class.java)
-    manager.createNotificationChannel(NotificationChannel(
-        INCOMING_CHANNEL, host.app.t("sip.status.incoming"), NotificationManager.IMPORTANCE_HIGH,
-    ).apply {
-        enableVibration(true)
-        setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build())
-    })
+    ensureIncomingChannel(context, host.app.t("sip.status.incoming"))
     val answer = callActivity(context, host, call.id, "ANSWER")
     val end = endCall(context, host, call.id)
     val answerAction = action(host.app.t("sip.answer"), answer)
     val endAction = action(host.app.t("sip.hangup"), end)
     val builder = callNotification(context, host, call, INCOMING_CHANNEL)
+    incomingPresentation(context, builder, tag, call.id, answer, end, endAction.title.toString())
     if (Build.VERSION.SDK_INT >= 31) {
         builder.setStyle(Notification.CallStyle.forIncomingCall(person(call), end, answer))
     } else builder.setActions(answerAction, endAction)
@@ -133,8 +126,10 @@ internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: Ph
     }
 }
 
-internal fun dismissIncomingCall(context: Context, tag: String? = null) =
+internal fun dismissIncomingCall(context: Context, tag: String? = null) {
     context.getSystemService(NotificationManager::class.java).cancel(tag, INCOMING_NOTIFICATION)
+    context.sendBroadcast(Intent(INCOMING_CLOSED_ACTION).setPackage(context.packageName).putExtra("tag", tag))
+}
 
 @RequiresApi(28)
 private fun person(call: PhoneCall) = Person.Builder().setName(call.label.ifBlank { "Zoo" }).build()
@@ -170,6 +165,10 @@ private fun endCall(context: Context, host: AndroidPhoneHost, id: String): Pendi
 
 class PhoneActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == DM_PUSH_DISMISS_ACTION) {
+            dismissPushedDmCall(context, intent)
+            return
+        }
         if (intent.action != "zoo.phone.END") return
         val host = AndroidPhoneHost.current ?: return
         if (host.matches(intent.getStringExtra(PHONE_SESSION), intent.getStringExtra(PHONE_CALL))) {

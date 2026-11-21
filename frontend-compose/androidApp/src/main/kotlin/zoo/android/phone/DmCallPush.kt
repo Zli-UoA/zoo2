@@ -1,15 +1,14 @@
 package zoo.android.phone
 
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.Person
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
-import android.media.AudioAttributes
-import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
 import java.util.UUID
 import works.zli.zoo.R
 import zoo.android.MainActivity
@@ -17,6 +16,18 @@ import zoo.android.PushBinding
 import zoo.android.notificationsAllowed
 
 internal const val DM_PUSH_ANSWER_ACTION = "zoo.phone.PUSH_ANSWER"
+internal const val DM_PUSH_DISMISS_ACTION = "zoo.phone.PUSH_DISMISS"
+
+internal fun dismissPushedDmCall(context: Context, intent: Intent) {
+    val answer = DmCallPushAnswer.fromIntent(intent) ?: return
+    val user = intent.getStringExtra("user") ?: return
+    val store = PushBinding(context)
+    synchronized(PushBinding.lock) {
+        if (!store.matches(answer.binding, user)) return
+        store.rememberEndedDmInvite(user, answer.id)
+        dismissIncomingCall(context, dmNotificationTag(user, answer.id))
+    }
+}
 
 private fun inviteUuid(value: String?): String? =
     value?.takeIf { it.length == 36 }?.let { runCatching { UUID.fromString(it).toString() }.getOrNull() }
@@ -42,7 +53,7 @@ internal fun showDmCallPush(context: Context, store: PushBinding, user: String, 
     val tag = dmNotificationTag(user, id)
     if (data["notificationType"] == "call_invite_end") {
         store.rememberEndedDmInvite(user, id)
-        manager.cancel(tag, INCOMING_NOTIFICATION)
+        dismissIncomingCall(context, tag)
         return
     }
     if (!store.dmCallsEnabled(user) || store.dmInviteEnded(id) || !notificationsAllowed(context)) return
@@ -50,32 +61,41 @@ internal fun showDmCallPush(context: Context, store: PushBinding, user: String, 
     val timeout = answer.remainingMillis()
     if (timeout == 0L || manager.activeNotifications.any { it.tag == tag && it.id == INCOMING_NOTIFICATION }) return
 
-    if (manager.getNotificationChannel(INCOMING_CHANNEL) == null) {
-        manager.createNotificationChannel(NotificationChannel(INCOMING_CHANNEL, "Zoo", NotificationManager.IMPORTANCE_HIGH).apply {
-            enableVibration(true)
-            setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build())
-        })
-    }
+    ensureIncomingChannel(context, phoneLabel(context, "sip.status.incoming", "Incoming call"))
     val intent = Intent(context, MainActivity::class.java).setAction(DM_PUSH_ANSWER_ACTION)
         .setData(Uri.parse("zoo-phone://$binding/$id/push-answer"))
         .putExtra("invite", id).putExtra("binding", binding).putExtra("expiresAt", answer.expiresAt)
         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     val pending = PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-    val notification = Notification.Builder(context, INCOMING_CHANNEL)
+    val label = data["title"].orEmpty().take(200).ifBlank { "Zoo" }
+    val dismissIntent = Intent(intent).setClass(context, PhoneActionReceiver::class.java)
+        .setAction(DM_PUSH_DISMISS_ACTION).putExtra("user", user)
+    val dismiss = PendingIntent.getBroadcast(context, 0, dismissIntent, PendingIntent.FLAG_IMMUTABLE)
+    val answerAction = Notification.Action.Builder(null as Icon?,
+        phoneLabel(context, "sip.answer", "Answer"), pending).build()
+    val dismissAction = Notification.Action.Builder(null as Icon?,
+        phoneLabel(context, "common.close", "Close"), dismiss).build()
+    val builder = Notification.Builder(context, INCOMING_CHANNEL)
         .setSmallIcon(R.drawable.ic_notification)
-        .setContentTitle(data["title"].orEmpty().take(200).ifBlank { "Zoo" })
-        .addAction(Notification.Action.Builder(null as Icon?, answerLabel(context), pending).build())
+        .setContentTitle(label)
         .setCategory(Notification.CATEGORY_CALL)
         .setTimeoutAfter(timeout).setOnlyAlertOnce(true)
         .setVisibility(Notification.VISIBILITY_PRIVATE)
-        .build().apply { flags = flags or Notification.FLAG_INSISTENT }
-    try { manager.notify(tag, INCOMING_NOTIFICATION, notification) }
-    catch (_: SecurityException) { /* Permission may change during delivery. */ }
+        .setPublicVersion(Notification.Builder(context, INCOMING_CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification).setContentTitle("Zoo")
+            .setContentText(phoneLabel(context, "sip.status.incoming", "Incoming call")).build())
+    incomingPresentation(context, builder, tag, id, pending, dismiss, dismissAction.title.toString(), timeout)
+    if (Build.VERSION.SDK_INT >= 31) {
+        builder.setStyle(Notification.CallStyle.forIncomingCall(Person.Builder().setName(label).build(), dismiss, pending))
+    } else builder.setActions(answerAction, dismissAction)
+    try {
+        postIncomingNotification(builder, answerAction, dismissAction) { manager.notify(tag, INCOMING_NOTIFICATION, it) }
+    } catch (_: SecurityException) { /* Permission may change during delivery. */ }
 }
 
-private fun answerLabel(context: Context): String {
-    val locale = context.resources.configuration.locales[0] ?: return "Answer"
+
+internal fun phoneLabel(context: Context, key: String, fallback: String): String {
+    val locale = context.resources.configuration.locales[0] ?: return fallback
     val dictionaryLocale = when (locale.language) {
         "ja", "yue" -> locale.language
         "ko" -> if (locale.country == "KP") "ko-KP" else "ko-KR"
@@ -85,6 +105,6 @@ private fun answerLabel(context: Context): String {
     return runCatching {
         val dictionary = context.assets.open("locales/$dictionaryLocale.json")
             .bufferedReader().use { zoo.json.parseToJsonElement(it.readText()) as zoo.Row }
-        zoo.android.translateDictionary(dictionary, dictionaryLocale, "sip.answer", emptyMap())
-    }.getOrDefault("Answer")
+        zoo.android.translateDictionary(dictionary, dictionaryLocale, key, emptyMap())
+    }.getOrDefault(fallback)
 }
