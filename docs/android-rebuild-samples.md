@@ -28,10 +28,18 @@
 | ログイン復元中 | [ライト](images/android-design/rebuild/login-restoring-light.png) | [ダーク](images/android-design/rebuild/login-restoring-dark.png) |
 | 着信（相手のアバターと一定間隔の波紋） | [ライト](images/android-design/rebuild/call-light.png) | [ダーク](images/android-design/rebuild/call-dark.png) |
 | 通話中（受信音声に合わせた波紋） | [ライト](images/android-design/rebuild/call-active-light.png) | [ダーク](images/android-design/rebuild/call-active-dark.png) |
+| スレッド設定 | [ライト](images/android-design/rebuild/thread-settings-light.png) | [ダーク](images/android-design/rebuild/thread-settings-dark.png) |
+| スレッド参加者 | [ライト](images/android-design/rebuild/thread-members-light.png) | [ダーク](images/android-design/rebuild/thread-members-dark.png) |
+| グループ DM 作成 | [ライト](images/android-design/rebuild/group-dm-light.png) | [ダーク](images/android-design/rebuild/group-dm-dark.png) |
+| メッセージ・投稿の編集 | [ライト](images/android-design/rebuild/entry-edit-light.png) | [ダーク](images/android-design/rebuild/entry-edit-dark.png) |
+| ユーザー検索 | [ライト](images/android-design/rebuild/people-search-light.png) | [ダーク](images/android-design/rebuild/people-search-dark.png) |
+| Bubble 参加者 | [ライト](images/android-design/rebuild/bubble-participants-light.png) | [ダーク](images/android-design/rebuild/bubble-participants-dark.png) |
 
 ```sh
 cd frontend-compose
 ./gradlew -Pzoo.android=true -Pzoo.uiPreview=true :ui-preview:testDebugUnitTest
 ```
+
+暗号化の初期設定と解錠は、接続した環境で検証する。リカバリーキーが出る画面では端末のスクリーンキャプチャを無効にする。
 
 生成先は `frontend-compose/ui-preview/build/reports/android-ui/`。

@@ -3,6 +3,7 @@ package zoo.android.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -31,6 +32,7 @@ internal data class SelectionItem(
     val title: String,
     val detail: String? = null,
     val isUserName: Boolean = false,
+    val selected: Boolean? = null,
 )
 internal data class RecentPhoto(val id: String, val label: String)
 
@@ -38,6 +40,7 @@ internal data class RecentPhoto(val id: String, val label: String)
 internal fun DirectoryPage(
     title: String, query: String, results: List<SelectionItem>, colors: AndroidColors,
     back: () -> Unit, search: (String) -> Unit, select: (String) -> Unit,
+    submit: String?, canSubmit: Boolean, encryption: Boolean?, onSubmit: () -> Unit, onEncryption: () -> Unit,
 ) {
     PageHeader(title, colors, onBack = back)
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -65,9 +68,21 @@ internal fun DirectoryPage(
                             fontWeight = if (item.isUserName) AndroidWeights.userName else AndroidWeights.body)
                         item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
                     }
-                    UiGlyph(UiIcon.Next, colors.secondary)
+                    val selected = item.selected
+                    if (selected == null) UiGlyph(UiIcon.Next, colors.secondary)
+                    else androidx.compose.material3.Checkbox(selected, onCheckedChange = null)
                 }
             }
+        }
+        if (encryption != null) {
+            Row(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target).clickable(onClick = onEncryption),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("エンドツーエンド暗号化", Modifier.weight(1f), color = colors.foreground)
+                androidx.compose.material3.Switch(encryption, onCheckedChange = null)
+            }
+        }
+        if (submit != null) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            TextAction(submit, colors, canSubmit, click = onSubmit)
         }
     }
 }
@@ -115,11 +130,22 @@ internal fun NewPostPage(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(screen.attached, key = { it.id }) { item ->
-                photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
+                    TextAction("削除", colors, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
+                }
+            }
+        }
+        screen.federate?.let { enabled ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 48.dp)
+                .clickable { dispatch(AndroidUiAction.OpenSetting("toggle-federation")) },
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("ActivityPub で配信", Modifier.weight(1f), color = colors.foreground)
+                androidx.compose.material3.Switch(enabled, onCheckedChange = null)
             }
         }
         if (screen.visibility != null) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-            for ((id, label) in listOf("public" to "公開", "unlisted" to "未収載", "followers" to "フォロワー")) {
+            for ((id, label) in listOf("public" to "公開", "unlisted" to "未収載", "followers" to "フォロワー", "local" to "ローカル")) {
                 TextAction(label, colors, style = if (id == screen.visibility) TextActionStyle.Neutral else TextActionStyle.Plain,
                     modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectPostVisibility(id)) }
             }
@@ -174,6 +200,21 @@ internal fun ChannelEditorPage(
         }
         ChannelField("説明", screen.description, colors, singleLine = false) {
             dispatch(AndroidUiAction.ChannelDescriptionChanged(it))
+        }
+        val options = listOf(
+            Triple("channel-private", "非公開", screen.privateChannel),
+            Triple("channel-encrypted", "エンドツーエンド暗号化", screen.encrypted),
+            Triple("channel-sensitive", "センシティブな内容を含む", screen.sensitive),
+        )
+        options.forEach { (id, label, selection) ->
+            if (selection != null) Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .toggleable(selection, role = Role.Switch) { dispatch(AndroidUiAction.OpenSetting(id)) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label, Modifier.weight(1f), color = colors.foreground)
+                androidx.compose.material3.Switch(selection, onCheckedChange = null)
+            }
         }
         Spacer(Modifier.weight(1f))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {

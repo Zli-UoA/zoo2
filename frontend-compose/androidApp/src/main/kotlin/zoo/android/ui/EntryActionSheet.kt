@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 internal fun EntryActionSheet(
     entry: TimelineItem, colors: AndroidColors, posts: Boolean,
     dismiss: () -> Unit, open: (() -> Unit)?,
+    action: (EntryOperation, String) -> Unit,
 ) {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
@@ -37,6 +38,14 @@ internal fun EntryActionSheet(
                     colors,
                     open,
                 )
+            }
+            if (entry.editable) {
+                SheetAction(UiIcon.Format, "編集", colors) { action(EntryOperation.Edit, "") }
+                SheetAction(UiIcon.Delete, "削除", colors) { action(EntryOperation.Delete, "") }
+            }
+            if (entry.canReact) SheetAction(UiIcon.Emoji, "リアクション", colors) { action(EntryOperation.React, "") }
+            if (entry.canRepost) SheetAction(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿", colors) {
+                action(EntryOperation.Repost, "")
             }
             SheetAction(UiIcon.Copy, "本文をコピー", colors) {
                 scope.launch {
