@@ -41,6 +41,21 @@ export function useActiveChannels() {
   };
 }
 
+/**
+ * オフライン控えからライブへ差し替えるとき、両者に共通する id の区間は控え側を残す。
+ * 配列ごと差し替えると、ライブの 1 ページ目が届いた瞬間に一覧が短くなり、
+ * classifyScrollChange が prepend / replace と誤判定してアンカー復元が暴れる。
+ */
+export function mergeCachedAndLive(cached: FeedRow[], live: FeedRow[]): FeedRow[] {
+  if (cached.length === 0) return live;
+  if (live.length === 0) return cached;
+  const liveIds = new Set(live.map((row) => row.id));
+  const firstLiveIndex = cached.findIndex((row) => liveIds.has(row.id));
+  if (firstLiveIndex < 0) return live;
+  // 控えの中でライブより古い行だけを前置きし、共通以降はライブの順序・内容を使う。
+  return [...cached.slice(0, firstLiveIndex), ...live];
+}
+
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
@@ -106,7 +121,11 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => clearTimeout(timer);
   }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
 
-  const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
+  const displayedRows =
+    cachedRows && oldestFirst.length > 0
+      ? mergeCachedAndLive(cachedRows, oldestFirst)
+      : (cachedRows ?? oldestFirst);
+  const data = useOptimisticDisplay(channelId, displayedRows);
   const fromCache = cachedRows !== null;
   return {
     ...query,

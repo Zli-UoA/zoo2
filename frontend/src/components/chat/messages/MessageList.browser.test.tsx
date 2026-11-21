@@ -22,6 +22,46 @@ vi.mock("../../../lib/electric/collections-context", async (importOriginal) => (
 
 afterEach(() => api.get.mockReset());
 
+it("shows a loading indicator while older messages are being fetched", () => {
+  const noop = () => {};
+  render(
+    <LocaleProvider>
+      <div className="flex h-[400px] w-[360px] flex-col">
+        <MessageList
+          messages={[
+            {
+              id: "1",
+              user_id: "other",
+              display_name: "Alice",
+              parent_id: null,
+              created_at: "2026-01-02 00:00:00.000",
+              content: "Message 1",
+            },
+          ]}
+          isLoading={false}
+          isError={false}
+          isLoadingOlder
+          currentUserId="me"
+          editingId={null}
+          editingText=""
+          onEditingTextChange={noop}
+          onStartEdit={noop}
+          onCancelEdit={noop}
+          onSaveEdit={noop}
+          onRequestDelete={noop}
+          reactions={new Map()}
+          kitchenCatalog={null}
+          canReact={false}
+          onReaction={noop}
+          onPickReaction={noop}
+          onOpenThread={noop}
+        />
+      </div>
+    </LocaleProvider>,
+  );
+  expect(screen.getByRole("status", { name: "読み込み中…" })).toBeInTheDocument();
+});
+
 const nextFrame = () =>
   new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),

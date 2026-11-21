@@ -130,6 +130,15 @@ export const Loading: Story = {
   },
 };
 
+export const LoadingOlder: Story = {
+  args: {
+    isLoadingOlder: true,
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("status", { name: "読み込み中…" })).toBeInTheDocument();
+  }),
+};
+
 export const Error: Story = {
   args: {
     messages: [],

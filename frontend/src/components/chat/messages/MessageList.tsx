@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownIcon, LockKeyholeIcon } from "lucide-react";
+import { ArrowDownIcon, LoaderCircleIcon, LockKeyholeIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -313,7 +313,11 @@ export function MessageList({
       // Estimates for unmounted rows must not decide which message the reader sees.
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
-      if (anchor && index >= 0) {
+      if (anchor && index < 0 && slid) {
+        // アンカー行そのものがウィンドウから押し出された場合、今の先頭行を
+        // 新しいアンカーとしてそのままスクロール位置を保つ (読む行は消えた分だけ進む)。
+        captureScrollAnchor();
+      } else if (anchor && index >= 0) {
         restoringAnchorRef.current = true;
         let frame = 0;
         let stopped = false;
@@ -558,6 +562,18 @@ export function MessageList({
           data-testid="message-scroll"
           className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
+          {isLoadingOlder ? (
+            <div
+              role="status"
+              aria-label={t("attachments.loading")}
+              className="pointer-events-none sticky top-0 z-10 flex h-6 items-center justify-center text-xs text-muted-foreground"
+            >
+              <LoaderCircleIcon
+                className="size-4 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+            </div>
+          ) : null}
           <div role="list" className="relative w-full" style={{ height: totalSize }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
