@@ -135,15 +135,23 @@ internal fun PageHeader(
         if (onBack != null) {
             UiIconButton(UiIcon.Back, "戻る", colors.foreground, onBack)
         } else ZooBadge(colors, Modifier.size(26.dp))
-        Column(Modifier.weight(1f).then(
-            if (onOpen == null) Modifier else Modifier.heightIn(min = AndroidControlSize.target).clickable(onClick = onOpen),
-        ), verticalArrangement = Arrangement.Center) {
-            Text(title, color = colors.foreground, fontSize = if (description == null) 20.sp else 16.sp,
-                fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            if (!description.isNullOrEmpty()) {
-                Text(description, color = colors.secondary, fontSize = 13.sp, maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        val titleAction = if (onOpen == null) Modifier else Modifier
+            .heightIn(min = AndroidControlSize.target)
+            .clickable(role = Role.Button, onClickLabel = "チャンネル設定を開く", onClick = onOpen)
+        Row(
+            Modifier.weight(1f).then(titleAction),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, color = colors.foreground, fontSize = if (onOpen == null) 20.sp else 16.sp,
+                    fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                if (!description.isNullOrEmpty()) {
+                    Text(description, color = colors.secondary, fontSize = 13.sp, maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                }
             }
+            if (onOpen != null) UiGlyph(UiIcon.Next, colors.secondary)
         }
     }
 }
