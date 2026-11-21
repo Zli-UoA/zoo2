@@ -9,6 +9,7 @@ import {
   HomeIcon,
   MessageCircleMoreIcon,
   type LucideIcon,
+  SearchIcon,
   SettingsIcon,
 } from "lucide-react";
 
@@ -29,7 +30,7 @@ function RailLink({
   label,
   exact = false,
 }: {
-  to: "/home" | "/" | "/bubble" | "/realtime";
+  to: "/home" | "/" | "/search" | "/bubble" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -78,6 +79,7 @@ export function LeftRail() {
       </PaneHeader>
       <RailLink to="/home" icon={HomeIcon} label={t("home.title")} exact />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
+      <RailLink to="/search" icon={SearchIcon} label={t("globalSearch.openNav")} />
       <NotificationsButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
       <AppDialogs />
