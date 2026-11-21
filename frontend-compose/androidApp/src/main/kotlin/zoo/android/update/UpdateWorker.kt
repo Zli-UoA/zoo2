@@ -28,6 +28,18 @@ internal class UpdatePreferences(context: Context) {
             values.edit().putBoolean("enabled", value).apply()
         }
 
+    fun installing(release: UpdateRelease) {
+        check(values.edit().putLong("installingVersion", release.versionCode)
+            .putString("status", "${release.versionName} をインストールしています").commit())
+    }
+
+    fun confirmInstalledUpdate(version: Long, name: String) {
+        val pending = values.getLong("installingVersion", 0)
+        if (pending != 0L && version >= pending) {
+            values.edit().remove("installingVersion").putString("status", "$name への更新が完了しました").apply()
+        }
+    }
+
     var status: String
         get() = values.getString("status", "更新はまだ確認していません").orEmpty()
         set(value) {
@@ -166,10 +178,10 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                 )
                 currentCoroutineContext().ensureActive()
                 if (!manual && !prefs.enabled) return@withLock Result.success()
-                prefs.status = "${release.versionName} をインストールしています"
+                prefs.installing(release)
                 val result = ShizukuInstaller(applicationContext).install(apk)
                 check(result == "Success") { result }
-                prefs.status = "${release.versionName} への更新が完了しました"
+                prefs.confirmInstalledUpdate(release.versionCode, release.versionName)
                 Result.success()
             } catch (cancelled: CancellationException) {
                 throw cancelled

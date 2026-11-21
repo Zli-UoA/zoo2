@@ -176,6 +176,11 @@
     "invalidState": "This action cannot be performed in the current state."
   },
   "settings": {
+    "appearance": "Appearance",
+    "interaction": "Gestures",
+    "swipeReply": "Swipe to reply",
+    "operationHaptics": "Haptic feedback",
+    "navTitle": "Settings",
     "admin": "Administrator",
     "member": "Member",
     "makeAdmin": "Make administrator",
@@ -246,6 +251,10 @@
     "edited": "Edited"
   },
   "attachments": {
+    "recentPhotos": "Recent photos",
+    "systemPhotos": "Open photo picker",
+    "allowRecentPhotos": "Allow photo access",
+    "noRecentPhotos": "No photos available",
     "play": "Play",
     "pause": "Pause",
     "add": "Attach files",
@@ -393,6 +402,8 @@
     "channels": "Channel suggestions"
   },
   "notifications": {
+    "filterAll": "All",
+    "filterMentions": "Mentions",
     "label": "Notifications",
     "close": "Dismiss notification",
     "title": "Notifications",
@@ -590,6 +601,7 @@
     "micNotFound": "No microphone found."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "A room where text appears in real time as you type",
     "emptyTitle": "No one is typing right now",
@@ -803,6 +815,7 @@
     "showLess": "Show less"
   },
   "home": {
+    "navTitle": "Home",
     "back": "Back",
     "deleted": "Post deleted",
     "newPosts": "View new posts ({{count}})",
@@ -1718,6 +1731,9 @@
     "description": "Select public channels to join automatically when an account is created. Existing accounts are unaffected.",
     "empty": "No public channels are available.",
     "saved": "Saved."
+  },
+  "androidUpdate": {
+    "title": "App updates"
   },
   "androidNotifications": {
     "enable": "Enable notifications",

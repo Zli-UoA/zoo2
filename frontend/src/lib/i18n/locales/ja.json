@@ -176,6 +176,11 @@
     "invalidState": "この操作は現在の状態では実行できません。"
   },
   "settings": {
+    "appearance": "外観",
+    "interaction": "操作",
+    "swipeReply": "スワイプで返信",
+    "operationHaptics": "触覚フィードバック",
+    "navTitle": "設定",
     "admin": "管理者",
     "member": "メンバー",
     "makeAdmin": "管理者にする",
@@ -246,6 +251,10 @@
     "edited": "編集済み"
   },
   "attachments": {
+    "recentPhotos": "最近の写真",
+    "systemPhotos": "写真アプリで選ぶ",
+    "allowRecentPhotos": "写真へのアクセスを許可",
+    "noRecentPhotos": "表示できる写真がありません",
     "play": "再生",
     "pause": "一時停止",
     "add": "ファイルを添付",
@@ -393,6 +402,8 @@
     "channels": "チャンネル候補"
   },
   "notifications": {
+    "filterAll": "すべて",
+    "filterMentions": "メンション",
     "label": "通知",
     "close": "通知を閉じる",
     "title": "通知",
@@ -590,6 +601,7 @@
     "micNotFound": "マイクが見つかりませんでした。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "入力中の文字がそのままリアルタイムに表示されるルームです",
     "emptyTitle": "現在入力中のユーザーはいません",
@@ -803,6 +815,7 @@
     "showLess": "折りたたむ"
   },
   "home": {
+    "navTitle": "ホーム",
     "back": "戻る",
     "deleted": "投稿を削除しました",
     "newPosts": "新しい投稿を見る（{{count}}件）",
@@ -1718,6 +1731,9 @@
     "description": "アカウント作成時に自動参加する公開チャンネルを選択します。既存アカウントには適用されません。",
     "empty": "選択できる公開チャンネルがありません。",
     "saved": "保存しました。"
+  },
+  "androidUpdate": {
+    "title": "アプリの更新"
   },
   "androidNotifications": {
     "enable": "通知を有効にする",

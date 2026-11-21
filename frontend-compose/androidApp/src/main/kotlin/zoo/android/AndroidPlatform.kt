@@ -28,7 +28,9 @@ internal class AndroidPlatform(
     private val base: String,
     private val userId: String,
     val logout: () -> Unit,
-    private val chooseFiles: suspend () -> List<Uri>,
+    private val chooseFiles: suspend (Boolean) -> List<Uri>,
+    private val recentPhotos: RecentPhotos,
+    private val requestRecentPhotos: suspend () -> Unit,
     /**
      * 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（docs/e2ee.md の「ログアウトと
      * 端末の削除」）。`count` が負なら数えられなかった。ログアウトしてよければ真を返す。
@@ -37,13 +39,27 @@ internal class AndroidPlatform(
 ) : Platform {
     /** E2EE の端末（#359）。ログインしたあとに設定する。 */
     override var messageEncryption: zoo.MessageEncryption? = null
+    var reauthenticate: (suspend () -> String)? = null
+    var passkey: zoo.crypto.UnlockMethod.Passkey? = null
     var e2ee: zoo.crypto.E2eeDeviceManager? = null
 
-    var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true))
+    private val prefs = activity.getSharedPreferences("preferences", 0)
+    private val savedTheme = prefs.getString("theme", "system") ?: "system"
+    private fun reducedMotion() = android.provider.Settings.Global.getFloat(
+        activity.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
+    ) == 0f
+
+    var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true,
+        theme = savedTheme,
+        locale = prefs.getString("locale", "ja") ?: "ja",
+        dark = savedTheme == "dark" || savedTheme == "system" && (activity.resources.configuration.uiMode and 48) == 32,
+        reducedMotion = reducedMotion(),
+        swipeReply = prefs.getBoolean("swipe-reply", true),
+        operationHaptics = prefs.getBoolean("operation-haptics", true),
+    ))
         private set
 
     private val history = NavigationHistory(env.path)
-    private val prefs = activity.getSharedPreferences("preferences", 0)
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cacheDirectory = java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}")
     private val cache = AccountCache(cacheDirectory)
@@ -115,8 +131,15 @@ internal class AndroidPlatform(
         env = env.copy(online = value)
     }
 
+    fun protectScreen(): () -> Unit {
+        val flag = android.view.WindowManager.LayoutParams.FLAG_SECURE
+        val alreadyProtected = activity.window.attributes.flags and flag != 0
+        if (!alreadyProtected) activity.window.addFlags(flag)
+        return { if (!alreadyProtected) activity.window.clearFlags(flag) }
+    }
+
     fun visible(value: Boolean) {
-        env = env.copy(visible = value)
+        env = env.copy(visible = value, reducedMotion = reducedMotion())
     }
 
     fun systemDark(value: Boolean) {
@@ -169,10 +192,16 @@ internal class AndroidPlatform(
     override fun action(name: String) {
         when {
             name == "back" -> back()
-            name == "haptic:longPress" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            name == "haptic:longPress" && env.operationHaptics ->
+                activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            name == "haptic:threshold" && env.operationHaptics ->
+                activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            name == "toggleSwipeReply" -> updateInteraction("swipe-reply", !env.swipeReply)
+            name == "toggleOperationHaptics" -> updateInteraction("operation-haptics", !env.operationHaptics)
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
+                prefs.edit().putString("theme", theme).apply()
                 env =
                     env.copy(
                         theme = theme,
@@ -182,9 +211,18 @@ internal class AndroidPlatform(
                                     (activity.resources.configuration.uiMode and 48) == 32,
                     )
             }
-            name.startsWith("locale:") -> env = env.copy(locale = name.removePrefix("locale:"))
+            name.startsWith("locale:") -> {
+                val locale = name.removePrefix("locale:")
+                prefs.edit().putString("locale", locale).apply()
+                env = env.copy(locale = locale)
+            }
             name.startsWith("fileRelease:") -> files.remove(name.removePrefix("fileRelease:"))
         }
+    }
+
+    private fun updateInteraction(key: String, enabled: Boolean) {
+        prefs.edit().putBoolean(key, enabled).apply()
+        env = if (key == "swipe-reply") env.copy(swipeReply = enabled) else env.copy(operationHaptics = enabled)
     }
 
     private fun open(url: String) {
@@ -293,43 +331,13 @@ internal class AndroidPlatform(
                 open(json.parseToJsonElement(payload).jsonObject.text("url"))
                 "{}"
             }
-            "pickFiles" -> {
-                val selected = chooseFiles().take(10)
-                val rows =
-                    withContext(Dispatchers.IO) {
-                        selected.map { uri ->
-                            val id = uuid()
-                            files[id] = uri
-                            var name = "attachment"
-                            var size = 0L
-                            activity.contentResolver
-                                .query(
-                                    uri,
-                                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                                    null,
-                                    null,
-                                    null,
-                                )
-                                ?.use { cursor ->
-                                    if (cursor.moveToFirst()) {
-                                        name = cursor.getString(0)
-                                        size = cursor.getLong(1)
-                                    }
-                                }
-                            zoo.obj(
-                                "id" to id,
-                                "name" to name,
-                                "size" to size,
-                                "type" to activity.contentResolver.getType(uri).orEmpty(),
-                            )
-                        }
-                    }
-                buildJsonObject {
-                        put("origin", "pick")
-                        put("files", JsonArray(rows))
-                    }
-                    .toString()
+            "recentPhotos" -> recentPhotos.list()
+            "requestRecentPhotos" -> {
+                requestRecentPhotos()
+                recentPhotos.list()
             }
+            "pickRecentPhoto" -> registerFiles(listOf(recentPhotos.select(payload.toLong())), mediaStoreId = payload)
+            "pickFiles" -> registerFiles(chooseFiles(json.parseToJsonElement(payload).jsonObject.flag("photos")).take(10))
             "fileRead" ->
                 android.util.Base64.encodeToString(readFile(payload), android.util.Base64.NO_WRAP)
             "filePut" -> {
@@ -347,6 +355,45 @@ internal class AndroidPlatform(
             "refreshUser" -> "{}" // Profile updates are rendered by the shared users Shape.
             else -> error("Android では未対応の操作です: $name")
         }
+
+    private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
+        val rows =
+            withContext(Dispatchers.IO) {
+                selected.map { uri ->
+                    val id = uuid()
+                    var name = "attachment"
+                    var size = 0L
+                    activity.contentResolver
+                        .query(
+                            uri,
+                            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                            null,
+                            null,
+                            null,
+                        )
+                        ?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                name = cursor.getString(0)
+                                size = cursor.getLong(1)
+                            }
+                        }
+                    zoo.obj(
+                        "id" to id,
+                        "name" to name,
+                        "size" to size,
+                        "type" to activity.contentResolver.getType(uri).orEmpty(),
+                        "media_store_id" to mediaStoreId,
+                    )
+                }
+            }
+        val response = buildJsonObject {
+                put("origin", "pick")
+                put("files", JsonArray(rows))
+            }
+            .toString()
+        rows.zip(selected).forEach { (row, uri) -> files[row.text("id")] = uri }
+        return response
+    }
 
     private suspend fun readFile(id: String): ByteArray =
         withContext(Dispatchers.IO) {

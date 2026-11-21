@@ -35,7 +35,7 @@
 
 # Android のデザイン
 
-- Android の画面・Compose 部品・余白・サイズを追加や変更するときは `.agents/skills/android-design/SKILL.md` と `docs/android-design.md` に従う。通知カードを基準にし、数値は `AndroidDesign.kt`、表示・操作は既存の共通部品に集約する。
+- Android の画面・Compose 部品・余白・サイズを追加や変更するときは `.agents/skills/android-design/SKILL.md` と `docs/android-design.md` に従う。画面の役割と操作体験を基準にし、数値は `AndroidDesign.kt`、表示・操作は既存の共通部品に集約する。
 
 # Compose の開発方針
 

@@ -6,6 +6,19 @@ import kotlinx.coroutines.test.runTest
 
 class InstallerSessionTest {
     @Test
+    fun restartsExactlyOnceOnlyWhenPackageManagerConfirmsSuccess() {
+        var relaunches = 0
+        val restart = { relaunches++; Unit }
+        assertContains(completeInstall(1, "Success", restart), "インストールできませんでした")
+        assertContains(completeInstall(0, "Not a Success", restart), "インストールできませんでした")
+        assertEquals(0, relaunches)
+        assertEquals("Success", completeInstall(0, "Performing Streamed Install\nSuccess", restart))
+        assertEquals(1, relaunches)
+        assertContains(restartCommand(10).windowed(2), listOf("--user", "10"))
+        assertEquals("works.zli.zoo/zoo.android.MainActivity", restartCommand(10).last())
+    }
+
+    @Test
     fun preservesResultAcrossSuspendingCleanup() = runTest {
         var disconnected = false
         val result =

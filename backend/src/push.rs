@@ -155,6 +155,16 @@ pub struct NotificationPayload {
     /// 通話の招待 (`call_invite` / `call_invite_end`) だけに付ける、招待の id。
     #[serde(rename = "inviteId", skip_serializing_if = "Option::is_none")]
     invite_id: Option<String>,
+    #[serde(skip)]
+    android_preview: Option<AndroidPreview>,
+}
+
+#[derive(Clone)]
+struct AndroidPreview {
+    actor: String,
+    channel: String,
+    avatar_url: Option<String>,
+    image_id: Option<String>,
 }
 
 /// 暗号化チャンネルの通知に付ける、受信端末が復号に使う値。どれもサーバーが元から持つ値で、
@@ -256,6 +266,7 @@ fn notification_payload(
         notification_type: preview.notification_type,
         e2ee: None,
         invite_id: None,
+        android_preview: None,
     }
 }
 
@@ -363,9 +374,15 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
     }
     let client = push_client()?;
     for notification in notifications {
-        let Some(payload) = build_payload(&mut db, &notification).await? else {
+        let Some(mut payload) = build_payload(&mut db, &notification).await? else {
             continue;
         };
+        if android.is_some() && notification.message_id.is_some() {
+            match android_preview(&mut db, &notification).await {
+                Ok(preview) => payload.android_preview = preview,
+                Err(_) => tracing::warn!("Android push preview unavailable"),
+            }
+        }
         push_to_user(
             &client,
             config.as_ref(),
@@ -378,6 +395,52 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
         .await?;
     }
     Ok(())
+}
+
+async fn android_preview(
+    db: &mut toasty::Db,
+    notice: &Notification,
+) -> anyhow::Result<Option<AndroidPreview>> {
+    let mut tx = db.transaction().await?;
+    let row = crate::apps::query(&mut tx, "
+        SELECT json_build_object(
+          'actor', COALESCE(NULLIF(u.display_name::text, ''), u.user_name),
+          'channel', CASE WHEN c.is_dm THEN '' ELSE c.channel_name END,
+          'avatar_url', CASE WHEN NOT c.encrypted THEN u.avatar_url END,
+          'image_id', CASE WHEN NOT c.encrypted AND NOT c.is_private AND NOT c.is_dm AND NOT c.is_nsfw
+            AND $3 <> 'reaction' THEN (
+              SELECT a.id FROM attachments a
+              JOIN home_posts p ON p.id = a.message_id AND p.channel_id = c.id AND p.deleted_at IS NULL
+              WHERE a.channel_id = c.id AND a.message_id = m.id AND NOT a.is_sensitive
+                AND a.file_size <= 4194304
+                AND a.content_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')
+              ORDER BY a.created_at, a.id LIMIT 1
+            ) END
+        )::text
+        FROM messages m JOIN channels c ON c.id = m.channel_id
+        JOIN users u ON u.id = $2
+        WHERE m.id = $1 AND m.deleted_at IS NULL AND c.deleted_at IS NULL",
+        &[notice.message_id.as_deref().unwrap_or_default(), &notice.actor_id, &notice.notification_type],
+    ).await?.into_iter().next();
+    Ok(row.map(|row| AndroidPreview {
+        actor: row["actor"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        channel: row["channel"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        avatar_url: row["avatar_url"]
+            .as_str()
+            .filter(|url| url.starts_with("https://") && url.len() <= 512)
+            .map(str::to_owned),
+        image_id: row["image_id"].as_str().map(str::to_owned),
+    }))
 }
 
 pub(crate) fn push_client() -> anyhow::Result<reqwest::Client> {
@@ -632,6 +695,7 @@ fn call_invite_end_notification(
             notification_type: "call_invite_end".into(),
             e2ee: None,
             invite_id: Some(invite.id.clone()),
+            android_preview: None,
         },
         channel_is_dm,
     )
@@ -685,6 +749,7 @@ async fn deliver_call_invites(
                     notification_type: "call_invite".into(),
                     e2ee: None,
                     invite_id: Some(invite.id.clone()),
+                    android_preview: None,
                 }
             };
             let delivery = Delivery {
@@ -948,6 +1013,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             notification_type: "mention".into(),
             e2ee: None,
             invite_id: None,
+            android_preview: None,
         };
         let encrypted = keys.encrypt(&payload).unwrap();
         let server = MockServer::start().await;
@@ -1048,6 +1114,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             tag: "zoo-n".into(),
             notification_type: "mention".into(),
             invite_id: None,
+            android_preview: None,
             e2ee: Some(EncryptedPush {
                 recipient_id: "00000000-0000-4000-8000-000000000001".into(),
                 message: EncryptedRow {

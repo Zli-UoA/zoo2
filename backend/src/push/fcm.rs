@@ -224,6 +224,16 @@ fn message(
         data["inviteId"] = json!(id);
         data["expiresAt"] = json!((now + u64::from(ttl)).to_string());
     }
+    if let Some(preview) = &payload.android_preview {
+        data["actor"] = json!(preview.actor);
+        data["channelName"] = json!(preview.channel);
+        if let Some(avatar) = &preview.avatar_url {
+            data["avatarUrl"] = json!(avatar);
+        }
+        if let Some(image) = &preview.image_id {
+            data["imageId"] = json!(image);
+        }
+    }
     let priority = if payload.notification_type == "call_invite_end" {
         "NORMAL"
     } else {
@@ -321,6 +331,12 @@ mod tests {
             notification_type: "dm".into(),
             e2ee: None,
             invite_id: None,
+            android_preview: Some(super::super::AndroidPreview {
+                actor: "Actor".into(),
+                channel: "General".into(),
+                avatar_url: Some("https://zoo.example/avatar.png".into()),
+                image_id: Some("attachment-id".into()),
+            }),
         };
         let body = message("token", "binding", "user", &payload, 300);
         assert_eq!(body["message"]["android"]["priority"], "HIGH");
@@ -328,6 +344,14 @@ mod tests {
         assert_eq!(body["message"]["data"]["userId"], "user");
         assert!(body["message"].get("notification").is_none());
         assert!(body["message"]["data"].get("e2ee").is_none());
+        assert_eq!(body["message"]["data"]["actor"], "Actor");
+        assert_eq!(body["message"]["data"]["imageId"], "attachment-id");
+        assert!(
+            serde_json::to_value(&payload)
+                .unwrap()
+                .get("android_preview")
+                .is_none()
+        );
     }
     #[test]
     fn call_invite_carries_its_short_ttl_and_identifier() {
@@ -339,6 +363,7 @@ mod tests {
             notification_type: "call_invite".into(),
             e2ee: None,
             invite_id: Some("invite".into()),
+            android_preview: None,
         };
         let body = message("token", "binding", "user", &payload, 17);
         assert_eq!(body["message"]["android"]["ttl"], "17s");
@@ -362,6 +387,7 @@ mod tests {
             notification_type: "call_invite_end".into(),
             e2ee: None,
             invite_id: Some("invite".into()),
+            android_preview: None,
         };
         let body = message("token", "binding", "user", &payload, 60);
         assert_eq!(body["message"]["android"]["priority"], "NORMAL");

@@ -176,6 +176,11 @@
     "invalidState": "이 조작은 현재 상태에서는 실행할수 없습니다."
   },
   "settings": {
+    "appearance": "겉모양",
+    "interaction": "조작",
+    "swipeReply": "밀어서 답변",
+    "operationHaptics": "촉각 되알림",
+    "navTitle": "설정",
     "admin": "관리자",
     "member": "성원",
     "makeAdmin": "관리자로 지정",
@@ -246,6 +251,10 @@
     "edited": "편집됨"
   },
   "attachments": {
+    "recentPhotos": "최근 사진",
+    "systemPhotos": "사진 선택기 열기",
+    "allowRecentPhotos": "사진 접근 허용",
+    "noRecentPhotos": "표시할 사진이 없습니다",
     "play": "재생",
     "pause": "일시 정지",
     "add": "화일 첨부",
@@ -393,6 +402,8 @@
     "channels": "통로 후보"
   },
   "notifications": {
+    "filterAll": "전체",
+    "filterMentions": "언급",
     "label": "알림",
     "close": "알림 닫기",
     "title": "알림",
@@ -590,6 +601,7 @@
     "micNotFound": "마이크를 찾을수 없었습니다."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "입력하는 글자가 그대로 실시간으로 표시되는 방입니다",
     "emptyTitle": "현재 입력하고 있는 사용자가 없습니다",
@@ -803,6 +815,7 @@
     "showLess": "접기"
   },
   "home": {
+    "navTitle": "홈",
     "back": "뒤로",
     "deleted": "게시물을 삭제했습니다",
     "newPosts": "새 게시물 보기 ({{count}}개)",
@@ -1718,6 +1731,9 @@
     "description": "계정을 만들 때 자동으로 참가할 공개 통로를 선택합니다. 기존 계정에는 적용되지 않습니다.",
     "empty": "사용할 수 있는 공개 통로가 없습니다.",
     "saved": "보관했습니다."
+  },
+  "androidUpdate": {
+    "title": "앱 갱신"
   },
   "androidNotifications": {
     "enable": "알림 사용",

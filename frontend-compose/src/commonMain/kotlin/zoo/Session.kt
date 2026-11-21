@@ -90,7 +90,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         surfaceChanges.tryEmit(Unit)
     }
     var env by mutableStateOf(initial)
-    val overlays = mutableStateListOf<OverlaySlot>()
     var dialog by mutableStateOf<String?>(null)
     var appDetailId by mutableStateOf<String?>(null)
     var thread by mutableStateOf<String?>(null)
@@ -153,6 +152,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     val assets = mutableMapOf<String, JsonElement>()
     val activityPubNotifications by lazy { ActivityPubNotificationsState(this) }
     val globalSearch by lazy { GlobalSearchController(this) }
+    internal val notificationReads = NotificationReadQueue(this)
     val previews = PreviewLoader(this)
     val attachmentLinks = AttachmentLinks(this)
     val channelId: String?
@@ -190,12 +190,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             platform.previousDay(now) -> t("dates.yesterday")
             else -> value
         }
-    }
-
-    fun escape(): Boolean {
-        val top = overlays.lastOrNull { it.visible && !it.tooltip } ?: return false
-        if (top.onEscape?.invoke() != true) top.close()
-        return true
     }
 
     fun navigate(path: String) = platform.navigate(path)
@@ -550,6 +544,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     fun close() {
         if (homeLiveState.isInitialized()) homeLiveState.value.close()
+        notificationReads.close()
         activityPubNotifications.close()
         toastController.close()
         if (preferenceState.isInitialized()) preferenceState.value.close()
