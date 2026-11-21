@@ -7,7 +7,9 @@ import zoo.android.ui.InboxItem
 
 internal class NotificationInboxBinding(private val inbox: NotificationInbox) {
     fun screen(): AndroidScreen.Notifications = AndroidScreen.Notifications(
-        inbox.snapshot().map { InboxItem(it.id, it.author, it.summary, it.snippet, it.time, it.unread, it.target, it.followActor, it.followActivity) },
+        inbox.snapshot().map { InboxItem(it.id, it.author, it.summary, it.snippet, it.time, it.unread, it.target,
+            it.followActor, it.followActivity, it.kinds, it.avatar, it.unreadIds) },
+        nextCursor = inbox.nextCursor,
     )
 
     fun dispatch(action: AndroidUiAction.ViewedNotification) {

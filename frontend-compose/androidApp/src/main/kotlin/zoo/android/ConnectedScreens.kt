@@ -295,7 +295,12 @@ internal fun ConnectedScreens(
             }
         },
         language = env.locale, interaction = state.interaction.snapshot(),
-        remoteAudioLevel = { phone.remoteAudioLevel }) { item, modifier ->
+        remoteAudioLevel = { phone.remoteAudioLevel },
+        loadNotificationAvatar = { url ->
+            try { session.imageBitmap(url) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { null }
+        }) { item, modifier ->
         val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
             value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
                 ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }

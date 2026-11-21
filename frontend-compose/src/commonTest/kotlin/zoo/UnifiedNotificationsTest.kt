@@ -3,6 +3,19 @@ package zoo
 import kotlin.test.*
 
 class UnifiedNotificationsTest {
+    @Test
+    fun inboxGroupsRepliesAndReactionsByPostAndKeepsFollowRequestsSeparate() {
+        val notices = listOf(
+            UnifiedNotificationEntry("reply", "3", item = obj("id" to "r", "post_id" to "reply", "target_post_id" to "root")),
+            UnifiedNotificationEntry("reaction", "2", channel = listOf(obj("id" to "a", "message_id" to "root"))),
+            UnifiedNotificationEntry("repost", "1", item = obj("id" to "p", "post_id" to "root")),
+            UnifiedNotificationEntry("follow", "0", item = obj("id" to "f", "post_id" to "")),
+        )
+        val groups = inboxGroups(notices)
+        assertEquals(listOf("post-group:root", "follow"), groups.keys.toList())
+        assertEquals(listOf("reply", "reaction", "repost"), groups.getValue("post-group:root").map { it.key })
+    }
+
     private fun local(id: String, time: String, read: Boolean = false): Row = obj("id" to id, "user_id" to "me", "actor_id" to "alice", "channel_id" to "channel", "message_id" to "message", "notification_type" to "reaction", "is_read" to read, "created_at" to time)
     private fun remote(id: String, time: String, actor: String = "https://peer/alice", read: Boolean = false): Row = obj("id" to id, "actor_id" to actor, "post_id" to "message", "kind" to "like", "is_read" to read, "created_at" to time)
 

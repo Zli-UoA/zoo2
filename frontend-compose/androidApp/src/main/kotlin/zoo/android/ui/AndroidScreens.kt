@@ -74,7 +74,7 @@ internal data class ChannelSection(val label: String, val channels: List<Channel
 internal sealed interface AndroidScreen {
     data class Home(val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
-    data class Notifications(val items: List<InboxItem>) : AndroidScreen
+    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
     data class Conversation(
@@ -177,6 +177,7 @@ internal fun AndroidScreens(
     language: String? = null,
     interaction: AndroidInteractionSettings = AndroidInteractionSettings(),
     remoteAudioLevel: () -> Float = { 0f },
+    loadNotificationAvatar: suspend (String) -> ImageBitmap? = { null },
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
@@ -202,11 +203,11 @@ internal fun AndroidScreens(
             if (visibleScreen is AndroidScreen.Conversation) {
                 conversationState.SaveableStateProvider(visibleScreen.id) {
                     RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                        dispatch, language, interaction, remoteAudioLevel, photo)
+                        dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, photo)
                 }
             } else {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                    dispatch, language, interaction, remoteAudioLevel, photo)
+                    dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, photo)
             }
         }
     }
@@ -228,6 +229,7 @@ private fun RenderAndroidScreen(
     language: String?,
     interaction: AndroidInteractionSettings,
     remoteAudioLevel: () -> Float,
+    loadNotificationAvatar: suspend (String) -> ImageBitmap?,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val top = when (screen) {
@@ -246,6 +248,7 @@ private fun RenderAndroidScreen(
             is AndroidScreen.Home -> HomePage(screen, colors, dispatch)
             is AndroidScreen.Channels -> ChannelPage(screen, colors, dispatch)
             is AndroidScreen.Notifications -> NotificationPage(screen.items, foreground, colors,
+                nextCursor = screen.nextCursor, loadAvatar = loadNotificationAvatar,
                 onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
                 onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
                 loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },

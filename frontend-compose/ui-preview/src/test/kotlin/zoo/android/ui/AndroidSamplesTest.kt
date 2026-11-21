@@ -61,11 +61,12 @@ class AndroidSamplesTest {
             ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる", isUserName = true))),
         ))
         val inbox = AndroidScreen.Notifications(listOf(
-            InboxItem("reply", "はる", "投稿に返信しました", "次のテストでも確認します。", "12:03", true),
-            InboxItem("mention", "ゆい", "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true),
+            InboxItem("reply", "はる ほか", "3件 · 返信・リアクション・リポスト", "次のテストでも確認します。", "12:03", true,
+                kinds = listOf("reply", "like", "repost"), unreadIds = listOf("reply", "reaction", "repost")),
+            InboxItem("mention", "ゆい", "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kinds = listOf("mention")),
             InboxItem("reaction", "みずき", "投稿にリアクションしました", null, "11:22", false),
             InboxItem("follow", "りん", "フォローを申請しました", null, "11:15", false,
-                followActor = "https://example.test/rin", followActivity = "https://example.test/follow"),
+                followActor = "https://example.test/rin", followActivity = "https://example.test/follow", kinds = listOf("follow_request")),
         ))
         val conversation = AndroidScreen.Conversation("dev", "開発", "Zoo の開発と通話のテストについて相談するチャンネルです。",
             posts, InputState("確認しました。"))
@@ -166,6 +167,11 @@ class AndroidSamplesTest {
                     check(root.right - bounds.right == 4.dp && root.bottom - bounds.bottom == 4.dp) {
                         "Expected 4dp between send action and screen edges: $bounds / $root"
                     }
+                }
+                if (name == "notifications") {
+                    ui.onNodeWithText("未読").assertDoesNotExist()
+                    ui.onNodeWithText("3件 · 返信・リアクション・リポスト").assertIsDisplayed()
+                    ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)
                 }
                 if (name == "home") {
                     val nameBounds = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
