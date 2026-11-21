@@ -164,7 +164,7 @@ internal fun PageHeader(
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
             }
-            if (onOpen != null) UiGlyph(UiIcon.Next, colors.secondary)
+            if (onOpen != null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
         }
         actions()
     }

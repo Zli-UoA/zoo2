@@ -69,7 +69,7 @@ internal fun DirectoryPage(
                         item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
                     }
                     val selected = item.selected
-                    if (selected == null) UiGlyph(UiIcon.Next, colors.secondary)
+                    if (selected == null) UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                     else androidx.compose.material3.Checkbox(selected, onCheckedChange = null)
                 }
             }
@@ -219,7 +219,7 @@ internal fun ChannelEditorPage(
         Spacer(Modifier.weight(1f))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
             TextAction(screen.submitLabel, colors, screen.canSubmit,
-                icon = if (screen.submitLabel == "保存") UiIcon.Save else UiIcon.Create) { dispatch(AndroidUiAction.SubmitChannel) }
+                icon = if (screen.submitLabel == "保存") UiIcon.Save else UiIcon.Add) { dispatch(AndroidUiAction.SubmitChannel) }
         }
     }
 }

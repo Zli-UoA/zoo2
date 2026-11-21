@@ -49,7 +49,7 @@ internal fun TextAction(
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (icon != null) UiGlyph(icon, ink)
+        if (icon != null) UiGlyph(icon, ink, iconSize = AndroidControlSize.inlineIcon)
         Text(title, color = ink, fontSize = 15.sp, fontWeight = labelWeight)
     }
 }
@@ -58,7 +58,7 @@ internal fun TextAction(
 internal fun DialogAction(title: String, icon: UiIcon, enabled: Boolean = true, click: () -> Unit) {
     TextButton(onClick = click, enabled = enabled) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            UiGlyph(icon, androidx.compose.material3.LocalContentColor.current, iconSize = 18.dp)
+            UiGlyph(icon, androidx.compose.material3.LocalContentColor.current, iconSize = AndroidControlSize.inlineIcon)
             Text(title, fontWeight = AndroidWeights.emphasis)
         }
     }
