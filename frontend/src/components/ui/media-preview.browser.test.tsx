@@ -138,6 +138,21 @@ it("does not jump while IME composition is active", async () => {
   );
 });
 
+it("treats keyCode 229 without a recent composition as a normal Enter", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "5");
+  fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false, keyCode: 229 });
+  fireEvent.submit(pageInput.closest("form")!);
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+});
+
 it("jumps on Enter even with full-width digits and surrounding spaces", async () => {
   await page.viewport(1280, 844);
   render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
@@ -167,7 +182,29 @@ it("commits the draft page when tab moves focus to a page button", async () => {
   expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled();
 });
 
-it("clears the page-button press flag when the pointer is released outside", async () => {
+it("discards the draft on a touch tap in the same order as pointerup, blur, click", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "10{Enter}");
+  await waitFor(() => expect(pageInput.value).toBe("10"), { timeout: 10_000 });
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "2");
+
+  const prev = screen.getByRole("button", { name: "前のページ" });
+  fireEvent.pointerDown(prev);
+  fireEvent.pointerUp(window);
+  fireEvent.blur(pageInput);
+  fireEvent.click(prev);
+  await waitFor(() => expect(pageInput.value).toBe("9"), { timeout: 10_000 });
+});
+
+it("resets a stale page-button press when the input regains focus", async () => {
   await page.viewport(1280, 844);
   render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
   const pageInput = (await screen.findByRole("textbox", {
@@ -179,7 +216,7 @@ it("clears the page-button press flag when the pointer is released outside", asy
   fireEvent.pointerUp(window);
   await userEvent.click(pageInput);
   await userEvent.type(pageInput, "5");
-  await userEvent.tab();
+  fireEvent.blur(pageInput);
   await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
 });
 

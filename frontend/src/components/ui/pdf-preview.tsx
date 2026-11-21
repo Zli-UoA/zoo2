@@ -75,6 +75,7 @@ const PdfPageSlot = memo(function PdfPageSlot({
     <div
       ref={slotRef}
       data-pdf-page={pageNumber}
+      aria-hidden={mounted ? undefined : true}
       style={slotStyle}
       className="relative mx-auto w-full overflow-hidden rounded-xs bg-white shadow-xs"
     >
@@ -85,9 +86,7 @@ const PdfPageSlot = memo(function PdfPageSlot({
           onMount={onCanvasMount}
           onUnmount={onCanvasUnmount}
         />
-      ) : (
-        <div role="img" aria-label={label} className="size-full bg-white" />
-      )}
+      ) : null}
     </div>
   );
 });
@@ -132,6 +131,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
   const selectOnRenderRef = useRef(false);
   const dirtyInputRef = useRef(false);
   const composingRef = useRef(false);
+  const compositionEndedAtRef = useRef(0);
   const lastEnterComposingRef = useRef(false);
   const programmaticScrollTopRef = useRef<number | null>(null);
   const lastAlignedScrollTopRef = useRef<number | null>(null);
@@ -623,19 +623,6 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     return () => observer.disconnect();
   }, [document, measureViewport]);
 
-  // ボタン押下中に別の場所でポインタを離した場合もフラグを戻す。
-  useEffect(() => {
-    const clearPress = () => {
-      pageButtonPressRef.current = false;
-    };
-    window.addEventListener("pointerup", clearPress);
-    window.addEventListener("pointercancel", clearPress);
-    return () => {
-      window.removeEventListener("pointerup", clearPress);
-      window.removeEventListener("pointercancel", clearPress);
-    };
-  }, []);
-
   const handleSlotMount = useCallback((pageNumber: number, element: HTMLDivElement) => {
     pageRefs.current.set(pageNumber, element);
   }, []);
@@ -731,6 +718,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
               commitPageInput();
             }
             lastEnterComposingRef.current = false;
+            compositionEndedAtRef.current = 0;
           }}
         >
           <Input
@@ -746,24 +734,32 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
             className="h-7 w-16 px-1.5 text-center tabular-nums"
             onCompositionStart={() => {
               composingRef.current = true;
+              compositionEndedAtRef.current = 0;
             }}
             onCompositionEnd={() => {
               composingRef.current = false;
+              compositionEndedAtRef.current = Date.now();
             }}
             onKeyDown={(event) => {
               justFocusedRef.current = false;
               if (event.key === "Enter") {
-                // Safari では compositionend が keydown より先に来ることがあるため keyCode も見る。
+                // Safari では compositionend が keydown より先に来る。直後の keyCode 229 だけ
+                // IME 確定とみなし、Android のソフトキーボードの常時 229 は通常の Enter として扱う。
+                const justEndedComposition = Date.now() - compositionEndedAtRef.current < 250;
                 lastEnterComposingRef.current =
                   event.nativeEvent.isComposing ||
                   composingRef.current ||
-                  event.nativeEvent.keyCode === 229;
+                  (justEndedComposition && event.nativeEvent.keyCode === 229);
+              } else {
+                compositionEndedAtRef.current = 0;
               }
             }}
             onFocus={(event) => {
               inputFocusedRef.current = true;
               justFocusedRef.current = true;
               dirtyInputRef.current = false;
+              // ボタン外でポインタを離して click が来なかった場合の押下フラグを戻す。
+              pageButtonPressRef.current = false;
               event.currentTarget.select();
             }}
             onMouseUp={(event) => {
