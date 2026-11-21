@@ -15,52 +15,61 @@ import { HomePostContent } from "./HomePostContent";
 
 beforeAll(startMockServer);
 
-it("expands Home URLs without a CollectionsProvider and shares Summaly requests", async () => {
-  const url = "https://example.com/home-without-provider";
-  let lookups = 0;
-  let endpointReads = 0;
-  mockServer.use(
-    http.get("*/summaly-endpoint", () => {
-      endpointReads++;
-      return HttpResponse.text("https://home-summaly.example/url");
-    }),
-    http.get("*/media-proxy-endpoint", () => {
-      endpointReads++;
-      return HttpResponse.text("https://home-media.example/");
-    }),
-    http.get("https://home-summaly.example/url", ({ request }) => {
-      lookups++;
-      expect(new URL(request.url).searchParams.get("url")).toBe(url);
-      expect(request.credentials).toBe("omit");
-      return HttpResponse.json({
-        title: "Homeのリンクプレビュー",
-        description: "Summalyで取得した説明",
-        sitename: "Example",
-      });
-    }),
-  );
-  // The production shell uses the default collections singleton, with no Provider.
-  const view = render(
-    <>
-      <HomePostContent content={url} />
-      <HomePostContent content={`引用へのコメント\n\n<${url}>`} />
-      <HomePostContent content={`<${url}>`} />
-    </>,
-  );
-  const cards = await screen.findAllByRole("link", { name: /Homeのリンクプレビュー/ });
-  expect(cards).toHaveLength(3);
-  for (const card of cards) expect(card).toHaveAttribute("href", url);
-  expect(screen.getAllByText("Summalyで取得した説明")).toHaveLength(3);
-  expect(lookups).toBe(1);
-  expect(endpointReads).toBe(2);
-  view.unmount();
-  render(<HomePostContent content={url} />);
-  await screen.findByRole("link", { name: /Homeのリンクプレビュー/ });
-  expect(lookups).toBe(1);
-  expect(endpointReads).toBe(2);
-});
+it(
+  "expands Home URLs without a CollectionsProvider and shares Summaly requests",
+  { timeout: 30_000 },
+  async () => {
+    const url = "https://example.com/home-without-provider";
+    let lookups = 0;
+    let endpointReads = 0;
+    mockServer.use(
+      http.get("*/summaly-endpoint", () => {
+        endpointReads++;
+        return HttpResponse.text("https://home-summaly.example/url");
+      }),
+      http.get("*/media-proxy-endpoint", () => {
+        endpointReads++;
+        return HttpResponse.text("https://home-media.example/");
+      }),
+      http.get("https://home-summaly.example/url", ({ request }) => {
+        lookups++;
+        expect(new URL(request.url).searchParams.get("url")).toBe(url);
+        expect(request.credentials).toBe("omit");
+        return HttpResponse.json({
+          title: "Homeのリンクプレビュー",
+          description: "Summalyで取得した説明",
+          sitename: "Example",
+        });
+      }),
+    );
+    // The production shell uses the default collections singleton, with no Provider.
+    const view = render(
+      <>
+        <HomePostContent content={url} />
+        <HomePostContent content={`引用へのコメント\n\n<${url}>`} />
+        <HomePostContent content={`<${url}>`} />
+      </>,
+    );
+    // プレビューの取得は並列で動くブラウザーテストの負荷で1秒を超えることがある。
+    const cards = await screen.findAllByRole(
+      "link",
+      { name: /Homeのリンクプレビュー/ },
+      { timeout: 10_000 },
+    );
+    expect(cards).toHaveLength(3);
+    for (const card of cards) expect(card).toHaveAttribute("href", url);
+    expect(screen.getAllByText("Summalyで取得した説明")).toHaveLength(3);
+    expect(lookups).toBe(1);
+    expect(endpointReads).toBe(2);
+    view.unmount();
+    render(<HomePostContent content={url} />);
+    await screen.findByRole("link", { name: /Homeのリンクプレビュー/ }, { timeout: 10_000 });
+    expect(lookups).toBe(1);
+    expect(endpointReads).toBe(2);
+  },
+);
 
-it("preserves Home links without a Provider when Summaly fails", async () => {
+it("preserves Home links without a Provider when Summaly fails", { timeout: 30_000 }, async () => {
   const url = "https://example.com/home-unavailable-preview";
   let lookups = 0;
   mockServer.use(
@@ -73,7 +82,8 @@ it("preserves Home links without a Provider when Summaly fails", async () => {
   );
   render(<HomePostContent content={`<${url}>`} />);
   const link = screen.getByRole("link", { name: url.replace("https://", "") });
-  await waitFor(() => expect(lookups).toBe(1));
+  // Summaly の取得は並列で動くブラウザーテストの負荷で1秒を超えることがある。
+  await waitFor(() => expect(lookups).toBe(1), { timeout: 10_000 });
   expect(link).toHaveAttribute("href", url);
   expect(screen.getAllByRole("link")).toHaveLength(1);
   expect(screen.queryByRole("link", { name: `${url} example.com` })).toBeNull();
