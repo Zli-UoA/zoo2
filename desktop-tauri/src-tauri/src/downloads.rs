@@ -1107,23 +1107,37 @@ fn check_destination_with(
     journal.record(&probe)?;
     journal.record(&moved)?;
 
-    let outcome = std::fs::write(&probe, b"")
-        .map_err(anyhow::Error::from)
-        .and_then(|()| match rename(&probe, &moved) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err.into()),
-            // ファイルシステムが「既にあれば失敗する移動」を持たない。確定
-            // （[`rename_unique`]）と同じ順で、ハードリンクで名前を確保できるかを見る。
-            Err(err) if is_unsupported(&err) => hard_link(&probe, &moved).map_err(|link| {
-                anyhow::Error::new(UnsupportedDestination)
-                    .context(format!("ハードリンクも作れません: {link}"))
-            }),
-            Err(err) => Err(err.into()),
-        });
+    let (created, outcome) = match create_probe(&probe) {
+        Ok(()) => {
+            let outcome = match rename(&probe, &moved) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err.into()),
+                // ファイルシステムが「既にあれば失敗する移動」を持たない。確定
+                // （[`rename_unique`]）と同じ順で、ハードリンクで名前を確保できるかを見る。
+                Err(err) if is_unsupported(&err) => {
+                    hard_link(&probe, &moved).map_err(|link| {
+                        // 保存先の性質による失敗だけを `UnsupportedDestination` にする。
+                        // 権限や一時的な I/O の失敗は、保存先を変えても直らないことがある。
+                        if is_unsupported_destination(&link) {
+                            anyhow::Error::new(UnsupportedDestination)
+                                .context(format!("ハードリンクも作れません: {link}"))
+                        } else {
+                            link.into()
+                        }
+                    })
+                }
+                Err(err) => Err(err.into()),
+            };
+            (true, outcome)
+        }
+        Err(err) => (false, Err(err.into())),
+    };
 
-    // 検査用の名前は残さない。片付けられないまま本文を転送すると、保存先に空の
-    // ファイルが残る（記録には残るので、次の起動で消す）。
-    let cleaned = discard_probe(journal, &probe).and_then(|()| discard_probe(journal, &moved));
+    // 自分で作った検査用の名前だけを片付ける。先にあった名前は第三者のものかもしれない
+    // ので消さない。片付けられないまま本文を転送すると保存先に空のファイルが残るため、
+    // 消せなかったときは失敗にする（記録には残るので、次の起動で消す）。
+    let cleaned = discard_probe(journal, &probe, created)
+        .and_then(|()| discard_probe(journal, &moved, outcome.is_ok()));
     match (outcome, cleaned) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), _) => Err(err),
@@ -1131,8 +1145,22 @@ fn check_destination_with(
     }
 }
 
-/// 検査用の名前を消し、記録から外す。消せなければ記録に残し、次の起動で再試行する。
-fn discard_probe(journal: &Journal, path: &Path) -> Result<()> {
+/// 検査用の空のファイルを、既にあると失敗する形で作る。共有フォルダーでは、`.part` の
+/// 名前から ID を読んだ第三者が、同じ名前の `.probe` を別のファイルへのシンボリック
+/// リンクとして先に置ける。`std::fs::write` はリンクをたどってリンク先を空にするため、
+/// 使わない。
+fn create_probe(path: &Path) -> std::io::Result<()> {
+    OpenOptions::new().write(true).create_new(true).open(path)?;
+    Ok(())
+}
+
+/// 検査用の名前を消し、記録から外す。`ours` が偽なら、この保存が作った名前ではないので
+/// 触らずに記録だけ外す。消せなければ記録に残し、次の起動で再試行する。
+fn discard_probe(journal: &Journal, path: &Path, ours: bool) -> Result<()> {
+    if !ours {
+        journal.forget(path);
+        return Ok(());
+    }
     match std::fs::remove_file(path) {
         Ok(()) => {
             journal.forget(path);
@@ -1999,12 +2027,57 @@ mod tests {
             &part,
             &journal,
             |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
-            |_, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
         )
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
         assert!(!probe.exists());
         assert!(!moved.exists());
+
+        // 権限や一時的な I/O の失敗は、保存先の性質ではないので、そのまま返す
+        // （保存先を変えても直らないことがある）。
+        let err = check_destination_with(
+            &part,
+            &journal,
+            |_, _| Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+            |_, _| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        )
+        .unwrap_err();
+        assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
+        assert!(err.downcast_ref::<std::io::Error>().is_some());
+        assert!(!probe.exists());
+        assert!(!moved.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_existing_probe_name_is_neither_written_through_nor_deleted() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        // 共有フォルダーで、第三者が同じ ID の `.probe` を別ファイルへのリンクとして
+        // 先に置いた場合を再現する。
+        symlink(&victim, &probe).unwrap();
+
+        let err = check_destination_with(&part, &journal, rename_no_replace, |from, to| {
+            std::fs::hard_link(from, to)
+        })
+        .unwrap_err();
+        assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"keep",
+            "リンク先を空にしない"
+        );
+        assert!(probe.symlink_metadata().is_ok(), "先にあった名前を消さない");
+        assert!(journal.snapshot().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
