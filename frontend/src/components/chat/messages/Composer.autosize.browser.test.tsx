@@ -39,6 +39,7 @@ describe("Composer autosize", () => {
     const { textarea } = renderComposer(320, "ここに入力するとリアルタイムに表示されます…");
 
     expect(textarea.getBoundingClientRect().height).toBeLessThanOrEqual(45);
+    expect(getComputedStyle(textarea).overflowY).toBe("hidden");
   });
 
   it("caps the height and scrolls instead of growing without bound", async () => {
@@ -48,5 +49,6 @@ describe("Composer autosize", () => {
     expect(textarea.getBoundingClientRect().height).toBeGreaterThanOrEqual(190);
     expect(textarea.getBoundingClientRect().height).toBeLessThanOrEqual(200);
     expect(textarea.scrollHeight).toBeGreaterThan(textarea.clientHeight);
+    expect(getComputedStyle(textarea).overflowY).toBe("auto");
   });
 });

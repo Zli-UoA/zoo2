@@ -11,7 +11,7 @@ import { AppAvatar } from "./AppIdentity";
 import {
   ComposerField,
   composerTextareaClassName,
-  composerTextareaSizingClass,
+  composerTextareaFitClass,
 } from "./messages/ComposerField";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -373,7 +373,7 @@ export function BubbleChatScreen() {
                   value={content}
                   placeholder={t("bubbleChat.placeholder")}
                   aria-label={t("bubbleChat.inputLabel")}
-                  className={`${composerTextareaClassName} ${composerTextareaSizingClass(content)} max-h-[180px] min-h-11 overflow-y-auto px-2 py-2.5`}
+                  className={`${composerTextareaClassName} ${composerTextareaFitClass(content)} max-h-[180px] min-h-11 px-2 py-2.5`}
                   onCompositionStart={() => {
                     composingRef.current = true;
                   }}
