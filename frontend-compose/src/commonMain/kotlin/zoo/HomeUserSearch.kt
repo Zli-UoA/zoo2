@@ -24,7 +24,7 @@ fun HomeUserSearch(
     var loading by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
     var pending by remember { mutableStateOf(false) }
-    Panel(app.t("home.userSearch"), close, 512.dp) {
+    Panel(app.t("home.userSearch"), close, 512.dp, androidPage = true) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Field(
                 query,

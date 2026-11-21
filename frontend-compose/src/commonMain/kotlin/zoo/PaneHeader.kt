@@ -8,6 +8,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -45,10 +46,12 @@ fun ScreenHeader(
     title: String,
     description: String? = null,
     primaryIcon: Boolean = false,
+    brand: Boolean = false,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     PaneHeader {
-        Box(
+        if (brand && LocalTouchUi.current) ZooMark(32.dp, Modifier.clip(androidx.compose.foundation.shape.CircleShape))
+        else Box(
             Modifier.size(32.dp)
                 .background(
                     if (primaryIcon) MaterialTheme.colorScheme.primary

@@ -15,7 +15,7 @@ internal object AndroidDesign {
     val headerMinHeight = 56.dp
     val icon = 24.dp
     val controlVisualSize = 32.dp
-    val avatar = 40.dp
+    val avatar = 36.dp
     val controlRadius = 8.dp
     val surfaceRadius = 12.dp
 
@@ -34,6 +34,8 @@ internal object AndroidDesign {
     val supportingLineHeight = 20.sp
     val inputSize = 16.sp
     val inputLineHeight = 24.sp
+    val channelTitleSize = 16.sp
+    val channelDescriptionSize = 13.sp
     val titleSize = 20.sp
     val titleLineHeight = 28.sp
     val labelSize = 12.sp

@@ -176,6 +176,11 @@
     "invalidState": "この操作は現在の状態では実行できません。"
   },
   "settings": {
+    "appearance": "外観",
+    "interaction": "操作",
+    "swipeReply": "スワイプで返信",
+    "operationHaptics": "触覚フィードバック",
+    "navTitle": "設定",
     "admin": "管理者",
     "member": "メンバー",
     "makeAdmin": "管理者にする",
@@ -397,6 +402,8 @@
     "channels": "チャンネル候補"
   },
   "notifications": {
+    "filterAll": "すべて",
+    "filterMentions": "メンション",
     "label": "通知",
     "close": "通知を閉じる",
     "title": "通知",
@@ -594,6 +601,7 @@
     "micNotFound": "マイクが見つかりませんでした。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "入力中の文字がそのままリアルタイムに表示されるルームです",
     "emptyTitle": "現在入力中のユーザーはいません",
@@ -807,6 +815,7 @@
     "showLess": "折りたたむ"
   },
   "home": {
+    "navTitle": "ホーム",
     "back": "戻る",
     "deleted": "投稿を削除しました",
     "newPosts": "新しい投稿を見る（{{count}}件）",

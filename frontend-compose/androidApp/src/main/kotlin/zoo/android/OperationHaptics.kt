@@ -10,7 +10,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 
 /** Observe successful touch clicks after children; drags/cancelled presses never vibrate. */
 @Composable
-internal fun Modifier.operationHaptics(): Modifier {
+internal fun Modifier.operationHaptics(enabled: Boolean): Modifier {
+    if (!enabled) return this
     val feedback = LocalHapticFeedback.current
     return pointerInput(feedback) {
         awaitEachGesture {

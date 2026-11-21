@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.*
@@ -49,9 +50,11 @@ val LocalEncryptionSettings = staticCompositionLocalOf<(@Composable (Session) ->
 fun ZooSettings(app: Session, users: List<Row>) {
     val encryption = LocalEncryptionSettings.current
     val phone = LocalPhoneController.current
+    val android = LocalTouchUi.current
     val tabs =
         listOfNotNull(
             "general" to "settings.general",
+            ("appearance" to "settings.appearance").takeIf { android },
             ("sip" to "sip.title").takeIf { phone != null },
             ("encryption" to "e2ee.tab").takeIf { encryption != null },
             "activitypub" to "ActivityPub",
@@ -60,20 +63,23 @@ fun ZooSettings(app: Session, users: List<Row>) {
             "members" to "members.title",
             "slack" to "slackLink.tab",
         )
-    val tab = app.query["tab"].takeIf { value -> tabs.any { it.first == value } } ?: "general"
+    val selectedTab = app.query["tab"]?.takeIf { value -> tabs.any { it.first == value } }
+    val tab = selectedTab ?: "general"
     val tabFocus = remember(tabs.size) { List(tabs.size) { FocusRequester() } }
     fun selectTab(value: String) {
         val builder =
             io.ktor.http.URLBuilder("https://zoo.invalid${app.env.path}").apply {
                 parameters["tab"] = value
             }
-        app.platform.replace(builder.buildString().removePrefix("https://zoo.invalid"))
+        val path = builder.buildString().removePrefix("https://zoo.invalid")
+        if (android) app.navigate(path) else app.platform.replace(path)
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val contentPadding = if (LocalTouchUi.current) AndroidDesign.screenInset else if (maxWidth < 640.dp) 16.dp else 24.dp
         Column(Modifier.fillMaxSize()) {
             PaneHeader {
-                Button(
+                if (android && selectedTab == null) ZooMark(32.dp, Modifier.clip(androidx.compose.foundation.shape.CircleShape))
+                else Button(
                     app.t("channels.back"),
                     variant = "ghost",
                     size = "icon-sm",
@@ -84,7 +90,8 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 }
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    app.t("settings.zooTitle"),
+                    app.t(if (android && selectedTab != null) tabs.first { it.first == selectedTab }.second
+                        else if (android) "settings.navTitle" else "settings.zooTitle"),
                     Modifier.semantics { heading() },
                     weight = FontWeight.SemiBold,
                     size = if (LocalTouchUi.current) AndroidDesign.titleSize else 18.sp,
@@ -96,7 +103,14 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(contentPadding),
                 verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.sectionGap else 16.dp),
             ) {
-                Row(
+                if (android && selectedTab == null) {
+                    AndroidSettingsIndex(
+                        app,
+                        tabs.map { (value, label) -> value to app.t(label) },
+                        onOpen = ::selectTab,
+                    )
+                }
+                if (!android) Row(
                     Modifier.fillMaxWidth()
                         .horizontalScroll(rememberScrollState())
                         .then(webControlModifier("tablist"))
@@ -152,7 +166,8 @@ fun ZooSettings(app: Session, users: List<Row>) {
                         }
                     }
                 }
-                when (tab) {
+                if (!android || selectedTab != null) when (tab) {
+                    "appearance" -> AndroidAppearanceSettings(app)
                     "sip" -> phone?.let { PhoneSettings(app, it, users) }
                     "emojis" -> CustomEmojiSettings(app)
                     "apps" -> Apps(app, embedded = true)
@@ -160,7 +175,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     "activitypub" -> ActivityPubSettingsTab(app)
                     "slack" -> SlackLinkPanel(app)
                     "encryption" -> encryption?.invoke(app) ?: GeneralSettings(app)
-                    else -> GeneralSettings(app)
+                    else -> GeneralSettings(app, showAppearance = !android)
                 }
             }
         }
@@ -168,16 +183,18 @@ fun ZooSettings(app: Session, users: List<Row>) {
 }
 
 @Composable
-private fun GeneralSettings(app: Session) {
+private fun GeneralSettings(app: Session, showAppearance: Boolean = true) {
     Column(
         Modifier.fillMaxWidth()
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 10.dp))
             .padding(1.dp)
     ) {
-        SettingRow(app.t("theme.title"), icon = "palette") { ThemeToggle(app) }
-        HorizontalDivider()
-        SettingRow(app.t("language.title"), icon = "languages") { LanguageSelect(app) }
-        HorizontalDivider()
+        if (showAppearance) {
+            SettingRow(app.t("theme.title"), icon = "palette") { ThemeToggle(app) }
+            HorizontalDivider()
+            SettingRow(app.t("language.title"), icon = "languages") { LanguageSelect(app) }
+            HorizontalDivider()
+        }
         SettingRow(app.t("search.engine"), icon = "search") {
             Column(
                 horizontalAlignment = Alignment.End,

@@ -27,6 +27,8 @@ internal class AndroidNotifications(
     private val errors = mutableMapOf<String, String>()
     private val avatars = linkedMapOf<String, Bitmap>()
     private val avatarJobs = mutableMapOf<String, Job>()
+    private val pictures = linkedMapOf<String, Bitmap?>()
+    private val pictureJobs = mutableMapOf<String, Job>()
     private val avatarSlots = Semaphore(2)
     private var closed = false
     private val actions = NotificationActions(
@@ -108,6 +110,15 @@ internal class AndroidNotifications(
     private fun replyParent(row: Row): String? =
         notificationReplyParent(row, app.repo.cachedMessages(row.text("channel_id")))
 
+    private fun previewImage(row: Row): Row? {
+        if (row.text("notification_type") == "reaction") return null
+        val id = row.text("channel_id")
+        val channel = app.repo.channels.rows.value.find { it.text("id") == id } ?: return null
+        return notificationPreviewImage(
+            notificationCachedMessage(channel, row.text("message_id"), app.repo.cachedMessages(id)),
+        )
+    }
+
     private fun post(
         row: Row,
         error: String? = errors[row.text("id")],
@@ -123,6 +134,8 @@ internal class AndroidNotifications(
         val channelId = notificationChannel(row)
         val body = notificationBody(row) { key, name -> app.t(key, "actor" to name) }
         val avatar = avatars[notificationAvatar(row)]
+        val image = previewImage(row)
+        val picture = image?.let { pictures[it.text("id")] }
         val self = app.repo.users.rows.value.find { it.text("id") == app.config.userId }
             ?.let(::author)?.ifEmpty { null } ?: "Zoo"
         val destination = PushBinding(activity).openIntent(app.config.userId, id,
@@ -135,8 +148,11 @@ internal class AndroidNotifications(
             .setSmallIcon(works.zli.zoo.R.drawable.ic_notification)
             .setContentTitle(if (channel.isEmpty()) actor else "$actor · $channel")
             .setContentText(error ?: body)
-            .setStyle(if (error != null) Notification.BigTextStyle().bigText(error)
-                else notificationStyle(row, body, self, avatar))
+            .setStyle(when {
+                error != null -> Notification.BigTextStyle().bigText(error)
+                picture != null -> Notification.BigPictureStyle().bigPicture(picture).setSummaryText(body)
+                else -> notificationStyle(row, body, self, avatar)
+            })
             .setLargeIcon(avatar)
             .setWhen(timestampMillis(row.text("created_at")) ?: System.currentTimeMillis())
             .setGroup("zoo:${app.config.userId}:${notificationGroup(row)}")
@@ -157,6 +173,28 @@ internal class AndroidNotifications(
         catch (_: SecurityException) { /* Permission may be revoked while building the notification. */ }
         if (refreshSummary) updateSummaries()
         loadAvatar(row)
+        if (error == null && image != null) loadPicture(image.text("id"))
+    }
+
+    private fun loadPicture(id: String) {
+        if (closed || id in pictures || id in pictureJobs || pictureJobs.size >= 2) return
+        val job = app.scope.launch(start = CoroutineStart.LAZY) {
+            val bitmap = try {
+                withTimeoutOrNull(8_000) {
+                    val bytes = app.image(app.attachmentLinks.get(id))
+                    withContext(avatarDispatcher) { decodeOrientedBitmap(bytes, maxEdge = 720) }
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { null }
+            pictureJobs.remove(id)
+            if (closed) return@launch
+            pictures[id] = bitmap
+            while (pictures.size > 8) pictures.remove(pictures.keys.first())
+            if (bitmap != null) shown.values.filter { previewImage(it)?.text("id") == id }.toList()
+                .forEach { post(it, refreshSummary = false) }
+        }
+        pictureJobs[id] = job
+        job.start()
     }
 
     private fun loadAvatar(row: Row) {
@@ -262,6 +300,9 @@ internal class AndroidNotifications(
         observer.cancel()
         avatarJobs.values.forEach { it.cancel() }
         avatarJobs.clear()
+        pictureJobs.values.forEach { it.cancel() }
+        pictureJobs.clear()
+        pictures.clear()
         avatars.clear()
         if (preserveNotifications) {
             val posted = manager.activeNotifications.associateBy { it.tag }

@@ -195,6 +195,63 @@ fun HomeComposer(
     ) {
         Icon("square-pen", modifier = Modifier.size(24.dp), color = colors.onPrimary)
     }
+    val submitButton: @Composable () -> Unit = {
+        Button(
+            "",
+            enabled = !state.sending && canSend,
+            primary = true,
+            size = "icon",
+            icon = if (state.sending) "loader-circle" else "send",
+            accessibleLabel = app.t(if (state.sending) "home.sending" else "home.post"),
+        ) {
+            if (!state.sending && canSend) {
+                val payload = buildJsonObject {
+                    put("content", state.content)
+                    if (images.items.isNotEmpty()) put("image_ids", JsonArray(images.items.map { JsonPrimitive(it.uploaded!!.text("id")) }))
+                    if (images.items.any { it.sensitive }) put("sensitive_image_ids", JsonArray(images.items.filter { it.sensitive }.map { JsonPrimitive(it.uploaded!!.text("id")) }))
+                    put("apub", federated)
+                    put("visibility", state.visibility)
+                    put(
+                        "channel_id",
+                        selectedChannel.takeIf { it.isNotBlank() }?.let(::JsonPrimitive)
+                            ?: JsonNull,
+                    )
+                    state.replyTarget?.let { put("in_reply_to", it.text("id")) }
+                }
+                val post = latestPost
+                state.submit(app.scope, images) {
+                    post(payload)
+                    writeHomePreference(app, state.settingsKey, obj("visibility" to state.visibility, "apub" to federated, "channel_id" to selectedChannel.takeIf { it.isNotBlank() }).toString())
+                    state.federationPreference = federated
+                    state.channelId = selectedChannel
+                    state.replyTarget = null
+                    images.release(images.items.toList())
+                    images.items.clear()
+                    images.error = null
+                    state.content = ""
+                    state.opened = false
+                }
+            }
+        }
+    }
+    val attachmentActions: @Composable () -> Unit = {
+        Row(Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium),
+                horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
+                verticalAlignment = Alignment.CenterVertically) {
+            val usePhotoPicker = LocalTouchUi.current
+            IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) {
+                if (usePhotoPicker) showRecentPhotos = !showRecentPhotos else images.pick()
+            }
+            IconButton("smile", app.t("reactions.tabEmoji"), !state.sending && !composing) {
+                pickerSelection = editorState.editing.value.selection
+                emojiPicker = true
+            }
+            if (LocalTouchUi.current) {
+                Spacer(Modifier.weight(1f))
+                submitButton()
+            }
+        }
+    }
     OverlayRegistration(
         app.t("home.compose"),
         state::close,
@@ -308,43 +365,7 @@ fun HomeComposer(
                                 muted = true,
                             )
                     }
-                    Button(
-                        "",
-                        enabled = !state.sending && canSend,
-                        primary = true,
-                        size = "icon",
-                        icon = if (state.sending) "loader-circle" else "send",
-                        accessibleLabel = app.t(if (state.sending) "home.sending" else "home.post"),
-                    ) {
-                        if (!state.sending && canSend) {
-                            val payload = buildJsonObject {
-                                put("content", state.content)
-                                if (images.items.isNotEmpty()) put("image_ids", JsonArray(images.items.map { JsonPrimitive(it.uploaded!!.text("id")) }))
-                                if (images.items.any { it.sensitive }) put("sensitive_image_ids", JsonArray(images.items.filter { it.sensitive }.map { JsonPrimitive(it.uploaded!!.text("id")) }))
-                                put("apub", federated)
-                                put("visibility", state.visibility)
-                                put(
-                                    "channel_id",
-                                    selectedChannel.takeIf { it.isNotBlank() }?.let(::JsonPrimitive)
-                                        ?: JsonNull,
-                                )
-                                state.replyTarget?.let { put("in_reply_to", it.text("id")) }
-                            }
-                            val post = latestPost
-                            state.submit(app.scope, images) {
-                                post(payload)
-                                writeHomePreference(app, state.settingsKey, obj("visibility" to state.visibility, "apub" to federated, "channel_id" to selectedChannel.takeIf { it.isNotBlank() }).toString())
-                                state.federationPreference = federated
-                                state.channelId = selectedChannel
-                                state.replyTarget = null
-                                images.release(images.items.toList())
-                                images.items.clear()
-                                images.error = null
-                                state.content = ""
-                                state.opened = false
-                            }
-                        }
-                    }
+                    if (!LocalTouchUi.current) submitButton()
                 }
             }
             HorizontalDivider(color = colors.outline)
@@ -434,19 +455,7 @@ fun HomeComposer(
                         state.content = it
                     }
                     DraftAttachments(app, images, errorMessage = images.error?.let { app.t("home.imageError") })
-                    Row(horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall)) {
-                        val usePhotoPicker = LocalTouchUi.current
-                        IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) {
-                            if (usePhotoPicker) showRecentPhotos = !showRecentPhotos else images.pick()
-                        }
-                        IconButton("smile", app.t("reactions.tabEmoji"), !state.sending && !composing) {
-                            pickerSelection = editorState.editing.value.selection
-                            emojiPicker = true
-                        }
-                    }
-                    if (showRecentPhotos && LocalTouchUi.current && state.opened) {
-                        HomeRecentPhotos(app, images, !state.sending && images.items.size < MAX_ATTACHMENTS)
-                    }
+                    if (!LocalTouchUi.current) attachmentActions()
                     HomeComposerFooter(app, state, available, length)
 
                     if (state.failed)
@@ -456,6 +465,13 @@ fun HomeComposer(
                             color = colors.error,
                         )
                 }
+            }
+            if (LocalTouchUi.current) {
+                if (showRecentPhotos && state.opened) Column(Modifier.padding(horizontal = AndroidDesign.screenInset)) {
+                    HomeRecentPhotos(app, images, !state.sending && images.items.size < MAX_ATTACHMENTS)
+                }
+                HorizontalDivider(color = colors.outlineVariant)
+                attachmentActions()
             }
         }
     }

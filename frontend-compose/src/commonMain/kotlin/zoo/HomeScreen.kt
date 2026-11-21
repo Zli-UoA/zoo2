@@ -142,16 +142,18 @@ fun HomeScreen(
                         "home",
                         app.t(
                             if (selectedPost != null) "activitypubSettings.post"
-                            else if (selectedActor != null) "home.userDetails" else "home.title"
+                            else if (selectedActor != null) "home.userDetails"
+                            else if (LocalTouchUi.current) "home.navTitle" else "home.title"
                         ),
+                        brand = selectedPost == null && selectedActor == null,
                     ) {
                         IconButton("user-search", app.t("home.userSearch")) { search = true }
-                        IconButton("refresh-cw", app.t("home.refresh")) {
+                        if (!LocalTouchUi.current) IconButton("refresh-cw", app.t("home.refresh")) {
                             scope.launch { scroll.scrollToItem(0); feed.refresh() }
                             controlUpdates.request()
                         }
                     }
-                    HorizontalDivider()
+                    if (!LocalTouchUi.current || selectedPost != null || selectedActor != null) HorizontalDivider()
                 }
             }
             PullToRefreshBox(

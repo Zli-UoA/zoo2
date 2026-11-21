@@ -19,7 +19,7 @@ class MobileDestinationTest {
         for (root in listOf("/home", "/", "/notifications", "/bubble", "/settings")) {
             assertTrue(showMobileNavigation(root, channelList = true), root)
         }
-        for (detail in listOf("/home/posts/one", "/home/users/one", "/channels/one", "/settings/notifications")) {
+        for (detail in listOf("/home/posts/one", "/home/users/one", "/channels/one", "/settings/notifications", "/settings?tab=sip")) {
             assertFalse(showMobileNavigation(detail, channelList = false), detail)
         }
         assertTrue(showMobileNavigation("/channels/one", channelList = true))

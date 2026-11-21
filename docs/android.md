@@ -29,10 +29,6 @@ Android ターゲットは `zoo.android=true` で明示的に有効にします�
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
 
-## 初回ログイン
-
-Androidの初回ログインはCustom TabsでOIDC認可コードフローを開始し、S256 PKCEと検証済み App Linksでアプリへ戻ります。認証サービスにはAndroid用public clientの認可コードグラントと、ビルド時のホストに対応する `https://zli.chat/android/reauth-callback` を登録します。本番以外では該当するホストを使います。初回ログインは `offline_access` を要求し、再認証は `max_age=0` を指定します。コールバックの `state` とIDトークンの `nonce` を照合してからセッションを作ります。
-
 ## SIP・DM通話とAndroid Telecom
 
 「設定 → 電話（SIP）」で個人用・共有用の回線、利用メンバー、電話機の連絡先を登録・編集できます。共有回線の管理は管理者、利用は明示したメンバーのみです。個人回線は本人だけが利用します。PBX・TURN・VPNの構成は [SIP電話](sip.md) を参照してください。
@@ -156,23 +152,13 @@ PRの単体テストに加えて、配布前に次を端末で確認します。
 
 ## ログイン
 
-起動画面で Zoo サーバーの HTTPS origin URL、OIDC issuer、Android 用 public client ID、
-resource（backend の `OIDC_AUDIENCE` と同じ値）を入力します。
-認証画面をブラウザーで開き、アプリとブラウザーのコードが一致することを確認して承認します。
-デバイスコード方式のため callback URI や client secret は不要です。
+初回ログインは Custom Tabs でOIDC認可コードフローを開始し、S256 PKCEと検証済み App Linksでアプリへ戻ります。コールバックの `state` とIDトークンの `nonce` を照合してからセッションを作ります。初回ログインは `offline_access` を要求し、暗号化の再認証は `max_age=0` を指定します。
 
-IdP にデバイス認可（RFC 8628）と refresh token を許可した public client を登録してください。
-client ID は自動作成しません。既定の接続先は `https://zli.chat`、
-issuer は `https://account.zli.works/api/auth`、Resource / audience は `https://zli.chat/api` です。
-AuthZ では Public client の登録に加え、編集画面でデバイスコード認証を許可し、
-`openid profile offline_access` と対象 API の利用を許可してください。
-Public client であることだけでは、デバイスコード認証は許可されません。
+「接続先の設定」でZooサーバーのHTTPS origin、OIDC issuer、Android用public client ID、resourceを設定できます。既定のサーバーは `https://zli.chat`、issuerは `https://account.zli.works/api/auth`、resourceは `https://zli.chat/api` です。初回にclient IDを設定してください。
 
-ログイン時の OAuth エラーは HTTP ステータス・エラーコードと確認すべき設定を表示します。
-`unauthorized_client` はデバイスコードの許可、`invalid_target` は Resource と API の紐付けを
-確認してください。保存済みの接続設定を直す場合は、起動画面で編集してからログインし直します。
+認証サービスにはAndroid用public clientの認可コードグラントと、本番の戻り先 `https://zli.chat/android/reauth-callback` を登録します。別のビルドでは設定された App Links ホストを使います。`openid profile offline_access` と対象APIへのアクセスを許可します。
 
-初回はブラウザーでコードを承認します。以後はアプリの再起動時に保存した refresh token で
+初回はブラウザーで認証します。以後はアプリの再起動時に保存した refresh token で
 アクセストークンを取得し、同じ接続先へ自動でログインします。更新時に refresh token が
 ローテーションした場合も保存し直します。refresh token が発行されないクライアントでは、
 従来どおり起動ごとのログインが必要です。

@@ -148,11 +148,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        notificationIntent = intent
         // 初回ログインと再認証で同じ App Link を使い、待機中の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
-        }
+        } else notificationIntent = intent
     }
 
     /** リカバリーキーをクリップボードに置く。キーボードの候補やプレビューに出ないよう、機微な内容の印を付ける。 */
@@ -353,7 +352,7 @@ class MainActivity : ComponentActivity() {
                     LocalPhoneController provides current.phone.controller,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
+                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics(platform.env.operationHaptics)) {
                             val notificationsAllowed = remember(notificationPermissionRevision, platform.env.visible) {
                                 current.notifications.allowed()
                             }
@@ -504,22 +503,10 @@ class MainActivity : ComponentActivity() {
         var error by remember { mutableStateOf(initialError) }
         var job by remember { mutableStateOf<Job?>(null) }
         val scope = rememberCoroutineScope()
-        Surface(Modifier.fillMaxSize()) {
-            Column(
-                Modifier.safeDrawingPadding()
-                    .imePadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
-                    ZooMark(size = 76.dp)
-                    Text("Zoo", style = MaterialTheme.typography.headlineLarge)
-                    Text("ブラウザーで認証を完了すると、Zooに戻ります。")
-                }
-                TextButton(onClick = { advanced = !advanced }, enabled = job == null) {
-                    Text("接続先の設定")
-                }
+        AndroidSignInScreen(
+            message = "ブラウザーで認証を完了すると、Zooに戻ります。",
+            detailsVisible = advanced,
+            details = {
                 if (advanced) {
                     OutlinedTextField(
                         base,
@@ -563,6 +550,11 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     color = MaterialTheme.colorScheme.error,
                 )
+            },
+            actions = {
+                TextButton(onClick = { advanced = !advanced }, enabled = job == null) {
+                    Text("接続先の設定")
+                }
                 if (retryRestore != null && job == null) {
                     TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
                 }
@@ -627,8 +619,8 @@ class MainActivity : ComponentActivity() {
                         Text("ログイン")
                     }
                 }
-            }
-        }
+            },
+        )
     }
 }
 

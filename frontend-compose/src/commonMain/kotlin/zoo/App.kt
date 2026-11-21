@@ -216,6 +216,7 @@ internal fun AppDialogs(
                     { app.dialog = null },
                     512.dp,
                     description = channel.text("channel_name"),
+                    androidPage = true,
                 ) {
                     if (channel.flag("imported_from_slack")) {
                         // 取り込みの種類 (最初の取り込み) と最後に取り込んだ日付がわかるときは、それも出す
@@ -413,6 +414,39 @@ internal fun Sidebar(
     val joinedChannels = remember(joined) {
         joined.filterNot { it.flag("is_dm") || it.present("archive_at") }
     }
+    if (narrow && LocalTouchUi.current) {
+        fun entry(channel: Row): AndroidChannelEntry {
+            val id = channel.text("id")
+            val dm = channel.flag("is_dm")
+            val name = if (dm) dmTitle(app, channel, users, memberships) else channel.text("channel_name")
+            val last = app.repo.cachedMessages(id).lastOrNull { !it.present("deleted_at") && it["ciphertext"].let { value -> value == null || value == JsonNull } }
+            val description = if (channel.flag("encrypted")) "" else last?.text("content").orEmpty()
+            return AndroidChannelEntry(
+                id, name, description.ifBlank { channel.text("description").trim() },
+                if (dm) "message-circle" else if (channel.flag("is_private")) "lock" else "hash",
+                unreadLabel = app.t("channels.unread").takeIf { id in app.unread },
+                archivedLabel = app.t("moderation.archived").takeIf { channel.present("archive_at") },
+                avatar = if (dm) memberships.firstOrNull {
+                    it.text("channel_id") == id && it.text("user_id") != app.config.userId
+                }?.let { membership -> users.firstOrNull { it.text("id") == membership.text("user_id") } } else null,
+            )
+        }
+        AndroidChannelList(
+            app.t("channels.title"), app.t("channels.browseTitle"), app.t("channels.createTitle"),
+            app.t("members.joined"), app.t("dms.title"), app.t("dms.createTitle"),
+            app.t("channels.noJoined"), app.t("dms.empty"),
+            joinedChannels.map(::entry),
+            joined.filter { it.flag("is_dm") }.map(::entry),
+            loading, if (error) { { LoadErrorState(app.t("channels.loadError"),
+                app.t("offline.retry"), retry = { app.repo.channels.refresh() }) } } else null,
+            open = { app.navigate("/channels/${it.id}"); app.pane = "chat" },
+            browse = { app.dialog = "browse" },
+            create = { app.dialog = "create" },
+            createDm = { app.dialog = "dm" },
+            modifier = modifier,
+        )
+        return
+    }
     BoxWithConstraints(
         modifier
             .fillMaxHeight()
@@ -424,7 +458,7 @@ internal fun Sidebar(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 4.dp)
         ) {
             if (narrow) {
-                ScreenHeader("hash", app.t("channels.title"))
+                ScreenHeader("hash", app.t("channels.title"), brand = true)
                 HorizontalDivider()
             }
             CollapsibleSection(
@@ -696,8 +730,8 @@ internal fun Header(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(channelName, Modifier.semantics { heading() }, weight = FontWeight.SemiBold,
-                        size = 16.sp, maxLines = 1)
-                    Text(description, weight = FontWeight.Normal, size = 13.sp, maxLines = 1)
+                        size = AndroidDesign.channelTitleSize, maxLines = 1)
+                    Text(description, weight = FontWeight.Normal, size = AndroidDesign.channelDescriptionSize, maxLines = 1)
                 }
                 Icon("chevron-right", modifier = Modifier.size(16.dp))
             }

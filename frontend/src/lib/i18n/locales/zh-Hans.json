@@ -176,6 +176,11 @@
     "invalidState": "当前状态无法执行此操作。"
   },
   "settings": {
+    "appearance": "外观",
+    "interaction": "操作方式",
+    "swipeReply": "滑动回复",
+    "operationHaptics": "触感反馈",
+    "navTitle": "设置",
     "admin": "管理员",
     "member": "成员",
     "makeAdmin": "设为管理员",
@@ -246,6 +251,10 @@
     "edited": "已编辑"
   },
   "attachments": {
+    "recentPhotos": "最近的照片",
+    "systemPhotos": "打开照片选择器",
+    "allowRecentPhotos": "允许访问照片",
+    "noRecentPhotos": "没有可显示的照片",
     "play": "播放",
     "pause": "暂停",
     "add": "添加文件",
@@ -393,6 +402,8 @@
     "channels": "频道建议"
   },
   "notifications": {
+    "filterAll": "全部",
+    "filterMentions": "提及",
     "label": "通知",
     "close": "关闭通知",
     "title": "通知",
@@ -590,6 +601,7 @@
     "micNotFound": "未找到麦克风设备。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "输入的文字会实时显示在此房间中",
     "emptyTitle": "当前没有人在输入",
@@ -803,6 +815,7 @@
     "showLess": "收起"
   },
   "home": {
+    "navTitle": "首页",
     "back": "返回",
     "deleted": "帖子已删除",
     "newPosts": "查看新帖子（{{count}}）",

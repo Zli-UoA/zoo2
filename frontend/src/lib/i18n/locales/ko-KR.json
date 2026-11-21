@@ -176,6 +176,11 @@
     "invalidState": "현재 상태에서는 이 작업을 수행할 수 없습니다."
   },
   "settings": {
+    "appearance": "모양",
+    "interaction": "동작",
+    "swipeReply": "밀어서 답장",
+    "operationHaptics": "햅틱 피드백",
+    "navTitle": "설정",
     "admin": "관리자",
     "member": "멤버",
     "makeAdmin": "관리자로 지정",
@@ -246,6 +251,10 @@
     "edited": "편집됨"
   },
   "attachments": {
+    "recentPhotos": "최근 사진",
+    "systemPhotos": "사진 선택기 열기",
+    "allowRecentPhotos": "사진 접근 허용",
+    "noRecentPhotos": "표시할 사진이 없습니다",
     "play": "재생",
     "pause": "일시 정지",
     "add": "파일 첨부",
@@ -393,6 +402,8 @@
     "channels": "채널 후보"
   },
   "notifications": {
+    "filterAll": "전체 알림",
+    "filterMentions": "멘션",
     "label": "알림",
     "close": "알림 닫기",
     "title": "알림",
@@ -590,6 +601,7 @@
     "micNotFound": "마이크를 찾을 수 없습니다."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "입력 중인 글자가 그대로 실시간으로 표시되는 방입니다",
     "emptyTitle": "현재 입력 중인 사용자가 없습니다",
@@ -803,6 +815,7 @@
     "showLess": "접기"
   },
   "home": {
+    "navTitle": "홈",
     "back": "뒤로",
     "deleted": "게시물을 삭제했습니다",
     "newPosts": "새 게시물 보기 ({{count}}개)",
