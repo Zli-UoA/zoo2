@@ -438,7 +438,7 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile", "UserAvatar"]
+      "states": ["Default", "Mobile", "UserAvatar", "AboutZoo"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
@@ -1235,7 +1235,7 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
+      "reason": "DefaultとMobileで実験版切り替えボタンが表示されないこと、AboutZooでZooアイコンから版情報を開閉できることを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",

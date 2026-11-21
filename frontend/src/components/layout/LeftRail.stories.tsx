@@ -2,7 +2,7 @@ import { storyCollections } from "../../../.storybook/fixtures";
 import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within, waitFor } from "storybook/test";
+import { expect, screen, userEvent, within, waitFor } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { LeftRail } from "./LeftRail";
@@ -50,5 +50,25 @@ export const UserAvatar: Story = {
       const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
       await expect(image?.naturalWidth).toBeGreaterThan(0);
     });
+  }),
+};
+
+export const AboutZoo: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const trigger = within(canvasElement).getByRole("button", { name: "Zooについて" });
+    await userEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "Zooについて" });
+    const version = import.meta.env.VITE_ZOO_BUILD_SHA?.substring(0, 12) || "不明";
+    await expect(within(dialog).getByText(`バージョン: ${version}`)).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(async () => {
+      await expect(screen.queryByRole("dialog", { name: "Zooについて" })).not.toBeInTheDocument();
+      await expect(trigger).toHaveFocus();
+    });
+
+    await userEvent.keyboard("{Enter}");
+    await expect(await screen.findByRole("dialog", { name: "Zooについて" })).toBeVisible();
   }),
 };
