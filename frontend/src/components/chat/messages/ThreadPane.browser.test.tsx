@@ -308,6 +308,16 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(onLeaveThread).toHaveBeenCalledOnce();
     });
 
+    it("参加状態も人数も未確定のあいだは、メンバーのボタンを出さない", async () => {
+      await page.viewport(1280, 900);
+      render(
+        <LocaleProvider>
+          <ThreadPane {...paneProps({ membership: undefined, onLeaveThread: noop })} />
+        </LocaleProvider>,
+      );
+      expect(screen.queryByRole("button", { name: /メンバー|参加者/ })).toBeNull();
+    });
+
     it("未参加では参加ボタンを出し、アーカイブ済みは再Openして参加する（投稿権限がなければ出さない）", async () => {
       await page.viewport(1280, 900);
       const onJoinThread = vi.fn();

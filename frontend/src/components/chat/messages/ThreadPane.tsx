@@ -196,8 +196,12 @@ export function ThreadPane({
           : "checking";
   // 参加ボタンの出し方は、入力欄の代わりの案内（`ThreadJoinPrompt`）と同じ。アーカイブ済みの再Openは
   // 投稿権限が要るので、権限がないときは出さない。
-  // 人数をまだ読み込めていなくても、自分の参加状態があれば、参加・退出の操作のために出す。
-  const showParticipants = participantCount !== undefined || participantsStatus !== null;
+  // 人数をまだ読み込めていなくても、自分の参加状態が確定していれば、参加・退出の操作のために出す。
+  // どちらも未確定（読み込み中）のあいだは、押しても何も出せないので出さない。
+  const showParticipants =
+    participantCount !== undefined ||
+    participantsStatus === "joined" ||
+    participantsStatus === "notJoined";
   const participantsAction: ThreadParticipantsAction | null =
     participantsStatus === "joined"
       ? onLeaveThread
@@ -286,6 +290,9 @@ export function ThreadPane({
 
   function handlePaneKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (isWidePane) return;
+    // メンバーのダイアログが開いているあいだは、キー操作はそちらのもの。開いた直後で、まだ
+    // フォーカスがダイアログへ移っていないときの Escape で、ペインごと閉じないようにする。
+    if (participantsOpen) return;
     // 削除確認やリアクションピッカーなど、子のダイアログが Escape を処理する場合は干渉しない。
     if ((event.target as HTMLElement).closest('[role="dialog"]') !== event.currentTarget) return;
     if (event.key === "Escape") {
