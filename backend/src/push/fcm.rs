@@ -193,9 +193,19 @@ pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
 fn message(token: &str, binding: &str, user: &str, payload: &NotificationPayload) -> Value {
     // Data-only messages reach FirebaseMessagingService in the foreground and after process death.
     // Never attach E2EE ciphertext: Android displays the existing generic encrypted-message body.
-    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": "300s"},
-        "data": {"binding": binding, "userId": user, "title": payload.title, "body": payload.body,
-            "url": payload.url, "tag": payload.tag, "notificationType": payload.notification_type}}})
+    let mut data = json!({"binding": binding, "userId": user, "title": payload.title, "body": payload.body,
+        "url": payload.url, "tag": payload.tag, "notificationType": payload.notification_type});
+    if let Some(preview) = &payload.android_preview {
+        data["actor"] = json!(preview.actor);
+        data["channelName"] = json!(preview.channel);
+        if let Some(avatar) = &preview.avatar_url {
+            data["avatarUrl"] = json!(avatar);
+        }
+        if let Some(image) = &preview.image_id {
+            data["imageId"] = json!(image);
+        }
+    }
+    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": "300s"}, "data": data}})
 }
 
 fn is_unregistered(error: &Value) -> bool {
@@ -272,6 +282,12 @@ mod tests {
             notification_type: "dm".into(),
             e2ee: None,
             invite_id: None,
+            android_preview: Some(super::super::AndroidPreview {
+                actor: "Actor".into(),
+                channel: "General".into(),
+                avatar_url: Some("https://zoo.example/avatar.png".into()),
+                image_id: Some("attachment-id".into()),
+            }),
         };
         let body = message("token", "binding", "user", &payload);
         assert_eq!(body["message"]["android"]["priority"], "HIGH");
@@ -279,6 +295,14 @@ mod tests {
         assert_eq!(body["message"]["data"]["userId"], "user");
         assert!(body["message"].get("notification").is_none());
         assert!(body["message"]["data"].get("e2ee").is_none());
+        assert_eq!(body["message"]["data"]["actor"], "Actor");
+        assert_eq!(body["message"]["data"]["imageId"], "attachment-id");
+        assert!(
+            serde_json::to_value(&payload)
+                .unwrap()
+                .get("android_preview")
+                .is_none()
+        );
     }
     #[tokio::test]
     async fn http_delivery_authenticates_and_preserves_devices_on_project_errors() {

@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
+import android.graphics.Bitmap
+import kotlinx.coroutines.test.runTest
 import java.util.UUID
 import kotlin.test.*
 import org.junit.runner.RunWith
@@ -67,6 +69,48 @@ class AndroidPushTest {
         shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         showPushNotification(context, data(binding))
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun publicImageUpgradesExistingPushToBigPicture() = runTest {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val attachment = UUID.randomUUID().toString()
+        val posted = assertNotNull(showPushNotification(context, data(binding) + mapOf(
+            "notificationType" to "mention", "actor" to "投稿者", "channelName" to "開発",
+            "avatarUrl" to "https://zoo.example/avatar.png", "imageId" to attachment,
+        )))
+        assertEquals("https://zoo.example/api/home/images/$attachment", posted.imageUrl)
+        assertEquals("android.app.Notification\$MessagingStyle",
+            manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEMPLATE))
+        val requested = mutableSetOf<String>()
+        enrichPushNotification(context, posted) { url, _ ->
+            requested += url
+            Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        }
+        val displayed = manager.activeNotifications.single().notification
+        assertEquals("android.app.Notification\$BigPictureStyle", displayed.extras.getString(Notification.EXTRA_TEMPLATE))
+        assertNotNull(displayed.getLargeIcon())
+        assertEquals(setOf(posted.avatarUrl, posted.imageUrl), requested)
+        assertEquals(Notification.VISIBILITY_PRIVATE, displayed.visibility)
+    }
+
+    @Test fun dismissedPushIsNotRestoredByLateMedia() = runTest {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val posted = assertNotNull(showPushNotification(context, data(binding) +
+            ("avatarUrl" to "https://zoo.example/avatar.png")))
+        enrichPushNotification(context, posted) { _, _ ->
+            manager.cancel(posted.tag, 0)
+            Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        }
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun blocksExternalAvatarAndDoesNotRequestAttachmentsForDm() {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val posted = assertNotNull(showPushNotification(context, data(binding) + mapOf(
+            "avatarUrl" to "https://elsewhere.example/avatar.png", "imageId" to UUID.randomUUID().toString(),
+        )))
+        assertNull(posted.avatarUrl)
+        assertNull(posted.imageUrl)
     }
 
     @Test fun notificationTapUsesOnlyAnInternalMessageDestination() {
