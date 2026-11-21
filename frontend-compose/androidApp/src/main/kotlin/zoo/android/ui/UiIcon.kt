@@ -24,6 +24,8 @@ internal object AndroidControlSize {
     val target = 48.dp
     val inputEdgeInset = 4.dp
     val postActionInset = 8.dp
+    val postToolbarHeight = 36.dp
+    val postToolbarIcon = 14.dp
     val icon = 24.dp
     val inlineIcon = 18.dp
     val navigationHeight = 60.dp
@@ -87,8 +89,8 @@ internal fun UiIconButton(
     action: () -> Unit,
     enabled: Boolean = true,
     fill: Color = Color.Transparent,
-    modifier: Modifier = Modifier,
     iconSize: Dp = AndroidControlSize.icon,
+    modifier: Modifier = Modifier,
 ) {
     Box(
         modifier.size(AndroidControlSize.target).clip(CircleShape).background(fill)

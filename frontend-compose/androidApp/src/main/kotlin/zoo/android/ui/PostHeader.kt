@@ -10,6 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,8 +67,11 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
                 }
             }
         }
+        val sourceFontSize = 11.sp
+        val sourceLineHeight = 14.sp
+        val sourceHeight = with(LocalDensity.current) { sourceLineHeight.toDp() }
         if (data.channel != null) {
-            Text("#${data.channel}", color = colors.secondary, fontSize = 12.sp,
+            Text("#${data.channel}", Modifier.height(sourceHeight), color = colors.secondary, fontSize = sourceFontSize, lineHeight = sourceLineHeight,
                 fontWeight = AndroidWeights.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
         } else data.server?.let { server ->
             val tint = data.serverRgb?.let { Color(it or 0xff000000.toInt()) }
@@ -77,7 +81,7 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
                 .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 UiGlyph(UiIcon.Public, colors.foreground, iconSize = 12.dp)
-                Text(server, color = colors.foreground, fontSize = 11.sp, lineHeight = 14.sp, fontWeight = AndroidWeights.emphasis,
+                Text(server, Modifier.height(sourceHeight), color = colors.foreground, fontSize = sourceFontSize, lineHeight = sourceLineHeight, fontWeight = AndroidWeights.emphasis,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

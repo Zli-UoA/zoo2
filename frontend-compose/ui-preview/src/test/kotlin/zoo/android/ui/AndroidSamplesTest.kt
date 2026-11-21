@@ -195,16 +195,20 @@ class AndroidSamplesTest {
                     val serverBounds = ui.onNodeWithText("misskey.io", useUnmergedTree = true).getUnclippedBoundsInRoot()
                     check(nameBounds.right < dateBounds.left && serverBounds.top > dateBounds.top)
                     ui.onNodeWithContentDescription("公開", useUnmergedTree = true).assertIsDisplayed()
-                    ui.onNodeWithText("#開発", useUnmergedTree = true).assertIsDisplayed()
+                    val channelBounds = ui.onNodeWithText("#開発", useUnmergedTree = true)
+                        .assertIsDisplayed().getUnclippedBoundsInRoot()
+                    check(channelBounds.bottom - channelBounds.top == serverBounds.bottom - serverBounds.top)
                     val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
                     val controls = listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作").map { label ->
                         ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true)
-                            .assertHasClickAction().assertIsEnabled().assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
+                            .assertHasClickAction().assertIsEnabled().assertHeightIsEqualTo(36.dp).getUnclippedBoundsInRoot()
                     }
-                    check(controls.zipWithNext().all { (left, right) ->
-                        left.top == right.top && left.right == right.left &&
-                            kotlin.math.abs((left.right - left.left).value - (right.right - right.left).value) <= 1f
-                    })
+                    val postBounds = ui.onNodeWithTag("timeline-entry-1", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                    val bodyBounds = ui.onNode(firstPost and hasText(homePosts.first().body), useUnmergedTree = true)
+                        .getUnclippedBoundsInRoot()
+                    check(controls.first().left == bodyBounds.left && controls.last().right == postBounds.right)
+                    val gaps = controls.zipWithNext { left, right -> (right.left - left.right).value }
+                    check(gaps.max() - gaps.min() <= 1f)
                     ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("再投稿"),
                         useUnmergedTree = true).assertIsNotEnabled()
                 }
@@ -244,7 +248,10 @@ class AndroidSamplesTest {
         }
         ui.runOnIdle { screen = AndroidScreen.Home(homePosts) }
         val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
-        for (label in listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作")) {
+        ui.onNode(firstPost and hasContentDescription("返信"), useUnmergedTree = true).performTouchInput {
+            click(center.copy(x = center.x + 15.dp.toPx()))
+        }
+        for (label in listOf("再投稿", "リアクションを追加", "その他の投稿操作")) {
             ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true).performClick()
         }
         ui.onNodeWithText("本文をコピー").assertIsDisplayed()

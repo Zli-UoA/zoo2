@@ -571,18 +571,22 @@ private fun PostActions(
     dispatch: (AndroidUiAction) -> Unit,
     onMore: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth()) {
+    val actionWidth = Modifier.width(AndroidControlSize.postToolbarIcon)
+    Row(
+        Modifier.fillMaxWidth().height(AndroidControlSize.postToolbarHeight),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
         UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
-            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
+            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
             if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
-            enabled = entry.canRepost, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
+            enabled = entry.canRepost, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
         UiIconButton(UiIcon.Emoji, "リアクションを追加",
             colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
             { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
-            enabled = entry.canReact, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
-        UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
+            enabled = entry.canReact, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
+        UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, iconSize = AndroidControlSize.postToolbarIcon, modifier = actionWidth)
     }
 }
 
