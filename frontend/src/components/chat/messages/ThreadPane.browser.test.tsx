@@ -365,6 +365,41 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(within(dialog).queryByText("ほか 50人")).toBeNull();
     });
 
+    it("ダイアログを描画しなくなったら、開いた状態も解除する（狭幅のペインの Escape が戻り、あとで勝手に開かない）", async () => {
+      await page.viewport(390, 844);
+      const onClose = vi.fn();
+      const view = (extra: Partial<ThreadPaneProps>) => (
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({ membership: "joined", onLeaveThread: noop, onClose, ...extra })}
+          />
+        </LocaleProvider>
+      );
+      // 人数が未取得で、参加状態だけがあるので、メンバーのボタンが出る
+      const { rerender } = render(view({}));
+      await userEvent.click(screen.getByRole("button", { name: "メンバー" }));
+      await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
+
+      // メンバーでなくなると、ボタンもダイアログも描画されない
+      rerender(view({ isMember: false }));
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+        SLOW,
+      );
+      expect(screen.queryByRole("button", { name: "メンバー" })).toBeNull();
+
+      // ダイアログが開いたままの状態が残らないので、狭幅のペインの Escape が、ペインを閉じる
+      const pane = screen.getByRole("dialog", { name: "スレッド" });
+      pane.focus();
+      await userEvent.keyboard("{Escape}");
+      expect(onClose).toHaveBeenCalledOnce();
+
+      // メンバーに戻っても、ダイアログは勝手に開かない
+      rerender(view({}));
+      expect(await screen.findByRole("button", { name: "メンバー" })).toBeTruthy();
+      expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull();
+    });
+
     it("参加状態も人数も未確定のあいだは、メンバーのボタンを出さない", async () => {
       await page.viewport(1280, 900);
       render(

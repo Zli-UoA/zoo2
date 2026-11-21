@@ -202,6 +202,11 @@ export function ThreadPane({
     participantCount !== undefined ||
     participantsStatus === "joined" ||
     participantsStatus === "notJoined";
+  // ダイアログを描画しない間は、開いた状態も残さない。残すと、狭幅のペインが Escape・Tab を扱わないままになり、
+  // あとで人数や参加状態が戻ったときに、操作なしでダイアログが開いてしまう。
+  useEffect(() => {
+    if (!showParticipants) setParticipantsOpen(false);
+  }, [showParticipants]);
   const participantsAction: ThreadParticipantsAction | null =
     participantsStatus === "joined"
       ? onLeaveThread
