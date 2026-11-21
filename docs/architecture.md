@@ -1,15 +1,19 @@
 # アプリの構成
 
+2026-11-21時点のmain（`285e7c3`）を基準に、アプリ内の責務と通信を記載します。
+利用できる機能と実機検証の状況は[README](../README.md)を参照してください。
+
 ## ディレクトリと責務
 
 | 配置 | 責務 |
 | --- | --- |
-| `Sources/App` | 起動、認証セッション、OS通知・CallKit、画面のルートと回転制御 |
+| `Sources/App` | 起動、認証セッション、OS通知・CallKit・PushKit、Watch連携、画面のルートと回転制御 |
 | `Sources/Domain` | ユーザー・会話・メッセージなどの値、表示判定、本文や通知の解析 |
 | `Sources/Data/Authentication` | 認証、トークンの保存と更新 |
 | `Sources/Data/Networking` | クライアントの契約、REST・Electric・SSEの通信と応答形式 |
 | `Sources/Data/Sync` | SwiftDataモデル、キャッシュactor、失効を管理する同期セッション、履歴同期、添付のディスク保存 |
 | `Sources/Data/Notifications` | プッシュ登録と通知プレビュー鍵の保存契約 |
+| `Sources/Data/Images` | 公開アイコン・スタンプ画像の取得、メモリとディスクのキャッシュ |
 | `Sources/Features/Workspace` | タブ・iPadの画面構成、会話のルーティング、ワークスペースの状態と同期の開始・停止 |
 | `Sources/Features/Channels` | チャンネル一覧・検索・作成・詳細・編集、DMの宛先選択、スレッド一覧 |
 | `Sources/Features/Conversation` | 会話・返信の画面、スクロール位置、入力欄、メッセージ操作と会話の状態 |
@@ -18,6 +22,13 @@
 | `Sources/Features/Inbox`、`Profile`、`Calls`、`Intents` | 通知一覧、プロフィール、音声通話、Siriの各画面・操作と状態 |
 | `Sources/Features/Shared` | 各画面で共用するデザインとアバター |
 | `Sources/Preview` | DEBUGでだけ使う模擬クライアント、画像・PDF、通知ストレージ、通話メディア |
+| `NotificationService`、`Shared` | 通知サービス拡張、暗号化された通知プレビューの解析・復号 |
+| `WatchApp`、`WatchShared` | Watchの画面・通信状態、iPhoneと共通の通知・通話のデータと操作 |
+| `CallActivityExtension`、`CallActivityShared` | 通話中のLive ActivityとDynamic Islandの表示、共通の属性 |
+| `Tests`、`UITests` | Swift Testing・XCTestによるロジックの検証と、模擬データを使うUIテスト |
+
+`project.yml`から、iOSアプリの`Zoo`、通知拡張の`ZooNotificationService`、Watchアプリの`ZooWatch`、
+通話表示拡張の`ZooCallActivity`とテストターゲットを生成します。3つのアプリ・拡張を`Zoo`に同梱します。
 
 画面構成、一覧、作成シートを別ファイルに置き、メッセージのスクロール制御は `MessageList` に集約します。状態を所有するStoreは保持し、分割のために内部状態を別のStoreへ複製しません。
 SwiftDataのモデル名・プロパティはファイル分割で変更しません。新しいSwiftファイルは `project.yml` のソースディレクトリからXcodeGenでプロジェクトに登録します。
@@ -39,9 +50,29 @@ WebView、WebPage、JavaScript ブリッジ、Web 側からの準備完了通知
 
 ## SiriとApp Intents
 
-`Features/Intents` の `ZooShortcuts` がDM送信と音声通話を登録し、`ShortcutActions` が既存の `ChatClient` と `CallStore` を呼び出します。App Intentと通常画面は `AppSession.shared` を共有し、前面実行・端末認証・システム確認後に操作します。
-宛先IDにはサーバーとアカウントを含め、実行前にRESTでメンバーを再検証します。確認中のログアウトは以前のWorkspaceの停止で検出します。Siriからの送信は既存の入力中の下書きを変更しません。通話は入室完了まで待ち、キャンセル時はその操作で始めた接続を終了します。
+`Sources/Features/Intents`は、標準のSiriKit送信、App Shortcuts、iOS 27以降のApp Schemaを登録します。
+通常画面と`AppSession.shared`を共有し、`ShortcutActions`から既存の`ChatClient`と`CallStore`を呼び出します。
+
+| 入口 | 処理 |
+| --- | --- |
+| `SiriMessageHandler` | `INSendMessageIntent`の宛先・本文の解決、確認、1対1のDM送信 |
+| `ZooShortcuts` | `SendZooMessageIntent`によるDM送信、`StartZooCallIntent`による1対1の音声通話 |
+| `ZooMessageSchemas` | `.messages.sendMessage`によるDM送信、`.messages.draftMessage`によるDMの下書き作成 |
+| `ZooCallSchemas` | `.phone.startCall`による1対1の音声通話 |
+
+送信と発信では相手・内容を確認し、ロック中は認証を求めます。通話は確認後にZooを前面へ移します。
+宛先は表示名・ユーザー名の完全一致を優先し、同名候補を勝手に一人へ絞りません。
+宛先IDにはサーバーとアカウントを含め、実行前にRESTでメンバーを再検証します。確認中のログアウトは以前のWorkspaceの停止で検出します。
+Siriからの送信は入力中の下書きを変更しません。DMの下書き作成では送信せず、異なる既存の下書きは上書きしません。
+宛先がない下書きは、本文を保持してZooの宛先選択へ引き継ぎます。
+チャンネル投稿、添付・位置情報・予約送信、グループへの送信・発信、ビデオ通話には対応していません。
+
+`StartZooSchemaCallIntent`だけは音声開始前に`NativeCallLiveActivity`を開始します。
+表示を開始できなければ発信せず、表示の終了・削除時には対応する通話を停止します。
+通話終了・失敗・ログアウト時に表示を終了し、アプリ起動時には前回の表示を片付けます。
+通話は入室完了まで待ち、キャンセル時はその操作で始めた接続を終了します。
 起動・ログイン・ログアウトとメンバー一覧の変更時に `updateAppShortcutParameters()` を呼び、未ログイン時は候補を空にします。動的な宛先付きフレーズの更新方法は[AppleのApp Shortcuts解説](https://developer.apple.com/videos/play/wwdc2023/10102/)に基づいています。
+`SiriVocabulary`はSiriの許可に合わせて宛先を検索用に登録し、ログアウトや許可の取り消し時に削除します。
 
 ## 通信
 
@@ -68,6 +99,12 @@ URL に含める識別子は UUID であることを検証します。
 | アカウントスタンプの名簿 | `GET /api/emoji-accounts` |
 | 既読 | `POST /api/channels/{id}/read-state` |
 | チャンネル・DM の作成 | `POST /api/channels`、`POST /api/dms` |
+| チャンネルの編集・アーカイブ | `PATCH /api/channels/{id}`、`POST /api/channels/{id}/archive` |
+| ピン留めの取得・追加・解除 | `GET /api/channel-pins`、`POST /api/channel-pins`、`DELETE /api/channel-pins/{id}` |
+| 入力中状態の取得・更新 | `GET /api/channels/{id}/typing`、`POST /api/channels/{id}/typing` |
+| 添付のアップロード準備・取得 | `POST /api/attachments/presign`、`GET /api/attachments/{id}/url` |
+| 通話一覧・入室 | `GET /api/calls/active`、`GET /api/channels/{id}/call/stream` |
+| 通話通知の購読・招待 | `GET /api/shapes/call_invites`、`POST /api/channels/{id}/call/invites` |
 
 チャンネル・ユーザー・未読は前面表示中に 30 秒ごとに更新します。
 チャンネルが削除されたり閲覧可能な一覧から外れたりしたら、その会話の状態を破棄します。
@@ -75,9 +112,17 @@ URL に含める識別子は UUID であることを検証します。
 
 REST のユーザー応答には画像 URL が含まれないため、ユーザー一覧は Web と同じ users shape から取得します。
 分割応答を `up-to-date` まで集めたスナップショットを使い、`avatar_url` の変更・削除を次の更新で反映します。
-アイコンは認証情報を含まない HTTPS URL だけを受け付け、SwiftUI の
-[AsyncImage](https://developer.apple.com/documentation/swiftui/asyncimage) で読み込みます。
-画像取得には API の Bearer トークンを付けません。未設定・読み込み中・取得失敗時は頭文字を表示します。
+アイコンは認証情報を含まないHTTPS URLだけを受け付け、`CachedRemoteImage`と`RemoteImageStore`で読み込みます。
+画像取得にはAPIのBearerトークンやCookieを付けません。自動リダイレクトは拒否し、
+遷移先も認証情報を含まないHTTPS URLか確認してから、最初の取得を含め最大4回のリクエストで追跡します。
+同じURLの取得と表示状態を共有し、取得済みの画像を表示したまま更新します。
+ユーザーアイコンは5分を目安に再確認し、固定画像のスタンプには保存済みデータを使います。
+画像がまだない場合は頭文字などの代替表示を使い、更新に失敗しても保存済みの画像は残します。
+
+`RemoteImageDiskCache`は`Library/Application Support/ZooImages-v1`へ保存し、バックアップ対象から外します。
+接続先・アカウント・URLをハッシュ化して分離し、全体64MB・512件を上限に古い参照から削除します。
+公開画像のキャッシュは、閲覧権限を確認して取得する添付画像・PDFのキャッシュとは別に管理します。
+ログアウト時は公開画像の通信とメモリ上の状態を解放し、ディスクの保存データは容量・件数の管理対象として残します。
 
 ## Electric の同期
 
@@ -117,9 +162,11 @@ HTTP 409、`must-refetch` では保存状態をリセットして再取得しま
 
 ## 添付ファイルの送信
 
-入力欄のファイル選択にはSwiftUIの `fileImporter` を使い、通常の会話と各スレッドで添付の下書きを分けます。
+入力欄の写真・動画選択には`PhotosPicker`、ファイル選択にはSwiftUIの`fileImporter`を使い、通常の会話と各スレッドで添付の下書きを分けます。
 選択したファイルはセキュリティスコープを開き、`NSFileCoordinator` で読み取りを調整してアプリの一時領域へコピーします。
 コピーはメインアクターの外で実行し、ファイル名・空ファイル・50MBの上限・禁止拡張子を検証します。添付の上限は10個です。
+ImageIOで画像の実データを調べ、HEIC／HEIFならJPEGへ変換します。拡張子より実データの形式を優先し、
+元の解像度と向きを引き継いで`.jpg`・`image/jpeg`として扱います。変換後も50MBの上限を検証します。
 [Appleのファイル選択API](https://developer.apple.com/documentation/swiftui/view/fileimporter(ispresented:allowedcontenttypes:allowsmultipleselection:oncompletion:))に従い、読み取り完了時にセキュリティスコープを閉じます。
 
 `POST /api/attachments/presign` にファイル名・サイズ・MIME型・チャンネルIDを渡し、返されたHTTPS URLへファイルから直接PUTします。
@@ -143,6 +190,9 @@ Associated Domains、AASA、認証コールバックのルートは不要です�
 対象が返信の場合は同期後にそのスレッドを開きます。
 複数の通知を続けて開いた場合は新しい遷移先を優先します。
 APNs 登録解除の失敗時には既存どおり Keychain の解除情報を保持し、次の接続時に再試行します。
+通常通知とVoIP通知は`PushKind`で区別し、端末トークンとKeychainの登録情報を分けます。
+VoIP登録は`GET /api/push/apns/config`の`voip: true`を確認してから送信します。
+通知本文は`ZooNotificationService`が端末の鍵で復号します。詳細は[認証・通知の配備](native-auth-push.md)を参照してください。
 
 ## 検証の境界
 
@@ -208,5 +258,39 @@ SSE切断・復旧できない音声障害・退出・ログアウト・音声�
 Shapeの遅延中も取り消せるよう、送信成功時の招待IDを最長30秒保持します。ShapeでそのIDを観測した時点で同期結果へ引き継ぎ、API応答前に観測・終了した招待は復活させません。
 取り消しに成功したIDは招待の期限まで記録し、遅れて届いた呼び出し中の行で表示を復活させないようにします。
 
-終了中の着信には対応していません。現在のサーバーのAPNsは通常の通知のみで、VoIP招待配信・PushKit登録がありません。
+`SystemCallController`は起動時にPushKitを初期化し、VoIP通知と前面表示中の招待をCallKitへ登録します。
+発信もCallKitへ登録し、標準画面から応答・拒否・終了・ミュートを操作できます。
+ロック中・バックグラウンドの着信には、通知設定とサーバーのVoIP配信対応が必要です。
+終了状態からの着信や実音声の継続は、クライアント実装だけで動作確認済みとは扱いません。
+
+CallKitの音声セッションが有効な間は、1人待機中や相手との接続交渉中も音声入力を維持します。
+入力は保存・送信せず、WebRTCの音声入出力開始時に引き継ぎます。通話終了・音声セッションの無効化で停止します。
+
+入室前に通話セッションを接続先・アカウント別にKeychainへ記録します。
+強制終了後は、次回の通話一覧更新または通話開始時に前回のセッションへ退出を送り、成功後に記録を削除します。
+開始・一覧更新が退出完了を待つのは最大2秒で、期限後も回収を続けます。通信失敗時は記録を保持して再試行します。
+新規発信・着信応答では同じチャンネルの回収を優先し、別端末の通話は終了しません。音声通話の自動再開は行いません。
 携帯回線や異なるNAT間の接続品質にはサーバーのTURN設定が関わるため、配布前に実機2台とWebクライアント間で音声・ミュート・Bluetooth・切断を確認します。
+
+## Apple Watchとの連携
+
+`ZooWatch`はwatchOS 26以降向けのコンパニオンアプリです。
+`WatchCompanionController`と`WatchSession`がWatchConnectivityで通信し、`WatchCompanionService`がiPhoneの状態取得と操作を担当します。
+通知一覧は種類・送信者を直近10件まで渡し、本文・認証情報は複製しません。
+Watchアプリの表示中だけ15秒ごとに更新し、通信切断・非表示時はWatchの表示データを破棄します。
+表示更新の送信に失敗した場合は、最新状態と到達性を確認して1秒間隔で2回まで再送します。
+
+Watchアプリからは着信への応答・拒否、通話のミュート・終了をiPhoneのCallKit経由で操作します。
+Watchアプリの操作では現在のセッションID・通話IDを照合し、古い画面から別の通話を操作することを防ぎます。
+iPhoneと通信できる間だけ操作でき、音声はiPhone側で処理します。Watch単体通話・新規発信・操作予約には対応しません。
+
+Watchアプリを閉じている間の着信には、iPhoneで生成したローカル通知のOS標準転送を使います。
+`IncomingCallNotifications`が「iPhoneで応答」「拒否」の通知アクションを登録し、
+`WatchCompanionController`が通知設定の有効化・Watchとのペアリング・通信セッションの有効化を確認して通知を生成します。
+Watchアプリへの到達性は生成条件に含めません。通知・音・振動の配信はOSの通知設定に従います。
+CallKitへの着信報告が成功し、現在のアカウントで応答可能な着信だけを通知とWatchの画面へ渡します。
+
+通知アクションは`NotificationDelegate`から`SystemCallController`へ渡し、現在の通話IDとユーザーIDを照合して処理します。
+Watchアプリを開く必要はなく、iPhoneのバックグラウンドで既存の応答・拒否処理を呼び出します。
+応答・拒否・取消・期限切れ・ログアウト時は着信通知を削除し、起動時には前回残った通知も回収します。
+Watchアプリ表示中に新しい応答可能な着信が表示されると、`WatchHomeView`が触覚フィードバックを再生します。
