@@ -425,9 +425,48 @@ class ReviewRegressionUiTest {
                     "archive_at" to "2026-11-15T00:00:00Z"))
             }
             ui.onNodeWithText("General").assertDoesNotExist()
-            ui.onNodeWithText("channels.empty").assertIsDisplayed()
+            ui.onNodeWithText("channels.noJoined").assertIsDisplayed()
             ui.runOnIdle { rows = listOf(channel) }
             ui.onNodeWithText("General").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun channelBrowserShowsAccessibleArchivedChannelsOnlyWhenIncluded() {
+        val fixture = Fixture()
+        val archivedAt = "2026-11-15T00:00:00Z"
+        val channels = listOf(
+            obj("id" to "active", "channel_name" to "Active"),
+            obj("id" to "public", "channel_name" to "Archived public", "archive_at" to archivedAt),
+            obj("id" to "joined", "channel_name" to "Archived joined private",
+                "archive_at" to archivedAt, "is_private" to true),
+            obj("id" to "private", "channel_name" to "Archived unjoined private",
+                "archive_at" to archivedAt, "is_private" to true),
+        )
+        val members = listOf(obj("channel_id" to "joined", "user_id" to "alice"))
+        try {
+            fixture.app.dialog = "browse"
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        NativeWindow(fixture.app) {
+                            AppDialogs(fixture.app, null, channels, emptyList(), members)
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithText("Active").assertIsDisplayed()
+            ui.onNodeWithText("Archived public").assertDoesNotExist()
+            ui.onNodeWithText("Archived joined private").assertDoesNotExist()
+            ui.onNodeWithText("channels.includeArchived").performClick()
+            ui.onNodeWithText("Active").assertIsDisplayed()
+            ui.onNodeWithText("Archived public").assertIsDisplayed()
+            ui.onNodeWithText("Archived joined private").assertIsDisplayed()
+            ui.onNodeWithText("Archived unjoined private").assertDoesNotExist()
+            ui.onNodeWithContentDescription("common.close").performClick()
+            ui.runOnIdle { fixture.app.dialog = "browse" }
+            ui.onNodeWithText("Active").assertIsDisplayed()
+            ui.onNodeWithText("Archived public").assertDoesNotExist()
         } finally { fixture.close() }
     }
 

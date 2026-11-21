@@ -390,9 +390,12 @@ internal fun Sidebar(
     error: Boolean = false,
     narrow: Boolean = false,
 ) {
-    val channels = remember(rows) { rows.filterNot { it.present("deleted_at") || it.present("archive_at") } }
+    val channels = remember(rows) { rows.filterNot { it.present("deleted_at") } }
     val joined = remember(channels, memberships, app.config.userId) {
         channels.filter { isMember(memberships, it.text("id"), app.config.userId) }
+    }
+    val joinedChannels = remember(joined) {
+        joined.filterNot { it.flag("is_dm") || it.present("archive_at") }
     }
     BoxWithConstraints(
         modifier
@@ -468,7 +471,7 @@ internal fun Sidebar(
                                     app.dialog = "create"
                                 }
                             }
-                        joined.none { !it.flag("is_dm") } ->
+                        joinedChannels.isEmpty() ->
                             Column(
                                 Modifier.padding(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -484,11 +487,9 @@ internal fun Sidebar(
                                 }
                             }
                         else ->
-                            joined
-                                .filterNot { it.flag("is_dm") }
-                                .forEach { channel ->
-                                    ChannelLink(app, channel, channel.text("channel_name"))
-                                }
+                            joinedChannels.forEach { channel ->
+                                ChannelLink(app, channel, channel.text("channel_name"))
+                            }
                     }
                 }
             }
