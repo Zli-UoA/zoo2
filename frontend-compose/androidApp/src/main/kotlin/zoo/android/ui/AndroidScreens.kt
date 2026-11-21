@@ -61,6 +61,7 @@ internal data class TimelineItem(
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
     val preview: String? = null, val entryKey: String = id,
     val media: List<Pair<String, String>> = emptyList(),
+    val postHeader: PostHeaderData? = null,
 )
 internal data class ChannelItem(
     val id: String,
@@ -502,7 +503,9 @@ private fun Timeline(
                     Text(entry.author.take(1), color = colors.secondary, fontSize = 13.sp)
                 }
                 Column(Modifier.weight(1f)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (posts && entry.postHeader != null) {
+                        PostHeader(entry.author, entry.postHeader, colors)
+                    } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(entry.author, color = colors.foreground, fontWeight = authorWeight, fontSize = authorSize)
                         Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                     }

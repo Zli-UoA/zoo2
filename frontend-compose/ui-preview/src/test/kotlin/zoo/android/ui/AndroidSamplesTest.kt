@@ -42,6 +42,11 @@ class AndroidSamplesTest {
             TimelineItem("2", "みずき", "共有用の画像を追加します。確認をお願いします。", "11:56"),
             TimelineItem("3", "ゆい", "今日の通話テストは夕方からです。", "11:42"),
         )
+        val homePosts = listOf(
+            posts[0].copy(postHeader = PostHeaderData("@haru", "11/21 12:05", PostAudience.Public, null, "misskey.io")),
+            posts[1].copy(postHeader = PostHeaderData("@mizuki", "11/21 11:56", PostAudience.Local, "開発", "zli.chat")),
+            posts[2].copy(postHeader = PostHeaderData("@yui", "11/21 11:42", PostAudience.Unlisted, null, "zli.chat")),
+        )
         val settings = listOf(
             SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", "端末に従う"),
                 SettingsEntry.Destination("language", "言語", "日本語"))),
@@ -72,7 +77,7 @@ class AndroidSamplesTest {
             canvas.drawOval(22f, 77f, 106f, 160f, paint)
         }.asImageBitmap()
         val cases = listOf(
-            "home" to AndroidScreen.Home(posts),
+            "home" to AndroidScreen.Home(homePosts),
             "channels" to channels,
             "notifications" to inbox,
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
@@ -102,10 +107,12 @@ class AndroidSamplesTest {
                 SelectionItem("haru", "はる", isUserName = true),
                 SelectionItem("yui", "ゆい", isUserName = true),
             )),
-            "post" to AndroidScreen.Post(posts.first(), posts.drop(1), InputState()),
+            "post" to AndroidScreen.Post(homePosts.first(), homePosts.drop(1), InputState()),
             "post-compose" to AndroidScreen.NewPost(InputState("新しい画面を共有します。"), emptyList(), true),
             "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。写真と通話の感想を投稿します。",
-                posts.map { it.copy(author = "はる") }, "フォロー", handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
+                homePosts.map {
+                    it.copy(author = "はる", postHeader = it.postHeader?.copy(handle = "@haru", channel = null, server = "social.example"))
+                }, "フォロー", handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
@@ -159,6 +166,14 @@ class AndroidSamplesTest {
                     check(root.right - bounds.right == 4.dp && root.bottom - bounds.bottom == 4.dp) {
                         "Expected 4dp between send action and screen edges: $bounds / $root"
                     }
+                }
+                if (name == "home") {
+                    val nameBounds = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                    val dateBounds = ui.onNodeWithText("11/21 12:05", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                    val serverBounds = ui.onNodeWithText("misskey.io", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                    check(nameBounds.right < dateBounds.left && serverBounds.top > dateBounds.top)
+                    ui.onNodeWithContentDescription("公開", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithText("#開発", useUnmergedTree = true).assertIsDisplayed()
                 }
                 if (name == "profile") {
                     ui.onNodeWithText("@haru@social.example").assertIsDisplayed()
