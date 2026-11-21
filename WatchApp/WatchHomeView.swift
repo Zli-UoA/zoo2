@@ -74,9 +74,6 @@ struct WatchHomeView: View {
         Section("iPhoneの通話") {
             if let call {
                 Text(call.title).font(.headline)
-                Text(call.status).foregroundStyle(.secondary)
-                Text("音声はiPhoneから流れます。")
-                    .font(.footnote).foregroundStyle(.secondary)
                 if call.phase == .incoming {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         VStack {
@@ -88,6 +85,7 @@ struct WatchHomeView: View {
                         .disabled(state.pending != nil || !call.allows(.answer, at: context.date))
                     }
                 } else {
+                    Text(call.status).foregroundStyle(.secondary)
                     Button(call.muted ? "ミュート解除" : "ミュート", systemImage: call.muted ? "mic.slash.fill" : "mic.fill") {
                         send(.setMuted, !call.muted)
                     }
