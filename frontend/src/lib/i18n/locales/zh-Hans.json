@@ -1827,7 +1827,12 @@
   "androidPhone": {
     "description": "通过设备的通话功能使用个人或共享SIP线路及私信语音通话。",
     "nativeCalls": "设备通话集成",
-    "nativeHelp": "启用来电后将显示常驻通知并保持连接。可通过设备的通话控件接听、挂断和切换音频输出。需要麦克风权限。",
+    "nativeHelp": "有来电时会显示通话通知。允许通知后，受支持的设备可在后台接收私信来电。等待 SIP 来电，或在无法使用 FCM 的设备上等待私信来电时，请将 Zoo 保持在前台。可通过设备的通话控件接听、挂断和切换音频输出，需要麦克风权限。",
+    "minimizeCall": "最小化",
+    "expandCall": "展开通话",
+    "floatCall": "画中画",
+    "pipUnavailable": "请在 Android 设置中检查画中画。",
+    "incomingScreenSettings": "全屏来电设置",
     "receiveDm": "接收私信来电",
     "callError": "无法准备或操作通话，请检查麦克风权限、设备通话支持、网络和线路设置。",
     "speaker": "扬声器",

@@ -72,6 +72,47 @@ internal class PushBinding(private val context: Context) {
             prefs.getString("binding", null) == binding && prefs.getString("user", null) == user
     }
 
+    fun dmCallsEnabled(user: String): Boolean = synchronized(lock) {
+        prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false)
+    }
+
+    fun phoneLocale(): String? = prefs.getString("locale", null)
+
+    fun setPhoneLocale(binding: String, locale: String) = synchronized(lock) {
+        if (prefs.getString("binding", null) == binding && phoneLocale() != locale) {
+            prefs.edit().putString("locale", locale).apply()
+        }
+    }
+
+    fun setDmCallsEnabled(user: String, enabled: Boolean) = synchronized(lock) {
+        if (prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false) != enabled) {
+            check(prefs.edit().putBoolean("dmCalls", enabled).commit())
+            if (!enabled) {
+                val manager = context.getSystemService(NotificationManager::class.java)
+                manager.activeNotifications.filter { it.tag?.startsWith("zoo:$user:call:") == true }
+                    .forEach { zoo.android.phone.dismissIncomingCall(context, it.tag) }
+            }
+            AndroidPushRegistration.tokenChanged()
+        }
+    }
+
+    fun dmInviteEnded(id: String): Boolean = synchronized(lock) {
+        val now = System.currentTimeMillis() / 1000L
+        prefs.getStringSet("endedDmInvites", emptySet()).orEmpty().any {
+            it.substringBefore(':') == id && (it.substringAfter(':').toLongOrNull() ?: 0L) > now
+        }
+    }
+
+    fun rememberEndedDmInvite(user: String, id: String) = synchronized(lock) {
+        if (prefs.getString("user", null) != user) return@synchronized
+        val now = System.currentTimeMillis() / 1000L
+        val recent = prefs.getStringSet("endedDmInvites", emptySet()).orEmpty()
+            .filter { it.substringBefore(':') != id && (it.substringAfter(':').toLongOrNull() ?: 0L) > now }
+            .sortedByDescending { it.substringAfter(':').toLongOrNull() }
+            .take(63).toSet()
+        prefs.edit().putStringSet("endedDmInvites", recent + "$id:${now + 60}").apply()
+    }
+
     fun endpoint(binding: String): String? = synchronized(lock) {
         if (prefs.getString("binding", null) == binding) prefs.getString("endpoint", null) else null
     }
@@ -115,6 +156,18 @@ internal class PushSubscriptionRegistration(
     private val binding: String,
     private val request: suspend (method: String, endpoint: String) -> Unit,
 ) {
+    private var registeredEndpoint: String? = null
+
+    suspend fun refresh(token: String, supportsDmCalls: Boolean) {
+        val suffix = if (supportsDmCalls && store.dmCallsEnabled(user)) ":dm-calls" else ""
+        val endpoint = "fcm:$token:$binding$suffix"
+        cleanup()
+        if (endpoint == registeredEndpoint) return
+        registeredEndpoint = null
+        register(endpoint)
+        registeredEndpoint = endpoint
+    }
+
     suspend fun cleanup() {
         for (endpoint in store.pendingRemovals(base, user)) {
             request("DELETE", endpoint)
@@ -167,14 +220,17 @@ internal class AndroidPushRegistration(
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
     private var projectId: String? = null
-    private var registeredEndpoint: String? = null
+    private var supportsDmCalls = false
     private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
         app.api.request("/api/push/subscriptions", method,
             if (method == "POST") obj("transport" to "fcm", "endpoint" to endpoint) else obj("endpoint" to endpoint))
         Unit
     }
     private val observer = app.scope.launch {
-        snapshotFlow { app.env.online to app.env.visible }.collectLatest { (online, _) -> if (online) refresh() }
+        snapshotFlow { Triple(app.env.online, app.env.visible, app.env.locale) }.collectLatest { (online, _, locale) ->
+            store.setPhoneLocale(binding, locale)
+            if (online) refresh()
+        }
     }
     private val worker = app.scope.launch {
         for (ignored in updates) {
@@ -184,18 +240,13 @@ internal class AndroidPushRegistration(
                 if (projectId == null) {
                     val config = app.api.request("/api/push/config") as? Row ?: continue
                     projectId = config.text("fcmProjectId").takeIf { it.isNotEmpty() }
+                    supportsDmCalls = config.flag("fcmDmCalls")
                 }
                 if (projectId == null || projectId != firebase.options.projectId) continue
                 val messaging = FirebaseMessaging.getInstance()
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
-                val endpoint = "fcm:$token:$binding"
-                registration.cleanup()
-                if (endpoint != registeredEndpoint) {
-                    registration.register(endpoint)
-                    if (!closed) registeredEndpoint = endpoint
-                }
-
+                registration.refresh(token, supportsDmCalls)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -283,7 +334,13 @@ internal fun showPushNotification(context: Context, data: Map<String, String>) {
 private fun showBoundPushNotification(context: Context, data: Map<String, String>) {
     val binding = data["binding"]
     val user = data["userId"]
-    if (!PushBinding(context).matches(binding, user) || !notificationsAllowed(context)) return
+    val store = PushBinding(context)
+    if (!store.matches(binding, user)) return
+    if (data["notificationType"] in setOf("call_invite", "call_invite_end")) {
+        zoo.android.phone.showDmCallPush(context, store, user!!, binding!!, data)
+        return
+    }
+    if (!notificationsAllowed(context)) return
     val path = pushDestination(data["url"]) ?: return
     val kind = data["notificationType"]
     if (kind !in setOf("mention", "dm", "reply", "reaction")) return

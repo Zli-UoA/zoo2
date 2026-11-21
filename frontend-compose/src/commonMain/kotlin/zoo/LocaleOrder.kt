@@ -8,3 +8,6 @@ expect fun compareLocaleText(
     numeric: Boolean = false,
     baseSensitivity: Boolean = false,
 ): Int
+
+/** Returns up to [count] complete user-perceived characters. */
+expect fun takeGraphemes(text: String, count: Int): String

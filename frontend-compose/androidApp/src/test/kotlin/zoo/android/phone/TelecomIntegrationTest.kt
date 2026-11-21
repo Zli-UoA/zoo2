@@ -1,16 +1,302 @@
 package zoo.android.phone
 
+import android.app.Activity
+import android.app.Notification
+import android.app.PictureInPictureParams
+import android.app.NotificationManager
+import android.app.Service
+import android.content.pm.ServiceInfo
+import android.content.Intent
 import android.telecom.CallAudioState
 import android.telecom.Connection
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respondError
+import io.ktor.http.HttpStatusCode
 import kotlin.test.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowActivity
+import org.robolectric.shadows.ShadowService
+import org.robolectric.shadows.ShadowToast
+import org.robolectric.util.ReflectionHelpers
+import zoo.Environment
+import zoo.Platform
+import zoo.Repository
+import zoo.Session
+import zoo.android.PushBinding
+import zoo.obj
+import zoo.phone.PhoneCall
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28, 35])
+@OptIn(ExperimentalCoroutinesApi::class)
 class TelecomIntegrationTest {
+    private class Fixture(scope: CoroutineScope) : AutoCloseable {
+        val context = RuntimeEnvironment.getApplication()
+        val shadow = shadowOf(context)
+        val notifications = context.getSystemService(NotificationManager::class.java)
+        val routes = mutableListOf<String>()
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) {}
+            override fun uuid() = "phone-test"
+            override fun now() = "2026-11-21T00:00:00Z"
+            override fun navigate(path: String) { routes.add(path) }
+            override fun action(name: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+        }
+        val http = HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) })
+        val config = zoo.Config("https://zoo.test", "/api/shapes", "alice", false)
+        val session = Session(Repository(config, platform, http, scope, synchronize = false),
+            scope, Environment(visible = false))
+        var microphoneAllowed = true
+        val host = AndroidPhoneHost(context, session, http, prepare = { check(microphoneAllowed) })
+
+        fun ring(inviteId: String = "invite"): ZooConnection {
+            host.controller.invites(listOf(obj(
+                "id" to inviteId, "channel_id" to "target-dm", "invitee_id" to "alice",
+                "inviter_name" to "Bob", "status" to "pending", "expires_at" to "2026-11-21T00:00:30Z",
+            )), "alice", 1795219200000)
+            return (host.connection(true, null) as ZooConnection).also { it.onShowIncomingCallUi() }
+        }
+
+        fun activePictureInPictureIntent(): Intent {
+            val call = PhoneCall("active-call", "dm", "target-dm", "Bob", "active")
+            ReflectionHelpers.callInstanceMethod<Unit>(host.controller, "setCall",
+                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            return Intent(context, PhonePictureInPictureActivity::class.java)
+                .putExtra(PHONE_SESSION, host.token).putExtra(PHONE_CALL, call.id)
+        }
+
+        override fun close() {
+            host.close()
+            session.close()
+            http.close()
+        }
+    }
+
+    @Test fun pictureInPictureRejectsUnconnectedAndMismatchedCalls() = runTest {
+        Fixture(backgroundScope).use { f ->
+            f.host.controller.receiveDmCalls(true)
+            runCurrent()
+            f.ring()
+            val id = assertNotNull(f.host.controller.call).id
+            assertNull(f.host.incomingCaller("other-call"))
+            assertNull(f.host.incomingCaller(id)) // The authenticated invite and user have not synced.
+            PhonePictureInPictureActivity.open(f.context, f.host, id)
+            assertNull(f.shadow.nextStartedActivity)
+
+            for ((token, call) in listOf(f.host.token to id, "stale-session" to id, f.host.token to "other-call")) {
+                val intent = Intent(f.context, PhonePictureInPictureActivity::class.java)
+                    .putExtra(PHONE_SESSION, token).putExtra(PHONE_CALL, call)
+                val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, intent).create().get()
+                assertTrue(activity.isFinishing)
+            }
+        }
+    }
+
+    @Test fun expandedPictureInPictureCanReenterWhenTheActivityIsReused() = runTest {
+        Fixture(backgroundScope).use { f ->
+            val intent = f.activePictureInPictureIntent()
+            val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, intent)
+                .create().start().resume().postResume()
+            try {
+                val screen = activity.get()
+                assertTrue(screen.isInPictureInPictureMode)
+
+                activity.newIntent(Intent(intent))
+                // Robolectric's shadow does not expose a public exit transition.
+                ReflectionHelpers.setField(shadowOf(screen), "isInPictureInPictureMode", false)
+                activity.postResume()
+                assertFalse(screen.isInPictureInPictureMode)
+
+                activity.newIntent(Intent(intent).putExtra(PHONE_SESSION, "stale-session")).postResume()
+                assertFalse(screen.isInPictureInPictureMode)
+                activity.newIntent(Intent(intent)).postResume()
+                assertTrue(screen.isInPictureInPictureMode)
+            } finally {
+                activity.pause().stop().destroy()
+            }
+        }
+    }
+
+    @Implements(Activity::class)
+    class PictureInPictureDenied : ShadowActivity() {
+        @Implementation
+        override fun enterPictureInPictureMode(params: PictureInPictureParams): Boolean = false
+    }
+
+    @Test
+    @Config(shadows = [PictureInPictureDenied::class])
+    fun pictureInPictureDenialExplainsHowToEnableItWithoutEndingTheCall() = runTest {
+        Fixture(backgroundScope).use { f ->
+            val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, f.activePictureInPictureIntent())
+                .create().start().resume().postResume()
+            try {
+                assertTrue(activity.get().isFinishing)
+                assertEquals(phoneLabel(f.context, "androidPhone.pipUnavailable", "Check Picture-in-picture in Android settings."),
+                    ShadowToast.getTextOfLatestToast())
+                assertEquals("active", f.host.controller.call?.status)
+            } finally {
+                activity.pause().stop().destroy()
+            }
+        }
+    }
+
+    @Test fun enablingDmWaitingDoesNotStartAServiceOrPostANotification() = runTest {
+        Fixture(backgroundScope).use {
+            it.host.controller.receiveDmCalls(true)
+            runCurrent()
+            assertTrue(it.host.controller.dmWaiting)
+            assertNull(it.shadow.nextStartedService)
+            assertTrue(it.notifications.activeNotifications.isEmpty())
+        }
+    }
+
+    @Test fun incomingNotificationOpensDmAndAnswerPromotesOneServiceUntilHangup() = runTest {
+        Fixture(backgroundScope).use {
+            it.host.controller.receiveDmCalls(true)
+            runCurrent()
+            val call = it.ring()
+            assertNull(it.shadow.nextStartedService)
+            val incoming = it.notifications.activeNotifications.single().notification
+            assertEquals(2, incoming.actions.size)
+            assertTrue(it.host.open(shadowOf(incoming.contentIntent).savedIntent))
+            val answer = incoming.actions.single { action ->
+                shadowOf(action.actionIntent).savedIntent.action == "zoo.phone.ANSWER"
+            }
+            assertTrue(it.host.open(shadowOf(answer.actionIntent).savedIntent))
+            assertEquals(listOf("/channels/target-dm", "/channels/target-dm"), it.routes)
+            runCurrent()
+            val start = assertNotNull(it.shadow.nextStartedService)
+            val service = Robolectric.buildService(PhoneService::class.java).create().get()
+            assertTrue(it.host.controller.busy)
+            service.onStartCommand(start, 0, 1)
+            assertNotNull(shadowOf(service).lastForegroundNotification)
+            assertTrue(it.notifications.activeNotifications.none { n -> n.id == 604 })
+
+            val receiver = PhoneActionReceiver()
+            val end = Intent("zoo.phone.END").putExtra(PHONE_SESSION, it.host.token)
+                .putExtra(PHONE_CALL, call.id)
+            receiver.onReceive(it.context, Intent(end).putExtra(PHONE_SESSION, "old-session"))
+            receiver.onReceive(it.context, Intent(end).putExtra(PHONE_CALL, "old-call"))
+            assertEquals(call.id, it.host.controller.call?.id)
+            receiver.onReceive(it.context, end)
+            assertNull(it.host.controller.call)
+            assertEquals(start.component, it.shadow.nextStoppedService?.component)
+            service.onDestroy()
+        }
+    }
+
+    @Test fun hangupBeforeServiceDeliveryAcknowledgesStartWithoutMicrophone() = runTest {
+        Fixture(backgroundScope).use {
+            it.host.controller.receiveDmCalls(true)
+            runCurrent()
+            val call = it.ring()
+            call.onAnswer()
+            runCurrent()
+            val start = assertNotNull(it.shadow.nextStartedService)
+            call.onDisconnect()
+            assertNull(it.host.controller.call)
+            assertNull(it.shadow.nextStoppedService)
+
+            val service = Robolectric.buildService(PhoneService::class.java).create().get()
+            service.onStartCommand(start, 0, 1)
+            assertNotNull(shadowOf(service).lastForegroundNotification)
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                assertEquals(android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL,
+                    service.foregroundServiceType)
+            }
+            assertTrue(shadowOf(service).isStoppedBySelf)
+            assertNull(it.host.controller.call)
+            service.onDestroy()
+        }
+    }
+
+    @Implements(Service::class)
+    class MicrophoneDeniedServiceShadow : ShadowService() {
+        @Implementation
+        override fun startForeground(id: Int, notification: Notification, type: Int) {
+            if (type and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0) {
+                throw SecurityException("Microphone access denied")
+            }
+            super.startForeground(id, notification, type)
+        }
+    }
+
+    @Test
+    @Config(sdk = [35], shadows = [MicrophoneDeniedServiceShadow::class])
+    fun nativeMicrophonePromotionFailureAcknowledgesStartAndEndsCall() = runTest {
+        Fixture(backgroundScope).use {
+            it.host.controller.receiveDmCalls(true)
+            runCurrent()
+            it.ring().onAnswer()
+            runCurrent()
+            val start = assertNotNull(it.shadow.nextStartedService)
+            val service = Robolectric.buildService(PhoneService::class.java).create().get()
+            service.onStartCommand(start, 0, 1)
+            assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL, service.foregroundServiceType)
+            assertNotNull(shadowOf(service).lastForegroundNotification)
+            assertTrue(shadowOf(service).isStoppedBySelf)
+            assertNull(it.host.controller.call)
+            assertTrue(it.host.controller.error)
+            service.onDestroy()
+        }
+    }
+
+    @Test fun notificationAnswerWithDeniedMicrophoneDoesNotStartService() = runTest {
+        Fixture(backgroundScope).use {
+            it.host.controller.receiveDmCalls(true)
+            runCurrent()
+            it.ring()
+            it.microphoneAllowed = false
+            val incoming = it.notifications.activeNotifications.single().notification
+            val answer = incoming.actions.single { action ->
+                shadowOf(action.actionIntent).savedIntent.action == "zoo.phone.ANSWER"
+            }
+            assertTrue(it.host.open(shadowOf(answer.actionIntent).savedIntent))
+            runCurrent()
+            assertNull(it.shadow.nextStartedService)
+            assertNull(it.host.controller.call)
+            assertTrue(it.host.controller.error)
+        }
+    }
+
+    @Test fun pushAnswerWaitsForTheMatchingAuthenticatedInviteAndTelecomConnection() = runTest {
+        Fixture(backgroundScope).use {
+            val store = PushBinding(it.context)
+            val binding = store.bind("https://zoo.test", "alice")
+            store.setDmCallsEnabled("alice", true)
+            val id = "5f3d960a-49bd-4ebf-beae-4090a7e96950"
+            val answer = Intent(DM_PUSH_ANSWER_ACTION).putExtra("invite", id)
+                .putExtra("binding", binding).putExtra("expiresAt", System.currentTimeMillis() / 1000L + 30)
+            assertTrue(it.host.open(answer))
+            runCurrent()
+            assertNull(it.shadow.nextStartedService)
+            assertTrue(it.routes.isEmpty())
+
+            it.ring(id)
+            runCurrent()
+            assertEquals(listOf("/channels/target-dm"), it.routes)
+            assertNotNull(it.shadow.nextStartedService)
+        }
+    }
+
     private class Actions : ConnectionActions {
         var current = "call"
         var appMuted = false
