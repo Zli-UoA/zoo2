@@ -358,18 +358,6 @@ pub(super) async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Res
     Ok(())
 }
 
-/// このトランザクションの、次の INSERT を、ライブの返信として扱うか (`zoo.thread_live_import`)。
-/// テーブルは読まない定数の設定で、1 回 1 往復
-async fn set_live_import(tx: &mut toasty::Transaction<'_>, on: bool) -> Result<(), AppError> {
-    one(
-        tx,
-        "SELECT json_build_object('ok',set_config('zoo.thread_live_import',$1,true))::text",
-        &[if on { "on" } else { "off" }],
-    )
-    .await?;
-    Ok(())
-}
-
 async fn fail(s: &AppState, job: &Job, error: &AppError) -> Result<(), AppError> {
     // ZIP の中身の不備はやり直しても直らない
     let permanent = matches!(error, AppError::BadRequest(_));
@@ -1560,9 +1548,9 @@ pub(super) async fn insert_message(
     } = render_message(tx, ctx, message).await?;
     // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
     // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
-    // (`job_id` あり) と、期間より古い返信は、フラグを立てない。フラグは、この返信の INSERT の直前に立て、直後に
-    // 戻す (立てた返信だけ 2 往復。立てない返信は増えない)。同じトランザクションの、次の返信に引き継がない。
-    // 同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
+    // (`job_id` あり) と、期間より古い返信は、立てない。フラグ (`zoo.thread_live_import`) は、下の INSERT 文が
+    // 先頭の CTE で、この返信の値 (`on` / `off`) を毎回決め直す。別の文・往復は増えず、同じトランザクションの
+    // 次の返信に値を引き継ぐことも起きない。同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
     let live = job_id.is_empty() && !parent.is_empty() && {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1570,20 +1558,18 @@ pub(super) async fn insert_message(
             .unwrap_or_default();
         super::is_live_reply_ts(&message.ts, now)
     };
-    if live {
-        set_live_import(tx, true).await?;
-    }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
     // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
     exec(
         tx,
-        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
+        "WITH live AS MATERIALIZED (SELECT set_config('zoo.thread_live_import',$11,true) AS v) \
+         INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
          SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
           AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
-         NULLIF($8,'') WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
+         NULLIF($8,'') FROM live WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
@@ -1601,12 +1587,11 @@ pub(super) async fn insert_message(
             parent_ts,
             // 決定的な ID の行は、作成日時が同じ行だけを更新する (Zoo の投稿との対応 `slack_message_map` がある行は除く)
             if derived { "1" } else { "" },
+            // ライブの返信として扱うか (`zoo.thread_live_import`)。毎回、この文で決める
+            if live { "on" } else { "off" },
         ],
     )
     .await?;
-    if live {
-        set_live_import(tx, false).await?;
-    }
     // 確認と INSERT の間に、別の行が同じ ID で確定していた場合も、その行には何も結び付けない
     if derived && id_taken_by_other(tx, &id, channel_id, &message.ts).await? {
         tracing::warn!(

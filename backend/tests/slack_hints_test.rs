@@ -751,18 +751,23 @@ async fn test_hints_attach_a_reply_outside_the_watched_threads_to_its_parent() -
 
 /// Slack のスレッドの返信 (`ts`) を、返信のイベントと取り直しの応答で、Zoo に取り込む
 async fn deliver_reply(f: &Fixture, parent: &str, ts: &str) -> anyhow::Result<()> {
+    deliver_reply_by(f, parent, ts, "UA").await
+}
+
+/// Slack のユーザー `user` が、スレッドに返信した (`ts`) として、Zoo に取り込む
+async fn deliver_reply_by(f: &Fixture, parent: &str, ts: &str, user: &str) -> anyhow::Result<()> {
     Mock::given(method("GET"))
         .and(path("/conversations.replies"))
         .and(query_param("ts", parent))
         .and(query_param("latest", ts))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
-            "messages": [{"type":"message","ts":ts,"user":"UA","text":"a reply","thread_ts":parent}],
+            "messages": [{"type":"message","ts":ts,"user":user,"text":"a reply","thread_ts":parent}],
             "has_more": false})))
         .with_priority(1)
         .mount(&f.slack)
         .await;
     let event = json!({"type":"event_callback","team_id":&f.team,"event":{"type":"message",
-        "channel":"C1","user":"UA","ts":ts,"thread_ts":parent,"text":"a reply"}});
+        "channel":"C1","user":user,"ts":ts,"thread_ts":parent,"text":"a reply"}});
     deliver(f, &event).await
 }
 
@@ -972,6 +977,183 @@ async fn test_sync_reopens_for_a_recent_reply_but_not_for_an_old_one() -> anyhow
     let (archived, left) = thread_state(&f, &parent_id).await?;
     assert!(!archived, "a recent reply swept in reopens the thread");
     assert!(left.iter().all(|l| !l), "{left:?}");
+    Ok(())
+}
+
+/// 取り込んだ投稿の投稿者 (Zoo のユーザー ID)
+async fn author_of(f: &Fixture, ts: &str) -> String {
+    let id = backend::slack::message_id(&f.team, "C1", ts);
+    sql(
+        &f.state,
+        "SELECT json_build_object('user',user_id)::text FROM messages WHERE id=$1",
+        &[&id],
+    )
+    .await
+    .unwrap()[0]["user"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// スレッドの親が閉じているか (参加の状態は変えない)
+async fn archived(f: &Fixture, parent_id: &str) -> bool {
+    sql(
+        &f.state,
+        "SELECT json_build_object('a',thread_archive_at IS NOT NULL)::text FROM messages WHERE id=$1",
+        &[parent_id],
+    )
+    .await
+    .unwrap()[0]["a"]
+        == true
+}
+
+fn close_thread_sql() -> &'static str {
+    "UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1 RETURNING json_build_object('ok',true)::text"
+}
+
+/// ユーザーの参加の状態。`None` は参加行がない (未参加)、`Some(true)` は退出済み
+async fn left_of(f: &Fixture, parent_id: &str, user: &str) -> Option<bool> {
+    sql(
+        &f.state,
+        "SELECT json_build_object('left',left_at IS NOT NULL)::text FROM thread_participants WHERE thread_id=$1 AND user_id=$2",
+        &[parent_id, user],
+    )
+    .await
+    .unwrap()
+    .first()
+    .map(|row| row["left"] == true)
+}
+
+/// そのユーザーが `ago` 前に退出した状態にする
+async fn leave(f: &Fixture, parent_id: &str, user: &str, ago: &str) {
+    let rows = sql(
+        &f.state,
+        &format!(
+            "UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')-interval '{ago}' \
+             WHERE thread_id=$1 AND user_id=$2 RETURNING json_build_object('ok',true)::text"
+        ),
+        &[parent_id, user],
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "{user} has a participation row");
+}
+
+/// Slack の返信者も、zoo の返信と同じ参加の扱いになる:
+/// - 未参加の人が返信すると、参加して返信する
+/// - アーカイブ済みのスレッドへの他人の返信は、スレッドを再表示（再Open）する。ほかの人の退出は取り消さない
+/// - 退出済みの人が、退出のあとに返信すると、参加し直して返信する
+#[tokio::test]
+async fn test_slack_repliers_follow_the_zoo_participation_rules() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+
+    // UA が先に返信して、スレッドの参加者になる。UB は、まだ参加していない
+    let first = format!("{}.000200", now_secs() - 300);
+    deliver_reply(&f, &parent, &first).await?;
+    let ua = author_of(&f, &first).await;
+    assert_eq!(left_of(&f, &parent_id, &ua).await, Some(false));
+
+    // 閉じたスレッドに、未参加の UB が返信する: スレッドが再表示され、UB は参加する
+    sql(&f.state, close_thread_sql(), &[&parent_id]).await?;
+    let second = format!("{}.000300", now_secs() - 120);
+    deliver_reply_by(&f, &parent, &second, "UB").await?;
+    let ub = author_of(&f, &second).await;
+    assert_ne!(ua, ub);
+    assert!(
+        !archived(&f, &parent_id).await,
+        "another person's reply reopens the thread"
+    );
+    assert_eq!(left_of(&f, &parent_id, &ub).await, Some(false), "UB joins");
+    assert_eq!(left_of(&f, &parent_id, &ua).await, Some(false));
+
+    // UA が退出したあと、閉じたスレッドへの UB の返信: 再表示されるが、UA の退出は取り消さない
+    leave(&f, &parent_id, &ua, "10 minutes").await;
+    sql(&f.state, close_thread_sql(), &[&parent_id]).await?;
+    deliver_reply_by(&f, &parent, &format!("{}.000400", now_secs() - 90), "UB").await?;
+    assert!(!archived(&f, &parent_id).await);
+    assert_eq!(
+        left_of(&f, &parent_id, &ua).await,
+        Some(true),
+        "UA stays left"
+    );
+    assert_eq!(left_of(&f, &parent_id, &ub).await, Some(false));
+
+    // UB が退出し、そのあとに UB が返信する: 参加し直して返信する。UA は退出のまま
+    leave(&f, &parent_id, &ub, "5 minutes").await;
+    sql(&f.state, close_thread_sql(), &[&parent_id]).await?;
+    deliver_reply_by(&f, &parent, &format!("{}.000500", now_secs() - 60), "UB").await?;
+    assert!(!archived(&f, &parent_id).await);
+    assert_eq!(
+        left_of(&f, &parent_id, &ub).await,
+        Some(false),
+        "a reply after the leave rejoins"
+    );
+    assert_eq!(left_of(&f, &parent_id, &ua).await, Some(true));
+    Ok(())
+}
+
+/// 直近の返信と古い返信を、同じ同期（1 つのトランザクション）で取り込む。直近の返信の人だけが再参加し、
+/// 古い返信の人の退出は取り消さない
+#[tokio::test]
+async fn test_sync_imports_recent_and_old_replies_in_one_page() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    // UA と UB が、先に返信して、参加者になる
+    let a = format!("{}.000200", now_secs() - 200);
+    let b = format!("{}.000250", now_secs() - 190);
+    deliver_reply(&f, &parent, &a).await?;
+    deliver_reply_by(&f, &parent, &b, "UB").await?;
+    let (ua, ub) = (author_of(&f, &a).await, author_of(&f, &b).await);
+    // 閉じて、2 人とも 1 時間前に退出した状態にする
+    sql(&f.state, close_thread_sql(), &[&parent_id]).await?;
+    leave(&f, &parent_id, &ua, "1 hour").await;
+    leave(&f, &parent_id, &ub, "1 hour").await;
+    let before = count_messages(&f.state, &f.channel).await;
+
+    // 1 つのスレッドの返信に、直近の UA の返信と、3 日前の UB の返信を並べて返す (直近が先)
+    let recent = format!("{}.000600", now_secs() - 30);
+    let old = format!("{}.000500", now_secs() - 3 * 86_400);
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", parent.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+            "messages": [
+                {"type":"message","ts":&parent,"user":"UA","text":"new post","thread_ts":&parent,"reply_count":3},
+                {"type":"message","ts":&recent,"user":"UA","text":"recent","thread_ts":&parent},
+                {"type":"message","ts":&old,"user":"UB","text":"old","thread_ts":&parent}],
+            "has_more": false})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET swept_at=NULL WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    sync_now(&f).await?;
+
+    assert_eq!(count_messages(&f.state, &f.channel).await, before + 2);
+    assert!(
+        !archived(&f, &parent_id).await,
+        "the recent reply reopens the thread"
+    );
+    assert_eq!(
+        left_of(&f, &parent_id, &ua).await,
+        Some(false),
+        "UA rejoins"
+    );
+    assert_eq!(
+        left_of(&f, &parent_id, &ub).await,
+        Some(true),
+        "the old reply does not rejoin UB"
+    );
     Ok(())
 }
 
