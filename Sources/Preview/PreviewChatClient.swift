@@ -242,7 +242,7 @@ final class PreviewChatClient: ChatClient {
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await people().map { ChannelMembership(channel_id: channelID, user_id: $0.id) }
     }
-    func readState(channelID: String) async throws -> ChannelReadState {
+    func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
         if ProcessInfo.processInfo.arguments.contains("--uitesting-read-retry"), !failedReadOnce {
             failedReadOnce = true
             throw URLError(.notConnectedToInternet)
@@ -294,7 +294,7 @@ final class PreviewChatClient: ChatClient {
         guard let person = [currentUser, colleague, otherColleague].first(where: { $0.id == id }) else { throw ZooError.rejected(404, "ユーザーがいません。") }
         return person
     }
-    func readStates() async throws -> [ChannelReadState] {
+    func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
         allChannels.filter { $0.id != discoverableID || joinedPublic }
             .map { ChannelReadState(channel_id: $0.id, has_unread: $0.id == Self.channelID && readPositions[$0.id] == nil, last_read_at: readPositions[$0.id]) }
     }
@@ -431,6 +431,15 @@ final class PreviewChatClient: ChatClient {
                               created_user_id: currentUser.id)
         allChannels.append(channel)
         return channel
+    }
+
+    func markChannelRead(channelID: String) async throws -> ChannelReadState {
+        if let latest = allMessages.filter({ $0.channel_id == channelID && $0.parent_id == nil && $0.deleted_at == nil })
+            .max(by: { $0.created_at < $1.created_at }) {
+            try await markRead(channelID: channelID, messageID: latest.id)
+        }
+        return try await readStates().first { $0.channel_id == channelID }
+            ?? ChannelReadState(channel_id: channelID, has_unread: false, last_read_at: nil)
     }
     func updateChannel(id: String, name: String?, description: String) async throws -> Channel {
         guard let index = allChannels.firstIndex(where: { $0.id == id }), allChannels[index].canManage(by: currentUser) else {

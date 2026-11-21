@@ -44,7 +44,10 @@ struct NativeChatClient: ChatClient {
         return people
     }
     func person(id: String) async throws -> Person { try await api.get("api/users/\(try segment(id))") }
-    func readStates() async throws -> [ChannelReadState] { try await cachedGet("api/channel-read-states") }
+    func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
+        if allowCached { return try await cachedGet("api/channel-read-states") }
+        return try await api.get("api/channel-read-states")
+    }
 
     func cachedWorkspace() async throws -> CachedWorkspace? {
         guard let sync,
@@ -78,8 +81,10 @@ struct NativeChatClient: ChatClient {
     func members(channelID: String) async throws -> [ChannelMembership] {
         try await shapes.snapshot("api/shapes/channel_users", query: ["channel_id": try segment(channelID)], as: ChannelMembership.self)
     }
-    func readState(channelID: String) async throws -> ChannelReadState {
-        try await cachedGet("api/channels/\(try segment(channelID))/read-state")
+    func readState(channelID: String, allowCached: Bool) async throws -> ChannelReadState {
+        let path = "api/channels/\(try segment(channelID))/read-state"
+        if allowCached { return try await cachedGet(path) }
+        return try await api.get(path)
     }
     func attachmentURL(id: String) async throws -> URL {
         let result: Envelope<AttachmentDownload> = try await api.get("api/attachments/\(try segment(id))/url")
@@ -242,6 +247,37 @@ struct NativeChatClient: ChatClient {
     func markRead(channelID: String, messageID: String) async throws {
         _ = try await api.data("api/channels/\(try segment(channelID))/read-state", method: "POST",
                                body: ["message_id": .string(try segment(messageID))])
+    }
+
+    func markChannelRead(channelID: String) async throws -> ChannelReadState {
+        let id = try segment(channelID)
+        if sync?.isRevoked(id) == true { _ = try await channel(id: id) }
+        let version = sync?.channelVersion(id)
+        try sync?.check(channelID: id, channelVersion: version)
+        // 全履歴や端末のキャッシュではなく、サーバーの最新の親投稿を1件だけ取得する。
+        let data = try await api.data("api/shapes/messages", query: [
+            "channel_id": id, "offset": "-1", "log": "changes_only", "replica": "full",
+            "subset__where": "parent_id IS NULL AND deleted_at IS NULL",
+            "subset__order_by": "created_at DESC, id DESC", "subset__limit": "1"
+        ])
+        let snapshot = try JSONDecoder().decode(Envelope<[ShapeEvent]>.self, from: data)
+        try Task.checkCancellation()
+        try sync?.check(channelID: id, channelVersion: version)
+        let path = "api/channels/\(id)/read-state"
+        let state: ChannelReadState
+        if let event = snapshot.data.first {
+            guard snapshot.data.count == 1, event.headers.operation == "insert",
+                  let row = event.value, row["channel_id"]?.text == id,
+                  row["parent_id"]?.text == nil, row["deleted_at"]?.text == nil,
+                  let messageID = row["id"]?.text else { throw ZooError.invalidResponse }
+            state = try await api.write(path, body: ["message_id": .string(try segment(messageID))])
+        } else {
+            state = try await api.get(path)
+        }
+        try Task.checkCancellation()
+        try sync?.check(channelID: id, channelVersion: version)
+        guard state.channel_id == id else { throw ZooError.invalidResponse }
+        return state
     }
 
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
