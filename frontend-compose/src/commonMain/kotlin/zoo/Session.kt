@@ -404,13 +404,9 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 encryption.send(channel, platform.uuid(), parent, content)
                 true
             } catch (failure: CancellationException) { throw failure }
-            catch (failure: ApiException) {
-                // 暗号化チャンネルでも、参加が必要なスレッドへの返信は、参加を案内する。
-                toast = t(if (parent != null && failure.requiresThreadJoin) "threads.joinToReply" else "common.writeError")
-                false
-            }
             catch (failure: Exception) {
-                toast = t(failure.message?.takeIf { it.startsWith("e2ee.") } ?: "common.writeError")
+                // 暗号化チャンネルでも、参加が必要なスレッドへの返信は、参加を案内する。
+                toast = t(sendFailureKey(parent, failure, encrypted = true))
                 false
             }
         }
@@ -473,12 +469,9 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             true
         } catch (e: CancellationException) {
             throw e
-        } catch (e: ApiException) {
+        } catch (e: Exception) {
             // 参加が必要なスレッドへの返信は、参加（スレッドの「参加する」）を案内する。
-            toast = t(if (parent != null && e.requiresThreadJoin) "threads.joinToReply" else "common.writeError")
-            false
-        } catch (_: Exception) {
-            toast = t("common.writeError")
+            toast = t(sendFailureKey(parent, e, encrypted = false))
             false
         }
     }
@@ -565,4 +558,15 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 fun String.decodeURLPart(): String = decodeURLQueryComponent()
 
 /** 件数に合う複数形のキー (`key_one` / `key_other`) */
+/**
+ * 返信の送信に失敗したときの、案内の翻訳キー。参加行があるスレッドへ、参加せずに返信したとき
+ * （[requiresThreadJoin]）は、平文でも暗号化チャンネルでも、参加を案内する（親のない投稿には出さない）。
+ * 暗号化の送信が投げる `e2ee.` で始まる理由は、暗号化チャンネルのときだけ、そのまま使う。
+ */
+internal fun sendFailureKey(parent: String?, failure: Exception, encrypted: Boolean): String {
+    if (parent != null && failure is ApiException && failure.requiresThreadJoin) return "threads.joinToReply"
+    if (encrypted) return failure.message?.takeIf { it.startsWith("e2ee.") } ?: "common.writeError"
+    return "common.writeError"
+}
+
 fun pluralKey(key: String, count: Int): String = "${key}_${if (count == 1) "one" else "other"}"

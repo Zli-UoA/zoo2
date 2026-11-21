@@ -27,4 +27,20 @@ class ThreadJoinTest {
         )
         assertFalse(ApiException(403).requiresThreadJoin)
     }
+
+    @Test
+    fun aReplyThatNeedsAJoinIsAnsweredTheSameForPlainAndEncryptedSends() {
+        val needsJoin = ApiException(403, buildJsonObject { put("error", "x"); put("code", "THREAD_JOIN_REQUIRED") })
+        val restricted = ApiException(403, buildJsonObject { put("code", "POSTING_RESTRICTED") })
+        for (encrypted in listOf(false, true)) {
+            assertEquals("threads.joinToReply", sendFailureKey("root", needsJoin, encrypted))
+            // 親のない投稿には、スレッドの参加を案内しない。
+            assertEquals("common.writeError", sendFailureKey(null, needsJoin, encrypted))
+            // 投稿権限の 403 は、参加では直らない。
+            assertEquals("common.writeError", sendFailureKey("root", restricted, encrypted))
+        }
+        // `e2ee.` で始まる理由は、暗号化の送信のときだけ、そのまま使う。
+        assertEquals("e2ee.sendNeedsUnlock", sendFailureKey("root", Exception("e2ee.sendNeedsUnlock"), true))
+        assertEquals("common.writeError", sendFailureKey("root", Exception("e2ee.sendNeedsUnlock"), false))
+    }
 }

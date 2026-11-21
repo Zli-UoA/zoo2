@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
@@ -56,6 +57,10 @@ const fixture = vi.hoisted(() => {
     setWriteError: vi.fn(),
     /** `useThreadMembership` の取り直し（`retry`）。参加が必要な 403 のあとに呼ばれる。 */
     retryMembership: vi.fn(),
+    /** `useE2ee` の値。既定は暗号ストアなし（暗号化チャンネルの送信を試すテストだけ差し替える）。 */
+    e2ee: {} as Record<string, unknown>,
+    /** 暗号化チャンネルの送信（`sendEncryptedMessage`）。 */
+    sendEncrypted: vi.fn(),
   };
 });
 const collection = {
@@ -88,6 +93,14 @@ vi.mock("../../../hooks/useThreadMembership", async (original) => ({
     change: vi.fn(),
     retry: fixture.retryMembership,
   }),
+}));
+vi.mock("../../../lib/e2ee/e2ee-context", async (original) => ({
+  ...(await original<typeof import("../../../lib/e2ee/e2ee-context")>()),
+  useE2ee: () => fixture.e2ee,
+}));
+vi.mock("../../../lib/e2ee/channelSend", async (original) => ({
+  ...(await original<typeof import("../../../lib/e2ee/channelSend")>()),
+  sendEncryptedMessage: (...args: unknown[]) => fixture.sendEncrypted(...args),
 }));
 vi.mock("../../../hooks/useKitchenCatalog", () => ({
   useKitchenCatalog: () => ({ catalog: null }),
@@ -215,6 +228,8 @@ beforeEach(() => {
   fixture.writeErrorCause = null;
   fixture.setWriteError.mockClear();
   fixture.retryMembership.mockClear();
+  fixture.e2ee = {};
+  fixture.sendEncrypted.mockReset();
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.info).mockClear();
 });
@@ -404,5 +419,51 @@ describe("a reply that the server refuses until the thread is joined", () => {
     expect(fixture.retryMembership).not.toHaveBeenCalled();
     expect(toast.info).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalled();
+  });
+
+  it("answers the same 403 of an encrypted reply the same way", async () => {
+    fixture.e2ee = {
+      worker: { request: vi.fn().mockResolvedValue(undefined) },
+      deviceId: "device",
+      requestKeyBackup: vi.fn(),
+    };
+    fixture.sendEncrypted.mockRejectedValue(
+      new ApiError(403, "forbidden", { error: "any text", code: "THREAD_JOIN_REQUIRED" }),
+    );
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember encrypted />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Reply to thread" }));
+    await waitFor(() => expect(fixture.retryMembership).toHaveBeenCalled());
+    expect(toast.info).toHaveBeenCalledWith(
+      expect.stringContaining("参加"),
+      expect.objectContaining({ id: "thread-join-required" }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the generic error for an encrypted reply refused for another reason", async () => {
+    fixture.e2ee = {
+      worker: { request: vi.fn().mockResolvedValue(undefined) },
+      deviceId: "device",
+      requestKeyBackup: vi.fn(),
+    };
+    fixture.sendEncrypted.mockRejectedValue(
+      new ApiError(403, "forbidden", {
+        error: "Only channel managers may post here",
+        code: "POSTING_RESTRICTED",
+      }),
+    );
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember encrypted />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Reply to thread" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(fixture.retryMembership).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
   });
 });
