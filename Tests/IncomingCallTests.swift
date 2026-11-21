@@ -136,6 +136,102 @@ struct OutgoingCallTests {
         #expect(!context.controller.isManagingCall)
     }
 
+    @Test("Watchから指定した通話だけをミュート・終了し、別IDの要求を拒否する")
+    func watchControlsOutgoingCall() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let start = try await context.requestStart()
+        await context.performStart(start)
+        let call = try #require(context.controller.watchCall)
+        #expect(call.id == start.callUUID && call.phase == .connected && call.canSetMuted)
+        let count = context.requesting.requests.count
+        await #expect(throws: ZooError.self) {
+            try await context.controller.performWatchAction(WatchRequest(action: .end, callID: UUID()))
+        }
+        #expect(context.requesting.requests.count == count)
+        try await context.controller.performWatchAction(WatchRequest(action: .setMuted, callID: call.id, muted: true))
+        let mute = try #require(context.requesting.requests.last?.actions.first as? CXSetMutedCallAction)
+        #expect(mute.callUUID == call.id && mute.isMuted)
+        context.controller.provider(context.native, perform: mute)
+        #expect(context.media.muted && context.controller.watchCall?.muted == true)
+        try await context.controller.performWatchAction(WatchRequest(action: .end, callID: call.id))
+        let end = try #require(context.requesting.requests.last?.actions.first as? CXEndCallAction)
+        context.controller.provider(context.native, perform: end)
+        #expect(context.controller.watchCall == nil && context.media.closed)
+    }
+
+    @Test("Watchの古い接続セッションとログアウト後の操作を拒否する")
+    func watchRejectsStaleSession() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let start = try await context.requestStart()
+        await context.performStart(start)
+        var workspace: WorkspaceStore? = context.workspace
+        let service = WatchCompanionService(calls: context.controller, workspace: { workspace }, prepare: { workspace })
+        let initial = service.snapshot()
+        let count = context.requesting.requests.count
+        let stale = await service.respond(to: WatchRequest(action: .end, sessionID: UUID(), callID: start.callUUID))
+        #expect(stale.error != nil && context.requesting.requests.count == count)
+        workspace = nil
+        #expect(service.snapshot().sessionID == nil && service.snapshot().notices.isEmpty)
+        workspace = context.workspace
+        #expect(service.snapshot().sessionID != initial.sessionID)
+        let reconnected = await service.respond(to: WatchRequest(action: .end, sessionID: initial.sessionID, callID: start.callUUID))
+        #expect(reconnected.error != nil && context.requesting.requests.count == count)
+        let valid = await service.respond(to: WatchRequest(action: .end, sessionID: service.snapshot().sessionID, callID: start.callUUID))
+        #expect(valid.error == nil && context.requesting.requests.count == count + 1)
+    }
+
+    @Test("通知取得が遅くてもWatchの通話操作を待たせず、重複取得とログアウト後の継続を防ぐ")
+    func watchRefreshDoesNotBlockCalls() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let start = try await context.requestStart()
+        await context.performStart(start)
+        let started = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let release = AsyncStream<Void>.makeStream()
+        let cancelled = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        defer { started.continuation.finish(); release.continuation.finish(); cancelled.continuation.finish() }
+        var workspace: WorkspaceStore? = context.workspace
+        var refreshes = 0
+        let service = WatchCompanionService(calls: context.controller, workspace: { workspace }, prepare: {
+            Issue.record("接続済みの通話で認証復元を待っています")
+            return workspace
+        }, refresh: { _ in
+            refreshes += 1
+            started.continuation.yield(())
+            for await _ in release.stream { }
+            #expect(Task.isCancelled)
+            cancelled.continuation.yield(())
+        })
+        let reply = await service.respond(to: WatchRequest(action: .refresh))
+        for await _ in started.stream { break }
+        #expect(reply.snapshot.call?.id == start.callUUID)
+        _ = await service.respond(to: WatchRequest(action: .refresh))
+        #expect(refreshes == 1)
+        let action = await service.respond(to: WatchRequest(action: .end,
+            sessionID: reply.snapshot.sessionID, callID: start.callUUID))
+        #expect(action.error == nil)
+        #expect(context.requesting.requests.last?.actions.first is CXEndCallAction)
+        workspace = nil
+        #expect(service.snapshot().sessionID == nil)
+        for await _ in cancelled.stream { break }
+    }
+
+    @Test("WatchへCallKitの要求失敗を返し、成功表示にしない")
+    func watchReportsCallKitFailure() async throws {
+        let context = try Context()
+        defer { context.close() }
+        let start = try await context.requestStart()
+        await context.performStart(start)
+        let service = WatchCompanionService(calls: context.controller,
+            workspace: { context.workspace }, prepare: { context.workspace })
+        let snapshot = service.snapshot()
+        context.requesting.failure = ZooError.invalidResponse
+        let reply = await service.respond(to: WatchRequest(action: .end, sessionID: snapshot.sessionID, callID: start.callUUID))
+        #expect(reply.error != nil && context.controller.isManagingCall)
+    }
+
     @Test("発信要求の拒否と音声設定の失敗では入室せず、次の通話を妨げない", arguments: [false, true])
     func rejectsFailedStart(audioFailure: Bool) async throws {
         let context = try Context(audioFailure: audioFailure)
@@ -225,6 +321,39 @@ struct IncomingCallTests {
         var value = payload
         value[key] = "不正な値"
         #expect(IncomingCall(payload: value) == nil)
+    }
+
+    @Test("Watchの着信操作はログイン中の宛先に限り、CallKitへ応答・拒否を要求する", arguments: [true, false])
+    func watchIncomingActions(matchesUser: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let call = try #require(IncomingCall(payload: payload))
+        let client = FakeCallClient()
+        client.invitationRows = [call.invitation]
+        let userID = matchesUser ? call.userID : UUID().uuidString
+        let calls = CallStore(client: client, userID: userID, makeMedia: { FakeCallMedia() }, permission: { true })
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+        let reporting = FakeCallReporting()
+        let requesting = FakeCallRequesting()
+        let controller = SystemCallController(provider: reporting, callController: requesting)
+        controller.setForeground(false)
+        controller.connect(workspace)
+        defer { controller.disconnect(); workspace.shutdown() }
+        await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
+        if matchesUser {
+            #expect(controller.watchCall?.phase == .incoming && controller.watchCall?.title == call.callerName)
+            try await controller.performWatchAction(WatchRequest(action: .answer, callID: call.id))
+            #expect((requesting.requests.last?.actions.first as? CXAnswerCallAction)?.callUUID == call.id)
+            try await controller.performWatchAction(WatchRequest(action: .decline, callID: call.id))
+            #expect((requesting.requests.last?.actions.first as? CXEndCallAction)?.callUUID == call.id)
+        } else {
+            #expect(controller.watchCall == nil)
+            await #expect(throws: ZooError.self) {
+                try await controller.performWatchAction(WatchRequest(action: .answer, callID: call.id))
+            }
+            #expect(requesting.requests.isEmpty)
+        }
     }
 
     @Test("ShapeとVoIPが同じ着信を届けても二重に鳴らさない")

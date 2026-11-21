@@ -91,9 +91,9 @@ final class InboxStore {
         }
     }
 
-    func refresh() async {
+    func refresh(clearActionError: Bool = true) async {
         guard active, !Task.isCancelled else { return }
-        actionError = nil
+        if clearActionError { actionError = nil }
         async let remote: Void = refreshFederation()
         let revision = channelRevision
         do {

@@ -5,6 +5,34 @@ SwiftUI と Swift で実装した Zoo の iPhone・iPad アプリです。iOS／
 iPadでは縦・横・上下逆向きの表示に対応します。
 REST API と Electric の差分同期で `https://zli.chat` に直接接続します。
 
+## Apple Watchとの連携
+
+watchOS 26以降向けのZooアプリを同梱しています。ペアリングしたiPhoneのZooにログインして使います。
+Watchアプリでは通知の種類・送信者を直近10件まで確認でき、着信への「iPhoneで応答」・拒否と、
+通話のミュート・終了を操作できます。音声はiPhoneまたはiPhoneに接続した音声機器から流れます。
+Watch単体の音声通話と、Watchからの新規発信には対応していません。
+
+メッセージなどの通知は、iPhoneのWatchアプリの「通知」でZooの通知を許可すると、
+[OS標準の通知転送](https://developer.apple.com/documentation/watchos-apps/taking-advantage-of-notification-forwarding)で届きます。
+通知の表示先はiPhone・Watchのロック状態や集中モードなどに依存します。Watchアプリ内の一覧には
+本文を複製せず、通知バナーでの本文表示はOSの通知設定に従います。
+
+通話操作はWatchアプリを開いて、iPhoneと通信できる間に使用します。Watchアプリを閉じた状態での
+独自の着信通知や、iPhoneへ接続できない間の操作予約は行いません。着信への応答前に、iPhoneで
+マイクの使用を許可してください。接続中の表示はiPhoneの通話状態に追従し、Watchアプリの表示中だけ
+15秒ごとに通知一覧を更新します。iPhoneからの表示更新が失敗した場合は、失敗を検知してから
+1秒間隔で2回まで、最新の状態と到達性を確認して再送します。その後は通常の更新で回復します。
+通信やOSの停止による遅延は保証できません。通信切断・非表示時にはWatch側の表示データを破棄します。
+
+`make generate`でiOSとWatchのプロジェクトを再生成し、`make build`で同梱状態を、
+`make build-watch`でWatch単体のビルドを確認できます。回帰テストは`make test`に含まれます。
+実機では、通知転送、iPhoneのロック中・バックグラウンドでの応答、音声の送受信、
+着信の取消・期限切れ、通信切断と再接続、ログアウト後の表示消去を確認します。
+
+2026-11-21に同梱ビルド・Watch単体ビルド、iOS 26.5のSwift Testing 340件・XCTest 12件、
+着信応答・拒否のUIテスト2件が成功しました。reviewer-jpの指摘1件を修正し、再レビューを通過しています。
+実機での通知転送・Watchからの通話操作・音声は未検証です。
+
 ## スクリーンショット
 
 2026-11-19 に iPhone 18 Pro・iOS 27.0 シミュレーターで撮影した、ライト表示のアプリ画面です。
