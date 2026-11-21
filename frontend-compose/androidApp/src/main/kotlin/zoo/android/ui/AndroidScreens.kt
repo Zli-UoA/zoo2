@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
@@ -200,16 +201,20 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
             items(section.channels, key = { it.id }) { channel ->
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 48.dp)
-                        .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) },
+                        .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
+                        .semantics { if (channel.unread) stateDescription = "未読" },
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     UiGlyph(UiIcon.Channels, colors.secondary)
-                    Text(channel.title, Modifier.weight(1f), color = colors.foreground, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis)
-                    if (channel.unread) Text("未読",
-                        Modifier.background(colors.headerLight, CircleShape).padding(horizontal = 8.dp),
-                        color = colors.foreground, fontSize = 12.sp)
+                    Text(
+                        channel.title,
+                        Modifier.weight(1f),
+                        color = colors.foreground,
+                        fontWeight = if (channel.unread) FontWeight.Bold else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
