@@ -182,12 +182,16 @@ fn like_clauses(column: &str, terms: &[&str], first: usize) -> String {
         .collect()
 }
 
-/// スニペットの元。最初の語が当たった位置の少し前から切り出す（長い本文の後ろで当たっても語を含む）。
-/// 前を省いたら `…` を付ける。
-fn snippet_source(column: &str) -> String {
+/// スニペットの元。どれかの語が最初に当たった位置の少し前から切り出す（長い本文の後ろで当たっても語を
+/// 含み、語の順番にもよらない）。前を省いたら `…` を付ける。語は `$9` から `terms` 個。
+fn snippet_source(column: &str, terms: usize) -> String {
+    let positions: Vec<String> = (0..terms)
+        .map(|i| format!("NULLIF(strpos(lower({column}), lower(${})), 0)", 9 + i))
+        .collect();
+    let first = format!("COALESCE(LEAST({}), 1)", positions.join(", "));
     format!(
-        "(CASE WHEN strpos(lower({column}), lower($9)) > 201 THEN '…' ELSE '' END \
-          || substr({column}, greatest(1, strpos(lower({column}), lower($9)) - 200), 1000))"
+        "(CASE WHEN {first} > 201 THEN '…' ELSE '' END \
+          || substr({column}, greatest(1, {first} - 200), 1000))"
     )
 }
 
@@ -221,7 +225,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
              FROM (SELECT m.* FROM messages m WHERE m.deleted_at IS NULL AND m.content <> ''{likes} AND {common}) m \
              JOIN channels c ON c.id = m.channel_id ORDER BY m.created_at DESC, m.id DESC",
             likes = like_clauses("m.content", terms, 9),
-            text = snippet_source("m.content"),
+            text = snippet_source("m.content", terms.len()),
             common = common("m", "user_id"),
         ),
         SearchKind::Files => format!(
@@ -246,7 +250,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
              FROM (SELECT n.* FROM channel_notes n WHERE n.deleted_at IS NULL{likes} AND {common}) n \
              JOIN channels c ON c.id = n.channel_id ORDER BY n.created_at DESC, n.id DESC",
             likes = like_clauses("(n.title || E'\\n' || n.content)", terms, 9),
-            text = snippet_source("(n.title || E'\\n' || n.content)"),
+            text = snippet_source("(n.title || E'\\n' || n.content)", terms.len()),
             common = common("n", "created_user_id"),
         ),
     }
