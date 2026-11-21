@@ -557,7 +557,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
 fun String.decodeURLPart(): String = decodeURLQueryComponent()
 
-/** 件数に合う複数形のキー (`key_one` / `key_other`) */
 /**
  * 返信の送信に失敗したときの、案内の翻訳キー。参加行があるスレッドへ、参加せずに返信したとき
  * （[requiresThreadJoin]）は、平文でも暗号化チャンネルでも、参加を案内する（親のない投稿には出さない）。
@@ -569,4 +568,5 @@ internal fun sendFailureKey(parent: String?, failure: Exception, encrypted: Bool
     return "common.writeError"
 }
 
+/** 件数に合う複数形のキー (`key_one` / `key_other`) */
 fun pluralKey(key: String, count: Int): String = "${key}_${if (count == 1) "one" else "other"}"
