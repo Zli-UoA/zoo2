@@ -135,8 +135,9 @@ export const LoadingOlder: Story = {
     isLoadingOlder: true,
   },
   play: playForImplementation(async () => {
+    // 7 ロケールすべてで通るよう、文言ではなく「ライブリージョンに内容があること」を検証する。
     const status = await screen.findByTestId("loading-older-status");
-    await expect(status).toHaveTextContent(/読み込み中|Loading older messages/);
+    await expect(status).not.toBeEmptyDOMElement();
   }),
 };
 
