@@ -313,12 +313,9 @@ export function MessageList({
       // Estimates for unmounted rows must not decide which message the reader sees.
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
-      if (anchor && index < 0 && slid) {
-        // アンカー行がウィンドウから押し出された場合は、消えた行の実測高さを
-        // 正確に取れないため scrollTop を推測で動かさない。今の先頭行を新しい
-        // アンカーとして記録し、次の押し出しからは追従できるようにする。
-        captureScrollAnchor();
-      } else if (anchor && index >= 0) {
+      // アンカーが押し出された (index < 0) 場合は、消えた行の実測高さが取れないので
+      // scrollTop を推測で動かさない。描画後の captureScrollAnchor() が次の位置を記録する。
+      if (anchor && index >= 0) {
         restoringAnchorRef.current = true;
         let frame = 0;
         let stopped = false;
