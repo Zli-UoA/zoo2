@@ -112,4 +112,80 @@ struct WatchCompanionTests {
         let decoded = try JSONDecoder().decode(WatchRequest.self, from: JSONEncoder().encode(request))
         #expect(decoded.id == request.id && decoded.callID == request.callID && decoded.sessionID == request.sessionID)
     }
+
+    @Test("表示の送信失敗は最新状態で2回まで再試行する")
+    func retriesLatestSnapshot() async throws {
+        let probe = DeliveryProbe(current: snapshot())
+        let publisher = probe.publisher()
+        var sent = probe.sent.stream.makeAsyncIterator()
+        var waiting = probe.waiting.stream.makeAsyncIterator()
+        publisher.publish()
+        _ = await sent.next()
+        for index in 0..<2 {
+            probe.failures[index]()
+            _ = await waiting.next()
+            probe.current = snapshot(phase: .connected)
+            probe.resume.continuation.yield(())
+            _ = await sent.next()
+            #expect(probe.snapshots.last == probe.current)
+        }
+        probe.failures[2]()
+        #expect(probe.waitCount == 2 && probe.snapshots.count == 3)
+    }
+
+    @Test("古い送信の失敗は新しい成功済み表示を無効化しない")
+    func ignoresSupersededFailure() {
+        let probe = DeliveryProbe(current: snapshot())
+        let publisher = probe.publisher()
+        publisher.publish()
+        probe.current = snapshot(phase: .connected)
+        publisher.publish()
+        probe.failures[0]()
+        publisher.publish()
+        #expect(probe.snapshots.count == 2)
+    }
+
+    @Test("再試行を待つ間に切断したら古い表示を送信しない")
+    func stopsRetryWhenDisconnected() async {
+        let probe = DeliveryProbe(current: snapshot())
+        let publisher = probe.publisher()
+        var reads = probe.reads.stream.makeAsyncIterator()
+        var waiting = probe.waiting.stream.makeAsyncIterator()
+        publisher.publish()
+        _ = await reads.next()
+        probe.failures[0]()
+        _ = await waiting.next()
+        probe.current = nil
+        probe.resume.continuation.yield(())
+        _ = await reads.next()
+        #expect(probe.snapshots.count == 1)
+    }
+
+    @MainActor private final class DeliveryProbe {
+        var current: WatchSnapshot?
+        var snapshots: [WatchSnapshot] = []
+        var failures: [@MainActor @Sendable () -> Void] = []
+        var waitCount = 0
+        let reads = AsyncStream<Void>.makeStream()
+        let sent = AsyncStream<Void>.makeStream()
+        let waiting = AsyncStream<Void>.makeStream()
+        let resume = AsyncStream<Void>.makeStream()
+
+        init(current: WatchSnapshot) { self.current = current }
+
+        func publisher() -> WatchSnapshotPublisher {
+            WatchSnapshotPublisher(snapshot: { [self] in
+                reads.continuation.yield(())
+                return current
+            }, send: { [self] data, failed in
+                if let reply = try? JSONDecoder().decode(WatchReply.self, from: data) { snapshots.append(reply.snapshot) }
+                failures.append(failed)
+                sent.continuation.yield(())
+            }, pause: { [self] in
+                waitCount += 1
+                waiting.continuation.yield(())
+                for await _ in resume.stream { return }
+            })
+        }
+    }
 }

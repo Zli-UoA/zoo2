@@ -9,12 +9,73 @@ private struct WatchReplyHandler: @unchecked Sendable {
 }
 
 @MainActor
+final class WatchSnapshotPublisher {
+    private let snapshot: () -> WatchSnapshot?
+    private let send: (Data, @escaping @MainActor @Sendable () -> Void) -> Void
+    private let pause: () async throws -> Void
+    private var lastSent: WatchSnapshot?
+    private var generation = UUID()
+    private var retryTask: Task<Void, Never>?
+
+    init(snapshot: @escaping () -> WatchSnapshot?,
+         send: @escaping (Data, @escaping @MainActor @Sendable () -> Void) -> Void,
+         pause: @escaping () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
+        self.snapshot = snapshot
+        self.send = send
+        self.pause = pause
+    }
+
+    deinit { retryTask?.cancel() }
+
+    func publish(force: Bool = false) { publish(force: force, retries: 2) }
+
+    private func publish(force: Bool, retries: Int) {
+        guard let snapshot = snapshot() else {
+            retryTask?.cancel()
+            retryTask = nil
+            generation = UUID()
+            lastSent = nil
+            return
+        }
+        guard force || snapshot != lastSent,
+              let data = try? JSONEncoder().encode(WatchReply(snapshot: snapshot)) else { return }
+        retryTask?.cancel()
+        retryTask = nil
+        let id = UUID()
+        generation = id
+        lastSent = snapshot
+        send(data) { [weak self] in
+            guard let self, self.generation == id else { return }
+            self.lastSent = nil
+            guard retries > 0 else { return }
+            let pause = self.pause
+            self.retryTask = Task { [weak self] in
+                do { try await pause(); try Task.checkCancellation() } catch { return }
+                guard let self, self.generation == id else { return }
+                self.retryTask = nil
+                // 古い着信やアカウントを再送せず、再試行時の状態と到達性を取り直す。
+                self.publish(force: true, retries: retries - 1)
+            }
+        }
+    }
+}
+
+@MainActor
 final class WatchCompanionController: NSObject {
     private let service: WatchCompanionService
     private let calls: SystemCallController
     private let connectivity: WCSession
-    private var lastSent: WatchSnapshot?
     private var observationID = UUID()
+    private lazy var publisher = WatchSnapshotPublisher(snapshot: { [weak self] in
+        guard let self, self.connectivity.activationState == .activated, self.connectivity.isPaired,
+              self.connectivity.isWatchAppInstalled, self.connectivity.isReachable else { return nil }
+        return self.service.snapshot()
+    }, send: { [weak self] data, failed in
+        // 通話操作と個人情報をバックグラウンド配送のキューへ残さない。
+        self?.connectivity.sendMessageData(data, replyHandler: nil) { @Sendable _ in
+            Task { @MainActor in failed() }
+        }
+    })
 
     init?(session: AppSession, calls: SystemCallController) {
         guard WCSession.isSupported() else { return nil }
@@ -46,15 +107,7 @@ final class WatchCompanionController: NSObject {
     }
 
     private func publish(force: Bool = false) {
-        guard connectivity.activationState == .activated, connectivity.isPaired,
-              connectivity.isWatchAppInstalled, connectivity.isReachable else { return }
-        let snapshot = service.snapshot()
-        guard force || snapshot != lastSent, let data = try? JSONEncoder().encode(WatchReply(snapshot: snapshot)) else { return }
-        lastSent = snapshot
-        // 通話操作と個人情報をバックグラウンド配送のキューへ残さない。
-        connectivity.sendMessageData(data, replyHandler: nil) { @Sendable [weak self] _ in
-            Task { @MainActor in self?.lastSent = nil }
-        }
+        publisher.publish(force: force)
     }
 }
 
