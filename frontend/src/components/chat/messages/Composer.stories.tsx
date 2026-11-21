@@ -59,6 +59,22 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+export const MultilineActionsStayAtTop: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const textbox = canvas.getByRole("textbox");
+    await userEvent.type(textbox, "1行目{Enter}2行目{Enter}3行目{Enter}4行目");
+    const frame = textbox.closest("div.rounded-xl")!;
+    const emoji = canvas.getByRole("button", { name: "絵文字" });
+    await expect(emoji).toBeVisible();
+    // 複数行になってもアクションは入力枠の先頭行に固定され、下端に寄らない。
+    const frameBox = frame.getBoundingClientRect();
+    const emojiBox = emoji.getBoundingClientRect();
+    await expect(emojiBox.top - frameBox.top).toBeLessThan(16);
+    await expect(frameBox.bottom - emojiBox.bottom).toBeGreaterThan(32);
+  }),
+};
+
 export const Disabled: Story = {
   args: {
     disabled: true,
