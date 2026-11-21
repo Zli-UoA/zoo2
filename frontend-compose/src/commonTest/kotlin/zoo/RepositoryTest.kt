@@ -265,15 +265,51 @@ class RepositoryTest {
     }
 
     @Test
-    fun initialSyncFailureDoesNotPublishAnEmptySuccessfulSnapshot() = runTest {
-        val http = HttpClient(MockEngine { respond("denied", HttpStatusCode.Forbidden) })
-        val table = SyncedTable("notifications", config, FakePlatform(), http, backgroundScope,
+    fun reloadAfterShapeFailureRestartsSyncAndCoalescesRepeatedTaps() = runTest {
+        val retryStarted = CompletableDeferred<Unit>()
+        val releaseRetry = CompletableDeferred<Unit>()
+        var initialRequests = 0
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.parameters["offset"] != "-1") awaitCancellation()
+            if (++initialRequests == 1) {
+                respond("denied", HttpStatusCode.Forbidden)
+            } else {
+                retryStarted.complete(Unit)
+                releaseRetry.await()
+                respond(
+                    """[{"key":"channel","value":{"id":"c1"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]""",
+                    headers = headersOf(
+                        "electric-handle" to listOf("reloaded-handle"),
+                        "electric-offset" to listOf("1_0"),
+                        "electric-cursor" to listOf("1"),
+                        "electric-schema" to listOf("""{"id":{"type":"text"}}"""),
+                        "content-type" to listOf("application/json"),
+                    ),
+                )
+            }
+        })
+        val table = SyncedTable("channels", config, FakePlatform(), http, backgroundScope,
             streamOptions = options)
         try {
             table.error.first { it != null }
             assertFalse(table.loading.value)
             assertNull(table.synchronizedRows.value)
-        } finally { table.close(); http.close() }
+
+            table.refresh()
+            retryStarted.await()
+            table.refresh()
+            runCurrent()
+            releaseRetry.complete(Unit)
+
+            val rows = table.synchronizedRows.first { it != null }
+            assertEquals(listOf("c1"), rows?.map { it.text("id") })
+            assertNull(table.error.value)
+            assertFalse(table.loading.value)
+            assertEquals(2, initialRequests)
+        } finally {
+            table.close()
+            http.close()
+        }
     }
 
     @Test
