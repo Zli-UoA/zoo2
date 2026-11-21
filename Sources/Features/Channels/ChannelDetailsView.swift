@@ -19,8 +19,10 @@ struct ChannelDetailsView: View {
             AppForm {
                 Section("会話について") {
                     Label(workspace.name(for: channel), systemImage: channel.symbol).font(.headline)
-                    if let description = channel.description, !description.isEmpty {
+                    if let description = channel.description, !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Text(description).textSelection(.enabled)
+                    } else {
+                        LabeledContent("説明", value: "なし")
                     }
                     LabeledContent("種類", value: channel.is_dm ? "ダイレクトメッセージ" : channel.is_private ? "非公開チャンネル" : "公開チャンネル")
                     if channel.archive_at != nil { Label("アーカイブ済み", systemImage: "archivebox") }
