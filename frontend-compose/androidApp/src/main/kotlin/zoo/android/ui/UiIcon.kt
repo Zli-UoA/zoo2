@@ -6,16 +6,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -33,8 +31,45 @@ internal object AndroidControlSize {
     val textVerticalInset = 8.dp
 }
 
-internal enum class UiIcon {
-    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff, Delete, Repost, Search, External, Mic, MicOff, Speaker, SpeakerOff, SignIn, Check, Close, Refresh, Photo, Save, Key, Lock, Download, Upload, UserAdd, Archive,
+// Google Material Design Icons (Outlined, 24px), Apache-2.0.
+// Source and license are bundled in assets/licenses/material-design-icons.txt.
+internal enum class UiIcon(val pathData: String) {
+    Back("M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"),
+    Next("M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6-6-6z"),
+    Home("M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z"),
+    Channels("M20,10V8h-4V4h-2v4h-4V4H8v4H4v2h4v4H4v2h4v4h2v-4h4v4h2v-4h4v-2h-4v-4H20z M14,14h-4v-4h4V14z"),
+    Bell("M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z"),
+    Bubble("M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"),
+    Settings("M19.43 12.98c.04-.32.07-.64.07-.98 0-.34-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.09-.16-.26-.25-.44-.25-.06 0-.12.01-.17.03l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.06-.02-.12-.03-.18-.03-.17 0-.34.09-.43.25l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98 0 .33.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.09.16.26.25.44.25.06 0 .12-.01.17-.03l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.06.02.12.03.18.03.17 0 .34-.09.43-.25l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zm-1.98-1.71c.04.31.05.52.05.73 0 .21-.02.43-.05.73l-.14 1.13.89.7 1.08.84-.7 1.21-1.27-.51-1.04-.42-.9.68c-.43.32-.84.56-1.25.73l-1.06.43-.16 1.13-.2 1.35h-1.4l-.19-1.35-.16-1.13-1.06-.43c-.43-.18-.83-.41-1.23-.71l-.91-.7-1.06.43-1.27.51-.7-1.21 1.08-.84.89-.7-.14-1.13c-.03-.31-.05-.54-.05-.74s.02-.43.05-.73l.14-1.13-.89-.7-1.08-.84.7-1.21 1.27.51 1.04.42.9-.68c.43-.32.84-.56 1.25-.73l1.06-.43.16-1.13.2-1.35h1.39l.19 1.35.16 1.13 1.06.43c.43.18.83.41 1.23.71l.91.7 1.06-.43 1.27-.51.7 1.21-1.07.85-.89.7.14 1.13zM12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm0 6c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"),
+    Send("M4.01 6.03l7.51 3.22-7.52-1 .01-2.22m7.5 8.72L4 17.97v-2.22l7.51-1M2.01 3L2 10l15 2-15 2 .01 7L23 12 2.01 3z"),
+    Attach("M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"),
+    Format("M9 4v3h5v12h3V7h5V4H9zm-6 8h3v7h3v-7h3V9H3v3z"),
+    Emoji("M12 16c-1.48 0-2.75-.81-3.45-2H6.88c.8 2.05 2.79 3.5 5.12 3.5s4.32-1.45 5.12-3.5h-1.67c-.7 1.19-1.97 2-3.45 2zm-.01-14C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"),
+    Create("M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM5.92 19H5v-.92l9.06-9.06.92.92L5.92 19zM20.71 5.63l-2.34-2.34c-.2-.2-.45-.29-.71-.29s-.51.1-.7.29l-1.83 1.83 3.75 3.75 1.83-1.83c.39-.39.39-1.02 0-1.41z"),
+    Document("M8 16h8v2H8zm0-4h8v2H8zm6-10H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"),
+    Copy("M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"),
+    Phone("M6.54 5c.06.89.21 1.76.45 2.59l-1.2 1.2c-.41-1.2-.67-2.47-.76-3.79h1.51m9.86 12.02c.85.24 1.72.39 2.6.45v1.49c-1.32-.09-2.59-.35-3.8-.75l1.2-1.19M7.5 3H4c-.55 0-1 .45-1 1 0 9.39 7.61 17 17 17 .55 0 1-.45 1-1v-3.49c0-.55-.45-1-1-1-1.24 0-2.45-.2-3.57-.57-.1-.04-.21-.05-.31-.05-.26 0-.51.1-.71.29l-2.2 2.2c-2.83-1.45-5.15-3.76-6.59-6.59l2.2-2.2c.28-.28.36-.67.25-1.02C8.7 6.45 8.5 5.25 8.5 4c0-.55-.45-1-1-1z"),
+    PhoneOff("M18.59 10.52c1.05.51 2.04 1.15 2.96 1.91l-1.07 1.07c-.58-.47-1.21-.89-1.88-1.27v-1.71m-13.2 0v1.7c-.65.37-1.28.79-1.87 1.27l-1.07-1.07c.91-.75 1.9-1.38 2.94-1.9M12 7C7.46 7 3.34 8.78.29 11.67c-.18.18-.29.43-.29.71s.11.53.29.7l2.48 2.48c.18.18.43.29.71.29.27 0 .52-.1.7-.28.79-.73 1.68-1.36 2.66-1.85.33-.16.56-.51.56-.9v-3.1C8.85 9.25 10.4 9 12 9s3.15.25 4.59.73v3.1c0 .4.23.74.56.9.98.49 1.88 1.11 2.67 1.85.18.17.43.28.7.28.28 0 .53-.11.71-.29l2.48-2.48c.18-.18.29-.43.29-.71s-.11-.53-.29-.71C20.66 8.78 16.54 7 12 7z"),
+    Delete("M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"),
+    Repost("M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"),
+    Search("M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"),
+    External("M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"),
+    Mic("M12,14c1.66,0,3-1.34,3-3V5c0-1.66-1.34-3-3-3S9,3.34,9,5v6C9,12.66,10.34,14,12,14z M17,11c0,2.76-2.24,5-5,5s-5-2.24-5-5H5c0,3.53,2.61,6.43,6,6.92V21h2v-3.08c3.39-0.49,6-3.39,6-6.92H17z"),
+    MicOff("M10.8 4.9c0-.66.54-1.2 1.2-1.2s1.2.54 1.2 1.2l-.01 3.91L15 10.6V5c0-1.66-1.34-3-3-3-1.54 0-2.79 1.16-2.96 2.65l1.76 1.76V4.9zM19 11h-1.7c0 .58-.1 1.13-.27 1.64l1.27 1.27c.44-.88.7-1.87.7-2.91zM4.41 2.86L3 4.27l6 6V11c0 1.66 1.34 3 3 3 .23 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.55-.9l4.2 4.2 1.41-1.41L4.41 2.86z"),
+    Speaker("M3 9v6h4l5 5V4L7 9H3zm7-.17v6.34L7.83 13H5v-2h2.83L10 8.83zM16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77 0-4.28-2.99-7.86-7-8.77z"),
+    SpeakerOff("M4.34 2.93L2.93 4.34 7.29 8.7 7 9H3v6h4l5 5v-6.59l4.18 4.18c-.65.49-1.38.88-2.18 1.11v2.06c1.34-.3 2.57-.92 3.61-1.75l2.05 2.05 1.41-1.41L4.34 2.93zM10 15.17L7.83 13H5v-2h2.83l.88-.88L10 11.41v3.76zM19 12c0 .82-.15 1.61-.41 2.34l1.53 1.53c.56-1.17.88-2.48.88-3.87 0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zm-7-8l-1.88 1.88L12 7.76zm4.5 8c0-1.77-1.02-3.29-2.5-4.03v1.79l2.48 2.48c.01-.08.02-.16.02-.24z"),
+    SignIn("M11,7L9.6,8.4l2.6,2.6H2v2h10.2l-2.6,2.6L11,17l5-5L11,7z M20,19h-8v2h8c1.1,0,2-0.9,2-2V5c0-1.1-0.9-2-2-2h-8v2h8V19z"),
+    Check("M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"),
+    Close("M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"),
+    Refresh("M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"),
+    Photo("M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-4.86 8.86l-3 3.87L9 13.14 6 17h12l-3.86-5.14z"),
+    Save("M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm2 16H5V5h11.17L19 7.83V19zm-7-7c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3zM6 6h9v4H6z"),
+    Key("M22 19h-6v-4h-2.68c-1.14 2.42-3.6 4-6.32 4-3.86 0-7-3.14-7-7s3.14-7 7-7c2.72 0 5.17 1.58 6.32 4H24v6h-2v4zm-4-2h2v-4h2v-2H11.94l-.23-.67C11.01 8.34 9.11 7 7 7c-2.76 0-5 2.24-5 5s2.24 5 5 5c2.11 0 4.01-1.34 4.71-3.33l.23-.67H18v4zM7 15c-1.65 0-3-1.35-3-3s1.35-3 3-3 3 1.35 3 3-1.35 3-3 3zm0-4c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"),
+    Lock("M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM9 6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9V6zm9 14H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"),
+    Download("M19 9h-4V3H9v6H5l7 7 7-7zm-8 2V5h2v6h1.17L12 13.17 9.83 11H11zm-6 7h14v2H5z"),
+    Upload("M9 16h6v-6h4l-7-7-7 7h4v6zm3-10.17L14.17 8H13v6h-2V8H9.83L12 5.83zM5 18h14v2H5z"),
+    UserAdd("M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0-6c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm0 8c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4zm-6 4c.22-.72 3.31-2 6-2 2.7 0 5.8 1.29 6 2H9zm-3-3v-3h3v-2H6V7H4v3H1v2h3v3z"),
+    Archive("M20.54 5.23l-1.39-1.68C18.88 3.21 18.47 3 18 3H6c-.47 0-.88.21-1.16.55L3.46 5.23C3.17 5.57 3 6.02 3 6.5V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6.5c0-.48-.17-.93-.46-1.27zM6.24 5h11.52l.81.97H5.44l.8-.97zM5 19V8h14v11H5zm8.45-9h-2.9v3H8l4 4 4-4h-2.55z"),
 }
 
 @Composable
@@ -58,147 +93,10 @@ internal fun UiIconButton(
 
 @Composable
 internal fun UiGlyph(icon: UiIcon, color: Color, iconSize: Dp = AndroidControlSize.icon) {
+    val path = remember(icon) { PathParser().parsePathString(icon.pathData).toPath() }
     Canvas(Modifier.size(iconSize)) {
-        fun point(x: Float, y: Float) = Offset(x * size.width / 24, y * size.height / 24)
-        val width = 1.75.dp.toPx()
-        fun lines(vararg points: Pair<Int, Int>) {
-            val path = Path()
-            points.forEachIndexed { index, (x, y) ->
-                val p = point(x.toFloat(), y.toFloat())
-                if (index == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
-            }
-            drawPath(path, color, style = Stroke(width, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        }
-        when (icon) {
-            UiIcon.Back -> { lines(13 to 5, 6 to 12, 13 to 19); lines(6 to 12, 21 to 12) }
-            UiIcon.Next -> lines(9 to 6, 15 to 12, 9 to 18)
-            UiIcon.Home -> { lines(3 to 11, 12 to 3, 21 to 11); lines(5 to 10, 5 to 21, 19 to 21, 19 to 10) }
-            UiIcon.Channels -> {
-                lines(10 to 4, 7 to 20)
-                lines(17 to 4, 14 to 20)
-                lines(4 to 9, 21 to 9); lines(3 to 15, 20 to 15)
-            }
-            UiIcon.Bell -> { lines(5 to 17, 7 to 13, 7 to 8, 10 to 5, 14 to 5, 17 to 8, 17 to 13, 19 to 17, 5 to 17); lines(10 to 20, 14 to 20) }
-            UiIcon.Bubble -> lines(4 to 5, 20 to 5, 20 to 17, 10 to 17, 5 to 21, 5 to 17, 4 to 17, 4 to 5)
-            UiIcon.Settings -> {
-                drawCircle(color, size.width * .32f, style = Stroke(width))
-                drawCircle(color, size.width * .10f, style = Stroke(width))
-                lines(12 to 2, 12 to 4); lines(12 to 20, 12 to 22)
-                lines(2 to 12, 4 to 12); lines(20 to 12, 22 to 12)
-            }
-            UiIcon.Send -> { lines(3 to 4, 21 to 12, 3 to 20, 6 to 12, 3 to 4); lines(6 to 12, 21 to 12) }
-            UiIcon.Attach -> lines(14 to 6, 7 to 13, 7 to 17, 10 to 20, 14 to 20, 21 to 13, 21 to 8, 18 to 5, 15 to 5, 9 to 11, 9 to 14, 11 to 16, 13 to 16, 18 to 11)
-            UiIcon.Format -> { lines(4 to 19, 10 to 5, 16 to 19); lines(7 to 14, 13 to 14); lines(18 to 11, 21 to 11, 21 to 19, 18 to 19, 18 to 15, 21 to 15) }
-            UiIcon.Emoji -> {
-                drawCircle(color, size.width * .39f, style = Stroke(width))
-                drawCircle(color, width / 2, point(9f, 9f))
-                drawCircle(color, width / 2, point(15f, 9f))
-                drawArc(color, 0f, 180f, false, point(8f, 11f), Size(size.width / 3, size.height / 4), style = Stroke(width))
-            }
-            UiIcon.Create -> lines(5 to 15, 16 to 4, 20 to 8, 9 to 19, 4 to 20, 5 to 15)
-            UiIcon.Document -> {
-                lines(6 to 3, 14 to 3, 19 to 8, 19 to 21, 6 to 21, 6 to 3)
-                lines(14 to 3, 14 to 8, 19 to 8)
-                lines(9 to 12, 16 to 12)
-                lines(9 to 16, 16 to 16)
-            }
-            UiIcon.SignIn -> {
-                lines(12 to 4, 20 to 4, 20 to 20, 12 to 20)
-                lines(3 to 12, 15 to 12)
-                lines(11 to 8, 15 to 12, 11 to 16)
-            }
-            UiIcon.Check -> lines(5 to 12, 10 to 17, 20 to 7)
-            UiIcon.Close -> { lines(6 to 6, 18 to 18); lines(18 to 6, 6 to 18) }
-            UiIcon.Refresh -> {
-                lines(20 to 10, 18 to 6, 14 to 4, 9 to 4, 5 to 8, 4 to 12, 6 to 17, 10 to 20, 15 to 20, 19 to 17)
-                lines(15 to 10, 20 to 10, 20 to 5)
-            }
-            UiIcon.Photo -> {
-                lines(4 to 5, 20 to 5, 20 to 19, 4 to 19, 4 to 5)
-                lines(4 to 17, 10 to 11, 14 to 15, 17 to 12, 20 to 15)
-                drawCircle(color, size.width / 17, point(15f, 9f))
-            }
-            UiIcon.Save -> {
-                lines(4 to 4, 17 to 4, 20 to 7, 20 to 20, 4 to 20, 4 to 4)
-                lines(8 to 4, 8 to 9, 16 to 9, 16 to 4)
-                lines(8 to 20, 8 to 14, 16 to 14, 16 to 20)
-            }
-            UiIcon.Key -> {
-                drawCircle(color, size.width / 6, point(8f, 8f), style = Stroke(width))
-                lines(11 to 11, 21 to 21, 21 to 17)
-                lines(16 to 16, 19 to 13)
-            }
-            UiIcon.Lock -> {
-                lines(5 to 11, 19 to 11, 19 to 21, 5 to 21, 5 to 11)
-                lines(8 to 11, 8 to 7, 10 to 4, 14 to 4, 16 to 7, 16 to 11)
-                lines(12 to 15, 12 to 17)
-            }
-            UiIcon.Download, UiIcon.Upload -> {
-                lines(5 to 16, 5 to 20, 19 to 20, 19 to 16)
-                lines(12 to 4, 12 to 15)
-                if (icon == UiIcon.Download) lines(8 to 11, 12 to 15, 16 to 11)
-                else lines(8 to 8, 12 to 4, 16 to 8)
-            }
-            UiIcon.UserAdd -> {
-                drawCircle(color, size.width / 6, point(9f, 8f), style = Stroke(width))
-                lines(3 to 20, 3 to 17, 6 to 14, 12 to 14, 15 to 17, 15 to 20)
-                lines(19 to 7, 19 to 15)
-                lines(15 to 11, 23 to 11)
-            }
-            UiIcon.Archive -> {
-                lines(4 to 5, 20 to 5, 20 to 9, 4 to 9, 4 to 5)
-                lines(6 to 9, 6 to 20, 18 to 20, 18 to 9)
-                lines(10 to 13, 14 to 13)
-            }
-            UiIcon.External -> {
-                lines(11 to 5, 5 to 5, 5 to 19, 19 to 19, 19 to 13)
-                lines(13 to 5, 19 to 5, 19 to 11)
-                lines(19 to 5, 11 to 13)
-            }
-            UiIcon.Search -> {
-                drawCircle(color, radius = size.width * .24f, center = point(10f, 10f), style = Stroke(width))
-                lines(14 to 14, 20 to 20)
-            }
-            UiIcon.Delete -> {
-                lines(6 to 7, 18 to 7)
-                lines(9 to 5, 15 to 5)
-                lines(8 to 9, 9 to 19, 15 to 19, 16 to 9)
-            }
-            UiIcon.Repost -> {
-                lines(5 to 9, 19 to 9, 16 to 6)
-                lines(19 to 9, 16 to 12)
-                lines(19 to 15, 5 to 15, 8 to 12)
-                lines(5 to 15, 8 to 18)
-            }
-            UiIcon.Copy -> {
-                lines(5 to 16, 3 to 16, 3 to 3, 16 to 3, 16 to 5)
-                lines(8 to 8, 21 to 8, 21 to 21, 8 to 21, 8 to 8)
-            }
-            UiIcon.Mic, UiIcon.MicOff -> {
-                drawRoundRect(color, topLeft = point(9f, 3f), size = Size(size.width / 4f, size.height * .46f),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.width / 8f), style = Stroke(width))
-                lines(6 to 11, 6 to 13, 8 to 16, 12 to 18, 16 to 16, 18 to 13, 18 to 11)
-                lines(12 to 18, 12 to 21)
-                if (icon == UiIcon.MicOff) lines(3 to 3, 21 to 21)
-            }
-            UiIcon.Speaker, UiIcon.SpeakerOff -> {
-                lines(3 to 9, 7 to 9, 12 to 5, 12 to 19, 7 to 15, 3 to 15, 3 to 9)
-                if (icon == UiIcon.Speaker) {
-                    lines(16 to 9, 17 to 12, 16 to 15)
-                    lines(19 to 6, 21 to 9, 21 to 15, 19 to 18)
-                } else {
-                    lines(16 to 10, 21 to 15)
-                    lines(21 to 10, 16 to 15)
-                }
-            }
-            UiIcon.Phone -> lines(
-                5 to 3, 9 to 3, 11 to 8, 8 to 10, 10 to 14, 14 to 16, 16 to 13,
-                21 to 15, 21 to 19, 19 to 21, 13 to 20, 8 to 17, 4 to 12, 3 to 7, 5 to 3,
-            )
-            UiIcon.PhoneOff -> lines(
-                3 to 12, 5 to 9, 9 to 7, 15 to 7, 19 to 9, 21 to 12, 21 to 16,
-                16 to 16, 15 to 12, 9 to 12, 8 to 16, 3 to 16, 3 to 12,
-            )
+        scale(size.width / 24f, size.height / 24f, pivot = Offset.Zero) {
+            drawPath(path, color)
         }
     }
 }
