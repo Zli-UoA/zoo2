@@ -43,6 +43,26 @@ fn scan(node: &Value, relations: &mut std::collections::BTreeMap<String, f64>) {
     if let Some(name) = name {
         *relations.entry(name.into()).or_default() += work;
     }
+    // 結合で捨てた行と、ソートの入力（メモリ内で済んだものも）も、表の走査と同じ上限で見る。
+    let removed = node["Rows Removed by Join Filter"].as_f64().unwrap_or(0.) * loops;
+    if removed > 0. {
+        *relations.entry("join-filter-removed".into()).or_default() += removed;
+    }
+    if matches!(
+        node["Node Type"].as_str(),
+        Some("Sort" | "Incremental Sort")
+    ) {
+        let input: f64 = node["Plans"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|child| {
+                child["Actual Rows"].as_f64().unwrap_or(0.)
+                    * child["Actual Loops"].as_f64().unwrap_or(0.)
+            })
+            .sum();
+        *relations.entry("sort-input".into()).or_default() += input;
+    }
     assert!(
         !node["Sort Method"]
             .as_str()
@@ -424,7 +444,7 @@ SET session_replication_role = DEFAULT;
                         // 対象の表と検索用インデックスは上限内。JOIN 先（channels など）はページの件数分。
                         for (relation, work) in &relations {
                             let limit = if relation.ends_with("_search_month")
-                                || ["messages", "attachments", "channel_notes"].contains(&relation.as_str())
+                                || ["messages", "attachments", "channel_notes", "join-filter-removed", "sort-input"].contains(&relation.as_str())
                                 || name.starts_with("scope")
                             {
                                 *bound
@@ -490,6 +510,60 @@ SET session_replication_role = DEFAULT;
         let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await?)?;
         assert_eq!(body["items"].as_array().map(Vec::len), Some(1), "{body}");
     }
+    // リクエストごとの SQL の回数・合計バッファ・DB 時間（pg_stat_statements。CI と compose で preload する）。
+    // 統計は全体で 1 つなので、1 リクエストずつ reset して読む。
+    db.batch_execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+        .await?;
+    let stat = |filter: &str| {
+        format!(
+            "SELECT json_build_object('calls', COALESCE(sum(calls), 0), \
+               'blocks', COALESCE(sum(shared_blks_hit + shared_blks_read), 0), \
+               'db_ms', COALESCE(sum(total_exec_time), 0))::text \
+             FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+               AND query NOT LIKE '%pg_stat_statements%' AND ({filter})"
+        )
+    };
+    let mut api_sql = Vec::new();
+    for (name, uri) in api {
+        for _ in 0..5 {
+            db.batch_execute("SELECT pg_stat_statements_reset()")
+                .await?;
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("X-Dev-User", ACTOR)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await?;
+            assert_eq!(response.status(), 200, "{name}");
+            let all: Value = serde_json::from_str(&one(&db, &stat("true")).await?)?;
+            let month: Value =
+                serde_json::from_str(&one(&db, &stat("query LIKE '%likequery%'")).await?)?;
+            let scope: Value = serde_json::from_str(
+                &one(&db, &stat("query LIKE '%visible AS MATERIALIZED%'")).await?,
+            )?;
+            let months = month["calls"].as_f64().unwrap();
+            assert_eq!(scope["calls"].as_f64(), Some(1.), "{name}: scope SQL once");
+            let expected = match name {
+                // 該当なしは、ちょうど 12 か月分の SQL を流して止まる。
+                "api-messages-12-months" => Some(12.),
+                // よくある語は今月だけでページがそろう。
+                "api-messages" => Some(1.),
+                _ => None,
+            };
+            if let Some(expected) = expected {
+                assert_eq!(months, expected, "{name}: month SQL count");
+            }
+            assert!((1. ..=12.).contains(&months), "{name}: {months} month SQLs");
+            api_sql.push(json!({
+                "name": name, "month_sql": months, "statements": all["calls"],
+                "blocks": all["blocks"], "db_ms": all["db_ms"],
+            }));
+        }
+    }
     let api_metrics = Arc::new(Mutex::new(Vec::<Value>::new()));
     for concurrency in [1, 8] {
         let mut tasks = Vec::new();
@@ -526,7 +600,7 @@ SET session_replication_role = DEFAULT;
         serde_json::to_vec_pretty(&json!({
             "rows": n, "recent_rows": R, "visible_channels": visible, "queries": queries.len(),
             "query_definitions": queries.iter().map(|(name, sql, bound)| json!({"name": name, "sql": sql, "bound": bound})).collect::<Vec<_>>(),
-            "samples": *metrics.lock().unwrap(), "api_samples": *api_metrics.lock().unwrap(),
+            "samples": *metrics.lock().unwrap(), "api_samples": *api_metrics.lock().unwrap(), "api_sql": api_sql,
         }))?,
     )?;
     println!(

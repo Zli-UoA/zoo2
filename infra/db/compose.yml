@@ -13,6 +13,9 @@ services:
       - postgres
       - -c
       - wal_level=logical
+      # The search query budget test counts SQL per API request (docs/search.md).
+      - -c
+      - shared_preload_libraries=pg_stat_statements
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
