@@ -218,7 +218,7 @@ it("asks for another folder when the save destination cannot save without overwr
   fireEvent.click(button);
   await waitFor(() => expect(toastError).toHaveBeenCalled(), { timeout: 5_000 });
   expect(toastError).toHaveBeenCalledWith(
-    "この保存先には保存できません。別のフォルダーを選んでください。",
+    "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
   );
   expect(button).not.toBeDisabled();
 });

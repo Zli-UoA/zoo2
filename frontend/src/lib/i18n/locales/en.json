@@ -257,7 +257,7 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
-    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder.",
+    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
     "downloading": "Downloading",
     "saving": "Saving…",
     "cancelDownload": "Cancel downloading {{name}}",

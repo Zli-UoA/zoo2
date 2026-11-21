@@ -257,7 +257,7 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
-    "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾。",
+    "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾，或在設定的「下載」中變更儲存位置。",
     "downloading": "正在下載",
     "saving": "正在儲存…",
     "cancelDownload": "取消下載 {{name}}",

@@ -257,7 +257,7 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
-    "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選んでください。",
+    "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
     "downloading": "ダウンロード中",
     "saving": "保存しています…",
     "cancelDownload": "{{name}}のダウンロードを中止",
