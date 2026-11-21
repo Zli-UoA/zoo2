@@ -241,7 +241,16 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         .await)
         .contains(&m(9))
     );
-    // before はその日を含まない。月初なら前の月から探す（今月の行は出ない）。
+    // before はその日を含まない。月初なら前の月から探す。境界の行は月初ちょうどと、その 1 秒前に置く
+    // （実行時刻によらない）。
+    sql.batch_execute(&format!(
+        "INSERT INTO messages (id, user_id, channel_id, content, created_at) VALUES
+           ('{at_start}', '{alice}', '{public}', '月境界の記録', date_trunc('month', LOCALTIMESTAMP)),
+           ('{before_start}', '{alice}', '{public}', '月境界の記録', date_trunc('month', LOCALTIMESTAMP) - interval '1 second');",
+        at_start = m(11),
+        before_start = m(12),
+    ))
+    .await?;
     let month_start = sql
         .query_one(
             "SELECT date_trunc('month', LOCALTIMESTAMP)::date::text",
@@ -252,13 +261,12 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let before_month = ids(&search(
         &app,
         &alice,
-        &format!("q={}&limit=50&before={month_start}", q("会議")),
+        &format!("q={}&before={month_start}", q("月境界")),
     )
     .await);
-    assert!(
-        before_month.contains(&m(7)) && !before_month.contains(&m(1)),
-        "{before_month:?}"
-    );
+    assert_eq!(before_month, vec![m(12)], "{before_month:?}");
+    let all_boundary = ids(&search(&app, &alice, &format!("q={}", q("月境界"))).await);
+    assert_eq!(all_boundary, vec![m(11), m(12)]);
     let tomorrow = sql
         .query_one(
             "SELECT (LOCALTIMESTAMP + interval '1 day')::date::text",
@@ -328,6 +336,18 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     sql.batch_execute(&insert(&m(10), &public, &long, "8 minutes"))
         .await?;
     let hit = search(&app, &alice, &format!("q={}", q("末尾の会議"))).await;
+    // 語の順番によらず、最初に当たった位置から切り出す（先頭の「資料」も残る）。
+    let spread = format!("資料{}会議の続き", "い".repeat(1500));
+    sql.batch_execute(&insert(&m(13), &public, &spread, "9 minutes"))
+        .await?;
+    let both = search(&app, &alice, &format!("q={}", q("会議の続き 資料"))).await;
+    assert!(
+        both["items"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .starts_with("資料"),
+        "{both}"
+    );
     assert!(
         hit["items"][0]["snippet"]
             .as_str()
