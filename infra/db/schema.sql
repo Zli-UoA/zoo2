@@ -4290,7 +4290,7 @@ ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;
 CREATE EXTENSION IF NOT EXISTS pg_bigm WITH SCHEMA public;
 CREATE EXTENSION IF NOT EXISTS btree_gin WITH SCHEMA public;
 -- 先頭の列は作成月（年*12+月）。検索は新しい月から 1 か月ずつ、月の等価条件で引く。
--- GIN は月とバイグラムの posting を突き合わせるので、1 回の走査は「その月のヒット」に限られ、総履歴に比例しない。
+-- 2 文字以上の語では、GIN は月とバイグラムの posting を突き合わせるので、1 回の走査は「その月のヒット」に限られ、総履歴に比例しない。
 -- 1 文字の語は部分一致で読み飛ばせないため、検索側で索引の条件から外し、その月の行をヒープで確かめる（docs/search.md）。
 -- 本文は lower() で英字の大文字・小文字を区別しない（C ロケールなので日本語には影響しない）。
 CREATE INDEX messages_search_month ON messages USING gin (
