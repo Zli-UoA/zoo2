@@ -13,7 +13,10 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -34,20 +37,35 @@ static DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Windows の上限は 255 UTF-16 単位で、UTF-8 のバイト数はそれを超えない。
 const MAX_FILE_NAME_BYTES: usize = 255 - 23 - 17;
 
-/// `CON`、`NUL`、`COM1` など、Windows が予約している名前。
+/// 同時に書き込める件数。リモートの画面が `begin` を繰り返して、ファイルハンドルを
+/// 使い切らないようにする。
+const MAX_PENDING_DOWNLOADS: usize = 3;
+
+/// 1 件の上限。添付の上限（`MAX_ATTACHMENT_FILE_SIZE`、50 MiB）に合わせる。
+const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
+
+/// `CON`、`NUL`、`COM1` など、Windows が予約している名前。予約名の後ろの空白は
+/// Windows が無視するので、比べる前に落とす。`COM¹` などの上付き数字も予約名。
 const RESERVED_NAMES: &[&str] = &[
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "COM9", "COM¹", "COM²", "COM³", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+    "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
-/// 書き込み中の 1 件。`file` は `.part` を開いたもの。
+/// 書き込み中の 1 件。`file` は `.part` を開いたもの。`None` は中止済みで、
+/// 書き込みも終了処理もしない。
 struct Pending {
-    file: File,
+    file: Arc<Mutex<Option<File>>>,
     part: PathBuf,
     final_path: PathBuf,
     /// 決まったフォルダーへの保存か（保存ダイアログで利用者が選んだのではない）。
     /// 同時に始めた同じ名前の保存で、先に完成したファイルを消さないようにする。
     deduplicate: bool,
+    /// この保存で書いた合計バイト数。
+    written: Arc<AtomicU64>,
+    /// 1 件あたりの上限。テストで小さくできるよう、`Pending` に持たせる。
+    limit: u64,
+    cancelled: Arc<AtomicBool>,
 }
 
 /// 保存先の設定と、書き込み中のもの。
@@ -61,6 +79,32 @@ impl Downloads {
         Self {
             settings: std::sync::Mutex::new(load_settings()),
             pending: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 前回のクラッシュや強制終了で残った `.part` を、起動時に消す。
+    /// 保存先にしているフォルダーと、既定のダウンロードフォルダーだけを見る。
+    pub fn cleanup_stale_parts(&self, app: &AppHandle) {
+        let settings = self.settings();
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = settings.directory.as_deref() {
+            dirs.push(PathBuf::from(dir));
+        }
+        if let Ok(dir) = app.path().download_dir()
+            && !dirs.contains(&dir)
+        {
+            dirs.push(dir);
+        }
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if is_part_file_name(&name.to_string_lossy()) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
         }
     }
 
@@ -90,6 +134,7 @@ impl Downloads {
     }
 
     /// OS のフォルダーの選択で決まった保存先を、確かめて保存する。パスは JS から受け取らない。
+    /// 選ばれたフォルダーが無いときは保存しない（作り直さない）。
     pub fn set_directory(&self, directory: &Path) -> Result<DownloadSettings> {
         let directory = check_directory(directory)?;
         let mut current = self
@@ -109,34 +154,41 @@ impl Downloads {
     ) -> Result<Option<(String, PathBuf)>> {
         let name = sanitize_file_name(file_name);
         let settings = self.settings();
-        let start_dir = settings
-            .directory
-            .as_deref()
-            .map(Path::new)
-            .filter(|dir| dir.is_dir());
+        let configured = settings.directory.as_deref().map(Path::new);
 
         let (final_path, deduplicate) = if settings.ask_every_time {
-            match ask_save_path(app, &name, start_dir).await {
+            match ask_save_path(app, &name, configured.filter(|dir| dir.is_dir())).await {
                 Some(path) => (path, false),
                 None => return Ok(None),
             }
         } else {
-            let dir = match settings.directory.as_deref() {
-                Some(dir) => PathBuf::from(dir),
-                None => app
-                    .path()
-                    .download_dir()
-                    .map_err(|err| anyhow!("ダウンロードフォルダーが見つかりません: {err}"))?,
-            };
-            std::fs::create_dir_all(&dir)
-                .with_context(|| format!("保存先を作れません: {}", dir.display()))?;
-            (unique_path(&dir, &name), true)
+            match configured {
+                // 設定したフォルダーが消えている（外付けドライブや同期フォルダーが外れたなど）。
+                // 作り直さず、保存ダイアログに戻して利用者に決めてもらう。
+                Some(dir) if dir.is_dir() => (unique_path(dir, &name), true),
+                Some(_) => match ask_save_path(app, &name, None).await {
+                    Some(path) => (path, false),
+                    None => return Ok(None),
+                },
+                None => {
+                    let dir = app
+                        .path()
+                        .download_dir()
+                        .map_err(|err| anyhow!("ダウンロードフォルダーが見つかりません: {err}"))?;
+                    if dir.is_dir() {
+                        (unique_path(&dir, &name), true)
+                    } else {
+                        match ask_save_path(app, &name, None).await {
+                            Some(path) => (path, false),
+                            None => return Ok(None),
+                        }
+                    }
+                }
+            }
         };
 
-        if let Some(dir) = final_path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("保存先を作れません: {}", dir.display()))?;
-        }
+        // 保存ダイアログは既にあるフォルダーを返す。決まったフォルダーの保存も、上の分岐で
+        // フォルダーの存在を確かめてある。ここで `create_dir_all` はしない。
         let id = new_download_id();
         let part = part_path(&final_path, &id);
         let file = OpenOptions::new()
@@ -144,70 +196,139 @@ impl Downloads {
             .create_new(true)
             .open(&part)
             .with_context(|| format!("書き込み用のファイルを作れません: {}", part.display()))?;
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                id.clone(),
-                Pending {
-                    file,
-                    part,
-                    final_path: final_path.clone(),
-                    deduplicate,
-                },
-            );
-        Ok(Some((id, final_path)))
-    }
-
-    /// 途中まで書いたものを追記する。
-    pub fn write(&self, id: &str, bytes: &[u8]) -> Result<()> {
         let mut pending = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = pending
-            .get_mut(id)
-            .ok_or_else(|| anyhow!("ダウンロードが見つかりません"))?;
-        entry.file.write_all(bytes)?;
-        Ok(())
+        if pending.len() >= MAX_PENDING_DOWNLOADS {
+            drop(pending);
+            drop(file);
+            let _ = std::fs::remove_file(&part);
+            return Err(anyhow!(
+                "同時に保存できるのは {MAX_PENDING_DOWNLOADS} 件までです"
+            ));
+        }
+        pending.insert(
+            id.clone(),
+            Pending {
+                file: Arc::new(Mutex::new(Some(file))),
+                part,
+                final_path: final_path.clone(),
+                deduplicate,
+                written: Arc::new(AtomicU64::new(0)),
+                limit: MAX_DOWNLOAD_BYTES,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            },
+        );
+        Ok(Some((id, final_path)))
+    }
+
+    /// 途中まで書いたものを追記する。ディスクへの書き込みは `spawn_blocking` に移し、
+    /// `pending` のロックを持ったまま同期 I/O をしない。
+    pub async fn write(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        let (file, written, limit, cancelled) = {
+            let pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = pending
+                .get(id)
+                .ok_or_else(|| anyhow!("ダウンロードが見つかりません"))?;
+            (
+                Arc::clone(&entry.file),
+                Arc::clone(&entry.written),
+                entry.limit,
+                Arc::clone(&entry.cancelled),
+            )
+        };
+        if cancelled.load(Ordering::SeqCst) {
+            return Err(anyhow!("ダウンロードは中止されました"));
+        }
+        let len = bytes.len() as u64;
+        let before = written.fetch_add(len, Ordering::SeqCst);
+        if before.saturating_add(len) > limit {
+            written.fetch_sub(len, Ordering::SeqCst);
+            return Err(anyhow!(
+                "添付が大きすぎます（上限は {} MiB）",
+                limit / (1024 * 1024)
+            ));
+        }
+        let data = bytes.to_vec();
+        let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let mut slot = file
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let file = slot
+                .as_mut()
+                .ok_or_else(|| std::io::Error::other("ダウンロードは中止されました"))?;
+            file.write_all(&data)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(err)) => {
+                written.fetch_sub(len, Ordering::SeqCst);
+                Err(err.into())
+            }
+            Err(err) => {
+                written.fetch_sub(len, Ordering::SeqCst);
+                Err(anyhow!("書き込みを実行できません: {err}"))
+            }
+        }
     }
 
     /// 書き終えたら、本来の名前に置き換える。保存した絶対パスを返す。
-    pub fn finish(&self, id: &str) -> Result<PathBuf> {
+    pub async fn finish(&self, id: &str) -> Result<PathBuf> {
         let entry = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id)
             .ok_or_else(|| anyhow!("ダウンロードが見つかりません"))?;
-        let synced = entry.file.sync_all();
-        drop(entry.file);
-        if let Err(err) = synced {
-            let _ = std::fs::remove_file(&entry.part);
-            return Err(err.into());
-        }
-        let saved = if entry.deduplicate {
-            // `begin` の後に同じ名前のファイルができても（同時に始めた保存など）、消さずに番号を足す。
-            rename_unique(&entry.part, &entry.final_path)
-        } else {
-            replace_file(&entry.part, &entry.final_path).map(|()| entry.final_path.clone())
-        };
-        saved.map_err(|err| {
-            let _ = std::fs::remove_file(&entry.part);
-            anyhow::Error::new(err)
-                .context(format!("保存できません: {}", entry.final_path.display()))
-        })
+        // `sync_all` と置き換えはディスクを待つので、IPC のワーカーを塞がない。
+        tokio::task::spawn_blocking(move || finish_entry(entry))
+            .await
+            .map_err(|err| anyhow!("保存を実行できません: {err}"))?
     }
 
     /// 中止する。途中までの `.part` を消す。見つからなくてもエラーにしない。
-    pub fn cancel(&self, id: &str) {
+    pub async fn cancel(&self, id: &str) {
         let entry = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
-        if let Some(entry) = entry {
-            drop(entry.file);
+        let Some(entry) = entry else {
+            return;
+        };
+        entry.cancelled.store(true, Ordering::SeqCst);
+        let file = Arc::clone(&entry.file);
+        let part = entry.part;
+        // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは消せない）。
+        let _ = tokio::task::spawn_blocking(move || {
+            let taken = file
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            drop(taken);
+            let _ = std::fs::remove_file(&part);
+        })
+        .await;
+    }
+
+    /// 書き込み中のものをすべて中止する。画面の読み込み直し、ログアウト、アプリの終了で呼ぶ。
+    pub fn cancel_all(&self) {
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for (_, entry) in pending {
+            entry.cancelled.store(true, Ordering::SeqCst);
+            if let Ok(mut slot) = entry.file.lock() {
+                drop(slot.take());
+            }
             let _ = std::fs::remove_file(&entry.part);
         }
     }
@@ -221,16 +342,7 @@ impl Default for Downloads {
 
 impl Drop for Downloads {
     fn drop(&mut self) {
-        let pending = std::mem::take(
-            &mut *self
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for (_, entry) in pending {
-            drop(entry.file);
-            let _ = std::fs::remove_file(&entry.part);
-        }
+        self.cancel_all();
     }
 }
 
@@ -305,16 +417,14 @@ fn store_settings(
     Ok(next)
 }
 
-/// 保存先として使えるかを確かめる。無ければ作る。
+/// 保存先として使えるかを確かめる。無いときは作り直さず、エラーにする。
 fn check_directory(directory: &Path) -> Result<PathBuf> {
     if !directory.is_absolute() {
         return Err(anyhow!("保存先は絶対パスで指定してください"));
     }
-    std::fs::create_dir_all(directory)
-        .with_context(|| format!("保存先を作れません: {}", directory.display()))?;
     if !directory.is_dir() {
         return Err(anyhow!(
-            "保存先がフォルダーではありません: {}",
+            "保存先のフォルダーが見つかりません: {}",
             directory.display()
         ));
     }
@@ -341,6 +451,17 @@ fn part_path(final_path: &Path, id: &str) -> PathBuf {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "attachment".into());
     final_path.with_file_name(format!(".{name}.{id}.part"))
+}
+
+/// 起動時の掃除の対象か。`part_path` が作る `.{名前}.{16 桁の ID}.part` だけ。
+fn is_part_file_name(name: &str) -> bool {
+    let Some(stem) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".part")) else {
+        return false;
+    };
+    let Some((_, id)) = stem.rsplit_once('.') else {
+        return false;
+    };
+    id.len() == 16 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// 拡張子を残して、名前がファイルシステムの上限（バイト数）に収まるようにする。
@@ -394,25 +515,38 @@ pub fn sanitize_file_name(name: &str) -> String {
     if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
         cleaned = "attachment".into();
     }
-    let stem = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
+    // Windows は予約名の後ろの空白を無視するので、比べる前に落とす。
+    let stem = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
     if RESERVED_NAMES.contains(&stem.as_str()) {
         cleaned.insert(0, '_');
     }
     truncate_name(cleaned)
 }
 
+/// 名前を、拡張子を残したまま `(n)` を足せる形に分ける。
+fn split_name(name: &str) -> (&str, &str) {
+    let path = Path::new(name);
+    let extension = path
+        .extension()
+        .map(|ext| &name[name.len() - ext.len() - 1..])
+        .unwrap_or("");
+    let stem = &name[..name.len() - extension.len()];
+    (stem, extension)
+}
+
 /// 決まったフォルダーに保存するとき、既にある名前を避ける（`name (1).pdf` など）。
+/// これは始めの候補を選ぶだけで、確定は [`move_unique`] が上書きせずに行う。
 fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let candidate = dir.join(name);
     if !candidate.exists() {
         return candidate;
     }
-    let path = Path::new(name);
-    let extension = path
-        .extension()
-        .map(|ext| format!(".{}", ext.to_string_lossy()))
-        .unwrap_or_default();
-    let stem = &name[..name.len().saturating_sub(extension.len())];
+    let (stem, extension) = split_name(name);
     for n in 1..=9999 {
         let candidate = dir.join(format!("{stem} ({n}){extension}"));
         if !candidate.exists() {
@@ -435,34 +569,119 @@ fn replace_file(part: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
+/// 保存先が既にあると失敗する形で、`part` を `target` へ移す。Unix の `rename` は既存の
+/// ファイルを置き換えるため、`exists` の確認と `rename` の間の競合で他のファイルを消さないよう、
+/// ハードリンク（既にあれば `AlreadyExists`）を使う。
+fn link_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
+    match std::fs::hard_link(part, target) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(part);
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
+        // ハードリンクを使えないファイルシステム（FAT など）や、ポリシーで禁じられている環境では、
+        // 空のファイルを `create_new` で先に確保してから写す。これも既にあるファイルを置き換えない。
+        Err(_) => {
+            let mut dest = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target)?;
+            let copied = std::fs::File::open(part).and_then(|mut src| {
+                std::io::copy(&mut src, &mut dest)?;
+                dest.sync_all()
+            });
+            if let Err(err) = copied {
+                drop(dest);
+                let _ = std::fs::remove_file(target);
+                return Err(err);
+            }
+            drop(dest);
+            let _ = std::fs::remove_file(part);
+            Ok(())
+        }
+    }
+}
+
 /// 決まったフォルダーへ保存するときは上書きしない。`begin` の後に同じ名前のファイルができたら、
 /// 番号を足した名前へ移す（同時に始めた保存や、別のアプリが作ったファイルを消さない）。
-fn rename_unique(part: &Path, target: &Path) -> std::io::Result<PathBuf> {
+fn move_unique(part: &Path, target: &Path) -> std::io::Result<PathBuf> {
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     let name = target
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "attachment".into());
-    let chosen = if target.exists() {
-        unique_path(dir, &name)
-    } else {
-        target.to_path_buf()
-    };
-    match std::fs::rename(part, &chosen) {
-        Ok(()) => Ok(chosen),
-        // Unix の `rename` は既存のファイルを置き換えるので、Windows でだけ起きる。
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            let next = unique_path(dir, &name);
-            std::fs::rename(part, &next)?;
-            Ok(next)
+    let (stem, extension) = split_name(&name);
+    for n in 0..=9999 {
+        let candidate = if n == 0 {
+            target.to_path_buf()
+        } else {
+            dir.join(format!("{stem} ({n}){extension}"))
+        };
+        match link_no_replace(part, &candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
         }
-        Err(err) => Err(err),
     }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "空いているファイル名が見つかりません",
+    ))
+}
+
+/// `finish` の実体。`spawn_blocking` の中で動く。
+fn finish_entry(entry: Pending) -> Result<PathBuf> {
+    if entry.cancelled.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&entry.part);
+        return Err(anyhow!("ダウンロードは中止されました"));
+    }
+    let file = entry
+        .file
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    let Some(file) = file else {
+        let _ = std::fs::remove_file(&entry.part);
+        return Err(anyhow!("ダウンロードは中止されました"));
+    };
+    let synced = file.sync_all();
+    drop(file);
+    if let Err(err) = synced {
+        let _ = std::fs::remove_file(&entry.part);
+        return Err(err.into());
+    }
+    let saved = if entry.deduplicate {
+        move_unique(&entry.part, &entry.final_path)
+    } else {
+        replace_file(&entry.part, &entry.final_path).map(|()| entry.final_path.clone())
+    };
+    saved.map_err(|err| {
+        let _ = std::fs::remove_file(&entry.part);
+        anyhow::Error::new(err).context(format!("保存できません: {}", entry.final_path.display()))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending(target: &Path, id: &str, deduplicate: bool, limit: u64) -> Pending {
+        let part = part_path(target, id);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .unwrap();
+        Pending {
+            file: Arc::new(Mutex::new(Some(file))),
+            part,
+            final_path: target.to_path_buf(),
+            deduplicate,
+            written: Arc::new(AtomicU64::new(0)),
+            limit,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
     #[test]
     fn sanitize_keeps_a_plain_name() {
@@ -489,6 +708,10 @@ mod tests {
         assert_eq!(sanitize_file_name("name..."), "name");
         assert_eq!(sanitize_file_name("CON"), "_CON");
         assert_eq!(sanitize_file_name("con.txt"), "_con.txt");
+        // 予約名の後ろの空白は Windows が無視する。上付き数字も予約名。
+        assert_eq!(sanitize_file_name("CON .txt"), "_CON .txt");
+        assert_eq!(sanitize_file_name("COM¹.txt"), "_COM¹.txt");
+        assert_eq!(sanitize_file_name("LPT².log"), "_LPT².log");
     }
 
     #[test]
@@ -507,8 +730,8 @@ mod tests {
         // `.part` に付く分を含めても、ファイル名の上限（255 バイト）に収まる。
         let part = part_path(&PathBuf::from(&cleaned), "0123456789abcdef");
         assert!(part.file_name().unwrap().len() <= 255);
-        // 重複したときの `-{ID}` を足しても収まる。
-        assert!(format!("{cleaned}-0123456789abcdef").len() <= 255);
+        // 重複したときの `(9999)` を足しても収まる。
+        assert!(format!("{cleaned} (9999)").len() <= 255);
     }
 
     #[test]
@@ -524,62 +747,74 @@ mod tests {
     }
 
     #[test]
-    fn write_finish_and_cancel_manage_the_part_file() {
+    fn is_part_file_name_matches_only_the_temporary_names() {
+        assert!(is_part_file_name(".a.txt.0123456789abcdef.part"));
+        assert!(is_part_file_name(".報告.0123456789abcdef.part"));
+        assert!(!is_part_file_name("a.txt"));
+        assert!(!is_part_file_name(".a.txt.part"));
+        assert!(!is_part_file_name(".a.txt.0123.part"));
+        assert!(!is_part_file_name(".a.txt.0123456789abcdeg.part"));
+    }
+
+    #[tokio::test]
+    async fn write_finish_and_cancel_manage_the_part_file() {
         let dir = std::env::temp_dir().join(format!("zoo2-downloads-{}", new_download_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let downloads = Downloads::new();
         let final_path = dir.join("saved.txt");
 
         let id = new_download_id();
-        let part = part_path(&final_path, &id);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part)
-            .unwrap();
-        downloads.pending.lock().unwrap().insert(
-            id.clone(),
-            Pending {
-                file,
-                part: part.clone(),
-                final_path: final_path.clone(),
-                deduplicate: false,
-            },
-        );
-        downloads.write(&id, b"hello ").unwrap();
-        downloads.write(&id, b"world").unwrap();
+        let entry = pending(&final_path, &id, false, MAX_DOWNLOAD_BYTES);
+        let part = entry.part.clone();
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+        downloads.write(&id, b"hello ").await.unwrap();
+        downloads.write(&id, b"world").await.unwrap();
         assert!(part.exists());
-        let saved = downloads.finish(&id).unwrap();
+        let saved = downloads.finish(&id).await.unwrap();
         assert_eq!(saved, final_path);
         assert_eq!(std::fs::read(&final_path).unwrap(), b"hello world");
         assert!(!part.exists());
 
         let cancel_id = new_download_id();
-        let cancel_part = part_path(&dir.join("cancelled.txt"), &cancel_id);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&cancel_part)
-            .unwrap();
-        downloads.pending.lock().unwrap().insert(
-            cancel_id.clone(),
-            Pending {
-                file,
-                part: cancel_part.clone(),
-                final_path: dir.join("cancelled.txt"),
-                deduplicate: false,
-            },
+        let entry = pending(
+            &dir.join("cancelled.txt"),
+            &cancel_id,
+            false,
+            MAX_DOWNLOAD_BYTES,
         );
-        downloads.write(&cancel_id, b"partial").unwrap();
-        downloads.cancel(&cancel_id);
+        let cancel_part = entry.part.clone();
+        downloads
+            .pending
+            .lock()
+            .unwrap()
+            .insert(cancel_id.clone(), entry);
+        downloads.write(&cancel_id, b"partial").await.unwrap();
+        downloads.cancel(&cancel_id).await;
         assert!(!cancel_part.exists());
-        assert!(downloads.write(&cancel_id, b"x").is_err());
+        assert!(downloads.write(&cancel_id, b"x").await.is_err());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn fixed_folder_saves_do_not_overwrite_each_other() {
+    #[tokio::test]
+    async fn write_rejects_more_than_the_limit() {
+        let dir = std::env::temp_dir().join(format!("zoo2-downloads-{}", new_download_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let downloads = Downloads::new();
+        let id = new_download_id();
+        downloads
+            .pending
+            .lock()
+            .unwrap()
+            .insert(id.clone(), pending(&dir.join("limit.bin"), &id, true, 4));
+        downloads.write(&id, b"1234").await.unwrap();
+        assert!(downloads.write(&id, b"5").await.is_err());
+        downloads.cancel(&id).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_fixed_folder_saves_do_not_overwrite_each_other() {
         let dir = std::env::temp_dir().join(format!("zoo2-downloads-{}", new_download_id()));
         std::fs::create_dir_all(&dir).unwrap();
         let downloads = Downloads::new();
@@ -589,32 +824,56 @@ mod tests {
         let mut ids = Vec::new();
         for _ in 0..2 {
             let id = new_download_id();
-            let part = part_path(&target, &id);
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&part)
-                .unwrap();
-            downloads.pending.lock().unwrap().insert(
-                id.clone(),
-                Pending {
-                    file,
-                    part,
-                    final_path: target.clone(),
-                    deduplicate: true,
-                },
-            );
-            downloads.write(&id, id.as_bytes()).unwrap();
+            downloads
+                .pending
+                .lock()
+                .unwrap()
+                .insert(id.clone(), pending(&target, &id, true, MAX_DOWNLOAD_BYTES));
+            downloads.write(&id, id.as_bytes()).await.unwrap();
             ids.push(id);
         }
 
-        // 先に終わった方が本来の名前、後から終わった方は番号を足した名前になる。どちらも消えない。
-        let first = downloads.finish(&ids[0]).unwrap();
-        let second = downloads.finish(&ids[1]).unwrap();
-        assert_eq!(first, target);
-        assert_eq!(second, dir.join("same (1).txt"));
-        assert_eq!(std::fs::read(&first).unwrap(), ids[0].as_bytes());
-        assert_eq!(std::fs::read(&second).unwrap(), ids[1].as_bytes());
+        // 同時に確定しても、後から確定した方が番号を足した名前になり、どちらも消えない。
+        let (first, second) = tokio::join!(downloads.finish(&ids[0]), downloads.finish(&ids[1]));
+        let saved = [first.unwrap(), second.unwrap()];
+        assert!(saved.contains(&target));
+        assert!(saved.contains(&dir.join("same (1).txt")));
+        for (id, path) in ids.iter().zip(&saved) {
+            assert_eq!(std::fs::read(path).unwrap(), id.as_bytes());
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn move_unique_does_not_replace_an_existing_file() {
+        let dir = std::env::temp_dir().join(format!("zoo2-downloads-{}", new_download_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join(".x.part");
+        let target = dir.join("x.txt");
+        std::fs::write(&part, b"new").unwrap();
+        std::fs::write(&target, b"old").unwrap();
+
+        let saved = move_unique(&part, &target).unwrap();
+        assert_eq!(saved, dir.join("x (1).txt"));
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert_eq!(std::fs::read(&saved).unwrap(), b"new");
+        assert!(!part.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_downloads_are_not_finished() {
+        let dir = std::env::temp_dir().join(format!("zoo2-downloads-{}", new_download_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let downloads = Downloads::new();
+        let id = new_download_id();
+        let entry = pending(&dir.join("cancelled.txt"), &id, true, MAX_DOWNLOAD_BYTES);
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+        downloads.cancel_all();
+        assert!(downloads.finish(&id).await.is_err());
+        assert!(!dir.join("cancelled.txt").exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

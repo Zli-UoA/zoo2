@@ -204,6 +204,7 @@ function AttachmentDownloadButton({
       downloadShortLabel={t("attachments.downloadShort")}
       cancelLabel={t("attachments.cancelDownload", { name: attachment.file_name })}
       cancelShortLabel={t("attachments.cancelDownloadShort")}
+      finishingLabel={t("attachments.saving")}
       progressLabel={t("attachments.downloading")}
       onDownload={() => void download()}
       onCancel={() => cancelDesktopDownload(attachment.id)}

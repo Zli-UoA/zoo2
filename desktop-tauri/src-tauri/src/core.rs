@@ -198,6 +198,9 @@ impl Drop for Session {
 
 impl Core {
     pub fn new(app: AppHandle, ui: UiMode, config: Result<Config>) -> Self {
+        let downloads = crate::downloads::Downloads::new();
+        // 前回のクラッシュなどで残った `.part` を、起動時に消す。
+        downloads.cleanup_stale_parts(&app);
         Self {
             app,
             ui,
@@ -206,7 +209,7 @@ impl Core {
             no_redirect_http: build_no_redirect_http_client(),
             browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),
-            downloads: crate::downloads::Downloads::new(),
+            downloads,
             reauth: std::sync::Mutex::new(None),
             inner: Mutex::new(Inner {
                 generation: 0,

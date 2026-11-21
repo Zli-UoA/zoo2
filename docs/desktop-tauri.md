@@ -106,16 +106,18 @@ ShapeEvent ─▶ 1 本のループ
 
 - `zoo_download_settings` / `zoo_set_download_settings`：保存先の設定。`{ ask_every_time, directory }` を `config_dir_for("zoo2-desktop-tauri")/downloads.json` に保存する（通知の `notifications.json` と同じく、同じディレクトリの一時ファイルから `rename` する）。既定は `ask_every_time: true`（保存のたびに OS の「名前を付けて保存」を出す）。`zoo_set_download_settings` が受け取るのは `{ ask_every_time, reset_directory }` だけで、保存先のパスは受け取らない。`directory` は画面に出すためだけに返す。`reset_directory: true` で OS のダウンロードフォルダーに戻す。
 - `zoo_pick_download_directory`：OS のフォルダーの選択ダイアログ。選ばれたパスは Rust 側で絶対パスか、フォルダーとして使えるかを確かめてから `downloads.json` に保存し、新しい設定を返す。キャンセルは `null`。リモートの画面から任意の場所を保存先にできないよう、パスを受け取るコマンドは置かない。
-- `zoo_download_begin`：`{ file_name }` を受け取り、保存ダイアログ（`ask_every_time` がオンのとき）または設定のフォルダーから保存先を決める。`{ status: "started", id, path }` か `{ status: "cancelled" }` を返す。`file_name` は Rust 側で sanitize する（パスの区切り、Windows が使えない文字、`CON` などの予約名、双方向の制御文字、長すぎる名前）。長い名前は、macOS / Linux の 255 バイトの上限と Windows の上限に収まるよう、拡張子を残して UTF-8 のバイト数で切る（`.part` と重複時の接尾辞の分も引く）。決まったフォルダーへ保存するときは、既にある名前を避けて `name (1).pdf` のようにする。
-- `zoo_download_write`：octet-stream の本文を、`x-zoo-download-id` ヘッダーの ID に追記する。React は 256 KiB ずつ送る。
-- `zoo_download_finish`：書き終えたら `.part` を本来の名前に置き換える。決まったフォルダーへの保存では上書きせず、`begin` の後に同じ名前のファイルができていれば、番号を足した名前へ移す。
+- `zoo_download_begin`：`{ file_name }` を受け取り、保存ダイアログ（`ask_every_time` がオンのとき）または設定のフォルダーから保存先を決める。`{ status: "started", id, path }` か `{ status: "cancelled" }` を返す。`file_name` は Rust 側で sanitize する（パスの区切り、Windows が使えない文字、`CON` や `COM¹` などの予約名、双方向の制御文字、長すぎる名前）。長い名前は、macOS / Linux の 255 バイトの上限と Windows の上限に収まるよう、拡張子を残して UTF-8 のバイト数で切る（`.part` と重複時の接尾辞の分も引く）。決まったフォルダーへ保存するときは、既にある名前を避けて `name (1).pdf` のようにする。設定したフォルダーが消えている（外付けドライブや同期フォルダーが外れた）ときは作り直さず、保存ダイアログに戻す。同時に書き込めるのは 3 件まで。
+- `zoo_download_write`：octet-stream の本文を、`x-zoo-download-id` ヘッダーの ID に追記する。React は 256 KiB ずつ送る。1 件あたり 50 MiB（添付の上限）を超える要求は拒否する。書き込みは `spawn_blocking` で行い、`pending` のロックを持ったまま同期 I/O をしない。
+- `zoo_download_finish`：書き終えたら `.part` を本来の名前に移す。保存ダイアログで選ばれた場合は上書きし、決まったフォルダーへの保存では上書きしない。上書きしない移動は、保存先が既にあると失敗するハードリンク（使えないファイルシステムでは `create_new` で確保してから写す）で行い、`begin` の後に同じ名前のファイルができていれば、番号を足した名前へ移す。
 - `zoo_download_cancel`：途中までの `.part` を消す。中止と失敗のどちらでも呼ぶ。
 
-書き込みは宛先と同じディレクトリの `.<名前>.<id>.part` に対して行い、最後に `rename` する。書きかけのファイルを本来の名前で残さないため。Windows では既にあるファイルへ `rename` できないので、保存ダイアログが上書きを確かめた後に限り、一度削除してから置き換える。アプリを終了したときも `Downloads` の `Drop` で `.part` を消す。
+書き込みは宛先と同じディレクトリの `.<名前>.<id>.part` に対して行い、最後に本来の名前に移す。書きかけのファイルを本来の名前で残さないため。アプリを終了したときは `Downloads` の `Drop`、画面の読み込み直し（`on_page_load`）、ログアウト・期限切れ（`follow_session`）でも書き込み中のものを中止して `.part` を消す。クラッシュや強制終了で残った `.{名前}.{16 桁の ID}.part` は、起動時に保存先と既定のダウンロードフォルダーから消す。
 
-React 側（`frontend/src/lib/desktopDownloads.ts`）は、署名付き URL を `fetch` で読みながら書き込む。最初の応答までに失敗したら URL を取り直して 1 回だけやり直す（`lib/api/attachments.ts` と同じ）。進捗は添付の ID ごとのモジュールのストアに置き、仮想スクロールで行が外れても保存を続ける。円状のボタン（`DownloadProgressButton`）は、書き込み中は `strokeDasharray` / `strokeDashoffset` で進み具合を出し、100% で円を閉じる。円を押すと中止し、ホバー時とキーボードで選んだときは中心に停止の四角を出す。E2EE の添付は復号した `Blob` を同じ書き込み先へ流し、取得・復号を全体の 8 割、書き込みを残り 2 割として出す。
+React 側（`frontend/src/lib/desktopDownloads.ts`）は、署名付き URL を `fetch` で読みながら書き込む。最初の応答までに失敗したら URL を取り直して 1 回だけやり直す（`lib/api/attachments.ts` と同じ）。進捗は添付の ID ごとのモジュールのストアに置き、仮想スクロールで行が外れても保存を続ける。円状のボタン（`DownloadProgressButton`）は、書き込み中は `strokeDasharray` / `strokeDashoffset` で進み具合を出し、100% で円を閉じる。進み具合はボタンの `aria-label` にも入れる。円を押すと中止し、ホバー時とキーボードで選んだときは中心に停止の四角を出す。名前への移動が始まったら中止できないので、ボタンを無効にして「保存しています…」と伝える。E2EE の添付は復号した `Blob` を同じ書き込み先へ流し、取得・復号を全体の 8 割、書き込みを残り 2 割として出す。E2EE では暗号文のチャンク、連結した暗号文、復号後の `Blob` が同時にメモリに載る（50 MiB の添付で最大 100 MiB 超）。これは既存の復号の経路と同じで、今回の変更では増やしていない。
 
-古い版のアプリにはこれらのコマンドがない。`zoo_download_settings` が失敗したら、React は従来のブラウザーの保存（`<a download>`）に戻す（`PROTOCOL_VERSION` は上げない）。設定画面の「ダウンロード」の行も、古い版では説明だけを出す。
+プレビュー（`media-preview.tsx` と `document-preview.tsx`）の `<a download>` は、今回の保存の経路に含めていない。プレビューは復号済みの `blob:` URL や署名付き URL をそのまま指しており、添付の保存とは別の経路のため。デスクトップ版でも WebView の既定の保存先へ保存される。保存ダイアログ・進捗・中止をプレビューにも付けるかは別の変更で扱う。
+
+古い版のアプリにはこれらのコマンドがない。`zoo_download_settings` が「コマンドがない」と失敗したときだけ、React は従来のブラウザーの保存（`<a download>`）に戻す（`PROTOCOL_VERSION` は上げない）。設定ファイルの読み込みの競合など一時的な失敗では戻さず、次の保存でもう一度試す。設定画面の「ダウンロード」の行も、古い版では説明だけを出す。
 
 ## 常駐、単一インスタンス
 

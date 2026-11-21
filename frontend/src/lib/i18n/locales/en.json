@@ -258,6 +258,7 @@
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
     "downloading": "Downloading",
+    "saving": "Saving…",
     "cancelDownload": "Cancel downloading {{name}}",
     "cancelDownloadShort": "Cancel",
     "retry": "Try again",

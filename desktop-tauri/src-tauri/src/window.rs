@@ -7,7 +7,7 @@ use tauri::{
     ipc::CapabilityBuilder,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    webview::{NewWindowResponse, PermissionKind, PermissionResponse},
+    webview::{NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse},
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
@@ -195,6 +195,11 @@ pub fn add_remote_capability(app: &App, core: &Core) -> tauri::Result<()> {
 
 /// (b) では、ログインしたらリモートの画面へ、ログアウトしたら同梱のログイン画面へ移す。
 pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
+    // ログアウトや期限切れでは画面が破棄され、React から `zoo_download_cancel` を呼べない。
+    // 書き込み中の `.part` をここで消す。
+    if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. }) {
+        core.downloads().cancel_all();
+    }
     // ログアウトや期限切れでは、画面が破棄されて React の後始末が走らないことがある。
     // バッジは OS 側に残るので、ここで消す。
     if matches!(state, SessionState::LoggedOut | SessionState::Failed { .. })
@@ -231,6 +236,7 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let popup_handle = app.handle().clone();
     let popup_core = core.clone();
     let perm_core = core.clone();
+    let page_core = core.clone();
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     let window = {
         let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
@@ -261,6 +267,13 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
                         PermissionResponse::Allow
                     }
                     _ => PermissionResponse::Default,
+                }
+            })
+            // 画面を読み込み直すと React の後始末が走らず、`.part` が残る。新しい画面を
+            // 読み始めた時点で、書き込み中のものをすべて中止する。
+            .on_page_load(move |_window, payload| {
+                if payload.event() == PageLoadEvent::Started {
+                    page_core.downloads().cancel_all();
                 }
             });
         #[cfg(target_os = "windows")]

@@ -207,6 +207,14 @@ export async function desktopDownloadSettings(): Promise<DesktopDownloadSettings
   }
 }
 
+/**
+ * 保存の設定を読む。古い版のアプリ（コマンドがない）か、一時的な失敗かを呼び出し側で
+ * 分けられるよう、失敗をそのまま返す。
+ */
+export async function probeDesktopDownloadSettings(): Promise<DesktopDownloadSettings> {
+  return invoke<DesktopDownloadSettings>("zoo_download_settings");
+}
+
 /** 確認の有無を変える。Rust 側が保存し、新しい設定を返す。保存先のパスは送らない。 */
 export async function desktopSetDownloadSettings(
   settings: DesktopDownloadSettingsUpdate,

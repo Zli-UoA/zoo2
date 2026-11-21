@@ -321,7 +321,7 @@ pub async fn zoo_download_write(
             ));
         }
     };
-    core.downloads().write(id, bytes).map_err(to_ipc)
+    core.downloads().write(id, bytes).await.map_err(to_ipc)
 }
 
 /// 書き終えたら、`.part` を本来の名前に置き換える。
@@ -332,7 +332,7 @@ pub async fn zoo_download_finish(
     id: String,
 ) -> Result<(), IpcError> {
     require(&webview, &core, ANY)?;
-    core.downloads().finish(&id).map_err(to_ipc)?;
+    core.downloads().finish(&id).await.map_err(to_ipc)?;
     Ok(())
 }
 
@@ -344,6 +344,6 @@ pub async fn zoo_download_cancel(
     id: String,
 ) -> Result<(), IpcError> {
     require(&webview, &core, ANY)?;
-    core.downloads().cancel(&id);
+    core.downloads().cancel(&id).await;
     Ok(())
 }

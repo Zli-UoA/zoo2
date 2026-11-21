@@ -18,6 +18,7 @@ export function DownloadProgressButton({
   downloadShortLabel,
   cancelLabel,
   cancelShortLabel,
+  finishingLabel,
   progressLabel,
   onDownload,
   onCancel,
@@ -31,6 +32,8 @@ export function DownloadProgressButton({
   downloadShortLabel: string;
   cancelLabel: string;
   cancelShortLabel: string;
+  /** 名前への置き換え中。もう中止できないので、ボタンを無効にして伝える。 */
+  finishingLabel: string;
   progressLabel: string;
   onDownload: () => void;
   onCancel: () => void;
@@ -51,7 +54,10 @@ export function DownloadProgressButton({
         onClick={onDownload}
       >
         {pending ? (
-          <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
+          <LoaderCircleIcon
+            className="size-4 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
         ) : (
           <DownloadIcon className="size-4" aria-hidden="true" />
         )}
@@ -60,10 +66,18 @@ export function DownloadProgressButton({
     );
   }
 
+  const finishing = state.status === "finishing";
   const fraction =
     state.status === "downloading" ? state.fraction : state.status === "finishing" ? 1 : null;
   const percent = fraction === null ? null : Math.round(fraction * 100);
   const indeterminate = percent === null;
+  // 円は `<button>` の中にあり、支援技術にはボタンの名前だけが伝わる。進み具合は
+  // ボタンの `aria-label` に入れる（`role="progressbar"` は読み上げられない）。
+  const label = finishing
+    ? finishingLabel
+    : percent === null
+      ? cancelLabel
+      : `${cancelLabel} ${percent}%`;
 
   return (
     <Button
@@ -71,12 +85,14 @@ export function DownloadProgressButton({
       variant="ghost"
       size={size}
       className={cn(className, "tabular-nums")}
-      aria-label={cancelLabel}
-      title={cancelLabel}
+      aria-label={label}
+      title={label}
+      disabled={finishing}
       onClick={onCancel}
     >
       <span
         role="progressbar"
+        aria-hidden="true"
         aria-label={progressLabel}
         aria-valuemin={0}
         aria-valuemax={100}
@@ -108,13 +124,13 @@ export function DownloadProgressButton({
             className={cn(
               "origin-center -rotate-90 text-primary",
               indeterminate
-                ? "animate-spin [animation-duration:1.4s]"
-                : "transition-[stroke-dashoffset] duration-150",
+                ? "animate-spin [animation-duration:1.4s] motion-reduce:animate-none"
+                : "transition-[stroke-dashoffset] duration-150 motion-reduce:transition-none",
             )}
           />
         </svg>
         <SquareIcon
-          className="absolute size-2 fill-current opacity-0 transition-opacity group-hover/button:opacity-100 group-focus-visible/button:opacity-100"
+          className="absolute size-2 fill-current opacity-0 transition-opacity group-hover/button:opacity-100 group-focus-visible/button:opacity-100 motion-reduce:transition-none"
           aria-hidden="true"
         />
       </span>

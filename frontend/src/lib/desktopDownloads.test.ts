@@ -5,6 +5,7 @@ import { AttachmentDownloadError } from "./api/attachments";
 const desktop = vi.hoisted(() => ({
   detect: vi.fn(),
   settings: vi.fn(),
+  probe: vi.fn(),
   begin: vi.fn(),
   write: vi.fn(),
   finish: vi.fn(),
@@ -14,6 +15,7 @@ const desktop = vi.hoisted(() => ({
 vi.mock("./desktop", () => ({
   detectDesktop: desktop.detect,
   desktopDownloadSettings: desktop.settings,
+  probeDesktopDownloadSettings: desktop.probe,
   desktopDownloadBegin: desktop.begin,
   desktopDownloadWrite: desktop.write,
   desktopDownloadFinish: desktop.finish,
@@ -50,13 +52,31 @@ afterEach(() => {
 describe("desktopDownloadsAvailable", () => {
   it("is true only when the app has the download settings command", async () => {
     desktop.detect.mockResolvedValue(true);
-    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.probe.mockResolvedValue({ ask_every_time: true, directory: null });
     await expect(desktopDownloadsAvailable()).resolves.toBe(true);
   });
 
-  it("is false in a browser or an older app", async () => {
+  it("is false in a browser", async () => {
     desktop.detect.mockResolvedValue(false);
     await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+  });
+
+  it("stays false when the command is missing from an older app", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.probe.mockRejectedValue("Command zoo_download_settings not found");
+    await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+    desktop.probe.mockResolvedValue({ ask_every_time: true, directory: null });
+    await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+    expect(desktop.probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries after a temporary failure instead of falling back for the whole session", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.probe.mockRejectedValueOnce(new Error("設定を読めませんでした"));
+    await expect(desktopDownloadsAvailable()).resolves.toBe(false);
+    desktop.probe.mockResolvedValueOnce({ ask_every_time: true, directory: null });
+    await expect(desktopDownloadsAvailable()).resolves.toBe(true);
+    expect(desktop.probe).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -138,6 +158,100 @@ describe("downloadUrlToDesktop", () => {
     expect(desktop.cancel).toHaveBeenCalledWith("d4");
     expect(desktopDownloadState("a4")).toBeUndefined();
   });
+
+  it("cancels the app's file when the stream is stopped halfway", async () => {
+    desktop.begin.mockResolvedValue(started("d5"));
+    desktop.cancel.mockResolvedValue(undefined);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+        controller.enqueue(new Uint8Array([2]));
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream)),
+    );
+    desktop.write.mockImplementation(async () => {
+      // 1 つ目のチャンクを書いたところで、利用者が円を押した。
+      cancelDesktopDownload("a5");
+    });
+
+    const promise = downloadUrlToDesktop("a5", "a.txt", vi.fn().mockResolvedValue("u"));
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(desktop.cancel).toHaveBeenCalledWith("d5");
+    expect(desktop.finish).not.toHaveBeenCalled();
+    expect(desktopDownloadState("a5")).toBeUndefined();
+  });
+
+  it("finishes at 100% even when the response has no content-length", async () => {
+    desktop.begin.mockResolvedValue(started("d6"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue(undefined);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.close();
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(stream)),
+    );
+    const fractions: Array<number | null> = [];
+    const unsubscribe = subscribeDesktopDownloads(() => {
+      const state = desktopDownloadState("a6");
+      if (state?.status === "downloading") fractions.push(state.fraction);
+    });
+
+    await downloadUrlToDesktop("a6", "a.txt", vi.fn().mockResolvedValue("u"));
+
+    unsubscribe();
+    expect(fractions).toContain(null);
+    expect(fractions.at(-1)).toBe(1);
+    expect(desktop.finish).toHaveBeenCalledWith("d6");
+  });
+
+  it("ignores a second start for the same attachment and keeps the state across remounts", async () => {
+    let release!: (value: ReturnType<typeof started>) => void;
+    desktop.begin.mockReturnValue(new Promise((resolve) => (release = resolve)));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => blobResponse([1])),
+    );
+
+    const first = downloadUrlToDesktop("a7", "a.txt", vi.fn().mockResolvedValue("u"));
+    // 行が仮想スクロールで外れて戻ってきても、状態はモジュール側に残っている。
+    expect(desktopDownloadState("a7")).toEqual({ status: "preparing" });
+    await downloadUrlToDesktop("a7", "a.txt", vi.fn().mockResolvedValue("u"));
+    expect(desktop.begin).toHaveBeenCalledTimes(1);
+
+    release(started("d7"));
+    await first;
+    expect(desktop.finish).toHaveBeenCalledWith("d7");
+    expect(desktopDownloadState("a7")).toBeUndefined();
+  });
+
+  it("does not abort while the file is being moved into place", async () => {
+    desktop.begin.mockResolvedValue(started("d8"));
+    desktop.write.mockResolvedValue(undefined);
+    let release!: () => void;
+    desktop.finish.mockReturnValue(new Promise<void>((resolve) => (release = resolve)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => blobResponse([1])),
+    );
+
+    const promise = downloadUrlToDesktop("a8", "a.txt", vi.fn().mockResolvedValue("u"));
+    await vi.waitFor(() => expect(desktopDownloadState("a8")?.status).toBe("finishing"));
+    cancelDesktopDownload("a8");
+    release();
+
+    await expect(promise).resolves.toBeUndefined();
+    expect(desktop.cancel).not.toHaveBeenCalled();
+  });
 });
 
 describe("downloadBlobToDesktop", () => {
@@ -161,5 +275,20 @@ describe("downloadBlobToDesktop", () => {
     expect(written).toEqual([9, 8, 7]);
     expect(desktop.finish).toHaveBeenCalledWith("d1");
     expect(fractions.at(-1)).toBe(1);
+  });
+
+  it("stops a blob stream and cancels the app's file when aborted halfway", async () => {
+    desktop.begin.mockResolvedValue(started("e2"));
+    desktop.cancel.mockResolvedValue(undefined);
+    desktop.write.mockImplementation(async () => {
+      cancelDesktopDownload("e2");
+    });
+    const blob = new Blob([new Uint8Array([1]), new Uint8Array([2])]);
+
+    const promise = downloadBlobToDesktop("e2", "secret.bin", async () => blob);
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(desktop.cancel).toHaveBeenCalledWith("e2");
+    expect(desktop.finish).not.toHaveBeenCalled();
+    expect(desktopDownloadState("e2")).toBeUndefined();
   });
 });

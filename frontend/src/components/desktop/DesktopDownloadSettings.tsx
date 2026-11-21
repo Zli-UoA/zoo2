@@ -53,17 +53,20 @@ export function DesktopDownloadSettings() {
 
   return (
     <div className="flex flex-col items-end gap-2">
-      <Switch.Root
-        checked={askEveryTime}
-        aria-label={t("downloads.askEveryTime")}
-        disabled={busy || settings === undefined}
-        onCheckedChange={(checked) => {
-          if (settings) void save({ ask_every_time: checked });
-        }}
-        className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-input outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[checked]:bg-primary"
-      >
-        <Switch.Thumb className="block size-5 translate-x-0.5 rounded-full bg-background shadow transition-transform data-[checked]:translate-x-[22px]" />
-      </Switch.Root>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">{t("downloads.askEveryTime")}</span>
+        <Switch.Root
+          checked={askEveryTime}
+          aria-label={t("downloads.askEveryTime")}
+          disabled={busy || settings === undefined}
+          onCheckedChange={(checked) => {
+            if (settings) void save({ ask_every_time: checked });
+          }}
+          className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-input outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[checked]:bg-primary"
+        >
+          <Switch.Thumb className="block size-5 translate-x-0.5 rounded-full bg-background shadow transition-transform data-[checked]:translate-x-[22px]" />
+        </Switch.Root>
+      </div>
       {askEveryTime ? null : (
         <div className="flex min-w-0 items-center gap-2">
           <span

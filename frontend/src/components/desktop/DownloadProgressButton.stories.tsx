@@ -15,6 +15,7 @@ const meta = {
     downloadShortLabel: "ダウンロード",
     cancelLabel: "report.pdfのダウンロードを中止",
     cancelShortLabel: "中止",
+    finishingLabel: "保存しています…",
     progressLabel: "ダウンロード中",
     onDownload: fn(),
     onCancel: fn(),
@@ -44,23 +45,20 @@ export const Idle: Story = {
 export const Preparing: Story = {
   args: { state: { status: "preparing" } },
   play: async ({ canvasElement }) => {
-    const progress = await within(canvasElement).findByRole("progressbar", {
-      name: "ダウンロード中",
+    const button = await within(canvasElement).findByRole("button", {
+      name: "report.pdfのダウンロードを中止",
     });
-    await expect(progress).not.toHaveAttribute("aria-valuenow");
+    await expect(button).toBeEnabled();
   },
 };
 
 export const Downloading: Story = {
   args: { state: { status: "downloading", fraction: 0.42 } },
   play: async ({ canvasElement, args }) => {
-    const progress = await within(canvasElement).findByRole("progressbar", {
-      name: "ダウンロード中",
+    const button = await within(canvasElement).findByRole("button", {
+      name: "report.pdfのダウンロードを中止 42%",
     });
-    await expect(progress).toHaveAttribute("aria-valuenow", "42");
-    await userEvent.click(
-      await within(canvasElement).findByRole("button", { name: "report.pdfのダウンロードを中止" }),
-    );
+    await userEvent.click(button);
     await expect(args.onCancel).toHaveBeenCalledTimes(1);
   },
 };
@@ -70,9 +68,13 @@ export const UnknownSize: Story = {
   args: { state: { status: "downloading", fraction: null } },
 };
 
-/** 本文を書き終え、名前に置き換えている間。円は完成した状態で待つ。 */
+/** 本文を書き終え、名前に置き換えている間。円は完成した状態で待つ。中止はできない。 */
 export const Finishing: Story = {
   args: { state: { status: "finishing" } },
+  play: async ({ canvasElement }) => {
+    const button = await within(canvasElement).findByRole("button", { name: "保存しています…" });
+    await expect(button).toBeDisabled();
+  },
 };
 
 export const Complete: Story = {

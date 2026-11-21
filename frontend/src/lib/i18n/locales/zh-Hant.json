@@ -258,6 +258,7 @@
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
     "downloading": "正在下載",
+    "saving": "正在儲存…",
     "cancelDownload": "取消下載 {{name}}",
     "cancelDownloadShort": "取消",
     "retry": "重試",

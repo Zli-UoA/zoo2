@@ -258,6 +258,7 @@
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
     "downloading": "ダウンロード中",
+    "saving": "保存しています…",
     "cancelDownload": "{{name}}のダウンロードを中止",
     "cancelDownloadShort": "中止",
     "retry": "再試行",

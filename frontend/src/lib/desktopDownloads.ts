@@ -16,9 +16,9 @@ import {
   desktopDownloadBegin,
   desktopDownloadCancel,
   desktopDownloadFinish,
-  desktopDownloadSettings,
   desktopDownloadWrite,
   detectDesktop,
+  probeDesktopDownloadSettings,
 } from "./desktop";
 
 /** 書き込み中の状態。終わったら（成功・中止・失敗とも）状態を持たない。 */
@@ -93,24 +93,56 @@ let available: boolean | null = null;
 let probe: Promise<boolean> | null = null;
 
 /**
- * この版のアプリが保存のコマンドを持つか。古い版のアプリでは false（ブラウザーの保存に戻す）。
- * 結果は覚えておく。
+ * アプリにコマンドが無いことによる失敗か。古い版のアプリでは、この失敗だけを
+ * 「保存のコマンドが無い」として覚えておく。設定ファイルの読み込みの競合など、
+ * 一時的な失敗は覚えず、次回また試す。
  */
-export function desktopDownloadsAvailable(): Promise<boolean> {
-  if (available !== null) return Promise.resolve(available);
-  probe ??= (async () => {
-    const desktop = await detectDesktop();
-    const settings = desktop ? await desktopDownloadSettings() : null;
-    available = settings !== null;
-    // 失敗した結果も覚える（毎回のダイアログで試さない）。古い版のアプリでは保存のたびに
-    // 呼ぶことになるが、呼び出しは 1 回だけ。
-    return available;
-  })();
-  return probe;
+function isMissingCommandError(error: unknown): boolean {
+  const message =
+    typeof error === "string"
+      ? error
+      : typeof (error as { message?: unknown } | null)?.message === "string"
+        ? String((error as { message: string }).message)
+        : "";
+  return /not found|unknown command|not allowed|コマンドがありません/i.test(message);
+}
+
+/**
+ * この版のアプリが保存のコマンドを持つか。古い版のアプリでは false（ブラウザーの保存に戻す）。
+ * 「コマンドが無い」と分かったときだけ結果を覚え、それ以外の失敗は次回また試す。
+ */
+export async function desktopDownloadsAvailable(): Promise<boolean> {
+  if (available !== null) return available;
+  const running =
+    probe ??
+    (probe = (async () => {
+      const desktop = await detectDesktop();
+      if (!desktop) {
+        available = false;
+        return false;
+      }
+      try {
+        await probeDesktopDownloadSettings();
+        available = true;
+        return true;
+      } catch (error) {
+        if (isMissingCommandError(error)) available = false;
+        return false;
+      }
+    })());
+  try {
+    return await running;
+  } finally {
+    // 判定を覚えられなかったときは、次の保存でもう一度試せるようにする。
+    if (available === null && probe === running) probe = null;
+  }
 }
 
 /** 保存を中止する。保存ダイアログを出している間は、決まったあとに取り消す。 */
 export function cancelDesktopDownload(id: string): void {
+  // 名前への置き換えが始まったら、途中までのファイルはもう無い。押しても保存は止まらないので、
+  // ここでは何もしない（ボタン側も無効にする）。
+  if (states.get(id)?.status === "finishing") return;
   controllers.get(id)?.abort();
 }
 
@@ -198,8 +230,10 @@ async function writeResponse(
       received += value.byteLength;
       report(total ? Math.min(1, received / total) : null);
     }
-  } finally {
-    if (signal.aborted) void reader.cancel().catch(() => {});
+  } catch (error) {
+    // 中止のときも、書き込みが失敗したときも、未読の本文と取得元の接続を残さない。
+    void reader.cancel().catch(() => {});
+    throw error;
   }
   report(1);
 }
@@ -261,16 +295,21 @@ export async function downloadBlobToDesktop(
     if (stream) {
       const reader = stream.getReader();
       let received = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (signal.aborted) {
-          void reader.cancel().catch(() => {});
-          throw new DesktopDownloadCancelledError();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (signal.aborted) {
+            throw new DesktopDownloadCancelledError();
+          }
+          await writeChunk(downloadId, value);
+          received += value.byteLength;
+          report(blob.size > 0 ? 0.8 + 0.2 * Math.min(1, received / blob.size) : 1);
         }
-        await writeChunk(downloadId, value);
-        received += value.byteLength;
-        report(blob.size > 0 ? 0.8 + 0.2 * Math.min(1, received / blob.size) : 1);
+      } catch (error) {
+        // 中止のときも、書き込みが失敗したときも、未読の Blob を読み続けない。
+        void reader.cancel().catch(() => {});
+        throw error;
       }
     } else {
       const bytes = new Uint8Array(await blob.arrayBuffer());
