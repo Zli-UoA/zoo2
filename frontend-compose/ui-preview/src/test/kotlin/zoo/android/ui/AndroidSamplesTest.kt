@@ -61,12 +61,14 @@ class AndroidSamplesTest {
             ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる", isUserName = true))),
         ))
         val inbox = AndroidScreen.Notifications(listOf(
-            InboxItem("reply", "はる ほか", "3件 · 返信・リアクション・リポスト", "次のテストでも確認します。", "12:03", true,
-                kinds = listOf("reply", "like", "repost"), unreadIds = listOf("reply", "reaction", "repost")),
-            InboxItem("mention", "ゆい", "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kinds = listOf("mention")),
-            InboxItem("reaction", "みずき", "投稿にリアクションしました", null, "11:22", false),
-            InboxItem("follow", "りん", "フォローを申請しました", null, "11:15", false,
-                followActor = "https://example.test/rin", followActivity = "https://example.test/follow", kinds = listOf("follow_request")),
+            InboxItem("reply", listOf(InboxActor("haru", "はる", "fixture-avatar")),
+                "投稿に返信しました", "次のテストでも確認します。", "12:03", true, kind = "reply", destination = "#開発"),
+            InboxItem("mention", listOf(InboxActor("yui", "ゆい")),
+                "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kind = "mention", destination = "#開発"),
+            InboxItem("reaction", listOf(InboxActor("mizuki", "みずき", "fixture-avatar"), InboxActor("nagi", "なぎ")),
+                "リアクション · 2件", null, "11:22", false, kind = "like", destination = "misskey.io"),
+            InboxItem("follow", listOf(InboxActor("rin", "りん")), "フォローを申請しました", null, "11:15", false,
+                followActor = "https://example.test/rin", followActivity = "https://example.test/follow", kind = "follow_request"),
         ))
         val conversation = AndroidScreen.Conversation("dev", "開発", "Zoo の開発と通話のテストについて相談するチャンネルです。",
             posts, InputState("確認しました。"))
@@ -147,7 +149,7 @@ class AndroidSamplesTest {
                 if (action == AndroidUiAction.OpenChannelSettings("dev")) {
                     screen = AndroidScreen.ChannelSettings("開発", settings)
                 }
-            }, language = "ja", remoteAudioLevel = { .4f }) { item, modifier ->
+            }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { avatar }) { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
         }
@@ -170,7 +172,9 @@ class AndroidSamplesTest {
                 }
                 if (name == "notifications") {
                     ui.onNodeWithText("未読").assertDoesNotExist()
-                    ui.onNodeWithText("3件 · 返信・リアクション・リポスト").assertIsDisplayed()
+                    ui.onNodeWithText("リアクション · 2件").assertIsDisplayed()
+                    ui.onNodeWithContentDescription("みずき", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription("なぎ", useUnmergedTree = true).assertIsDisplayed()
                     ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)
                 }
                 if (name == "home") {
