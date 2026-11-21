@@ -577,11 +577,26 @@ fn journal_path() -> Option<PathBuf> {
 
 /// 保存した設定。ないときや読めないときは、既定（保存のたびに確認する）。
 fn load_settings() -> DownloadSettings {
-    settings_path()
+    let settings = settings_path()
         .ok()
         .and_then(|path| std::fs::read(path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    usable_settings(settings)
+}
+
+/// `downloads.json` は手で書き換えられる。保存先に使ってよいのは、OS のフォルダーの選択で
+/// 選んだ絶対パスのフォルダーだけなので、そうでない値は捨てて「保存のたびに確認する」に戻す。
+fn usable_settings(settings: DownloadSettings) -> DownloadSettings {
+    let Some(directory) = settings.directory.as_deref() else {
+        return settings;
+    };
+    let path = Path::new(directory);
+    if path.is_absolute() && path.is_dir() {
+        settings
+    } else {
+        DownloadSettings::default()
+    }
 }
 
 /// 設定をファイルへ書き、覚えている値も入れ替える。書き出せなかったら、覚えている値は変えない。
@@ -1096,6 +1111,43 @@ mod tests {
     fn sanitize_gives_a_stem_to_a_name_that_is_only_an_extension() {
         assert_eq!(sanitize_file_name(".pdf"), "attachment.pdf");
         assert_eq!(sanitize_file_name(".bashrc"), "attachment.bashrc");
+    }
+
+    #[test]
+    fn sanitize_gives_a_stem_when_only_spaces_or_dots_remain() {
+        assert_eq!(
+            sanitize_file_name(&format!("{}.pdf", " ".repeat(300))),
+            "attachment.pdf"
+        );
+        assert_eq!(
+            sanitize_file_name(&format!("{}.pdf", ".".repeat(300))),
+            "attachment.pdf"
+        );
+        assert_eq!(sanitize_file_name(&".".repeat(300)), "attachment");
+    }
+
+    #[test]
+    fn unusable_settings_go_back_to_asking_every_time() {
+        let dir = temp_dir();
+        let picked = DownloadSettings {
+            ask_every_time: false,
+            directory: Some(dir.display().to_string()),
+        };
+        assert_eq!(usable_settings(picked.clone()), picked);
+        // `downloads.json` を手で書き換えた場合。保存先には使わない。
+        for directory in [
+            "Downloads".to_string(),
+            dir.join("missing").display().to_string(),
+        ] {
+            assert_eq!(
+                usable_settings(DownloadSettings {
+                    ask_every_time: false,
+                    directory: Some(directory),
+                }),
+                DownloadSettings::default()
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

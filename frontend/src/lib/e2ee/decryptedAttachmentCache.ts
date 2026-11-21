@@ -117,6 +117,8 @@ export function createDecryptedAttachmentCache({
         // 復号できたものはキャッシュに置き、次にプレビューが開いたときに使う。
         return loader(info).then(
           (blob) => {
+            // 先に失敗した取得の記録が残っていても、復号できたなら消す。
+            failures.delete(key);
             remember(key, blob);
             return blob;
           },
@@ -131,6 +133,7 @@ export function createDecryptedAttachmentCache({
         request = loader(info)
           .then(
             (blob) => {
+              failures.delete(key);
               remember(key, blob);
               return blob;
             },

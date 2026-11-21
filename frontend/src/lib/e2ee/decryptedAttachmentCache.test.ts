@@ -115,6 +115,39 @@ describe("createDecryptedAttachmentCache", () => {
     expect(cache.peek(info("a"))).toBe(value);
   });
 
+  it("clears an earlier failure when a parallel isolated load succeeds", async () => {
+    const cache = createDecryptedAttachmentCache();
+    let failPreview: ((error: unknown) => void) | undefined;
+    let finishSave: ((value: Blob) => void) | undefined;
+    const previewLoader = vi.fn(
+      () =>
+        new Promise<Blob>((_, reject) => {
+          failPreview = reject;
+        }),
+    );
+    const saveLoader = vi.fn(
+      () =>
+        new Promise<Blob>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+
+    const preview = cache.load(info("a"), previewLoader);
+    const save = cache.load(info("a"), saveLoader, { isolated: true });
+    // プレビューの復号が失敗して記録されたあとに、並行していた保存の復号が成功する。
+    failPreview?.(new EncryptedAttachmentError("decrypt"));
+    await expect(preview).rejects.toMatchObject({ reason: "decrypt" });
+    expect(cache.failed(info("a"))).toBe(true);
+    const value = blob(2);
+    finishSave?.(value);
+    await expect(save).resolves.toBe(value);
+
+    // 失敗の記録を消し、次にプレビューが開いたときは再取得せずにキャッシュから出す。
+    expect(cache.failed(info("a"))).toBe(false);
+    await expect(cache.load(info("a"), previewLoader)).resolves.toBe(value);
+    expect(previewLoader).toHaveBeenCalledTimes(1);
+  });
+
   it("keys on the key material, not only the attachment id", async () => {
     // 同じ attachment_id を別の鍵で指すメッセージに、ほかのメッセージの平文を出さない。
     expect(decryptedAttachmentCacheKey(info("a", "k1"))).not.toBe(
