@@ -1467,6 +1467,18 @@ async fn test_dm_call_rings_the_other_member_and_join_accepts() -> anyhow::Resul
     };
     assert_eq!(invite_status(&mut w.db, &id).await?, "pending");
 
+    // Android follows the explicit accept endpoint before joining the room.
+    let (status, accepted) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(accepted, serde_json::json!({"ok": true, "channel_id": w.dm_ch}));
+
     // 相手が入ったら応答済み。2 人目の入室では、新しく呼ばない
     let bob_stream = open(&bob, uuid::Uuid::new_v4()).await?;
     assert_eq!(bob_stream.status(), StatusCode::OK);

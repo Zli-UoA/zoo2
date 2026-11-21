@@ -36,7 +36,7 @@ class PhoneControllerTest {
                 path == "/api/sip/lines" -> { beforeRead?.await(); obj("enabled" to true, "lines" to JsonArray(listOf(line))) }
                 path.endsWith("/connect") -> obj("data" to obj("revision" to revision, "session_id" to "phone-session", "peer_id" to "gateway-peer", "ice_servers" to JsonArray(emptyList())))
                 path.endsWith("/authorize") -> { check(authorize); obj("data" to obj("revision" to revision)) }
-                path.endsWith("/accept") -> pendingAccept?.await() ?: obj("data" to obj("channel_id" to "dm"))
+                path.endsWith("/accept") -> pendingAccept?.await() ?: obj("ok" to true, "channel_id" to "dm")
                 path.endsWith("/call/heartbeat") && heartbeatTimeout -> { delay(20_000); obj() }
                 path.endsWith("/call/signal") && signalTimeouts > 0 -> { signalTimeouts--; delay(20_000); obj() }
                 path.endsWith("/command") -> {
@@ -109,7 +109,7 @@ class PhoneControllerTest {
         f.pendingAccept = CompletableDeferred(); f.controller.answer(); runCurrent()
         f.controller.invites(emptyList(), "alice", 1893456000100)
         assertNotNull(f.controller.call)
-        f.pendingAccept!!.complete(obj("data" to obj("channel_id" to "dm"))); runCurrent()
+        f.pendingAccept!!.complete(obj("ok" to true, "channel_id" to "dm")); runCurrent()
         assertEquals("dialing", f.controller.call?.status); assertNotNull(f.streamEvent)
         f.streamEvent!!("room_state", obj("ice_servers" to JsonArray(emptyList()))); runCurrent()
         assertTrue("rtc.start" in f.commands)
@@ -221,7 +221,7 @@ class PhoneControllerTest {
         f.controller.answer(); runCurrent(); f.controller.hangup(); runCurrent()
         val second=JsonObject(f.invitation() + ("id" to JsonPrimitive("next-invite")))
         f.controller.invites(listOf(second),"alice",1893456000000)
-        first.complete(obj("data" to obj("channel_id" to "dm"))); runCurrent()
+        first.complete(obj("ok" to true, "channel_id" to "dm")); runCurrent()
         assertEquals("incoming",f.controller.call?.status)
         f.pendingAccept=null; f.controller.answer(); runCurrent()
         assertTrue(f.requests.any {it.endsWith("/next-invite/accept")})
