@@ -8,7 +8,16 @@ struct ShortcutRecipient: Identifiable, Hashable, Sendable {
 
     func matches(_ text: String) -> Bool {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !query.isEmpty && (name.localizedStandardContains(query) || username.localizedStandardContains(query))
+        return !query.isEmpty && [name, username].contains {
+            $0.range(of: query, options: [.caseInsensitive, .widthInsensitive], locale: .current) != nil
+        }
+    }
+
+    func exactlyMatches(_ text: String) -> Bool {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !query.isEmpty && [name, username].contains {
+            $0.compare(query, options: [.caseInsensitive, .widthInsensitive], locale: .current) == .orderedSame
+        }
     }
 }
 
@@ -124,14 +133,14 @@ struct ShortcutActions {
         workspace.addAndOpen(channel)
     }
 
-    func call(_ recipient: ShortcutRecipient) async throws {
+    func call(_ recipient: ShortcutRecipient, requiresLiveActivity: Bool = false) async throws {
         try check()
         guard workspace.calls.channel == nil, workspace.systemCalls?.isManagingCall != true else {
             throw ZooError.auth("別の通話や着信を終了してから、もう一度お試しください。")
         }
         let channel = try await directMessage(to: recipient)
         workspace.addAndOpen(channel)
-        try await workspace.calls.startAndWait(channel: channel)
+        try await workspace.calls.startAndWait(channel: channel, requiresLiveActivity: requiresLiveActivity)
         try check()
     }
 }

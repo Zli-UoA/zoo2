@@ -21,12 +21,14 @@ targets:
   Zoo:
     type: application
     platform: iOS
-    sources: [Sources, Shared, WatchShared]
+    sources: [Sources, Shared, WatchShared, CallActivityShared]
     dependencies:
       - package: WebRTC
       - target: ZooNotificationService
         embed: true
       - target: ZooWatch
+        embed: true
+      - target: ZooCallActivity
         embed: true
     settings:
       base:
@@ -55,7 +57,8 @@ targets:
         NSCameraUsageDescription: このバージョンではカメラを使用しません。音声通話はマイクのみを使用します。
         NSMicrophoneUsageDescription: チャンネルやDMの音声通話でマイクを使用します。
         NSLocalNetworkUsageDescription: 同じWi-Fiに接続している通話相手と音声を直接送受信します。
-        NSSiriUsageDescription: SiriからDMを送信するため、宛先の名前と送信するメッセージをSiriと共有します。
+        NSSiriUsageDescription: SiriからZooのDM送信・下書き・音声通話を使うため、メンバー名と依頼内容をSiriと共有します。
+        NSSupportsLiveActivities: true
         INIntentsSupported: [INSendMessageIntent]
         INIntentsRestrictedWhileLocked: [INSendMessageIntent]
         INIntentsRestrictedWhileProtectedDataUnavailable: [INSendMessageIntent]
@@ -75,6 +78,23 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+  ZooCallActivity:
+    type: app-extension
+    platform: iOS
+    sources: [CallActivityExtension, CallActivityShared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: works.zli.zoo.call-activity
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: CallActivity-Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Zooの通話
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
   ZooNotificationService:
     type: app-extension
     platform: iOS

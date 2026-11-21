@@ -512,7 +512,11 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(error.waitForExistence(timeout: 5))
         XCTAssertTrue(error.isHittable)
         app.swipeUp()
-        XCTAssertTrue(error.isHittable)
+        // 操作対象ではないエラー表示は、スクロール後のヒット判定ではなく表示範囲で確認する。
+        XCTAssertTrue(error.exists)
+        XCTAssertGreaterThan(error.frame.height, 0)
+        XCTAssertTrue(app.frame.contains(error.frame))
+        XCTAssertGreaterThanOrEqual(error.frame.minY, app.navigationBars.firstMatch.frame.maxY - 1)
         capture(app, name: "長い一覧の上部に固定したピン保存エラー")
     }
 

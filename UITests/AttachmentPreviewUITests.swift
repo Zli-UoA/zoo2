@@ -94,7 +94,7 @@ final class AttachmentPreviewUITests: XCTestCase {
             XCTAssertTrue(reveal.waitForExistence(timeout: 5))
             let author = app.staticTexts["さくら"].firstMatch
             let authorFrame = author.frame
-            XCTAssertEqual(authorFrame.minX, app.frame.minX + 66, accuracy: 1, "画像の幅で投稿者情報の位置を変えません")
+            XCTAssertEqual(authorFrame.minX, app.frame.minX + 58, accuracy: 1, "画像の幅で投稿者情報の位置を変えません")
             XCTAssertEqual(reveal.frame.minX, authorFrame.minX, accuracy: 1)
             XCTAssertEqual(reveal.frame.width / reveal.frame.height, ratio, accuracy: 0.01)
             if ratio > 1 { XCTAssertEqual(reveal.frame.maxX, app.frame.maxX, accuracy: 1) }

@@ -58,6 +58,7 @@ final class AppSession {
             return session
         }
         #endif
+        NativeCallLiveActivity.endInterrupted()
         return AppSession()
     }
 

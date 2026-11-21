@@ -46,7 +46,9 @@
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>アップロードされた画像や動画を写真に保存します。</string>
 	<key>NSSiriUsageDescription</key>
-	<string>SiriからDMを送信するため、宛先の名前と送信するメッセージをSiriと共有します。</string>
+	<string>SiriからZooのDM送信・下書き・音声通話を使うため、メンバー名と依頼内容をSiriと共有します。</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

@@ -25,6 +25,8 @@ enum SiriVocabulary {
             INSpeakableString(vocabularyIdentifier: $0.id, spokenPhrase: $0.name, pronunciationHint: nil)
         }
         INVocabulary.shared().setVocabulary(NSOrderedSet(array: vocabulary), of: .contactName)
+        // 旧ビルドが登録したチャンネル名をSiriの候補から削除する。
+        INVocabulary.shared().setVocabulary(NSOrderedSet(), of: .contactGroupName)
         if #available(iOS 27.0, *), indexedRecipients != recipients {
             indexedRecipients = recipients
             let previous = indexing
@@ -35,9 +37,14 @@ enum SiriVocabulary {
                 guard !Task.isCancelled else { return }
                 do {
                     let index = CSSearchableIndex.default()
-                    try await index.deleteAppEntities(ofType: ZooMessagePerson.self)
+                    // 型変更前の宛先や廃止したチャンネルも、再生成する索引から消す。
+                    try await index.deleteAllSearchableItems()
                     guard !Task.isCancelled else { return }
                     try await index.indexAppEntities(recipients.map(ZooMessagePerson.init))
+                    guard !Task.isCancelled else { return }
+                    try await index.indexAppEntities(recipients.map(ZooRecipientEntity.init))
+                    guard !Task.isCancelled else { return }
+                    try await index.indexAppEntities(recipients.map(ZooPhonePerson.init))
                     Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri向けの宛先登録を更新しました。件数: \(recipients.count)")
                 } catch {
                     Logger(subsystem: "works.zli.zoo", category: "Siri").error("Siri向けの宛先登録に失敗しました。")
