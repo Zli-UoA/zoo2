@@ -329,7 +329,7 @@ fun ChannelDialog(
                 Box(Modifier.fillMaxWidth().height(320.dp)) {
                     val filtered =
                         channels
-                            .filterNot { it.present("deleted_at") }
+                            .filterNot { it.present("deleted_at") || it.present("archive_at") }
                             .filter {
                                 !it.flag("is_dm") &&
                                     !it.flag("is_private") &&
@@ -376,7 +376,6 @@ fun ChannelDialog(
                                                 maxLines = 1,
                                             )
                                     }
-                                    if (row.present("archive_at")) ChannelArchiveBadge(app)
                                     Text(
                                         app.t("channels.view"),
                                         small = true,

@@ -405,6 +405,33 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun channelListUpdatesWhenAJoinedChannelIsArchivedOrRestored() {
+        val fixture = Fixture()
+        val channel = obj("id" to "general", "channel_name" to "General")
+        var rows by mutableStateOf(listOf(channel))
+        val members = listOf(obj("channel_id" to "general", "user_id" to "alice"))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Sidebar(fixture.app, rows, emptyList(), members, false,
+                            Modifier.width(400.dp).height(1000.dp), narrow = true)
+                    }
+                }
+            }
+            ui.onNodeWithText("General").assertIsDisplayed()
+            ui.runOnIdle {
+                rows = listOf(obj("id" to "general", "channel_name" to "General",
+                    "archive_at" to "2026-11-15T00:00:00Z"))
+            }
+            ui.onNodeWithText("General").assertDoesNotExist()
+            ui.onNodeWithText("channels.empty").assertIsDisplayed()
+            ui.runOnIdle { rows = listOf(channel) }
+            ui.onNodeWithText("General").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun reselectingTheCurrentDmReturnsFromTheSidebarToChat() {
         val fixture = Fixture(Environment(path = "/channels/dm", touch = true))
         fixture.app.pane = "sidebar"

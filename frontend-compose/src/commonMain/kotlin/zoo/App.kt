@@ -390,7 +390,7 @@ internal fun Sidebar(
     error: Boolean = false,
     narrow: Boolean = false,
 ) {
-    val channels = remember(rows) { rows.filterNot { it.present("deleted_at") } }
+    val channels = remember(rows) { rows.filterNot { it.present("deleted_at") || it.present("archive_at") } }
     val joined = remember(channels, memberships, app.config.userId) {
         channels.filter { isMember(memberships, it.text("id"), app.config.userId) }
     }
@@ -577,8 +577,6 @@ internal fun ChannelLink(app: Session, channel: Row, title: String) {
                     .then(webControlModifier("img"))
                     .semantics { contentDescription = app.t("channels.unread") }
             )
-        if (channel.present("archive_at"))
-            Icon("archive", app.t("moderation.archived"), Modifier.size(12.dp))
     }
 }
 
