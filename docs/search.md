@@ -98,9 +98,9 @@ CREATE INDEX messages_search_month ON messages USING gin (
 
 | クライアント | 入口 | 備考 |
 | --- | --- | --- |
-| Web（React） | 左のレールの検索、`/search?q=&type=` | メッセージとファイルの 2 つのタブ。続きは「さらに古い結果を検索」 |
-| Android（Compose） | チャンネル一覧の上の検索ボタン、広い画面ではレール | Web と同じ |
-| TUI | `S` / `Ctrl+F` | Tab で種類を切り替え、末尾で ↓ を押すと続きを読む |
+| Web（React） | 左のレールの検索、`/search?q=&type=&from=&in=&after=&before=` | 種類は「すべて」（既定。メッセージとファイル）・メッセージ・ファイル。送信者・チャンネル・期間（過去 7 日・30 日・1 年、または日付を指定）で絞り込む。続きは「さらに古い結果を検索」 |
+| Android（Compose） | チャンネル一覧の上の検索ボタン、広い画面ではレール | 種類は Web と同じ（既定は「すべて」）。絞り込みは必須ではない機能なので付けない（AGENTS.md「クライアントごとの機能の範囲」） |
+| TUI | `S` / `Ctrl+F` | Tab で種類（すべて・メッセージ・ファイル）を切り替え、末尾で ↓ を押すと続きを読む。語に `from:@名前`・`in:#チャンネル`・`after:YYYY-MM-DD`・`before:YYYY-MM-DD` を書くと絞り込む（Slack と同じ書き方） |
 | デスクトップ（Tauri） | Web と同じ | 既定の Remote モードは React の画面を読むので、Web の検索がそのまま使える。開発用の Leptos の画面にはメッセージへ移動する手段がないので、検索は付けない |
 | iOS | Zli-UoA/zoo2-ios で対応 | |
 

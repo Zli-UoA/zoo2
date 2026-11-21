@@ -182,7 +182,7 @@ const meta = {
               ? { items: [olderMessage], next_cursor: null, searched_until: "2024-12" }
               : {
                   // 既定（すべて）はメッセージとファイルが新しい順に混ざる。
-                  items: [fileItems[0]!, ...messageItems],
+                  items: [messageItems[0]!, fileItems[0]!, ...messageItems.slice(1)],
                   next_cursor: "cursor-1",
                   searched_until: "2025-12",
                 },
