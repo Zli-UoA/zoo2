@@ -552,6 +552,15 @@ export function MessagePane({
     t,
   ]);
 
+  // 検索・リンクで開いた返信の親が削除されていても、返信は残っている。そのスレッドは閉じずに、親の代わりに
+  // 知らせを出して読むだけにする。
+  const deletedRootForTarget =
+    !!threadRootRow?.deleted_at &&
+    !!target &&
+    !target.deleted_at &&
+    target.parent_id === threadRootId;
+  const threadPaneRoot = threadRoot ?? (deletedRootForTarget ? threadRootRow : null);
+
   // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
   // ID で取る。取得が終わるまでは判断しない。
@@ -560,6 +569,7 @@ export function MessagePane({
       return;
     }
     if (threadRootRow && !threadRootRow.deleted_at) return;
+    if (deletedRootForTarget) return;
     closeThread();
     if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
@@ -569,6 +579,7 @@ export function MessagePane({
     threadRootRow,
     threadRootQuery.isLoading,
     threadRootQuery.isError,
+    deletedRootForTarget,
     closeThread,
     t,
   ]);
@@ -1044,21 +1055,22 @@ export function MessagePane({
           )}
         </div>
 
-        {threadRoot ? (
+        {threadPaneRoot ? (
           <ThreadPane
             commands={commandSuggestions.commands}
             onRequestCommands={commandSuggestions.load}
             targetMessageId={resolvedTargetId}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
-            key={threadRoot.id}
-            readOnly={readOnly}
+            key={threadPaneRoot.id}
+            readOnly={readOnly || !threadRoot}
+            rootDeleted={!threadRoot}
             isArchived={threadIsArchived}
             isMember={!readOnly && isMember}
             isOffline={!isOnline}
             typingUsers={threadTyping.users}
             onTyping={threadTyping.onTyping}
-            root={threadRoot}
+            root={threadPaneRoot}
             replies={threadReplies}
             membership={threadMembership.data?.membership}
             membershipPending={threadMembership.pending}
@@ -1080,8 +1092,8 @@ export function MessagePane({
             }
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
-            currentUserId={readOnly || threadIsArchived ? null : currentUserId}
-            canModerate={canModerate && !threadIsArchived}
+            currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+            canModerate={canModerate && !threadIsArchived && !!threadRoot}
             reactions={reactionGroups}
             attachments={attachmentsByMessage}
             onUploadAttachment={uploadAttachment}
@@ -1089,6 +1101,7 @@ export function MessagePane({
             canReact={
               !readOnly &&
               !threadIsArchived &&
+              !!threadRoot &&
               !!currentUserId &&
               !reactionsQuery.isLoading &&
               !reactionsQuery.isError
