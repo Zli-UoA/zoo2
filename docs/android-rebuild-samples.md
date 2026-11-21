@@ -9,7 +9,8 @@
 | 通知 | [ライト](images/android-design/rebuild/notifications-light.png) | [ダーク](images/android-design/rebuild/notifications-dark.png) |
 | Bubble | [ライト](images/android-design/rebuild/bubble-light.png) | [ダーク](images/android-design/rebuild/bubble-dark.png) |
 | 設定 | [ライト](images/android-design/rebuild/settings-light.png) | [ダーク](images/android-design/rebuild/settings-dark.png) |
-| 会話 | [ライト](images/android-design/rebuild/conversation-light.png) | [ダーク](images/android-design/rebuild/conversation-dark.png) |
+| 会話・待機中 | [ライト](images/android-design/rebuild/conversation-idle-light.png) | [ダーク](images/android-design/rebuild/conversation-idle-dark.png) |
+| 会話・入力中 | [ライト](images/android-design/rebuild/conversation-light.png) | [ダーク](images/android-design/rebuild/conversation-dark.png) |
 | 全画面入力 | [ライト](images/android-design/rebuild/composer-light.png) | [ダーク](images/android-design/rebuild/composer-dark.png) |
 | スレッド | [ライト](images/android-design/rebuild/thread-light.png) | [ダーク](images/android-design/rebuild/thread-dark.png) |
 | 投稿詳細 | [ライト](images/android-design/rebuild/post-light.png) | [ダーク](images/android-design/rebuild/post-dark.png) |
@@ -20,7 +21,9 @@
 | チャンネル設定 | [ライト](images/android-design/rebuild/channel-settings-light.png) | [ダーク](images/android-design/rebuild/channel-settings-dark.png) |
 | 設定の子画面 | [ライト](images/android-design/rebuild/settings-detail-light.png) | [ダーク](images/android-design/rebuild/settings-detail-dark.png) |
 | ログイン | [ライト](images/android-design/rebuild/login-light.png) | [ダーク](images/android-design/rebuild/login-dark.png) |
+| ログイン復元中 | [ライト](images/android-design/rebuild/login-restoring-light.png) | [ダーク](images/android-design/rebuild/login-restoring-dark.png) |
 | 着信 | [ライト](images/android-design/rebuild/call-light.png) | [ダーク](images/android-design/rebuild/call-dark.png) |
+| 通話中 | [ライト](images/android-design/rebuild/call-active-light.png) | [ダーク](images/android-design/rebuild/call-active-dark.png) |
 
 ```sh
 cd frontend-compose

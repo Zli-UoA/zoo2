@@ -62,6 +62,7 @@ class AndroidSamplesTest {
             "notifications" to inbox,
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState()),
             "settings" to AndroidScreen.Settings(settings),
+            "conversation-idle" to conversation.copy(input = InputState()),
             "conversation" to conversation,
             "composer" to conversation.copy(input = InputState("確認しました。", expanded = true)),
             "thread" to AndroidScreen.Thread("開発", posts.first(), posts.drop(1), InputState()),
@@ -73,7 +74,9 @@ class AndroidSamplesTest {
             "channel-settings" to AndroidScreen.ChannelSettings("開発", settings),
             "settings-detail" to AndroidScreen.SettingsDetail("通知", settings.take(1)),
             "login" to AndroidScreen.SignIn(false),
+            "login-restoring" to AndroidScreen.SignIn(true),
             "call" to AndroidScreen.Call("はる", true),
+            "call-active" to AndroidScreen.Call("はる", false),
         )
         var screen by mutableStateOf<AndroidScreen>(cases.first().second)
         var dark by mutableStateOf(false)
