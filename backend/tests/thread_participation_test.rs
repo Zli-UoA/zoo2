@@ -414,3 +414,117 @@ async fn rollout_http_keeps_legacy_threads_readable_and_isolates_phases() -> any
     fixture.cleanup().await?;
     Ok(())
 }
+
+/// フラグ (`zoo.thread_live_import`) を一度も設定していない接続でも、zoo の返信 (作成日時が現在時刻) は、
+/// 退出が返信の作成日時より後でも、従来どおり再参加させる。
+/// 未設定のフラグは `current_setting` が NULL を返し、条件が NULL になって、再参加の UPDATE が動かないことがあった。
+/// プールの接続は、Slack の取り込みで一度フラグを設定すると、トランザクションのあとに空文字列へ戻り NULL にならないので、
+/// 新しい接続で確かめる
+#[tokio::test]
+async fn zoo_reply_rejoins_on_a_fresh_connection_even_when_the_leave_is_later() -> anyhow::Result<()>
+{
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
+    let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let users: Vec<_> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    for user in &users {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id":user,"user_name":user,"display_name":user}),
+        )
+        .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+    let root = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/messages",
+        json!({"id":root,"channel_id":channel,"content":"Root"}),
+    )
+    .await?;
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        "/api/messages",
+        json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":root,"content":"First"}),
+    )
+    .await?;
+
+    // 新しい接続（フラグを一度も設定していない）で、直接 SQL を流す
+    let (client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(connection);
+    let unset: Option<String> = client
+        .query_one(
+            "SELECT current_setting('zoo.thread_live_import', true)",
+            &[],
+        )
+        .await?
+        .get(0);
+    assert!(
+        unset.is_none(),
+        "a fresh connection has no flag, so current_setting is NULL"
+    );
+    // users[1] が、これから入れる返信の作成日時（現在時刻）より後の時刻に退出した状態にする
+    client
+        .execute(
+            "UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')+interval '1 minute' \
+             WHERE thread_id=$1 AND user_id=$2",
+            &[&root, &users[1]],
+        )
+        .await?;
+    // zoo の返信: 作成日時はトランザクションの開始時刻（現在時刻）
+    let inserted = client
+        .execute(
+            "INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) \
+             VALUES($1,$2,$3,'Again',$4,now() AT TIME ZONE 'UTC')",
+            &[
+                &uuid::Uuid::new_v4().to_string(),
+                &users[1],
+                &channel,
+                &root,
+            ],
+        )
+        .await?;
+    assert_eq!(inserted, 1);
+    let left: bool = client
+        .query_one(
+            "SELECT left_at IS NOT NULL FROM thread_participants WHERE thread_id=$1 AND user_id=$2",
+            &[&root, &users[1]],
+        )
+        .await?
+        .get(0);
+    assert!(
+        !left,
+        "a zoo reply rejoins even when the leave is dated later than the reply"
+    );
+    fixture.cleanup().await?;
+    Ok(())
+}

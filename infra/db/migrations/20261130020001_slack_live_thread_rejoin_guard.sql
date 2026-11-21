@@ -14,7 +14,9 @@ BEGIN
     WHERE id=NEW.parent_id AND deleted_at IS NULL FOR NO KEY UPDATE;
   IF NOT FOUND THEN RETURN NULL; END IF;
   posted_now:=TG_OP='INSERT' AND NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC');
-  imported_live:=TG_OP='INSERT' AND current_setting('zoo.thread_live_import',true)='on';
+  -- フラグを一度も設定していない接続では、current_setting が NULL を返す。NULL のままだと、imported_live と
+  -- NOT imported_live が NULL になり、zoo の返信の条件（posted_now AND NOT imported_live）が効かなくなる
+  imported_live:=TG_OP='INSERT' AND COALESCE(current_setting('zoo.thread_live_import',true),'off')='on';
   live_post:=posted_now OR imported_live;
   INSERT INTO thread_participants(thread_id,user_id)
     VALUES(NEW.parent_id,parent_author),(NEW.parent_id,NEW.user_id) ON CONFLICT DO NOTHING;
