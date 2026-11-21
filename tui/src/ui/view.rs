@@ -1452,6 +1452,81 @@ mod tests {
                 .iter()
                 .all(|item| !matches!(item, SidebarItem::Thread { .. }))
         );
+
+        // 参加済みの DM をピン留めして、その DM で、返信のあるスレッドを閲覧中にしても、ピン留めの下にスレッドの行を
+        // 出さない。DM の除外は、未参加による除外とは別の条件なので、参加済みの DM で確かめる
+        // （通常の一覧の DM の下には、閲覧中のスレッドが出る。ピン留めの下には出さない）
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::Channels,
+            vec![(
+                "d1",
+                json!({ "id": "d1", "channel_name": "dm:u1:u2", "is_private": "t", "is_dm": "t" }),
+            )],
+        );
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("dm-m", json!({ "user_id": "u1", "channel_id": "d1" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("d1".into()),
+            vec![
+                (
+                    "dr1",
+                    json!({ "id": "dr1", "user_id": "u2", "channel_id": "d1",
+                               "content": "dm root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "dr2",
+                    json!({ "id": "dr2", "user_id": "u1", "channel_id": "d1", "content": "dm reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "dr1" }),
+                ),
+            ],
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p3",
+                json!({
+                    "user_id": "u1", "channel_id": "d1", "position": "2",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "dr1".into(),
+            channel_id: "d1".into(),
+            content: "dm root".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.current = Some("d1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "dr1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert!(items.contains(&SidebarItem::Pinned("d1".into())));
+        // 設定が、閲覧中のスレッドの行を出す経路に届いていることの確認（通常の一覧の DM の下には出る）
+        assert!(items.contains(&SidebarItem::Thread {
+            channel_id: "d1".into(),
+            id: "dr1".into(),
+            pinned: false,
+        }));
+        assert!(
+            !items.iter().any(|item| matches!(
+                item,
+                SidebarItem::Thread { channel_id, pinned: true, .. } if channel_id == "d1"
+            )),
+            "{items:?}"
+        );
     }
 
     #[tokio::test]
