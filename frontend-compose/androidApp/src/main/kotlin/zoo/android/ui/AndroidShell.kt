@@ -42,6 +42,12 @@ internal class AndroidColors(dark: Boolean) {
     val accent = Color(0xffffd400)
 }
 
+internal object AndroidWeights {
+    val body = FontWeight.Normal
+    val label = FontWeight.Medium
+    val emphasis = FontWeight.SemiBold
+}
+
 @Composable
 internal fun AndroidShell(
     selected: TopPage?,
@@ -71,7 +77,7 @@ internal fun AndroidShell(
                             }
                             Text(
                                 page.title, color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
-                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                                fontWeight = if (active) AndroidWeights.label else AndroidWeights.body,
                             )
                         }
                     }
@@ -102,7 +108,7 @@ internal fun PageHeader(
             if (onOpen == null) Modifier else Modifier.heightIn(min = 48.dp).clickable(onClick = onOpen),
         ), verticalArrangement = Arrangement.Center) {
             Text(title, color = colors.foreground, fontSize = if (description == null) 20.sp else 16.sp,
-                fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
             if (!description.isNullOrEmpty()) {
                 Text(description, color = colors.secondary, fontSize = 13.sp, maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)

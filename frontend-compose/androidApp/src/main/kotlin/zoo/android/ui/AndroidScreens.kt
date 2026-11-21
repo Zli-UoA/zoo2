@@ -26,7 +26,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -196,7 +195,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
         screen.sections.forEach { section ->
             item {
                 Text(section.label, Modifier.padding(top = 16.dp, bottom = 4.dp), color = colors.secondary,
-                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    fontSize = 13.sp, fontWeight = AndroidWeights.label)
             }
             items(section.channels, key = { it.id }) { channel ->
                 Row(
@@ -211,7 +210,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
                         channel.title,
                         Modifier.weight(1f),
                         color = colors.foreground,
-                        fontWeight = if (channel.unread) FontWeight.Bold else FontWeight.Normal,
+                        fontWeight = if (channel.unread) AndroidWeights.emphasis else AndroidWeights.body,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -257,7 +256,7 @@ private fun Timeline(
                 }
                 Column(Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(entry.author, color = colors.foreground, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.label, fontSize = 14.sp)
                         Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                     }
                     Text(entry.body, color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)
