@@ -33,7 +33,7 @@ internal object AndroidControlSize {
 }
 
 internal enum class UiIcon {
-    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff, Delete, Repost, Search, External,
+    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff, Delete, Repost, Search, External, Mic, MicOff, Speaker, SpeakerOff,
 }
 
 @Composable
@@ -124,6 +124,23 @@ internal fun UiGlyph(icon: UiIcon, color: Color) {
             UiIcon.Copy -> {
                 lines(5 to 16, 3 to 16, 3 to 3, 16 to 3, 16 to 5)
                 lines(8 to 8, 21 to 8, 21 to 21, 8 to 21, 8 to 8)
+            }
+            UiIcon.Mic, UiIcon.MicOff -> {
+                drawRoundRect(color, topLeft = point(9f, 3f), size = Size(size.width / 4f, size.height * .46f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.width / 8f), style = Stroke(width))
+                lines(6 to 11, 6 to 13, 8 to 16, 12 to 18, 16 to 16, 18 to 13, 18 to 11)
+                lines(12 to 18, 12 to 21)
+                if (icon == UiIcon.MicOff) lines(3 to 3, 21 to 21)
+            }
+            UiIcon.Speaker, UiIcon.SpeakerOff -> {
+                lines(3 to 9, 7 to 9, 12 to 5, 12 to 19, 7 to 15, 3 to 15, 3 to 9)
+                if (icon == UiIcon.Speaker) {
+                    lines(16 to 9, 17 to 12, 16 to 15)
+                    lines(19 to 6, 21 to 9, 21 to 15, 19 to 18)
+                } else {
+                    lines(16 to 10, 21 to 15)
+                    lines(21 to 10, 16 to 15)
+                }
             }
             UiIcon.Phone -> lines(
                 5 to 3, 9 to 3, 11 to 8, 8 to 10, 10 to 14, 14 to 16, 16 to 13,

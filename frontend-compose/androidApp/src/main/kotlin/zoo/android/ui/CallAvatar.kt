@@ -9,7 +9,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
@@ -17,9 +23,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.sqrt
@@ -72,5 +80,23 @@ internal fun CallAvatar(
             }
             else -> ZooBadge(colors, modifier)
         }
+    }
+}
+
+@Composable
+internal fun CallToggle(label: String, icon: UiIcon, active: Boolean, colors: AndroidColors, toggle: () -> Unit) {
+    Column(
+        Modifier.widthIn(min = 76.dp).heightIn(min = AndroidControlSize.target)
+            .toggleable(active, role = Role.Switch) { toggle() }.padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            Modifier.size(AndroidControlSize.target).background(if (active) colors.accent else colors.inputSurface, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            UiGlyph(icon, if (active) Color.Black else colors.foreground)
+        }
+        Text(label, color = colors.foreground, fontSize = 12.sp, fontWeight = AndroidWeights.label)
     }
 }

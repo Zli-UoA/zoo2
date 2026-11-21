@@ -325,11 +325,11 @@ private fun RenderAndroidScreen(
                 },
             ) {
                 Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (screen.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                        TextAction(if (screen.muted) "ミュートを解除" else "ミュート", colors, style = TextActionStyle.Plain) {
+                    if (screen.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
+                        CallToggle("ミュート", if (screen.muted) UiIcon.MicOff else UiIcon.Mic, screen.muted, colors) {
                             dispatch(AndroidUiAction.MuteCall)
                         }
-                        TextAction(if (screen.speaker) "スピーカーをオフ" else "スピーカー", colors, style = TextActionStyle.Plain) {
+                        CallToggle("スピーカー", if (screen.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, screen.speaker, colors) {
                             dispatch(AndroidUiAction.SpeakerCall)
                         }
                     }
