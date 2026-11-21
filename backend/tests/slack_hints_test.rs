@@ -795,17 +795,6 @@ async fn test_slack_live_reply_reopens_the_thread_and_rejoins_the_replier() -> a
     let f = imported(true).await?;
     let parent = f.ts_new.clone();
     let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
-    let close_and_leave = || async {
-        sql(
-            &f.state,
-            "WITH a AS (UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1 RETURNING id), \
-                  l AS (UPDATE thread_participants SET left_at=now() AT TIME ZONE 'UTC' WHERE thread_id=$1 RETURNING thread_id) \
-             SELECT json_build_object('a',(SELECT count(*) FROM a),'l',(SELECT count(*) FROM l))::text",
-            &[&parent_id],
-        )
-        .await
-    };
-
     // 最初の返信。親の投稿者と返信者が参加する (参加は、これまでどおり)
     let first = format!("{}.000200", now_secs() - 50);
     deliver_reply(&f, &parent, &first).await?;
@@ -813,9 +802,8 @@ async fn test_slack_live_reply_reopens_the_thread_and_rejoins_the_replier() -> a
     assert!(!archived);
     assert!(!left.is_empty() && left.iter().all(|l| !l), "{left:?}");
 
-    // 閉じて、全員が退出したあとの、直近の返信は、再Openして再参加させる
-    let rows = close_and_leave().await?;
-    assert_eq!(rows[0]["l"], 1, "{rows:?}");
+    // 閉じて、全員が返信より前に退出したあとの、直近の返信は、再Openして再参加させる
+    close_and_leave(&f, &parent_id, "5 minutes").await?;
     let second = format!("{}.000300", now_secs() - 40);
     deliver_reply(&f, &parent, &second).await?;
     let (archived, left) = thread_state(&f, &parent_id).await?;
@@ -823,7 +811,7 @@ async fn test_slack_live_reply_reopens_the_thread_and_rejoins_the_replier() -> a
     assert!(left.iter().all(|l| !l), "the replier rejoins: {left:?}");
 
     // 同じ返信の再送 (すでにある行) は、閉じたスレッドを開かず、退出も取り消さない
-    close_and_leave().await?;
+    close_and_leave(&f, &parent_id, "5 minutes").await?;
     deliver_reply(&f, &parent, &second).await?;
     let (archived, left) = thread_state(&f, &parent_id).await?;
     assert!(archived, "a resend does not reopen the thread");
@@ -842,6 +830,148 @@ async fn test_slack_live_reply_reopens_the_thread_and_rejoins_the_replier() -> a
         left.iter().all(|l| *l),
         "an old reply does not rejoin: {left:?}"
     );
+    Ok(())
+}
+
+/// 閉じて、全員が `left_ago` 前に退出した状態にする
+async fn close_and_leave(f: &Fixture, parent_id: &str, left_ago: &str) -> anyhow::Result<()> {
+    let rows = sql(
+        &f.state,
+        &format!(
+            "WITH a AS (UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1 RETURNING id), \
+                  l AS (UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')-interval '{left_ago}' \
+                        WHERE thread_id=$1 RETURNING thread_id) \
+             SELECT json_build_object('a',(SELECT count(*) FROM a),'l',(SELECT count(*) FROM l))::text"
+        ),
+        &[parent_id],
+    )
+    .await?;
+    assert_eq!(rows[0]["a"], 1, "{rows:?}");
+    assert!(rows[0]["l"].as_i64().unwrap() >= 1, "{rows:?}");
+    Ok(())
+}
+
+/// 返信より後に zoo で退出した人は、遅れて取り込んだ返信では再参加しない。返信より後の退出でなければ、再参加する。
+/// 再Openは、返信の時刻が活動時刻を進めるので、どちらでも行う
+#[tokio::test]
+async fn test_slack_reply_older_than_the_leave_does_not_rejoin() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    deliver_reply(&f, &parent, &format!("{}.000200", now_secs() - 55)).await?;
+
+    // 5 分前に退出した人の、10 分前の返信 (退出より前に書いた返信) を、いま取り込む
+    close_and_leave(&f, &parent_id, "5 minutes").await?;
+    deliver_reply(&f, &parent, &format!("{}.000300", now_secs() - 600)).await?;
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(!archived, "the reply still extends the thread's activity");
+    assert!(
+        left.iter().all(|l| *l),
+        "a reply older than the leave does not rejoin: {left:?}"
+    );
+
+    // 5 分前に退出した人の、1 分前の返信 (退出のあとに書いた返信) は、再参加させる
+    close_and_leave(&f, &parent_id, "5 minutes").await?;
+    deliver_reply(&f, &parent, &format!("{}.000400", now_secs() - 60)).await?;
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(!archived);
+    assert!(
+        left.iter().all(|l| !l),
+        "a reply after the leave rejoins: {left:?}"
+    );
+    Ok(())
+}
+
+/// 期間 (24 時間) の端に近い返信は、再Openしても、活動時刻がすぐ期間を外れて閉じ直されるので、履歴として扱う
+#[tokio::test]
+async fn test_slack_reply_near_the_end_of_the_idle_window_is_history() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    deliver_reply(&f, &parent, &format!("{}.000200", now_secs() - 55)).await?;
+
+    // 24 時間より 5 分手前 (余裕の 10 分の内側) は、再Openも再参加もしない
+    close_and_leave(&f, &parent_id, "1 minute").await?;
+    deliver_reply(
+        &f,
+        &parent,
+        &format!("{}.000300", now_secs() - (86_400 - 300)),
+    )
+    .await?;
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(archived, "a reply at the end of the window is history");
+    assert!(left.iter().all(|l| *l), "{left:?}");
+
+    // 24 時間より 20 分手前 (余裕の外側) は、直近の返信として、再Openし、再参加させる
+    deliver_reply(
+        &f,
+        &parent,
+        &format!("{}.000400", now_secs() - (86_400 - 1_200)),
+    )
+    .await?;
+    let (archived, _) = thread_state(&f, &parent_id).await?;
+    assert!(!archived, "a reply outside the margin is live");
+    Ok(())
+}
+
+/// 差分同期 (ページ単位の書き込み) の経路でも、直近の返信だけが再Openし、古い返信は履歴として入るだけ
+#[tokio::test]
+async fn test_sync_reopens_for_a_recent_reply_but_not_for_an_old_one() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    deliver_reply(&f, &parent, &format!("{}.000200", now_secs() - 90)).await?;
+    close_and_leave(&f, &parent_id, "1 hour").await?;
+    let before = count_messages(&f.state, &f.channel).await;
+
+    // スレッドの返信の取得に、1 回ずつ、決めた返信を返す (呼ばれた順に使う)
+    let serve = |reply: String| {
+        let slack = &f.slack;
+        let parent = parent.clone();
+        async move {
+            Mock::given(method("GET"))
+                .and(path("/conversations.replies"))
+                .and(query_param("ts", parent.as_str()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+                    "messages": [
+                        {"type":"message","ts":&parent,"user":"UA","text":"new post","thread_ts":&parent,"reply_count":2},
+                        {"type":"message","ts":&reply,"user":"UA","text":"swept reply","thread_ts":&parent}],
+                    "has_more": false})))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(slack)
+                .await;
+        }
+    };
+    // 直前の同期から 5 分以内でないことにして、監視中のスレッドを全部取り直す同期にする
+    let sweep = || async {
+        sql(
+            &f.state,
+            "UPDATE slack_channel_syncs SET swept_at=NULL WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+            &[&f.team],
+        )
+        .await?;
+        sync_now(&f).await
+    };
+
+    // 3 日前の返信を、同期が取り込む: 再Openも再参加もしない
+    serve(format!("{}.000500", now_secs() - 3 * 86_400)).await;
+    sweep().await?;
+    assert_eq!(count_messages(&f.state, &f.channel).await, before + 1);
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(archived, "an old reply swept in is history");
+    assert!(left.iter().all(|l| *l), "{left:?}");
+
+    // 30 秒前の返信を、同期が取り込む: 再Openし、再参加させる
+    serve(format!("{}.000600", now_secs() - 30)).await;
+    sweep().await?;
+    assert_eq!(count_messages(&f.state, &f.channel).await, before + 2);
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(!archived, "a recent reply swept in reopens the thread");
+    assert!(left.iter().all(|l| !l), "{left:?}");
     Ok(())
 }
 

@@ -358,6 +358,18 @@ pub(super) async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Res
     Ok(())
 }
 
+/// このトランザクションの、次の INSERT を、ライブの返信として扱うか (`zoo.thread_live_import`)。
+/// テーブルは読まない定数の設定で、1 回 1 往復
+async fn set_live_import(tx: &mut toasty::Transaction<'_>, on: bool) -> Result<(), AppError> {
+    one(
+        tx,
+        "SELECT json_build_object('ok',set_config('zoo.thread_live_import',$1,true))::text",
+        &[if on { "on" } else { "off" }],
+    )
+    .await?;
+    Ok(())
+}
+
 async fn fail(s: &AppState, job: &Job, error: &AppError) -> Result<(), AppError> {
     // ZIP の中身の不備はやり直しても直らない
     let permanent = matches!(error, AppError::BadRequest(_));
@@ -1548,20 +1560,18 @@ pub(super) async fn insert_message(
     } = render_message(tx, ctx, message).await?;
     // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
     // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
-    // (`job_id` あり) と、期間より古い返信は、立てない。同じトランザクションで返信ごとに値を決め直すので、
-    // 直前の返信のフラグを引き継がない。同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
-    if job_id.is_empty() && !parent.is_empty() {
+    // (`job_id` あり) と、期間より古い返信は、フラグを立てない。フラグは、この返信の INSERT の直前に立て、直後に
+    // 戻す (立てた返信だけ 2 往復。立てない返信は増えない)。同じトランザクションの、次の返信に引き継がない。
+    // 同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
+    let live = job_id.is_empty() && !parent.is_empty() && {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or_default();
-        let live = super::is_live_reply_ts(&message.ts, now);
-        one(
-            tx,
-            "SELECT json_build_object('ok',set_config('zoo.thread_live_import',$1,true))::text",
-            &[if live { "on" } else { "off" }],
-        )
-        .await?;
+        super::is_live_reply_ts(&message.ts, now)
+    };
+    if live {
+        set_live_import(tx, true).await?;
     }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
@@ -1594,6 +1604,9 @@ pub(super) async fn insert_message(
         ],
     )
     .await?;
+    if live {
+        set_live_import(tx, false).await?;
+    }
     // 確認と INSERT の間に、別の行が同じ ID で確定していた場合も、その行には何も結び付けない
     if derived && id_taken_by_other(tx, &id, channel_id, &message.ts).await? {
         tracing::warn!(
