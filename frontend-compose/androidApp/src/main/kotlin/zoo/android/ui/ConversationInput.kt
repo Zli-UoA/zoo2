@@ -6,7 +6,6 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -39,7 +38,6 @@ internal fun ConversationInput(
     val showTools = full || focused || state.text.isNotEmpty() || drag > 0f
     val expand by rememberUpdatedState { onTool(InputTool.Expand) }
     Column(modifier.fillMaxWidth().background(colors.inputSurface).padding(bottom = AndroidControlSize.inputEdgeInset)) {
-        HorizontalDivider(color = colors.inputBoundary)
         Box(
             Modifier.fillMaxWidth().height(24.dp)
                 .pointerInput(full) {
