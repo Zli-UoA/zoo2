@@ -47,6 +47,11 @@ struct ChannelDetailsView: View {
                             .accessibilityIdentifier("edit-channel")
                         Button("チャンネルをアーカイブ", systemImage: "archivebox", role: .destructive) { confirmingArchive = true }
                             .accessibilityIdentifier("archive-channel")
+                            .confirmationDialog("このチャンネルをアーカイブしますか？", isPresented: $confirmingArchive, titleVisibility: .visible) {
+                                Button("アーカイブ", role: .destructive) { archiving = true }
+                            } message: {
+                                Text("新しい投稿と通話を停止します。過去のメッセージは引き続き閲覧できます。")
+                            }
                     }
                     .disabled(workspace.updatingChannels.contains(channel.id))
                 }
@@ -65,11 +70,6 @@ struct ChannelDetailsView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() }.disabled(archiving) } }
             .task { await workspace.loadMembers(channelID: channel.id) }
             .sheet(isPresented: $editing) { ChannelEditor(channel: currentChannel, workspace: workspace) }
-            .confirmationDialog("このチャンネルをアーカイブしますか？", isPresented: $confirmingArchive, titleVisibility: .visible) {
-                Button("アーカイブ", role: .destructive) { archiving = true }
-            } message: {
-                Text("新しい投稿と通話を停止します。過去のメッセージは引き続き閲覧できます。")
-            }
             .task(id: archiving) {
                 guard archiving else { return }
                 defer { archiving = false }

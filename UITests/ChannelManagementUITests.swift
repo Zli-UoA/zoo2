@@ -28,8 +28,23 @@ final class ChannelManagementUITests: XCTestCase {
         let details = app.buttons["channel-details"]
         XCTAssertTrue(details.wait(for: \.label, toEqual: "一般更新の詳細", timeout: 5))
         details.tap()
-        app.buttons["archive-channel"].tap()
-        app.buttons["アーカイブ"].tap()
+        let archive = app.buttons["archive-channel"]
+        let sourceFrame = archive.frame
+        archive.tap()
+        let confirmation = app.buttons["アーカイブ"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        let title = app.staticTexts["このチャンネルをアーカイブしますか？"]
+        let dialogFrame = title.frame.union(confirmation.frame)
+        XCTAssertTrue(dialogFrame.insetBy(dx: -32, dy: -32).intersects(sourceFrame), "確認表示を押したボタンの位置に表示する")
+        let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        screenshot.name = "アーカイブボタンに紐づく確認表示"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.navigationBars["チャンネル詳細"].staticTexts["チャンネル詳細"].tap()
+        XCTAssertTrue(confirmation.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(archive.isEnabled)
+        archive.tap()
+        confirmation.tap()
         XCTAssertTrue(app.staticTexts["アーカイブ済みのチャンネルです"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["start-call"].exists)
         details.tap()

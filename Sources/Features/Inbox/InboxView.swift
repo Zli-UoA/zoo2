@@ -143,7 +143,7 @@ private struct InboxCard: View {
                     }
                 } label: {
                     VStack(alignment: .leading, spacing: 8) {
-                        header
+                        header()
                         if !missedCall {
                             if hasChannel, let text = context?.content {
                                 preview(text)
@@ -181,9 +181,9 @@ private struct InboxCard: View {
                 if openFailed { Text("会話を開けませんでした。もう一度お試しください。").font(.caption).foregroundStyle(.red) }
             } else {
                 if let actorURL = store.actorURL(for: entry) {
-                    Link(destination: actorURL) { header }.buttonStyle(.plain)
+                    Link(destination: actorURL) { header(actorColor: AppDesign.externalLink) }.buttonStyle(.plain)
                         .accessibilityIdentifier("inbox-actor-\(entry.id)")
-                } else { header }
+                } else { header() }
                 if let postURL = store.webURL(for: entry), postURL != store.actorURL(for: entry) {
                     Link(destination: postURL) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -193,7 +193,7 @@ private struct InboxCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .tint(AppDesign.link)
+                    .tint(AppDesign.externalLink)
                     .accessibilityIdentifier("inbox-post-\(entry.id)")
                 } else if let text = entry.content { preview(text) }
                 if entry.kind == "follow_request", entry.pendingFollow {
@@ -243,11 +243,11 @@ private struct InboxCard: View {
         let retry: Int
     }
 
-    private var header: some View {
+    private func header(actorColor: Color = .primary) -> some View {
         HStack(alignment: .top, spacing: AppDesign.spacing) {
             AvatarView(name: actor, url: entry.avatarURL ?? person?.avatarURL)
             VStack(alignment: .leading, spacing: 3) {
-                Text(actorSummary).font(.subheadline.bold()).foregroundStyle(.primary)
+                Text(actorSummary).font(.subheadline.bold()).foregroundStyle(actorColor)
                 Label {
                     Text(event.text)
                 } icon: {

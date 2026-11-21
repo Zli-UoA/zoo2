@@ -26,6 +26,7 @@ struct SiriSettingsSection: View {
             }
             if let settings = URL(string: UIApplication.openSettingsURLString) {
                 Link("iOSのZoo設定を開く", destination: settings)
+                    .tint(AppDesign.externalLink)
             }
             NavigationLink("宛先を固定して使う") { FixedRecipientShortcutGuide() }
                 .accessibilityIdentifier("fixed-recipient-shortcut-guide")
