@@ -17,6 +17,8 @@ def groups(path):
     for sample in data['samples']:
         grouped.setdefault((sample['name'], sample['concurrency']), []).append(sample)
     assert len(grouped) == data['queries'] * 2
+    names = {name for name, _ in grouped}
+    assert set(grouped) == {(name, n) for name in names for n in (1, 8)}, sorted(grouped)
     for (name, concurrency), samples in grouped.items():
         assert len(samples) == 30 * concurrency, (name, concurrency, len(samples))
     return data, grouped

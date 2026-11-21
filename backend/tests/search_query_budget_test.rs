@@ -102,7 +102,7 @@ SELECT 'sc-'||i,'{ACTOR}',LOCALTIMESTAMP FROM generate_series(1,{channels}) i WH
 -- 今月（R 件）。月初から 50ms 間隔なので、月の 0:17 以降に実行すれば今月に収まる。
 INSERT INTO messages(id,user_id,channel_id,content,created_at,deleted_at)
 SELECT 'r-'||lpad(i::text,8,'0'),CASE WHEN i%2=0 THEN '{ACTOR}' ELSE '{NOISE}' END,'sc-'||(1+i%{channels}),
-  CASE WHEN i=7 THEN 'とてもレア語な話' ELSE {content} END,
+  CASE WHEN i=8 THEN 'とてもレア語な話' ELSE {content} END,
   date_trunc('month',LOCALTIMESTAMP)+i*interval '50 milliseconds',
   CASE WHEN i%7=0 THEN LOCALTIMESTAMP END
 FROM generate_series(1,{R}) i;
@@ -470,6 +470,17 @@ SET session_replication_role = DEFAULT;
         ("api-files", "/api/search?type=files&q=pdf"),
         ("api-notes", "/api/search?type=notes&q=%E9%9A%9C%E5%AE%B3"),
     ];
+    let oldest_month = {
+        let m = now - 11;
+        format!("{:04}-{:02}", (m - 1) / 12, (m - 1) % 12 + 1)
+    };
+    // まれな語は、今月の削除されていない 1 行だけに当たる（0 件の計測にならない）。
+    {
+        let uri = "/api/search?q=%E3%83%AC%E3%82%A2%E8%AA%9E"; // レア語
+        let response = app.clone().oneshot(Request::builder().uri(uri).header("X-Dev-User", ACTOR).body(Body::empty()).unwrap()).await?;
+        let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await?)?;
+        assert_eq!(body["items"].as_array().map(Vec::len), Some(1), "{body}");
+    }
     let api_metrics = Arc::new(Mutex::new(Vec::<Value>::new()));
     for concurrency in [1, 8] {
         let mut tasks = Vec::new();
@@ -485,6 +496,8 @@ SET session_replication_role = DEFAULT;
                         if name == "api-messages-12-months" {
                             assert!(body["items"].as_array().unwrap().is_empty());
                             assert!(body["next_cursor"].is_string(), "older months remain after 12");
+                            // ちょうど 12 か月（今月から 11 か月前まで）を見て止まる。
+                            assert_eq!(body["searched_until"], json!(oldest_month), "{body}");
                         }
                         metrics.lock().unwrap().push(json!({"name": name, "concurrency": concurrency, "roundtrip_ms": start.elapsed().as_secs_f64() * 1000.}));
                     }
