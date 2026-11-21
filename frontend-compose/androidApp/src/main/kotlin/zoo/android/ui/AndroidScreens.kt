@@ -238,9 +238,22 @@ private fun RenderAndroidScreen(
                     TextAction("ログイン画面を開く", colors, style = TextActionStyle.Plain, click = back)
                 } else TextAction("ログイン", colors) { dispatch(AndroidUiAction.SignIn) }
             }
-            is AndroidScreen.Call -> BrandPage(if (screen.incoming) "着信中" else "通話中", screen.caller, colors, detailWeight = AndroidWeights.userName) {
-                if (screen.incoming) TextAction("応答", colors) { dispatch(AndroidUiAction.Answer) }
-                TextAction("通話を終了", colors, style = TextActionStyle.Neutral) { dispatch(AndroidUiAction.HangUp) }
+            is AndroidScreen.Call -> BrandPage(
+                if (screen.incoming) "着信中" else "通話中", screen.caller, colors,
+                detailWeight = AndroidWeights.userName,
+            ) {
+                Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (screen.incoming) {
+                        TextAction("応答", colors, modifier = Modifier.fillMaxWidth(),
+                            icon = UiIcon.Phone, labelWeight = AndroidWeights.emphasis) {
+                            dispatch(AndroidUiAction.Answer)
+                        }
+                    }
+                    TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
+                        icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) {
+                        dispatch(AndroidUiAction.HangUp)
+                    }
+                }
             }
         }
     }

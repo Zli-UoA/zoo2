@@ -118,6 +118,12 @@ class AndroidSamplesTest {
                             toolbar.right - post.right == 8.dp && photos.left - toolbar.left == 8.dp,
                     ) { "Expected an 8dp inset around the post actions: $post / $photos / $toolbar" }
                 }
+                if (name == "call") {
+                    val answer = ui.onNodeWithText("応答").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
+                    val hangUp = ui.onNodeWithText("通話を終了").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
+                    check(answer.left == hangUp.left && answer.right == hangUp.right &&
+                        hangUp.top - answer.bottom == 12.dp) { "Incoming call actions should align: $answer / $hangUp" }
+                }
                 capture("$name-${if (night) "dark" else "light"}")
             }
         }
