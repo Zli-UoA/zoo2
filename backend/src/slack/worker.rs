@@ -1105,8 +1105,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
-                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, &job.id, message)
-                    .await?;
+                // ZIP の取り込みは履歴。直近の返信でも、再Openも再参加もしない
+                insert_message(
+                    &mut tx,
+                    &mut ctx,
+                    &channel.id,
+                    channel_id,
+                    &job.id,
+                    false,
+                    message,
+                )
+                .await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
             }
@@ -1483,12 +1492,16 @@ pub(super) async fn id_taken_by_other(
     .is_empty())
 }
 
+/// `live_replies`: 直近の返信を、zoo の返信と同じライブの投稿として扱うか (スレッドの再Open・退出済みの
+/// 投稿者の再参加)。差分同期・イベントの取り込みは真。ZIP・API の履歴の取り込み (取り込みジョブ、API の
+/// 初回の全履歴の同期) は偽で、直近の返信でも履歴として入れるだけにする
 pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     slack_channel: &str,
     channel_id: &str,
     job_id: &str,
+    live_replies: bool,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
     // ループ防止: このアプリが投稿したメッセージ (#294 のブリッジが Zoo から Slack へ出したもの) は、取り込まない
@@ -1548,10 +1561,10 @@ pub(super) async fn insert_message(
     } = render_message(tx, ctx, message).await?;
     // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
     // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
-    // (`job_id` あり) と、期間より古い返信は、立てない。フラグ (`zoo.thread_live_import`) は、下の INSERT 文が
+    // (`live_replies` が偽) と、期間より古い返信は、立てない。フラグ (`zoo.thread_live_import`) は、下の INSERT 文が
     // 先頭の CTE で、この返信の値 (`on` / `off`) を毎回決め直す。別の文・往復は増えず、同じトランザクションの
     // 次の返信に値を引き継ぐことも起きない。同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
-    let live = job_id.is_empty() && !parent.is_empty() && {
+    let live = live_replies && !parent.is_empty() && {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

@@ -1159,6 +1159,58 @@ async fn test_sync_imports_recent_and_old_replies_in_one_page() -> anyhow::Resul
     Ok(())
 }
 
+/// API の最初の全履歴の同期（カーソル 0・未同期）は、履歴の取り込み。直近の返信でも、再Openも再参加もしない。
+/// 同じ返信を、通常の差分同期で取り込むと、再Openする（`test_sync_reopens_for_a_recent_reply_but_not_for_an_old_one`）
+#[tokio::test]
+async fn test_api_initial_history_sync_does_not_reopen_threads() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    deliver_reply(&f, &parent, &format!("{}.000200", now_secs() - 90)).await?;
+    close_and_leave(&f, &parent_id, "1 hour").await?;
+    let before = count_messages(&f.state, &f.channel).await;
+
+    let recent = format!("{}.000600", now_secs() - 30);
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", parent.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+            "messages": [
+                {"type":"message","ts":&parent,"user":"UA","text":"new post","thread_ts":&parent,"reply_count":2},
+                {"type":"message","ts":&recent,"user":"UA","text":"history reply","thread_ts":&parent}],
+            "has_more": false})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    // API から取り込みを始めたチャンネルの、最初の同期にする（カーソルが 0 で、まだ一度も同期が終わっていない）
+    sql(
+        &f.state,
+        "UPDATE slack_channels SET last_ts='0' WHERE team_id=$1 AND slack_channel_id='C1' RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET last_synced_at=NULL,swept_at=NULL,available_at=now()-interval '1 minute',\
+         not_before=NULL,lease_token=NULL,lease_until=NULL,running=false WHERE team_id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    drain(&f.state).await;
+
+    assert_eq!(count_messages(&f.state, &f.channel).await, before + 1);
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(archived, "a recent reply in the initial history is history");
+    assert!(
+        left.iter().all(|l| *l),
+        "the initial history does not rejoin: {left:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_hints_do_not_create_messages_zoo_does_not_have() -> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;
