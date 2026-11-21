@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { forgetAttachmentUrl, resolveAttachmentUrl } from "../../../lib/api/attachmentUrls";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { formatAttachmentSize, mediaPreviewKind } from "../../../lib/attachments";
+import { DesktopDownloadDestinationError } from "../../../lib/desktop";
 import {
   DesktopDownloadCancelledError,
   cancelDesktopDownload,
@@ -326,6 +327,11 @@ function EncryptedDownloadButton({
   const desktopState = useDesktopDownloadState(attachment.attachment_id);
 
   function reportFailure(error: unknown) {
+    if (error instanceof DesktopDownloadDestinationError) {
+      // 保存先が上書きせずに保存する操作に対応していない。保存先を変えてもらう。
+      toast.error(t("attachments.downloadDestinationUnsupported"));
+      return;
+    }
     toast.error(
       error instanceof EncryptedAttachmentError && error.reason === "decrypt"
         ? t("e2ee.attachments.decryptFailed")

@@ -118,6 +118,19 @@ impl SaveDecision {
     }
 }
 
+/// 保存先が、既存のファイルを上書きせずに保存する方法を持たない。`begin` で転送を
+/// 始める前に確かめ、確定できない保存先では本文を読み始めない。
+#[derive(Debug)]
+pub struct UnsupportedDestination;
+
+impl std::fmt::Display for UnsupportedDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("この保存先には保存できません。別のフォルダーを選んでください")
+    }
+}
+
+impl std::error::Error for UnsupportedDestination {}
+
 /// クラッシュや強制終了で残る `.part` の記録。保存先がダイアログで選ばれたフォルダーでも、
 /// 次の起動で消せるように、設定ディレクトリの `download_parts.json` に置く。
 struct Journal {
@@ -387,27 +400,44 @@ impl Downloads {
         let part = part_path(&final_path, &id);
         let journal = Arc::clone(&self.journal);
         let part_for_task = part.clone();
+        let final_for_task = final_path.clone();
         let file = tokio::task::spawn_blocking(move || -> Result<File> {
             // 記録を先に保存する。書けなければ始めない（残骸を次の起動で消せなくしないため）。
             journal.record(&part_for_task)?;
             // ダイアログは既にあるフォルダーを返し、決まったフォルダーは上の分岐で存在を
             // 確かめてある。ここで `create_dir_all` はしない。
-            match OpenOptions::new()
+            let file = match OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&part_for_task)
             {
-                Ok(file) => Ok(file),
+                Ok(file) => file,
                 Err(err) => {
                     journal.forget(&part_for_task);
-                    Err(err).with_context(|| {
+                    return Err(err).with_context(|| {
                         format!(
                             "書き込み用のファイルを作れません: {}",
                             part_for_task.display()
                         )
-                    })
+                    });
                 }
+            };
+            // 上書きの承認が無い保存は、確定時に既存のファイルを置き換えない。置き換えない
+            // 移動を持たない保存先なら、本文を読み始める前に断る。
+            if decision.deduplicate
+                && let Err(err) = check_destination(&part_for_task)
+            {
+                drop(file);
+                journal.remove_part(&part_for_task);
+                return Err(if is_unsupported_destination(&err) {
+                    anyhow::Error::new(UnsupportedDestination)
+                        .context(format!("保存できません: {}", final_for_task.display()))
+                } else {
+                    anyhow::Error::new(err)
+                        .context(format!("保存できません: {}", final_for_task.display()))
+                });
             }
+            Ok(file)
         })
         .await
         .map_err(|err| anyhow!("書き込み用のファイルを用意できません: {err}"))??;
@@ -1033,11 +1063,63 @@ fn link_without_replace(
             Ok(())
         }
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
-        Err(err) => Err(std::io::Error::new(
+        Err(err) if is_unsupported_destination(&err) => Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             format!("この保存先では、既存のファイルを上書きせずに移せません: {err}"),
         )),
+        // 権限や一時的な I/O の失敗。保存先の性質にせず、元のエラーを返す。
+        Err(err) => Err(err),
     }
+}
+
+/// この保存先で、既存のファイルを置き換えずに `.part` を確定できるかを、本文を読み始める
+/// 前に確かめる。`part` は空の書き込み中のファイル。試し用の名前へリンクか移動をして、
+/// すぐ戻す。
+fn check_destination(part: &Path) -> std::io::Result<()> {
+    let probe = part.with_extension("probe");
+    match std::fs::hard_link(part, &probe) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            return Ok(());
+        }
+        Err(err) if is_unsupported_destination(&err) => {}
+        Err(err) => return Err(err),
+    }
+    // ハードリンクが無い保存先。OS の「既にあれば失敗する移動」が使えるかを試し、
+    // 元の名前に戻す。
+    rename_no_replace(part, &probe)?;
+    match std::fs::rename(&probe, part) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&probe);
+            Err(err)
+        }
+    }
+}
+
+/// 保存先が、原子性を保った「上書きしない移動」に対応していないことを表すエラー。
+/// 権限や一時的な I/O の失敗は含めない（保存先のせいにせず、元のエラーを返す）。
+fn is_unsupported_destination(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+    ) || raw_not_supported(err.raw_os_error())
+}
+
+/// FAT32 や exFAT のハードリンクは `EPERM`、対応しない `renameat2` / `renamex_np` は
+/// `ENOTSUP` / `EOPNOTSUPP` を返す。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn raw_not_supported(code: Option<i32>) -> bool {
+    matches!(
+        code,
+        Some(code)
+            if code == libc::EPERM || code == libc::ENOTSUP || code == libc::EOPNOTSUPP
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn raw_not_supported(_code: Option<i32>) -> bool {
+    false
 }
 
 fn is_unsupported(err: &std::io::Error) -> bool {
@@ -1183,6 +1265,15 @@ fn mark_of_the_web(_path: &Path) {}
 
 /// `finish` の実体。`spawn_blocking` の中で動く。
 fn finish_entry(entry: Pending) -> Result<PathBuf> {
+    finish_entry_with(entry, move_unique)
+}
+
+/// [`finish_entry`] の本体。テストで「上書きしない移動」の失敗を再現できるよう、
+/// 確定に使う関数を受け取る。
+fn finish_entry_with(
+    entry: Pending,
+    move_unique: impl Fn(&Path, &Path) -> std::io::Result<PathBuf>,
+) -> Result<PathBuf> {
     // 中止と確定が同時に来ても、ファイルのロックの中で決める。中止はロックの前で
     // `cancelled` を立てるので、ここで見てから確定するまでの間に取り消されることはない。
     let mut slot = entry.file.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1218,7 +1309,13 @@ fn finish_entry(entry: Pending) -> Result<PathBuf> {
     };
     let saved = saved.map_err(|err| {
         let _ = std::fs::remove_file(&entry.part);
-        anyhow::Error::new(err).context(format!("保存できません: {}", entry.final_path.display()))
+        if is_unsupported_destination(&err) {
+            anyhow::Error::new(UnsupportedDestination)
+                .context(format!("保存できません: {}", entry.final_path.display()))
+        } else {
+            anyhow::Error::new(err)
+                .context(format!("保存できません: {}", entry.final_path.display()))
+        }
     })?;
     mark_of_the_web(&saved);
     Ok(saved)
@@ -1732,6 +1829,50 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn finish_removes_the_part_when_the_destination_cannot_save() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let entry = pending(&target, "0123456789abcdef", true, 1024);
+        {
+            use std::io::Write;
+            let mut slot = entry.file.lock().unwrap();
+            slot.as_mut().unwrap().write_all(b"new").unwrap();
+        }
+
+        // `renameat2` が使えず、ハードリンクも使えない保存先を再現する。確定の失敗で
+        // `.part` を残さず、最終名も作らない。
+        let err = finish_entry_with(entry, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+        })
+        .unwrap_err();
+        assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
+        assert!(!target.exists());
+        assert!(!dir.join(".x.txt.0123456789abcdef.part").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_write_error_is_not_blamed_on_the_destination() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let entry = pending(&target, "0123456789abcdee", true, 1024);
+        {
+            use std::io::Write;
+            let mut slot = entry.file.lock().unwrap();
+            slot.as_mut().unwrap().write_all(b"new").unwrap();
+        }
+
+        // 権限や一時的な I/O の失敗は、保存先が対応していない扱いにしない。
+        let err = finish_entry_with(entry, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+        assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
+        assert!(!target.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

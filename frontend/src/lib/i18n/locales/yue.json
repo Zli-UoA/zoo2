@@ -257,6 +257,7 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "下載唔到檔案。",
+    "downloadDestinationUnsupported": "呢個位置存唔到檔案。請揀第二個資料夾。",
     "downloading": "下載緊",
     "saving": "儲存緊…",
     "cancelDownload": "取消下載 {{name}}",

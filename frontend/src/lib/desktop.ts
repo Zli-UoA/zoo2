@@ -248,6 +248,25 @@ export async function desktopPickDownloadDirectory(): Promise<DesktopDownloadSet
   return (await invoke<DesktopDownloadSettings | null>("zoo_pick_download_directory")) ?? null;
 }
 
+/**
+ * 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
+ * Rust 側の `ErrorCode::UnsupportedDestination` を、画面が文言を変えられる形にしたもの。
+ */
+export class DesktopDownloadDestinationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopDownloadDestinationError";
+  }
+}
+
+function downloadError(error: unknown): unknown {
+  if ((error as { code?: unknown } | null)?.code !== "unsupported_destination") return error;
+  const message = (error as { message?: unknown } | null)?.message;
+  return new DesktopDownloadDestinationError(
+    typeof message === "string" ? message : "この保存先には保存できません",
+  );
+}
+
 /** OS の保存ダイアログを出し、書き込み先を決める。`size` は添付の大きさ（分かれば）。 */
 export async function desktopDownloadBegin(
   fileName: string,
@@ -257,7 +276,11 @@ export async function desktopDownloadBegin(
   if (typeof size === "number" && Number.isFinite(size) && size > 0) {
     begin.size = Math.floor(size);
   }
-  return invoke<DesktopDownloadStart>("zoo_download_begin", { begin });
+  try {
+    return await invoke<DesktopDownloadStart>("zoo_download_begin", { begin });
+  } catch (error) {
+    throw downloadError(error);
+  }
 }
 
 function invokeRaw(
@@ -277,7 +300,11 @@ export async function desktopDownloadWrite(id: string, bytes: Uint8Array): Promi
 
 /** `.part` を本来の名前に置き換える。 */
 export async function desktopDownloadFinish(id: string): Promise<void> {
-  await invoke("zoo_download_finish", { id });
+  try {
+    await invoke("zoo_download_finish", { id });
+  } catch (error) {
+    throw downloadError(error);
+  }
 }
 
 /** 中止して、途中までのファイルを消す。 */

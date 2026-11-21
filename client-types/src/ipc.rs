@@ -329,6 +329,8 @@ pub enum ErrorCode {
     Timeout,
     /// 新しい操作を始めたので、前の操作を取り消した。
     Cancelled,
+    /// 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
+    UnsupportedDestination,
     Internal,
 }
 

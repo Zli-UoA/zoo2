@@ -18,6 +18,7 @@ use zoo2_client_types::{
 
 use crate::{
     core::{Core, to_ipc},
+    downloads::UnsupportedDestination,
     window::{Origin, classify},
 };
 
@@ -279,6 +280,16 @@ pub async fn zoo_pick_download_directory(
         .map_err(to_ipc)
 }
 
+/// 保存先が、上書きせずに確定する操作に対応していない失敗だけ、WebView が文言を
+/// 変えられるコードにする。それ以外は通常の IPC エラーにする。
+fn download_ipc_error(err: anyhow::Error) -> IpcError {
+    if err.downcast_ref::<UnsupportedDestination>().is_some() {
+        IpcError::new(ErrorCode::UnsupportedDestination, format!("{err:#}"))
+    } else {
+        to_ipc(err)
+    }
+}
+
 /// 保存ダイアログを出し、書き込み先を決める。利用者が閉じたら `Cancelled`。
 #[tauri::command]
 pub async fn zoo_download_begin(
@@ -288,7 +299,12 @@ pub async fn zoo_download_begin(
     begin: DownloadBegin,
 ) -> Result<DownloadStart, IpcError> {
     require(&webview, &core, ANY)?;
-    match core.downloads().begin(&app, &begin).await.map_err(to_ipc)? {
+    match core
+        .downloads()
+        .begin(&app, &begin)
+        .await
+        .map_err(download_ipc_error)?
+    {
         Some((id, path)) => Ok(DownloadStart::Started {
             id,
             path: path.display().to_string(),
@@ -331,7 +347,10 @@ pub async fn zoo_download_finish(
     id: String,
 ) -> Result<(), IpcError> {
     require(&webview, &core, ANY)?;
-    core.downloads().finish(&id).await.map_err(to_ipc)?;
+    core.downloads()
+        .finish(&id)
+        .await
+        .map_err(download_ipc_error)?;
     Ok(())
 }
 

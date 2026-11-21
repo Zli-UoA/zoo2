@@ -257,6 +257,7 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder.",
     "downloading": "Downloading",
     "saving": "Saving…",
     "cancelDownload": "Cancel downloading {{name}}",

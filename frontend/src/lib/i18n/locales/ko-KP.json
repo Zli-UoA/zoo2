@@ -257,6 +257,7 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
+    "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하십시오.",
     "downloading": "내려받는 중",
     "saving": "저장 중…",
     "cancelDownload": "{{name}} 내려받기 취소",

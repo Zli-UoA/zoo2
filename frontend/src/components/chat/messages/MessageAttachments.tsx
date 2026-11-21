@@ -12,6 +12,7 @@ import {
   mediaPreviewKind,
   shouldRefreshAttachmentUrl,
 } from "../../../lib/attachments";
+import { DesktopDownloadDestinationError } from "../../../lib/desktop";
 import {
   DesktopDownloadCancelledError,
   cancelDesktopDownload,
@@ -167,6 +168,11 @@ function AttachmentDownloadButton({
       status: error instanceof AttachmentDownloadError ? error.status : null,
       error,
     });
+    if (error instanceof DesktopDownloadDestinationError) {
+      // 保存先が上書きせずに保存する操作に対応していない。保存先を変えてもらう。
+      toast.error(t("attachments.downloadDestinationUnsupported"));
+      return;
+    }
     toast.error(
       t("attachments.downloadError"),
       error instanceof AttachmentDownloadError && error.reason === "http" && error.status

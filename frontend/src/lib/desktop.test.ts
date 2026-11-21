@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   DESKTOP_PROTOCOL_VERSION,
+  DesktopDownloadDestinationError,
   desktopAccessToken,
   desktopDownloadBegin,
   desktopDownloadCancel,
@@ -172,6 +173,18 @@ describe("download commands", () => {
     expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_finish", { id: "d1" });
     await desktopDownloadCancel("d1");
     expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_cancel", { id: "d1" });
+  });
+
+  it("marks a save destination that cannot be written without overwriting", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw { code: "unsupported_destination", message: "この保存先には保存できません" };
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadBegin("a.exe")).rejects.toBeInstanceOf(
+      DesktopDownloadDestinationError,
+    );
   });
 
   it("is null when an older app does not have the download commands", async () => {
