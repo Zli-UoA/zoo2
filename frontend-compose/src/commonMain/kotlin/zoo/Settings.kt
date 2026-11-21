@@ -105,9 +105,17 @@ fun ZooSettings(app: Session, users: List<Row>) {
             ) {
                 if (android && selectedTab == null) {
                     AndroidSettingsIndex(
-                        app,
-                        tabs.map { (value, label) -> value to app.t(label) },
+                        labels = AndroidSettingsLabels(
+                            app.t("settings.appearance"), app.t("theme.title"), app.t("theme.${app.env.theme}"),
+                            app.t("settings.interaction"), app.t("settings.swipeReply"),
+                            app.t("settings.operationHaptics"), app.t("settings.zooTitle"),
+                        ),
+                        destinations = tabs.map { (value, label) -> value to app.t(label) },
+                        swipeReply = app.env.swipeReply,
+                        haptics = app.env.operationHaptics,
                         onOpen = ::selectTab,
+                        onToggleSwipeReply = { app.platform.action("toggleSwipeReply") },
+                        onToggleHaptics = { app.platform.action("toggleOperationHaptics") },
                     )
                 }
                 if (!android) Row(
