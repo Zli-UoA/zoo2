@@ -7,7 +7,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -15,12 +14,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 internal data class AndroidChannelEntry(
     val id: String,
     val title: String,
-    val subtitle: String,
     val icon: String,
     val unreadLabel: String? = null,
     val archivedLabel: String? = null,
@@ -105,25 +104,21 @@ private fun ChannelListSection(title: String, action: String, onAction: () -> Un
 private fun AndroidChannelListRow(entry: AndroidChannelEntry, open: (AndroidChannelEntry) -> Unit) {
     val colors = MaterialTheme.colorScheme
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 56.dp)
+        Modifier.fillMaxWidth().heightIn(min = AndroidDesign.touchTarget)
             .clickable(role = Role.Button) { open(entry) }
             .semantics { contentDescription = entry.title }
-            .padding(horizontal = AndroidDesign.spaceSmall, vertical = AndroidDesign.spaceMedium),
+            .padding(horizontal = AndroidDesign.spaceSmall, vertical = AndroidDesign.spaceSmall),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceLarge),
+        horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceMedium),
     ) {
-        Box(Modifier.size(32.dp), contentAlignment = Alignment.Center) {
-            if (entry.avatar != null) Avatar(entry.avatar, size = 32.dp)
+        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+            if (entry.avatar != null) Avatar(entry.avatar, size = 28.dp)
             else Icon(entry.icon, modifier = Modifier.size(20.dp))
         }
-        Column(Modifier.weight(1f)) {
-            Text(entry.title, weight = androidx.compose.ui.text.font.FontWeight.SemiBold, maxLines = 1)
-            if (entry.subtitle.isNotBlank()) Text(entry.subtitle, small = true, muted = true, maxLines = 1)
-        }
+        Text(entry.title, Modifier.weight(1f), weight = FontWeight.SemiBold, maxLines = 1)
         (entry.unreadLabel ?: entry.archivedLabel)?.let {
             Text(it, Modifier.background(colors.secondaryContainer, CircleShape)
                 .padding(horizontal = AndroidDesign.spaceMedium), small = true, color = colors.onSecondaryContainer)
         }
     }
-    HorizontalDivider(color = colors.outlineVariant)
 }
