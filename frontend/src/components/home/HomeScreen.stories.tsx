@@ -2400,11 +2400,11 @@ export const DeleteFromDetail: Story = {
     await userEvent.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", { name: "投稿を削除" }),
     );
-    await waitFor(() =>
-      expect(canvas.queryByRole("button", { name: "戻る" })).not.toBeInTheDocument(),
-    );
-    await expect(canvas.queryByText(/Homeから最初の公開投稿です/)).not.toBeInTheDocument();
-    await expect(await canvas.findByText(detailRemainingPost.content)).toBeVisible();
+    await waitFor(async () => {
+      await expect(canvas.queryByRole("button", { name: "戻る" })).not.toBeInTheDocument();
+      await expect(canvas.queryByText(/Homeから最初の公開投稿です/)).not.toBeInTheDocument();
+      await expect(canvas.getByText(detailRemainingPost.content)).toBeVisible();
+    });
   }),
 };
 export const DeleteFailure: Story = {
