@@ -127,13 +127,26 @@ internal class ConnectedScreenState(
                 it to if (image.flag("is_sensitive")) "センシティブな画像を開く" else image.text("name").ifBlank { "画像を開く" }
             }
         }
-        return TimelineItem(id, name, body, platform.time(data.text("created_at")),
+        val createdAt = data.text("created_at")
+        val time = platform.time(createdAt)
+        val postHeader = if (post.isNotEmpty() || data.present("visibility")) {
+            val username = data.text("user_name").ifBlank { users[data.text("user_id")]?.text("user_name").orEmpty() }
+            val handle = username.trimStart('@').substringBefore('@').takeIf { it.isNotBlank() }?.let { "@$it" }
+            val channelName = data.text("channel_name").trimStart('#').ifBlank { null }
+            val server = if (data.flag("remote")) {
+                publicUrl(data.text("user_id"))?.host
+                    ?: publicUrl(data.text("url"))?.host
+            } else publicUrl(app.config.apiBaseUrl)?.host
+            PostHeaderData(handle, listOf(platform.day(createdAt).substringAfter('/'), time).filter { it.isNotBlank() }.joinToString(" "),
+                PostAudience.fromApi(data.text("visibility")), channelName, server)
+        } else null
+        return TimelineItem(id, name, body, time,
             editable = (writable || post.isNotEmpty()) && data.text("user_id") == app.config.userId && !data.flag("remote"),
             canReact = writable || post.isNotEmpty(),
             canRepost = post.isNotEmpty() && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = display.flag("reposted"), reactions = badges, attachments = files, link = url,
             preview = url?.let { app.previews.cached(previewService, it)?.title },
-            entryKey = HomeTimeline.key(row).ifBlank { id }, media = media,
+            entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader,
         )
     }
 
