@@ -417,6 +417,35 @@ class AndroidSamplesTest {
         capture("post-menu-dark", withSheet = true)
     }
 
+    @Test
+    fun emojiPickerFitsSixColumnsOnPhone() {
+        assertEmojiColumns(6)
+    }
+
+    @Test
+    @Config(qualifiers = "ja-rJP-w720dp-h760dp-xhdpi")
+    fun emojiPickerUsesFullAvailableWidthOnTablet() {
+        assertEmojiColumns(14)
+        capture("emoji-picker-wide-light", bottomDialog = true)
+    }
+
+    private fun assertEmojiColumns(expected: Int) {
+        val choices = ("😀 😃 😄 😁 😆 😅 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 " +
+            "😎 🤓 🧐 🥳 👍 👋 🙌 👏 ✨ 🔥 🎉 🎈 🐶 🐱 🦊 🐼 🐻 🌈 🚀 🌍 🌸 🍕")
+            .split(' ').mapIndexed { i, glyph -> EmojiChoice("emoji-$i", glyph, "emoji-$i") }
+        ui.setContent {
+            EmojiPicker(
+                "絵文字", AndroidColors(dark = false), choices, custom = emptyList(),
+                loadKitchen = { null }, loadImage = { null }, dismiss = {}, select = {},
+            )
+        }
+        val first = ui.onNodeWithContentDescription("emoji-0").getUnclippedBoundsInRoot()
+        val last = ui.onNodeWithContentDescription("emoji-${expected - 1}").getUnclippedBoundsInRoot()
+        val next = ui.onNodeWithContentDescription("emoji-$expected").getUnclippedBoundsInRoot()
+        check(last.top == first.top && next.top > first.top)
+        check(first.right - first.left >= 48.dp)
+    }
+
     private fun capture(name: String, withSheet: Boolean = false, bottomDialog: Boolean = false) {
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)

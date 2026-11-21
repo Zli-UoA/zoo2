@@ -40,6 +40,8 @@
 | ユーザー検索 | [ライト](images/android-design/rebuild/people-search-light.png) | [ダーク](images/android-design/rebuild/people-search-dark.png) |
 | Bubble 参加者 | [ライト](images/android-design/rebuild/bubble-participants-light.png) | [ダーク](images/android-design/rebuild/bubble-participants-dark.png) |
 
+絵文字ピッカーは画面幅に応じて列数を変える。720dp幅の表示では14列になる。[ワイド表示（1440×1520px）](images/android-design/rebuild/emoji-picker-wide-light.png)
+
 ```sh
 cd frontend-compose
 ./gradlew -Pzoo.android=true -Pzoo.uiPreview=true :ui-preview:testDebugUnitTest

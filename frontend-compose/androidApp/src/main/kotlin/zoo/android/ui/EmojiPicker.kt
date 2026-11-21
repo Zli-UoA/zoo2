@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -76,6 +77,7 @@ internal fun EmojiPicker(
     ModalBottomSheet(
         onDismissRequest = dismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetMaxWidth = Dp.Unspecified,
         containerColor = colors.background,
         contentColor = colors.foreground,
     ) {
@@ -131,10 +133,10 @@ internal fun EmojiPicker(
                 }
                 Text(message, Modifier.padding(vertical = 20.dp), color = colors.secondary)
             } else key(tab, first, query) {
-                LazyVerticalGrid(GridCells.Adaptive(48.dp), Modifier.weight(1f, fill = false),
+                LazyVerticalGrid(GridCells.Adaptive(AndroidControlSize.target), Modifier.weight(1f, fill = false),
                     contentPadding = PaddingValues(bottom = 16.dp)) {
                     items(filtered, key = { it.value }) { choice ->
-                        Box(Modifier.fillMaxWidth().height(48.dp).clickable(role = Role.Button) {
+                        Box(Modifier.fillMaxWidth().height(AndroidControlSize.target).clickable(role = Role.Button) {
                             if (tab == EmojiTab.Kitchen && first == null) {
                                 first = choice
                                 query = ""
