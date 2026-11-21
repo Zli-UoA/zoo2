@@ -301,6 +301,9 @@ pub struct Config {
     /// `encrypted: true` のチャンネルと DM の作成を受け付けるか（`E2EE_ENCRYPTED_CHANNELS_ENABLED`。既定は false）。
     /// false のあいだは 403 `E2EE_DISABLED`。#358 の拒否が入ってから true にする（docs/e2ee.md）。
     pub e2ee_encrypted_channels_enabled: bool,
+    /// 参加・退出・再Openの応答に載せる参加者一覧を、コミット後に読む時間の上限（ミリ秒）。超えたら、
+    /// 一覧を省いて応答する（書き込みはコミット済み）。Web の POST の期限（10秒）より短くする。環境変数にはしない。
+    pub thread_participants_read_timeout_ms: u64,
 }
 
 impl fmt::Debug for Config {
@@ -514,6 +517,8 @@ impl Config {
             e2ee_encrypted_channels_enabled: parse_bool_flag(
                 env::var("E2EE_ENCRYPTED_CHANNELS_ENABLED").ok().as_deref(),
             ),
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         }
     }
 
@@ -767,6 +772,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -798,6 +805,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // 有効な JSON 配列
@@ -841,6 +850,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -935,6 +946,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         assert!(config.validate().is_err());
     }
@@ -965,6 +978,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         assert!(config.validate().is_ok());
 
@@ -1005,6 +1020,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // 境界値 OK (1 秒、604,800 秒 = 7 日)
@@ -1061,6 +1078,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // 正常系: 有効な STUN / TURN
@@ -1165,6 +1184,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
@@ -1217,6 +1238,8 @@ mod tests {
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
             e2ee_encrypted_channels_enabled: false,
+            thread_participants_read_timeout_ms:
+                crate::routes::threads::THREAD_PARTICIPANTS_READ_TIMEOUT_MS,
         };
 
         // None は OK

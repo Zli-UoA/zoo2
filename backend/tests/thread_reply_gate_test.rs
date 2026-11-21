@@ -8,7 +8,12 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use backend::{db::init_db, routes::create_router, state::AppState};
+use backend::{
+    auth::AuthUser,
+    db::init_db,
+    routes::{create_router, threads::read_participants},
+    state::AppState,
+};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -101,9 +106,18 @@ async fn world() -> anyhow::Result<World> {
 
 /// The same, with the staged migration in `phase` (`collecting`, `normalizing` or `ready`).
 async fn world_in(phase: &str) -> anyhow::Result<World> {
+    world_with(phase, |_| {}).await
+}
+
+/// The same, with the server's configuration adjusted by `adjust` before it starts.
+async fn world_with(
+    phase: &str,
+    adjust: impl FnOnce(&mut backend::config::Config),
+) -> anyhow::Result<World> {
     dotenvy::dotenv().ok();
     let fixture = thread_db::ThreadDb::new().await?;
-    let config = fixture.config.clone();
+    let mut config = fixture.config.clone();
+    adjust(&mut config);
     let mut db = init_db(&config.database_url).await?;
     toasty::sql::statement(&format!("UPDATE thread_rollout SET phase='{phase}'"))
         .exec(&mut db)
@@ -149,6 +163,25 @@ async fn world_in(phase: &str) -> anyhow::Result<World> {
 }
 
 impl World {
+    /// `count` more channel members, all participants of the thread `root` (live ones).
+    async fn crowd(&self, root: &str, count: i32) -> anyhow::Result<()> {
+        let (tag, channel) = (uuid::Uuid::new_v4().simple().to_string(), &self.channel);
+        let mut db = self.db.clone();
+        for sql in [
+            format!(
+                "INSERT INTO users(id,user_name,display_name) SELECT '{tag}-'||n,'{tag}-'||n,'U' FROM generate_series(1,{count}) n"
+            ),
+            format!(
+                "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT '{tag}-'||n,'{channel}',now() FROM generate_series(1,{count}) n"
+            ),
+            format!(
+                "INSERT INTO thread_participants(thread_id,user_id) SELECT '{root}','{tag}-'||n FROM generate_series(1,{count}) n"
+            ),
+        ] {
+            toasty::sql::statement(&sql).exec(&mut db).await?;
+        }
+        Ok(())
+    }
     fn reply(&self, parent: &str, content: &str) -> Value {
         json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":self.channel,"parent_id":parent,"content":content})
     }
@@ -765,5 +798,101 @@ async fn a_guest_is_gated_like_any_other_member() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
+    w.fixture.cleanup().await
+}
+
+/// 参加・退出・再Openの応答の参加者一覧は、コミット後に別の読み取りで取る。その読み取りが時間の上限
+/// （`thread_participants_read_timeout_ms`）を超えたら、一覧を省いて応答する。書き込みはコミット済みで、
+/// 応答は書き込みの結果を返す。読み取り（GET）には、この上限はかからない。
+#[tokio::test]
+async fn a_slow_participants_read_after_a_write_is_left_out() -> anyhow::Result<()> {
+    let w = world_with("ready", |config| {
+        config.thread_participants_read_timeout_ms = 1
+    })
+    .await?;
+    let root = w.root().await?;
+    w.crowd(&root, 3_000).await?;
+    let joined = ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        &format!("/api/threads/{root}/join"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(joined["data"]["membership"], "joined", "{joined}");
+    assert!(joined["data"].get("participants").is_none(), "{joined}");
+    assert!(
+        joined["data"].get("participant_count").is_none(),
+        "{joined}"
+    );
+    // The join took effect, and a read with no deadline lists everyone.
+    let after = w.thread(&w.users[1], &root).await?;
+    assert_eq!(after["membership"], "joined");
+    assert_eq!(after["participant_count"], 3_001);
+    // The helper itself: Postgres cancels the statement at the deadline, and without a deadline
+    // as short as that, the same read succeeds.
+    let viewer = AuthUser {
+        id: w.users[1].clone(),
+        user_name: w.users[1].clone(),
+        display_name: w.users[1].clone(),
+    };
+    let mut db = w.db.clone();
+    assert!(
+        read_participants(&mut db, &viewer, &root, &w.channel, 1)
+            .await
+            .is_err()
+    );
+    let participants = read_participants(&mut db, &viewer, &root, &w.channel, 5_000).await?;
+    assert_eq!(participants["count"], 3_001);
+    w.fixture.cleanup().await
+}
+
+async fn read(
+    db: &mut toasty::Db,
+    viewer: &AuthUser,
+    root: &str,
+    channel: &str,
+) -> Result<Value, backend::error::AppError> {
+    read_participants(db, viewer, root, channel, 5_000).await
+}
+
+/// 書き込みのコミット後の読み取りは、閲覧者がチャンネルを読めるかを、もう一度確かめる。コミットと読み取りの
+/// あいだに権限が外れても、プロフィールを返さない。読める条件は GET と同じ（メンバー、または公開チャンネルの
+/// ゲスト以外）。
+#[tokio::test]
+async fn the_list_after_a_write_needs_the_viewer_to_still_have_access() -> anyhow::Result<()> {
+    let w = world().await?;
+    let root = w.root().await?;
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    let viewer = AuthUser {
+        id: w.users[1].clone(),
+        user_name: w.users[1].clone(),
+        display_name: w.users[1].clone(),
+    };
+    let mut db = w.db.clone();
+    // A member: the parent author and the replier.
+    assert_eq!(read(&mut db, &viewer, &root, &w.channel).await?["count"], 2);
+    // A public channel can be read without a membership, as `GET` allows.
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2")
+        .bind(w.channel.as_str())
+        .bind(viewer.id.as_str())
+        .exec(&mut db)
+        .await?;
+    // The viewer is no longer listed itself (a participant who left the channel is not), but the read works.
+    assert_eq!(read(&mut db, &viewer, &root, &w.channel).await?["count"], 1);
+    // A guest has no access to a channel it is not a member of: nothing is listed.
+    toasty::sql::statement("UPDATE users SET is_guest=true WHERE id=$1")
+        .bind(viewer.id.as_str())
+        .exec(&mut db)
+        .await?;
+    assert!(read(&mut db, &viewer, &root, &w.channel).await.is_err());
     w.fixture.cleanup().await
 }

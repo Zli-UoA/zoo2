@@ -16,6 +16,11 @@ use crate::{
 
 const THREAD_IDLE_DAYS: i64 = 1;
 
+/// How long the participants read after a join / leave / unarchive may take (`statement_timeout`).
+/// Shorter than the 10 s the Web client waits for the POST: a read that needs longer is left out of
+/// the answer (the write is already committed) instead of making the client give up on the write.
+pub const THREAD_PARTICIPANTS_READ_TIMEOUT_MS: u64 = 5_000;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/threads", get(list_threads))
@@ -189,12 +194,27 @@ pub fn participants_sql() -> &'static str {
 }
 
 /// The participants of a thread, read in a transaction of their own (after a write committed).
-async fn read_participants(
+/// - The viewer's access to the channel is checked again here, as a read: the write committed
+///   before this read, and a membership can be revoked in between. Without access the read fails,
+///   and the caller leaves the list out of the answer.
+/// - Postgres cancels a statement that runs longer than `timeout_ms` (`statement_timeout`; dropping
+///   the future instead would leave the statement running), which also fails the read.
+pub async fn read_participants(
     db: &mut toasty::Db,
+    viewer: &AuthUser,
     root_id: &str,
     channel_id: &str,
+    timeout_ms: u64,
 ) -> Result<Value, AppError> {
     let mut tx = db.transaction().await?;
+    toasty::sql::statement(format!("SET LOCAL statement_timeout={timeout_ms}"))
+        .exec(&mut tx)
+        .await?;
+    let actor = crate::apps::events::Actor {
+        user: viewer.clone(),
+        principal: None,
+    };
+    actor.channel(&mut tx, channel_id, false).await?;
     let participants =
         crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?;
     tx.commit().await?;
@@ -309,7 +329,15 @@ async fn thread_operation(
         None if !with_participants => None,
         // The write is already committed. If only this read fails, answer without the list
         // (the client keeps what it has and refreshes) instead of reporting a failed write.
-        None => match read_participants(&mut db, root_id, channel_id).await {
+        None => match read_participants(
+            &mut db,
+            &auth,
+            root_id,
+            channel_id,
+            state.config.thread_participants_read_timeout_ms,
+        )
+        .await
+        {
             Ok(participants) => Some(participants),
             Err(error) => {
                 tracing::warn!(

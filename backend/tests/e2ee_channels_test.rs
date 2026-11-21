@@ -876,9 +876,10 @@ async fn replies_to_a_tracked_thread_need_a_join_in_encrypted_channels_too() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = env
-        .call("POST", "/api/messages", &bob, reply(&bob_device, "again"))
-        .await;
+    // The retry after the join is the same request: the client keeps the payload (and its post ID)
+    // of the refused reply, as `reply` makes a new ID on every call.
+    let again = reply(&bob_device, "again");
+    let (status, body) = env.call("POST", "/api/messages", &bob, again.clone()).await;
     assert_eq!(
         (status, code(&body)),
         (StatusCode::FORBIDDEN, "THREAD_JOIN_REQUIRED"),
@@ -893,9 +894,7 @@ async fn replies_to_a_tracked_thread_need_a_join_in_encrypted_channels_too() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = env
-        .call("POST", "/api/messages", &bob, reply(&bob_device, "again"))
-        .await;
+    let (status, body) = env.call("POST", "/api/messages", &bob, again).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 

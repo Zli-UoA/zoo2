@@ -925,6 +925,17 @@ mod tests {
     use crate::http::ApiError;
     use crate::http::HttpError;
 
+    /// The requests the mock server received, in order, as `METHOD /path`.
+    async fn requests(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect()
+    }
+
     fn client(server: &MockServer) -> ApiClient {
         ApiClient::new(
             reqwest::Client::new(),
@@ -1166,6 +1177,15 @@ mod tests {
             .unwrap();
         assert_eq!(txid.as_deref(), Some("7"));
         assert_eq!(parent.as_deref(), Some("root"));
+        // The counts above do not say in which order: the reply, the join, then the same reply.
+        assert_eq!(
+            requests(&server).await,
+            [
+                "POST /api/messages",
+                "POST /api/threads/root/join",
+                "POST /api/messages"
+            ]
+        );
     }
 
     /// 参加がアーカイブ済みを理由に 409 になったときだけ、先に再Openして、参加し直す。
@@ -1221,6 +1241,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(txid.as_deref(), Some("8"));
+        // The refused join comes first: only then the reopen, the join again, and the same reply.
+        assert_eq!(
+            requests(&server).await,
+            [
+                "POST /api/messages",
+                "POST /api/threads/root/join",
+                "POST /api/threads/root/unarchive",
+                "POST /api/threads/root/join",
+                "POST /api/messages"
+            ]
+        );
     }
 
     #[tokio::test]
