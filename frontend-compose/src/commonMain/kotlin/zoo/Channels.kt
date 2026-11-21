@@ -62,6 +62,7 @@ fun ChannelDialog(
         }
     var encrypted by remember(kind) { mutableStateOf(false) }
     var search by remember(kind) { mutableStateOf(initial.text("search")) }
+    var includeArchived by remember(kind, open) { mutableStateOf(false) }
     var selected by
         remember(kind) {
             mutableStateOf<Set<String>>(
@@ -88,7 +89,10 @@ fun ChannelDialog(
                 limitReached = false
                 activeCandidate = 0
             }
-            "browse" -> search = ""
+            "browse" -> {
+                search = ""
+                includeArchived = false
+            }
         }
         app.dialog = null
         onOpenChange?.invoke(false)
@@ -326,21 +330,32 @@ fun ChannelDialog(
                 ) {
                     search = it
                 }
+                Button(
+                    app.t("channels.includeArchived"),
+                    selected = includeArchived,
+                    variant = if (includeArchived) "secondary" else "outline",
+                    size = "sm",
+                    icon = if (includeArchived) "check" else "archive",
+                ) {
+                    includeArchived = !includeArchived
+                }
                 Box(Modifier.fillMaxWidth().height(320.dp)) {
-                    val filtered =
-                        channels
-                            .filterNot { it.present("deleted_at") }
-                            .filter {
-                                !it.flag("is_dm") &&
-                                    !it.flag("is_private") &&
-                                    !(if ("joinedIds" in initial)
-                                        it.text("id") in
-                                            initial.array("joinedIds").map { v ->
-                                                v.jsonPrimitive.content
-                                            }
-                                    else isMember(members, it.text("id"), app.config.userId)) &&
-                                    it.text("channel_name").contains(search.trim(), true)
-                            }
+                    val joinedIds =
+                        if ("joinedIds" in initial)
+                            initial.array("joinedIds").map { it.jsonPrimitive.content }.toSet()
+                        else
+                            members.filter { it.text("user_id") == app.config.userId }
+                                .map { it.text("channel_id") }.toSet()
+                    val filtered = channels.filter { row ->
+                        val archived = row.present("archive_at")
+                        val joined = row.text("id") in joinedIds
+                        !row.present("deleted_at") &&
+                            !row.flag("is_dm") &&
+                            (includeArchived || !archived) &&
+                            (!row.flag("is_private") || (archived && joined)) &&
+                            (archived || !joined) &&
+                            row.text("channel_name").contains(search.trim(), ignoreCase = true)
+                    }
                     if (filtered.isEmpty())
                         Text(
                             app.t(
