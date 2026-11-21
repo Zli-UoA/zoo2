@@ -4,6 +4,7 @@ pub(crate) mod client_ip;
 mod emoji;
 pub(crate) mod emoji_cache;
 mod inbox;
+mod instance_colors;
 pub(crate) mod interactions;
 mod kitchen;
 mod note_identity;

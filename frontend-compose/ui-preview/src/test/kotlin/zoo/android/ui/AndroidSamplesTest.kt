@@ -43,7 +43,8 @@ class AndroidSamplesTest {
             TimelineItem("3", "ゆい", "今日の通話テストは夕方からです。", "11:42"),
         )
         val homePosts = listOf(
-            posts[0].copy(postHeader = PostHeaderData("@haru", "11/21 12:05", PostAudience.Public, null, "misskey.io")),
+            posts[0].copy(postHeader = PostHeaderData("@haru", "11/21 12:05", PostAudience.Public, null, "misskey.io",
+                remoteServer = true, serverRgb = 0x86b300)),
             posts[1].copy(postHeader = PostHeaderData("@mizuki", "11/21 11:56", PostAudience.Local, "開発", "zli.chat")),
             posts[2].copy(postHeader = PostHeaderData("@yui", "11/21 11:42", PostAudience.Unlisted, null, "zli.chat")),
         )

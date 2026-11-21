@@ -9,6 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,6 +41,8 @@ internal data class PostHeaderData(
     val audience: PostAudience?,
     val channel: String?,
     val server: String?,
+    val remoteServer: Boolean = false,
+    val serverRgb: Int? = null,
 )
 
 @Composable
@@ -67,12 +70,14 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
             Text("#${data.channel}", color = colors.secondary, fontSize = 12.sp,
                 fontWeight = AndroidWeights.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
         } else data.server?.let { server ->
+            val tint = data.serverRgb?.let { Color(it or 0xff000000.toInt()) }
+            val start = tint?.let { lerp(colors.background, it, 0.32f) } ?: colors.headerLight
             Row(Modifier.fillMaxWidth()
-                .background(Brush.horizontalGradient(listOf(colors.headerLight, Color.Transparent)), RoundedCornerShape(5.dp))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
+                .background(Brush.horizontalGradient(listOf(start, Color.Transparent)), RoundedCornerShape(5.dp))
+                .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                UiGlyph(UiIcon.Public, colors.foreground, iconSize = 14.dp)
-                Text(server, color = colors.foreground, fontSize = 12.sp, fontWeight = AndroidWeights.emphasis,
+                UiGlyph(UiIcon.Public, colors.foreground, iconSize = 12.dp)
+                Text(server, color = colors.foreground, fontSize = 11.sp, lineHeight = 14.sp, fontWeight = AndroidWeights.emphasis,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

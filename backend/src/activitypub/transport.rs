@@ -255,7 +255,7 @@ pub(super) async fn fetch_json_limit(
     let response = request(state, user, reqwest::Method::GET, url, None).await?;
     read_json(response, limit).await
 }
-async fn read_json(mut response: reqwest::Response, limit: usize) -> Result<Value, AppError> {
+pub(super) async fn read_json(mut response: reqwest::Response, limit: usize) -> Result<Value, AppError> {
     if !response.status().is_success() {
         return Err(AppError::BadGateway("Remote resource unavailable".into()));
     }

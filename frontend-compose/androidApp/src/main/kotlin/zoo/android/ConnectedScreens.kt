@@ -271,6 +271,17 @@ internal fun ConnectedScreens(
             canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
+    val instanceHosts = when (screen) {
+        is AndroidScreen.Home -> screen.posts
+        is AndroidScreen.Profile -> screen.posts
+        is AndroidScreen.Post -> listOf(screen.root) + screen.replies
+        else -> emptyList()
+    }.mapNotNull { entry ->
+        entry.postHeader?.takeIf { it.remoteServer && it.channel == null }?.server
+    }.distinct().sorted()
+    LaunchedEffect(instanceHosts, env.online, env.visible) {
+        if (env.online && env.visible) state.loadInstanceColors(instanceHosts)
+    }
     val previewLinks = when (screen) {
         is AndroidScreen.Home -> screen.posts
         is AndroidScreen.Conversation -> screen.entries.takeLast(20)

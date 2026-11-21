@@ -20,6 +20,25 @@ internal class ConnectedScreenState(
 ) {
     val home = HomeTimeline(app, app.scope)
     val inbox = NotificationInboxBinding(zoo.NotificationInbox(app))
+    private val instanceColors = mutableStateMapOf<String, Int?>()
+
+    suspend fun loadInstanceColors(hosts: List<String>) {
+        for (batch in hosts.filterNot(instanceColors::containsKey).chunked(12)) {
+            val query = batch.joinToString(",").encodeURLParameter()
+            val response = try {
+                app.api.request("/api/activitypub/instance-colors?hosts=$query").jsonObject
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                return
+            }
+            batch.filter(response::containsKey).forEach { host ->
+                instanceColors[host] = response.text(host).removePrefix("#")
+                    .takeIf { it.length == 6 }?.toIntOrNull(16)
+            }
+        }
+    }
+
     val interaction = InteractionSettingsBinding(app)
     val photoBytes = mutableStateMapOf<String, ByteArray>()
     val postFiles = AttachmentDrafts(app, "", app.scope) { file ->
@@ -133,12 +152,13 @@ internal class ConnectedScreenState(
             val username = data.text("user_name").ifBlank { users[data.text("user_id")]?.text("user_name").orEmpty() }
             val handle = username.trimStart('@').substringBefore('@').takeIf { it.isNotBlank() }?.let { "@$it" }
             val channelName = data.text("channel_name").trimStart('#').ifBlank { null }
-            val server = if (data.flag("remote")) {
-                publicUrl(data.text("user_id"))?.host
-                    ?: publicUrl(data.text("url"))?.host
+            val remote = data.flag("remote")
+            val server = if (remote) {
+                publicUrl(data.text("user_id"))?.host ?: publicUrl(data.text("url"))?.host
             } else publicUrl(app.config.apiBaseUrl)?.host
             PostHeaderData(handle, listOf(platform.day(createdAt).substringAfter('/'), time).filter { it.isNotBlank() }.joinToString(" "),
-                PostAudience.fromApi(data.text("visibility")), channelName, server)
+                PostAudience.fromApi(data.text("visibility")), channelName, server,
+                remoteServer = remote, serverRgb = if (remote && server != null) instanceColors[server] else null)
         } else null
         return TimelineItem(id, name, body, time,
             editable = (writable || post.isNotEmpty()) && data.text("user_id") == app.config.userId && !data.flag("remote"),
