@@ -14,6 +14,7 @@ use zoo2_client_core::poll::PollGate;
 use super::e2ee_chat::{
     self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
 };
+use super::global_search::{self, GlobalSearch};
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -79,6 +80,16 @@ pub enum AppEvent {
         to: String,
     },
     ThreadLeft(String),
+    /// 全文検索の 1 ページ（`generation` が今のものと違えば捨てる）。
+    SearchResults {
+        generation: u64,
+        append: bool,
+        page: crate::api::SearchPage,
+    },
+    SearchFailed {
+        generation: u64,
+        message: String,
+    },
     ReadStatesPollFinished,
     EmojiPollFinished,
     TypingPollFinished,
@@ -164,6 +175,8 @@ pub enum Mode {
     },
     /// チャンネル名で絞り込む。
     Search(String),
+    /// 全文検索（状態は `App::global_search`）。
+    GlobalSearch,
     Help,
     /// 暗号化の画面（初回設定と解錠。#360）。
     Encryption,
@@ -237,6 +250,8 @@ pub struct App {
     /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
     pub inner_scroll: usize,
     pub thread: Option<ThreadView>,
+    /// 全文検索の語と結果。閉じても残し、開き直したときに続きから使う。
+    pub global_search: GlobalSearch,
     /// 直近の描画でタイムラインに出ていた最も新しいメッセージ (チャンネル, メッセージ)。
     /// 既読はここまでしか進めない。
     pub newest_shown: Option<(String, String)>,
@@ -329,6 +344,7 @@ impl App {
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
             thread_failed_append: [None, None],
+            global_search: GlobalSearch::default(),
             current: None,
             selected: None,
             scroll: 0,
@@ -743,6 +759,15 @@ impl App {
                     "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
                 ));
             }
+            AppEvent::SearchResults {
+                generation,
+                append,
+                page,
+            } => self.global_search.apply(generation, append, page),
+            AppEvent::SearchFailed {
+                generation,
+                message,
+            } => self.global_search.fail(generation, message),
             AppEvent::ThreadLeft(id) => {
                 self.active_threads.retain(|thread| thread.id != id);
                 self.archived_threads.retain(|thread| thread.id != id);
@@ -1326,6 +1351,7 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Mode::Search(query) => self.on_search_key(key, query),
+            Mode::GlobalSearch => self.on_global_search_key(key),
             Mode::React { message_id, input } => self.on_react_key(key, message_id, input),
             Mode::Help => self.mode = Mode::Normal,
             Mode::Encryption => {
@@ -1376,6 +1402,9 @@ impl App {
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(true)
             }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.mode = Mode::GlobalSearch
+            }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.scroll_inside(false)
             }
@@ -1401,6 +1430,7 @@ impl App {
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
+            KeyCode::Char('S') => self.mode = Mode::GlobalSearch,
             KeyCode::Char('R') => self.restore_failed_draft(),
             KeyCode::Char('u') => self.reopen_thread(),
             KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
@@ -1551,6 +1581,66 @@ impl App {
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if self.composer.insert_str(text) {
             self.touch_typing();
+        }
+    }
+
+    fn on_global_search_key(&mut self, key: KeyEvent) {
+        match self.global_search.on_key(key) {
+            global_search::Action::None => {}
+            global_search::Action::Close => self.mode = Mode::Normal,
+            global_search::Action::Search => self.fetch_search(false),
+            global_search::Action::More => self.fetch_search(true),
+            global_search::Action::Open => {
+                if let Some(target) = self.global_search.destination() {
+                    self.mode = Mode::Normal;
+                    self.open_search_result(target);
+                }
+            }
+        }
+    }
+
+    /// 全文検索の 1 ページを取る。古い取得の結果は番号で捨てる（取り消しはしない）。
+    fn fetch_search(&mut self, append: bool) {
+        let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
+            return;
+        };
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let event = match api.search(kind, &query, cursor.as_deref()).await {
+                Ok(page) => AppEvent::SearchResults {
+                    generation,
+                    append,
+                    page,
+                },
+                Err(error) => AppEvent::SearchFailed {
+                    generation,
+                    message: format!("{error:#}"),
+                },
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    /// 検索結果のメッセージを開く。スレッドの返信ならスレッドを開いてその返信を選ぶ。
+    /// 行がまだ同期されていなくても、選択は届いた時点で効く（描画時に位置を探す）。
+    fn open_search_result(&mut self, target: global_search::Destination) {
+        self.open_channel(target.channel_id);
+        match target.parent_id {
+            Some(root_id) => {
+                self.thread = Some(ThreadView {
+                    root_id,
+                    selected: Some(target.message_id),
+                    scroll: 0,
+                    inner_scroll: 0,
+                });
+                self.focus = Focus::Thread;
+                self.poll_typing();
+            }
+            None => {
+                self.selected = Some(target.message_id);
+                self.focus = Focus::Messages;
+            }
         }
     }
 
