@@ -616,7 +616,7 @@ export function Composer({
               type="button"
               variant="ghost"
               size="icon-lg"
-              className="mb-1 size-11! shrink-0 md:size-9!"
+              className="size-11! shrink-0 md:mt-1 md:size-9!"
               aria-label={t("attachments.add")}
               title={t("attachments.add")}
               disabled={disabled || drafts.length >= MAX_ATTACHMENTS_PER_MESSAGE}
@@ -711,7 +711,7 @@ export function Composer({
         <Button
           type="submit"
           size="icon-lg"
-          className="mb-1 size-11! md:size-9!"
+          className="size-11! md:mt-1 md:size-9!"
           disabled={!canSubmitComposer(value, disabled, readyAttachmentCount, isUploading)}
           aria-label={t("messages.send")}
           title={t("messages.send")}

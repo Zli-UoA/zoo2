@@ -59,6 +59,23 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+export const SingleLineActionsAlignWithText: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const textbox = canvas.getByRole("textbox");
+    const textCenter = (() => {
+      const box = textbox.getBoundingClientRect();
+      const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
+      const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
+      return box.top + paddingTop + lineHeight / 2;
+    })();
+    for (const name of ["絵文字", "送信"]) {
+      const box = canvas.getByRole("button", { name }).getBoundingClientRect();
+      await expect(Math.abs(box.top + box.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+    }
+  }),
+};
+
 export const MultilineActionsStayAtTop: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -72,6 +89,11 @@ export const MultilineActionsStayAtTop: Story = {
     const emojiBox = emoji.getBoundingClientRect();
     await expect(emojiBox.top - frameBox.top).toBeLessThan(16);
     await expect(frameBox.bottom - emojiBox.bottom).toBeGreaterThan(32);
+
+    const send = canvas.getByRole("button", { name: "送信" });
+    const sendBox = send.getBoundingClientRect();
+    await expect(sendBox.top - frameBox.top).toBeLessThan(16);
+    await expect(frameBox.bottom - sendBox.bottom).toBeGreaterThan(32);
   }),
 };
 

@@ -34,6 +34,7 @@ export function ComposerEmojiButton({
         type="button"
         variant="ghost"
         size="icon-lg"
+        className="md:mt-1"
         disabled={disabled}
         aria-label={t("reactions.tabEmoji")}
         title={t("reactions.tabEmoji")}

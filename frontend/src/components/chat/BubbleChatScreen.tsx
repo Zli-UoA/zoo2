@@ -407,7 +407,7 @@ export function BubbleChatScreen() {
                 <Button
                   type="button"
                   size="icon-lg"
-                  className="mb-1 size-11! md:size-9!"
+                  className="size-11! md:mt-1 md:size-9!"
                   disabled={content.trim().length === 0}
                   aria-label={t("bubbleChat.clear")}
                   title={t("bubbleChat.clear")}
