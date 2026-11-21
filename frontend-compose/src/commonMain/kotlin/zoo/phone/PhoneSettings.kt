@@ -37,15 +37,15 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
         Text(app.t("androidPhone.description"), muted = true)
         SettingsSection(app.t("androidPhone.nativeCalls"), app.t("androidPhone.nativeHelp")) {
             Check(app.t("androidPhone.receiveDm"), controller.dmWaiting, enabled = !controller.busy) { controller.receiveDmCalls(it) }
+            if (controller.dmWaitingError) PhoneErrorText(app.t("androidPhone.callError"))
         }
         CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
             Button(app.t("sip.refresh"), enabled = !controller.loading, variant = "outline") { controller.refresh() }
             if (controller.enabled) Button(app.t("sip.addLine"), enabled = !controller.writing) { editingId = null; editing = PhoneDraft() }
         }
         if (controller.loading) Text(app.t("sip.loading"), Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-        if (controller.loadError) Text(app.t("sip.loadError"), color = MaterialTheme.colorScheme.error)
+        if (controller.loadError) PhoneErrorText(app.t("sip.loadError"))
         if (!controller.loading && !controller.loadError && !controller.enabled) Text(app.t("sip.disabled"))
-        if (controller.error) Text(app.t("androidPhone.callError"), Modifier.semantics { liveRegion = LiveRegionMode.Assertive }, color = MaterialTheme.colorScheme.error)
         if (controller.registration.lineId != null) {
             SettingsSection(controller.lines.find { it.text("id") == controller.registration.lineId }?.text("name").orEmpty()) {
                 Text(app.t("sip.status.${if (controller.registration.status == "ready") "ready" else "connecting"}"))
@@ -66,6 +66,7 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
                         Button(app.t("sip.delete"), enabled = !controller.writing, destructive = true) { deleting = line }
                     }
                 }
+                if (controller.sipConnectionError == line.text("id")) PhoneErrorText(app.t("sip.callError"))
                 line["phones"]?.rows().orEmpty().forEach { phone ->
                     CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
                         Text("${phone.text("name")} · ${phone.text("extension")}")
@@ -98,7 +99,7 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
                 }
                 Button(app.t("sip.addPhone"), variant = "outline", enabled = !controller.writing && draft.phones.size < 100) { draft.phones.add(obj("name" to "", "extension" to "")) }
                 Text(app.t("sip.pbxHelp"), small = true, muted = true)
-                if (controller.writeError) Text(app.t("sip.writeError"), color = MaterialTheme.colorScheme.error)
+                if (controller.writeError) PhoneErrorText(app.t("sip.writeError"))
                 CssFlowRow(horizontalGap = 8.dp, verticalGap = 8.dp) {
                     Button(app.t(if (controller.writing) "sip.saving" else "sip.save"), enabled = !controller.writing && draft.valid(editingId != null)) { controller.save(editingId, draft.body()) { editing = null } }
                     Button(app.t("sip.cancel"), variant = "outline", enabled = !controller.writing) { draft.password = ""; editing = null }
@@ -110,7 +111,7 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { if (!controller.writing) deleting = null },
             title = { Text(app.t("sip.deleteTitle")) },
-            text = { Column { Text(app.t("sip.deleteHelp")); if (controller.writeError) Text(app.t("sip.writeError"), color = MaterialTheme.colorScheme.error) } },
+            text = { Column { Text(app.t("sip.deleteHelp")); if (controller.writeError) PhoneErrorText(app.t("sip.writeError")) } },
             confirmButton = { Button(app.t("sip.delete"), destructive = true, enabled = !controller.writing) { controller.remove(line.text("id")) { deleting = null } } },
             dismissButton = { Button(app.t("sip.cancel"), variant = "outline", enabled = !controller.writing) { deleting = null } },
         )
@@ -121,7 +122,15 @@ fun PhoneSettings(app: Session, controller: PhoneController, users: List<Row>) {
 fun PhoneCallBanner(app: Session, controller: PhoneController) {
     val call = controller.call
     if (call == null) {
-        if (controller.error) LoadErrorState(app.t("androidPhone.callError"), app.t("common.close"), retry = controller::clearError)
+        if (controller.error) {
+            SettingsSection(
+                title = "",
+                modifier = Modifier.padding(horizontal = AndroidDesign.screenInset),
+            ) {
+                PhoneErrorText(app.t("androidPhone.callError"))
+                Button(app.t("common.close"), variant = "outline", click = controller::clearError)
+            }
+        }
         return
     }
     SettingsSection(call.label.ifBlank { app.t("sip.title") }, app.t("sip.status.${call.status}") + call.peer.let { if (it.isBlank()) "" else " · $it" }) {
@@ -138,6 +147,15 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
             Field(tone, app.t("sip.dtmf"), maxLength = 1, modifier = Modifier.fillMaxWidth()) { tone = it }
             Button(app.t("sip.sendTone"), enabled = !controller.busy && Regex("[0-9*#]").matches(tone), variant = "outline") { controller.dtmf(tone) }
         }
-        if (controller.error) Text(app.t("androidPhone.callError"), color = MaterialTheme.colorScheme.error)
+        if (controller.error) PhoneErrorText(app.t("androidPhone.callError"))
     }
+}
+
+@Composable
+private fun PhoneErrorText(message: String) {
+    Text(
+        message,
+        Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        color = MaterialTheme.colorScheme.error,
+    )
 }

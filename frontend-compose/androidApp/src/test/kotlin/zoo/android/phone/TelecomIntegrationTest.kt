@@ -1,16 +1,63 @@
 package zoo.android.phone
 
+import android.app.NotificationManager
 import android.telecom.CallAudioState
 import android.telecom.Connection
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respondError
+import io.ktor.http.HttpStatusCode
 import kotlin.test.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import zoo.Environment
+import zoo.Platform
+import zoo.Repository
+import zoo.Session
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28, 35])
 class TelecomIntegrationTest {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun enablingDmWaitingDoesNotStartAServiceOrPostANotification() = runTest {
+        val context = RuntimeEnvironment.getApplication()
+        val platform = object : Platform {
+            override suspend fun headers() = emptyMap<String, String>()
+            override suspend fun readCache(key: String): String? = null
+            override suspend fun writeCache(key: String, value: String) {}
+            override fun uuid() = "phone-test"
+            override fun now() = "2026-11-21T00:00:00Z"
+            override fun navigate(path: String) {}
+            override fun action(name: String) {}
+            override fun translate(key: String, args: Map<String, String>) = key
+            override fun time(timestamp: String) = timestamp
+            override fun day(timestamp: String) = timestamp
+        }
+        val http = HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) })
+        val config = zoo.Config("https://zoo.test", "/api/shapes", "alice", false)
+        val session = Session(Repository(config, platform, http, backgroundScope, synchronize = false),
+            backgroundScope, Environment(visible = false))
+        val host = AndroidPhoneHost(context, session, http, prepare = {})
+        try {
+            host.controller.receiveDmCalls(true)
+            runCurrent()
+            assertTrue(host.controller.dmWaiting)
+            assertNull(shadowOf(context).nextStartedService)
+            assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications.isEmpty())
+        } finally {
+            host.close()
+            session.close()
+            http.close()
+        }
+    }
+
     private class Actions : ConnectionActions {
         var current = "call"
         var appMuted = false

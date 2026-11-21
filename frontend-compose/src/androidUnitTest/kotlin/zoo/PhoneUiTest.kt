@@ -7,6 +7,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -26,7 +28,7 @@ import zoo.phone.*
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PhoneUiTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
-    private class Fixture {
+    private class Fixture(prepare: suspend () -> Unit = {}) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val platform = object : Platform {
             override suspend fun headers() = emptyMap<String, String>()
@@ -46,10 +48,11 @@ class PhoneUiTest {
             stream = { _, _, _ -> awaitCancellation() }, media = { _, _ -> error("Unexpected media capture") },
             telecom = object : PhoneTelecom {
                 override suspend fun outgoing(call: PhoneCall) {}
+                override suspend fun startAudio(id: String) = Unit
                 override fun incoming(call: PhoneCall) {}
                 override fun ended(id: String) {}
                 override fun speaker(id: String, enabled: Boolean) {}
-            }, prepare = {}, waiting = {}, uuid = { "call" })
+            }, prepare = prepare, waiting = {}, uuid = { "call" })
         fun close() { controller.close(); app.close(); http.close(); scope.cancel() }
     }
     @Test fun settingsExposeOptInWaitingAndPersonalRegistrationAtPhoneWidth() {
@@ -71,7 +74,10 @@ class PhoneUiTest {
     @Test fun failureRemainsVisibleAfterTheCallHasEndedAndCanBeDismissed() {
         val f = Fixture()
         try {
-            ui.runOnIdle { f.controller.nativeUnavailable() }
+            ui.runOnIdle {
+                f.controller.callDm("dm", "Bob")
+                f.controller.nativeFailed("call")
+            }
             ui.setContent {
                 CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
                     MaterialTheme { PhoneCallBanner(f.app, f.controller) }
@@ -80,6 +86,30 @@ class PhoneUiTest {
             ui.onNodeWithText("androidPhone.callError").assertIsDisplayed()
             ui.onNodeWithText("common.close").performClick()
             ui.onNodeWithText("androidPhone.callError").assertDoesNotExist()
+        } finally { f.close() }
+    }
+    @Test fun waitingPermissionFailureUsesTheThemeErrorColorBesideTheWaitingControl() {
+        val f = Fixture(prepare = { error("Microphone permission denied") })
+        val colors = zooColorScheme(dark = true)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
+                    MaterialTheme(colorScheme = colors) {
+                        Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+                            PhoneSettings(f.app, f.controller, emptyList())
+                            PhoneCallBanner(f.app, f.controller)
+                        }
+                    }
+                }
+            }
+            val waiting = ui.onNodeWithText("androidPhone.receiveDm").performClick()
+            ui.onAllNodesWithText("androidPhone.callError").assertCountEquals(1)
+            val message = ui.onNodeWithText("androidPhone.callError").assertIsDisplayed()
+            assertTrue(message.fetchSemanticsNode().boundsInRoot.top >= waiting.fetchSemanticsNode().boundsInRoot.bottom)
+            val layouts = mutableListOf<TextLayoutResult>()
+            message.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals(colors.error, layouts.single().layoutInput.style.color)
+            ui.onNodeWithText("common.close").assertDoesNotExist()
         } finally { f.close() }
     }
     @Test fun incomingBannerOffersAnswerAndEndWithoutOpeningTheMicrophone() {

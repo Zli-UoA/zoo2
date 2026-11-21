@@ -1811,7 +1811,7 @@
   "androidPhone": {
     "description": "Use personal or shared SIP lines and DM voice calls with your device’s calling features.",
     "nativeCalls": "Device call integration",
-    "nativeHelp": "Enabling incoming calls keeps a connection with an ongoing notification. Answer, end calls and route audio using device call controls. Microphone permission is required.",
+    "nativeHelp": "A call notification appears when a call comes in. Incoming calls can be received while the app is running. Device call controls support answering, ending calls and routing audio. Microphone permission is required.",
     "receiveDm": "Receive DM calls",
     "callError": "Could not prepare or control the call. Check microphone permission, device calling support, network and line configuration.",
     "speaker": "Speaker",

@@ -1,90 +1,147 @@
 package zoo.android.phone
 
 import android.app.*
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.RingtoneManager
-import android.os.*
 import android.net.Uri
-import zoo.android.MainActivity
+import android.os.Build
+import androidx.annotation.RequiresApi
 import works.zli.zoo.R
+import zoo.android.MainActivity
+import zoo.phone.PhoneCall
 
-/** User-enabled VoIP waiting, upgraded to a microphone/phone-call foreground service in a call. */
+private const val INCOMING_NOTIFICATION = 604
+private const val CALL_NOTIFICATION = 600
+private const val INCOMING_CHANNEL = "zoo.phone.incoming"
+private const val CALL_CHANNEL = "zoo.phone.ongoing"
+
+/** The foreground service exists only while a call needs access to the microphone. */
 class PhoneService : Service() {
     private var host: AndroidPhoneHost? = null
+    private var callId: String? = null
+
     override fun onBind(intent: Intent?) = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val current = AndroidPhoneHost.current
-        if (current == null) { stopSelf(); return START_NOT_STICKY }
-        if (intent?.getStringExtra(PHONE_SESSION) != current.token) return START_NOT_STICKY
-        host = current; current.service = this
-        when (intent.action) {
-            "zoo.phone.STOP" -> if (current.controller.call == null) current.controller.stop()
-            "zoo.phone.END" -> if (current.matches(current.token, intent.getStringExtra(PHONE_CALL))) current.controller.hangup()
+        val id = intent?.getStringExtra(PHONE_CALL)
+        if (current == null || id == null ||
+            !current.matches(intent.getStringExtra(PHONE_SESSION), id) || current.audioCall(id) == null
+        ) {
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
-        if (current.desired) refresh() else stopSelf()
+
+        host = current
+        callId = id
+        if (refresh()) current.audioStarted(this, id)
         return START_NOT_STICKY
     }
-    fun refresh() {
-        val current = host?.takeIf { it === AndroidPhoneHost.current } ?: return
-        val app = current.app
+
+    internal fun refresh(): Boolean {
+        val current = host?.takeIf { it === AndroidPhoneHost.current } ?: return false
+        val call = current.audioCall(callId) ?: return false
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel("zoo.phone.waiting", app.t("androidPhone.nativeCalls"), NotificationManager.IMPORTANCE_LOW))
-        manager.createNotificationChannel(NotificationChannel("zoo.phone.incoming", app.t("sip.status.incoming"), NotificationManager.IMPORTANCE_HIGH).apply {
-            enableVibration(true)
-            setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE), AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build())
-        })
-        val call = current.controller.call
-        val open = Intent(this, MainActivity::class.java).setData(Uri.parse("zoo-phone://${current.token}/${call?.id ?: "waiting"}/open")).setAction("zoo.phone.OPEN").putExtra(PHONE_SESSION, current.token).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        call?.let { open.putExtra(PHONE_CALL, it.id) }
-        val show = PendingIntent.getActivity(this, 601, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        fun end(): PendingIntent = PendingIntent.getService(this, 602,
-            Intent(this, PhoneService::class.java).setData(Uri.parse("zoo-phone://${current.token}/${call?.id ?: "waiting"}/end")).setAction(if (call == null) "zoo.phone.STOP" else "zoo.phone.END").putExtra(PHONE_SESSION, current.token).putExtra(PHONE_CALL, call?.id),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val privateVersion = Notification.Builder(this, "zoo.phone.waiting").setSmallIcon(R.drawable.ic_notification).setContentTitle("Zoo").setContentText(app.t("sip.title")).build()
-        val builder = Notification.Builder(this, "zoo.phone.waiting")
-            .setSmallIcon(R.drawable.ic_notification).setContentTitle(call?.label?.ifBlank { "Zoo" } ?: "Zoo")
-            .setContentText(if (call == null) app.t("androidPhone.waiting") else app.t("sip.status.${call.status}"))
-            .setContentIntent(show).setOngoing(true).setOnlyAlertOnce(true)
-            .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(privateVersion)
-        if (call != null) {
-            builder.setCategory(Notification.CATEGORY_CALL)
-            if (Build.VERSION.SDK_INT >= 31 && call.status != "incoming") builder.setStyle(Notification.CallStyle.forOngoingCall(Person.Builder().setName(call.label.ifBlank { "Zoo" }).build(), end()))
-            else builder.addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notification), app.t("sip.hangup"), end()).build())
-        } else builder.addAction(Notification.Action.Builder(Icon.createWithResource(this, R.drawable.ic_notification), app.t("sip.disconnect"), end()).build())
-        try {
-            if (Build.VERSION.SDK_INT >= 34) {
-                val type = when {
-                    current.callAdmitted && call?.status != "incoming" -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    current.callAdmitted -> ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
-                    else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                }
-                startForeground(600, builder.build(), type)
-            } else if (Build.VERSION.SDK_INT >= 30 && call != null && call.status != "incoming" && current.callAdmitted) startForeground(600, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            else if (Build.VERSION.SDK_INT >= 29 && call != null && current.callAdmitted) startForeground(600, builder.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
-            else startForeground(600, builder.build())
-        } catch (_: Exception) { current.controller.stop(); stopSelf(); return }
-        if (call?.status == "incoming" && current.ringingId == call.id) {
-            val answerIntent = Intent(open).putExtra("answer", true)
-            val answer = PendingIntent.getActivity(this, 603, answerIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            val ringing = Notification.Builder(this, "zoo.phone.incoming").setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(call.label.ifBlank { "Zoo" }).setContentText(app.t("sip.status.incoming"))
-                .setContentIntent(show).setCategory(Notification.CATEGORY_CALL).setOngoing(true).setOnlyAlertOnce(true)
-                .setVisibility(Notification.VISIBILITY_PRIVATE).setPublicVersion(privateVersion)
-            if (Build.VERSION.SDK_INT >= 31) ringing.setStyle(Notification.CallStyle.forIncomingCall(Person.Builder().setName(call.label.ifBlank { "Zoo" }).build(), end(), answer))
-            else { ringing.addAction(Notification.Action.Builder(null as Icon?, app.t("sip.answer"), answer).build()); ringing.addAction(Notification.Action.Builder(null as Icon?, app.t("sip.hangup"), end()).build()) }
-            postIncomingNotification(ringing,
-                Notification.Action.Builder(null as Icon?, app.t("sip.answer"), answer).build(),
-                Notification.Action.Builder(null as Icon?, app.t("sip.hangup"), end()).build()) { manager.notify(604, it) }
-        } else manager.cancel(604)
+        return try {
+            manager.createNotificationChannel(NotificationChannel(
+                CALL_CHANNEL, current.app.t("androidPhone.nativeCalls"), NotificationManager.IMPORTANCE_LOW,
+            ))
+            val end = endCall(this, current, call.id)
+            val builder = callNotification(this, current, call, CALL_CHANNEL)
+            if (Build.VERSION.SDK_INT >= 31) builder.setStyle(Notification.CallStyle.forOngoingCall(person(call), end))
+            else builder.addAction(action(current.app.t("sip.hangup"), end))
+
+            val notification = builder.build()
+            if (Build.VERSION.SDK_INT >= 30) startForeground(
+                CALL_NOTIFICATION, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+            )
+            else if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(CALL_NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+            } else startForeground(CALL_NOTIFICATION, notification)
+            true
+        } catch (_: RuntimeException) {
+            current.audioFailed(call.id)
+            stopSelf()
+            false
+        }
     }
+
     override fun onDestroy() {
-        getSystemService(NotificationManager::class.java).cancel(604)
         stopForeground(STOP_FOREGROUND_REMOVE)
-        host?.serviceDestroyed(this); host = null
+        host?.serviceDestroyed(this)
         super.onDestroy()
+    }
+}
+
+internal fun showIncomingCall(context: Context, host: AndroidPhoneHost, call: PhoneCall) {
+    val manager = context.getSystemService(NotificationManager::class.java)
+    manager.createNotificationChannel(NotificationChannel(
+        INCOMING_CHANNEL, host.app.t("sip.status.incoming"), NotificationManager.IMPORTANCE_HIGH,
+    ).apply {
+        enableVibration(true)
+        setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build())
+    })
+    val answer = callActivity(context, host, call.id, "ANSWER")
+    val end = endCall(context, host, call.id)
+    val answerAction = action(host.app.t("sip.answer"), answer)
+    val endAction = action(host.app.t("sip.hangup"), end)
+    val builder = callNotification(context, host, call, INCOMING_CHANNEL)
+    if (Build.VERSION.SDK_INT >= 31) {
+        builder.setStyle(Notification.CallStyle.forIncomingCall(person(call), end, answer))
+    } else builder.setActions(answerAction, endAction)
+
+    postIncomingNotification(builder, answerAction, endAction) { manager.notify(INCOMING_NOTIFICATION, it) }
+}
+
+internal fun dismissIncomingCall(context: Context) =
+    context.getSystemService(NotificationManager::class.java).cancel(INCOMING_NOTIFICATION)
+
+@RequiresApi(28)
+private fun person(call: PhoneCall) = Person.Builder().setName(call.label.ifBlank { "Zoo" }).build()
+
+private fun action(label: String, intent: PendingIntent) =
+    Notification.Action.Builder(null as Icon?, label, intent).build()
+
+private fun callNotification(context: Context, host: AndroidPhoneHost, call: PhoneCall, channel: String) =
+    Notification.Builder(context, channel)
+        .setSmallIcon(R.drawable.ic_notification)
+        .setContentTitle(call.label.ifBlank { "Zoo" })
+        .setContentText(host.app.t("sip.status.${call.status}"))
+        .setContentIntent(callActivity(context, host, call.id, "OPEN"))
+        .setCategory(Notification.CATEGORY_CALL)
+        .setOngoing(true)
+        .setOnlyAlertOnce(true)
+        .setVisibility(Notification.VISIBILITY_PRIVATE)
+        .setPublicVersion(Notification.Builder(context, channel).setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Zoo").setContentText(host.app.t("sip.title")).build())
+
+private fun callIntent(context: Context, component: Class<*>, host: AndroidPhoneHost, id: String, action: String) =
+    Intent(context, component).setAction("zoo.phone.$action")
+        .setData(Uri.parse("zoo-phone://${host.token}/$id/$action"))
+        .putExtra(PHONE_SESSION, host.token).putExtra(PHONE_CALL, id)
+
+private fun callActivity(context: Context, host: AndroidPhoneHost, id: String, action: String): PendingIntent =
+    PendingIntent.getActivity(context, 0, callIntent(context, MainActivity::class.java, host, id, action)
+        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_IMMUTABLE)
+
+private fun endCall(context: Context, host: AndroidPhoneHost, id: String): PendingIntent =
+    PendingIntent.getBroadcast(context, 0, callIntent(context, PhoneActionReceiver::class.java, host, id, "END"),
+        PendingIntent.FLAG_IMMUTABLE)
+
+class PhoneActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != "zoo.phone.END") return
+        val host = AndroidPhoneHost.current ?: return
+        if (host.matches(intent.getStringExtra(PHONE_SESSION), intent.getStringExtra(PHONE_CALL))) {
+            host.controller.hangup()
+        }
     }
 }
 

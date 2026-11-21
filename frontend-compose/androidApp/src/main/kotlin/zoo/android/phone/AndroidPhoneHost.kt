@@ -9,6 +9,7 @@ import android.os.*
 import android.telecom.*
 import androidx.compose.runtime.snapshotFlow
 import io.ktor.client.HttpClient
+import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.UUID
@@ -30,10 +31,10 @@ internal class AndroidPhoneHost(
     private var connectionReady: CompletableDeferred<Unit>? = null
     private var inviteTable: SyncedTable? = null
     private var invites: Job? = null
-    private var serviceRequested = false
-    internal var service: PhoneService? = null
+    private var audioReady: CompletableDeferred<Unit>? = null
+    private var audioCallId: String? = null
+    private var service: PhoneService? = null
     internal var pendingMute: Boolean? = null
-    var ringingId: String? = null; private set
     val controller: PhoneController = PhoneController(
         app.scope,
         request = { path, method, body -> app.api.request(path, method, body) },
@@ -50,17 +51,19 @@ internal class AndroidPhoneHost(
         current?.close(); current = this
         available = runCatching { manager.registerPhoneAccount(PhoneAccount.builder(handle, "Zoo").setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED).setSupportedUriSchemes(listOf(PhoneAccount.SCHEME_TEL, PhoneAccount.SCHEME_SIP)).build()) }.isSuccess
         state = app.scope.launch {
-            snapshotFlow { listOf(controller.call, controller.registration, controller.dmWaiting, controller.busy) }.collect {
+            snapshotFlow { controller.call?.let { Triple(it.id, it.status, controller.busy) } }.collect {
                 val call = controller.call
                 if (call != null && call.status == "active" && connection?.id == call.id && !controller.busy) {
                     connection?.setRingbackRequested(false); connection?.setActive()
                     pendingMute?.let { mute -> pendingMute = null; controller.mute(mute) }
                 }
-                syncService()
+                service?.refresh()
             }
         }
     }
-    private fun mayCapture(kind: String) = connection?.id == controller.call?.id && controller.call?.kind == kind && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    private fun mayCapture(kind: String) =
+        service != null && audioCallId == controller.call?.id && controller.call?.kind == kind &&
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     override fun valid(id: String) = matches(token, id)
     override fun answer(id: String) { if (valid(id)) controller.answer() }
     override fun end(id: String) { if (valid(id)) controller.hangup() }
@@ -85,20 +88,35 @@ internal class AndroidPhoneHost(
         finally { if (connectionReady === ready) connectionReady = null }
     }
     override fun incoming(call: PhoneCall) { check(available); manager.addNewIncomingCall(handle, extras(call)) }
-    fun connection(incoming: Boolean): Connection {
+    fun connection(incoming: Boolean, address: Uri?): Connection {
         val call = controller.call ?: return Connection.createFailedConnection(DisconnectCause(DisconnectCause.CANCELED))
+        if (connection != null || incoming != (call.status == "incoming")) {
+            return Connection.createFailedConnection(DisconnectCause(DisconnectCause.CANCELED))
+        }
         val native = ZooConnection(this, call.id, incoming)
         native.setCallerDisplayName(call.label.ifBlank { "Zoo" }, TelecomManager.PRESENTATION_ALLOWED)
-        if (call.peer.isNotBlank()) native.setAddress(Uri.fromParts("tel", call.peer, null), TelecomManager.PRESENTATION_ALLOWED)
-        connection = native; connectionReady?.complete(Unit); syncService()
+        address?.let { native.setAddress(it, TelecomManager.PRESENTATION_ALLOWED) }
+        connection = native; connectionReady?.complete(Unit)
         return native
     }
     fun failed() { connectionReady?.completeExceptionally(IllegalStateException("Telecom rejected the call")); controller.call?.id?.let(controller::nativeFailed) }
-    fun showIncoming(id: String) { if (controller.call?.id == id) { ringingId = id; service?.refresh() } }
+    private fun showIncoming(id: String) {
+        val call = controller.call?.takeIf { it.id == id && it.status == "incoming" } ?: return
+        if (audioCallId == id) return
+        try {
+            showIncomingCall(context, this, call)
+        } catch (_: RuntimeException) {
+            controller.nativeFailed(id)
+        }
+    }
     override fun ended(id: String) {
         connection?.takeIf { it.id == id }?.let { it.setDisconnected(DisconnectCause(DisconnectCause.LOCAL)); it.destroy(); connection = null }
-        connectionReady?.cancel(); connectionReady = null; pendingMute = null; ringingId = null
-        syncService()
+        connectionReady?.cancel(); connectionReady = null; pendingMute = null
+        dismissIncomingCall(context)
+        if (audioCallId == id) {
+            audioCallId = null; audioReady?.cancel(); audioReady = null; service = null
+            context.stopService(Intent(context, PhoneService::class.java))
+        }
     }
     @Suppress("DEPRECATION")
     override fun speaker(id: String, enabled: Boolean) {
@@ -125,36 +143,48 @@ internal class AndroidPhoneHost(
                 }.collect { rows -> controller.invites(rows, app.config.userId, kotlin.time.Clock.System.now().toEpochMilliseconds()) }
             }
         }
-        syncService()
     }
-    val callAdmitted: Boolean get() = connection?.id == controller.call?.id && controller.call != null && context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-    val desired: Boolean get() = controller.dmWaiting || controller.registration.status != "offline" || controller.call != null
-    private fun syncService() {
-        if (current !== this) return
-        if (desired && !serviceRequested) {
-            serviceRequested = true
-            try { context.startForegroundService(Intent(context, PhoneService::class.java).putExtra(PHONE_SESSION, token)) }
-            catch (_: Exception) { serviceRequested = false; controller.nativeUnavailable() }
-        } else if (!desired && serviceRequested) { serviceRequested = false; context.stopService(Intent(context, PhoneService::class.java)) }
-        service?.refresh()
+    override suspend fun startAudio(id: String) {
+        check(valid(id) && connection?.id == id && audioCallId == null)
+        val ready = CompletableDeferred<Unit>()
+        audioCallId = id
+        audioReady = ready
+        context.startForegroundService(Intent(context, PhoneService::class.java)
+            .putExtra(PHONE_SESSION, token).putExtra(PHONE_CALL, id))
+        withTimeout(10_000) { ready.await() }
     }
+
+    fun audioCall(id: String?) = controller.call?.takeIf { it.id == id && id == audioCallId }
+    fun audioStarted(instance: PhoneService, id: String) {
+        if (audioCall(id) == null) return
+        service = instance
+        dismissIncomingCall(context)
+        audioReady?.complete(Unit)
+    }
+
+    fun audioFailed(id: String) {
+        if (audioCall(id) != null) controller.nativeFailed(id)
+    }
+
     fun open(intent: Intent): Boolean {
-        if (intent.action != "zoo.phone.OPEN" || intent.getStringExtra(PHONE_SESSION) != token) return false
-        val callId = intent.getStringExtra(PHONE_CALL)
-        if (callId != null && controller.call?.id == callId && intent.getBooleanExtra("answer", false)) controller.answer()
-        app.navigate("/settings?tab=sip")
+        if (intent.action != "zoo.phone.OPEN" && intent.action != "zoo.phone.ANSWER") return false
+        if (!matches(intent.getStringExtra(PHONE_SESSION), intent.getStringExtra(PHONE_CALL))) return true
+        val call = controller.call ?: return true
+        if (intent.action == "zoo.phone.ANSWER") controller.answer()
+        app.navigate(if (call.kind == "dm") "/channels/${call.target.encodeURLPathPart()}" else "/settings?tab=sip")
         return true
     }
     fun serviceDestroyed(instance: PhoneService) {
         if (service !== instance) return
-        service = null; serviceRequested = false
-        if (desired && current === this) controller.stop()
+        service = null
+        audioCallId?.let(::audioFailed)
     }
     fun close() {
         if (current !== this) return
         current = null; state.cancel(); invites?.cancel(); inviteTable?.close(); controller.close()
         connection?.setDisconnected(DisconnectCause(DisconnectCause.LOCAL)); connection?.destroy(); connection = null
         runCatching { manager.unregisterPhoneAccount(handle) }
+        dismissIncomingCall(context)
         context.stopService(Intent(context, PhoneService::class.java))
     }
     companion object { var current: AndroidPhoneHost? = null; private set }
