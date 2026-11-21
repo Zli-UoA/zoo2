@@ -30,8 +30,15 @@ internal fun EntryActionSheet(
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
             Text(entry.body, color = colors.secondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(12.dp))
-            if (open != null) SheetAction(if (posts) "投稿を開く" else "スレッドを開く", colors, open)
-            SheetAction("本文をコピー", colors) {
+            if (open != null) {
+                SheetAction(
+                    if (posts) UiIcon.Document else UiIcon.Bubble,
+                    if (posts) "投稿を開く" else "スレッドを開く",
+                    colors,
+                    open,
+                )
+            }
+            SheetAction(UiIcon.Copy, "本文をコピー", colors) {
                 scope.launch {
                     clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(null, entry.body)))
                     dismiss()
@@ -42,12 +49,14 @@ internal fun EntryActionSheet(
 }
 
 @Composable
-private fun SheetAction(title: String, colors: AndroidColors, click: () -> Unit) {
-    Box(
+private fun SheetAction(icon: UiIcon, title: String, colors: AndroidColors, click: () -> Unit) {
+    Row(
         Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
             .clickable(role = Role.Button, onClick = click),
-        contentAlignment = Alignment.CenterStart,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        UiGlyph(icon, colors.foreground)
         Text(title, color = colors.foreground, fontWeight = AndroidWeights.label)
     }
 }
