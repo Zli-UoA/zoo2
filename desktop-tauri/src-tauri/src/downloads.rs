@@ -841,8 +841,8 @@ fn is_part_file_name(name: &str) -> bool {
 }
 
 /// 検査用のファイルに書く目印。`.part` は中身が本体なので目印を書けないが、検査用の
-/// ファイルは空なので、起動時の掃除はこの目印があるものだけを消す。`.part` の名前から
-/// ID を読んだ第三者が、同じ名前の `.probe` を先に置くことができるため。
+/// ファイルには目印を書き、起動時の掃除はこの目印があるものだけを消す。`.part` の
+/// 名前から ID を読んだ第三者が、同じ名前の `.probe` を先に置くことができるため。
 const PROBE_MARKER: &[u8] = b"zoo2 probe\n";
 
 /// 検査用の名前か。中身（目印）を確かめてから消す対象。
@@ -862,10 +862,15 @@ fn remove_stale_entry(path: &Path) -> bool {
         // 記録の形が違うものは、ファイルには触れずに記録から外す。
         return true;
     }
-    if is_probe_name(name) && !has_probe_marker(path) {
-        // 先にあった第三者のファイルかもしれない。リンクの先を消さないよう、自分が
-        // 書いた目印が無いものには触れず、記録から外すだけにする。
-        return true;
+    if is_probe_name(name) {
+        match probe_state(path) {
+            ProbeState::Ours => {}
+            // 先にあった第三者のファイルかもしれない。自分が書いた目印が無いものには
+            // 触れず、記録から外すだけにする。
+            ProbeState::NotOurs => return true,
+            // 開けなかっただけかもしれない。記録を残し、次の起動でやり直す。
+            ProbeState::Unreadable => return false,
+        }
     }
     match std::fs::remove_file(path) {
         Ok(()) => true,
@@ -874,11 +879,39 @@ fn remove_stale_entry(path: &Path) -> bool {
     }
 }
 
-/// 検査用のファイルに、この保存が書いた目印があるか。リンクをたどるが、読む量は
-/// 目印の長さまでに限る。
-fn has_probe_marker(path: &Path) -> bool {
+/// 記録に残った検査用の名前が、このアプリが作ったものか。
+enum ProbeState {
+    /// 目印がある。消してよい。
+    Ours,
+    /// 目印が無い、または通常のファイルではない。触らずに記録から外す。
+    NotOurs,
+    /// 開けない、または読めない。次の起動でやり直す。
+    Unreadable,
+}
+
+fn probe_state(path: &Path) -> ProbeState {
+    // 通常のファイル以外は開かない。FIFO は書き手が現れるまで `open` が返らず、
+    // 1 件で掃除のスレッドが止まると、残りの `.part` も消せなくなる。
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return ProbeState::NotOurs,
+        Err(_) => return ProbeState::Unreadable,
+    };
+    if !metadata.file_type().is_file() {
+        return ProbeState::NotOurs;
+    }
+    // このアプリが作る検査用のファイルは、目印の長さか 0 バイト（目印を書く前に
+    // 終了した場合）。それ以外は中身を読むまでもない。0 バイトのファイルは、
+    // 先に置かれたものだとしても消して失われる中身が無い。
+    let length = metadata.len();
+    if length != 0 && length != PROBE_MARKER.len() as u64 {
+        return ProbeState::NotOurs;
+    }
+    if length == 0 {
+        return ProbeState::Ours;
+    }
     let Ok(file) = File::open(path) else {
-        return false;
+        return ProbeState::Unreadable;
     };
     let mut marker = Vec::with_capacity(PROBE_MARKER.len() + 1);
     if file
@@ -886,9 +919,13 @@ fn has_probe_marker(path: &Path) -> bool {
         .read_to_end(&mut marker)
         .is_err()
     {
-        return false;
+        return ProbeState::Unreadable;
     }
-    marker == PROBE_MARKER
+    if marker == PROBE_MARKER {
+        ProbeState::Ours
+    } else {
+        ProbeState::NotOurs
+    }
 }
 
 /// 拡張子を残して、名前がファイルシステムの上限（バイト数）に収まるようにする。
@@ -1133,8 +1170,8 @@ fn prepare_part_with(
 }
 
 /// この保存先で、既存のファイルを置き換えずに `.part` を確定できるかを、本文を読み始める
-/// 前に確かめる。空の検査用のファイルを作り、確定と同じ順（「既にあれば失敗する移動」、
-/// 使えなければハードリンク）で別の名前へ移す。`.part` は動かさない。
+/// 前に確かめる。目印を書いた短い検査用のファイルを作り、確定と同じ順（「既にあれば
+/// 失敗する移動」、使えなければハードリンク）で別の名前へ移す。`.part` は動かさない。
 fn check_destination_with(
     part: &Path,
     journal: &Journal,
@@ -1175,7 +1212,7 @@ fn check_destination_with(
     };
 
     // 自分で作った検査用の名前だけを片付ける。先にあった名前は第三者のものかもしれない
-    // ので消さない。片付けられないまま本文を転送すると保存先に空のファイルが残るため、
+    // ので消さない。片付けられないまま本文を転送すると保存先に検査用のファイルが残るため、
     // 消せなかったときは失敗にする（記録には残るので、次の起動で消す）。
     let cleaned = discard_probe(journal, &probe, created)
         .and_then(|()| discard_probe(journal, &moved, outcome.is_ok()));
@@ -1186,20 +1223,20 @@ fn check_destination_with(
     }
 }
 
-/// 検査用の空のファイルを、既にあると失敗する形で作る。共有フォルダーでは、`.part` の
+/// 検査用のファイルを、既にあると失敗する形で作る。共有フォルダーでは、`.part` の
 /// 名前から ID を読んだ第三者が、同じ名前の `.probe` を別のファイルへのシンボリック
 /// リンクとして先に置ける。`std::fs::write` はリンクをたどってリンク先を空にするため、
 /// 使わない。作ったファイルには目印（[`PROBE_MARKER`]）を書き、起動時の掃除が自分が
 /// 作ったものだけを消せるようにする。
+///
+/// 目印は、強制終了のあとに消してよいかを決めるためだけに使う。`sync_all` は呼ばない
+/// （ディスクを待つと保存を始めるまでの待ちが増えるうえ、電源断のときしか効かない）。
 fn create_probe(path: &Path) -> std::io::Result<()> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     let written = file.write_all(PROBE_MARKER);
-    // 目印は、消してよいかの判定にだけ使う。同期できないファイルシステムでも保存を
-    // 止めないよう、同期の失敗は無視する。
-    let _ = file.sync_all();
     drop(file);
     if let Err(err) = written {
-        // 書きかけのファイルは自分が作ったものなので、残さない。
+        // 書きかけのファイルは自分が作ったもの（0 バイトを含む）なので、残さない。
         let _ = std::fs::remove_file(path);
         return Err(err);
     }
@@ -2166,6 +2203,39 @@ mod tests {
         assert!(remove_stale_entry(&moved));
         assert!(moved.symlink_metadata().is_ok(), "リンクを消さない");
         assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_cleanup_does_not_open_a_preexisting_probe_fifo() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        let path = std::ffi::CString::new(probe.to_str().unwrap()).unwrap();
+        // 掃除が FIFO を開くと、書き手が現れるまで戻らず、残りの `.part` も消せなくなる。
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+
+        assert!(remove_stale_entry(&probe));
+        assert!(probe.symlink_metadata().is_ok(), "FIFO を消さない");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_removes_an_empty_probe() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        // 目印を書く前に終了した場合。0 バイトなら、先に置かれたものだとしても
+        // 消して失われる中身が無い。
+        std::fs::write(&probe, b"").unwrap();
+
+        assert!(remove_stale_entry(&probe));
+        assert!(!probe.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
