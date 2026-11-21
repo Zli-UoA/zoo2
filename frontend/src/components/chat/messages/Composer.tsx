@@ -1,7 +1,11 @@
 import { ComposerEmojiButton } from "./ComposerEmojiButton";
 import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
-import { ComposerField, composerTextareaClassName } from "./ComposerField";
+import {
+  ComposerField,
+  composerTextareaClassName,
+  composerTextareaSizingClass,
+} from "./ComposerField";
 import { useTranslation } from "react-i18next";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
 import { PaperclipIcon, SendIcon, XIcon } from "lucide-react";
@@ -629,7 +633,7 @@ export function Composer({
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className={`${composerTextareaClassName} max-h-[200px] min-h-11 overflow-y-auto px-2 py-2.5`}
+          className={`${composerTextareaClassName} ${composerTextareaSizingClass(value)} max-h-[200px] min-h-11 overflow-y-auto px-2 py-2.5`}
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}

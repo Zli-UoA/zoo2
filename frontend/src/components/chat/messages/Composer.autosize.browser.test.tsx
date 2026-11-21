@@ -45,6 +45,7 @@ describe("Composer autosize", () => {
     const { textarea } = renderComposer(480);
     await userEvent.type(textarea, Array.from({ length: 30 }, (_, i) => `${i}行目`).join("\n"));
 
+    expect(textarea.getBoundingClientRect().height).toBeGreaterThanOrEqual(190);
     expect(textarea.getBoundingClientRect().height).toBeLessThanOrEqual(200);
     expect(textarea.scrollHeight).toBeGreaterThan(textarea.clientHeight);
   });

@@ -8,7 +8,11 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useMediaQuery } from "../layout/useMediaQuery";
 import { AppAvatar } from "./AppIdentity";
-import { ComposerField, composerTextareaClassName } from "./messages/ComposerField";
+import {
+  ComposerField,
+  composerTextareaClassName,
+  composerTextareaSizingClass,
+} from "./messages/ComposerField";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
@@ -369,7 +373,7 @@ export function BubbleChatScreen() {
                   value={content}
                   placeholder={t("bubbleChat.placeholder")}
                   aria-label={t("bubbleChat.inputLabel")}
-                  className={`${composerTextareaClassName} max-h-[180px] min-h-11 overflow-y-auto px-2 py-2.5`}
+                  className={`${composerTextareaClassName} ${composerTextareaSizingClass(content)} max-h-[180px] min-h-11 overflow-y-auto px-2 py-2.5`}
                   onCompositionStart={() => {
                     composingRef.current = true;
                   }}
