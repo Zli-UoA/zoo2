@@ -44,7 +44,13 @@ struct KeychainCallSessionJournal: CallSessionJournal {
         guard status == errSecSuccess, let data = result as? Data else {
             throw ZooError.auth("前回の通話情報を読み取れませんでした。端末のロックを解除して再度お試しください。")
         }
-        return try JSONDecoder().decode([CallSessionRecord].self, from: data)
+        do {
+            return try JSONDecoder().decode([CallSessionRecord].self, from: data)
+        } catch is DecodingError {
+            // 参照不能な旧記録で全通話を止めず、この接続先・アカウントの項目だけを初期化する。
+            try save([])
+            return []
+        }
     }
 
     func save(_ records: [CallSessionRecord]) throws {

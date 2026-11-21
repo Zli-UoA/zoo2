@@ -9,6 +9,7 @@ final class CallStore {
     private let makeMedia: @MainActor () -> any CallMedia
     private let permission: @MainActor () async -> Bool
     private let retryDelay: Duration
+    private let recoveryWaitLimit: Duration
     private let sessionJournal: (any CallSessionJournal)?
     @ObservationIgnored private var recovery: Task<Void, Error>?
     private(set) var channel: Channel?
@@ -61,9 +62,11 @@ final class CallStore {
     init(client: any CallClient, userID: String,
          makeMedia: @escaping @MainActor () -> any CallMedia = { NativeCallMedia() },
          permission: @escaping @MainActor () async -> Bool = { await AVAudioApplication.requestRecordPermission() },
-         retryDelay: Duration = .seconds(1), sessionJournal: (any CallSessionJournal)? = nil) {
+         retryDelay: Duration = .seconds(1), sessionJournal: (any CallSessionJournal)? = nil,
+         recoveryWaitLimit: Duration = .seconds(2)) {
         self.client = client; self.userID = userID; self.makeMedia = makeMedia; self.permission = permission
         self.retryDelay = retryDelay
+        self.recoveryWaitLimit = recoveryWaitLimit
         self.sessionJournal = sessionJournal
     }
 
@@ -144,8 +147,7 @@ final class CallStore {
                 guard await permission() else { throw ZooError.rejected(403, "設定でマイクへのアクセスを許可してください。") }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
-                try await recoverInterruptedCalls()
-                try Task.checkCancellation()
+                try await prepareInterruptedCalls(in: channel.id)
                 guard sessionID == session else { return }
                 if let prepareSystemCall { try await prepareSystemCall(callID, channel) }
                 try Task.checkCancellation()
@@ -389,18 +391,49 @@ final class CallStore {
         }
     }
 
-    private func recoverInterruptedCalls() async throws {
+    private func prepareInterruptedCalls(in channelID: String) async throws {
+        guard let sessionJournal, try sessionJournal.load().contains(where: { $0.sessionID != sessionID }) else { return }
+        let completed = AsyncStream<Void>.makeStream()
+        Task { [weak self] in
+            defer { completed.continuation.yield(()) }
+            do { try await self?.recoverInterruptedCalls(preferredChannelID: channelID) }
+            catch {
+                if self?.active == true, case ZooError.expiredSession = error { self?.onExpiredSession?() }
+            }
+        }
+        let limit = recoveryWaitLimit
+        let deadline = Task {
+            do { try await Task.sleep(for: limit) } catch { return }
+            completed.continuation.yield(())
+        }
+        defer { deadline.cancel(); completed.continuation.finish() }
+        // 通常は退出を先行させるが、応答期限を使い切らないよう回収の完了待ちを制限する。
+        for await _ in completed.stream { break }
+        try Task.checkCancellation()
+    }
+
+    private func recoverInterruptedCalls(preferredChannelID: String? = nil) async throws {
+        guard active, !Task.isCancelled else { throw CancellationError() }
         if let recovery { try await recovery.value; return }
         guard let sessionJournal else { return }
-        let interrupted = try sessionJournal.load().filter { $0.sessionID != sessionID }
+        let interrupted = try sessionJournal.load().filter { $0.sessionID != sessionID }.sorted {
+            $0.channelID == preferredChannelID && $1.channelID != preferredChannelID
+        }
         guard !interrupted.isEmpty else { return }
         let client = client
         let task = Task {
             for record in interrupted {
                 try Task.checkCancellation()
-                try await Self.leave(record, client: client)
-                try Task.checkCancellation()
-                try sessionJournal.remove(record)
+                do {
+                    try await Self.leave(record, client: client)
+                    try Task.checkCancellation()
+                    try sessionJournal.remove(record)
+                } catch {
+                    try Task.checkCancellation()
+                    if error is CancellationError { throw error }
+                    if case ZooError.expiredSession = error { throw error }
+                    // 失敗した記録は保持し、ほかの退出処理と新しい通話を妨げない。
+                }
             }
         }
         recovery = task

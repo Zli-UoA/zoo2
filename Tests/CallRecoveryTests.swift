@@ -21,8 +21,10 @@ struct CallRecoveryTests {
         CallSessionRecord(channelID: channel.id, sessionID: "22222222-2222-4222-8222-222222222222")
     }
 
-    private func store(_ client: FakeCallClient, journal: any CallSessionJournal) -> CallStore {
-        CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true }, sessionJournal: journal)
+    private func store(_ client: FakeCallClient, journal: any CallSessionJournal,
+                       recoveryWaitLimit: Duration = .seconds(2)) -> CallStore {
+        CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true },
+                  sessionJournal: journal, recoveryWaitLimit: recoveryWaitLimit)
     }
 
     @Test("再起動後は前回の端末セッションだけを退出し、他の参加者がいる通話は表示する")
@@ -92,25 +94,118 @@ struct CallRecoveryTests {
         #expect(journal.records.isEmpty && client.commands == ["leave", "leave"])
     }
 
-    @Test("古い通話が残っている間は新しく入室せず、回復後に発信する")
-    func recoveryBeforeNewCall() async throws {
+    @Test("前回の退出が失敗しても記録を保持して新規発信・着信応答を試す", arguments: [false, true])
+    func recoveryBeforeNewCall(incoming: Bool) async throws {
         let journal = MemoryCallSessionJournal()
         try journal.record(previous)
         let client = FakeCallClient()
-        client.commandFailure = { _ in URLError(.notConnectedToInternet) }
+        client.commandFailure = { _ in ZooError.rejected(500, "退出失敗") }
         let calls = store(client, journal: journal)
         defer { calls.shutdown() }
-        await calls.start(channel: channel)?.value
-        #expect(!client.observed && calls.channel == nil)
-        #expect(journal.records.contains(previous))
-        client.commandFailure = nil
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        await withCheckedContinuation { done in
+            client.delivered = { done.resume() }
+            calls.start(channel: channel, invitationID: incoming ? "invitation" : nil)
+        }
+        #expect(calls.ready && client.accepted == incoming)
+        #expect(journal.records.contains(previous) && journal.records.count == 2)
+        client.commandFailure = nil
+        await calls.refreshActiveCalls()
+        #expect(calls.ready && !journal.records.contains(previous))
+        #expect(journal.records.count == 1)
+    }
+
+    @Test("回収できない記録があっても残りのセッションを退出する")
+    func continuesPastFailedRecord() async throws {
+        let journal = MemoryCallSessionJournal()
+        let later = CallSessionRecord(channelID: channel.id, sessionID: UUID().uuidString)
+        try journal.save([previous, later])
+        let client = FakeCallClient()
+        client.commandFailure = { _ in client.commandBodies.count == 1 ? ZooError.rejected(409, "退出失敗") : nil }
+        let calls = store(client, journal: journal)
+        defer { calls.shutdown() }
+        await calls.refreshActiveCalls()
+        #expect(client.commands == ["leave", "leave"])
+        #expect(journal.records == [previous])
+    }
+
+    @Test("回復中の認証切れを通知して進行中の通話を停止する")
+    func expiredRecoveryStopsCall() async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.record(previous)
+        let client = FakeCallClient()
+        client.commandFailure = { _ in ZooError.expiredSession }
+        let calls = store(client, journal: journal)
+        defer { calls.shutdown() }
+        var expired = false
+        calls.onExpiredSession = { expired = true; calls.shutdown() }
+        await calls.start(channel: channel)?.value
+        #expect(expired && calls.channel == nil)
+        #expect(journal.records.contains(previous))
+    }
+
+    @Test("過去の退出応答が止まっていても着信を受けて入室する")
+    func acceptsWhileRecoveryIsWaiting() async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.record(previous)
+        let client = FakeCallClient()
+        let entered = AsyncStream<Void>.makeStream()
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        client.beforeCommand = { _ in
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+        }
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        client.delivered = { entered.continuation.yield(()) }
+        let calls = store(client, journal: journal, recoveryWaitLimit: .milliseconds(10))
+        defer { calls.shutdown(); entered.continuation.finish(); started.continuation.finish(); release.continuation.finish() }
+        let recovery = Task { await calls.refreshActiveCalls() }
+        for await _ in started.stream { break }
+        calls.start(channel: channel, invitationID: "invitation")
+        for await _ in entered.stream { break }
+        #expect(calls.ready && client.accepted && journal.records.contains(previous))
+        release.continuation.yield(())
+        await recovery.value
+        #expect(!journal.records.contains(previous) && journal.records.count == 1)
+    }
+
+    @Test("正常に退出できるときは同じチャンネルの古い参加を優先して入室前に解消する")
+    func leavesBeforeJoining() async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.save([CallSessionRecord(channelID: "other-channel", sessionID: UUID().uuidString), previous])
+        let client = FakeCallClient()
+        client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        client.commandObserved = { if $0 == "leave" { #expect(!client.observed) } }
+        let calls = store(client, journal: journal)
+        defer { client.commandObserved = nil; calls.shutdown() }
         await withCheckedContinuation { done in
             client.delivered = { done.resume() }
             calls.start(channel: channel)
         }
-        #expect(calls.ready && !journal.records.contains(previous))
-        #expect(journal.records.count == 1)
+        let leftChannels = zip(client.commands, client.commandChannels).filter { $0.0 == "leave" }.map(\.1)
+        #expect(leftChannels == [channel.id, "other-channel"])
+        #expect(!journal.records.contains(previous) && calls.ready)
+    }
+
+    @Test("回収完了を待つ間のログアウトで着信応答と入室を取り消す")
+    func cancelsWhilePreparingRecovery() async throws {
+        let journal = MemoryCallSessionJournal()
+        try journal.record(previous)
+        let client = FakeCallClient()
+        let started = AsyncStream<Void>.makeStream()
+        client.beforeCommand = { _ in
+            started.continuation.yield(())
+            try await Task.sleep(for: .seconds(86_400))
+        }
+        let calls = store(client, journal: journal, recoveryWaitLimit: .seconds(60))
+        let pending = calls.start(channel: channel, invitationID: "invitation")
+        for await _ in started.stream { break }
+        started.continuation.finish()
+        calls.shutdown()
+        await pending?.value
+        #expect(!client.accepted && !client.observed && calls.channel == nil)
+        #expect(journal.records.contains(previous))
     }
 
     @Test("退出だけが失敗しても別チャンネルの通話一覧を更新する", arguments: [false, true])
@@ -132,7 +227,7 @@ struct CallRecoveryTests {
         #expect(calls.hasActiveCall(in: "new-channel"))
     }
 
-    @Test("退出済み・権限喪失は完了扱いにし、認証切れやサーバー障害は記録を残す", arguments: [403, 404, 401, 500])
+    @Test("退出済み・権限喪失は完了扱いにし、認証切れやサーバー障害は記録を残す", arguments: [400, 403, 404, 409, 410, 422, 401, 500])
     func recoveryErrors(status: Int) async throws {
         let journal = MemoryCallSessionJournal()
         try journal.record(previous)
@@ -246,5 +341,22 @@ struct CallRecoveryTests {
         var result: CFTypeRef?
         #expect(SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess)
         #expect((result as? [String: Any])?[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+    }
+
+    @Test("壊れた通話記録は対象アカウントだけ初期化し、新しい記録を保存できる")
+    func discardsUnreadableRecord() throws {
+        let service = "works.zli.zoo.tests.call-sessions." + UUID().uuidString
+        let journal = KeychainCallSessionJournal(account: "damaged", service: service)
+        let other = KeychainCallSessionJournal(account: "other", service: service)
+        defer { try? journal.save([]); try? other.save([]) }
+        try other.record(previous)
+        let item: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service, kSecAttrAccount as String: "damaged",
+            kSecValueData as String: Data("破損した記録".utf8)]
+        #expect(SecItemAdd(item as CFDictionary, nil) == errSecSuccess)
+        #expect(try journal.load().isEmpty)
+        #expect(try other.load() == [previous])
+        try journal.record(previous)
+        #expect(try journal.load() == [previous])
     }
 }
