@@ -27,7 +27,14 @@ export interface DecryptedAttachmentCache {
   load(
     info: AttachmentInfo,
     loader: (info: AttachmentInfo) => Promise<Blob>,
-    options?: { retry?: boolean },
+    options?: {
+      retry?: boolean;
+      /**
+       * 実行中の取得とまとめない。中止や進捗を、この呼び出しだけに効かせる（保存など）。
+       * 復号できたものはキャッシュに置く。
+       */
+      isolated?: boolean;
+    },
   ): Promise<Blob>;
 }
 
@@ -74,6 +81,16 @@ export function createDecryptedAttachmentCache({
     }
   }
 
+  function rememberFailure(key: string, error: unknown) {
+    if (!(error instanceof EncryptedAttachmentError) || error.reason !== "decrypt") return;
+    failures.set(key, error);
+    // 覚える件数も上限までにする（古いものから忘れる）。
+    for (const oldKey of failures.keys()) {
+      if (failures.size <= maxEntries) break;
+      failures.delete(oldKey);
+    }
+  }
+
   return {
     peek(info) {
       const key = decryptedAttachmentCacheKey(info);
@@ -95,6 +112,20 @@ export function createDecryptedAttachmentCache({
         if (!options.retry) return Promise.reject(failures.get(key));
         failures.delete(key);
       }
+      if (options.isolated) {
+        // 中止や進捗をこの呼び出しだけに効かせるため、実行中の取得とはまとめない。
+        // 復号できたものはキャッシュに置き、次にプレビューが開いたときに使う。
+        return loader(info).then(
+          (blob) => {
+            remember(key, blob);
+            return blob;
+          },
+          (error: unknown) => {
+            rememberFailure(key, error);
+            throw error;
+          },
+        );
+      }
       let request = pending.get(key);
       if (!request) {
         request = loader(info)
@@ -104,14 +135,7 @@ export function createDecryptedAttachmentCache({
               return blob;
             },
             (error: unknown) => {
-              if (error instanceof EncryptedAttachmentError && error.reason === "decrypt") {
-                failures.set(key, error);
-                // 覚える件数も上限までにする（古いものから忘れる）。
-                for (const oldKey of failures.keys()) {
-                  if (failures.size <= maxEntries) break;
-                  failures.delete(oldKey);
-                }
-              }
+              rememberFailure(key, error);
               throw error;
             },
           )

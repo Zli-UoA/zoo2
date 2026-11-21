@@ -480,6 +480,7 @@
     "askEveryTime": "每次保存时确认",
     "defaultDirectory": "下载文件夹",
     "chooseFolder": "选择文件夹",
+    "resetDirectory": "恢复默认文件夹",
     "desktopValue": "系统保存对话框",
     "error": "无法更改下载设置，请重试。"
   },

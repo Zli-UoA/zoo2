@@ -36,7 +36,10 @@ function FakeDesktop({
       __TAURI_INTERNALS__: {
         invoke: async (
           cmd: string,
-          args?: { settings?: DesktopDownloadSettings; begin?: unknown },
+          args?: {
+            settings?: { ask_every_time: boolean; reset_directory?: boolean };
+            begin?: unknown;
+          },
         ) => {
           if (cmd === "zoo_session")
             return {
@@ -48,10 +51,18 @@ function FakeDesktop({
           if (!supported) throw new Error(`command ${cmd} not found`);
           if (cmd === "zoo_download_settings") return current;
           if (cmd === "zoo_set_download_settings") {
-            current = args?.settings ?? current;
+            if (args?.settings) {
+              current = {
+                ask_every_time: args.settings.ask_every_time,
+                directory: args.settings.reset_directory ? null : current.directory,
+              };
+            }
             return current;
           }
-          if (cmd === "zoo_pick_download_directory") return picked;
+          if (cmd === "zoo_pick_download_directory") {
+            current = { ...current, directory: picked };
+            return current;
+          }
           return null;
         },
         transformCallback: () => 1,
@@ -170,6 +181,21 @@ export const ChooseFolder: Story = {
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "フォルダーを選ぶ" }));
     await expect(await screen.findByText("D:\\Downloads")).toBeVisible();
+  }),
+};
+
+/** 選んだフォルダーは、OS のダウンロードフォルダーに戻せる。 */
+export const ResetFolder: Story = {
+  decorators: [
+    (Story) => (
+      <FakeDesktop supported askEveryTime={false} directory={"C:\\Users\\zoo\\Documents"}>
+        <Story />
+      </FakeDesktop>
+    ),
+  ],
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "既定のフォルダーに戻す" }));
+    await expect(await screen.findByText("ダウンロードフォルダー")).toBeVisible();
   }),
 };
 

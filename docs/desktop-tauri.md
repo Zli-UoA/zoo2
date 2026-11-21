@@ -104,9 +104,9 @@ ShapeEvent ─▶ 1 本のループ
 
 デスクトップ版では、WebView（wry / WebView2 / WKWebView / WebKitGTK）の既定のダウンロードを使わない。既定では保存先を WebView が決めてしまい、保存ダイアログが出ず、進捗と中止も取れない。さらに E2EE の添付は復号した `Blob` を保存するので、署名付き URL のダウンロードとは経路が違う。代わりに、React が本文を読みながら Rust 側のコマンドへ渡し、Rust 側が保存先の決定・書き込み・置き換え・中止を受け持つ。
 
-- `zoo_download_settings` / `zoo_set_download_settings`：保存先の設定。`{ ask_every_time, directory }` を `config_dir_for("zoo2-desktop-tauri")/downloads.json` に保存する（通知の `notifications.json` と同じく、同じディレクトリの一時ファイルから `rename` する）。既定は `ask_every_time: true`（保存のたびに OS の「名前を付けて保存」を出す）。`directory` は画面に出すための絶対パスで、保存先の決定に JS から受け取った値は使わない。`zoo_set_download_settings` は絶対パスか、フォルダーとして使えるかを確かめてから保存する。
-- `zoo_pick_download_directory`：OS のフォルダーの選択ダイアログ。キャンセルは `null`。
-- `zoo_download_begin`：`{ file_name }` を受け取り、保存ダイアログ（`ask_every_time` がオンのとき）または設定のフォルダーから保存先を決める。`{ status: "started", id, path }` か `{ status: "cancelled" }` を返す。`file_name` は Rust 側で sanitize する（パスの区切り、Windows が使えない文字、`CON` などの予約名、双方向の制御文字、長すぎる名前）。決まったフォルダーへ保存するときは、既にある名前を避けて `name (1).pdf` のようにする。
+- `zoo_download_settings` / `zoo_set_download_settings`：保存先の設定。`{ ask_every_time, directory }` を `config_dir_for("zoo2-desktop-tauri")/downloads.json` に保存する（通知の `notifications.json` と同じく、同じディレクトリの一時ファイルから `rename` する）。既定は `ask_every_time: true`（保存のたびに OS の「名前を付けて保存」を出す）。`zoo_set_download_settings` が受け取るのは `{ ask_every_time, reset_directory }` だけで、保存先のパスは受け取らない。`directory` は画面に出すためだけに返す。`reset_directory: true` で OS のダウンロードフォルダーに戻す。
+- `zoo_pick_download_directory`：OS のフォルダーの選択ダイアログ。選ばれたパスは Rust 側で絶対パスか、フォルダーとして使えるかを確かめてから `downloads.json` に保存し、新しい設定を返す。キャンセルは `null`。リモートの画面から任意の場所を保存先にできないよう、パスを受け取るコマンドは置かない。
+- `zoo_download_begin`：`{ file_name }` を受け取り、保存ダイアログ（`ask_every_time` がオンのとき）または設定のフォルダーから保存先を決める。`{ status: "started", id, path }` か `{ status: "cancelled" }` を返す。`file_name` は Rust 側で sanitize する（パスの区切り、Windows が使えない文字、`CON` などの予約名、双方向の制御文字、長すぎる名前）。長い名前は、macOS / Linux の 255 バイトの上限と Windows の上限に収まるよう、拡張子を残して UTF-8 のバイト数で切る（`.part` と重複時の接尾辞の分も引く）。決まったフォルダーへ保存するときは、既にある名前を避けて `name (1).pdf` のようにする。
 - `zoo_download_write`：octet-stream の本文を、`x-zoo-download-id` ヘッダーの ID に追記する。React は 256 KiB ずつ送る。
 - `zoo_download_finish`：書き終えたら `.part` を本来の名前に置き換える。決まったフォルダーへの保存では上書きせず、`begin` の後に同じ名前のファイルができていれば、番号を足した名前へ移す。
 - `zoo_download_cancel`：途中までの `.part` を消す。中止と失敗のどちらでも呼ぶ。

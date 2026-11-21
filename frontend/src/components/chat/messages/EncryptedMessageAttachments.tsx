@@ -97,8 +97,12 @@ export function useEncryptedAttachmentSource(): EncryptedAttachmentSource {
           options,
         );
       } catch (error) {
-        // 期限切れなどで取得できなかった URL は、次に試すときに取り直す。
-        if (error instanceof EncryptedAttachmentError && error.reason === "download") {
+        // 期限切れなどで取得できなかった URL は、次に試すときに取り直す。中止は失敗ではないので残す。
+        if (
+          error instanceof EncryptedAttachmentError &&
+          error.reason === "download" &&
+          !options.signal?.aborted
+        ) {
           forgetAttachmentUrl(config, info.attachment_id);
         }
         throw error;
@@ -110,7 +114,9 @@ export function useEncryptedAttachmentSource(): EncryptedAttachmentSource {
       load: (info, options = {}) => {
         const { retry, ...progress } = options;
         const loadOne = () => loadFromNetwork(info, progress);
-        return cache ? cache.load(info, loadOne, { retry }) : loadOne();
+        return cache
+          ? cache.load(info, loadOne, { retry, isolated: progress.signal !== undefined })
+          : loadOne();
       },
     };
   }, [override, worker, client, config]);

@@ -75,6 +75,46 @@ describe("createDecryptedAttachmentCache", () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
+  it("does not share an isolated load, so cancelling a save does not fail a preview", async () => {
+    const cache = createDecryptedAttachmentCache();
+    let finishPreview: ((value: Blob) => void) | undefined;
+    const previewLoader = vi.fn(
+      () =>
+        new Promise<Blob>((resolve) => {
+          finishPreview = resolve;
+        }),
+    );
+    let failSave: ((error: unknown) => void) | undefined;
+    const saveLoader = vi.fn(
+      () =>
+        new Promise<Blob>((_, reject) => {
+          failSave = reject;
+        }),
+    );
+
+    const preview = cache.load(info("a"), previewLoader);
+    const save = cache.load(info("a"), saveLoader, { isolated: true });
+    // プレビューが先に始めた取得に、保存は合流しない（中止しても巻き込まない）。
+    expect(previewLoader).toHaveBeenCalledTimes(1);
+    expect(saveLoader).toHaveBeenCalledTimes(1);
+
+    failSave?.(new EncryptedAttachmentError("download"));
+    await expect(save).rejects.toMatchObject({ reason: "download" });
+    expect(cache.failed(info("a"))).toBe(false);
+
+    const value = blob(2);
+    finishPreview?.(value);
+    await expect(preview).resolves.toBe(value);
+  });
+
+  it("keeps the result of an isolated load in the cache", async () => {
+    const cache = createDecryptedAttachmentCache();
+    const value = blob(4);
+    await expect(cache.load(info("a"), async () => value, { isolated: true })).resolves.toBe(value);
+    // 保存で復号したものを、次にプレビューが開いたときに使える。
+    expect(cache.peek(info("a"))).toBe(value);
+  });
+
   it("keys on the key material, not only the attachment id", async () => {
     // 同じ attachment_id を別の鍵で指すメッセージに、ほかのメッセージの平文を出さない。
     expect(decryptedAttachmentCacheKey(info("a", "k1"))).not.toBe(

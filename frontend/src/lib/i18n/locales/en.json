@@ -480,6 +480,7 @@
     "askEveryTime": "Ask where to save each time",
     "defaultDirectory": "Downloads folder",
     "chooseFolder": "Choose folder",
+    "resetDirectory": "Use the default folder",
     "desktopValue": "OS save dialog",
     "error": "Could not change the download settings. Please try again."
   },

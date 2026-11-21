@@ -550,6 +550,7 @@
         "DefaultFolder",
         "ToggleOff",
         "ChooseFolder",
+        "ResetFolder",
         "OlderApp"
       ]
     },

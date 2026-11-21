@@ -20,7 +20,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
-use zoo2_client_types::ipc::DownloadSettings;
+use zoo2_client_types::ipc::{DownloadSettings, DownloadSettingsUpdate};
 
 use crate::APP_NAME;
 use zoo2_client_core::config::config_dir_for;
@@ -28,8 +28,11 @@ use zoo2_client_core::config::config_dir_for;
 /// 一時ファイルに使う ID の連番。同じプロセスの中で一意にする。
 static DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// 名前が長すぎると Windows のパスの上限に当たるので、ファイル名をこの文字数までにする。
-const MAX_FILE_NAME_CHARS: usize = 180;
+/// 名前が長すぎるとファイルシステムの上限に当たるので、ファイル名をこのバイト数までにする。
+/// macOS (APFS) と Linux (ext4) の上限は UTF-8 で 255 バイト。`.part` に付く
+/// `.{16 桁の ID}.part`（23 バイト）と、重複したときの `-{16 桁の ID}`（17 バイト）の分を引く。
+/// Windows の上限は 255 UTF-16 単位で、UTF-8 のバイト数はそれを超えない。
+const MAX_FILE_NAME_BYTES: usize = 255 - 23 - 17;
 
 /// `CON`、`NUL`、`COM1` など、Windows が予約している名前。
 const RESERVED_NAMES: &[&str] = &[
@@ -68,27 +71,34 @@ impl Downloads {
             .clone()
     }
 
-    /// 変えて保存する。保存できなかったら、変えない。保存先が使えるかを確かめてから返す。
-    pub fn set_settings(&self, settings: DownloadSettings) -> Result<DownloadSettings> {
-        let normalized = normalize_settings(settings)?;
+    /// 確認の有無を変えて保存する。保存先は、`reset_directory` のときだけ既定
+    /// （OS のダウンロードフォルダー）に戻す。保存できなかったら、変えない。
+    ///
+    /// 保存先のパスは受け取らない。決められるのは OS のフォルダーの選択（[`Self::set_directory`]）
+    /// だけで、リモートの画面から任意の場所へ書き込めないようにするため。
+    pub fn set_settings(&self, update: DownloadSettingsUpdate) -> Result<DownloadSettings> {
         let mut current = self
             .settings
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let path = settings_path()?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        let mut next = current.clone();
+        next.ask_every_time = update.ask_every_time;
+        if update.reset_directory {
+            next.directory = None;
         }
-        // 通知の設定と同じく、同じディレクトリの一時ファイルから置き換える。
-        let tmp = path.with_extension("json.tmp");
-        let written = std::fs::write(&tmp, serde_json::to_vec(&normalized)?)
-            .and_then(|()| std::fs::rename(&tmp, &path));
-        if let Err(err) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(err.into());
-        }
-        *current = normalized.clone();
-        Ok(normalized)
+        store_settings(&mut current, next)
+    }
+
+    /// OS のフォルダーの選択で決まった保存先を、確かめて保存する。パスは JS から受け取らない。
+    pub fn set_directory(&self, directory: &Path) -> Result<DownloadSettings> {
+        let directory = check_directory(directory)?;
+        let mut current = self
+            .settings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut next = current.clone();
+        next.directory = Some(directory.display().to_string());
+        store_settings(&mut current, next)
     }
 
     /// 保存先を決め、`.part` を開く。キャンセルされたら `None`。
@@ -274,23 +284,41 @@ fn load_settings() -> DownloadSettings {
         .unwrap_or_default()
 }
 
-/// 設定を確かめる。保存先は絶対パスに限り、無ければ作る。
-fn normalize_settings(settings: DownloadSettings) -> Result<DownloadSettings> {
-    if let Some(directory) = settings.directory.as_deref() {
-        let path = Path::new(directory);
-        if !path.is_absolute() {
-            return Err(anyhow!("保存先は絶対パスで指定してください"));
-        }
-        std::fs::create_dir_all(path)
-            .with_context(|| format!("保存先を作れません: {}", path.display()))?;
-        if !path.is_dir() {
-            return Err(anyhow!(
-                "保存先がフォルダーではありません: {}",
-                path.display()
-            ));
-        }
+/// 設定をファイルへ書き、覚えている値も入れ替える。書き出せなかったら、覚えている値は変えない。
+fn store_settings(
+    current: &mut DownloadSettings,
+    next: DownloadSettings,
+) -> Result<DownloadSettings> {
+    let path = settings_path()?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
     }
-    Ok(settings)
+    // 通知の設定と同じく、同じディレクトリの一時ファイルから置き換える。
+    let tmp = path.with_extension("json.tmp");
+    let written = std::fs::write(&tmp, serde_json::to_vec(&next)?)
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    *current = next.clone();
+    Ok(next)
+}
+
+/// 保存先として使えるかを確かめる。無ければ作る。
+fn check_directory(directory: &Path) -> Result<PathBuf> {
+    if !directory.is_absolute() {
+        return Err(anyhow!("保存先は絶対パスで指定してください"));
+    }
+    std::fs::create_dir_all(directory)
+        .with_context(|| format!("保存先を作れません: {}", directory.display()))?;
+    if !directory.is_dir() {
+        return Err(anyhow!(
+            "保存先がフォルダーではありません: {}",
+            directory.display()
+        ));
+    }
+    Ok(directory.to_path_buf())
 }
 
 fn new_download_id() -> String {
@@ -315,22 +343,29 @@ fn part_path(final_path: &Path, id: &str) -> PathBuf {
     final_path.with_file_name(format!(".{name}.{id}.part"))
 }
 
-/// 拡張子を残して、名前が長すぎないようにする。
+/// 拡張子を残して、名前がファイルシステムの上限（バイト数）に収まるようにする。
+/// 文字数ではなくバイト数で切るので、日本語などの名前でも `.part` を含めて 255 バイトに収まる。
 fn truncate_name(name: String) -> String {
-    if name.chars().count() <= MAX_FILE_NAME_CHARS {
+    if name.len() <= MAX_FILE_NAME_BYTES {
         return name;
     }
-    let path = Path::new(&name);
-    let extension = path
+    let suffix = Path::new(&name)
         .extension()
         .map(|ext| format!(".{}", ext.to_string_lossy()))
-        .filter(|ext| ext.chars().count() < 16)
+        .filter(|ext| ext.len() < 16)
+        .filter(|ext| name.ends_with(ext.as_str()))
         .unwrap_or_default();
-    let stem: String = name
-        .chars()
-        .take(MAX_FILE_NAME_CHARS.saturating_sub(extension.chars().count()))
-        .collect();
-    format!("{stem}{extension}")
+    let stem_source = &name[..name.len() - suffix.len()];
+    let budget = MAX_FILE_NAME_BYTES.saturating_sub(suffix.len());
+    let mut stem = String::with_capacity(budget);
+    for c in stem_source.chars() {
+        if stem.len() + c.len_utf8() > budget {
+            break;
+        }
+        stem.push(c);
+    }
+    let stem = stem.trim_end_matches(['.', ' ']);
+    format!("{stem}{suffix}")
 }
 
 /// 危険な制御文字（双方向の制御文字を含む）か。
@@ -457,11 +492,23 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_truncates_long_names_and_keeps_the_extension() {
+    fn sanitize_truncates_long_names_by_bytes_and_keeps_the_extension() {
         let name = format!("{}.pdf", "a".repeat(300));
         let cleaned = sanitize_file_name(&name);
-        assert_eq!(cleaned.chars().count(), MAX_FILE_NAME_CHARS);
+        assert_eq!(cleaned.len(), MAX_FILE_NAME_BYTES);
         assert!(cleaned.ends_with(".pdf"));
+
+        // 日本語は 1 文字 3 バイト。文字数で切ると macOS / Linux の 255 バイトを超える。
+        let cleaned = sanitize_file_name(&"あ".repeat(300));
+        assert!(cleaned.len() <= MAX_FILE_NAME_BYTES);
+        assert!(cleaned.ends_with('あ'));
+        assert_eq!(cleaned.len() % 3, 0);
+
+        // `.part` に付く分を含めても、ファイル名の上限（255 バイト）に収まる。
+        let part = part_path(&PathBuf::from(&cleaned), "0123456789abcdef");
+        assert!(part.file_name().unwrap().len() <= 255);
+        // 重複したときの `-{ID}` を足しても収まる。
+        assert!(format!("{cleaned}-0123456789abcdef").len() <= 255);
     }
 
     #[test]

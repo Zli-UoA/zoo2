@@ -9,8 +9,9 @@ use tauri::{AppHandle, State, Webview};
 use zoo2_client_types::{
     ipc::{
         AccessToken, DOWNLOAD_ID_HEADER, DeviceLogin, DownloadBegin, DownloadSettings,
-        DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError, NotificationSettings,
-        ObservedNotifications, OpenChannel, SendMessage, SendResult, SessionInfo, UiMode,
+        DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError,
+        NotificationSettings, ObservedNotifications, OpenChannel, SendMessage, SendResult,
+        SessionInfo, UiMode,
     },
     shape::ShapeId,
 };
@@ -250,23 +251,28 @@ pub async fn zoo_download_settings(
 pub async fn zoo_set_download_settings(
     webview: Webview,
     core: Core_<'_>,
-    settings: DownloadSettings,
+    settings: DownloadSettingsUpdate,
 ) -> Result<DownloadSettings, IpcError> {
     require(&webview, &core, ANY)?;
     core.downloads().set_settings(settings).map_err(to_ipc)
 }
 
-/// OS のフォルダーの選択。選ばれた絶対パス（文字列）か `null`。
+/// OS のフォルダーの選択。選ばれたら、Rust 側で保存先として保存し、新しい設定を返す。
+/// 閉じたら `None`。パスは JS から指定できない。
 #[tauri::command]
 pub async fn zoo_pick_download_directory(
     webview: Webview,
     core: Core_<'_>,
     app: AppHandle,
-) -> Result<Option<String>, IpcError> {
+) -> Result<Option<DownloadSettings>, IpcError> {
     require(&webview, &core, ANY)?;
-    Ok(crate::downloads::pick_directory(&app)
-        .await
-        .map(|path| path.display().to_string()))
+    let Some(path) = crate::downloads::pick_directory(&app).await else {
+        return Ok(None);
+    };
+    core.downloads()
+        .set_directory(&path)
+        .map(Some)
+        .map_err(to_ipc)
 }
 
 /// 保存ダイアログを出し、書き込み先を決める。利用者が閉じたら `Cancelled`。

@@ -101,8 +101,13 @@ describe("download commands", () => {
       if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
       if (cmd === "zoo_download_settings") return { ask_every_time: true, directory: null };
       if (cmd === "zoo_set_download_settings")
-        return (args as { settings?: unknown }).settings ?? null;
-      if (cmd === "zoo_pick_download_directory") return "C:\\Users\\zoo\\Downloads";
+        return {
+          ask_every_time:
+            (args as { settings?: { ask_every_time?: boolean } }).settings?.ask_every_time ?? true,
+          directory: null,
+        };
+      if (cmd === "zoo_pick_download_directory")
+        return { ask_every_time: false, directory: "C:\\Users\\zoo\\Downloads" };
       return undefined;
     });
     await detectDesktop();
@@ -111,12 +116,17 @@ describe("download commands", () => {
       ask_every_time: true,
       directory: null,
     });
-    const next = { ask_every_time: false, directory: "C:\\Users\\zoo\\Documents" };
-    await expect(desktopSetDownloadSettings(next)).resolves.toEqual(next);
-    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_download_settings", {
-      settings: next,
+    await expect(desktopSetDownloadSettings({ ask_every_time: false })).resolves.toEqual({
+      ask_every_time: false,
+      directory: null,
     });
-    await expect(desktopPickDownloadDirectory()).resolves.toBe("C:\\Users\\zoo\\Downloads");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_download_settings", {
+      settings: { ask_every_time: false },
+    });
+    await expect(desktopPickDownloadDirectory()).resolves.toEqual({
+      ask_every_time: false,
+      directory: "C:\\Users\\zoo\\Downloads",
+    });
   });
 
   it("passes raw bytes and the download id in a header", async () => {

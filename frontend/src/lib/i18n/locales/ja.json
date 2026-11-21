@@ -480,6 +480,7 @@
     "askEveryTime": "保存のたびに確認する",
     "defaultDirectory": "ダウンロードフォルダー",
     "chooseFolder": "フォルダーを選ぶ",
+    "resetDirectory": "既定のフォルダーに戻す",
     "desktopValue": "OS の保存ダイアログ",
     "error": "保存先の設定を変更できませんでした。もう一度お試しください。"
   },

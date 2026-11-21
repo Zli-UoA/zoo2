@@ -9,6 +9,7 @@ import {
   desktopPickDownloadDirectory,
   desktopSetDownloadSettings,
   type DesktopDownloadSettings as DownloadSettings,
+  type DesktopDownloadSettingsUpdate,
 } from "../../lib/desktop";
 import { Button } from "../ui/button";
 
@@ -35,9 +36,9 @@ export function DesktopDownloadSettings() {
     };
   }, []);
 
-  function save(next: DownloadSettings) {
+  function save(update: DesktopDownloadSettingsUpdate) {
     setBusy(true);
-    return desktopSetDownloadSettings(next)
+    return desktopSetDownloadSettings(update)
       .then((saved) => setSettings(saved))
       .catch(() => toast.error(t("downloads.error")))
       .finally(() => setBusy(false));
@@ -57,7 +58,7 @@ export function DesktopDownloadSettings() {
         aria-label={t("downloads.askEveryTime")}
         disabled={busy || settings === undefined}
         onCheckedChange={(checked) => {
-          if (settings) void save({ ...settings, ask_every_time: checked });
+          if (settings) void save({ ask_every_time: checked });
         }}
         className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-input outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[checked]:bg-primary"
       >
@@ -79,8 +80,8 @@ export function DesktopDownloadSettings() {
             onClick={() => {
               setBusy(true);
               void desktopPickDownloadDirectory()
-                .then(async (picked) => {
-                  if (picked && settings) await save({ ...settings, directory: picked });
+                .then((saved) => {
+                  if (saved) setSettings(saved);
                 })
                 .catch(() => toast.error(t("downloads.error")))
                 .finally(() => setBusy(false));
@@ -89,6 +90,17 @@ export function DesktopDownloadSettings() {
             <FolderIcon className="size-3.5" aria-hidden="true" />
             {t("downloads.chooseFolder")}
           </Button>
+          {directory ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={busy || settings === undefined}
+              onClick={() => void save({ ask_every_time: askEveryTime, reset_directory: true })}
+            >
+              {t("downloads.resetDirectory")}
+            </Button>
+          ) : null}
         </div>
       )}
     </div>

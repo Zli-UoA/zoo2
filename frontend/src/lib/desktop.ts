@@ -178,10 +178,16 @@ export async function desktopSetNotifications(enabled: boolean): Promise<void> {
   await invoke("zoo_set_notifications", { settings: { enabled } });
 }
 
-/** 添付を保存するときの設定。`directory` は画面に出すための絶対パスで、保存先の決定には送らない。 */
+/** 添付を保存するときの設定。`directory` は画面に出すためだけで、JS からは指定できない。 */
 export type DesktopDownloadSettings = {
   ask_every_time: boolean;
   directory: string | null;
+};
+
+/** 設定の変更。保存先のパスは送らず、変えられるのは確認の有無と既定への復帰だけ。 */
+export type DesktopDownloadSettingsUpdate = {
+  ask_every_time: boolean;
+  reset_directory?: boolean;
 };
 
 /** `zoo_download_begin` の結果。`path` は保存する場所（画面に出すためだけ）。 */
@@ -201,16 +207,19 @@ export async function desktopDownloadSettings(): Promise<DesktopDownloadSettings
   }
 }
 
-/** 保存先を変える。Rust 側が確かめて保存し、正規化した設定を返す。 */
+/** 確認の有無を変える。Rust 側が保存し、新しい設定を返す。保存先のパスは送らない。 */
 export async function desktopSetDownloadSettings(
-  settings: DesktopDownloadSettings,
+  settings: DesktopDownloadSettingsUpdate,
 ): Promise<DesktopDownloadSettings> {
   return invoke<DesktopDownloadSettings>("zoo_set_download_settings", { settings });
 }
 
-/** OS のフォルダーの選択。閉じられたら null。 */
-export async function desktopPickDownloadDirectory(): Promise<string | null> {
-  return (await invoke<string | null>("zoo_pick_download_directory")) ?? null;
+/**
+ * OS のフォルダーの選択。選ばれた保存先は Rust 側が保存する。閉じられたら null。
+ * パスは返してもらうだけで、保存先として送ることはない。
+ */
+export async function desktopPickDownloadDirectory(): Promise<DesktopDownloadSettings | null> {
+  return (await invoke<DesktopDownloadSettings | null>("zoo_pick_download_directory")) ?? null;
 }
 
 /** OS の保存ダイアログを出し、書き込み先を決める。 */

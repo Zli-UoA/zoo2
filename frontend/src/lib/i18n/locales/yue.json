@@ -480,6 +480,7 @@
     "askEveryTime": "每次儲存都確認",
     "defaultDirectory": "下載資料夾",
     "chooseFolder": "揀資料夾",
+    "resetDirectory": "還原預設資料夾",
     "desktopValue": "系統儲存對話框",
     "error": "未能更改下載設定，請再試一次。"
   },

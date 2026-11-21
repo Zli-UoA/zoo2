@@ -80,9 +80,10 @@ pub mod command {
     /// 古い版のアプリにはないので、呼べなかったら Web 側はブラウザーの保存に戻す
     /// (`PROTOCOL_VERSION` は上げない)。
     pub const DOWNLOAD_SETTINGS: &str = "zoo_download_settings";
-    /// `{ settings: DownloadSettings }`。保存先を変えて、保存する。正規化した設定を返す。
+    /// [`super::DownloadSettingsUpdate`]。確認の有無を変えて、保存する。新しい設定を返す。
     pub const SET_DOWNLOAD_SETTINGS: &str = "zoo_set_download_settings";
-    /// 引数なし。OS のフォルダーの選択を出し、選ばれた絶対パス（文字列）か `null` を返す。
+    /// 引数なし。OS のフォルダーの選択を出し、選ばれた保存先を Rust 側で保存して、新しい
+    /// [`super::DownloadSettings`] を返す。閉じたら `null`。パスは JS に決めさせない。
     pub const PICK_DOWNLOAD_DIRECTORY: &str = "zoo_pick_download_directory";
     /// [`super::DownloadBegin`]。保存ダイアログを出し、書き込み先の ID を返す。
     pub const DOWNLOAD_BEGIN: &str = "zoo_download_begin";
@@ -181,9 +182,23 @@ pub struct DownloadSettings {
     #[serde(default = "ask_every_time_default")]
     pub ask_every_time: bool,
     /// 「都度確認」がオフのときの保存先（絶対パス）。`None` なら OS のダウンロードフォルダー。
-    /// 画面に出すためだけに返し、保存先の決定には JS から受け取った値を使わない。
+    /// 画面に出すためだけに返す。JS からは変えられず、OS のフォルダーの選択でだけ決まる。
     #[serde(default)]
     pub directory: Option<String>,
+}
+
+/// [`command::SET_DOWNLOAD_SETTINGS`] の引数。
+///
+/// 保存先のパスは受け取らない。保存先を決められるのは OS のフォルダーの選択
+/// （[`command::PICK_DOWNLOAD_DIRECTORY`]）だけで、リモートの画面から任意の場所へ
+/// 書き込めないようにするため。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadSettingsUpdate {
+    /// 保存のたびに OS の「名前を付けて保存」を出すか。
+    pub ask_every_time: bool,
+    /// 保存先を OS のダウンロードフォルダーに戻すか。
+    #[serde(default)]
+    pub reset_directory: bool,
 }
 
 fn ask_every_time_default() -> bool {
@@ -418,6 +433,17 @@ mod tests {
             DownloadSettings {
                 ask_every_time: true,
                 directory: None
+            }
+        );
+        // 更新の引数は保存先のパスを受け取らない（`directory` を足しても無視される）。
+        assert_eq!(
+            serde_json::from_value::<DownloadSettingsUpdate>(
+                json!({ "ask_every_time": false, "directory": "C:\\Windows" })
+            )
+            .unwrap(),
+            DownloadSettingsUpdate {
+                ask_every_time: false,
+                reset_directory: false
             }
         );
     }
