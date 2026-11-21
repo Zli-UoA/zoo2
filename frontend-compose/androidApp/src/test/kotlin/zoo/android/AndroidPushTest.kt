@@ -3,10 +3,13 @@ package zoo.android
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
 import android.content.Context
 import java.util.UUID
 import kotlin.test.*
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
@@ -107,6 +110,32 @@ class AndroidPushTest {
         assertTrue(manager.activeNotifications.isEmpty())
         showPushNotification(context, payload + mapOf("inviteId" to UUID.randomUUID().toString(), "expiresAt" to "1"))
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun disablingDmCallingClearsRingingNotificationAndRejectsNewOrStaleBinding() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+        store.setDmCallsEnabled(user, true)
+        val payload = data(binding) + mapOf(
+            "notificationType" to "call_invite", "inviteId" to id,
+            "expiresAt" to (System.currentTimeMillis() / 1000L + 25).toString(),
+        )
+        showPushNotification(context, payload + ("binding" to UUID.randomUUID().toString()))
+        assertTrue(manager.activeNotifications.isEmpty())
+        showPushNotification(context, payload)
+        assertEquals(1, manager.activeNotifications.size)
+        store.setDmCallsEnabled(user, false)
+        assertTrue(manager.activeNotifications.isEmpty())
+        showPushNotification(context, payload)
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun lockScreenFinishesIfRingEndedBeforeItWasCreated() {
+        val action = PendingIntent.getBroadcast(context, 0, Intent("zoo.test.action"), PendingIntent.FLAG_IMMUTABLE)
+        val screen = Intent(context, IncomingCallActivity::class.java)
+            .putExtra("answer", action).putExtra("dismiss", action)
+        val activity = Robolectric.buildActivity(IncomingCallActivity::class.java, screen).create().get()
+        assertTrue(activity.isFinishing)
     }
 
     @Test fun notificationTapUsesOnlyAnInternalMessageDestination() {

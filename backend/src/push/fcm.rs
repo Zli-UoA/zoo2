@@ -177,7 +177,20 @@ async fn post_message(
 }
 
 /// A binding changes on logout/account switch, so delayed pushes cannot cross sessions.
+const DM_CALLS_SUFFIX: &str = ":dm-calls";
+
+pub(super) fn accepts_notification(endpoint: &str, kind: &str) -> bool {
+    match kind {
+        "missed_call" => false,
+        "call_invite" | "call_invite_end" => {
+            endpoint.ends_with(DM_CALLS_SUFFIX) && registration(endpoint).is_some()
+        }
+        _ => true,
+    }
+}
+
 pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
+    let endpoint = endpoint.strip_suffix(DM_CALLS_SUFFIX).unwrap_or(endpoint);
     let (token, binding) = endpoint.strip_prefix("fcm:")?.rsplit_once(':')?;
     if token.is_empty()
         || token.len() > 4096
@@ -211,7 +224,12 @@ fn message(
         data["inviteId"] = json!(id);
         data["expiresAt"] = json!((now + u64::from(ttl)).to_string());
     }
-    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": format!("{ttl}s")},
+    let priority = if payload.notification_type == "call_invite_end" {
+        "NORMAL"
+    } else {
+        "HIGH"
+    };
+    json!({"message": {"token": token, "android": {"priority": priority, "ttl": format!("{ttl}s")},
         "data": data}})
 }
 
@@ -269,6 +287,20 @@ mod tests {
     }
 
     #[test]
+    fn only_opted_in_subscriptions_receive_dm_invites_and_ends() {
+        let endpoint = format!("fcm:test:{}", uuid::Uuid::new_v4());
+        let opted_in = format!("{endpoint}{DM_CALLS_SUFFIX}");
+        assert_eq!(registration(&endpoint), registration(&opted_in));
+        for kind in ["call_invite", "call_invite_end"] {
+            assert!(!accepts_notification(&endpoint, kind));
+            assert!(accepts_notification(&opted_in, kind));
+            assert!(!accepts_notification("fcm:invalid:dm-calls", kind));
+        }
+        assert!(accepts_notification(&endpoint, "mention"));
+        assert!(!accepts_notification(&opted_in, "missed_call"));
+    }
+
+    #[test]
     fn only_unregistered_tokens_are_removed() {
         assert!(!is_unregistered(&json!({"error":{"status":"NOT_FOUND"}})));
         assert!(!is_unregistered(
@@ -318,6 +350,21 @@ mod tests {
                 .parse::<u64>()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn call_end_is_normal_priority() {
+        let payload = NotificationPayload {
+            title: String::new(),
+            body: String::new(),
+            url: "/channels/dm".into(),
+            tag: "zoo-call-invite".into(),
+            notification_type: "call_invite_end".into(),
+            e2ee: None,
+            invite_id: Some("invite".into()),
+        };
+        let body = message("token", "binding", "user", &payload, 60);
+        assert_eq!(body["message"]["android"]["priority"], "NORMAL");
     }
 
     #[tokio::test]

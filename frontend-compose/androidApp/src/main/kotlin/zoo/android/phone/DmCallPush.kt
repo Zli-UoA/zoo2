@@ -49,6 +49,12 @@ internal data class DmCallPushAnswer(val id: String, val binding: String, val ex
 
 /** Handles the notification before an authenticated Activity exists. Only the live Shape can ring or answer. */
 internal fun showDmCallPush(context: Context, store: PushBinding, user: String, binding: String, data: Map<String, String>) {
+    synchronized(PushBinding.lock) {
+        if (store.matches(binding, user)) showBoundDmCallPush(context, store, user, binding, data)
+    }
+}
+
+private fun showBoundDmCallPush(context: Context, store: PushBinding, user: String, binding: String, data: Map<String, String>) {
     val id = inviteUuid(data["inviteId"]) ?: return
     val manager = context.getSystemService(NotificationManager::class.java)
     val tag = dmNotificationTag(user, id)
@@ -101,15 +107,19 @@ internal fun showDmCallPush(context: Context, store: PushBinding, user: String, 
 
 internal fun phoneLabel(context: Context, key: String, fallback: String): String {
     val locale = context.resources.configuration.locales[0] ?: return fallback
-    val dictionaryLocale = when (locale.language) {
+    val dictionaryLocale = PushBinding(context).phoneLocale() ?: when (locale.language) {
         "ja", "yue" -> locale.language
         "ko" -> if (locale.country == "KP") "ko-KP" else "ko-KR"
         "zh" -> if (locale.script == "Hant" || locale.country in setOf("TW", "HK", "MO")) "zh-Hant" else "zh-Hans"
         else -> "en"
     }
     return runCatching {
-        val dictionary = context.assets.open("locales/$dictionaryLocale.json")
-            .bufferedReader().use { zoo.json.parseToJsonElement(it.readText()) as zoo.Row }
+        val dictionary = phoneDictionaries.getOrPut(dictionaryLocale) {
+            context.assets.open("locales/$dictionaryLocale.json")
+                .bufferedReader().use { zoo.json.parseToJsonElement(it.readText()) as zoo.Row }
+        }
         zoo.android.translateDictionary(dictionary, dictionaryLocale, key, emptyMap())
     }.getOrDefault(fallback)
 }
+
+private val phoneDictionaries = java.util.concurrent.ConcurrentHashMap<String, zoo.Row>()

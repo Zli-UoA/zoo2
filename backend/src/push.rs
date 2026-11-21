@@ -489,7 +489,9 @@ async fn push_to_user(
         .await?;
     for subscription in subscriptions {
         if subscription.endpoint.starts_with("fcm:") {
-            if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
+            if let Some(android) = android.filter(|_| {
+                fcm::accepts_notification(&subscription.endpoint, &payload.notification_type)
+            }) {
                 let ttl = delivery.remaining_ttl();
                 if ttl == 0 {
                     continue;
@@ -634,6 +636,13 @@ async fn deliver_call_invites(
         let result: anyhow::Result<()> = async {
             let mut android_for_invite = android.as_ref();
             let payload = if end {
+                if android_for_invite.is_some()
+                    && !Channel::get_by_id(&mut db, invite.channel_id.as_str())
+                        .await
+                        .is_ok_and(|channel| channel.is_dm)
+                {
+                    android_for_invite = None;
+                }
                 NotificationPayload {
                     title: String::new(),
                     body: String::new(),
@@ -646,9 +655,7 @@ async fn deliver_call_invites(
             } else {
                 let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
                 let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
-                if !channel.is_dm {
-                    android_for_invite = None;
-                }
+                android_for_invite = android_for_invite.filter(|_| channel.is_dm);
                 let name: String = display_name(&actor).chars().take(60).collect();
                 NotificationPayload {
                     title: if channel.is_dm {

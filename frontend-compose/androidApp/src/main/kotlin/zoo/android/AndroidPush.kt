@@ -76,14 +76,23 @@ internal class PushBinding(private val context: Context) {
         prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false)
     }
 
+    fun phoneLocale(): String? = prefs.getString("locale", null)
+
+    fun setPhoneLocale(binding: String, locale: String) = synchronized(lock) {
+        if (prefs.getString("binding", null) == binding && phoneLocale() != locale) {
+            prefs.edit().putString("locale", locale).apply()
+        }
+    }
+
     fun setDmCallsEnabled(user: String, enabled: Boolean) = synchronized(lock) {
         if (prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false) != enabled) {
             check(prefs.edit().putBoolean("dmCalls", enabled).commit())
             if (!enabled) {
                 val manager = context.getSystemService(NotificationManager::class.java)
                 manager.activeNotifications.filter { it.tag?.startsWith("zoo:$user:call:") == true }
-                    .forEach { manager.cancel(it.tag, it.id) }
+                    .forEach { zoo.android.phone.dismissIncomingCall(context, it.tag) }
             }
+            AndroidPushRegistration.tokenChanged()
         }
     }
 
@@ -199,6 +208,7 @@ internal class AndroidPushRegistration(
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
     private var projectId: String? = null
+    private var supportsDmCalls = false
     private var registeredEndpoint: String? = null
     private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
         app.api.request("/api/push/subscriptions", method,
@@ -206,7 +216,10 @@ internal class AndroidPushRegistration(
         Unit
     }
     private val observer = app.scope.launch {
-        snapshotFlow { app.env.online to app.env.visible }.collectLatest { (online, _) -> if (online) refresh() }
+        snapshotFlow { Triple(app.env.online, app.env.visible, app.env.locale) }.collectLatest { (online, _, locale) ->
+            store.setPhoneLocale(binding, locale)
+            if (online) refresh()
+        }
     }
     private val worker = app.scope.launch {
         for (ignored in updates) {
@@ -216,12 +229,14 @@ internal class AndroidPushRegistration(
                 if (projectId == null) {
                     val config = app.api.request("/api/push/config") as? Row ?: continue
                     projectId = config.text("fcmProjectId").takeIf { it.isNotEmpty() }
+                    supportsDmCalls = config.flag("fcmDmCalls")
                 }
                 if (projectId == null || projectId != firebase.options.projectId) continue
                 val messaging = FirebaseMessaging.getInstance()
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
-                val endpoint = "fcm:$token:$binding"
+                val suffix = if (supportsDmCalls && store.dmCallsEnabled(app.config.userId)) ":dm-calls" else ""
+                val endpoint = "fcm:$token:$binding$suffix"
                 registration.cleanup()
                 if (endpoint != registeredEndpoint) {
                     registration.register(endpoint)

@@ -9,7 +9,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.res.Configuration
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -17,14 +16,27 @@ import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
@@ -32,7 +44,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import zoo.Button
 import zoo.LocalTouchUi
-import zoo.SettingsSection
+import zoo.Text
+import works.zli.zoo.R
 import zoo.ZooTheme
 
 internal const val INCOMING_CLOSED_ACTION = "zoo.phone.INCOMING_CLOSED"
@@ -60,8 +73,6 @@ internal fun incomingPresentation(
     timeoutMillis: Long = 0,
 ) {
     builder.setOngoing(true)
-    val manager = context.getSystemService(NotificationManager::class.java)
-    if (Build.VERSION.SDK_INT >= 34 && !manager.canUseFullScreenIntent()) return
     val screen = Intent(context, IncomingCallActivity::class.java)
         .setData(Uri.parse("zoo-phone://incoming/$callId"))
         .putExtra("tag", tag).putExtra("answer", answer).putExtra("dismiss", dismiss)
@@ -94,28 +105,81 @@ class IncomingCallActivity : ComponentActivity() {
             window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
         }
         ContextCompat.registerReceiver(this, closed, IntentFilter(INCOMING_CLOSED_ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
+        if (!hasIncomingNotification()) {
+            finish()
+            return
+        }
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         val deadline = intent.getLongExtra("deadline", 0)
         if (deadline > 0L) lifecycleScope.launch {
             delay((deadline - System.currentTimeMillis()).coerceAtLeast(0L))
             finish()
         }
-        val dark = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
         val title = phoneLabel(this, "sip.status.incoming", "Incoming call")
         val answerLabel = phoneLabel(this, "sip.answer", "Answer")
         val dismissLabel = intent.getStringExtra("dismissLabel") ?: phoneLabel(this, "common.close", "Close")
         setContent {
             CompositionLocalProvider(LocalTouchUi provides true) {
-                ZooTheme(dark = dark) {
-                    Surface {
-                        Box(Modifier.fillMaxSize().safeDrawingPadding(), contentAlignment = Alignment.Center) {
-                            SettingsSection("Zoo", title) {
-                                Button(answerLabel) { answerWhenUnlocked(answer) }
-                                Button(dismissLabel, variant = "outline") { dispatch(dismiss) }
+                ZooTheme(dark = true) {
+                    val colors = MaterialTheme.colorScheme
+                    Surface(color = colors.background) {
+                        BoxWithConstraints(
+                            Modifier.fillMaxSize()
+                                .background(Brush.verticalGradient(listOf(colors.primary.copy(alpha = 0.13f), colors.background, colors.background)))
+                                .safeDrawingPadding(),
+                            contentAlignment = Alignment.TopCenter,
+                        ) {
+                            val height = maxHeight
+                            Column(
+                                Modifier.widthIn(max = 440.dp).fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                                    .heightIn(min = height)
+                                    .padding(horizontal = 24.dp, vertical = 24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(32.dp),
+                            ) {
+                                Column(
+                                    Modifier.weight(1f, fill = true).fillMaxWidth(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center,
+                                ) {
+                                    Box(
+                                        Modifier.size(128.dp)
+                                            .border(1.dp, colors.primary.copy(alpha = 0.24f), CircleShape)
+                                            .background(colors.primary.copy(alpha = 0.08f), CircleShape),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Image(painterResource(R.drawable.zoo_launcher), contentDescription = null,
+                                            modifier = Modifier.size(88.dp).clip(CircleShape))
+                                    }
+                                    Spacer(Modifier.height(24.dp))
+                                    Text("Zoo", color = colors.primary, weight = FontWeight.SemiBold)
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(title, size = MaterialTheme.typography.headlineMedium.fontSize,
+                                        lineHeight = MaterialTheme.typography.headlineMedium.lineHeight,
+                                        weight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                                }
+                                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(answerLabel, primary = true, modifier = Modifier.fillMaxWidth(),
+                                        minimumTouchTarget = 56.dp) { answerWhenUnlocked(answer) }
+                                    Button(dismissLabel, variant = "outline", modifier = Modifier.fillMaxWidth(),
+                                        minimumTouchTarget = 56.dp) { dispatch(dismiss) }
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+    }
+
+    private fun hasIncomingNotification(): Boolean {
+        val tag = intent.getStringExtra("tag")
+        return getSystemService(NotificationManager::class.java).activeNotifications.any {
+            it.id == INCOMING_NOTIFICATION && it.tag == tag
         }
     }
 
@@ -128,8 +192,7 @@ class IncomingCallActivity : ComponentActivity() {
     }
 
     private fun dispatch(action: PendingIntent) {
-        val tag = intent.getStringExtra("tag")
-        if (getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == INCOMING_NOTIFICATION && it.tag == tag }) {
+        if (hasIncomingNotification()) {
             try { action.send() } catch (_: PendingIntent.CanceledException) { }
         }
         finish()
