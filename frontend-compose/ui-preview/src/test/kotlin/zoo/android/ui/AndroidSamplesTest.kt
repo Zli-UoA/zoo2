@@ -83,7 +83,12 @@ class AndroidSamplesTest {
         var foreground by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
-            AndroidScreens(screen, dark, foreground, actions::add, language = "ja") { item, modifier ->
+            AndroidScreens(screen, dark, foreground, dispatch = { action ->
+                actions.add(action)
+                if (action == AndroidUiAction.OpenChannelSettings("dev")) {
+                    screen = AndroidScreen.ChannelSettings("開発", settings)
+                }
+            }, language = "ja") { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
         }
@@ -103,7 +108,11 @@ class AndroidSamplesTest {
                 capture("$name-${if (night) "dark" else "light"}")
             }
         }
+        ui.runOnIdle { screen = conversation }
+        ui.onNodeWithText("開発").assertHasClickAction().performClick()
+        ui.onNodeWithText("テーマ").assertIsDisplayed()
         ui.runOnIdle {
+            check(actions.contains(AndroidUiAction.OpenChannelSettings("dev")))
             check(actions.none { it is AndroidUiAction.ViewedNotification })
             screen = inbox
             foreground = true
