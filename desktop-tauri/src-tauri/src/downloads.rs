@@ -855,6 +855,11 @@ fn is_probe_name(name: &str) -> bool {
 
 /// 記録に残った名前を消す。消した、または触れる必要が無かったら `true`（記録から外す）。
 fn remove_stale_entry(path: &Path) -> bool {
+    remove_stale_entry_with(path, probe_state)
+}
+
+/// [`remove_stale_entry`] の本体。テストで判断を差し替えられるよう、分類を受け取る。
+fn remove_stale_entry_with(path: &Path, probe: impl Fn(&Path) -> ProbeState) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return true;
     };
@@ -863,12 +868,12 @@ fn remove_stale_entry(path: &Path) -> bool {
         return true;
     }
     if is_probe_name(name) {
-        match probe_state(path) {
+        match probe(path) {
             ProbeState::Ours => {}
             // 先にあった第三者のファイルかもしれない。自分が書いた目印が無いものには
             // 触れず、記録から外すだけにする。
             ProbeState::NotOurs => return true,
-            // 開けなかっただけかもしれない。記録を残し、次の起動でやり直す。
+            // 一時的な I/O の失敗かもしれない。記録を残し、次の起動でやり直す。
             ProbeState::Unreadable => return false,
         }
     }
@@ -883,33 +888,68 @@ fn remove_stale_entry(path: &Path) -> bool {
 enum ProbeState {
     /// 目印がある。消してよい。
     Ours,
-    /// 目印が無い、通常のファイルではない、または 0 バイト。触らずに記録から外す。
+    /// 目印が無い、通常のファイルではない、0 バイト、または読む権限が無い。
+    /// 触らずに記録から外す。
     NotOurs,
-    /// 開けない、または読めない。次の起動でやり直す。
+    /// 一時的な I/O の失敗で読めない。次の起動でやり直す。
     Unreadable,
 }
 
+/// Windows で再解析ポイント（シンボリックリンクなど）自体を開くためのフラグ。
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// 検査用のファイルを、種類を確かめながら開く。種類の確認と `open` を分けると、
+/// その間に第三者が FIFO やリンクへ差し替えられる。FIFO を開くと書き手が現れるまで
+/// 戻らず、1 件で掃除のスレッドが止まると、残りの `.part` も消せなくなる。
+fn open_probe(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // FIFO を開いても止まらないようにし、リンクはたどらない。
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(path)
+}
+
 fn probe_state(path: &Path) -> ProbeState {
-    // 通常のファイル以外は開かない。FIFO は書き手が現れるまで `open` が返らず、
-    // 1 件で掃除のスレッドが止まると、残りの `.part` も消せなくなる。
-    let metadata = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return ProbeState::NotOurs,
+    let file = match open_probe(path) {
+        Ok(file) => file,
+        // 無い、読む権限が無い、リンクをたどらない指定で開けなかった。いずれも
+        // 自分が作った検査用のファイルではない（自分が作ったものは自分で読める）。
+        // 再試行しても結果は変わらないので、記録から外す。
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return ProbeState::NotOurs;
+        }
+        Err(err) if is_symlink_error(&err) => return ProbeState::NotOurs,
         Err(_) => return ProbeState::Unreadable,
+    };
+    // 開いたものの種類と長さを、パスではなく開いたものから読む（差し替えの影響を
+    // 受けない）。FIFO は `O_NONBLOCK` で開けるが、通常のファイルではない。
+    let Ok(metadata) = file.metadata() else {
+        return ProbeState::Unreadable;
     };
     if !metadata.file_type().is_file() {
         return ProbeState::NotOurs;
     }
-    let length = metadata.len();
     // 0 バイトのファイルは、目印を書く前にこちらが作ったものかもしれないが、先に
     // 置かれたものかもしれない。名前だけでは所有者を確かめられないので消さない
     // （目印を書く前に終了した自分のファイルは、空のまま残る）。
-    if length != PROBE_MARKER.len() as u64 {
+    if metadata.len() != PROBE_MARKER.len() as u64 {
         return ProbeState::NotOurs;
     }
-    let Ok(file) = File::open(path) else {
-        return ProbeState::Unreadable;
-    };
     let mut marker = Vec::with_capacity(PROBE_MARKER.len() + 1);
     if file
         .take(PROBE_MARKER.len() as u64 + 1)
@@ -923,6 +963,17 @@ fn probe_state(path: &Path) -> ProbeState {
     } else {
         ProbeState::NotOurs
     }
+}
+
+/// リンクをたどらない指定で開けなかったことを表すエラーか。
+#[cfg(unix)]
+fn is_symlink_error(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+fn is_symlink_error(_err: &std::io::Error) -> bool {
+    false
 }
 
 /// 拡張子を残して、名前がファイルシステムの上限（バイト数）に収まるようにする。
@@ -2233,6 +2284,50 @@ mod tests {
 
         assert!(remove_stale_entry(&probe), "記録からは外す");
         assert!(probe.exists(), "第三者のファイルかもしれないので消さない");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_keeps_a_preexisting_probe_with_other_content() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        // 目印と同じ長さでも、中身が違えば自分が書いたものではない。
+        std::fs::write(&probe, b"xxxxxxxxxxx").unwrap();
+
+        assert!(remove_stale_entry(&probe));
+        assert_eq!(std::fs::read(&probe).unwrap(), b"xxxxxxxxxxx");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_keeps_the_record_when_the_probe_cannot_be_read() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        std::fs::write(&probe, PROBE_MARKER).unwrap();
+
+        // 読めないだけなら、自分のファイルかもしれない。消さず、記録も残す。
+        assert!(!remove_stale_entry_with(&probe, |_| ProbeState::Unreadable));
+        assert!(probe.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn startup_cleanup_keeps_a_directory_with_a_probe_name() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        std::fs::create_dir(&probe).unwrap();
+
+        assert!(remove_stale_entry(&probe));
+        assert!(probe.is_dir());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
