@@ -8,7 +8,8 @@
 //! Run (a database whose role may `SET session_replication_role`; the test makes its own schema):
 //! `DATABASE_URL=postgres://… ACTIVITYPUB_BASE_URL=https://zoo.test cargo test --test
 //! thread_participants_api_latency_test -- --ignored --nocapture`. CI does not run it; the numbers
-//! and their premises are in `docs/request-design.md`. Repeated runs differ by 20-30%.
+//! and their premises are in `docs/request-design.md`. Repeated runs differ by 20-50%.
+//! `API_LATENCY_USERS` (default P; at least P, not a multiple of 37) sizes the `users` table.
 #[path = "support/thread_db.rs"]
 mod thread_db;
 use axum::{
@@ -160,17 +161,24 @@ async fn thread_detail_latency_with_many_participants() -> anyhow::Result<()> {
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(connection);
     let tag = uuid::Uuid::new_v4().simple().to_string();
+    // `users` holds `users_total` rows (API_LATENCY_USERS, at least P), and the participants are
+    // spread over their ids (37 is coprime with 10,000, 300,000 and 3,000,000), as in the scale test.
+    let users_total: i32 = std::env::var("API_LATENCY_USERS")
+        .map(|value| value.parse())
+        .unwrap_or(Ok(P))?;
+    assert!(users_total >= P && users_total % 37 != 0);
+    eprintln!("users={users_total} participants={P}");
     let tx = admin.transaction().await?;
     tx.batch_execute("SET LOCAL session_replication_role=replica")
         .await?;
     tx.execute(
-        "INSERT INTO users(id,user_name,display_name) SELECT $1||'-'||n,$1||'-'||n,'U' FROM generate_series(1,$2::integer)n",
-        &[&tag, &P],
+        "INSERT INTO users(id,user_name,display_name) SELECT $1||'-u-'||lpad(n::text,9,'0'),$1||'-u-'||lpad(n::text,9,'0'),'U' FROM generate_series(1,$2::integer)n",
+        &[&tag, &users_total],
     )
     .await?;
     tx.execute(
-        "INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-'||n,timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$4::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$3::integer)n",
-        &[&root, &tag, &P, &LEFT],
+        "INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+(n*37)%$5::integer)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$4::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$3::integer)n",
+        &[&root, &tag, &P, &LEFT, &users_total],
     )
     .await?;
     tx.execute(
@@ -179,8 +187,8 @@ async fn thread_detail_latency_with_many_participants() -> anyhow::Result<()> {
     )
     .await?;
     tx.execute(
-        "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $1||'-'||n,$2,now() FROM generate_series(1,$3::integer)n ON CONFLICT DO NOTHING",
-        &[&tag, &channel, &P],
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT DISTINCT user_id,$2,now() FROM thread_participants WHERE thread_id=$1 AND user_id LIKE $3::text||'-u-%' ON CONFLICT DO NOTHING",
+        &[&root, &channel, &tag],
     )
     .await?;
     // The first live ones: deactivated (n in LEFT+1..), the last live ones: out of the channel.
