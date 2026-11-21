@@ -581,7 +581,7 @@ class ReviewRegressionUiTest {
     }
 
     @Test
-    fun androidChannelListRendersSearchJoinedAndDmWithoutAccordion() {
+    fun androidChannelListShowsCompactSingleLineRowsWithoutDescriptions() {
         val fixture = Fixture(labels = mapOf(
             "channels.title" to "チャンネル", "channels.browseTitle" to "チャンネルを探す",
             "channels.createTitle" to "チャンネルを作成", "members.joined" to "参加中",
@@ -613,7 +613,11 @@ class ReviewRegressionUiTest {
                 }
             }
             ui.onNodeWithText("チャンネルを探す").assertIsDisplayed()
-            ui.onNodeWithText("着信と通話中の画面を確認").assertIsDisplayed()
+            ui.onNodeWithText("着信と通話中の画面を確認").assertDoesNotExist()
+            ui.onNodeWithText("ランチいきませんか？").assertDoesNotExist()
+            ui.onNodeWithContentDescription("開発").assertHeightIsEqualTo(AndroidDesign.touchTarget)
+            ui.onNodeWithContentDescription("雑談").assertHeightIsEqualTo(AndroidDesign.touchTarget)
+            ui.onNodeWithText("未読").assertIsDisplayed()
             ui.onNodeWithContentDescription("はる").assertIsDisplayed()
             captureAndroidUi(ui, { ui.activity }, "channel-index", "android-channel-index")
             ui.onNodeWithText("チャンネルを探す").performClick()

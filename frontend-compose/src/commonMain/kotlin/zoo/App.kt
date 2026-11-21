@@ -419,10 +419,8 @@ internal fun Sidebar(
             val id = channel.text("id")
             val dm = channel.flag("is_dm")
             val name = if (dm) dmTitle(app, channel, users, memberships) else channel.text("channel_name")
-            val last = app.repo.cachedMessages(id).lastOrNull { !it.present("deleted_at") && it["ciphertext"].let { value -> value == null || value == JsonNull } }
-            val description = if (channel.flag("encrypted")) "" else last?.text("content").orEmpty()
             return AndroidChannelEntry(
-                id, name, description.ifBlank { channel.text("description").trim() },
+                id, name,
                 if (dm) "message-circle" else if (channel.flag("is_private")) "lock" else "hash",
                 unreadLabel = app.t("channels.unread").takeIf { id in app.unread },
                 archivedLabel = app.t("moderation.archived").takeIf { channel.present("archive_at") },
