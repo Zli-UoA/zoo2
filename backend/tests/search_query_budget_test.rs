@@ -274,12 +274,29 @@ SET session_replication_role = DEFAULT;
             "",
             ["", ""],
         ),
+        (
+            "files-one-char",
+            SearchKind::Files,
+            "attachments",
+            "file_name",
+            vec!["議"],
+            "",
+            ["", ""],
+        ),
+        (
+            "notes-one-char",
+            SearchKind::Notes,
+            "channel_notes",
+            "(title || E'\\n' || content)",
+            vec!["障"],
+            "",
+            ["", ""],
+        ),
     ];
-    // 1 文字の語は索引の条件に入れないので、その月の生きている行をすべて確かめる。
-    let month_rows: f64 = one(&db, &hits("messages", "content", &[])).await?.parse()?;
+    // 1 文字の語は索引の条件に入れないので、その月の生きている行をすべて確かめる（表ごとの月内の行数が上限）。
     for (name, kind, table, column, terms, author, [at, id]) in &cases {
         let h: f64 = if terms.iter().any(|t| t.chars().count() < 2) {
-            month_rows
+            one(&db, &hits(table, column, &[])).await?.parse()?
         } else {
             one(&db, &hits(table, column, terms)).await?.parse()?
         };

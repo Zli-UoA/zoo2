@@ -137,31 +137,6 @@ fn parse_cursor(value: &str) -> Result<Cursor, AppError> {
     Ok(cursor)
 }
 
-/// 最初にヒットした語のまわりを切り出す。英字は大文字・小文字を区別しない（SQL の lower() と同じく ASCII だけ）。
-pub fn snippet(text: &str, terms: &[String]) -> String {
-    let lower = text.to_ascii_lowercase();
-    let start_byte = terms
-        .iter()
-        .filter_map(|t| lower.find(&t.to_ascii_lowercase()))
-        .min()
-        .unwrap_or(0);
-    let chars_before = text[..start_byte].chars().count();
-    let from = chars_before.saturating_sub(SNIPPET_BEFORE);
-    let total = text.chars().count();
-    let body: String = text.chars().skip(from).take(SNIPPET_CHARS).collect();
-    let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!(
-        "{}{}{}",
-        if from > 0 { "…" } else { "" },
-        body,
-        if from + SNIPPET_CHARS < total {
-            "…"
-        } else {
-            ""
-        }
-    )
-}
-
 /// 語の数だけ LIKE を並べる。値はすべてバインドする。`first` は最初の語のパラメーター番号。
 ///
 /// 1 文字の語は、pg_bigm がその文字を含むすべてのキーを部分一致で読むため、月の列と突き合わせても
@@ -252,13 +227,14 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
                'user_id', a.uploader_id, 'author', m.display_data->'author', \
                'file_name', a.file_name, 'content_type', a.content_type, 'file_size', a.file_size, \
                'width', a.width, 'height', a.height, 'is_sensitive', a.is_sensitive, \
-               'text', a.file_name, 'created_at', a.created_at)::text \
+               {text}, 'created_at', a.created_at)::text \
              FROM (SELECT a.* FROM attachments a WHERE a.message_id IS NOT NULL{likes} \
                AND EXISTS (SELECT 1 FROM messages live WHERE live.id = a.message_id AND live.deleted_at IS NULL) \
                AND {common}) a \
              JOIN messages m ON m.id = a.message_id JOIN channels c ON c.id = a.channel_id \
              ORDER BY a.created_at DESC, a.id DESC",
             likes = like_clauses("a.file_name", terms, 9),
+            text = snippet_source("a.file_name", terms.len()),
             common = common("a", "uploader_id"),
         ),
         SearchKind::Notes => format!(
@@ -406,15 +382,13 @@ async fn search(
                 .remove("text")
                 .and_then(|t| t.as_str().map(str::to_string))
                 .unwrap_or_default();
-            // メッセージ・ノートは SQL が当たった位置で切り出してある。ファイル名は短いのでそのまま探す。
-            let value = match (object.remove("cut_start"), object.remove("cut_end")) {
-                (Some(start), Some(end)) => cut_snippet(
-                    &text,
-                    start.as_bool().unwrap_or(false),
-                    end.as_bool().unwrap_or(false),
-                ),
-                _ => snippet(&text, &terms),
-            };
+            // どの種類も SQL が当たった位置で切り出してある（一致の判定は SQL の lower() だけ）。
+            let flag = |value: Option<Value>| value.and_then(|v| v.as_bool()).unwrap_or(false);
+            let value = cut_snippet(
+                &text,
+                flag(object.remove("cut_start")),
+                flag(object.remove("cut_end")),
+            );
             object.insert("snippet".into(), Value::String(value));
         }
     }
@@ -441,12 +415,10 @@ mod tests {
     }
 
     #[test]
-    fn snippet_centers_on_first_hit_case_insensitively() {
-        let text = format!("{}Hello World{}", "x".repeat(100), "y".repeat(300));
-        let s = snippet(&text, &["world".into()]);
-        assert!(s.starts_with('…') && s.ends_with('…'));
-        assert!(s.contains("Hello World"));
-        assert_eq!(snippet("短い本文", &["本".into()]), "短い本文");
+    fn cut_snippet_marks_trimmed_sides_and_collapses_whitespace() {
+        assert_eq!(cut_snippet("会議の\n  資料", true, false), "…会議の 資料");
+        assert_eq!(cut_snippet("短い本文", false, false), "短い本文");
+        assert_eq!(cut_snippet("途中", true, true), "…途中…");
     }
 
     #[test]
