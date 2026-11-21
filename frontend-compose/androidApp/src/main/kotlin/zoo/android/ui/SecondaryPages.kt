@@ -142,6 +142,7 @@ internal fun NewPostPage(
 internal fun BrandPage(
     title: String, detail: String, colors: AndroidColors, loading: Boolean = false,
     detailWeight: FontWeight = AndroidWeights.body,
+    badge: @Composable () -> Unit = { ZooBadge(colors, Modifier.size(88.dp)) },
     actions: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
@@ -151,7 +152,7 @@ internal fun BrandPage(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Spacer(Modifier.weight(2f))
-        ZooBadge(colors, Modifier.size(88.dp))
+        badge()
         Text(title, color = colors.foreground, fontSize = 32.sp, fontWeight = AndroidWeights.emphasis)
         if (detail.isNotEmpty()) Text(detail, color = colors.secondary, fontSize = 16.sp, fontWeight = detailWeight, textAlign = TextAlign.Center)
         if (loading) CircularProgressIndicator(Modifier.size(22.dp), color = colors.accent, strokeWidth = 2.dp)

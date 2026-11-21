@@ -37,7 +37,7 @@
 
 | 画面 | デザインモック | 見る箇所 |
 | --- | --- | --- |
-| 着信 | [ライト・ダーク](images/android-design/reference/call-themes.webp) | 黄色い着信マーク、テーマに合わせた背景、中央の内容幅ボタン |
+| 着信 | [ライト・ダーク](images/android-design/reference/call-themes.webp) | 通話画面の配色と中央の内容幅ボタン。最新の [Compose キャプチャ](android-rebuild-samples.md) は相手のアバターと波紋を反映 |
 | ホーム投稿の写真 | [投稿画面内で選択](images/android-design/reference/post-photos.webp) | 最近の写真と OS の写真ピッカーを同じ下書きから使う |
 | ログイン | [アプリからブラウザを開いてホームに戻る](images/android-design/reference/sign-in.webp) | 同じ端末で認証を完了し、アプリに復帰する |
 | OS 通知 | [通知シェードの展開例](images/android-design/reference/notification-shade.webp) | 本文の抜粋、画像、通知からの操作 |

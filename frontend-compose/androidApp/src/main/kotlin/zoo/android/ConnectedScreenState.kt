@@ -162,7 +162,7 @@ internal class ConnectedScreenState(
         return AndroidScreen.SettingsDetail(title, listOf(SettingsGroup(title, entries)))
     }
 
-    fun dispatch(action: AndroidUiAction, screen: AndroidScreen, channel: Row?, enableNotifications: () -> Unit) {
+    fun dispatch(action: AndroidUiAction, screen: AndroidScreen, channel: Row?, callPeerId: String?, callPeerName: String?, enableNotifications: () -> Unit) {
         val channelId = channel?.text("id").orEmpty()
         val draftKey = channelId + (app.thread?.let { ":$it" } ?: "")
         when (action) {
@@ -246,7 +246,9 @@ internal class ConnectedScreenState(
             AndroidUiAction.HangUp -> phone.hangup()
             AndroidUiAction.MuteCall -> phone.mute()
             AndroidUiAction.SpeakerCall -> phone.speaker()
-            AndroidUiAction.StartCall -> if (channel != null && channel.flag("is_dm")) phone.callDm(channelId, channel.text("channel_name"))
+            AndroidUiAction.StartCall -> if (channel != null && channel.flag("is_dm")) {
+                phone.callDm(channelId, callPeerName.orEmpty().ifBlank { channel.text("channel_name") }, callPeerId)
+            }
             AndroidUiAction.SignIn, AndroidUiAction.Back -> Unit
         }
     }
