@@ -5,6 +5,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import zoo.android.ui.EntryCard
+import zoo.android.ui.EntryContentPanel
+import zoo.android.ui.EntryContentText
 import zoo.obj
 
 class MessageRichContentTest {
@@ -15,7 +18,7 @@ class MessageRichContentTest {
               {"title":"Branch","value":"main","code":true,"url":"https://example.test/branches"}
             ]}]}
         """.trimIndent()))
-        val card = content.cards.single()
+        val card = content.blocks.single() as EntryCard
         assertTrue(content.hidesBody)
         assertEquals("Build", card.title)
         assertNull(card.url)
@@ -30,8 +33,10 @@ class MessageRichContentTest {
               "card":{"title":"Issue 42"}}]
         """.trimIndent()))
         assertFalse(content.hidesBody)
-        assertEquals("GitHub", content.cards.single().caption)
-        assertEquals("https://example.test/issue", content.cards.single().url)
+        val panel = content.blocks.single() as EntryContentPanel
+        assertEquals("GitHub", panel.caption)
+        assertEquals("https://example.test/issue", panel.url)
+        assertEquals("Issue 42", (panel.blocks.single() as EntryCard).title)
     }
 
     @Test
@@ -42,8 +47,9 @@ class MessageRichContentTest {
             ]}]}
         """.trimIndent()))
         assertTrue(content.hidesBody)
-        assertEquals(listOf("**Status**"), content.text)
-        assertEquals("Passed", content.cards.single().description)
+        val panel = content.blocks.single() as EntryContentPanel
+        assertEquals(EntryContentText("**Status**"), panel.blocks.first())
+        assertEquals("Passed", (panel.blocks.last() as EntryCard).description)
 
         assertFalse(messageRichContent(obj("components" to """{"flags":32768,"components":[{"type":9999}]}""")).hidesBody)
         assertFalse(messageRichContent(obj("card" to "{")).hidesBody)

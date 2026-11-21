@@ -109,10 +109,12 @@ class AndroidSamplesTest {
         val richMessage = posts.first().copy(
             body = "連携カードの代替本文",
             richContent = EntryRichContent(
-                cards = listOf(EntryCard("Android の CI", "**Debug ビルド**と lint が完了しました。",
-                    "https://example.test/build", "GitHub Actions",
-                    listOf(EntryCardField("ブランチ", "android-ui", code = true)))),
-                text = listOf("**ビルド結果**"),
+                blocks = listOf(
+                    EntryContentText("**ビルド結果**"),
+                    EntryCard("Android の CI", "**Debug ビルド**と lint が完了しました。",
+                        "https://example.test/build", "GitHub Actions",
+                        listOf(EntryCardField("ブランチ", "android-ui", code = true))),
+                ),
                 hidesBody = true,
             ),
         )

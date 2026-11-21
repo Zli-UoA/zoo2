@@ -15,10 +15,21 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 internal data class EntryCardField(val title: String, val value: String, val code: Boolean = false, val url: String? = null)
+
+internal sealed interface EntryContentBlock
+
+internal data class EntryContentText(val body: String) : EntryContentBlock
+
+internal data class EntryContentPanel(
+    val blocks: List<EntryContentBlock>,
+    val caption: String = "",
+    val url: String? = null,
+) : EntryContentBlock
 
 internal data class EntryCard(
     val title: String,
@@ -28,13 +39,32 @@ internal data class EntryCard(
     val fields: List<EntryCardField> = emptyList(),
     val image: TimelineMedia? = null,
     val formatted: Boolean = true,
-)
+) : EntryContentBlock
 
 internal data class EntryRichContent(
-    val cards: List<EntryCard> = emptyList(),
-    val text: List<String> = emptyList(),
+    val blocks: List<EntryContentBlock> = emptyList(),
     val hidesBody: Boolean = false,
 )
+
+@Composable
+internal fun EntryBlocks(
+    blocks: List<EntryContentBlock>, colors: AndroidColors, fontSize: TextUnit, emoji: Map<String, TimelineMedia>,
+) {
+    blocks.forEach { block ->
+        when (block) {
+            is EntryCard -> EntryCards(listOf(block), colors)
+            is EntryContentText -> EntryBody(block.body, colors.foreground, fontSize, emoji)
+            is EntryContentPanel -> Column(
+                Modifier.padding(vertical = 4.dp).fillMaxWidth()
+                    .background(colors.inputSurface, RoundedCornerShape(12.dp)).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (block.caption.isNotBlank()) Text(entryLabel(block.caption, block.url), color = colors.secondary, fontSize = 12.sp)
+                EntryBlocks(block.blocks, colors, 14.sp, emoji)
+            }
+        }
+    }
+}
 
 @Composable
 internal fun EntryCards(cards: List<EntryCard>, colors: AndroidColors) {

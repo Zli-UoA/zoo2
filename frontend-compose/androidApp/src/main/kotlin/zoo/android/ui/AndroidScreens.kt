@@ -497,10 +497,7 @@ private fun Timeline(
                         if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
                             EntryBody(entry.body, colors.foreground, bodySize, entry.emoji)
                         }
-                        entry.richContent.text.forEach {
-                            Text(formatEntry(it), color = colors.foreground, fontSize = bodySize)
-                        }
-                        EntryCards(entry.richContent.cards, colors)
+                        EntryBlocks(entry.richContent.blocks, colors, bodySize, entry.emoji)
                         entry.attachments.forEach { (id, name) ->
                             Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                                 .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
