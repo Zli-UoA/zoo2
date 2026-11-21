@@ -280,8 +280,15 @@ async fn thread_operation(
                 "INSERT INTO thread_participants(thread_id,user_id) VALUES($1,$2) ON CONFLICT(thread_id,user_id) DO UPDATE SET left_at=NULL,joined_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC' WHERE thread_participants.left_at IS NOT NULL RETURNING '{}'::text",
                 &[root_id,&auth.id]).await?
         }
-        "leave" => crate::apps::query(&mut tx,
+        // A member can leave a thread that has no row yet (the row records the leave). A reader who is
+        // not a member (a public channel can be read without joining it) may only end a row it
+        // already has: a new row would make the thread tracked, and the first reply of every member
+        // would then need a join.
+        "leave" if channel["member"] == true => crate::apps::query(&mut tx,
             "INSERT INTO thread_participants(thread_id,user_id,left_at) VALUES($1,$2,now() AT TIME ZONE 'UTC') ON CONFLICT(thread_id,user_id) DO UPDATE SET left_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC' WHERE thread_participants.left_at IS NULL RETURNING '{}'::text",
+            &[root_id,&auth.id]).await?,
+        "leave" => crate::apps::query(&mut tx,
+            "UPDATE thread_participants SET left_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC' WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL RETURNING '{}'::text",
             &[root_id,&auth.id]).await?,
         "unarchive" => crate::apps::query(&mut tx,
             "UPDATE messages SET thread_archive_at=NULL,thread_activity_at=now() AT TIME ZONE 'UTC' WHERE id=$1 AND thread_archive_at IS NOT NULL RETURNING '{}'::text",
@@ -308,14 +315,13 @@ async fn thread_operation(
     // A write holds the root lock (it serializes replies, joins and leaves of this thread) until
     // it commits, so its O(P) read runs after the commit, in its own transaction: the lock is held
     // for the write only, whatever P is. A read has no lock and stays in its transaction.
-    let participants = if !with_participants {
-        // No list was asked for: only `tracked`, one index entry, inside the transaction.
-        let tracked = crate::apps::one(&mut tx, thread_tracked_sql(), &[root_id]).await?;
-        row["tracked"] = tracked["tracked"].clone();
-        None
-    } else if operation == "read" {
+    let participants = if with_participants && operation == "read" {
         Some(crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?)
     } else {
+        // `tracked` is always answered, one index entry, inside the transaction (after the write):
+        // a write whose list is read afterwards, and fails or runs out of time, still says it.
+        let tracked = crate::apps::one(&mut tx, thread_tracked_sql(), &[root_id]).await?;
+        row["tracked"] = tracked["tracked"].clone();
         None
     };
     let txid = if changed.is_empty() {

@@ -826,6 +826,8 @@ async fn a_slow_participants_read_after_a_write_is_left_out() -> anyhow::Result<
         joined["data"].get("participant_count").is_none(),
         "{joined}"
     );
+    // `tracked` is read in the write's own transaction, so a lost list does not lose it.
+    assert_eq!(joined["data"]["tracked"], true, "{joined}");
     // The join took effect, and a read with no deadline lists everyone.
     let after = w.thread(&w.users[1], &root).await?;
     assert_eq!(after["membership"], "joined");
@@ -894,5 +896,83 @@ async fn the_list_after_a_write_needs_the_viewer_to_still_have_access() -> anyho
         .exec(&mut db)
         .await?;
     assert!(read(&mut db, &viewer, &root, &w.channel).await.is_err());
+    w.fixture.cleanup().await
+}
+
+/// 公開チャンネルは、メンバーでなくても読める。その人の `leave` は、すでにある参加行を終えるだけで、
+/// 新しい行は作らない。行が1つでもあるスレッドは tracked になり、メンバー全員の最初の返信に参加が要る
+/// ようになるため（メンバーの `leave` は、行がなくても退出の記録を残す）。
+#[tokio::test]
+async fn a_reader_who_is_not_a_member_cannot_make_a_thread_tracked_by_leaving() -> anyhow::Result<()>
+{
+    let w = world().await?;
+    let root = w.root().await?;
+    let outsider = uuid::Uuid::new_v4().to_string();
+    ok(
+        &w.app,
+        &outsider,
+        "POST",
+        "/api/users",
+        json!({"id":outsider,"user_name":outsider,"display_name":outsider}),
+    )
+    .await?;
+    let path = format!("/api/threads/{root}");
+    let left = ok(
+        &w.app,
+        &outsider,
+        "POST",
+        &format!("{path}/leave"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(left["data"]["membership"], "none", "{left}");
+    assert_eq!(left["data"]["tracked"], false, "{left}");
+    // Nothing was written: the thread is still untracked, and a member's first reply needs no join.
+    assert_eq!(w.thread(&w.users[1], &root).await?["tracked"], false);
+    let (status, body) = call(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A member who is not in the thread yet may still leave it: the row records the leave.
+    let second = w.root().await?;
+    let left = ok(
+        &w.app,
+        &w.users[2],
+        "POST",
+        &format!("/api/threads/{second}/leave"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(left["data"]["membership"], "left", "{left}");
+    assert_eq!(left["data"]["tracked"], true, "{left}");
+    // A reader who left the channel keeps the right to end the row it has.
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        &format!("/api/threads/{second}/join"),
+        json!({}),
+    )
+    .await?;
+    let mut db = w.db.clone();
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2")
+        .bind(w.channel.as_str())
+        .bind(w.users[1].as_str())
+        .exec(&mut db)
+        .await?;
+    let left = ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        &format!("/api/threads/{second}/leave"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(left["data"]["membership"], "left", "{left}");
     w.fixture.cleanup().await
 }
