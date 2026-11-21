@@ -12,6 +12,9 @@
 //! SQL (`thread_tracked_sql`, the answer without the list) are measured too:
 //! no Seq Scan, `thread_participants` rows <= 2, `users` not read, logical blocks <= 64.
 //! Each plan is written to `SCALE_PLAN_DIR` before the bounds are checked, so a failing plan survives.
+//! When the server is a postgres process of this host, the CPU time (user + system, `/proc/<pid>/stat`)
+//! of 30 single runs on the large thread is reported too (`cpu_ms_per_call`); elsewhere (a container,
+//! another host) it is `null`.
 use backend::{
     config::Config,
     routes::{
@@ -36,6 +39,28 @@ fn rows(messages: &[SimpleQueryMessage]) -> Vec<&str> {
         })
         .collect()
 }
+/// CPU time (user + system, in ms) of a local server process, from `/proc/<pid>/stat`. `None` when
+/// the server is not a local postgres process (a container, another host): CI then reports no CPU time.
+fn backend_cpu_ms(pid: i32) -> Option<f64> {
+    let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    if !name.trim().starts_with("postgres") {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name may hold spaces: the fields after the last `)` start at the state (field 3),
+    // so utime (field 14) and stime (field 15) are the 12th and 13th.
+    let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+    let ticks: f64 = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
+    let per_second: f64 = std::process::Command::new("getconf")
+        .arg("CLK_TCK")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(100.);
+    Some(ticks / per_second * 1000.)
+}
+
 fn walk(node: &Value, f: &mut impl FnMut(&Value)) {
     f(node);
     if let Some(children) = node["Plans"].as_array() {
@@ -426,11 +451,21 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         json!({"p50":samples[samples.len()/2],"p95":samples[samples.len()*95/100],"max":samples[samples.len()-1]})
     };
     let mut single = Vec::new();
+    // The CPU time of the backend that runs the 30 statements, to tell the work from the waiting.
+    let pid: i32 = client
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let cpu_before = backend_cpu_ms(pid);
     for _ in 0..30 {
         let started = std::time::Instant::now();
         client.simple_query(&large_statement).await?;
         single.push(started.elapsed().as_secs_f64() * 1000.);
     }
+    let cpu_per_call = cpu_before
+        .zip(backend_cpu_ms(pid))
+        .map(|(before, after)| (after - before) / 30.);
+    eprintln!("U={users} H={history} large single backend cpu_ms_per_call={cpu_per_call:?}");
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let url = url.clone();
@@ -458,7 +493,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     );
     metrics.insert(
         "timing_ms".into(),
-        json!({"single":timings(single),"concurrent8":timings(concurrent)}),
+        json!({"single":timings(single),"concurrent8":timings(concurrent),"cpu_ms_per_call":cpu_per_call}),
     );
     if let Some(dir) = &output {
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
