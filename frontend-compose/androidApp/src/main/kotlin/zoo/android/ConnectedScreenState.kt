@@ -7,6 +7,7 @@ import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import zoo.*
@@ -81,7 +82,6 @@ internal class ConnectedScreenState(
         private set
     var editDraft by mutableStateOf("")
         private set
-    private val link = Regex("https?://[^\\s<>]+")
     var openedPostId by mutableStateOf<String?>(null)
         private set
     var people by mutableStateOf<List<Row>>(emptyList())
@@ -143,6 +143,7 @@ internal class ConnectedScreenState(
                 uri, original.text("id").takeIf { it.isNotBlank() && !original.flag("remote") },
                 original.text("display_name").ifBlank { original.text("user_name") },
                 original.text("content"), original.array("media").rows().mapNotNull(::postMedia),
+                displayEmoji(original, original, isPost = true),
             )
         }
         val body = data.text("content").let { content ->
@@ -150,9 +151,10 @@ internal class ConnectedScreenState(
                 content.trimEnd().removeSuffix(quote.uri).trimEnd()
             } else content
         }
-        val url = link.find(body)?.value?.trimEnd('.', ',', ')')?.takeIf {
-            publicUrl(it) != null && it != quoteUri && allowPreview && !data.present("ciphertext")
-        }
+        val richContent = if (!isPost && !data.present("ciphertext")) messageRichContent(data) else EntryRichContent()
+        val url = if (allowPreview && !data.present("ciphertext") && !richContent.hidesBody) {
+            previewUrls(body, quoteUri).firstOrNull()
+        } else null
         val metadata = display.ifEmpty { data }
         val badges = if (isPost) metadata.array("reactions").rows().map {
             "${it.text("reaction")} ${it.text("count")}" to it.flag("selected")
@@ -183,15 +185,51 @@ internal class ConnectedScreenState(
                 PostAudience.fromApi(data.text("visibility")), channelName, server,
                 remoteServer = remote, serverRgb = if (remote && server != null) instanceColors[server] else null)
         } else null
-        return TimelineItem(id, name, body, time,
+        return withLinkCard(TimelineItem(id, name, body, time,
             editable = (writable || isPost) && data.text("user_id") == app.config.userId && !data.flag("remote"),
             canReact = writable || isPost,
             canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
             reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
-            preview = url?.let { app.previews.cached(previewService, it)?.title },
+            richContent = richContent,
+            emoji = if (allowPreview && !data.present("ciphertext")) displayEmoji(data, metadata, isPost) else emptyMap(),
             entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
             repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
+        ), previewService)
+    }
+
+    fun withLinkCard(entry: TimelineItem, service: String): TimelineItem {
+        val url = entry.link ?: return entry
+        val preview = app.previews.cached(service, url) ?: return entry
+        val proxy = app.previews.endpoints.value.second
+        val imageUrl = proxyImageUrl(
+            if (proxy.startsWith('/') && !proxy.startsWith("//")) endpoint(app.config.assetsBaseUrl, proxy) else proxy,
+            preview.image,
         )
+        val image = imageUrl?.let { TimelineMedia(it, "", TimelineMediaKind.Image, url = it) }
+        return entry.copy(linkCard = EntryCard(preview.title, preview.description, url, preview.site, image = image,
+            formatted = false))
+    }
+
+    private fun displayEmoji(data: Row, metadata: Row, isPost: Boolean): Map<String, TimelineMedia> {
+        val emojis = if (isPost) data.array("emojis").rows().map { it.text("name") to it }
+        else metadata.nested("emojis").ifEmpty { data.nested("display_data").nested("emojis") }
+            .mapNotNull { (name, value) -> (value as? JsonObject)?.let { name to it } }
+        return buildMap {
+            for ((name, emoji) in emojis.take(256)) {
+                val raw = if (isPost && !emoji.flag("local")) {
+                    val imageId = emoji.text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) } ?: continue
+                    "/api/activitypub/emoji-images/$imageId"
+                } else emoji.text("url")
+                val url = if (raw.startsWith('/') && !raw.startsWith("//")) {
+                    endpoint(app.config.apiBaseUrl, raw)
+                } else raw
+                val safe = publicUrl(url)?.toString() ?: continue
+                val media = TimelineMedia(safe, name, TimelineMediaKind.Image, url = safe, previewUrl = safe)
+                put(":${name.trim(':')}:", media)
+                emoji.array("aliases").take(32).mapNotNull { (it as? JsonPrimitive)?.content }
+                    .forEach { put(":${it.trim(':')}:", media) }
+            }
+        }
     }
 
     private fun postMedia(row: Row): TimelineMedia? {

@@ -69,7 +69,7 @@ internal fun ConnectedScreens(
     val posts = state.home.posts.map { state.entry(it, usersById, previewService = previewService) }
     val encrypted = channel?.let { session.isEncryptedChannel(it.text("id")) } == true
     val canPost = env.online && channel != null && member && !channel.present("archive_at")
-    val messages by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost) {
+    val messageEntries by produceState(emptyList<TimelineItem>(), rows, usersById, encrypted, filesByMessage, reactionsByMessage, canPost) {
         value = rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("created_at") }.map { row ->
             val data = if (row.present("ciphertext")) {
                 val body = try { platform.messageEncryption?.decrypt(row)?.body }
@@ -79,9 +79,10 @@ internal fun ConnectedScreens(
             } else row
             val id = row.text("id")
             state.entry(kotlinx.serialization.json.JsonObject(data), usersById,
-                filesByMessage[id].orEmpty(), reactionsByMessage[id].orEmpty(), previewService, writable = canPost, allowPreview = !encrypted)
+                filesByMessage[id].orEmpty(), reactionsByMessage[id].orEmpty(), writable = canPost, allowPreview = !encrypted)
         }
     }
+    val messages = messageEntries.map { state.withLinkCard(it, previewService) }
     val currentThread = session.thread
     val threadDetail = state.threadDetails.takeIf { it.text("id") == currentThread } ?: obj()
     val conversationEntries = rows.filter { it.text("parent_id").isEmpty() }.map { it.text("id") }.toSet()
@@ -293,6 +294,7 @@ internal fun ConnectedScreens(
         is AndroidScreen.Conversation -> screen.entries.takeLast(20)
         is AndroidScreen.Thread -> listOf(screen.root) + screen.replies.takeLast(20)
         is AndroidScreen.Post -> listOf(screen.root) + screen.replies
+        is AndroidScreen.Profile -> screen.posts
         else -> emptyList()
     }.mapNotNull { it.link }.distinct().take(20)
     LaunchedEffect(previewService, previewLinks, env.online, env.visible) {

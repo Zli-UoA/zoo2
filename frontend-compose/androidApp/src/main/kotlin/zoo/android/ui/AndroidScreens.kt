@@ -60,10 +60,13 @@ internal data class TimelineItem(
     val editable: Boolean = false, val canReact: Boolean = false, val canRepost: Boolean = false,
     val reposted: Boolean = false, val reactions: List<Pair<String, Boolean>> = emptyList(),
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
-    val preview: String? = null, val entryKey: String = id,
+    val entryKey: String = id,
     val media: List<TimelineMedia> = emptyList(),
     val quote: TimelineQuote? = null, val repostedBy: String? = null,
     val postHeader: PostHeaderData? = null,
+    val richContent: EntryRichContent = EntryRichContent(),
+    val linkCard: EntryCard? = null,
+    val emoji: Map<String, TimelineMedia> = emptyMap(),
 )
 internal data class ChannelItem(
     val id: String,
@@ -491,7 +494,13 @@ private fun Timeline(
                             Text(entry.author, color = colors.foreground, fontWeight = authorWeight, fontSize = authorSize)
                             Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                         }
-                        Text(formatEntry(entry.body), color = colors.foreground, fontSize = bodySize, lineHeight = 25.sp)
+                        if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
+                            EntryBody(entry.body, colors.foreground, bodySize, entry.emoji)
+                        }
+                        entry.richContent.text.forEach {
+                            Text(formatEntry(it), color = colors.foreground, fontSize = bodySize)
+                        }
+                        EntryCards(entry.richContent.cards, colors)
                         entry.attachments.forEach { (id, name) ->
                             Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                                 .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
@@ -506,8 +515,9 @@ private fun Timeline(
                                 open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
                                 openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
                         }
-                        entry.link?.let { url ->
-                            Text(entry.preview ?: url,
+                        EntryCards(listOfNotNull(entry.linkCard), colors)
+                        entry.link?.takeIf { entry.linkCard == null }?.let { url ->
+                            Text(url,
                                 Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Link, url)) }
                                     .heightIn(min = 48.dp).padding(vertical = 12.dp),
                                 color = colors.secondary, maxLines = 2, overflow = TextOverflow.Ellipsis)

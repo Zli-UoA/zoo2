@@ -29,6 +29,7 @@ internal data class TimelineMedia(
 
 internal data class TimelineQuote(
     val uri: String, val postId: String?, val author: String, val body: String, val media: List<TimelineMedia>,
+    val emoji: Map<String, TimelineMedia> = emptyMap(),
 )
 
 internal val LocalTimelineImage = staticCompositionLocalOf<suspend (TimelineMedia) -> ImageBitmap?> { { null } }
@@ -59,8 +60,7 @@ internal fun TimelineQuoteCard(
             .clickable(role = Role.Button, onClick = open), verticalArrangement = Arrangement.Center) {
             Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
                 color = colors.secondary, fontSize = 12.sp, fontWeight = AndroidWeights.label)
-            if (quote.body.isNotBlank()) Text(formatEntry(quote.body), color = colors.foreground, fontSize = 14.sp,
-                maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, 14.sp, quote.emoji, maxLines = 4)
         }
         quote.media.forEach { media -> TimelineMediaTile(media, colors) { openMedia(media) } }
     }

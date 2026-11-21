@@ -101,7 +101,24 @@ class AndroidSamplesTest {
             TimelineMedia("channel-image", "添付画像", TimelineMediaKind.Image, attachmentId = "channel-image"),
             TimelineMedia("channel-video", "添付動画", TimelineMediaKind.Video, attachmentId = "channel-video"),
         ))
+        val richPost = homePosts.first().copy(
+            body = "# リリースノート\n**今日の変更** は _ここ_ で確認できます。 :party:\n> 次回の予定\n~~旧手順~~ → [新しい手順](https://example.test/guide)",
+            emoji = mapOf(":party:" to TimelineMedia("fixture-emoji", "party", TimelineMediaKind.Image)),
+            linkCard = EntryCard("Zoo Android ガイド", "通話、通知、投稿の使い方", "https://example.test/guide", "example.test"),
+        )
+        val richMessage = posts.first().copy(
+            body = "連携カードの代替本文",
+            richContent = EntryRichContent(
+                cards = listOf(EntryCard("Android の CI", "**Debug ビルド**と lint が完了しました。",
+                    "https://example.test/build", "GitHub Actions",
+                    listOf(EntryCardField("ブランチ", "android-ui", code = true)))),
+                text = listOf("**ビルド結果**"),
+                hidesBody = true,
+            ),
+        )
         val cases = listOf(
+            "home-rich" to AndroidScreen.Home(listOf(richPost)),
+            "channel-rich" to conversation.copy(entries = listOf(richMessage), input = InputState()),
             "home" to AndroidScreen.Home(homePosts),
             "home-media" to AndroidScreen.Home(listOf(illustratedPost)),
             "channel-media" to conversation.copy(entries = listOf(illustratedMessage), input = InputState()),
@@ -177,7 +194,7 @@ class AndroidSamplesTest {
         var emojiPicker by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
-            CompositionLocalProvider(LocalTimelineImage provides { avatar }) {
+            CompositionLocalProvider(LocalTimelineImage provides { if (it.key == "fixture-emoji") reactionEmoji else avatar }) {
                 AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
                     actions.add(action)
                     if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
@@ -220,6 +237,14 @@ class AndroidSamplesTest {
                     check(root.right - bounds.right == 4.dp && root.bottom - bounds.bottom == 4.dp) {
                         "Expected 4dp between send action and screen edges: $bounds / $root"
                     }
+                }
+                if (name == "channel-rich") {
+                    ui.onNodeWithText("Android の CI", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithText("連携カードの代替本文").assertDoesNotExist()
+                }
+                if (name == "home-rich") {
+                    ui.onNodeWithText("Zoo Android ガイド", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithContentDescription(":party:", useUnmergedTree = true).assertIsDisplayed()
                 }
                 if (name == "channels") {
                     for (label in listOf("チャンネルを作成", "DMを作成")) {

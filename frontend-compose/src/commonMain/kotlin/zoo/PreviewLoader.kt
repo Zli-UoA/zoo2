@@ -28,6 +28,8 @@ fun publicUrl(raw: String): Url? =
         null
     }
 
+fun publicUrlString(raw: String): String? = publicUrl(raw)?.toString()
+
 /** Only visible links create cards: code, plain and MFM silent links stay private. */
 fun previewUrls(content: String, excludeUrl: String? = null): List<String> {
     val visible =

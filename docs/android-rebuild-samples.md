@@ -7,6 +7,8 @@
 | ホーム | [ライト](images/android-design/rebuild/home-light.png) | [ダーク](images/android-design/rebuild/home-dark.png) |
 | APubの引用・再投稿・メディア | [ライト](images/android-design/rebuild/home-media-light.png) | [ダーク](images/android-design/rebuild/home-media-dark.png) |
 | チャンネルの画像・動画 | [ライト](images/android-design/rebuild/channel-media-light.png) | [ダーク](images/android-design/rebuild/channel-media-dark.png) |
+| APub の MFM・絵文字・リンクカード | [ライト](images/android-design/rebuild/home-rich-light.png) | [ダーク](images/android-design/rebuild/home-rich-dark.png) |
+| チャンネルの連携カード | [ライト](images/android-design/rebuild/channel-rich-light.png) | [ダーク](images/android-design/rebuild/channel-rich-dark.png) |
 | チャンネル一覧 | [ライト](images/android-design/rebuild/channels-light.png) | [ダーク](images/android-design/rebuild/channels-dark.png) |
 | 通知 | [ライト](images/android-design/rebuild/notifications-light.png) | [ダーク](images/android-design/rebuild/notifications-dark.png) |
 | Bubble | [ライト](images/android-design/rebuild/bubble-light.png) | [ダーク](images/android-design/rebuild/bubble-dark.png) |
