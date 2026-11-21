@@ -6,7 +6,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -64,7 +63,6 @@ internal fun NotificationPage(
                 Text(item.summary, color = colors.foreground, fontSize = 15.sp)
                 item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
             }
-            HorizontalDivider(color = colors.secondary.copy(alpha = .24f))
         }
     }
 }

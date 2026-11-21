@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -206,13 +205,13 @@ private fun RenderAndroidScreen(
             is AndroidScreen.Conversation -> {
                 PageHeader(screen.name, colors, screen.description, onBack = back,
                     onOpen = { dispatch(AndroidUiAction.OpenChannelSettings(screen.id)) })
-                TimelineWithInput(screen.entries, screen.input, colors, dispatch, showDividers = false, swipeReply = swipeReply, allowThreads = true)
+                TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = swipeReply, allowThreads = true)
             }
             is AndroidScreen.Thread -> {
                 PageHeader("スレッド", colors, onBack = back)
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
-                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch, showDividers = false)
+                TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -308,12 +307,11 @@ private fun ColumnScope.TimelineWithInput(
     input: InputState,
     colors: AndroidColors,
     dispatch: (AndroidUiAction) -> Unit,
-    showDividers: Boolean = true,
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
 ) {
     if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch,
-        showDividers = showDividers, swipeReply = swipeReply, allowThreads = allowThreads)
+        swipeReply = swipeReply, allowThreads = allowThreads)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
         { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier)
 }
@@ -321,7 +319,7 @@ private fun ColumnScope.TimelineWithInput(
 @Composable
 private fun Timeline(
     entries: List<TimelineItem>, colors: AndroidColors, modifier: Modifier,
-    dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false, showDividers: Boolean = true,
+    dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false,
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
 ) {
@@ -352,7 +350,6 @@ private fun Timeline(
                     Text(entry.body, color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp)
                 }
             }
-            if (showDividers) HorizontalDivider(color = colors.inputBoundary)
         }
     }
     entries.firstOrNull { it.id == menuId }?.let { entry ->
