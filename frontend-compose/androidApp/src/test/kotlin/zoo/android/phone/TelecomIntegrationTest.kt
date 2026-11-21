@@ -308,6 +308,12 @@ class TelecomIntegrationTest {
         override fun incomingUi(id: String) { calls.add("incoming:$id") }
         override fun audio(id: String, speaker: Boolean, muted: Boolean?) { calls.add("audio:$speaker:$muted"); if (muted != null) appMuted = muted }
     }
+    @Test fun selfManagedOutgoingCallDoesNotAskTelecomToPlayRingback() {
+        val connection = ZooConnection(Actions(), "call", incoming = false)
+        assertEquals(Connection.STATE_DIALING, connection.state)
+        assertFalse(connection.isRingbackRequested)
+    }
+
     @Test fun telecomAnswerHeadsetDisconnectAndDtmfReachOnlyTheCurrentCall() {
         val actions = Actions(); val call = ZooConnection(actions, "call", true)
         assertEquals(Connection.STATE_RINGING, call.state)

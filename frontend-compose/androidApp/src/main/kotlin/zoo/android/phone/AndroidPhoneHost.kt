@@ -61,7 +61,7 @@ internal class AndroidPhoneHost(
             snapshotFlow { controller.call?.let { Triple(it.id, it.status, controller.busy) } }.collect {
                 val call = controller.call
                 if (call != null && call.status == "active" && connection?.id == call.id && !controller.busy) {
-                    connection?.setRingbackRequested(false); connection?.setActive()
+                    connection?.setActive()
                     pendingMute?.let { mute -> pendingMute = null; controller.mute(mute) }
                 }
                 service?.refresh()

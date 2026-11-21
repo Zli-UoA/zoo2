@@ -42,7 +42,8 @@ internal class ZooConnection(private val actions: ConnectionActions, val id: Str
         connectionProperties = PROPERTY_SELF_MANAGED
         connectionCapabilities = CAPABILITY_MUTE
         audioModeIsVoip = true
-        if (incoming) setRinging() else { setDialing(); setRingbackRequested(true) }
+        // Telecom does not own the ringback audio of a self-managed call.
+        if (incoming) setRinging() else setDialing()
     }
     override fun onAnswer() { if (actions.valid(id)) actions.answer(id) }
     override fun onAnswer(videoState: Int) = onAnswer()
