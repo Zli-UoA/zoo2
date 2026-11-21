@@ -111,6 +111,10 @@ final class ConversationStore {
         self.roots = roots
         repliesByParent = replies
     }
+    func prepareForThread(_ id: String) {
+        focusedMessageID = nil
+        if messagesByID[id] == nil { loading = true }
+    }
     func draftKey(_ parentID: String?) -> String { parentID ?? "root" }
     func validContent(_ text: String) -> Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.unicodeScalars.count <= 40_000

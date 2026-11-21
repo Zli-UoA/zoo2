@@ -30,7 +30,7 @@ final class TypingUITests: XCTestCase {
 
     func testTypingAppearsAboveComposerAndFollowsThread() {
         let app = XCUIApplication()
-        app.launchArguments = ["--uitesting-workspace", "--uitesting-typing", "--uitesting-joined-thread"]
+        app.launchArguments = ["--uitesting-workspace", "--uitesting-typing", "--uitesting-thread-directory"]
         app.launch()
         let channel = app.buttons["channel-11111111-1111-4111-8111-111111111111"]
         XCTAssertTrue(channel.waitForExistence(timeout: 15))
