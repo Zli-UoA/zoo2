@@ -67,21 +67,28 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
                 }
             }
         }
-        val sourceFontSize = 11.sp
-        val sourceLineHeight = 14.sp
-        val sourceHeight = with(LocalDensity.current) { sourceLineHeight.toDp() }
-        if (data.channel != null) {
-            Text("#${data.channel}", Modifier.height(sourceHeight), color = colors.secondary, fontSize = sourceFontSize, lineHeight = sourceLineHeight,
-                fontWeight = AndroidWeights.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        } else data.server?.let { server ->
-            val tint = data.serverRgb?.let { Color(it or 0xff000000.toInt()) }
-            val start = tint?.let { lerp(colors.background, it, 0.32f) } ?: colors.headerLight
-            Row(Modifier.fillMaxWidth()
-                .background(Brush.horizontalGradient(listOf(start, Color.Transparent)), RoundedCornerShape(5.dp))
-                .padding(horizontal = 6.dp),
-                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                UiGlyph(UiIcon.Public, colors.foreground, iconSize = AndroidControlSize.metadataIcon)
-                Text(server, Modifier.height(sourceHeight), color = colors.foreground, fontSize = sourceFontSize, lineHeight = sourceLineHeight, fontWeight = AndroidWeights.emphasis,
+        val channel = data.channel
+        val source = channel?.let { "#$it" } ?: data.server
+        if (source != null) {
+            val server = channel == null
+            val sourceLineHeight = 14.sp
+            val sourceHeight = with(LocalDensity.current) { sourceLineHeight.toDp() }
+            val start = if (server) {
+                val tint = data.serverRgb?.let { Color(it or 0xff000000.toInt()) }
+                tint?.let { lerp(colors.background, it, 0.32f) } ?: colors.headerLight
+            } else colors.inputSurface
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.metadataIcon)
+                    .background(Brush.horizontalGradient(listOf(start, Color.Transparent)), RoundedCornerShape(5.dp))
+                    .padding(horizontal = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (server) UiGlyph(UiIcon.Public, colors.foreground, iconSize = AndroidControlSize.metadataIcon)
+                Text(source, Modifier.height(sourceHeight),
+                    color = if (server) colors.foreground else colors.secondary,
+                    fontSize = 11.sp, lineHeight = sourceLineHeight,
+                    fontWeight = if (server) AndroidWeights.emphasis else AndroidWeights.label,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }

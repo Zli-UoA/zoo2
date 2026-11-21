@@ -288,6 +288,8 @@ class AndroidSamplesTest {
                     val channelBounds = ui.onNodeWithText("#開発", useUnmergedTree = true)
                         .assertIsDisplayed().getUnclippedBoundsInRoot()
                     check(channelBounds.bottom - channelBounds.top == serverBounds.bottom - serverBounds.top)
+                    val channelHandle = ui.onNodeWithText("@mizuki", useUnmergedTree = true).getUnclippedBoundsInRoot()
+                    check(channelBounds.top - channelHandle.bottom == serverBounds.top - nameBounds.bottom)
                     val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
                     val controls = listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作").map { label ->
                         ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true)
