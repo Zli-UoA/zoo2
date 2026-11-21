@@ -1477,7 +1477,10 @@ async fn test_dm_call_rings_the_other_member_and_join_accepts() -> anyhow::Resul
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(accepted, serde_json::json!({"ok": true, "channel_id": w.dm_ch}));
+    assert_eq!(
+        accepted,
+        serde_json::json!({"ok": true, "channel_id": w.dm_ch})
+    );
 
     // 相手が入ったら応答済み。2 人目の入室では、新しく呼ばない
     let bob_stream = open(&bob, uuid::Uuid::new_v4()).await?;
