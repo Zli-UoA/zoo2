@@ -81,6 +81,28 @@ it("does not start a PDF task when bytes arrive after the loading deadline", asy
   });
   expect(mocked.getDocument).not.toHaveBeenCalled();
 });
+it("shows the limit notice without building page slots for an over-limit PDF", async () => {
+  const getPage = vi.fn();
+  mocked.fetch.mockResolvedValue(new Uint8Array());
+  mocked.getDocument.mockReturnValue({
+    destroy: mocked.destroy,
+    promise: Promise.resolve({
+      numPages: 1001,
+      getPage,
+      loadingTask: { destroy: mocked.destroy },
+    }),
+  });
+  const view = render(
+    <LocaleProvider>
+      <PdfPreview src="/many-pages" />
+    </LocaleProvider>,
+  );
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "ページ番号" })).toBeNull();
+  expect(view.container.querySelector("[data-pdf-page]")).toBeNull();
+  expect(getPage).not.toHaveBeenCalled();
+});
+
 it("keeps rendered canvases intact while typing in the page input or stepping to buffered pages", async () => {
   const renders = new Map<number, number>();
   mocked.fetch.mockResolvedValue(new Uint8Array());

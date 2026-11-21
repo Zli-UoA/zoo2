@@ -668,22 +668,24 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
   // ページ枠はページ数分必要だが、入力欄の変更では作り直さない。
   const pageSlots = useMemo(
     () =>
-      Array.from({ length: totalPages }, (_, index) => {
-        const pageNumber = index + 1;
-        return (
-          <PdfPageSlot
-            key={pageNumber}
-            pageNumber={pageNumber}
-            label={t("attachments.pdfPage", { page: pageNumber })}
-            size={pageSizes[pageNumber] ?? defaultSize}
-            mounted={keptPagesSet.has(pageNumber)}
-            onSlotMount={handleSlotMount}
-            onSlotUnmount={handleSlotUnmount}
-            onCanvasMount={handleCanvasMount}
-            onCanvasUnmount={handleCanvasUnmount}
-          />
-        );
-      }),
+      overLimit
+        ? []
+        : Array.from({ length: totalPages }, (_, index) => {
+            const pageNumber = index + 1;
+            return (
+              <PdfPageSlot
+                key={pageNumber}
+                pageNumber={pageNumber}
+                label={t("attachments.pdfPage", { page: pageNumber })}
+                size={pageSizes[pageNumber] ?? defaultSize}
+                mounted={keptPagesSet.has(pageNumber)}
+                onSlotMount={handleSlotMount}
+                onSlotUnmount={handleSlotUnmount}
+                onCanvasMount={handleCanvasMount}
+                onCanvasUnmount={handleCanvasUnmount}
+              />
+            );
+          }),
     [
       defaultSize,
       handleCanvasMount,
@@ -691,6 +693,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       handleSlotMount,
       handleSlotUnmount,
       keptPagesSet,
+      overLimit,
       pageSizes,
       t,
       totalPages,
