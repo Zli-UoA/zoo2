@@ -1,9 +1,13 @@
-import { useEffect, useLayoutEffect, type RefObject } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 
-function fit(element: HTMLTextAreaElement, maxHeight: number) {
+/** Fits the field to its draft. Returns false, and leaves the field alone, while it is not rendered. */
+function fit(element: HTMLTextAreaElement, maxHeight: number): boolean {
+  // A field inside a hidden parent (`display: none`) has no `scrollHeight`: fitting it would set 0.
+  if (element.getClientRects().length === 0) return false;
   element.style.height = "auto";
   element.style.height = `${Math.min(element.scrollHeight, maxHeight)}px`;
   element.style.overflowY = element.scrollHeight > maxHeight ? "auto" : "hidden";
+  return true;
 }
 
 /** Grow with the draft, then scroll within the configured input height. */
@@ -12,24 +16,16 @@ export function useAutosizeTextarea(
   value: string,
   maxHeight: number,
 ) {
+  const pending = useRef(false);
   useLayoutEffect(() => {
     const element = ref.current;
-    if (element) fit(element, maxHeight);
+    if (element) pending.current = !fit(element, maxHeight);
   }, [ref, value, maxHeight]);
 
-  // A hidden textarea (`display: none`) has no `scrollHeight`, so a draft set meanwhile would be
-  // fitted to 0 and stay that small after it is shown. A change of width also rewraps the draft.
-  // Only the width is watched: fitting changes the height, which must not fit again.
-  useEffect(() => {
+  // A draft set while the field was hidden is fitted by the render that shows it again (the parent
+  // that shows it renders this component too). No dependencies: it must look after every render.
+  useLayoutEffect(() => {
     const element = ref.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    let width = element.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (element.clientWidth === width) return;
-      width = element.clientWidth;
-      if (width > 0) fit(element, maxHeight);
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [ref, maxHeight]);
+    if (element && pending.current) pending.current = !fit(element, maxHeight);
+  });
 }
