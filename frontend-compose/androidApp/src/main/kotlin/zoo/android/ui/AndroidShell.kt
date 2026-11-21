@@ -9,6 +9,8 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,7 +58,20 @@ internal fun AndroidShell(
     screen: @Composable ColumnScope.(AndroidColors) -> Unit,
 ) {
     val colors = AndroidColors(dark)
-    MaterialTheme {
+    val scheme = (if (dark) darkColorScheme() else lightColorScheme()).copy(
+        primary = colors.accent,
+        onPrimary = Color.Black,
+        primaryContainer = colors.headerLight,
+        onPrimaryContainer = colors.foreground,
+        background = colors.background,
+        surface = colors.background,
+        onSurface = colors.foreground,
+        surfaceVariant = colors.quietSurface,
+        onSurfaceVariant = colors.secondary,
+        outline = colors.inputHint,
+        outlineVariant = colors.inputBoundary,
+    )
+    MaterialTheme(colorScheme = scheme) {
         Column(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
             Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
             if (selected != null) {
