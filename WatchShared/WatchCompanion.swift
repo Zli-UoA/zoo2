@@ -48,6 +48,7 @@ struct WatchSnapshot: Codable, Equatable, Sendable {
     var unreadCount = 0
     var noticesLoading = false
     var noticeError: String?
+    var callError: String?
 }
 
 struct WatchReply: Codable, Sendable {

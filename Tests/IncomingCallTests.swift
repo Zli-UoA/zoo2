@@ -1,7 +1,9 @@
+import AVFAudio
 import CallKit
 import Foundation
 import Synchronization
 import Testing
+import UIKit
 import UserNotifications
 @testable import Zoo
 
@@ -37,6 +39,13 @@ private final class FakeCallRequesting: SystemCallRequesting {
         completion(failure)
         if failure == nil { onRequest?(transaction) }
     }
+}
+
+private final class RecordingAnswerAction: CXAnswerCallAction {
+    private let completions = Mutex<[Bool]>([])
+    var results: [Bool] { completions.withLock { $0 } }
+    override func fulfill() { completions.withLock { $0.append(true) } }
+    override func fail() { completions.withLock { $0.append(false) } }
 }
 
 @MainActor @Suite("発信の標準通話画面とライフサイクル", .timeLimit(.minutes(1)))
@@ -302,10 +311,164 @@ struct OutgoingCallTests {
 
 @MainActor @Suite("着信の通知と応答", .timeLimit(.minutes(1)))
 struct IncomingCallTests {
+    @MainActor private final class AnswerPreparation {
+        var configured = false
+        var backgroundStarts = 0
+        var backgroundEnds = 0
+        var expiration: (@MainActor @Sendable () -> Void)?
+    }
+
+    @MainActor private final class AnswerContext {
+        let harness: ChatHarness
+        let client = FakeCallClient()
+        let media = FakeCallMedia()
+        let reporting = FakeCallReporting()
+        let requesting = FakeCallRequesting()
+        let native = CXProvider(configuration: CXProviderConfiguration())
+        let call: IncomingCall
+        let calls: CallStore
+        let workspace: WorkspaceStore
+        let controller: SystemCallController
+        let progress = AsyncStream<String>.makeStream()
+        let preparation = AnswerPreparation()
+
+        init(payload: [String: String], permission: Bool = true, audioFailure: Bool = false) throws {
+            harness = try ChatHarness()
+            call = try #require(IncomingCall(payload: payload))
+            let channel = Channel(id: call.channelID, channel_name: "着信先", is_private: false, is_dm: false)
+            let channelData = try JSONEncoder().encode(channel)
+            harness.stub { request in
+                #expect(request.url?.path == "/api/channels/\(channel.id)")
+                return (200, [:], channelData)
+            }
+            client.invitationRows = [call.invitation]
+            client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+            let media = self.media
+            calls = CallStore(client: client, userID: call.userID, makeMedia: { media }, permission: { permission })
+            workspace = WorkspaceStore(client: harness.client,
+                user: Person(id: call.userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+            let preparation = self.preparation
+            controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {
+                preparation.configured = true
+                if audioFailure { throw ZooError.invalidResponse }
+            }, beginBackgroundTask: { expired in
+                preparation.backgroundStarts += 1
+                preparation.expiration = expired
+                return UIBackgroundTaskIdentifier(rawValue: 1)
+            }, endBackgroundTask: { task in
+                #expect(task.rawValue == 1)
+                preparation.backgroundEnds += 1
+            })
+            client.delivered = { [weak self] in self?.progress.continuation.yield("入室") }
+            reporting.onEnd = { [weak self] in self?.progress.continuation.yield("終了") }
+            controller.setForeground(false)
+            controller.connect(workspace)
+        }
+
+        func receive() async {
+            await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
+        }
+
+        func requestAnswer(fromNotification: Bool = false) async throws -> RecordingAnswerAction {
+            if fromNotification {
+                let content = UNMutableNotificationContent()
+                content.categoryIdentifier = IncomingCallNotifications.categoryID
+                content.userInfo = ["invite_id": call.id.uuidString, "user_id": call.userID]
+                let request = UNNotificationRequest(identifier: IncomingCallNotifications.identifierPrefix + UUID().uuidString,
+                                                    content: content, trigger: nil)
+                let response = try #require(IncomingCallNotificationAction(request: request,
+                    actionIdentifier: IncomingCallNotifications.answerID))
+                await controller.performNotificationAction(response)
+            } else {
+                try await controller.performWatchAction(WatchRequest(action: .answer, callID: call.id))
+            }
+            let requested = try #require(requesting.requests.last?.actions.first as? CXAnswerCallAction)
+            return RecordingAnswerAction(call: requested.callUUID)
+        }
+
+        func close() {
+            controller.disconnect()
+            workspace.shutdown()
+            native.invalidate()
+            progress.continuation.finish()
+            harness.close()
+        }
+    }
+
     private var payload: [String: String] {
         ["type": "call_invite", "invite_id": UUID().uuidString, "user_id": UUID().uuidString,
          "channel_id": UUID().uuidString, "inviter_id": UUID().uuidString,
          "caller_name": "発信者", "expires_at": Date.now.addingTimeInterval(30).ISO8601Format()]
+    }
+
+    @Test("Watchの通知・アプリからの応答は音声を先に準備し、バックグラウンドで入室してCallKitへ完了を返す",
+          arguments: [true, false], [true, false])
+    func answersInBackground(fromNotification: Bool, audioActivatesFirst: Bool) async throws {
+        let context = try AnswerContext(payload: payload)
+        defer {
+            context.controller.provider(context.native, didDeactivate: AVAudioSession.sharedInstance())
+            context.close()
+        }
+        await context.receive()
+        let action = try await context.requestAnswer(fromNotification: fromNotification)
+        #expect(!context.calls.ready && action.results.isEmpty)
+        context.controller.provider(context.native, perform: action)
+        #expect(context.preparation.configured && context.preparation.backgroundStarts == 1)
+        #expect(!context.client.observed && action.results.isEmpty)
+        if audioActivatesFirst {
+            context.controller.provider(context.native, didActivate: AVAudioSession.sharedInstance())
+            #expect(context.preparation.backgroundEnds == 0)
+        }
+        var progress = context.progress.stream.makeAsyncIterator()
+        #expect(await progress.next() == "入室")
+        #expect(context.calls.ready && context.media.started && context.client.accepted)
+        #expect(action.results == [true] && context.controller.watchCall?.phase == .connected)
+        // 応答完了と音声の有効化には間隔があるため、入室だけでは実行時間を解放しない。
+        #expect(context.preparation.backgroundEnds == (audioActivatesFirst ? 1 : 0))
+        if !audioActivatesFirst {
+            context.controller.provider(context.native, didActivate: AVAudioSession.sharedInstance())
+        }
+        #expect(context.preparation.backgroundEnds == 1)
+        context.controller.provider(context.native, perform: CXEndCallAction(call: context.call.id))
+        #expect(context.preparation.backgroundEnds == 1 && context.media.closed)
+        #expect(!context.controller.isManagingCall && context.calls.channel == nil)
+    }
+
+    @Test("応答の音声設定・マイク許可が失敗したら着信と実行時間を解放する", arguments: [true, false])
+    func answerPreparationFails(audioFailure: Bool) async throws {
+        let context = try AnswerContext(payload: payload, permission: false, audioFailure: audioFailure)
+        defer { context.close() }
+        await context.receive()
+        let action = try await context.requestAnswer()
+        context.controller.provider(context.native, perform: action)
+        var progress = context.progress.stream.makeAsyncIterator()
+        #expect(await progress.next() == "終了")
+        #expect(action.results == [false] && !context.controller.isManagingCall)
+        #expect(!context.client.observed && !context.media.started)
+        #expect(context.preparation.backgroundStarts == 1 && context.preparation.backgroundEnds == 1)
+        #expect(context.calls.error != nil)
+        let service = WatchCompanionService(calls: context.controller, workspace: { context.workspace }, prepare: { context.workspace })
+        #expect(service.snapshot().callError == context.calls.error)
+    }
+
+    @Test("応答準備の期限切れ・取消・リセットで遅い処理を無効にし、実行時間を一度だけ解放する",
+          arguments: ["期限切れ", "取消", "リセット"])
+    func interruptsAnswerPreparation(reason: String) async throws {
+        let context = try AnswerContext(payload: payload)
+        defer { context.close() }
+        await context.receive()
+        let action = try await context.requestAnswer()
+        context.controller.provider(context.native, perform: action)
+        let expire = try #require(context.preparation.expiration)
+        switch reason {
+        case "期限切れ": expire()
+        case "取消": context.controller.provider(context.native, perform: CXEndCallAction(call: context.call.id))
+        default: context.controller.providerDidReset(context.native)
+        }
+        #expect(action.results == [false] && !context.controller.isManagingCall)
+        #expect(context.preparation.backgroundEnds == 1 && !context.client.observed)
+        expire()
+        #expect(context.preparation.backgroundEnds == 1)
     }
 
     @Test("通知の操作は現在の着信と宛先に限り、終了後や応答後には送信しない",

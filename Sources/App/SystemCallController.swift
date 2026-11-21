@@ -29,6 +29,9 @@ final class SystemCallController: NSObject {
     private let provider: any SystemCallReporting
     private let callController: any SystemCallRequesting
     private let configureAudio: @MainActor () throws -> Void
+    private let beginBackgroundTask: (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier
+    private let endBackgroundTask: (UIBackgroundTaskIdentifier) -> Void
+    private var answerBackgroundTask = UIBackgroundTaskIdentifier.invalid
     private var registry: PKPushRegistry?
     private weak var session: AppSession?
     private weak var workspace: WorkspaceStore?
@@ -123,10 +126,16 @@ final class SystemCallController: NSObject {
     }
 
     init(provider: any SystemCallReporting, callController: any SystemCallRequesting = CXCallController(),
-         configureAudio: @escaping @MainActor () throws -> Void = NativeCallMedia.prepareSystemAudio) {
+         configureAudio: @escaping @MainActor () throws -> Void = NativeCallMedia.prepareSystemAudio,
+         beginBackgroundTask: @escaping (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier = {
+             UIApplication.shared.beginBackgroundTask(withName: "着信への応答準備", expirationHandler: $0)
+         },
+         endBackgroundTask: @escaping (UIBackgroundTaskIdentifier) -> Void = { UIApplication.shared.endBackgroundTask($0) }) {
         self.provider = provider
         self.callController = callController
         self.configureAudio = configureAudio
+        self.beginBackgroundTask = beginBackgroundTask
+        self.endBackgroundTask = endBackgroundTask
         super.init()
         (provider as? CXProvider)?.setDelegate(self, queue: .main)
     }
@@ -332,10 +341,19 @@ final class SystemCallController: NSObject {
         phase = .connected
         onWatchStateChanged?()
         answerAction?.fulfill(); answerAction = nil
+        if audioActivated { finishAnswerBackgroundTask() }
         updateSync()
     }
 
+    private func finishAnswerBackgroundTask() {
+        guard answerBackgroundTask != .invalid else { return }
+        let task = answerBackgroundTask
+        answerBackgroundTask = .invalid
+        endBackgroundTask(task)
+    }
+
     private func clear() {
+        finishAnswerBackgroundTask()
         if let current { retired[current.id] = max(current.expiresAt, .now.addingTimeInterval(60)) }
         current = nil
         incomingReported = false
@@ -473,19 +491,37 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
         onWatchStateChanged?()
         expiry?.cancel(); expiry = nil
         answerAction = action
+        // Watchの通知操作が完了しても、CallKitが音声を有効にするまで応答準備を継続する。
+        answerBackgroundTask = beginBackgroundTask { [weak self] in
+            guard let self, current?.id == call.id else { return }
+            workspace?.calls.error = "通話の準備が時間内に完了しませんでした。もう一度お試しください。"
+            end(reason: .failed)
+        }
+        do { try configureAudio() }
+        catch {
+            workspace?.calls.error = "通話の音声を準備できませんでした。"
+            end(reason: .failed)
+            return
+        }
         answering = Task { [weak self] in
-            guard let self, let session else { action.fail(); return }
-            let workspace = await session.prepareForIncomingCall()
+            guard let self else { action.fail(); return }
+            // 着信を受け付けた接続が使える場合、通常の復帰処理や通知登録の完了を待たない。
+            let workspace: WorkspaceStore?
+            if let connected = self.workspace, connected.active { workspace = connected }
+            else { workspace = await session?.prepareForIncomingCall() }
             guard !Task.isCancelled, current?.id == call.id else { return }
-            guard let workspace, call.canAnswer(userID: workspace.user.id), workspace.calls.channel == nil else {
+            guard let workspace, workspace.active, call.canAnswer(userID: workspace.user.id), workspace.calls.channel == nil else {
                 end(reason: .failed); return
             }
+            connect(workspace)
             do {
                 let channel = try await workspace.client.channel(id: call.channelID)
                 try Task.checkCancellation()
                 guard current?.id == call.id else { return }
                 guard call.canAnswer(userID: workspace.user.id) else { end(reason: .unanswered); return }
-                guard workspace.calls.channel == nil else { end(reason: .failed); return }
+                guard self.workspace === workspace, workspace.active, workspace.calls.channel == nil else {
+                    end(reason: .failed); return
+                }
                 let audio = RTCAudioSession.sharedInstance()
                 audio.useManualAudio = true
                 audio.isAudioEnabled = audioActivated
@@ -539,6 +575,7 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
         audio.audioSessionDidActivate(audioSession)
         audio.isAudioEnabled = true
         workspace?.calls.setSystemAudioActive(true)
+        if phase == .connected { finishAnswerBackgroundTask() }
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {

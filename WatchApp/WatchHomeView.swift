@@ -24,6 +24,9 @@ struct WatchHomeView: View {
                         Text("iPhoneのZooでログインしてください。")
                     } else {
                         callSection(snapshot.call)
+                        if let error = snapshot.callError {
+                            Text(error).font(.footnote).foregroundStyle(.orange)
+                        }
                         Section("通知 · 未読\(snapshot.unreadCount)件") {
                             if let error = snapshot.noticeError {
                                 Text(error).font(.footnote).foregroundStyle(.secondary)
