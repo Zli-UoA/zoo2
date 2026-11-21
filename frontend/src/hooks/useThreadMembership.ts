@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore } from "react";
-import { createConfiguredApiClient, type ApiEnvelope } from "../lib/api/client";
+import { ApiError, createConfiguredApiClient, type ApiEnvelope } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { THREADS_CHANGED } from "../lib/electric/threads";
 
@@ -9,6 +9,15 @@ export interface ThreadParticipant {
   display_name: string | null;
   avatar_url: string | null;
 }
+/** `POST /api/messages` の 403 のうち、参加行があるスレッドへ、参加せずに返信したもの（`code`）。 */
+const THREAD_JOIN_REQUIRED_CODE = "THREAD_JOIN_REQUIRED";
+
+/** `error` が、スレッドへ参加してから返信するよう求める 403 か。投稿権限などの 403 は含まない。 */
+export function isThreadJoinRequired(error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 403) return false;
+  return (error.body as { code?: unknown } | null)?.code === THREAD_JOIN_REQUIRED_CODE;
+}
+
 export interface ThreadMembership {
   id: string;
   channel_id: string;
@@ -17,15 +26,19 @@ export interface ThreadMembership {
   can_participate: boolean;
   /** 現在参加中の人数と、先頭から最大50人。 */
   participant_count?: number;
-  /** 参加行が1つでもあるか（全員退出済みでも true）。true なら返信に参加が必要。 */
+  /**
+   * 参加行が1つでもあるか（全員退出済みでも true）。サーバーは、true のスレッドへの未参加者の返信を
+   * 403（`THREAD_JOIN_REQUIRED`）で拒否する。Web の画面は、返信の有無によらず参加状態（`membership`）だけで
+   * 入力欄を出すので、この値は使わない。参加者を表示しないクライアントのために、応答に含まれる。
+   */
   tracked?: boolean;
   participants?: ThreadParticipant[];
 }
 /**
  * 書き込み（参加・退出・再Open）や他の画面の通知で届いた値を、いまの値へ重ねる。応答に参加者の項目が
- * ない（コミット後の読み取りに失敗した、など）ときは、前の値を残す。値が消えると、参加人数のボタンが
- * 隠れ、`tracked` が不明になって、参加が必要なスレッドに入力欄が開いてしまう。書き込みの応答は再取得せず
- * 反映する方針（docs/request-design.md）なので、残した人数のずれは、次の定期取得（60秒）で直る。
+ * ない（コミット後の読み取りに失敗した、など）ときは、前の人数と一覧を残す。値が消えると、ヘッダーの
+ * 参加人数のボタンが隠れてしまう。書き込みの応答は再取得せず反映する方針（docs/request-design.md）なので、
+ * 残した人数のずれは、次の定期取得（60秒）で直る。
  */
 function mergeMembership(
   previous: ThreadMembership | null,
@@ -35,7 +48,6 @@ function mergeMembership(
   return {
     ...next,
     participant_count: next.participant_count ?? previous.participant_count,
-    tracked: next.tracked ?? previous.tracked,
     participants: next.participants ?? previous.participants,
   };
 }

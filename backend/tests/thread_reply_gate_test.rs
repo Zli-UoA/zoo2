@@ -96,11 +96,16 @@ struct World {
 
 /// Three channel members (users[0] owns the channel); the rollout is `ready`.
 async fn world() -> anyhow::Result<World> {
+    world_in("ready").await
+}
+
+/// The same, with the staged migration in `phase` (`collecting`, `normalizing` or `ready`).
+async fn world_in(phase: &str) -> anyhow::Result<World> {
     dotenvy::dotenv().ok();
     let fixture = thread_db::ThreadDb::new().await?;
     let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
-    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+    toasty::sql::statement(&format!("UPDATE thread_rollout SET phase='{phase}'"))
         .exec(&mut db)
         .await?;
     let app = create_router(AppState::new(db.clone(), config));
@@ -537,5 +542,211 @@ async fn a_message_without_replies_can_be_joined_before_the_first_reply() -> any
             .iter()
             .any(|item| item["id"] == root.as_str())
     );
+    w.fixture.cleanup().await
+}
+
+/// 投稿権限の確認は、参加の確認より先。管理者のみ投稿できるチャンネルの非管理者は、参加しているかどうかに
+/// よらず、投稿権限の 403（`POSTING_RESTRICTED`）になり、参加を求められない（参加しても送れないため）。
+#[tokio::test]
+async fn the_posting_policy_is_checked_before_the_join() -> anyhow::Result<()> {
+    let mut w = world().await?;
+    let root = w.root().await?;
+    // users[1] replies first (the thread now tracks participants), then the channel becomes managers-only.
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    toasty::sql::statement("UPDATE channels SET posting_policy='managers' WHERE id=$1")
+        .bind(w.channel.as_str())
+        .exec(&mut w.db)
+        .await?;
+    // users[1] is joined and users[2] is not: neither is the creator or an administrator.
+    for user in [&w.users[1], &w.users[2]] {
+        let (status, body) =
+            call(&w.app, user, "POST", "/api/messages", w.reply(&root, "x")).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["code"], "POSTING_RESTRICTED", "{body}");
+        assert_eq!(body["error"], "Only channel managers may post here");
+    }
+    // The creator still posts: as the author of the root, they joined with the first reply.
+    let (status, body) = call(
+        &w.app,
+        &w.users[0],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "creator"),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    w.fixture.cleanup().await
+}
+
+/// 参加して退出しただけでも、参加行は残る（`tracked`）。そのスレッドへの最初の返信も、全員が参加してから。
+#[tokio::test]
+async fn joining_and_leaving_keeps_the_thread_tracked() -> anyhow::Result<()> {
+    let w = world().await?;
+    let root = w.root().await?;
+    let path = format!("/api/threads/{root}");
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        &format!("{path}/join"),
+        json!({}),
+    )
+    .await?;
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        &format!("{path}/leave"),
+        json!({}),
+    )
+    .await?;
+    let thread = w.thread(&w.users[2], &root).await?;
+    assert_eq!(thread["tracked"], true);
+    assert_eq!(thread["participant_count"], 0);
+    let (status, body) = call(
+        &w.app,
+        &w.users[2],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::FORBIDDEN, &json!("THREAD_JOIN_REQUIRED"))
+    );
+    w.fixture.cleanup().await
+}
+
+/// 無効化したユーザーは、参加していても、一覧と人数に載らない。
+#[tokio::test]
+async fn a_deactivated_participant_is_not_listed() -> anyhow::Result<()> {
+    let mut w = world().await?;
+    let root = w.root().await?;
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    assert_eq!(w.thread(&w.users[0], &root).await?["participant_count"], 2);
+    toasty::sql::statement("UPDATE users SET is_deactivated=true WHERE id=$1")
+        .bind(w.users[1].as_str())
+        .exec(&mut w.db)
+        .await?;
+    let thread = w.thread(&w.users[0], &root).await?;
+    assert_eq!(thread["participant_count"], 1);
+    assert!(
+        !thread["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == w.users[1].as_str())
+    );
+    w.fixture.cleanup().await
+}
+
+/// 段階移行の途中（`collecting`・`normalizing`）でも、ゲートは同じに働く。
+#[tokio::test]
+async fn the_gate_holds_while_the_staged_migration_is_running() -> anyhow::Result<()> {
+    for phase in ["collecting", "normalizing"] {
+        let w = world_in(phase).await?;
+        let root = w.root().await?;
+        ok(
+            &w.app,
+            &w.users[1],
+            "POST",
+            "/api/messages",
+            w.reply(&root, "first"),
+        )
+        .await?;
+        let (status, body) = call(
+            &w.app,
+            &w.users[2],
+            "POST",
+            "/api/messages",
+            w.reply(&root, "late"),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{phase}: {body}");
+        assert_eq!(body["code"], "THREAD_JOIN_REQUIRED", "{phase}");
+        ok(
+            &w.app,
+            &w.users[2],
+            "POST",
+            &format!("/api/threads/{root}/join"),
+            json!({}),
+        )
+        .await?;
+        let (status, body) = call(
+            &w.app,
+            &w.users[2],
+            "POST",
+            "/api/messages",
+            w.reply(&root, "late"),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{phase}: {body}");
+        w.fixture.cleanup().await?;
+    }
+    Ok(())
+}
+
+/// ゲスト（チャンネルのメンバーだけを見られる利用者）も、ほかのメンバーと同じにゲートを受ける。
+#[tokio::test]
+async fn a_guest_is_gated_like_any_other_member() -> anyhow::Result<()> {
+    let mut w = world().await?;
+    let root = w.root().await?;
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    toasty::sql::statement("UPDATE users SET is_guest=true WHERE id=$1")
+        .bind(w.users[2].as_str())
+        .exec(&mut w.db)
+        .await?;
+    let (status, body) = call(
+        &w.app,
+        &w.users[2],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "late"),
+    )
+    .await?;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::FORBIDDEN, &json!("THREAD_JOIN_REQUIRED")),
+        "{body}"
+    );
+    ok(
+        &w.app,
+        &w.users[2],
+        "POST",
+        &format!("/api/threads/{root}/join"),
+        json!({}),
+    )
+    .await?;
+    let (status, body) = call(
+        &w.app,
+        &w.users[2],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "late"),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
     w.fixture.cleanup().await
 }

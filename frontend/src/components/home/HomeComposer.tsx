@@ -44,12 +44,15 @@ import { attachmentFilesFromClipboard, resolveAttachmentContentType } from "../.
 import { useCollections } from "../../lib/electric/collections-context";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 
-// バックエンドの `apps::events::posting` が、投稿権限のないチャンネルへ返す 403 の文言。
+// バックエンドの `apps::events::posting` が、投稿権限のないチャンネルへ返す 403 の `code` と本文。
+// `code` を優先し、`code` のない応答（コードを返す前のサーバー）だけ、本文で判定する。
+const POSTING_RESTRICTED_CODE = "POSTING_RESTRICTED";
 const POSTING_FORBIDDEN_MESSAGE = "Only channel managers may post here";
 
 function isPostingForbidden(body: unknown): boolean {
-  const message = (body as { error?: unknown } | null)?.error;
-  return typeof message === "string" && message.includes(POSTING_FORBIDDEN_MESSAGE);
+  const { code, error } = (body ?? {}) as { code?: unknown; error?: unknown };
+  if (typeof code === "string") return code === POSTING_RESTRICTED_CODE;
+  return typeof error === "string" && error.includes(POSTING_FORBIDDEN_MESSAGE);
 }
 
 export interface HomePostInput {

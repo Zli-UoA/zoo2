@@ -167,6 +167,20 @@ export function ThreadPane({
   // （サーバーは、参加行がないスレッドの最初の返信を、旧版のクライアントのために、参加なしで受け付ける）。
   // 参加状態の取得中（`membership` が未定）は、入力欄を止めるだけで、参加の案内は出さない。
   const needsJoin = isMember && (membership === "none" || membership === "left");
+  // 参加ボタンを押したあと、入力欄が使えるようになったら、入力欄へフォーカスを移す。ボタンは消えるので、
+  // 何もしないとフォーカスが失われ、キーボード・スクリーンリーダーの利用者が入力欄を探し直すことになる。
+  const composerRef = useRef<HTMLDivElement>(null);
+  const focusComposerAfterJoin = useRef(false);
+  useEffect(() => {
+    if (!needsJoin && focusComposerAfterJoin.current) {
+      focusComposerAfterJoin.current = false;
+      composerRef.current?.querySelector("textarea")?.focus();
+    } else if (membershipError) {
+      // 参加に失敗したら、あとで別の理由で入力欄が使えるようになっても、フォーカスを奪わない。
+      focusComposerAfterJoin.current = false;
+    }
+  }, [needsJoin, membershipError]);
+  const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -501,11 +515,18 @@ export function ThreadPane({
               reason={postingForbidden ? composeDisabledReason : undefined}
               pending={membershipPending}
               disabled={membership === undefined || isOffline}
-              onJoin={isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread}
+              onJoin={
+                joinThread
+                  ? () => {
+                      focusComposerAfterJoin.current = true;
+                      joinThread();
+                    }
+                  : undefined
+              }
             />
           ) : null}
           {/* 参加が必要になっても Composer はアンマウントせず隠す。入力中の本文・添付の下書きを保つ。 */}
-          <div hidden={needsJoin}>
+          <div ref={composerRef} hidden={needsJoin}>
             <Composer
               commands={commands}
               onRequestCommands={onRequestCommands}

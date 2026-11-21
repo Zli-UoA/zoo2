@@ -3,7 +3,7 @@ import {
   THREAD_REPLY_REDIRECTED,
   type ThreadReplyRedirect,
 } from "../../../lib/electric/threads";
-import { useThreadMembership } from "../../../hooks/useThreadMembership";
+import { isThreadJoinRequired, useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
@@ -295,6 +295,7 @@ export function MessagePane({
   );
   const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
   const threadMembership = useThreadMembership(currentUserId, threadRootId);
+  const retryMembership = threadMembership.retry;
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
@@ -566,10 +567,18 @@ export function MessagePane({
     if (!error) {
       return;
     }
+    if (isThreadJoinRequired(errorCause)) {
+      // 表示している参加状態が古かった（ほかの画面・クライアントで退出した、など）。参加状態を取り直すと、
+      // 入力欄の代わりに参加ボタンが出る。入力欄は隠れるだけなので、下書きは残る。
+      void retryMembership?.();
+      toast.info(t("threads.joinToReply"), { id: "thread-join-required" });
+      setError(null);
+      return;
+    }
     const description = errorCause == null ? error : localizeApiError(errorCause, t);
     toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
-  }, [error, errorCause, setError, t]);
+  }, [error, errorCause, retryMembership, setError, t]);
 
   const handleJoin = useCallback(async () => {
     if (!currentUserId || isJoining) {

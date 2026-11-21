@@ -120,10 +120,11 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
             else if (!archived)
                 Button(app.t("threads.join"), detail != null && !pending && app.env.online, size = "sm") { change("join") }
         }
-        // 参加してから返信する。返信がまだないメッセージも同じ（サーバーは、参加行がないスレッドの最初の
-        // 返信を、旧版のクライアントのために、参加なしで受け付ける。参加行があるスレッドへ参加せずに送ると 403）。
+        // 参加行があるスレッドは、参加してから返信する（未参加のまま送ると 403 になる）。Androidは、サーバーが
+        // 受け付ける範囲に合わせる。参加行がないスレッドの最初の返信は、参加なしで送れる（Web だけが、画面で
+        // 返信の前の参加を必須にしている）。
         val membership = detail?.text("membership")
-        val needsJoin = membership == "none" || membership == "left"
+        val needsJoin = membership == "left" || (membership == "none" && detail?.flag("tracked") == true)
         if (needsJoin) Text(app.t("threads.joinToReply"), small = true, muted = true)
         if (archived) Text(app.t("threads.reopenOnSend"), small = true, muted = true)
         if (failed) Text(app.t("threads.membershipError"), small = true, color = MaterialTheme.colorScheme.error)

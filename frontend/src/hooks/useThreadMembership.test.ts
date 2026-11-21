@@ -2,10 +2,18 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { useThreadMembership, type ThreadMembership } from "./useThreadMembership";
+import { ApiError } from "../lib/api/client";
+import {
+  isThreadJoinRequired,
+  useThreadMembership,
+  type ThreadMembership,
+} from "./useThreadMembership";
 import { THREADS_CHANGED } from "../lib/electric/threads";
 const fixture = vi.hoisted(() => ({ api: { get: vi.fn(), post: vi.fn() }, config: {} }));
-vi.mock("../lib/api/client", () => ({ createConfiguredApiClient: () => fixture.api }));
+vi.mock("../lib/api/client", async (original) => ({
+  ...(await original<typeof import("../lib/api/client")>()),
+  createConfiguredApiClient: () => fixture.api,
+}));
 vi.mock("../lib/electric/collections-context", () => ({
   useCollections: () => ({ config: fixture.config }),
 }));
@@ -152,8 +160,24 @@ it("keeps the participant fields when a write answers without them", async () =>
   expect(changed).toBe(true);
   expect(value.data?.membership).toBe("left");
   expect(value.data?.participant_count).toBe(3);
-  expect(value.data?.tracked).toBe(true);
   expect(value.data?.participants).toHaveLength(1);
   // A write is reflected without a refetch; the next periodic read corrects the kept count.
   expect(fixture.api.get).toHaveBeenCalledTimes(1);
+});
+
+it("recognises the 403 that asks for a join, by its code, and no other error", () => {
+  const forbidden = (body: unknown) => new ApiError(403, "forbidden", body);
+  expect(isThreadJoinRequired(forbidden({ error: "any text", code: "THREAD_JOIN_REQUIRED" }))).toBe(
+    true,
+  );
+  // A posting restriction (or any other 403) is not cured by a join.
+  expect(isThreadJoinRequired(forbidden({ error: "Only channel managers may post here" }))).toBe(
+    false,
+  );
+  expect(isThreadJoinRequired(forbidden({ code: "OTHER" }))).toBe(false);
+  expect(isThreadJoinRequired(new ApiError(409, "x", { code: "THREAD_JOIN_REQUIRED" }))).toBe(
+    false,
+  );
+  expect(isThreadJoinRequired(forbidden(null))).toBe(false);
+  expect(isThreadJoinRequired(new Error("network"))).toBe(false);
 });
