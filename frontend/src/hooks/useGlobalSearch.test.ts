@@ -164,6 +164,23 @@ it("retries the first page after it failed and refresh restarts from the newest 
   expect(search.items.map((row) => row.id)).toEqual(["m0"]);
 });
 
+it("retries the first page when a refresh of loaded results failed", async () => {
+  fixture.api.get
+    .mockResolvedValueOnce(page(["m1"], "cursor-1"))
+    .mockRejectedValueOnce(new Error("timeout"))
+    .mockResolvedValueOnce(page(["m3"], "cursor-3"));
+  await act(async () => root.render(createElement(Test, { query: "会議" })));
+  await act(async () => search.refresh());
+  expect(search.isError).toBe(true);
+  expect(search.items.map((row) => row.id)).toEqual(["m1"]);
+  await act(async () => search.loadMore());
+  // 再試行は失敗した 1 ページ目をやり直し、古い月の続き（cursor-1）は読まない。
+  expect(requested().map((url) => url.searchParams.get("cursor"))).toEqual([null, null, null]);
+  expect(search.items.map((row) => row.id)).toEqual(["m3"]);
+  expect(search.nextCursor).toBe("cursor-3");
+  expect(search.isError).toBe(false);
+});
+
 it("separates results by account", async () => {
   fixture.api.get.mockResolvedValueOnce(page(["alice"], null));
   await act(async () => root.render(createElement(Test, { query: "会議" })));

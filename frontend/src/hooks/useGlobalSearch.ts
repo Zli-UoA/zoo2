@@ -49,6 +49,8 @@ function createSearchEntry(config: Config, query: string, kind: SearchKind) {
   let fetchedAt = 0;
   let generation = 0;
   let controller: AbortController | null = null;
+  /** 失敗した取得のカーソル（1 ページ目なら null）。失敗していなければ undefined。 */
+  let failedCursor: string | null | undefined;
   let pendingStop: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
   const set = (next: GlobalSearchState) => {
@@ -76,6 +78,7 @@ function createSearchEntry(config: Config, query: string, kind: SearchKind) {
         (page) => {
           if (started !== generation) return;
           controller = null;
+          failedCursor = undefined;
           fetchedAt = Date.now();
           set({
             items: cursor ? appendSearchItems(state.items, page.items) : page.items,
@@ -89,17 +92,22 @@ function createSearchEntry(config: Config, query: string, kind: SearchKind) {
         () => {
           if (started !== generation) return;
           controller = null;
-          // 取得済みの結果は残し、同じ位置から再試行できるようにする。
+          // 取得済みの結果は残し、失敗した取得（1 ページ目の取り直しも含む）を同じ位置から再試行できるようにする。
+          failedCursor = cursor;
           set({ ...state, isLoading: false, isError: true });
         },
       );
   };
   return {
     snapshot: () => state,
-    /** 続き（さらに古い月）を読む。最初のページで失敗していれば最初から読む。 */
+    /**
+     * 続き（さらに古い月）を読む。失敗した取得があれば、同じカーソルでやり直す（1 ページ目の取り直しが
+     * 失敗していれば 1 ページ目から）。
+     */
     loadMore: () => {
       if (!listeners.size) return;
-      if (!state.loaded) fetchPage(null);
+      if (failedCursor !== undefined) fetchPage(failedCursor);
+      else if (!state.loaded) fetchPage(null);
       else if (state.nextCursor) fetchPage(state.nextCursor);
     },
     /** 同じ語で検索し直す。進行中の取得は捨てる。 */
