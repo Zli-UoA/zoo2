@@ -100,4 +100,4 @@ ZOO_DESKTOP_UI=leptos nix develop -c scripts/desktop-bench.sh -n 5 tauri-leptos 
 ZOO_DESKTOP_UI=remote nix develop -c scripts/desktop-bench.sh -n 5 tauri-remote desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri
 ```
 
-GPUI の行を測り直すには、廃止の直前のコミット `4e0d5274` を checkout して、`cd desktop && cargo build --release` のあと、`scripts/desktop-bench.sh -n 5 gpui desktop/target/release/zoo2-desktop run` を実行する。
+GPUI の行を測り直すには、廃止の直前のコミット `4e0d5274` を checkout して、`(cd desktop && cargo build --release)` のあと（サブシェルで、作業ディレクトリをリポジトリのルートのままにする）、`scripts/desktop-bench.sh -n 5 gpui desktop/target/release/zoo2-desktop run` を実行する。
