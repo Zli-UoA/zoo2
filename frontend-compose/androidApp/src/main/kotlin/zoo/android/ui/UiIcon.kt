@@ -1,11 +1,14 @@
 package zoo.android.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -18,14 +21,31 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
+internal object AndroidControlSize {
+    val target = 48.dp
+    val icon = 24.dp
+    val navigationHeight = 60.dp
+    val navigationIndicatorHeight = 32.dp
+    val textInset = 24.dp
+    val textVerticalInset = 8.dp
+}
+
 internal enum class UiIcon {
     Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create,
 }
 
 @Composable
-internal fun UiIconButton(icon: UiIcon, label: String, color: Color, action: () -> Unit, enabled: Boolean = true) {
+internal fun UiIconButton(
+    icon: UiIcon,
+    label: String,
+    color: Color,
+    action: () -> Unit,
+    enabled: Boolean = true,
+    fill: Color = Color.Transparent,
+) {
     Box(
-        Modifier.size(48.dp).clickable(enabled = enabled, role = Role.Button, onClick = action)
+        Modifier.size(AndroidControlSize.target).clip(CircleShape).background(fill)
+            .clickable(enabled = enabled, role = Role.Button, onClick = action)
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
@@ -35,9 +55,9 @@ internal fun UiIconButton(icon: UiIcon, label: String, color: Color, action: () 
 
 @Composable
 internal fun UiGlyph(icon: UiIcon, color: Color) {
-    Canvas(Modifier.size(22.dp)) {
+    Canvas(Modifier.size(AndroidControlSize.icon)) {
         fun point(x: Float, y: Float) = Offset(x * size.width / 24, y * size.height / 24)
-        val width = 1.65.dp.toPx()
+        val width = 1.75.dp.toPx()
         fun lines(vararg points: Pair<Int, Int>) {
             val path = Path()
             points.forEachIndexed { index, (x, y) ->

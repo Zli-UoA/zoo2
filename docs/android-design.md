@@ -47,12 +47,13 @@ Androidの見た目を変更するときの基準。数値の定義元は
 | 通知・投稿の内側 | 左右・上下12dp | `NotificationCard` / `HomePostCard` / `Message`。チャット左右は`MessageList`が所有 |
 | 著者のアバター / 本文まで | 36dp / 12dp | `postAvatarSize` / `avatarGap`。装飾の表示サイズであり操作の最小サイズではない |
 | ヘッダー | 最小56dp、左右12dp、上下4dp | `PaneHeader`。タイトル20sp/28sp。内容に合わせて伸びる |
-| ボタン・入力・メニュー・一覧操作 | 最小48dp | `touchTargetSize`、共通UI。ナビゲーション行の間隔は0dp |
-| 操作アイコン | 24dp | `Button` / `IconButton`。バッジ・本文中の装飾は対象外 |
-| ボタン内側 / アイコンとラベル間 | 左右12dp / 8dp | `Button`。アイコンだけのボタンは48dpの中央配置 |
+| ボタン・入力・メニュー・一覧操作 | 最小48dp | `AndroidControlSize.target`。隣接する操作領域は重ねない。 |
+| 操作アイコン | 24dp | `UiGlyph`。バッジ・本文中の装飾は対象外 |
+| 文字ボタン内側 | 左右24dp・上下8dp | `TextAction`。通常の高さは48dp、幅は内容に合わせる |
 | 入力内側 | 左右12dp・上下8dp | `Field`。先頭アイコン付きは開始44dp、用途固有の明示的な`contentPadding`は維持 |
 | 設定画面外側 / セクション間 | 16dp / 24dp | `ZooSettings`。設定行内側は左右16dp・上下12dp |
-| ボタンの見える背景 | 補助操作は必要に応じて32dp、主操作・枠付き操作は最小48dp | `AndroidAction`。文字ボタンは内容幅、主操作のアイコンボタンは円形 |
+| 背景付きアイコンボタン | 48dpの円 | `UiIconButton`。透明な補助ボタンと同じ操作領域 |
+| 下部タブ | 高さ60dp、選択の背景48×32dp | `AndroidShell`。タブ全体を操作領域にする |
 | 操作の角丸 / 面の角丸 | 円とカプセル、入力は12dp、検索はカプセル | `AndroidAction`、`androidInputDecoration` |
 | 本文 | 17sp / 行高25sp | `ZooTheme.bodyMedium` |
 | 説明・日時 | 14sp / 行高20sp | `ZooTheme.bodySmall`、`PostTimestamp` |
@@ -65,7 +66,7 @@ Androidの見た目を変更するときの基準。数値の定義元は
 
 ## ボタンの表示サイズと操作領域
 
-アイコンは24dp。補助操作はアイコンだけか淡い面、主操作は黄色の円またはカプセルで示す。タップ領域は透明な周辺を含めて確保する。文字ボタンは文字幅に合わせた背景を操作領域の中央へ置く。文字倍率が大きい場合は背景も文字を収める高さに広げる。
+アイコンは24dp、アイコンボタンの操作領域と丸い背景は48dpにそろえる。添付・装飾・絵文字・戻るなどの補助操作は透明、送信や新規投稿の主操作は黄色。文字ボタンは内容幅のカプセルとし、文字倍率が大きい場合は48dpから必要な高さまで広げる。入力欄のつまみは24dp高の帯に置く展開用のジェスチャー面。
 隣り合う操作領域は重ねない。
 
 [WCAG 2.2のTarget Size (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum/)

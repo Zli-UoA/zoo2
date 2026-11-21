@@ -48,7 +48,7 @@ internal fun DirectoryPage(
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
             items(results, key = { it.id }) { item ->
                 Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
                         .clickable(role = Role.Button) { select(item.id) },
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -87,8 +87,9 @@ internal fun NewPostPage(
         if (showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("最近の写真", Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
-                Text("写真を選択", Modifier.clickable(role = Role.Button) { dispatch(AndroidUiAction.SystemPhotos) }
-                    .padding(vertical = 14.dp), color = colors.foreground, fontSize = 14.sp)
+                TextAction("写真を選択", colors, style = TextActionStyle.Plain) {
+                    dispatch(AndroidUiAction.SystemPhotos)
+                }
             }
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
@@ -106,7 +107,7 @@ internal fun NewPostPage(
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))
             val enabled = input.canSend && input.text.isNotBlank()
-            PrimaryAction("投稿", colors, enabled) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
+            TextAction("投稿", colors, enabled) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
         }
     }
 }
@@ -133,18 +134,6 @@ internal fun BrandPage(
 }
 
 @Composable
-internal fun PrimaryAction(title: String, colors: AndroidColors, enabled: Boolean = true, click: () -> Unit) {
-    Box(
-        Modifier.heightIn(min = 48.dp).clip(CircleShape)
-            .background(if (enabled) colors.accent else colors.inputBoundary)
-            .clickable(enabled = enabled, role = Role.Button, onClick = click).padding(horizontal = 24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(title, color = if (enabled) Color.Black else colors.inputHint, fontWeight = AndroidWeights.label)
-    }
-}
-
-@Composable
 internal fun ChannelEditorPage(
     screen: AndroidScreen.EditChannel,
     colors: AndroidColors,
@@ -160,7 +149,7 @@ internal fun ChannelEditorPage(
         }
         Spacer(Modifier.weight(1f))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            PrimaryAction(screen.submitLabel, colors, screen.canSubmit) { dispatch(AndroidUiAction.SubmitChannel) }
+            TextAction(screen.submitLabel, colors, screen.canSubmit) { dispatch(AndroidUiAction.SubmitChannel) }
         }
     }
 }

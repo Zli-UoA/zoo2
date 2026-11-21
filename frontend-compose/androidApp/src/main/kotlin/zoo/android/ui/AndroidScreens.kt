@@ -24,7 +24,6 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -157,15 +156,12 @@ internal fun AndroidScreens(
                 colors, loading = screen.restoring,
             ) {
                 if (screen.restoring) {
-                    Text("ログイン画面を開く", Modifier.clickable(role = Role.Button, onClick = back).padding(12.dp),
-                        color = colors.foreground)
-                } else PrimaryAction("ログイン", colors) { dispatch(AndroidUiAction.SignIn) }
+                    TextAction("ログイン画面を開く", colors, style = TextActionStyle.Plain, click = back)
+                } else TextAction("ログイン", colors) { dispatch(AndroidUiAction.SignIn) }
             }
             is AndroidScreen.Call -> BrandPage(if (screen.incoming) "着信中" else "通話中", screen.caller, colors) {
-                if (screen.incoming) PrimaryAction("応答", colors) { dispatch(AndroidUiAction.Answer) }
-                Text("通話を終了", Modifier.clip(CircleShape).background(colors.inputSurface)
-                    .clickable(role = Role.Button) { dispatch(AndroidUiAction.HangUp) }
-                    .padding(horizontal = 24.dp, vertical = 14.dp), color = colors.foreground)
+                if (screen.incoming) TextAction("応答", colors) { dispatch(AndroidUiAction.Answer) }
+                TextAction("通話を終了", colors, style = TextActionStyle.Neutral) { dispatch(AndroidUiAction.HangUp) }
             }
         }
     }
@@ -176,8 +172,9 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
     PageHeader("ホーム", colors)
     Box(Modifier.fillMaxSize()) {
         Timeline(screen.posts, colors, Modifier.fillMaxSize(), dispatch, posts = true)
-        Box(Modifier.align(Alignment.BottomEnd).padding(16.dp).background(colors.accent, CircleShape)) {
-            UiIconButton(UiIcon.Create, "新しい投稿", Color.Black, { dispatch(AndroidUiAction.ComposePost) })
+        Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+            UiIconButton(UiIcon.Create, "新しい投稿", Color.Black,
+                action = { dispatch(AndroidUiAction.ComposePost) }, fill = colors.accent)
         }
     }
 }
@@ -189,6 +186,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
         item {
             Text("チャンネルを探す",
                 Modifier.fillMaxWidth().background(colors.quietSurface, CircleShape)
+                    .heightIn(min = AndroidControlSize.target)
                     .clickable(role = Role.Button) { dispatch(AndroidUiAction.Browse) }.padding(14.dp),
                 color = colors.foreground, fontSize = 15.sp)
         }
@@ -199,7 +197,7 @@ private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, d
             }
             items(section.channels, key = { it.id }) { channel ->
                 Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
                         .clickable(role = Role.Button) { dispatch(AndroidUiAction.OpenChannel(channel.id)) }
                         .semantics { if (channel.unread) stateDescription = "未読" },
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
