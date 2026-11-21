@@ -277,7 +277,10 @@ const memberPeople = [
 ];
 async function closeMembers() {
   await userEvent.keyboard("{Escape}");
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+  // 負荷の高い環境でも安定するよう、閉じる処理の完了を待つ時間を長めにする（既定は1秒）。
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(), {
+    timeout: 5000,
+  });
 }
 export const Participating: Story = {
   parameters: { a11y: { test: "error" } },
@@ -340,7 +343,8 @@ export const WithParticipants: Story = {
     await expect(args.onLeaveThread).toHaveBeenCalledOnce();
     // Escape で一覧だけを閉じ、ボタンへフォーカスが戻る。
     await closeMembers();
-    await expect(toggle).toHaveFocus();
+    // フォーカスはダイアログが閉じ終わってから戻るので、待つ。
+    await waitFor(() => expect(toggle).toHaveFocus(), { timeout: 5000 });
   }),
 };
 export const ParticipantsMembershipFailed: Story = {

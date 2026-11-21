@@ -1109,13 +1109,15 @@ async fn test_sync_imports_recent_and_old_replies_in_one_page() -> anyhow::Resul
     deliver_reply(&f, &parent, &a).await?;
     deliver_reply_by(&f, &parent, &b, "UB").await?;
     let (ua, ub) = (author_of(&f, &a).await, author_of(&f, &b).await);
-    // 閉じて、2 人とも 1 時間前に退出した状態にする
+    // 閉じて、UA は 1 時間前に、UB は 4 日前（古い返信より前）に退出した状態にする。UB の退出を古い返信より前に
+    // しておくので、古い返信にフラグが誤って立つと、再参加のガード（left_at < created_at）を通って再参加する
     sql(&f.state, close_thread_sql(), &[&parent_id]).await?;
     leave(&f, &parent_id, &ua, "1 hour").await;
-    leave(&f, &parent_id, &ub, "1 hour").await;
+    leave(&f, &parent_id, &ub, "4 days").await;
     let before = count_messages(&f.state, &f.channel).await;
 
-    // 1 つのスレッドの返信に、直近の UA の返信と、3 日前の UB の返信を並べて返す (直近が先)
+    // 1 つのスレッドの返信に、直近の UA の返信と、3 日前の UB の返信を並べて返す。同期は `ts` の昇順に
+    // 1 つのトランザクションで入れるので、実際の順序は、古い UB の返信が先で、直近の UA の返信があと
     let recent = format!("{}.000600", now_secs() - 30);
     let old = format!("{}.000500", now_secs() - 3 * 86_400);
     Mock::given(method("GET"))

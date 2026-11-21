@@ -394,7 +394,8 @@ export function ThreadPane({
           currentUserId={currentUserId}
           status={participantsStatus}
           action={participantsAction}
-          membershipError={membershipError}
+          // ペイン側の表示と同じ条件（メンバーでない人・読み取り専用には、参加・退出の操作がないので出さない）。
+          membershipError={!readOnly && isMember && membershipError}
           onMembershipRetry={onMembershipRetry}
         />
       ) : null}

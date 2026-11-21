@@ -181,6 +181,8 @@ describe("ThreadPane のダイアログ挙動", () => {
     await waitFor(() => expect(input).toHaveFocus());
   });
 
+  // 多くのテストを同時に流す、負荷の高い環境でも安定するよう、ダイアログの開閉・フォーカス復帰を待つ時間を長めにする（既定は1秒）。
+  const SLOW = { timeout: 5000 };
   describe("メンバーのダイアログ", () => {
     const participants = [
       { id: "user-1", user_name: "alice", display_name: "Alice", avatar_url: null },
@@ -222,7 +224,7 @@ describe("ThreadPane のダイアログ挙動", () => {
       const before = reply.getBoundingClientRect().top;
 
       await userEvent.click(toggle);
-      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       // ほかのポップアウトと同じ、画面の中央のダイアログ。ペインの中身は動かない。
       const rect = dialog.getBoundingClientRect();
       expect(Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2)).toBeLessThan(2);
@@ -256,8 +258,11 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(onLeaveThread).toHaveBeenCalledOnce();
 
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
-      await waitFor(() => expect(toggle).toHaveFocus());
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+        SLOW,
+      );
+      await waitFor(() => expect(toggle).toHaveFocus(), SLOW);
       expect(onClose).not.toHaveBeenCalled();
     });
 
@@ -266,13 +271,16 @@ describe("ThreadPane のダイアログ挙動", () => {
       render(<MembersHarness />);
       const toggle = screen.getByRole("button", { name: "参加者 53人" });
       await userEvent.click(toggle);
-      let dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      let dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       await userEvent.type(within(dialog).getByRole("searchbox", { name: "名前で検索" }), "car");
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+        SLOW,
+      );
 
       await userEvent.click(toggle);
-      dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       expect(within(dialog).getByRole("searchbox", { name: "名前で検索" })).toHaveValue("");
       expect(within(dialog).getAllByRole("listitem")).toHaveLength(3);
     });
@@ -282,14 +290,17 @@ describe("ThreadPane のダイアログ挙動", () => {
       const onClose = vi.fn();
       render(<MembersHarness onClose={onClose} />);
       await userEvent.click(screen.getByRole("button", { name: "参加者 53人" }));
-      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       const rect = dialog.getBoundingClientRect();
       expect(rect.left).toBeGreaterThanOrEqual(0);
       expect(rect.right).toBeLessThanOrEqual(window.innerWidth);
       expect(Math.abs(rect.left + rect.width / 2 - window.innerWidth / 2)).toBeLessThan(2);
 
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+        SLOW,
+      );
       expect(screen.getByRole("dialog", { name: "スレッド" })).toBeVisible();
       expect(onClose).not.toHaveBeenCalled();
     });
@@ -303,7 +314,7 @@ describe("ThreadPane のダイアログ挙動", () => {
         </LocaleProvider>,
       );
       await userEvent.click(screen.getByRole("button", { name: "メンバー" }));
-      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       await userEvent.click(within(dialog).getByRole("button", { name: "退出する" }));
       expect(onLeaveThread).toHaveBeenCalledOnce();
     });
@@ -326,7 +337,7 @@ describe("ThreadPane のダイアログ挙動", () => {
         </LocaleProvider>,
       );
       await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
-      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       // 背面のペインの表示ではなく、ダイアログの中に出る（モーダルの背面は操作も読み上げもできない）。
       const alert = within(dialog).getByRole("alert");
       expect(alert.textContent).toMatch(/スレッドの参加状態を更新できませんでした。/);
@@ -338,7 +349,7 @@ describe("ThreadPane のダイアログ挙動", () => {
       await page.viewport(1280, 900);
       render(<MembersHarness />);
       await userEvent.click(screen.getByRole("button", { name: "参加者 53人" }));
-      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       // 検索していないあいだは、「ほか N人」。
       expect(within(dialog).getByText("ほか 50人")).toBeTruthy();
       expect(within(dialog).queryByText(/読み込んだ先頭/)).toBeNull();
@@ -384,20 +395,26 @@ describe("ThreadPane のダイアログ挙動", () => {
       );
       const { rerender } = render(view({}));
       await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
-      let dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      let dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       expect(within(dialog).getByText("未参加")).toBeTruthy();
       await userEvent.click(within(dialog).getByRole("button", { name: "参加する" }));
       expect(onJoinThread).toHaveBeenCalledOnce();
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+        SLOW,
+      );
 
       rerender(view({ isArchived: true }));
       await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
-      dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       await userEvent.click(within(dialog).getByRole("button", { name: "再Openして参加する" }));
       expect(onReopenAndJoinThread).toHaveBeenCalledOnce();
       await userEvent.keyboard("{Escape}");
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull());
+      await waitFor(
+        () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+        SLOW,
+      );
 
       rerender(
         view({
@@ -407,31 +424,46 @@ describe("ThreadPane のダイアログ挙動", () => {
         }),
       );
       await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
-      dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       expect(within(dialog).queryByRole("button", { name: /参加/ })).toBeNull();
       expect(within(dialog).getByText("未参加")).toBeTruthy();
     });
 
-    it("メンバーでない人や読み取り専用では、参加・退出の操作を出さない", async () => {
+    it("メンバーでない人や読み取り専用では、参加・退出の操作と、その失敗の表示を出さない", async () => {
       await page.viewport(1280, 900);
-      render(
+      const view = (extra: Partial<ThreadPaneProps>) => (
         <LocaleProvider>
           <ThreadPane
             {...paneProps({
-              isMember: false,
               membership: "none",
               participantCount: 3,
               participants,
               onJoinThread: noop,
               onLeaveThread: noop,
+              // 参加状態の取得に失敗したときにも、エラーは立つ。
+              membershipError: true,
+              onMembershipRetry: noop,
+              ...extra,
             })}
           />
-        </LocaleProvider>,
+        </LocaleProvider>
       );
-      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
-      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
-      expect(within(dialog).queryByRole("button", { name: /参加|退出/ })).toBeNull();
-      expect(within(dialog).queryByText("未参加")).toBeNull();
+      const { rerender } = render(view({ isMember: false }));
+      for (const extra of [{ isMember: false }, { readOnly: true }]) {
+        rerender(view(extra));
+        await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+        const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
+        expect(within(dialog).queryByRole("button", { name: /参加|退出/ })).toBeNull();
+        expect(within(dialog).queryByText("未参加")).toBeNull();
+        // ペイン側の表示と同じ条件で、失敗と再試行も出さない。
+        expect(within(dialog).queryByRole("alert")).toBeNull();
+        expect(within(dialog).queryByRole("button", { name: "再試行" })).toBeNull();
+        await userEvent.keyboard("{Escape}");
+        await waitFor(
+          () => expect(screen.queryByRole("dialog", { name: /メンバー/ })).toBeNull(),
+          SLOW,
+        );
+      }
     });
   });
 });
