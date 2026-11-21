@@ -2618,7 +2618,7 @@ impl App {
 /// 参加（`J`）すれば送れることを伝える。投稿権限がないなど、ほかの失敗は原因をそのまま出す。
 fn send_failure_notice(target: &Target, err: &anyhow::Error) -> String {
     if matches!(target, Target::Reply(_)) && zoo2_client_core::http::is_thread_join_required(err) {
-        "このスレッドに参加していません。Esc で入力を終え、J で参加してから返信してください（下書きは残しています）"
+        "このスレッドに参加していません。Esc で入力を終え、J で参加してから返信してください（アーカイブ済みなら、先に u で再Openします。下書きは残しています）"
             .to_string()
     } else {
         format!("送信に失敗しました: {err}")
@@ -2707,6 +2707,7 @@ mod tests {
         let join_required: anyhow::Error = zoo2_client_core::http::HttpError::Status {
             status: reqwest::StatusCode::FORBIDDEN,
             message: zoo2_client_core::http::THREAD_JOIN_REQUIRED_MESSAGE.into(),
+            code: None,
         }
         .into();
         let notice = send_failure_notice(&Target::Reply("root".into()), &join_required);
@@ -2726,6 +2727,7 @@ mod tests {
         let forbidden: anyhow::Error = zoo2_client_core::http::HttpError::Status {
             status: reqwest::StatusCode::FORBIDDEN,
             message: "Only channel managers may post here".into(),
+            code: None,
         }
         .into();
         let notice = send_failure_notice(&Target::Reply("root".into()), &forbidden);

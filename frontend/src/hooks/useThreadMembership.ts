@@ -21,6 +21,23 @@ export interface ThreadMembership {
   tracked?: boolean;
   participants?: ThreadParticipant[];
 }
+/**
+ * 書き込み（参加・退出・再Open）や他の画面の通知で届いた値を、いまの値へ重ねる。応答に参加者の項目が
+ * ない（コミット後の読み取りに失敗した、など）ときは、前の値を残す。値が消えると、参加人数のボタンが
+ * 隠れ、`tracked` が不明になって、参加が必要なスレッドに入力欄が開いてしまう。
+ */
+function mergeMembership(
+  previous: ThreadMembership | null,
+  next: ThreadMembership,
+): ThreadMembership {
+  if (!previous || previous.id !== next.id) return next;
+  return {
+    ...next,
+    participant_count: next.participant_count ?? previous.participant_count,
+    tracked: next.tracked ?? previous.tracked,
+    participants: next.participants ?? previous.participants,
+  };
+}
 type Snapshot = { data: ThreadMembership | null; pending: boolean; error: boolean };
 const empty: Snapshot = { data: null, pending: false, error: false };
 const stores = new WeakMap<object, Map<string, ReturnType<typeof createStore>>>();
@@ -85,10 +102,12 @@ function createStore(
           {},
           { signal: AbortSignal.timeout(10_000) },
         );
-        set({ data: result.data, pending: false, error: false });
+        set({ data: mergeMembership(state.data, result.data), pending: false, error: false });
         window.dispatchEvent(
           new CustomEvent(THREADS_CHANGED, { detail: { ...result.data, userId, config } }),
         );
+        // 参加者の項目がない応答は、前の値を残したうえで、すぐ取り直して正しい値にする。
+        if (result.data.participants === undefined) queued = true;
         return true;
       } catch {
         set({ ...state, pending: false, error: true });
@@ -109,7 +128,12 @@ function createStore(
           if (detail?.userId && (detail.userId !== userId || detail.config !== config)) return;
           generation += 1;
           if (detail?.id === id) {
-            set({ data: detail, pending: state.pending, error: false });
+            set({
+              data: mergeMembership(state.data, detail),
+              pending: state.pending,
+              error: false,
+            });
+            if (detail.participants === undefined) void refresh();
             return;
           }
           void refresh();

@@ -152,18 +152,26 @@ async fn unarchive_thread(
     thread_operation(state, auth, id, "unarchive").await
 }
 
-/// Participants of one thread (`$1` = thread id): `tracked`, live count and the first 50.
-/// Shared with the scale test so it measures exactly the SQL the route runs.
+/// Participants of one thread (`$1` = thread id, `$2` = its channel id): `tracked`, live count and
+/// the first 50. Live = joined, not deactivated, and still a member of the channel (a participant
+/// who left the channel keeps the thread row, but is not listed or counted: the list must not show
+/// profiles beyond what the viewer's channels already reveal). Shared with the scale test so it
+/// measures exactly the SQL the route runs.
 pub fn participants_sql() -> &'static str {
     "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at,p.left_at FROM thread_participants p WHERE p.thread_id=$1), \
-              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM keys k CROSS JOIN LATERAL (SELECT x.id,x.user_name,x.display_name,x.avatar_url FROM users x WHERE x.id=k.user_id AND NOT x.is_deactivated OFFSET 0) u WHERE k.left_at IS NULL) \
+              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM keys k CROSS JOIN LATERAL (SELECT x.id,x.user_name,x.display_name,x.avatar_url FROM users x WHERE x.id=k.user_id AND NOT x.is_deactivated AND (SELECT true FROM channel_user cu WHERE cu.user_id=x.id AND cu.channel_id=$2) IS NOT NULL OFFSET 0) u WHERE k.left_at IS NULL) \
          SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text"
 }
 
 /// The participants of a thread, read in a transaction of their own (after a write committed).
-async fn read_participants(db: &mut toasty::Db, root_id: &str) -> Result<Value, AppError> {
+async fn read_participants(
+    db: &mut toasty::Db,
+    root_id: &str,
+    channel_id: &str,
+) -> Result<Value, AppError> {
     let mut tx = db.transaction().await?;
-    let participants = crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?;
+    let participants =
+        crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?;
     tx.commit().await?;
     Ok(participants)
 }
@@ -248,12 +256,14 @@ async fn thread_operation(
     //   planner from flattening it into a join), so it costs P probes whichever join method is
     //   chosen. A plain `JOIN keys` with `id = ANY(ARRAY(keys))` was seen to become a Nested Loop
     //   with a Join Filter on PostgreSQL 16 (P x P `users` rows), or a Hash Join over all users.
+    //   The channel membership check is a scalar subquery, so it stays one primary-key probe per
+    //   key as well (an `EXISTS` could be planned as a semi-join that scans the channel's members).
     // The list sorts the live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
     // A write holds the root lock (it serializes replies, joins and leaves of this thread) until
     // it commits, so its O(P) read runs after the commit, in its own transaction: the lock is held
     // for the write only, whatever P is. A read has no lock and stays in its transaction.
     let participants = if operation == "read" {
-        Some(crate::apps::one(&mut tx, participants_sql(), &[root_id]).await?)
+        Some(crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?)
     } else {
         None
     };
@@ -267,7 +277,7 @@ async fn thread_operation(
         Some(participants) => Some(participants),
         // The write is already committed. If only this read fails, answer without the list
         // (the client keeps what it has and refreshes) instead of reporting a failed write.
-        None => match read_participants(&mut db, root_id).await {
+        None => match read_participants(&mut db, root_id, channel_id).await {
             Ok(participants) => Some(participants),
             Err(error) => {
                 tracing::warn!(

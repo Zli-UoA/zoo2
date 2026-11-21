@@ -306,7 +306,7 @@
     "join": "加入討論串",
     "leave": "退出討論串",
     "reopen": "重新開啟",
-    "reopenOnSend": "傳送回覆將重新開啟並加入此討論串。",
+    "reopenOnSend": "傳送回覆將重新開啟此討論串。",
     "membershipError": "無法更新討論串參與狀態。",
     "participants_one": "參與者 {{count}} 人",
     "participants_other": "參與者 {{count}} 人",

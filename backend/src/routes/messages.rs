@@ -406,6 +406,10 @@ async fn idempotent_existing_message_in_snapshot(
     Err(AppError::Conflict("Idempotency key already used".into()))
 }
 
+/// `code` of the 403 for a reply to a thread that tracks participants, from someone who has not
+/// joined it. Joining (after reopening an archived thread) lets the same reply go through.
+pub const THREAD_JOIN_REQUIRED_CODE: &str = "THREAD_JOIN_REQUIRED";
+
 /// Reply gate lookup (`$1` = thread root, `$2` = author): whether the thread has participant
 /// rows and whether the author is joined. Shared with the scale test so it measures exactly the
 /// SQL the write path runs.
@@ -903,9 +907,14 @@ pub(crate) async fn create_message_impl(
                     Err(error) => return Err(error),
                 }
             }
-            return Err(AppError::Forbidden(
-                "Join the thread before replying".into(),
-            ));
+            // Clients decide on `code` (a changed or translated message cannot break them). The message
+            // text stays as it was: clients released before the code existed match it instead.
+            return Err(AppError::Coded {
+                status: axum::http::StatusCode::FORBIDDEN,
+                code: THREAD_JOIN_REQUIRED_CODE,
+                message: "Join the thread before replying".into(),
+                extra: serde_json::Map::new(),
+            });
         }
 
         parent_author_id = Some(parent.user_id);

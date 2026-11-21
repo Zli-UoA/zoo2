@@ -1,8 +1,9 @@
 //! SCALE_USERS=300000/1000000; use an empty migrated disposable database.
 //! Measures `GET /api/threads/{id}`'s participant SQL (`participants_sql`) against a
 //! large `users` table. P = participant rows of one thread, L = live (joined, not
-//! deactivated) ones. Bound: no Seq Scan on users/thread_participants, `thread_participants`
-//! rows <= P, `users` rows <= joined (not left), sort input <= L, logical blocks <= 5*joined + 2P + 64.
+//! deactivated, still a channel member) ones. Bound: no Seq Scan on users/thread_participants/
+//! channel_user, `thread_participants` rows <= P, `users` and `channel_user` rows <= joined (not
+//! left), sort input <= L, logical blocks <= BLOCKS_PER_KEY*joined + 2P + 64.
 //! The reply gate SQL (`reply_participation_sql`, run on every thread reply) is measured too:
 //! no Seq Scan, `thread_participants` rows <= 2, `users` not read, logical blocks <= 64.
 //! Each plan is written to `SCALE_PLAN_DIR` before the bounds are checked, so a failing plan survives.
@@ -34,9 +35,20 @@ fn walk(node: &Value, f: &mut impl FnMut(&Value)) {
     }
 }
 
+/// Logical blocks per joined key: one `users` probe (index levels + heap) and one `channel_user`
+/// probe (index levels), with some room for index levels that grow with the table.
+const BLOCKS_PER_KEY: f64 = 10.;
+
+/// The participants SQL with its thread (`$1`) and channel (`$2`) bound as literals.
+fn bind_participants(sql: &str, thread: &str, channel: &str) -> String {
+    sql.replace("$1", &quoted(thread))
+        .replace("$2", &quoted(channel))
+}
+
 struct Case {
     name: &'static str,
     thread: String,
+    channel: String,
     participants: f64,
     /// Not left: the keys looked up in users. Live = joined minus deactivated.
     joined: f64,
@@ -57,7 +69,9 @@ fn work(case: &Case, mode: &str, plan: &Value) -> Value {
             *relations.entry(table.into()).or_default() += n;
             assert!(
                 !(node["Node Type"] == "Seq Scan"
-                    && (table == "users" || table == "thread_participants")),
+                    && (table == "users"
+                        || table == "thread_participants"
+                        || table == "channel_user")),
                 "{name}: Seq Scan on {table}"
             );
         }
@@ -91,6 +105,12 @@ fn work(case: &Case, mode: &str, plan: &Value) -> Value {
         case.joined
     );
     assert!(
+        scanned("channel_user") <= case.joined,
+        "{name}: channel_user scanned {} > joined={}: {relations:?}",
+        scanned("channel_user"),
+        case.joined
+    );
+    assert!(
         max_sort <= case.live,
         "{name}: sort input {max_sort} > L={}",
         case.live
@@ -102,7 +122,7 @@ fn work(case: &Case, mode: &str, plan: &Value) -> Value {
     );
     let blocks = plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)
         + plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0);
-    let limit = 5. * case.joined + 2. * case.participants + 64.;
+    let limit = BLOCKS_PER_KEY * case.joined + 2. * case.participants + 64.;
     assert!(
         blocks as f64 <= limit,
         "{name}: {blocks} logical blocks > {limit}"
@@ -168,12 +188,13 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     let tag = uuid::Uuid::new_v4().to_string();
     let channel = format!("{tag}-channel");
     let owner = format!("{tag}-owner");
-    // (name, participants P, left, deactivated). Live = P - left - deactivated.
-    let specs: [(&str, i32, i32, i32); 4] = [
-        ("small", 50, 0, 0),
-        ("large", 10_000, 500, 500),
-        ("empty", 0, 0, 0),
-        ("all_left", 100, 100, 0),
+    // (name, participants P, left, deactivated, no longer channel members).
+    // Live = P - left - deactivated - non-members.
+    let specs: [(&str, i32, i32, i32, i32); 4] = [
+        ("small", 50, 0, 0, 0),
+        ("large", 10_000, 500, 500, 500),
+        ("empty", 0, 0, 0, 0),
+        ("all_left", 100, 100, 0, 0),
     ];
     let tx = client.transaction().await?;
     tx.execute(
@@ -186,7 +207,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         .await?;
     tx.execute("INSERT INTO users(id,user_name,display_name) SELECT $1||'-u-'||lpad(n::text,9,'0'),$1||'-u-'||lpad(n::text,9,'0'),'U' FROM generate_series(1,$2::integer)n", &[&tag, &users]).await?;
     let mut cases = Vec::new();
-    for (name, p, left, deactivated) in specs {
+    for (name, p, left, deactivated, non_members) in specs {
         let thread = format!("{tag}-thread-{name}");
         tx.execute("INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'root','2025-01-01')", &[&thread, &owner, &channel]).await?;
         // Spread participants over the whole id space (37 is coprime with 300k/1m), so
@@ -199,10 +220,19 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         cases.push(Case {
             name,
             thread,
+            channel: channel.clone(),
             participants: f64::from(p),
             joined: f64::from(p - left),
-            live: f64::from(p - left - deactivated),
+            live: f64::from(p - left - deactivated - non_members),
         });
+    }
+    // Every participant is a member of the channel, except the earliest `non_members` live ones of
+    // a case (they left the channel but kept the thread row). Those users are in no other case.
+    tx.execute("INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT DISTINCT user_id,$2,now() FROM thread_participants WHERE thread_id LIKE $1||'-thread-%' ON CONFLICT DO NOTHING", &[&tag, &channel]).await?;
+    for (case, (_, _, _, _, non_members)) in cases.iter().zip(specs) {
+        if non_members > 0 {
+            tx.execute("DELETE FROM channel_user WHERE channel_id=$2 AND user_id IN (SELECT user_id FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL ORDER BY joined_at LIMIT $3::integer)", &[&case.thread, &channel, &non_members]).await?;
+        }
     }
     // Unrelated history: `users` rows spread over users/30 other threads (30 rows each),
     // so the planner sees many distinct thread_id values, as in production.
@@ -212,6 +242,11 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     tx.commit().await?;
     client
         .batch_execute("ANALYZE users; ANALYZE thread_participants; ANALYZE messages")
+        .await?;
+    // The membership probe is an index-only scan; a vacuumed table (as in production) has no heap
+    // fetches. VACUUM cannot run inside a multi-statement batch.
+    client
+        .batch_execute("VACUUM (ANALYZE) channel_user")
         .await?;
 
     let output = std::env::var_os("SCALE_PLAN_DIR").map(std::path::PathBuf::from);
@@ -223,7 +258,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     for case in &cases {
         // Result correctness: tracked / live count / first 50.
         let result = client
-            .simple_query(&sql.replace("$1", &quoted(&case.thread)))
+            .simple_query(&bind_participants(sql, &case.thread, &case.channel))
             .await?;
         let value: Value = serde_json::from_str(rows(&result)[0])?;
         assert_eq!(value["tracked"], case.participants > 0., "{}", case.name);
@@ -240,7 +275,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             let raw = client
                 .simple_query(&format!(
                     "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) {}",
-                    sql.replace("$1", &quoted(&case.thread))
+                    bind_participants(sql, &case.thread, &case.channel)
                 ))
                 .await?;
             let plan: Value = serde_json::from_str(rows(&raw)[0])?;
@@ -252,12 +287,13 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             );
             metrics.insert(format!("{}/{run}", case.name), measured);
         }
-        client.batch_execute(&format!("DEALLOCATE ALL; PREPARE participants(text) AS {sql}; SET plan_cache_mode=force_generic_plan")).await?;
+        client.batch_execute(&format!("DEALLOCATE ALL; PREPARE participants(text,text) AS {sql}; SET plan_cache_mode=force_generic_plan")).await?;
         for run in ["generic_first", "generic_rerun"] {
             let raw = client
                 .simple_query(&format!(
-                    "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) EXECUTE participants({})",
-                    quoted(&case.thread)
+                    "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) EXECUTE participants({},{})",
+                    quoted(&case.thread),
+                    quoted(&case.channel)
                 ))
                 .await?;
             let plan: Value = serde_json::from_str(rows(&raw)[0])?;
@@ -314,12 +350,8 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     }
 
     // Single 30 runs and 8 concurrent x 30 runs on the large thread. Times are reported only.
-    let large = cases
-        .iter()
-        .find(|c| c.name == "large")
-        .unwrap()
-        .thread
-        .clone();
+    let large_case = cases.iter().find(|c| c.name == "large").unwrap();
+    let large_statement = bind_participants(sql, &large_case.thread, &large_case.channel);
     let timings = |mut samples: Vec<f64>| {
         samples.sort_by(|a, b| a.total_cmp(b));
         json!({"p50":samples[samples.len()/2],"p95":samples[samples.len()*95/100],"max":samples[samples.len()-1]})
@@ -327,15 +359,13 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     let mut single = Vec::new();
     for _ in 0..30 {
         let started = std::time::Instant::now();
-        client
-            .simple_query(&sql.replace("$1", &quoted(&large)))
-            .await?;
+        client.simple_query(&large_statement).await?;
         single.push(started.elapsed().as_secs_f64() * 1000.);
     }
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let url = url.clone();
-        let statement = sql.replace("$1", &quoted(&large));
+        let statement = large_statement.clone();
         tasks.push(tokio::spawn(async move {
             let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
             tokio::spawn(connection);

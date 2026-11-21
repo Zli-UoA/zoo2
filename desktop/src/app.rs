@@ -5937,6 +5937,7 @@ pub(crate) mod tests {
             HttpError::Status {
                 status: reqwest::StatusCode::NOT_FOUND,
                 message: "Channel not found".into(),
+                code: None,
             }
             .to_string(),
         ));

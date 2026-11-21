@@ -207,10 +207,13 @@ export function HomeComposer({
   const targetChannel = targetChannelId
     ? (channelsQuery.data ?? []).find((channel) => channel.id === targetChannelId)
     : undefined;
-  // 現在のユーザー（管理者か）が確定するまでは止めない。
+  // 現在のユーザー（管理者か）が確定するまでは止めない。チャンネルに参加していない人の返信は、
+  // サーバーが Home だけの返信として受け付ける（チャンネルの投稿権限は通らない）ので、止めない。
+  // 新規投稿の送り先は、参加中のチャンネルから選ぶ。
   const postingForbidden =
     !currentUserLoading &&
     !!targetChannel &&
+    joinedChannelIds.has(targetChannel.id) &&
     !canPostInChannel({
       postingPolicy: targetChannel.posting_policy,
       isAdmin,

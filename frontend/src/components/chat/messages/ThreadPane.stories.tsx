@@ -315,7 +315,7 @@ export const ReopenAndJoin: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
     // 入力欄が無いので「送信すると再Openして参加します」の注記も出さない。
-    await expect(canvas.queryByText("送信すると再Openして参加します。")).not.toBeInTheDocument();
+    await expect(canvas.queryByText("送信すると再Openします。")).not.toBeInTheDocument();
     await userEvent.click(canvas.getByRole("button", { name: "再Openして参加する" }));
     await expect(args.onReopenAndJoinThread).toHaveBeenCalledOnce();
   }),
@@ -429,7 +429,7 @@ export const ReopenArchived: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "再Open" }));
     await expect(args.onReopenThread).toHaveBeenCalledOnce();
-    await expect(canvas.getByText("送信すると再Openして参加します。")).toBeVisible();
+    await expect(canvas.getByText("送信すると再Openします。")).toBeVisible();
   }),
 };
 

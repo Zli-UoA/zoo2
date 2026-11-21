@@ -14,15 +14,22 @@ import kotlinx.serialization.json.*
 
 class ApiException(val status: Int, val body: JsonObject? = null) : Exception("HTTP $status")
 
-private const val THREAD_JOIN_REQUIRED = "Join the thread before replying"
+private const val THREAD_JOIN_REQUIRED_CODE = "THREAD_JOIN_REQUIRED"
+private const val THREAD_JOIN_REQUIRED_MESSAGE = "Join the thread before replying"
 
 /**
  * 参加行があるスレッドへ、未参加・退出済みのまま返信したときの 403（backend の `create_message_impl`）。
- * 参加すれば同じ返信を送れる。投稿権限がないなど、ほかの 403 は含まない。
+ * 参加すれば同じ返信を送れる。投稿権限がないなど、ほかの 403 は含まない。`code` を優先し、`code` が
+ * ない応答（コードを返す前のサーバー）だけ、本文で判定する。
  */
 val ApiException.requiresThreadJoin: Boolean
-    get() = status == 403 &&
-        (body?.get("error") as? JsonPrimitive)?.contentOrNull?.contains(THREAD_JOIN_REQUIRED) == true
+    get() {
+        if (status != 403) return false
+        val code = (body?.get("code") as? JsonPrimitive)?.contentOrNull
+        if (code != null) return code == THREAD_JOIN_REQUIRED_CODE
+        val message = (body?.get("error") as? JsonPrimitive)?.contentOrNull
+        return message?.contains(THREAD_JOIN_REQUIRED_MESSAGE) == true
+    }
 
 /** REST is the only write path. Authentication is resolved again for every request. */
 class ZooApi(val config: Config, val platform: Platform, private val http: HttpClient) {

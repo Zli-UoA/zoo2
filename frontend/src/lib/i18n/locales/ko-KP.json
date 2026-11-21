@@ -306,7 +306,7 @@
     "join": "스레드 참가",
     "leave": "스레드 나가기",
     "reopen": "다시 열기",
-    "reopenOnSend": "답장을 보내면 스레드를 다시 열고 참가합니다.",
+    "reopenOnSend": "답장을 보내면 스레드를 다시 엽니다.",
     "membershipError": "스레드 참가 상태를 변경하지 못했습니다.",
     "participants_one": "참가자 {{count}}명",
     "participants_other": "참가자 {{count}}명",

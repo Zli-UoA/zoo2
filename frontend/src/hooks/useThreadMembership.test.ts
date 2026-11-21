@@ -132,3 +132,28 @@ it("keeps data on a failed operation and allows retry", async () => {
   expect(value.error).toBe(false);
   expect(value.data?.membership).toBe("left");
 });
+
+it("keeps the participant fields when a write answers without them, and refetches", async () => {
+  const withParticipants: ThreadMembership = {
+    ...data,
+    tracked: true,
+    participant_count: 3,
+    participants: [{ id: "alice", user_name: "alice", display_name: null, avatar_url: null }],
+  };
+  fixture.api.get.mockReset().mockResolvedValue({ data: withParticipants });
+  // The participant read after the commit failed, so the response has no such fields.
+  fixture.api.post.mockResolvedValue({ data: { ...data, membership: "left" } });
+  await act(async () => root.render(createElement(Test)));
+  expect(value.data?.participant_count).toBe(3);
+  let changed: boolean | undefined;
+  await act(async () => {
+    changed = await value.change!("leave");
+  });
+  expect(changed).toBe(true);
+  expect(value.data?.membership).toBe("left");
+  expect(value.data?.participant_count).toBe(3);
+  expect(value.data?.tracked).toBe(true);
+  expect(value.data?.participants).toHaveLength(1);
+  // The write answered without a list, so the thread is fetched again for the right values.
+  expect(fixture.api.get).toHaveBeenCalledTimes(2);
+});

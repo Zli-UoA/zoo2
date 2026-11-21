@@ -306,7 +306,7 @@
     "join": "Join thread",
     "leave": "Leave thread",
     "reopen": "Reopen",
-    "reopenOnSend": "Sending a reply will reopen this thread and join it.",
+    "reopenOnSend": "Sending a reply will reopen this thread.",
     "membershipError": "Could not update thread participation.",
     "participants_one": "{{count}} participant",
     "participants_other": "{{count}} participants",

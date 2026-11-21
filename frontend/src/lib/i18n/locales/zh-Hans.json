@@ -306,13 +306,13 @@
     "join": "加入讨论串",
     "leave": "退出讨论串",
     "reopen": "重新打开",
-    "reopenOnSend": "发送回复将重新打开并加入此讨论串。",
+    "reopenOnSend": "发送回复将重新打开此讨论串。",
     "membershipError": "无法更新讨论串参与状态。",
     "participants_one": "参与者 {{count}} 人",
     "participants_other": "参与者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
     "participantsEmpty": "没有参与者",
-    "joinToReply": "参与后才能回复此主题。",
+    "joinToReply": "参与后才能回复此讨论串。",
     "reopenAndJoin": "重新打开并参与"
   },
   "reactions": {

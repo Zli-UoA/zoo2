@@ -1102,16 +1102,26 @@ mod tests {
 
     #[tokio::test]
     async fn a_reply_to_an_unjoined_thread_rejoins_and_resends_once_with_the_same_id() {
+        // コードを返す前のサーバーは、本文だけ。
+        rejoins_and_resends(json!({"error":"Join the thread before replying"})).await;
+    }
+
+    #[tokio::test]
+    async fn the_code_of_the_forbidden_reply_triggers_the_rejoin_whatever_the_message_says() {
+        rejoins_and_resends(
+            json!({"error":"参加してから返信してください","code":"THREAD_JOIN_REQUIRED"}),
+        )
+        .await;
+    }
+
+    async fn rejoins_and_resends(forbidden_body: serde_json::Value) {
         let server = MockServer::start().await;
         let body_with_id =
             || wiremock::matchers::body_partial_json(json!({"id":"m1","parent_id":"root"}));
         Mock::given(method("POST"))
             .and(path("/api/messages"))
             .and(body_with_id())
-            .respond_with(
-                ResponseTemplate::new(403)
-                    .set_body_json(json!({"error":"Join the thread before replying"})),
-            )
+            .respond_with(ResponseTemplate::new(403).set_body_json(forbidden_body))
             .up_to_n_times(1)
             .expect(1)
             .mount(&server)
@@ -1264,7 +1274,9 @@ mod tests {
         let api = client(&server);
         let err = api.join_channel("c1").await.unwrap_err();
         match err.downcast_ref::<HttpError>() {
-            Some(HttpError::Status { status, message }) => {
+            Some(HttpError::Status {
+                status, message, ..
+            }) => {
                 assert_eq!(status.as_u16(), 404);
                 assert_eq!(message, "Channel not found");
             }
