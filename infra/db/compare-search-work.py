@@ -71,9 +71,9 @@ def compare(first, second):
         later = max(s['blocks'] for s in y)
         assert later <= 1.5 * initial + 64, (name, 'api blocks', initial, later)
         # 文の数（BEGIN・SET・見える範囲・月ごと）は履歴によらない。トランザクションの揺れのぶんだけ許す。
-        initial = max(s['statements'] for s in x)
-        later = max(s['statements'] for s in y)
-        assert later <= initial + 2, (name, 'api statements', initial, later)
+        first = max(s['statements'] for s in x)
+        last = max(s['statements'] for s in y)
+        assert last <= first + 2, (name, 'api statements', first, last)
         print(f'API SQL {name}: month SQL {y[0]["month_sql"]:.0f}, statements {max(s["statements"] for s in y):.0f}, '
               f'blocks {initial} → {later}, DB ms max={max(s["db_ms"] for s in y):.3f}')
     for key, values in sorted(api_groups[1].items()):
