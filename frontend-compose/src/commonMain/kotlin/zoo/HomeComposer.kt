@@ -160,6 +160,8 @@ fun HomeComposer(
         state.focusOnOpen = { inputFocus.requestFocus() }
         onDispose { state.focusOnOpen = null }
     }
+    var showRecentPhotos by remember { mutableStateOf(false) }
+    LaunchedEffect(state.opened) { if (!state.opened) showRecentPhotos = false }
     val images = rememberAttachmentDrafts(app, "", "home-images", false) { file ->
         val mime = attachmentType(file.text("name"), file.text("type"))
         require(mime in imageTypes && (file.text("size").toLongOrNull() ?: 0) <= 8L * 1024 * 1024)
@@ -433,11 +435,17 @@ fun HomeComposer(
                     }
                     DraftAttachments(app, images, errorMessage = images.error?.let { app.t("home.imageError") })
                     Row(horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall)) {
-                        IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) { images.pick() }
+                        val usePhotoPicker = LocalTouchUi.current
+                        IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) {
+                            if (usePhotoPicker) showRecentPhotos = !showRecentPhotos else images.pick()
+                        }
                         IconButton("smile", app.t("reactions.tabEmoji"), !state.sending && !composing) {
                             pickerSelection = editorState.editing.value.selection
                             emojiPicker = true
                         }
+                    }
+                    if (showRecentPhotos && LocalTouchUi.current && state.opened) {
+                        HomeRecentPhotos(app, images, !state.sending && images.items.size < MAX_ATTACHMENTS)
                     }
                     HomeComposerFooter(app, state, available, length)
 

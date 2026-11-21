@@ -88,6 +88,25 @@ class MainActivity : ComponentActivity() {
         phonePermissionRequest.await { phonePermission.launch(android.Manifest.permission.RECORD_AUDIO) }
     }
 
+    private val recentPhotos by lazy { RecentPhotos(this) }
+    private var photoPermissionResult: CompletableDeferred<Unit>? = null
+    private val photoPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        photoPermissionResult?.complete(Unit)
+        photoPermissionResult = null
+    }
+
+    private suspend fun requestRecentPhotos() {
+        if (photoPermissionResult != null || recentPhotos.permissions().isEmpty()) return
+        val result = CompletableDeferred<Unit>()
+        photoPermissionResult = result
+        try {
+            photoPermissions.launch(recentPhotos.permissions())
+            result.await()
+        } finally {
+            if (photoPermissionResult === result) photoPermissionResult = null
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -95,12 +114,20 @@ class MainActivity : ComponentActivity() {
             fileResult = null
         }
 
-    private suspend fun chooseFiles(): List<Uri> {
+    private val photoPicker =
+        registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) {
+            fileResult?.complete(it)
+            fileResult = null
+        }
+
+    private suspend fun chooseFiles(photos: Boolean): List<Uri> {
         check(fileResult == null) { "ファイル選択中です" }
         val result = CompletableDeferred<List<Uri>>()
         fileResult = result
-        picker.launch(arrayOf("*/*"))
         return try {
+            if (photos) photoPicker.launch(
+                androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            ) else picker.launch(arrayOf("*/*"))
             result.await()
         } finally {
             if (fileResult === result) fileResult = null
@@ -122,7 +149,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         notificationIntent = intent
-        // 再認証のリダイレクト（ReauthCallbackActivity から）。待っている再認証の state と合うものだけを受け取る。
+        // 初回ログインと再認証で同じ App Link を使い、待機中の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
         }
@@ -171,9 +198,9 @@ class MainActivity : ComponentActivity() {
         }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
-        suspend fun connect(connection: LoginConnection, refresh: String?, show: (String, String) -> Unit) {
+        suspend fun connect(connection: LoginConnection, refresh: String?) {
             active = openSession(
-                connection, loginStore, dark, refresh, show,
+                connection, loginStore, dark, refresh,
                 onExpired = { expiredAuth ->
                     scope.launch {
                         val running = active
@@ -218,7 +245,7 @@ class MainActivity : ComponentActivity() {
                 val saved = loginStore.load()
                 canRestore = saved != null
                 if (saved == null) PushBinding(this@MainActivity).forgetAll()
-                if (saved != null) connect(saved.connection, saved.refreshToken) { _, _ -> }
+                if (saved != null) connect(saved.connection, saved.refreshToken)
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: LoginFailure) {
@@ -235,7 +262,7 @@ class MainActivity : ComponentActivity() {
         }
         AndroidUpdateFrame(this, current?.platform?.env?.dark ?: dark) {
             if (current == null) {
-                MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+                ZooTheme(dark = dark) {
                     if (restoring) {
                         Surface(Modifier.fillMaxSize()) {
                             Column(
@@ -256,11 +283,11 @@ class MainActivity : ComponentActivity() {
                     } else Login(
                         initialError = restoreError,
                         retryRestore = if (canRestore) ({ restoreAttempt++ }) else null,
-                    ) { base, issuer, client, resource, code ->
+                    ) { base, issuer, client, resource ->
                         canRestore = false
                         loginStore.clear()
                         PushBinding(this@MainActivity).forgetAll()
-                        connect(LoginConnection(base, issuer, client, resource), null, code)
+                        connect(LoginConnection(base, issuer, client, resource), null)
                     }
                 }
             } else {
@@ -353,7 +380,6 @@ class MainActivity : ComponentActivity() {
         loginStore: AndroidLoginStore,
         dark: Boolean,
         savedRefresh: String?,
-        showCode: (String, String) -> Unit,
         onExpired: (DeviceAuth) -> Unit,
         logout: () -> Unit,
     ): RunningSession {
@@ -383,9 +409,11 @@ class MainActivity : ComponentActivity() {
             consumeRefresh = { loginStore.consume(owner) },
             onExpired = onExpired,
         )
+        val reauthenticator = AndroidReauth(this, http, connection)
+        reauth = reauthenticator
         try {
             if (savedRefresh == null)
-                auth.login(connection.issuer, connection.client, connection.resource, showCode)
+                auth.acceptBrowserLogin(connection, reauthenticator.signIn())
             else auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
             val authHeaders = auth.headers()
             val response = http.get(endpoint(connection.base, "/api/users/me")) {
@@ -400,7 +428,7 @@ class MainActivity : ComponentActivity() {
             currentCoroutineContext().ensureActive()
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
-                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, ::confirmUnbackedKeys,
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys,
             )
             platform.systemDark(dark)
             platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -429,8 +457,6 @@ class MainActivity : ComponentActivity() {
             platform.e2ee = e2ee
             platform.messageEncryption = zoo.crypto.AndroidMessageEncryption(e2ee, session.api, lifetime)
             // 設定の「暗号化」タブ（#360）。再認証は Custom Tabs、パスキーは Credential Manager。
-            val reauthenticator = AndroidReauth(this, http, connection)
-            reauth = reauthenticator
             val e2eeSettings = e2ee.setup?.let { setup ->
                 zoo.crypto.E2eeSettingsHost(
                     setup = setup,
@@ -448,6 +474,7 @@ class MainActivity : ComponentActivity() {
                 e2ee.start()
             }
         } catch (failure: Throwable) {
+            if (reauth === reauthenticator) reauth = null
             auth.close()
             http.close()
             throw failure
@@ -458,7 +485,7 @@ class MainActivity : ComponentActivity() {
     private fun Login(
         initialError: String = "",
         retryRestore: (() -> Unit)? = null,
-        connect: suspend (String, String, String, String, (String, String) -> Unit) -> Unit
+        connect: suspend (String, String, String, String) -> Unit
     ) {
         val prefs = remember { getSharedPreferences("connection", 0) }
         var base by rememberSaveable {
@@ -473,8 +500,7 @@ class MainActivity : ComponentActivity() {
         var resource by rememberSaveable {
             mutableStateOf(prefs.getString("resource", "https://zli.chat/api").orEmpty())
         }
-        var code by remember { mutableStateOf("") }
-        var link by remember { mutableStateOf("") }
+        var advanced by rememberSaveable { mutableStateOf(client.isBlank()) }
         var error by remember { mutableStateOf(initialError) }
         var job by remember { mutableStateOf<Job?>(null) }
         val scope = rememberCoroutineScope()
@@ -486,45 +512,52 @@ class MainActivity : ComponentActivity() {
                     .padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text("Zoo", style = MaterialTheme.typography.headlineLarge)
-                Text("Android 版")
-                OutlinedTextField(
-                    base,
-                    { base = it },
-                    label = { Text("Zoo サーバー URL") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                )
-                OutlinedTextField(
-                    issuer,
-                    { issuer = it },
-                    label = { Text("OIDC issuer") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                )
-                OutlinedTextField(
-                    client,
-                    { client = it },
-                    label = { Text("Android 用 public client ID") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
-                )
-                OutlinedTextField(
-                    resource,
-                    { resource = it },
-                    label = { Text("Resource / audience") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-                )
-                Text("サーバー管理者が登録したデバイス認証対応の client ID を指定してください。ブラウザーでコードを承認してログインします。")
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                    ZooMark(size = 76.dp)
+                    Text("Zoo", style = MaterialTheme.typography.headlineLarge)
+                    Text("ブラウザーで認証を完了すると、Zooに戻ります。")
+                }
+                TextButton(onClick = { advanced = !advanced }, enabled = job == null) {
+                    Text("接続先の設定")
+                }
+                if (advanced) {
+                    OutlinedTextField(
+                        base,
+                        { base = it },
+                        label = { Text("Zoo サーバー URL") },
+                        enabled = job == null,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                    )
+                    OutlinedTextField(
+                        issuer,
+                        { issuer = it },
+                        label = { Text("OIDC issuer") },
+                        enabled = job == null,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                    )
+                    OutlinedTextField(
+                        client,
+                        { client = it },
+                        label = { Text("Android 用 public client ID") },
+                        enabled = job == null,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
+                    )
+                    OutlinedTextField(
+                        resource,
+                        { resource = it },
+                        label = { Text("Resource / audience") },
+                        enabled = job == null,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                    )
+                }
                 if (error.isNotEmpty()) Text(
                     error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
@@ -533,36 +566,24 @@ class MainActivity : ComponentActivity() {
                 if (retryRestore != null && job == null) {
                     TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
                 }
-                if (code.isNotEmpty()) {
-                    Text("確認コード: $code", style = MaterialTheme.typography.headlineSmall)
-                    Text("ブラウザーに表示されたコードが一致することを確認してください。")
-                    androidx.compose.material3.Button(
-                        onClick = { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
-                    ) {
-                        Text("認証画面を開く")
-                    }
-                }
                 if (job != null) {
-                    CircularProgressIndicator()
+                    CircularProgressIndicator(Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally))
                     TextButton(
+                        modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally),
                         onClick = {
                             job?.cancel()
-                            job = null
-                            code = ""
-                            link = ""
                         }
                     ) {
                         Text("キャンセル")
                     }
                 } else {
                     androidx.compose.material3.Button(
+                        modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally).widthIn(min = 170.dp),
                         enabled = client.isNotBlank(),
                         onClick = {
                             job =
                                 scope.launch {
                                     error = ""
-                                    code = ""
-                                    link = ""
                                     try {
                                         val server = base.trim().trimEnd('/')
                                         val url = Url(server)
@@ -588,16 +609,15 @@ class MainActivity : ComponentActivity() {
                                             issuer.trim(),
                                             client.trim(),
                                             resource.trim(),
-                                        ) { userCode, uri ->
-                                            code = userCode
-                                            link = uri
-                                        }
+                                        )
                                     } catch (e: CancellationException) {
                                         throw e
                                     } catch (failure: LoginFailure) {
                                         error = failure.message.orEmpty()
+                                    } catch (failure: zoo.crypto.ReauthException) {
+                                        error = failure.message.orEmpty()
                                     } catch (_: Exception) {
-                                        error = "ログインできません。接続先・client ID・コードの期限とネットワークを確認してください。"
+                                        error = "ログインできません。接続先とネットワークを確認してください。"
                                     } finally {
                                         job = null
                                     }

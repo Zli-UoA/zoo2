@@ -33,3 +33,10 @@ internal fun mobileDestination(path: String): MobileDestination? {
         else -> null
     }
 }
+
+/** The back stack owns child screens; the five destinations are shown on their roots. */
+internal fun showMobileNavigation(path: String, channelList: Boolean): Boolean =
+    when (val route = path.substringBefore('?')) {
+        "/home", "/notifications", "/bubble", "/settings" -> true
+        else -> channelList && (route == "/" || route.startsWith("/channels/"))
+    }

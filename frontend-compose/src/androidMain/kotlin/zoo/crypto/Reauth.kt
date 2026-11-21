@@ -62,6 +62,7 @@ class ReauthRequest private constructor(
             state: String = randomToken(),
             nonce: String = randomToken(),
             verifier: String = randomToken(),
+            forceReauth: Boolean = true,
         ): ReauthRequest {
             require(Url(authorizationEndpoint).protocol.name == "https") { "認可エンドポイントは HTTPS にしてください" }
             val url =
@@ -69,14 +70,14 @@ class ReauthRequest private constructor(
                     parameters.append("response_type", "code")
                     parameters.append("client_id", clientId)
                     parameters.append("redirect_uri", redirectUri)
-                    parameters.append("scope", "openid profile")
+                    parameters.append("scope", if (forceReauth) "openid profile" else "openid profile offline_access")
                     if (resource.isNotBlank()) parameters.append("resource", resource)
                     parameters.append("state", state)
                     parameters.append("nonce", nonce)
                     parameters.append("code_challenge", codeChallenge(verifier))
                     parameters.append("code_challenge_method", "S256")
                     // 既存の AuthZ のセッションがあっても、必ずログインし直させる。
-                    parameters.append("max_age", "0")
+                    if (forceReauth) parameters.append("max_age", "0")
                 }.buildString()
             return ReauthRequest(url, redirectUri, state, nonce, verifier)
         }

@@ -246,6 +246,10 @@
     "edited": "編集済み"
   },
   "attachments": {
+    "recentPhotos": "最近の写真",
+    "systemPhotos": "写真アプリで選ぶ",
+    "allowRecentPhotos": "写真へのアクセスを許可",
+    "noRecentPhotos": "表示できる写真がありません",
     "play": "再生",
     "pause": "一時停止",
     "add": "ファイルを添付",

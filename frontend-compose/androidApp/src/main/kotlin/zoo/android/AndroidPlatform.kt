@@ -28,7 +28,9 @@ internal class AndroidPlatform(
     private val base: String,
     private val userId: String,
     val logout: () -> Unit,
-    private val chooseFiles: suspend () -> List<Uri>,
+    private val chooseFiles: suspend (Boolean) -> List<Uri>,
+    private val recentPhotos: RecentPhotos,
+    private val requestRecentPhotos: suspend () -> Unit,
     /**
      * 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（docs/e2ee.md の「ログアウトと
      * 端末の削除」）。`count` が負なら数えられなかった。ログアウトしてよければ真を返す。
@@ -170,6 +172,7 @@ internal class AndroidPlatform(
         when {
             name == "back" -> back()
             name == "haptic:longPress" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            name == "haptic:threshold" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -293,43 +296,13 @@ internal class AndroidPlatform(
                 open(json.parseToJsonElement(payload).jsonObject.text("url"))
                 "{}"
             }
-            "pickFiles" -> {
-                val selected = chooseFiles().take(10)
-                val rows =
-                    withContext(Dispatchers.IO) {
-                        selected.map { uri ->
-                            val id = uuid()
-                            files[id] = uri
-                            var name = "attachment"
-                            var size = 0L
-                            activity.contentResolver
-                                .query(
-                                    uri,
-                                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                                    null,
-                                    null,
-                                    null,
-                                )
-                                ?.use { cursor ->
-                                    if (cursor.moveToFirst()) {
-                                        name = cursor.getString(0)
-                                        size = cursor.getLong(1)
-                                    }
-                                }
-                            zoo.obj(
-                                "id" to id,
-                                "name" to name,
-                                "size" to size,
-                                "type" to activity.contentResolver.getType(uri).orEmpty(),
-                            )
-                        }
-                    }
-                buildJsonObject {
-                        put("origin", "pick")
-                        put("files", JsonArray(rows))
-                    }
-                    .toString()
+            "recentPhotos" -> recentPhotos.list()
+            "requestRecentPhotos" -> {
+                requestRecentPhotos()
+                recentPhotos.list()
             }
+            "pickRecentPhoto" -> registerFiles(listOf(recentPhotos.select(payload.toLong())), mediaStoreId = payload)
+            "pickFiles" -> registerFiles(chooseFiles(json.parseToJsonElement(payload).jsonObject.flag("photos")).take(10))
             "fileRead" ->
                 android.util.Base64.encodeToString(readFile(payload), android.util.Base64.NO_WRAP)
             "filePut" -> {
@@ -347,6 +320,44 @@ internal class AndroidPlatform(
             "refreshUser" -> "{}" // Profile updates are rendered by the shared users Shape.
             else -> error("Android では未対応の操作です: $name")
         }
+
+    private suspend fun registerFiles(selected: List<Uri>, mediaStoreId: String? = null): String {
+        val rows =
+            withContext(Dispatchers.IO) {
+                selected.map { uri ->
+                    val id = uuid()
+                    files[id] = uri
+                    var name = "attachment"
+                    var size = 0L
+                    activity.contentResolver
+                        .query(
+                            uri,
+                            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                            null,
+                            null,
+                            null,
+                        )
+                        ?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                name = cursor.getString(0)
+                                size = cursor.getLong(1)
+                            }
+                        }
+                    zoo.obj(
+                        "id" to id,
+                        "name" to name,
+                        "size" to size,
+                        "type" to activity.contentResolver.getType(uri).orEmpty(),
+                        "media_store_id" to mediaStoreId,
+                    )
+                }
+            }
+        return buildJsonObject {
+                put("origin", "pick")
+                put("files", JsonArray(rows))
+            }
+            .toString()
+    }
 
     private suspend fun readFile(id: String): ByteArray =
         withContext(Dispatchers.IO) {

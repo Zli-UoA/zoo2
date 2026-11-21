@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.semantics.*
@@ -20,8 +22,15 @@ fun PaneHeader(
 ) {
     val platform = LocalWebPlatform.current
     val tag = remember { "pane-header:${platform?.uuid().orEmpty()}" }
+    val colors = MaterialTheme.colorScheme
+    val backdrop = if (LocalTouchUi.current) Modifier.background(
+        Brush.verticalGradient(listOf(
+            lerp(colors.background, colors.primary, if (colors.background.red < .5f) .11f else .23f),
+            colors.background,
+        )),
+    ) else Modifier
     Row(
-        modifier.fillMaxWidth().heightIn(min = if (LocalTouchUi.current) AndroidDesign.headerMinHeight else 60.dp)
+        modifier.then(backdrop).fillMaxWidth().heightIn(min = if (LocalTouchUi.current) AndroidDesign.headerMinHeight else 60.dp)
             .padding(horizontal = horizontalPadding, vertical = if (LocalTouchUi.current) AndroidDesign.spaceSmall else 0.dp).semantics {
             testTag = tag
         },

@@ -13,4 +13,15 @@ class MobileDestinationTest {
         assertEquals(MobileDestination.Settings, mobileDestination("/settings?channel=one"))
         assertNull(mobileDestination("/apps-authorize"))
     }
+
+    @Test
+    fun tabsAppearOnRootsAndOnTheChannelList() {
+        for (root in listOf("/home", "/", "/notifications", "/bubble", "/settings")) {
+            assertTrue(showMobileNavigation(root, channelList = true), root)
+        }
+        for (detail in listOf("/home/posts/one", "/home/users/one", "/channels/one", "/settings/notifications")) {
+            assertFalse(showMobileNavigation(detail, channelList = false), detail)
+        }
+        assertTrue(showMobileNavigation("/channels/one", channelList = true))
+    }
 }

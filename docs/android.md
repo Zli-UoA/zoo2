@@ -29,6 +29,10 @@ Android ターゲットは `zoo.android=true` で明示的に有効にします�
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
 
+## 初回ログイン
+
+Androidの初回ログインはCustom TabsでOIDC認可コードフローを開始し、S256 PKCEと検証済み App Linksでアプリへ戻ります。認証サービスにはAndroid用public clientの認可コードグラントと、ビルド時のホストに対応する `https://zli.chat/android/reauth-callback` を登録します。本番以外では該当するホストを使います。初回ログインは `offline_access` を要求し、再認証は `max_age=0` を指定します。コールバックの `state` とIDトークンの `nonce` を照合してからセッションを作ります。
+
 ## SIP・DM通話とAndroid Telecom
 
 「設定 → 電話（SIP）」で個人用・共有用の回線、利用メンバー、電話機の連絡先を登録・編集できます。共有回線の管理は管理者、利用は明示したメンバーのみです。個人回線は本人だけが利用します。PBX・TURN・VPNの構成は [SIP電話](sip.md) を参照してください。

@@ -42,6 +42,10 @@ import zoo.json
  * 【未検証】AuthZ からの 302 のリダイレクトで、Custom Tabs がアプリに処理を渡すか（docs/e2ee.md の「未決と
  * 未検証の一覧」）。渡さなかったときは、ブラウザーに zoo2 の案内のページが出るので、「ログインをやめる」で戻る。
  */
+internal class BrowserAuthorization(val tokenEndpoint: String, val tokens: JsonObject) {
+    override fun toString(): String = "BrowserAuthorization"
+}
+
 internal class AndroidReauth(
     private val activity: Activity,
     private val http: HttpClient,
@@ -58,7 +62,12 @@ internal class AndroidReauth(
         return current.result.complete(callback)
     }
 
-    suspend fun reauthenticate(): String {
+    suspend fun reauthenticate(): String =
+        requireNotNull(authorize(forceReauth = true).tokens.text("id_token"))
+
+    suspend fun signIn(): BrowserAuthorization = authorize(forceReauth = false)
+
+    private suspend fun authorize(forceReauth: Boolean): BrowserAuthorization {
         val discovery = discover()
         val request =
             ReauthRequest.create(
@@ -68,9 +77,10 @@ internal class AndroidReauth(
                 // 接続先ではなく、manifest の App Links と同じビルド時のホストにする（独自の接続先でもアプリに戻る）。
                 redirectUri = ReauthRequest.redirectUri("https://${works.zli.zoo.BuildConfig.REAUTH_HOST}"),
                 resource = connection.resource,
+                forceReauth = forceReauth,
             )
         val waiting = Pending(request, CompletableDeferred())
-        pending.set(waiting)
+        check(pending.compareAndSet(null, waiting)) { "認証はすでに進行中です" }
         try {
             withContext(Dispatchers.Main) {
                 try {
@@ -83,9 +93,9 @@ internal class AndroidReauth(
             val code =
                 when (val callback =
                     withTimeoutOrNull(ReauthRequest.TIMEOUT_MILLIS) { waiting.result.await() }
-                        ?: throw ReauthException(ReauthException.Reason.TIMEOUT, "再認証が時間内に終わりませんでした")) {
+                        ?: throw ReauthException(ReauthException.Reason.TIMEOUT, "認証が時間内に終わりませんでした")) {
                     is ReauthCallback.Code -> callback.code
-                    is ReauthCallback.Error -> throw ReauthException(ReauthException.Reason.DENIED, "再認証が拒否されました")
+                    is ReauthCallback.Error -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
                 }
             return exchange(discovery, request, code)
         } finally {
@@ -107,7 +117,7 @@ internal class AndroidReauth(
         return discovery
     }
 
-    private suspend fun exchange(discovery: JsonObject, request: ReauthRequest, code: String): String {
+    private suspend fun exchange(discovery: JsonObject, request: ReauthRequest, code: String): BrowserAuthorization {
         val endpoint = discovery.text("token_endpoint")
         if (endpoint == null || Url(endpoint).protocol != URLProtocol.HTTPS) {
             throw ReauthException(ReauthException.Reason.DENIED, "トークンエンドポイントがありません")
@@ -130,12 +140,12 @@ internal class AndroidReauth(
             } catch (_: Exception) {
                 JsonObject(emptyMap())
             }
-        // 成功応答の access_token は使わない（今のセッションのトークンは変えない）。エラーの本文は出さない。
+        // エラー応答の本文や成功時のトークンはログに出さない。
         val idToken =
             result.text("id_token")?.takeIf { response.status.value in 200..299 }
                 ?: throw ReauthException(ReauthException.Reason.DENIED, "ID トークンを受け取れませんでした (HTTP ${response.status.value})")
         validateIdToken(idToken, connection.issuer, connection.client, request.nonce, System.currentTimeMillis() / 1000)
-        return idToken
+        return BrowserAuthorization(endpoint, result)
     }
 }
 
