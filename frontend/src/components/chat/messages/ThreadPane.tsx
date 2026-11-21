@@ -1,6 +1,7 @@
+import { Popover } from "@base-ui/react/popover";
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, LogOutIcon, UsersIcon, XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -156,7 +157,6 @@ export function ThreadPane({
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
-  const [participantsOpen, setParticipantsOpen] = useState(false);
   // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
   // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
   const isWidePane = useMediaQuery("(min-width: 640px)");
@@ -322,18 +322,27 @@ export function ThreadPane({
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
         {participantCount !== undefined ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            id="thread-participants-toggle"
-            aria-expanded={participantsOpen}
-            aria-controls={participantsOpen ? "thread-participants" : undefined}
-            aria-label={t("threads.participants", { count: participantCount })}
-            onClick={() => setParticipantsOpen((value) => !value)}
-          >
-            <UsersIcon aria-hidden="true" />
-            <span className="tabular-nums">{participantCount}</span>
-          </Button>
+          <Popover.Root>
+            <Popover.Trigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={t("threads.participants", { count: participantCount })}
+                />
+              }
+            >
+              <UsersIcon aria-hidden="true" />
+              <span className="tabular-nums">{participantCount}</span>
+            </Popover.Trigger>
+            <ThreadParticipants
+              count={participantCount}
+              participants={participants ?? []}
+              // 狭幅ではペインが aria-modal のダイアログになる。外へ描画すると読み上げ・フォーカス移動の範囲から
+              // 外れるので、ペインの中へ描画する。広幅のサイドペインは、隣の列に隠れないよう body へ描画する。
+              container={isWidePane ? undefined : paneRef}
+            />
+          </Popover.Root>
         ) : null}
         {!readOnly && isMember && membership === "joined" && onLeaveThread ? (
           <Button
@@ -358,9 +367,6 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
-      {participantCount !== undefined && participantsOpen ? (
-        <ThreadParticipants count={participantCount} participants={participants ?? []} />
-      ) : null}
       {!readOnly &&
       isMember &&
       ((isArchived && onReopenThread && !postingForbidden) || membershipError) ? (
@@ -569,46 +575,65 @@ export function ThreadPane({
   );
 }
 
+/**
+ * 参加者の一覧。ヘッダーの人数ボタンから開くポップアウトで、ペインの縦の並びを押し下げない。
+ * ポップアップは `role="dialog"` なので、Escape は一覧だけを閉じ、スレッドのペインは閉じない
+ * （`handlePaneKeyDown` が、子のダイアログ内のキー操作に干渉しない）。
+ */
 function ThreadParticipants({
   count,
   participants,
+  container,
 }: {
   count: number;
   participants: ThreadParticipant[];
+  container?: React.ComponentProps<typeof Popover.Portal>["container"];
 }) {
   const { t } = useTranslation();
   return (
-    <div className="border-b px-3 py-2">
-      <ul
-        id="thread-participants"
-        aria-label={t("threads.participants", { count })}
-        className="max-h-40 overflow-y-auto text-xs"
+    <Popover.Portal container={container}>
+      <Popover.Positioner
+        side="bottom"
+        align="end"
+        sideOffset={8}
+        collisionPadding={8}
+        className="z-[60]"
       >
-        {participants.length === 0 ? (
-          <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
-        ) : (
-          participants.map((participant) => {
-            const label = participant.display_name || participant.user_name;
-            return (
-              <li key={participant.id} className="flex items-center gap-2 py-0.5">
-                <AppAvatar label={label} src={participant.avatar_url} size="sm" aria-hidden />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                {label !== participant.user_name ? (
-                  <span className="max-w-[40%] shrink-0 truncate text-muted-foreground">
-                    @{participant.user_name}
-                  </span>
-                ) : null}
+        <Popover.Popup className="w-[min(20rem,calc(100vw-2rem))] rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl outline-none">
+          <Popover.Title className="mb-2 text-sm font-semibold">
+            {t("threads.participants", { count })}
+          </Popover.Title>
+          <ul
+            aria-label={t("threads.participants", { count })}
+            className="max-h-[min(15rem,50dvh)] overflow-y-auto text-xs"
+          >
+            {participants.length === 0 ? (
+              <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
+            ) : (
+              participants.map((participant) => {
+                const label = participant.display_name || participant.user_name;
+                return (
+                  <li key={participant.id} className="flex items-center gap-2 py-0.5">
+                    <AppAvatar label={label} src={participant.avatar_url} size="sm" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">{label}</span>
+                    {label !== participant.user_name ? (
+                      <span className="max-w-[40%] shrink-0 truncate text-muted-foreground">
+                        @{participant.user_name}
+                      </span>
+                    ) : null}
+                  </li>
+                );
+              })
+            )}
+            {count > participants.length ? (
+              <li className="text-muted-foreground">
+                {t("threads.participantsMore", { count: count - participants.length })}
               </li>
-            );
-          })
-        )}
-        {count > participants.length ? (
-          <li className="text-muted-foreground">
-            {t("threads.participantsMore", { count: count - participants.length })}
-          </li>
-        ) : null}
-      </ul>
-    </div>
+            ) : null}
+          </ul>
+        </Popover.Popup>
+      </Popover.Positioner>
+    </Popover.Portal>
   );
 }
 

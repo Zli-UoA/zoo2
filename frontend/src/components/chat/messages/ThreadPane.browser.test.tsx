@@ -180,4 +180,76 @@ describe("ThreadPane のダイアログ挙動", () => {
     const input = await screen.findByRole("textbox", { name: "返信を送信" });
     await waitFor(() => expect(input).toHaveFocus());
   });
+
+  describe("参加者のポップアウト", () => {
+    const participants = [
+      { id: "u1", user_name: "alice", display_name: "Alice", avatar_url: null },
+      { id: "u2", user_name: "bob", display_name: null, avatar_url: null },
+    ];
+    function ParticipantsHarness({ onClose }: { onClose?: () => void }) {
+      return (
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({
+              replies: [message({ id: "reply-1", parent_id: "root-1", content: "a reply" })],
+              membership: "joined",
+              participantCount: 3,
+              participants,
+              onLeaveThread: noop,
+              onClose: onClose ?? noop,
+            })}
+          />
+        </LocaleProvider>
+      );
+    }
+
+    it("広幅では人数ボタンから開き、ペインの中身を押し下げずに、Escape で一覧だけを閉じる", async () => {
+      await page.viewport(1280, 900);
+      const onClose = vi.fn();
+      render(<ParticipantsHarness onClose={onClose} />);
+      const toggle = screen.getByRole("button", { name: "参加者 3人" });
+      const reply = screen.getByText("a reply");
+      const before = reply.getBoundingClientRect().top;
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+      await userEvent.click(toggle);
+      const popup = await screen.findByRole("dialog", { name: "参加者 3人" });
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(popup.textContent).toMatch(/Alice/);
+      expect(popup.textContent).toMatch(/@alice/);
+      expect(popup.textContent).toMatch(/bob/);
+      expect(popup.textContent).toMatch(/ほか 1人/);
+      // インラインの帯ではなくポップアウト: 返信の位置は変わらず、一覧はペインの外側（body）に重なる。
+      expect(reply.getBoundingClientRect().top).toBe(before);
+      expect(screen.getByRole("complementary", { name: "スレッド" }).contains(popup)).toBe(false);
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "参加者 3人" })).toBeNull());
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await waitFor(() => expect(toggle).toHaveFocus());
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("狭幅では一覧をダイアログの中へ描画し、Escape でスレッドのペインを閉じずに一覧だけを閉じる", async () => {
+      await page.viewport(390, 844);
+      const onClose = vi.fn();
+      render(<ParticipantsHarness onClose={onClose} />);
+      const pane = screen.getByRole("dialog", { name: "スレッド" });
+      const toggle = screen.getByRole("button", { name: "参加者 3人" });
+
+      await userEvent.click(toggle);
+      const popup = await screen.findByRole("dialog", { name: "参加者 3人" });
+      // aria-modal のペインの外に出ると、読み上げ・フォーカス移動の範囲から外れる。
+      expect(pane.contains(popup)).toBe(true);
+      expect(popup.textContent).toMatch(/Alice/);
+      const rect = popup.getBoundingClientRect();
+      expect(rect.left).toBeGreaterThanOrEqual(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth);
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "参加者 3人" })).toBeNull());
+      expect(screen.getByRole("dialog", { name: "スレッド" })).toBeVisible();
+      expect(onClose).not.toHaveBeenCalled();
+    });
+  });
 });

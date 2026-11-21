@@ -1,7 +1,7 @@
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { StoryShell } from "../../../../.storybook/shell";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent, within } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
@@ -296,13 +296,20 @@ export const WithParticipants: Story = {
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(toggle);
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    const list = within(canvas.getByRole("list", { name: "参加者 53人" }));
+    // 参加者は、ヘッダーの人数ボタンから開くポップアウトに出す（ペインの縦の並びを押し下げない）。
+    const popup = await screen.findByRole("dialog", { name: "参加者 53人" });
+    const list = within(within(popup).getByRole("list", { name: "参加者 53人" }));
     await expect(list.getByText("Alice")).toBeVisible();
     await expect(list.getByText("@alice")).toBeVisible();
     // 表示名がないときは、ユーザー名を表示名として出し、`@` の行は重ねない。
     await expect(list.getByText("bob")).toBeVisible();
     await expect(list.queryByText("@bob")).not.toBeInTheDocument();
     await expect(list.getByText("ほか 51人")).toBeVisible();
+    // Escape でポップアウトだけが閉じ、ボタンへフォーカスが戻る。
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "参加者 53人" })).toBeNull());
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toHaveFocus();
   }),
 };
 export const ReopenAndJoin: Story = {
