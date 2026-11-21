@@ -60,7 +60,9 @@ export const AboutZoo: Story = {
 
     const dialog = await screen.findByRole("dialog", { name: "Zooについて" });
     const version = import.meta.env.VITE_ZOO_BUILD_SHA?.substring(0, 12) || "不明";
-    await expect(within(dialog).getByText(`バージョン: ${version}`)).toBeVisible();
+    await waitFor(async () => {
+      await expect(within(dialog).getByText(`バージョン: ${version}`)).toBeVisible();
+    });
 
     await userEvent.keyboard("{Escape}");
     await waitFor(async () => {
@@ -69,6 +71,8 @@ export const AboutZoo: Story = {
     });
 
     await userEvent.keyboard("{Enter}");
-    await expect(await screen.findByRole("dialog", { name: "Zooについて" })).toBeVisible();
+    await waitFor(async () => {
+      await expect(screen.getByRole("dialog", { name: "Zooについて" })).toBeVisible();
+    });
   }),
 };
