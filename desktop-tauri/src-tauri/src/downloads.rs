@@ -877,6 +877,9 @@ fn remove_stale_entry_with(path: &Path, probe: impl Fn(&Path) -> ProbeState) -> 
             ProbeState::Unreadable => return false,
         }
     }
+    // 目印を読んでから削除するまでの間に、同じ名前へ別のファイルが置かれると、
+    // それを消してしまう。読み取ったものと同じファイルを、名前ではなく開いたもの
+    // として消す方法は 3 つの OS に無いため、この短い区間は残る（docs にも書いた）。
     match std::fs::remove_file(path) {
         Ok(()) => true,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
@@ -2290,10 +2293,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn startup_cleanup_keeps_a_preexisting_probe_socket() {
-        let dir = temp_dir();
-        let target = dir.join("x.txt");
-        let part = part_path(&target, "0123456789abcdef");
-        let probe = part.with_extension("probe");
+        // `sun_path` は 104 バイト（macOS）で、Rust は 103 バイトを超えるパスを
+        // 拒否する。`TMPDIR` が長い環境でも入るよう、短いパスに置く。
+        let base = std::env::temp_dir();
+        let base = if base.as_os_str().len() + 1 + 26 <= 100 {
+            base
+        } else {
+            PathBuf::from("/tmp")
+        };
+        let probe = base.join(format!(".zoo-{}.probe", new_download_id()));
+        assert!(
+            probe.as_os_str().len() < 100,
+            "ソケットのパスが長すぎます: {probe:?}"
+        );
         // Unix ドメインソケットは、リンクをたどらず止まらない指定で開くと
         // ENXIO（macOS では EOPNOTSUPP）で失敗する。中身は無いので消さない。
         let listener = std::os::unix::net::UnixListener::bind(&probe).unwrap();
@@ -2302,7 +2314,7 @@ mod tests {
         assert!(probe.symlink_metadata().is_ok(), "ソケットを消さない");
 
         drop(listener);
-        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_file(&probe).unwrap();
     }
 
     #[cfg(unix)]
