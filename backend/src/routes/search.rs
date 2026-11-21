@@ -294,6 +294,11 @@ async fn search(
     toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .exec(&mut tx)
         .await?;
+    // 月・語・空文字で外す条件（`$3 = '' OR …`）の値で計画が変わる。generic plan では月と本文の GIN を
+    // 使えず、総履歴を読む経路になりうるので、値を埋めた custom plan だけを使う（予算テストもこの計画を測る）。
+    toasty::sql::statement("SET LOCAL plan_cache_mode = force_custom_plan")
+        .exec(&mut tx)
+        .await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
     let scope = crate::apps::one(&mut tx, SCOPE_SQL, &[auth_user.id.as_str(), channel]).await?;
     let ids = scope["ids"].to_string();
