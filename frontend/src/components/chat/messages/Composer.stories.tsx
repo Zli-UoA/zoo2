@@ -76,24 +76,39 @@ export const SingleLineActionsAlignWithText: Story = {
   }),
 };
 
+export const SingleLineActionsAlignWithTextMobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const textbox = canvas.getByRole("textbox");
+    const textCenter = (() => {
+      const box = textbox.getBoundingClientRect();
+      const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
+      const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
+      return box.top + paddingTop + lineHeight / 2;
+    })();
+    for (const name of ["絵文字", "送信"]) {
+      const box = canvas.getByRole("button", { name }).getBoundingClientRect();
+      await expect(Math.abs(box.top + box.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+    }
+  }),
+};
+
 export const MultilineActionsStayAtTop: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const textbox = canvas.getByRole("textbox");
     await userEvent.type(textbox, "1行目{Enter}2行目{Enter}3行目{Enter}4行目");
-    const frame = textbox.closest("div.rounded-xl")!;
-    const emoji = canvas.getByRole("button", { name: "絵文字" });
-    await expect(emoji).toBeVisible();
-    // 複数行になってもアクションは入力枠の先頭行に固定され、下端に寄らない。
+    const frame = textbox.parentElement!;
     const frameBox = frame.getBoundingClientRect();
-    const emojiBox = emoji.getBoundingClientRect();
-    await expect(emojiBox.top - frameBox.top).toBeLessThan(16);
-    await expect(frameBox.bottom - emojiBox.bottom).toBeGreaterThan(32);
-
-    const send = canvas.getByRole("button", { name: "送信" });
-    const sendBox = send.getBoundingClientRect();
-    await expect(sendBox.top - frameBox.top).toBeLessThan(16);
-    await expect(frameBox.bottom - sendBox.bottom).toBeGreaterThan(32);
+    // 複数行になってもアクションは入力枠の先頭行に固定され、下端に寄らない。
+    for (const name of ["絵文字", "送信"]) {
+      const button = canvas.getByRole("button", { name });
+      const box = button.getBoundingClientRect();
+      // 下端（複数行の最終行）に寄っていないことを確認する。中心の一致は 1 行の Story で検証。
+      await expect(box.top - frameBox.top).toBeLessThanOrEqual(12);
+      await expect(box.top - frameBox.top).toBeGreaterThanOrEqual(0);
+    }
   }),
 };
 

@@ -231,6 +231,7 @@
       "states": [
         "Default",
         "SingleLineActionsAlignWithText",
+        "SingleLineActionsAlignWithTextMobile",
         "MultilineActionsStayAtTop",
         "Disabled",
         "Multiline",
