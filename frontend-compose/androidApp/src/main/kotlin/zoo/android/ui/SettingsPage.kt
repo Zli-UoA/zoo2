@@ -67,7 +67,7 @@ internal fun SettingsPage(
                         }
                         when (entry) {
                             is SettingsEntry.Information -> Unit
-                            is SettingsEntry.Destination -> UiGlyph(UiIcon.Next, colors.secondary)
+                            is SettingsEntry.Destination -> UiGlyph(UiIcon.Next, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
                             is SettingsEntry.Toggle -> Switch(checked = entry.enabled, onCheckedChange = null)
                         }
                     }
