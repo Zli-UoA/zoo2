@@ -25,7 +25,8 @@ internal enum class MobileDestination(val path: String, val icon: String, val la
 internal fun mobileDestination(path: String): MobileDestination? {
     val route = path.substringBefore('?')
     return when {
-        route == "/" || route.startsWith("/channels/") -> MobileDestination.Channels
+        // Search is opened from the channel list, so it stays under Channels.
+        route == "/" || route.startsWith("/channels/") || route == "/search" -> MobileDestination.Channels
         isHomePath(route) -> MobileDestination.Home
         route == "/notifications" -> MobileDestination.Notifications
         route == "/bubble" -> MobileDestination.Bubble

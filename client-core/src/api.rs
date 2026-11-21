@@ -51,6 +51,74 @@ pub struct ThreadPage {
     pub next_cursor: Option<String>,
 }
 
+/// `GET /api/search` の種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchKind {
+    Messages,
+    Files,
+    Notes,
+}
+
+impl SearchKind {
+    fn as_query(self) -> &'static str {
+        match self {
+            SearchKind::Messages => "messages",
+            SearchKind::Files => "files",
+            SearchKind::Notes => "notes",
+        }
+    }
+}
+
+/// 全文検索の 1 件（docs/search.md）。種類によって埋まる列が違う。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SearchItem {
+    /// メッセージ・添付・ノートの ID。
+    pub id: String,
+    pub channel_id: String,
+    pub channel_name: String,
+    #[serde(default)]
+    pub is_dm: bool,
+    /// スレッドの返信なら親の ID（メッセージ・ファイル）。
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// 添付が付いているメッセージ（ファイル）。
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    /// 投稿者の表示名（メッセージ・ファイル）。
+    #[serde(default, deserialize_with = "author_name")]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+fn author_name<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| {
+        v.get("display_name")
+            .or_else(|| v.get("user_name"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string)
+    }))
+}
+
+/// 検索の 1 ページ。`items` が少なくても `next_cursor` があれば古い月が残っている。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchPage {
+    pub items: Vec<SearchItem>,
+    pub next_cursor: Option<String>,
+    /// どの月（`YYYY-MM`）まで見たか。
+    #[serde(default)]
+    pub searched_until: Option<String>,
+}
+
 /// ピン留めの 1 行（`GET /api/channel-pins`）。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PinnedChannel {
@@ -430,6 +498,20 @@ impl ApiClient {
         )
         .await?;
         Ok(())
+    }
+
+    /// 全文検索（`GET /api/search`）。暗号化チャンネルは対象外。
+    pub async fn search(
+        &self,
+        kind: SearchKind,
+        query: &str,
+        cursor: Option<&str>,
+    ) -> Result<SearchPage> {
+        let mut path = format!("/api/search?type={}&q={}", kind.as_query(), segment(query));
+        if let Some(cursor) = cursor {
+            path.push_str(&format!("&cursor={}", segment(cursor)));
+        }
+        self.get(&path).await
     }
 
     pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
@@ -1022,6 +1104,33 @@ mod tests {
 
         let txid = client(&server).remove_reaction("m1", "👍").await.unwrap();
         assert_eq!(txid, None);
+    }
+
+    #[tokio::test]
+    async fn searches_with_escaped_query_and_cursor() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/search"))
+            .and(wiremock::matchers::query_param("type", "files"))
+            .and(wiremock::matchers::query_param("q", "会議 資料&x"))
+            .and(wiremock::matchers::query_param("cursor", "{\"m\":1}"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
+                {"id":"a1","message_id":"m1","channel_id":"c1","channel_name":"general","is_dm":false,
+                 "parent_id":null,"user_id":"u2","author":{"id":"u2","user_name":"bob","display_name":"Bob"},
+                 "file_name":"議事録.pdf","snippet":"議事録.pdf","created_at":"2026-11-21T01:02:03.456"}
+            ],"next_cursor":null,"searched_until":"2025-12"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let page = client(&server)
+            .search(SearchKind::Files, "会議 資料&x", Some("{\"m\":1}"))
+            .await
+            .unwrap();
+        assert_eq!(page.items[0].author.as_deref(), Some("Bob"));
+        assert_eq!(page.items[0].message_id.as_deref(), Some("m1"));
+        assert_eq!(page.searched_until.as_deref(), Some("2025-12"));
+        assert!(page.next_cursor.is_none());
     }
 
     #[tokio::test]

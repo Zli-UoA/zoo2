@@ -154,7 +154,7 @@ test('phone query budgets are mandatory in the merge queue', () => {
 test('search query budgets are mandatory in the merge queue', () => {
   const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
   const key = 'ci-search-query-budget';
-  for (const path of ['backend/src/routes/search.rs', 'backend/tests/search_query_budget_test.rs', 'infra/db/schema.sql', 'infra/db/compare-search-work.py', 'infra/db/postgres/Dockerfile', `.github/workflows/${key}.yaml`]) {
+  for (const path of ['backend/src/routes/search.rs', 'backend/src/routes/mod.rs', 'backend/tests/search_query_budget_test.rs', 'infra/db/schema.sql', 'infra/db/compare-search-work.py', 'infra/db/postgres/Dockerfile', `.github/workflows/${key}.yaml`]) {
     assert.equal(selectWorkflows([path], readWorkflow)[key], true, path);
   }
   assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)[key], false);

@@ -189,6 +189,23 @@
       "states": ["Unread", "SingleUnread", "AllRead"]
     },
     {
+      "file": "src/components/chat/search/SearchScreen.stories.tsx",
+      "states": [
+        "Prompt",
+        "SubmitQuery",
+        "Messages",
+        "LoadOlder",
+        "Files",
+        "SwitchKind",
+        "Loading",
+        "Empty",
+        "EmptyWithOlder",
+        "LoadError",
+        "LongJapanese",
+        "Mobile"
+      ]
+    },
+    {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
       "states": [
         "UnifiedTimeline",
@@ -1107,6 +1124,16 @@
     {
       "file": "src/components/chat/NotificationsButton.tsx",
       "story": "src/components/chat/NotificationsButton.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/search/SearchScreen.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/search/SearchResultRow.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "MessagesとFilesでメッセージ・スレッドの返信・DM・Appの投稿者・ファイルの各行、LongJapaneseで長い名前と本文の折り返しを実描画する。"
     },
     {
       "file": "src/components/chat/NotificationsScreen.tsx",

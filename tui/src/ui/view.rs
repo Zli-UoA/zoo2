@@ -80,6 +80,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let scroll = *scroll;
             draw_recipients(frame, app, scroll);
         }
+        Mode::GlobalSearch => draw_global_search(frame, app),
         _ => {}
     }
 }
@@ -252,6 +253,167 @@ fn draw_recipients(frame: &mut Frame, app: &App, scroll: usize) {
         DIM,
     ));
     draw_popup_sized(frame, "配布先の詳細", visible, 72);
+}
+
+/// 全文検索の画面（docs/search.md）。結果は 2 行ずつ（行き先・投稿者・日付と、抜粋）。
+fn draw_global_search(frame: &mut Frame, app: &App) {
+    const WIDTH: u16 = 84;
+    let search = &app.global_search;
+    let accent = Style::new().fg(ACCENT);
+    let inner = usize::from(WIDTH.min(frame.area().width).saturating_sub(2));
+    let kind = |files: bool, label: &'static str| {
+        if search.files == files {
+            Span::styled(format!("[{label}]"), accent.add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(format!(" {label} "), DIM)
+        }
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("検索: ", accent),
+            Span::raw(search.query.clone()),
+            Span::styled("▏", accent),
+        ]),
+        Line::from(vec![
+            kind(false, "メッセージ"),
+            Span::raw(" "),
+            kind(true, "ファイル"),
+        ]),
+        Line::from(""),
+    ];
+    // 結果の行数は画面の高さに合わせ、選択が見える範囲を出す。
+    let room = usize::from(frame.area().height.saturating_sub(12)).max(2) / 2;
+    let first = search.selected.saturating_sub(room.saturating_sub(1));
+    for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
+        let selected = index == search.selected;
+        let place = match app.store.channel(&item.channel_id) {
+            Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
+            _ => format!("#{}", item.channel_name),
+        };
+        let mut head = vec![
+            Span::styled(if selected { "▶ " } else { "  " }, accent),
+            Span::styled(place, if selected { accent } else { Style::new() }),
+        ];
+        if let Some(author) = &item.author {
+            head.push(Span::styled(format!("  {author}"), DIM));
+        }
+        head.push(Span::styled(
+            format!(
+                "  {}",
+                item.created_at.get(..10).unwrap_or(&item.created_at)
+            ),
+            DIM,
+        ));
+        if item.parent_id.is_some() {
+            head.push(Span::styled("  スレッドの返信", DIM));
+        }
+        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
+        lines.push(Line::from(truncate_spans(head, inner)));
+        let text = item.file_name.as_deref().unwrap_or(&item.snippet);
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = truncate_width(&text, inner.saturating_sub(4));
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            if selected {
+                Span::styled(text, Style::new().add_modifier(Modifier::BOLD))
+            } else {
+                Span::raw(text)
+            },
+        ]));
+    }
+    lines.push(Line::from(""));
+    let status = if search.loading {
+        Line::styled("検索中…", DIM)
+    } else if let Some(error) = &search.error {
+        Line::styled(
+            format!("検索できませんでした: {error}  Enter で再試行します。"),
+            Style::new().fg(Color::Red),
+        )
+    } else if search.searched.is_none() {
+        Line::styled(
+            "語を入れて Enter。空白で区切ると、すべての語を含むものを探します。",
+            DIM,
+        )
+    } else {
+        match (
+            &search.next_cursor,
+            &search.searched_until,
+            search.items.is_empty(),
+        ) {
+            (Some(_), Some(month), true) => Line::styled(
+                format!("{month} までに見つかりませんでした。↓ でさらに古い期間を検索します。"),
+                DIM,
+            ),
+            (Some(_), Some(month), false) => Line::styled(
+                format!(
+                    "{month} まで検索しました。末尾で ↓ を押すと、さらに古い結果を検索します。"
+                ),
+                DIM,
+            ),
+            // 最後まで見終わったときも、どこまで見たかは出す。
+            (None, Some(month), true) => Line::styled(
+                format!("{month} まで検索しました。見つかりませんでした。"),
+                DIM,
+            ),
+            (None, Some(month), false) => Line::styled(
+                format!("{} 件（{month} まで検索しました）", search.items.len()),
+                DIM,
+            ),
+            (_, _, true) => Line::styled("見つかりませんでした。", DIM),
+            _ => Line::styled(format!("{} 件", search.items.len()), DIM),
+        }
+    };
+    lines.push(status);
+    lines.push(Line::styled(
+        "暗号化されたチャンネルは検索の対象外です。",
+        DIM,
+    ));
+    lines.push(Line::styled(
+        "Enter: 検索 / 開く  ↑↓: 選ぶ  Tab: 種類  Esc: 閉じる",
+        DIM,
+    ));
+    draw_popup_sized(frame, "全文検索", lines, WIDTH);
+}
+
+/// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
+/// 幅 `width` に収まるよう、はみ出す span を `…` で切り、その後ろを捨てる。
+fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        if used >= width {
+            break;
+        }
+        let w = span.content.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        out.push(Span::styled(
+            truncate_width(&span.content, width - used),
+            span.style,
+        ));
+        break;
+    }
+    out
+}
+
+fn truncate_width(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width.saturating_sub(1) {
+            out.push('…');
+            return out;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out
 }
 
 /// チャンネルか DM の作成の入力欄（#361）。
@@ -521,11 +683,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    app.newest_shown = built
-        .ranges
-        .iter()
-        .rfind(|(_, range)| range.start < scroll + height)
-        .map(|(id, _)| (channel_id.clone(), id.clone()));
+    // 全文検索の画面が覆っている間は、背後のタイムラインを読んだことにしない（既読を進めない）。
+    if app.mode != Mode::GlobalSearch {
+        app.newest_shown = built
+            .ranges
+            .iter()
+            .rfind(|(_, range)| range.start < scroll + height)
+            .map(|(id, _)| (channel_id.clone(), id.clone()));
+    }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
 }
@@ -544,22 +709,41 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(root) = app.store.message(&channel_id, &thread.root_id) else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                if app.store.is_synced(&ShapeId::Messages(channel_id.clone())) {
+    let replies = app.store.replies(&channel_id, &thread.root_id);
+    let mut inner = inner;
+    let mut messages = Vec::new();
+    match app.store.message(&channel_id, &thread.root_id) {
+        Some(root) => messages.push(root),
+        None => {
+            let synced = app.store.is_synced(&ShapeId::Messages(channel_id.clone()));
+            let notice = Paragraph::new(Line::styled(
+                if synced {
                     "元のメッセージは削除されました"
                 } else {
                     "読み込み中…"
                 },
                 DIM,
-            )),
-            inner,
-        );
-        return;
-    };
-    let mut messages = vec![root];
-    messages.extend(app.store.replies(&channel_id, &thread.root_id));
+            ));
+            // 親が削除されても返信は残る（全文検索から開くこともある）。返信があれば、知らせの下に描く。
+            if !synced || replies.is_empty() {
+                frame.render_widget(notice, inner);
+                return;
+            }
+            frame.render_widget(
+                notice,
+                Rect {
+                    height: 1.min(inner.height),
+                    ..inner
+                },
+            );
+            inner = Rect {
+                y: inner.y + 1.min(inner.height),
+                height: inner.height.saturating_sub(1),
+                ..inner
+            };
+        }
+    }
+    messages.extend(replies);
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
@@ -723,6 +907,7 @@ const HELP: &[(&str, &str)] = &[
     ("[ / ] / Alt+↑↓", "ピン留めを上 / 下へ (ピン留め選択中)"),
     ("J / L", "チャンネル・スレッドに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
+    ("S / Ctrl+F", "メッセージ・ファイルを全文検索"),
     ("u", "選択中のスレッドを再開"),
     ("c / m", "チャンネル / DM を作る (Tab で暗号化)"),
     ("V", "暗号化チャンネルの配布先の詳細"),
@@ -2087,6 +2272,80 @@ mod tests {
         }
     }
 
+    #[test]
+    fn truncate_spans_keeps_the_heading_on_one_line() {
+        use unicode_width::UnicodeWidthStr;
+        let spans = vec![
+            Span::raw("▶ "),
+            Span::raw("#とても長いチャンネル名"),
+            Span::raw("  投稿者"),
+        ];
+        let out = truncate_spans(spans, 16);
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= 16, "{text}");
+        assert!(text.ends_with('…'), "{text}");
+        let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
+        assert_eq!(short.len(), 2);
+        // 前の span が幅を使い切ったら、`…` も足さずに止める。
+        let full = truncate_spans(vec![Span::raw("ab"), Span::raw("c")], 2);
+        let text: String = full.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "ab");
+    }
+
+    #[tokio::test]
+    async fn thread_with_deleted_root_still_shows_its_replies() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "r2",
+                json!({ "id": "r2", "user_id": "u1", "channel_id": "c1", "content": "親なしの返信",
+                           "created_at": "2026-11-01 03:05:00", "parent_id": "gone" }),
+            )]),
+        ));
+        app.open_channel("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "gone".into(),
+            selected: Some("r2".into()),
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("元のメッセージは削除されました"),
+            "{screen}"
+        );
+        assert!(screen.contains("親なしの返信"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn global_search_shows_the_searched_month_after_the_last_page() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), false));
+        app.global_search.searched_until = Some("2025-12".into());
+        app.global_search.next_cursor = None;
+        assert!(render(&mut app).contains("2025-12 まで検索しました。見つかりませんでした。"));
+    }
+
+    #[tokio::test]
+    async fn global_search_takes_pastes_and_does_not_mark_the_timeline_read() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        app.on_terminal_event(Event::Paste("会議\n資料".into()));
+        assert_eq!(app.global_search.query, "会議資料");
+        assert!(app.composer.is_empty());
+        app.newest_shown = None;
+        render(&mut app);
+        assert_eq!(app.newest_shown, None, "the popup covers the timeline");
+        press(&mut app, KeyCode::Esc);
+        render(&mut app);
+        assert!(app.newest_shown.is_some());
+    }
+
     #[tokio::test]
     async fn archived_thread_changes_require_reopening_but_replies_remain_available() {
         let mut app = app();
@@ -3179,6 +3438,54 @@ mod tests {
         assert_eq!(
             app.channel_encryption("c2"),
             crate::ui::e2ee_chat::ChannelEncryption::Downgraded
+        );
+    }
+
+    #[tokio::test]
+    async fn global_search_lists_results_and_opens_a_thread_reply() {
+        let mut app = app();
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        for ch in "会議".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        // 取得はつながらない宛先へ出るが、結果は直接入れる。
+        let (generation, ..) = app.global_search.start(false).unwrap();
+        let page: crate::api::SearchPage = serde_json::from_value(json!({
+            "items": [
+                {"id":"m1","channel_id":"c1","channel_name":"general","parent_id":null,
+                 "author":{"display_name":"Bob"},"snippet":"明日の会議の資料","created_at":"2026-11-20T09:00:00.000"},
+                {"id":"m2","channel_id":"c2","channel_name":"random","parent_id":"root",
+                 "author":{"display_name":"Carol"},"snippet":"会議は中止","created_at":"2026-11-19T09:00:00.000"}
+            ],
+            "next_cursor":"{\"m\":24322}","searched_until":"2025-12"
+        }))
+        .unwrap();
+        app.on_app_event(AppEvent::SearchResults {
+            generation,
+            append: false,
+            page,
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("全文検索"), "{screen}");
+        assert!(
+            screen.contains("#general") && screen.contains("Bob"),
+            "{screen}"
+        );
+        assert!(screen.contains("明日の会議の資料"), "{screen}");
+        assert!(screen.contains("スレッドの返信"), "{screen}");
+        assert!(screen.contains("2025-12 まで検索しました"), "{screen}");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        let thread = app.thread.as_ref().expect("thread opens");
+        assert_eq!(
+            (thread.root_id.as_str(), thread.selected.as_deref()),
+            ("root", Some("m2"))
         );
     }
 }

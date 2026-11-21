@@ -110,6 +110,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (
                 initial.path.startsWith("/channels/") ||
                     initial.path.startsWith("/notifications") ||
+                    isGlobalSearchPath(initial.path) ||
                     isHomePath(initial.path)
             )
                 "chat"
@@ -151,6 +152,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
     val activityPubNotifications by lazy { ActivityPubNotificationsState(this) }
+    val globalSearch by lazy { GlobalSearchController(this) }
     val previews = PreviewLoader(this)
     val attachmentLinks = AttachmentLinks(this)
     val channelId: String?
@@ -267,6 +269,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 if (
                     channelId != null ||
                         next.path.startsWith("/notifications") ||
+                        isGlobalSearchPath(next.path) ||
                         isHomePath(next.path)
                 )
                     "chat"
@@ -326,7 +329,12 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =
-            if (channelId != null || env.path.startsWith("/notifications") || isHomePath(env.path))
+            if (
+                channelId != null ||
+                    env.path.startsWith("/notifications") ||
+                    isGlobalSearchPath(env.path) ||
+                    isHomePath(env.path)
+            )
                 "chat"
             else "sidebar"
         scope.launch {

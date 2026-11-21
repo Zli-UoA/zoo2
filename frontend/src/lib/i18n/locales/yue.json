@@ -1838,5 +1838,24 @@
     "speaker": "揚聲器",
     "waiting": "正在等候來電",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "搵嘢",
+    "placeholder": "搵訊息同檔案",
+    "kinds": {
+      "messages": "訊息",
+      "files": "檔案"
+    },
+    "prompt": "請輸入要搵嘅字詞。用空格分開嘅話，會搵包含晒所有字詞嘅結果。",
+    "empty": "搵唔到結果。",
+    "emptyOlder": "到 {{month}} 為止搵唔到結果。可以再搵更早嘅內容。",
+    "searchedUntil": "已經搵到 {{month}}",
+    "searchOlder": "搵更早嘅結果",
+    "loading": "搵緊…",
+    "loadError": "搵唔到。",
+    "retry": "再試",
+    "encryptedNote": "加密頻道唔喺搜尋範圍入面。",
+    "openNav": "搵嘢",
+    "inThread": "子討論回覆"
   }
 }

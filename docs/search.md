@@ -72,6 +72,8 @@ CREATE INDEX messages_search_month ON messages USING gin (
 
 - 各 SQL の対象の表の走査が「今月のヒット数×3+64」以内（1 文字の語は「今月の行数×3+64」）。見えないチャンネルにだけ当たる語と、見えるチャンネルが 0 の閲覧者も測る。
 - 30 万件と 100 万件で、表ごとの走査量とバッファが増えない（`infra/db/compare-search-work.py`）。
+- 結合で捨てた行（`Rows Removed by Join Filter`）とソートの入力行（メモリ内のソートも）も、同じ上限で見る。
+- API 1 リクエストごとに、SQL の回数・合計バッファ・DB 時間を `pg_stat_statements` で測る（手元の compose と CI で preload する）。該当なしのリクエストは月の SQL がちょうど 12 回、今月でそろう語は 1 回。合計バッファは 30 万件と 100 万件で増えない。
 - 単独と 8 並列を各 30 回。API 全体の p50・p95・最大値も記録する。
 
 ## 拡張とデプロイ
@@ -90,3 +92,16 @@ CREATE INDEX messages_search_month ON messages USING gin (
 - 予算テストの CI と `ci-backend` の emoji のジョブは、service コンテナの代わりに、このイメージをビルドして `docker run` する。
 - 今まで `postgres:16-alpine` で作ったローカルのデータは、`make db-reset` で作り直す（alpine（musl）と Debian（glibc）で文字列の並び順が違い、インデックスが合わなくなるため）。
 - 本番（CNPG）と preview のイメージは Zli-UoA/zoo2-infra の `images/postgres-bigm` と `images/postgres-bigm-dev`。pg_bigm の版を上げるときは、3 つの Dockerfile をそろえる。
+
+## クライアント
+
+| クライアント | 入口 | 備考 |
+| --- | --- | --- |
+| Web（React） | 左のレールの検索、`/search?q=&type=` | メッセージとファイルの 2 つのタブ。続きは「さらに古い結果を検索」 |
+| Android（Compose） | チャンネル一覧の上の検索ボタン、広い画面ではレール | Web と同じ |
+| TUI | `S` / `Ctrl+F` | Tab で種類を切り替え、末尾で ↓ を押すと続きを読む |
+| デスクトップ（Tauri） | Web と同じ | 既定の Remote モードは React の画面を読むので、Web の検索がそのまま使える。開発用の Leptos の画面にはメッセージへ移動する手段がないので、検索は付けない |
+| iOS | Zli-UoA/zoo2-ios で対応 | |
+
+- ノート（`type=notes`）は、どのクライアントにもノートの画面がまだないので、クライアントからは使っていない。ノートの画面を作るときに、検索の種類に足す。
+- 暗号化チャンネルの検索は、今までどおり各クライアントが読み込んで復号した範囲だけで行う。

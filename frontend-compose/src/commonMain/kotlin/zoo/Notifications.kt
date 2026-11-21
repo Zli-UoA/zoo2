@@ -697,7 +697,7 @@ fun NotificationsButton(app: Session, unread: Int) {
 
 /** CSS flex-shrink distributes overflow proportionally between both labels. */
 @Composable
-private fun NotificationDestination(
+internal fun NotificationDestination(
     icon: String,
     context: String?,
     label: String,
