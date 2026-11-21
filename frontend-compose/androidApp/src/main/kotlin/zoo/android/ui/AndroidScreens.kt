@@ -324,7 +324,19 @@ private fun RenderAndroidScreen(
                     CallAvatar(screen, colors, foreground && !interaction.reducedMotion, remoteAudioLevel)
                 },
             ) {
-                Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (screen.incoming) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceAround,
+                    ) {
+                        IncomingCallAction("応答", UiIcon.Phone, Color(0xff1b743d), colors) {
+                            dispatch(AndroidUiAction.Answer)
+                        }
+                        IncomingCallAction("拒否", UiIcon.PhoneOff, Color(0xffbc3037), colors) {
+                            dispatch(AndroidUiAction.HangUp)
+                        }
+                    }
+                } else Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (screen.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
                         CallToggle("ミュート", if (screen.muted) UiIcon.MicOff else UiIcon.Mic, screen.muted, colors) {
                             dispatch(AndroidUiAction.MuteCall)
@@ -334,12 +346,6 @@ private fun RenderAndroidScreen(
                         }
                     }
 
-                    if (screen.incoming) {
-                        TextAction("応答", colors, modifier = Modifier.fillMaxWidth(),
-                            icon = UiIcon.Phone, labelWeight = AndroidWeights.emphasis) {
-                            dispatch(AndroidUiAction.Answer)
-                        }
-                    }
                     TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
                         icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) {
                         dispatch(AndroidUiAction.HangUp)
