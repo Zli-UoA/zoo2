@@ -314,8 +314,8 @@ private fun RenderAndroidScreen(
                 colors, loading = screen.restoring,
             ) {
                 if (screen.restoring) {
-                    TextAction("ログイン画面を開く", colors, style = TextActionStyle.Plain, click = back)
-                } else TextAction("ログイン", colors) { dispatch(AndroidUiAction.SignIn) }
+                    TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, style = TextActionStyle.Plain, click = back)
+                } else TextAction("ログイン", colors, icon = UiIcon.SignIn) { dispatch(AndroidUiAction.SignIn) }
             }
             is AndroidScreen.Call -> BrandPage(
                 if (screen.incoming) "着信中" else "通話中", screen.caller, colors,

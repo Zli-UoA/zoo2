@@ -78,8 +78,8 @@ internal fun NotificationPage(
                 item.detail?.let { Text(it, color = colors.secondary, fontSize = 13.sp) }
                 if (item.followActor != null && item.followActivity != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextAction("承認", colors) { respond(item.followActor, item.followActivity, true) }
-                        TextAction("拒否", colors, style = TextActionStyle.Neutral) { respond(item.followActor, item.followActivity, false) }
+                        TextAction("承認", colors, icon = UiIcon.Check) { respond(item.followActor, item.followActivity, true) }
+                        TextAction("拒否", colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { respond(item.followActor, item.followActivity, false) }
                     }
                 }
             }

@@ -69,7 +69,7 @@ internal fun SignInRoute(
                 OutlinedTextField(client, { client = it }, Modifier.fillMaxWidth(), label = { Text("Android 用 public client ID") }, singleLine = true)
                 OutlinedTextField(resource, { resource = it }, Modifier.fillMaxWidth(), label = { Text("Resource / audience") }, singleLine = true)
                 (signInError.ifBlank { error }).takeIf(String::isNotEmpty)?.let { Text(it, color = colors.foreground) }
-                TextAction("ログイン", colors, enabled = client.isNotBlank(), click = submit)
+                TextAction("ログイン", colors, icon = UiIcon.SignIn, enabled = client.isNotBlank(), click = submit)
             }
         } else {
             val pending = restoring || busy
@@ -78,15 +78,16 @@ internal fun SignInRoute(
             }
             BrandPage("Zoo", description, colors, loading = pending) {
                 if (restoring) {
-                    TextAction("ログイン画面を開く", colors, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
+                    TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
                         cancelRestore?.invoke()
                     }
                 } else if (!busy) {
-                    retry?.let { TextAction("自動ログインを再試行", colors, style = TextActionStyle.Plain, click = it) }
+                    retry?.let { TextAction("自動ログインを再試行", colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain, click = it) }
                     if (client.isNotBlank()) {
-                        TextAction("接続先の設定", colors, style = TextActionStyle.Plain) { editing = true }
+                        TextAction("接続先の設定", colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }
                     }
-                    TextAction(if (client.isBlank()) "接続先を設定" else "ログイン", colors) {
+                    TextAction(if (client.isBlank()) "接続先を設定" else "ログイン", colors,
+                        icon = if (client.isBlank()) UiIcon.Settings else UiIcon.SignIn) {
                         if (client.isBlank()) editing = true else submit()
                     }
                 }

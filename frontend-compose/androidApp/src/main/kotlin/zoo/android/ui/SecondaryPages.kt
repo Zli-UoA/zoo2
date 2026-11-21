@@ -82,7 +82,7 @@ internal fun DirectoryPage(
             }
         }
         if (submit != null) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            TextAction(submit, colors, canSubmit, click = onSubmit)
+            TextAction(submit, colors, canSubmit, icon = UiIcon.Bubble, click = onSubmit)
         }
     }
 }
@@ -111,7 +111,7 @@ internal fun NewPostPage(
         if (screen.showPhotos) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("最近の写真", Modifier.weight(1f), color = colors.secondary, fontSize = 13.sp)
-                TextAction("写真を選択", colors, style = TextActionStyle.Plain) {
+                TextAction("写真を選択", colors, icon = UiIcon.Photo, style = TextActionStyle.Plain) {
                     dispatch(AndroidUiAction.SystemPhotos)
                 }
             }
@@ -132,7 +132,7 @@ internal fun NewPostPage(
             items(screen.attached, key = { it.id }) { item ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
-                    TextAction("削除", colors, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
+                    TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
                 }
             }
         }
@@ -159,7 +159,7 @@ internal fun NewPostPage(
             UiIconButton(UiIcon.Emoji, "絵文字", colors.inputText, { dispatch(AndroidUiAction.UseInputTool(InputTool.Emoji)) })
             Spacer(Modifier.weight(1f))
             val enabled = input.canSend && (input.text.isNotBlank() || screen.attached.isNotEmpty())
-            TextAction("投稿", colors, enabled) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
+            TextAction("投稿", colors, enabled, icon = UiIcon.Send) { dispatch(AndroidUiAction.UseInputTool(InputTool.Send)) }
         }
     }
 }
@@ -218,7 +218,8 @@ internal fun ChannelEditorPage(
         }
         Spacer(Modifier.weight(1f))
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            TextAction(screen.submitLabel, colors, screen.canSubmit) { dispatch(AndroidUiAction.SubmitChannel) }
+            TextAction(screen.submitLabel, colors, screen.canSubmit,
+                icon = if (screen.submitLabel == "保存") UiIcon.Save else UiIcon.Create) { dispatch(AndroidUiAction.SubmitChannel) }
         }
     }
 }

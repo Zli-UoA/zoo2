@@ -337,11 +337,11 @@ internal fun ConnectedScreens(
                 }
             },
             confirmButton = {
-                if (deleting) TextButton(onClick = {
+                if (deleting) DialogAction("削除", UiIcon.Delete) {
                     state.confirmDelete(screen is AndroidScreen.Home || screen is AndroidScreen.Post || screen is AndroidScreen.Profile)
-                }) { Text("削除") }
+                }
             },
-            dismissButton = { TextButton(onClick = { state.confirmingEntry = null }) { Text("キャンセル") } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.confirmingEntry = null } },
         )
     }
     state.memberToRemove?.let { user ->
@@ -349,8 +349,8 @@ internal fun ConnectedScreens(
             onDismissRequest = { state.memberToRemove = null },
             title = { Text("チャンネルから削除") },
             text = { Text(user.title) },
-            confirmButton = { TextButton(onClick = { channel?.let { state.removeMember(it, user.id) } }) { Text("削除") } },
-            dismissButton = { TextButton(onClick = { state.memberToRemove = null }) { Text("キャンセル") } },
+            confirmButton = { DialogAction("削除", UiIcon.Delete) { channel?.let { state.removeMember(it, user.id) } } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.memberToRemove = null } },
         )
     }
     val archive = state.overlay?.takeIf { it == "archive" || it == "unarchive" }
@@ -360,8 +360,8 @@ internal fun ConnectedScreens(
             onDismissRequest = { state.overlay = "channel-settings" },
             title = { Text(label) },
             text = { Text(channel.text("channel_name")) },
-            confirmButton = { TextButton(onClick = { state.archiveChannel(channel, archive) }) { Text(label) } },
-            dismissButton = { TextButton(onClick = { state.overlay = "channel-settings" }) { Text("キャンセル") } },
+            confirmButton = { DialogAction(label, if (archive == "archive") UiIcon.Archive else UiIcon.Refresh) { state.archiveChannel(channel, archive) } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { state.overlay = "channel-settings" } },
         )
     }
 

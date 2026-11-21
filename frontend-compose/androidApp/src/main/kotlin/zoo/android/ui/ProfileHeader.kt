@@ -35,6 +35,7 @@ internal fun ProfileHeader(profile: AndroidScreen.Profile, colors: AndroidColors
             }
             profile.follow?.let { label ->
                 TextAction(label, colors, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 8.dp),
+                    icon = if (label == "フォロー") UiIcon.UserAdd else UiIcon.Close,
                     style = if (label == "フォロー") TextActionStyle.Primary else TextActionStyle.Neutral, click = follow)
             }
         }

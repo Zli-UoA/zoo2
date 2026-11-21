@@ -25,6 +25,8 @@ import kotlinx.serialization.json.*
 import zoo.*
 import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
+import zoo.android.ui.DialogAction
+import zoo.android.ui.UiIcon
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
 
@@ -323,13 +325,13 @@ class MainActivity : ComponentActivity() {
                     title = { Text(current.session.t("e2ee.logout.unbackedTitle")) },
                     text = { Text(detail) },
                     confirmButton = {
-                        TextButton(onClick = { prompt.answer.complete(true) }) {
-                            Text(current.session.t("e2ee.logout.confirm"))
+                        DialogAction(current.session.t("e2ee.logout.confirm"), UiIcon.SignIn) {
+                            prompt.answer.complete(true)
                         }
                     },
                     dismissButton = {
-                        TextButton(onClick = { prompt.answer.complete(false) }) {
-                            Text(current.session.t("common.cancel"))
+                        DialogAction(current.session.t("common.cancel"), UiIcon.Close) {
+                            prompt.answer.complete(false)
                         }
                     },
                 )
