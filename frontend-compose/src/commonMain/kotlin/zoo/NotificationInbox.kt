@@ -1,5 +1,7 @@
 package zoo
 
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import io.ktor.http.encodeURLPathPart
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonObject
@@ -39,18 +41,19 @@ internal fun inboxGroups(entries: List<UnifiedNotificationEntry>): Map<String, L
     }
 
 class NotificationInbox(private val session: Session) {
+    val loadFailed: Boolean get() = session.activityPubNotifications.error
     val nextCursor: String? get() = session.activityPubNotifications.nextCursor
 
     fun snapshot(): List<NotificationDisplay> {
         val users = session.repo.users.rows.value.associateBy { it.text("id") }
-        return inboxGroups(feed().entries).map { (id, entries) ->
+        return grouped.map { (id, entries) ->
             val latest = entries.first()
             val item = latest.representative()
             val rows = entries.flatMap { it.channel ?: listOf(it.representative()) }
             val actors = rows.distinctBy { it.text("actor_id").removePrefix("local:") }
                 .map { notificationActor(it, users) }
             val kind = noticeKind(item)
-            val summary = if (rows.size > 1) "${activityLabel(kind)} · ${rows.size}件"
+            val summary = if (rows.size > 1) "${groupActivityLabel(kind)} · ×${rows.size}"
                 else {
                     val key = "home.notificationKinds.$kind"
                     session.t(key).takeUnless { it == key } ?: activityLabel(kind)
@@ -147,17 +150,28 @@ class NotificationInbox(private val session: Session) {
         else -> session.t("notifications.title")
     }
 
+    private fun groupActivityLabel(kind: String): String = session.t(when (kind) {
+        "like" -> "notifications.reactionContext"
+        "reply" -> "home.reply"
+        "mention" -> "notifications.mentionContext"
+        "repost" -> "home.repost"
+        "dm" -> "notifications.dmContext"
+        "follow_request", "follow_accepted" -> "home.follow"
+        else -> "notifications.title"
+    })
+
     fun viewed(id: String) {
         if (!session.env.visible || !session.env.focused || !session.env.online) return
-        inboxGroups(feed().entries)[id]?.forEach(session.notificationReads::viewed)
+        grouped[id]?.forEach(session.notificationReads::viewed)
     }
 
-    private fun feed(): UnifiedNotificationFeed {
+    private val grouped by derivedStateOf {
         val federated = session.activityPubNotifications
-        return unifiedNotificationFeed(
+        inboxGroups(unifiedNotificationFeed(
             androidNotificationRows(session.repo.notifications.rows.value), federated.items, federated.nextCursor != null,
-        )
+        ).entries)
     }
+
 }
 
 

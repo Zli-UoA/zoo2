@@ -11,6 +11,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -113,8 +117,16 @@ internal fun NewPostPage(
         }
     }
     Column(Modifier.fillMaxSize().imePadding()) {
+        var editing by remember { mutableStateOf(TextFieldValue(input.text, input.selection ?: TextRange(input.text.length))) }
+        val value = if (editing.text == input.text && (input.selection == null || input.selection == editing.selection)) {
+            editing
+        } else TextFieldValue(input.text, input.selection ?: TextRange(input.text.length))
         BasicTextField(
-            input.text, { dispatch(AndroidUiAction.TextChanged(it)) },
+            value, {
+                editing = it
+                if (it.text != input.text) dispatch(AndroidUiAction.TextChanged(it.text))
+                if (it.selection != input.selection) dispatch(AndroidUiAction.SelectInput(it.selection))
+            },
             Modifier.weight(1f).fillMaxWidth().padding(16.dp),
             textStyle = LocalTextStyle.current.copy(color = colors.foreground, fontSize = 17.sp, lineHeight = 25.sp),
             cursorBrush = SolidColor(colors.inputText),
@@ -171,21 +183,24 @@ internal fun NewPostPage(
 internal fun BrandPage(
     title: String, detail: String, colors: AndroidColors, loading: Boolean = false,
     detailWeight: FontWeight = AndroidWeights.body,
+    compact: Boolean = false,
     badge: @Composable () -> Unit = { ZooBadge(colors, Modifier.size(88.dp)) },
     actions: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
         Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(colors.headerLight, colors.background), endY = 680f))
-            .padding(24.dp),
+            .then(if (compact) Modifier.verticalScroll(rememberScrollState()).padding(8.dp) else Modifier.padding(24.dp)),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Spacer(Modifier.weight(2f))
-        badge()
+        if (!compact) {
+            Spacer(Modifier.weight(2f))
+            badge()
+        }
         Text(title, color = colors.foreground, fontSize = 32.sp, fontWeight = AndroidWeights.emphasis)
         if (detail.isNotEmpty()) Text(detail, color = colors.secondary, fontSize = 16.sp, fontWeight = detailWeight, textAlign = TextAlign.Center)
         if (loading) CircularProgressIndicator(Modifier.size(22.dp), color = colors.accent, strokeWidth = 2.dp)
-        Spacer(Modifier.weight(3f))
+        if (!compact) Spacer(Modifier.weight(3f))
         actions()
     }
 }
@@ -197,7 +212,7 @@ internal fun ChannelEditorPage(
     dispatch: (AndroidUiAction) -> Unit,
 ) {
     PageHeader(screen.title, colors, onBack = { dispatch(AndroidUiAction.Back) })
-    Column(Modifier.fillMaxSize().imePadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         ChannelField("チャンネル名", screen.name, colors, singleLine = true) {
             dispatch(AndroidUiAction.ChannelNameChanged(it))
         }

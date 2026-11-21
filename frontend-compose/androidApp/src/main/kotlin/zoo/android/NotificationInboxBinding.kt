@@ -17,6 +17,7 @@ internal class NotificationInboxBinding(private val inbox: NotificationInbox) {
             it.reactions.map { reaction -> InboxReactionEmoji(reaction.emoji, reaction.image) },
             it.reactionContext?.let { context -> InboxReactionContext(context.id, context.actorIds) }) },
         nextCursor = inbox.nextCursor,
+        loadFailed = inbox.loadFailed,
     )
 
     suspend fun loadReactions(context: InboxReactionContext): List<InboxReactionEmoji> =

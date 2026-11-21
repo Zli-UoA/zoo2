@@ -56,9 +56,17 @@ internal fun NotificationPage(
     onViewed: (String) -> Unit,
     onOpen: (String) -> Unit,
     loadMore: () -> Unit,
+    loadFailed: Boolean,
+    retry: () -> Unit,
     respond: (String, String, Boolean) -> Unit,
 ) {
-    PageHeader("通知", colors, paintBackground = false)
+    PageHeader(androidLabel("notifications.title", "通知"), colors, paintBackground = false)
+    if (loadFailed) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(androidLabel("notifications.loadError", "通知を取得できませんでした"), Modifier.weight(1f), color = colors.secondary)
+            TextAction(androidLabel("offline.retry", "再試行"), colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain, click = retry)
+        }
+    }
     val scroll = rememberLazyListState()
     val visible by remember {
         derivedStateOf {

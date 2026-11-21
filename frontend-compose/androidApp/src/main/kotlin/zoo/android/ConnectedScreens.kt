@@ -161,6 +161,7 @@ internal fun ConnectedScreens(
     }
     val sipRoute = route == "/settings" && env.path.substringAfter('?', "").split('&').contains("tab=sip")
     fun back() {
+        state.invalidatePostRequest()
         when {
             state.mediaPreview != null -> state.mediaPreview = null
             showFullCall -> background()
@@ -248,7 +249,7 @@ internal fun ConnectedScreens(
         state.overlay in setOf("channel-settings", "archive", "unarchive") && channel != null -> AndroidScreen.ChannelSettings(
             channel.text("channel_name"), state.channelSettings(channel, member, encrypted))
         state.overlay == "new-post" -> AndroidScreen.NewPost(
-            InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft)),
+            InputState(state.postDraft, canSend = env.online && !state.saving && state.postFiles.canSend(state.postDraft), selection = state.postSelection),
             state.recent, state.photosOpen, state.postVisibility,
             state.postFiles.items.map { RecentPhoto(it.file.text("id"), it.name) },
             state.federatePost.takeIf { state.federationAvailable && state.postVisibility != "local" },
@@ -317,7 +318,10 @@ internal fun ConnectedScreens(
             if (!showFullCall && (state.overlay == "sip" || (state.overlay == null && sipRoute))) {
                 SipRoute(session, phone, users, ::back)
             } else {
-                CompositionLocalProvider(LocalTimelineImage provides { media -> timelineImage(session, media) }) {
+                CompositionLocalProvider(
+                    LocalTimelineImage provides { media -> timelineImage(session, media) },
+                    LocalAndroidTranslation provides { session.t(it) },
+                ) {
                     AndroidScreens(screen, env.dark, env.visible && env.focused,
                         dispatch = { action ->
                             when {
@@ -340,10 +344,13 @@ internal fun ConnectedScreens(
                             catch (cancelled: CancellationException) { throw cancelled }
                             catch (_: Exception) { null }
                         }) { item, modifier ->
-                        val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
-                            value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
-                                ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }
+                        val bytes = state.photoBytes[item.id]
+                        val recentImage by key(item.id, bytes) {
+                            produceState<ImageBitmap?>(null) {
+                                value = bytes?.let { platform.imageFrames(it).firstOrNull() }
+                            }
                         }
+                        val image = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap ?: recentImage
                         image?.let { Image(it, item.label, modifier, contentScale = ContentScale.Crop) }
                             ?: Box(modifier.background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant),
                                 contentAlignment = Alignment.Center) { Text(item.label, maxLines = 1) }

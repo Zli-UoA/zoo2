@@ -28,6 +28,7 @@ internal class AndroidNotifications(
     private val avatars = linkedMapOf<String, Bitmap>()
     private val avatarJobs = mutableMapOf<String, Job>()
     private val pictures = linkedMapOf<String, Bitmap?>()
+    private val pendingPictures = linkedSetOf<String>()
     private val pictureJobs = mutableMapOf<String, Job>()
     private val avatarSlots = Semaphore(2)
     private var closed = false
@@ -177,7 +178,12 @@ internal class AndroidNotifications(
     }
 
     private fun loadPicture(id: String) {
-        if (closed || id in pictures || id in pictureJobs || pictureJobs.size >= 2) return
+        if (closed || id.isBlank() || id in pictures || id in pictureJobs) return
+        if (pictureJobs.size >= 2) {
+            pendingPictures.add(id)
+            return
+        }
+        pendingPictures.remove(id)
         val job = app.scope.launch(start = CoroutineStart.LAZY) {
             val bitmap = try {
                 withTimeoutOrNull(8_000) {
@@ -192,6 +198,7 @@ internal class AndroidNotifications(
             while (pictures.size > 8) pictures.remove(pictures.keys.first())
             if (bitmap != null) shown.values.filter { previewImage(it)?.text("id") == id }.toList()
                 .forEach { post(it, refreshSummary = false) }
+            pendingPictures.firstOrNull()?.let(::loadPicture)
         }
         pictureJobs[id] = job
         job.start()
@@ -302,6 +309,7 @@ internal class AndroidNotifications(
         avatarJobs.clear()
         pictureJobs.values.forEach { it.cancel() }
         pictureJobs.clear()
+        pendingPictures.clear()
         pictures.clear()
         avatars.clear()
         if (preserveNotifications) {

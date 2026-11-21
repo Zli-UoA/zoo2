@@ -361,7 +361,6 @@ internal class AndroidPlatform(
             withContext(Dispatchers.IO) {
                 selected.map { uri ->
                     val id = uuid()
-                    files[id] = uri
                     var name = "attachment"
                     var size = 0L
                     activity.contentResolver
@@ -387,11 +386,13 @@ internal class AndroidPlatform(
                     )
                 }
             }
-        return buildJsonObject {
+        val response = buildJsonObject {
                 put("origin", "pick")
                 put("files", JsonArray(rows))
             }
             .toString()
+        rows.zip(selected).forEach { (row, uri) -> files[row.text("id")] = uri }
+        return response
     }
 
     private suspend fun readFile(id: String): ByteArray =

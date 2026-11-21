@@ -200,9 +200,9 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
                 notificationIntent?.let { intent ->
-                    if (current.phone.open(intent)) {
-                        callPresentation++
-                    } else if (!current.push.open(intent, current.notifications::dismissTag)) {
+                    if (!current.phone.open(intent) { callPresentation++ } &&
+                        !current.push.open(intent, current.notifications::dismissTag)
+                    ) {
                         current.notifications.open(intent)
                     }
                 }

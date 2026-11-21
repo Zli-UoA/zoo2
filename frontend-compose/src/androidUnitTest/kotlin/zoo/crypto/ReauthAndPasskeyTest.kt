@@ -73,6 +73,7 @@ class ReauthAndPasskeyTest {
         )
         val parameters = Url(request.url).parameters
         assertEquals("openid profile offline_access", parameters["scope"])
+        assertEquals("consent", parameters["prompt"])
         assertEquals("S256", parameters["code_challenge_method"])
         assertNull(parameters["max_age"])
         assertEquals(request.state, parameters["state"])

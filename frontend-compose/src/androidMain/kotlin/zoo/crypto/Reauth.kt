@@ -78,6 +78,7 @@ class ReauthRequest private constructor(
                     parameters.append("code_challenge_method", "S256")
                     // 既存の AuthZ のセッションがあっても、必ずログインし直させる。
                     if (forceReauth) parameters.append("max_age", "0")
+                    else parameters.append("prompt", "consent")
                 }.buildString()
             return ReauthRequest(url, redirectUri, state, nonce, verifier)
         }

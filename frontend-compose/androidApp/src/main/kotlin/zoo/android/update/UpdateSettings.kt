@@ -101,7 +101,6 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
                     checked = enabled,
                     onCheckedChange = {
                         UpdateScheduler.configure(context, it)
-                        if (it) UpdateScheduler.checkNow(context)
                     },
                     enabled = !BuildConfig.DEBUG && (ready || enabled),
                     modifier = Modifier.semantics { contentDescription = "自動更新" },

@@ -19,6 +19,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
@@ -79,7 +80,7 @@ internal data class ChannelSection(val label: String, val channels: List<Channel
 internal sealed interface AndroidScreen {
     data class Home(val posts: List<TimelineItem>, val timeline: String? = null, val loadOlder: Boolean = false) : AndroidScreen
     data class Channels(val sections: List<ChannelSection>) : AndroidScreen
-    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null) : AndroidScreen
+    data class Notifications(val items: List<InboxItem>, val nextCursor: String? = null, val loadFailed: Boolean = false) : AndroidScreen
     data class Bubble(val entries: List<TimelineItem>, val input: InputState, val participants: List<String> = emptyList()) : AndroidScreen
     data class Settings(val groups: List<SettingsGroup>) : AndroidScreen
     data class Conversation(
@@ -126,6 +127,7 @@ internal sealed interface AndroidScreen {
 internal sealed interface AndroidUiAction {
     data class Navigate(val page: TopPage) : AndroidUiAction
     data class OpenNotification(val path: String) : AndroidUiAction
+    data object RetryNotifications : AndroidUiAction
     data object LoadMoreNotifications : AndroidUiAction
     data class ActOnEntry(val item: TimelineItem, val operation: EntryOperation, val value: String = "") : AndroidUiAction
     data class RespondFollow(val actor: String, val activity: String, val accept: Boolean) : AndroidUiAction
@@ -263,10 +265,11 @@ private fun RenderAndroidScreen(
                 onViewed = { dispatch(AndroidUiAction.ViewedNotification(it)) },
                 onOpen = { dispatch(AndroidUiAction.OpenNotification(it)) },
                 loadMore = { dispatch(AndroidUiAction.LoadMoreNotifications) },
+                loadFailed = screen.loadFailed, retry = { dispatch(AndroidUiAction.RetryNotifications) },
                 respond = { actor, activity, accept -> dispatch(AndroidUiAction.RespondFollow(actor, activity, accept)) },
             )
             is AndroidScreen.Bubble -> {
-                PageHeader("Bubble", colors) {
+                PageHeader(androidLabel("bubbleChat.title", "Bubble"), colors) {
                     if (screen.participants.isNotEmpty()) UiIconButton(UiIcon.Bubble, "参加者", colors.foreground,
                         { dispatch(AndroidUiAction.OpenSetting("bubble-participants")) })
                 }
@@ -342,7 +345,7 @@ private fun RenderAndroidScreen(
 private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     CollapsingHeader(header = {
         Column {
-            PageHeader("ホーム", colors) {
+            PageHeader(androidLabel("home.title", "ホーム"), colors) {
                 UiIconButton(UiIcon.Search, "ユーザーを検索", colors.foreground,
                     { dispatch(AndroidUiAction.OpenSetting("people")) })
             }
@@ -367,7 +370,7 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
 
 @Composable
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    PageHeader("チャンネル", colors)
+    PageHeader(androidLabel("channels.title", "チャンネル"), colors)
     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         item {
             Text("チャンネルを探す",
@@ -428,8 +431,26 @@ private fun ColumnScope.TimelineWithInput(
     posts: Boolean = false,
     hideIdleHandle: Boolean = false,
 ) {
+    val scroll = rememberLazyListState()
+    var positioned by rememberSaveable { mutableStateOf(false) }
+    var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
+    LaunchedEffect(input.expanded, focusMessage, focusedIndex, entries.size) {
+        if (input.expanded) return@LaunchedEffect
+        if (focusMessage == null) {
+            openedTarget = null
+            if (allowThreads && entries.isNotEmpty() && !positioned) {
+                scroll.scrollToItem(entries.lastIndex)
+                positioned = true
+            }
+        } else if (focusedIndex >= 0 && openedTarget != focusMessage) {
+            scroll.scrollToItem(focusedIndex)
+            openedTarget = focusMessage
+            positioned = true
+        }
+    }
     if (!input.expanded) Timeline(entries, colors, Modifier.weight(1f), dispatch, posts = posts,
-        swipeReply = swipeReply, allowThreads = allowThreads, focusMessage = focusMessage)
+        swipeReply = swipeReply, allowThreads = allowThreads, scroll = scroll)
     ConversationInput(input, colors, { dispatch(AndroidUiAction.TextChanged(it)) },
         { dispatch(AndroidUiAction.UseInputTool(it)) }, if (input.expanded) Modifier.weight(1f) else Modifier,
         onMention = { dispatch(AndroidUiAction.Mention(it)) },
@@ -444,25 +465,15 @@ private fun Timeline(
     dispatch: (AndroidUiAction) -> Unit, posts: Boolean = false,
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
-    focusMessage: String? = null,
     loadOlder: (() -> Unit)? = null,
     header: (@Composable () -> Unit)? = null,
+    scroll: LazyListState = rememberLazyListState(),
 ) {
     var menuId by remember { mutableStateOf<String?>(null) }
-    val scroll = rememberLazyListState()
-    val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
     val lastVisible = scroll.layoutInfo.visibleItemsInfo.lastOrNull()?.index
     val requestOlder by rememberUpdatedState(loadOlder)
     LaunchedEffect(lastVisible, entries.size, loadOlder != null) {
         if (entries.isNotEmpty() && lastVisible == entries.lastIndex) requestOlder?.invoke()
-    }
-    var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
-    LaunchedEffect(focusMessage, focusedIndex) {
-        if (focusMessage == null) openedTarget = null
-        else if (focusedIndex >= 0 && openedTarget != focusMessage) {
-            scroll.scrollToItem(focusedIndex)
-            openedTarget = focusMessage
-        }
     }
     LazyColumn(modifier, state = scroll, contentPadding = PaddingValues(horizontal = 16.dp)) {
         if (header != null) item { header() }

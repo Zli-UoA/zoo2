@@ -1,6 +1,8 @@
 package zoo.android
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.Job
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -34,10 +36,12 @@ internal fun SignInRoute(
     var busy by remember { mutableStateOf(false) }
     var signInError by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    var loginJob by remember { mutableStateOf<Job?>(null) }
+    BackHandler(editing && !busy && !restoring) { editing = false }
     val submit = {
         if (!busy) {
             busy = true
-            scope.launch {
+            loginJob = scope.launch {
                 signInError = ""
                 try {
                     val connection = LoginConnection(server.trim().trimEnd('/'), issuer.trim(), client.trim(), resource.trim())
@@ -47,6 +51,8 @@ internal fun SignInRoute(
                     connect(connection)
                 } catch (failure: CancellationException) {
                     throw failure
+                } catch (failure: zoo.crypto.ReauthException) {
+                    signInError = failure.message.orEmpty()
                 } catch (failure: LoginFailure) {
                     signInError = failure.message.orEmpty()
                 } catch (failure: IllegalArgumentException) {
@@ -55,6 +61,7 @@ internal fun SignInRoute(
                     signInError = "ログインできません。接続先とネットワークを確認してください。"
                 } finally {
                     busy = false
+                    loginJob = null
                 }
             }
         }
@@ -81,7 +88,9 @@ internal fun SignInRoute(
                     TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, enabled = cancelRestore != null, style = TextActionStyle.Plain) {
                         cancelRestore?.invoke()
                     }
-                } else if (!busy) {
+                } else if (busy) {
+                    TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Plain) { loginJob?.cancel() }
+                } else {
                     retry?.let { TextAction("自動ログインを再試行", colors, icon = UiIcon.Refresh, style = TextActionStyle.Plain, click = it) }
                     if (client.isNotBlank()) {
                         TextAction("接続先の設定", colors, icon = UiIcon.Settings, style = TextActionStyle.Plain) { editing = true }

@@ -106,11 +106,12 @@ class BubbleController(private val app: Session) {
                         if (idle || revision == stoppedRevision) ""
                         else input.value.takeIf { it.isNotBlank() }.orEmpty()
                     if (value != confirmed) {
-                        val sentRevision = revision
                         if (write(value)) {
                             confirmed = value
-                            sharing.value = value.isNotEmpty() && sentRevision == revision
+                            sharing.value = value.isNotEmpty() && stoppedRevision != revision &&
+                                edited.elapsedNow().inWholeMilliseconds < 15000 && input.value == value
                         } else {
+                            confirmed = null
                             sharing.value = false
                             delay(1000)
                         }

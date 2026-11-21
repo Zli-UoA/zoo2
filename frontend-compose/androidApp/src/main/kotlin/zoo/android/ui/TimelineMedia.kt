@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -70,8 +71,10 @@ internal fun TimelineQuoteCard(
 @Composable
 internal fun TimelineMediaTile(media: TimelineMedia, colors: AndroidColors, open: () -> Unit) {
     val load = LocalTimelineImage.current
-    val image by produceState<ImageBitmap?>(null, media) {
-        if (media.kind == TimelineMediaKind.Image && !media.sensitive) value = load(media)
+    val image by key(media) {
+        produceState<ImageBitmap?>(null, load) {
+            value = if (media.kind == TimelineMediaKind.Image && !media.sensitive) load(media) else null
+        }
     }
     val bitmap = image
     Column(Modifier.fillMaxWidth().padding(top = 6.dp).clip(RoundedCornerShape(8.dp))

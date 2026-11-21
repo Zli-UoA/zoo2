@@ -2,6 +2,8 @@ package zoo.android.ui
 
 import android.content.ClipData
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -27,7 +29,7 @@ internal fun EntryActionSheet(
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = colors.background) {
-        Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
             Text(entry.body, color = colors.secondary, fontSize = entryTextSize, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(12.dp))
             if (open != null) {

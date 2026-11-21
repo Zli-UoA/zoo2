@@ -4,6 +4,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.annotation.Keep
 import java.io.IOException
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 
 /**
@@ -121,14 +122,32 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
     private fun restartApp(userId: Int) {
         try {
             val launch = ProcessBuilder(restartCommand(userId)).redirectErrorStream(true).start()
+            val rejected = FutureTask {
+                launch.inputStream.bufferedReader().use { reader ->
+                    var failure = false
+                    reader.lineSequence().forEach { raw ->
+                        val line = raw.trim()
+                        if (line.startsWith("Error", ignoreCase = true) ||
+                            line.contains("SecurityException", ignoreCase = true) ||
+                            line.startsWith("Exception", ignoreCase = true) ||
+                            line.startsWith("Status: timeout", ignoreCase = true)
+                        ) failure = true
+                    }
+                    failure
+                }
+            }
+            Thread(rejected, "Zoo restart output").apply { isDaemon = true; start() }
             try {
                 if (!launch.waitFor(10, TimeUnit.SECONDS)) {
                     Log.w("ZooUpdaterService", "Zoo restart timed out")
+                } else if (rejected.get(2, TimeUnit.SECONDS)) {
+                    Log.w("ZooUpdaterService", "Android rejected the restart after installation")
                 } else if (launch.exitValue() != 0) {
                     Log.w("ZooUpdaterService", "Zoo restart failed with exit code ${launch.exitValue()}")
                 }
             } finally {
                 launch.destroyForcibly()
+                rejected.cancel(true)
             }
         } catch (failure: Exception) {
             Log.w("ZooUpdaterService", "Could not reopen Zoo after installation", failure)

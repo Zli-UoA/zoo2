@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -28,12 +29,18 @@ import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-internal enum class TopPage(val title: String, val icon: UiIcon) {
-    Home("ホーム", UiIcon.Home),
-    Channels("チャンネル", UiIcon.Channels),
-    Notifications("通知", UiIcon.Bell),
-    Bubble("Bubble", UiIcon.Bubble),
-    Settings("設定", UiIcon.Settings),
+internal val LocalAndroidTranslation = staticCompositionLocalOf<(String) -> String> { { it } }
+
+@Composable
+internal fun androidLabel(key: String, fallback: String): String =
+    LocalAndroidTranslation.current(key).takeUnless { it == key } ?: fallback
+
+internal enum class TopPage(val title: String, val icon: UiIcon, val translationKey: String) {
+    Home("ホーム", UiIcon.Home, "home.title"),
+    Channels("チャンネル", UiIcon.Channels, "channels.title"),
+    Notifications("通知", UiIcon.Bell, "notifications.title"),
+    Bubble("Bubble", UiIcon.Bubble, "bubbleChat.title"),
+    Settings("設定", UiIcon.Settings, "settings.navTitle"),
 }
 
 internal class AndroidColors(dark: Boolean) {
@@ -118,7 +125,7 @@ internal fun AndroidShell(
                                     UiGlyph(page.icon, if (active) colors.foreground else colors.secondary)
                                 }
                                 Text(
-                                    page.title, color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
+                                    androidLabel(page.translationKey, page.title), color = if (active) colors.foreground else colors.secondary, fontSize = 11.sp,
                                     fontWeight = if (active) AndroidWeights.label else AndroidWeights.body,
                                 )
                             }
@@ -149,7 +156,7 @@ internal fun PageHeader(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (onBack != null) {
-            UiIconButton(UiIcon.Back, "戻る", colors.foreground, onBack)
+            UiIconButton(UiIcon.Back, androidLabel("home.back", "戻る"), colors.foreground, onBack)
         } else ZooBadge(colors, Modifier.size(26.dp))
         val titleAction = if (onOpen == null) Modifier else Modifier
             .heightIn(min = AndroidControlSize.target)

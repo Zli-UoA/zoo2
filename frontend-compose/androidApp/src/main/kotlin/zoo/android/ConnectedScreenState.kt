@@ -58,7 +58,14 @@ internal class ConnectedScreenState(
         }
     }
     private val channelFiles = mutableMapOf<String, AttachmentDrafts>()
-    var overlay by mutableStateOf<String?>(null)
+    private var postRequest = 0
+    private var currentOverlay by mutableStateOf<String?>(null)
+    var overlay: String?
+        get() = currentOverlay
+        set(value) {
+            if (currentOverlay != value) invalidatePostRequest()
+            currentOverlay = value
+        }
     var inputMenu by mutableStateOf<InputTool?>(null)
     var memberToRemove by mutableStateOf<SelectionItem?>(null)
     private var pins by mutableStateOf<List<String>>(emptyList())
@@ -97,6 +104,7 @@ internal class ConnectedScreenState(
     var federationAvailable by mutableStateOf(false)
         private set
     var query by mutableStateOf("")
+    var postSelection by mutableStateOf<TextRange?>(null)
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
     val bubble = BubbleController(app)
@@ -312,7 +320,8 @@ internal class ConnectedScreenState(
         home.refresh(retain = true)
         if (overlay == "profile" && profile.text("id").isNotBlank()) {
             val id = profile.text("id")
-            profilePosts = app.api.request("/api/home?timeline=social&author=${id.encodeURLParameter()}&limit=40").rows()
+            val posts = app.api.request("/api/home?timeline=social&author=${id.encodeURLParameter()}&limit=40").rows()
+            if (overlay == "profile" && profile.text("id") == id) profilePosts = posts
         }
         val selected = openedPostId ?: return
         val detail = app.api.request("/api/home/${selected.encodeURLParameter()}/thread").rows()
@@ -529,6 +538,7 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.SelectInput -> when (screen) {
                 is AndroidScreen.EditEntry -> editSelection = action.range
+                is AndroidScreen.NewPost -> postSelection = action.range
                 is AndroidScreen.Post -> replySelection = action.range
                 is AndroidScreen.Conversation, is AndroidScreen.Thread ->
                     drafts[draftKey] = (drafts[draftKey] ?: InputState()).copy(selection = action.range)
@@ -548,6 +558,7 @@ internal class ConnectedScreenState(
                     drafts[draftKey] = draft.copy(text = text, selection = TextRange(target + mention.length))
                 }
             }
+            AndroidUiAction.RetryNotifications -> app.activityPubNotifications.refresh()
             AndroidUiAction.LoadMoreNotifications -> app.activityPubNotifications.loadMore()
             is AndroidUiAction.ViewedNotification -> inbox.dispatch(action)
             is AndroidUiAction.Toggle -> if (!interaction.dispatch(action) && action.id == "dm-calls") phone.receiveDmCalls(action.value)
@@ -683,7 +694,7 @@ internal class ConnectedScreenState(
         val key = channelId + (app.thread?.let { ":$it" } ?: "")
         val draft = when (screen) {
             is AndroidScreen.EditEntry -> InputState(editDraft, selection = editSelection)
-            is AndroidScreen.NewPost -> InputState(postDraft)
+            is AndroidScreen.NewPost -> InputState(postDraft, selection = postSelection)
             is AndroidScreen.Post -> InputState(replyDraft, selection = replySelection)
             else -> drafts[key] ?: InputState()
         }
@@ -702,7 +713,7 @@ internal class ConnectedScreenState(
         val cursor = TextRange(start + inserted.length)
         when (screen) {
             is AndroidScreen.EditEntry -> { editDraft = text; editSelection = cursor }
-            is AndroidScreen.NewPost -> postDraft = text
+            is AndroidScreen.NewPost -> { postDraft = text; postSelection = cursor }
             is AndroidScreen.Post -> { replyDraft = text; replySelection = cursor }
             else -> drafts[key] = draft.copy(text = text, selection = cursor)
         }
@@ -760,24 +771,33 @@ internal class ConnectedScreenState(
                             if (post) refreshPost()
                         }
                         is AndroidScreen.NewPost -> {
-                            val ids = postFiles.items.mapNotNull { it.uploaded?.text("id") }
-                            if (!postFiles.canSend(postDraft)) return@request
-                            app.api.request("/api/home", "POST", obj("content" to postDraft,
-                                "apub" to (federatePost && federationAvailable && postVisibility != "local"), "visibility" to postVisibility, "image_ids" to JsonArray(ids.map(::JsonPrimitive))))
                             val sent = postFiles.items.toList()
-                            postFiles.items.clear()
+                            val text = postDraft
+                            val ids = sent.mapNotNull { it.uploaded?.text("id") }
+                            if (!postFiles.canSend(postDraft)) return@request
+                            app.api.request("/api/home", "POST", obj("content" to text,
+                                "apub" to (federatePost && federationAvailable && postVisibility != "local"), "visibility" to postVisibility, "image_ids" to JsonArray(ids.map(::JsonPrimitive))))
+                            val sentIds = sent.map { it.file.text("id") }.toSet()
+                            postFiles.items.removeAll { it.file.text("id") in sentIds }
                             postFiles.release(sent)
-                            postDraft = ""
-                            overlay = null
+                            if (postDraft == text) {
+                                postDraft = ""
+                                postSelection = null
+                            }
+                            if (overlay == "new-post" && postFiles.items.isEmpty() && postDraft.isBlank()) overlay = null
                             home.refresh(retain = true)
                         }
                         is AndroidScreen.Post -> {
-                            if (replyDraft.isBlank()) return@request
-                            app.api.request("/api/home", "POST", obj("content" to replyDraft,
+                            val text = replyDraft
+                            if (text.isBlank()) return@request
+                            app.api.request("/api/home", "POST", obj("content" to text,
                                 "visibility" to replyVisibility(screen.root.id), "apub" to false, "in_reply_to" to screen.root.id))
-                            replyDraft = ""
-                            replySelection = null
-                            postDetail = app.api.request("/api/home/${screen.root.id.encodeURLParameter()}/thread").rows()
+                            if (overlay == "post" && openedPostId == screen.root.id && replyDraft == text) {
+                                replyDraft = ""
+                                replySelection = null
+                            }
+                            val detail = app.api.request("/api/home/${screen.root.id.encodeURLParameter()}/thread").rows()
+                            if (overlay == "post" && openedPostId == screen.root.id) postDetail = detail
                         }
                         is AndroidScreen.Conversation, is AndroidScreen.Thread -> {
                             val files = channelFiles[key]
@@ -807,19 +827,30 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun openPost(id: String, focusReply: Boolean = false) = request {
+    fun invalidatePostRequest() { postRequest++ }
+
+    private fun openPost(id: String, focusReply: Boolean = false) {
+        val opening = ++postRequest
         val source = overlay
-        val detail = app.api.request("/api/home/${id.encodeURLParameter()}/thread").rows()
-        if (detail.isNotEmpty()) {
-            if (source != "post") postOrigin = source
-            postDetail = detail
-            openedPostId = id
-            replyFocusRequest = if (focusReply) replyFocusRequest + 1 else 0
-            overlay = "post"
+        val path = app.env.path
+        request {
+            val detail = app.api.request("/api/home/${id.encodeURLParameter()}/thread").rows()
+            if (detail.isNotEmpty() && opening == postRequest && source == overlay && path == app.env.path) {
+                if (source != "post") postOrigin = source
+                if (openedPostId != id) {
+                    replyDraft = ""
+                    replySelection = null
+                }
+                postDetail = detail
+                openedPostId = id
+                replyFocusRequest = if (focusReply) replyFocusRequest + 1 else 0
+                overlay = "post"
+            }
         }
     }
 
     fun closePost() {
+        invalidatePostRequest()
         openedPostId = null
         postDetail = emptyList()
         replyDraft = ""

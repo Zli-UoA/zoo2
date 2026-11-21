@@ -54,8 +54,9 @@ internal fun EncryptionRoute(
     val reauthenticate = platform.reauthenticate
     val passkey = platform.passkey
     suspend fun reload() {
-        status = setup?.loadStatus()
+        val loadedStatus = setup?.loadStatus()
         devices = session.api.request("/api/e2ee/devices").rows()
+        status = loadedStatus
     }
     fun perform(block: suspend () -> Unit) {
         if (job?.isActive == true) return
@@ -167,8 +168,8 @@ internal fun EncryptionRoute(
                 }
             }
             if (job != null) TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { job?.cancel() }
-            if (failure) {
-                Text("暗号化の操作を完了できませんでした", color = colors.foreground)
+            if (failure) Text("暗号化の操作を完了できませんでした", color = colors.foreground)
+            if (failure || (status == null && setup != null && store != null && job == null)) {
                 TextAction("状態を読み直す", colors, enabled, icon = UiIcon.Refresh, style = TextActionStyle.Neutral) { perform { reload() } }
             }
             if (devices.isNotEmpty()) {

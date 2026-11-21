@@ -8,54 +8,53 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 
 internal class NotificationReadQueue(private val app: Session) {
-    private val pending = linkedMapOf<String, UnifiedNotificationEntry>()
-    private val processing = mutableSetOf<String>()
+    private val pendingChannel = linkedSetOf<String>()
+    private val pendingFederated = linkedSetOf<String>()
+    private var writingChannel: Set<String> = emptySet()
+    private var writingFederated: Set<String> = emptySet()
     private var worker: Job? = null
 
     fun viewed(entry: UnifiedNotificationEntry) {
-        if (entry.key in processing) return
-        pending[entry.key] = entry
+        for (row in entry.channel.orEmpty()) {
+            val id = row.text("id")
+            if (id.isNotEmpty() && !row.flag("is_read") && id !in writingChannel) pendingChannel += id
+        }
+        for (row in listOfNotNull(entry.item) + entry.mirrors.map { it.item }) {
+            val id = row.text("id")
+            if (id.isNotEmpty() && !row.flag("is_read") && id !in writingFederated) pendingFederated += id
+        }
         if (worker?.isActive == true) return
         worker = app.scope.launch {
-            while (pending.isNotEmpty()) {
+            while (pendingChannel.isNotEmpty() || pendingFederated.isNotEmpty()) {
                 delay(100)
-                val batch = pending.values.toList()
-                processing.addAll(pending.keys)
-                pending.clear()
+                writingChannel = pendingChannel.toSet()
+                writingFederated = pendingFederated.toSet()
+                pendingChannel.clear()
+                pendingFederated.clear()
                 try {
-                    write(batch)
+                    write(writingChannel, writingFederated)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
                     app.toast = app.t("notifications.readError")
                 } finally {
-                    batch.forEach { processing.remove(it.key) }
+                    writingChannel = emptySet()
+                    writingFederated = emptySet()
                 }
             }
         }
     }
 
-    private suspend fun write(entries: List<UnifiedNotificationEntry>) {
-        val serverIds = linkedSetOf<String>()
-        val federatedIds = linkedSetOf<String>()
-        for (entry in entries) {
-            entry.item?.takeIf { !it.flag("is_read") }?.let { federatedIds += it.text("id") }
-            for (row in entry.channel.orEmpty()) {
-                if (!row.flag("is_read")) serverIds += row.text("id")
-            }
-            for (mirror in entry.mirrors) {
-                if (!mirror.item.flag("is_read")) federatedIds += mirror.item.text("id")
-            }
-        }
-        for (ids in serverIds.filter(String::isNotEmpty).chunked(500)) {
+    private suspend fun write(serverIds: Set<String>, federatedIds: Set<String>) {
+        for (ids in serverIds.chunked(500)) {
             app.api.request("/api/notifications/read", "POST", obj("ids" to JsonArray(ids.map(::JsonPrimitive))))
         }
-        val remote = federatedIds.filter(String::isNotEmpty)
-        if (remote.isNotEmpty()) app.activityPubNotifications.markRead(remote)
+        if (federatedIds.isNotEmpty()) app.activityPubNotifications.markRead(federatedIds.toList())
     }
 
     fun close() {
         worker?.cancel()
-        pending.clear()
+        pendingChannel.clear()
+        pendingFederated.clear()
     }
 }

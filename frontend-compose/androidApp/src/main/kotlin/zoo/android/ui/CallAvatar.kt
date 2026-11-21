@@ -125,33 +125,35 @@ internal fun CallPage(
     remoteAudioLevel: () -> Float, dispatch: (AndroidUiAction) -> Unit,
     answerLabel: String = "応答", dismissLabel: String = "拒否",
 ) {
-    BrandPage(call.status ?: if (call.incoming) "着信中" else "通話中", call.caller, colors,
-        detailWeight = AndroidWeights.userName, badge = { CallAvatar(call, colors, motion, remoteAudioLevel) }) {
-        if (call.incoming) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceAround,
-            ) {
-                IncomingCallAction(answerLabel, UiIcon.Phone, Color(0xff1b743d), colors) { dispatch(AndroidUiAction.Answer) }
-                IncomingCallAction(dismissLabel, UiIcon.PhoneOff, Color(0xffbc3037), colors) { dispatch(AndroidUiAction.HangUp) }
-            }
-        } else Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (call.minimize || call.pictureInPicture) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                if (call.minimize) UiIconButton(UiIcon.Minimize, "通話画面をしまう", colors.foreground,
-                    { dispatch(AndroidUiAction.MinimizeCall) })
-                if (call.pictureInPicture) UiIconButton(UiIcon.Float, "通話を小窓で表示", colors.foreground,
-                    { dispatch(AndroidUiAction.FloatCall) })
-            }
-            if (call.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
-                CallToggle("ミュート", if (call.muted) UiIcon.MicOff else UiIcon.Mic, call.muted, colors) {
-                    dispatch(AndroidUiAction.MuteCall)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        BrandPage(call.status ?: if (call.incoming) "着信中" else "通話中", call.caller, colors,
+            detailWeight = AndroidWeights.userName, compact = maxHeight < 360.dp, badge = { CallAvatar(call, colors, motion, remoteAudioLevel) }) {
+            if (call.incoming) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                ) {
+                    IncomingCallAction(answerLabel, UiIcon.Phone, Color(0xff1b743d), colors) { dispatch(AndroidUiAction.Answer) }
+                    IncomingCallAction(dismissLabel, UiIcon.PhoneOff, Color(0xffbc3037), colors) { dispatch(AndroidUiAction.HangUp) }
                 }
-                CallToggle("スピーカー", if (call.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, call.speaker, colors) {
-                    dispatch(AndroidUiAction.SpeakerCall)
+            } else Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (call.minimize || call.pictureInPicture) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    if (call.minimize) UiIconButton(UiIcon.Minimize, "通話画面をしまう", colors.foreground,
+                        { dispatch(AndroidUiAction.MinimizeCall) })
+                    if (call.pictureInPicture) UiIconButton(UiIcon.Float, "通話を小窓で表示", colors.foreground,
+                        { dispatch(AndroidUiAction.FloatCall) })
                 }
+                if (call.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
+                    CallToggle("ミュート", if (call.muted) UiIcon.MicOff else UiIcon.Mic, call.muted, colors) {
+                        dispatch(AndroidUiAction.MuteCall)
+                    }
+                    CallToggle("スピーカー", if (call.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, call.speaker, colors) {
+                        dispatch(AndroidUiAction.SpeakerCall)
+                    }
+                }
+                TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
+                    icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) { dispatch(AndroidUiAction.HangUp) }
             }
-            TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
-                icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) { dispatch(AndroidUiAction.HangUp) }
         }
     }
 }

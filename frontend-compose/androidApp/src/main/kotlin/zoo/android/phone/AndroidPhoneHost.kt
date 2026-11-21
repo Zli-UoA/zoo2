@@ -298,7 +298,7 @@ internal class AndroidPhoneHost(
         controller.answer()
     }
 
-    fun open(intent: Intent): Boolean {
+    fun open(intent: Intent, present: () -> Unit = {}): Boolean {
         if (intent.action == DM_PUSH_ANSWER_ACTION || intent.action == DM_PUSH_OPEN_ACTION) {
             val invite = DmCallPushAnswer.fromIntent(intent) ?: return true
             val remaining = invite.remainingMillis()
@@ -313,6 +313,7 @@ internal class AndroidPhoneHost(
                     pushedInvite.value = null
                     pushedInviteExpiry = null
                 }
+                present()
                 controller.restoreDmWaiting()
                 openPushedInviteIfReady()
             }
@@ -321,6 +322,7 @@ internal class AndroidPhoneHost(
         if (intent.action != "zoo.phone.OPEN" && intent.action != "zoo.phone.ANSWER") return false
         if (!matches(intent.getStringExtra(PHONE_SESSION), intent.getStringExtra(PHONE_CALL))) return true
         val call = controller.call ?: return true
+        present()
         if (intent.action == "zoo.phone.ANSWER") controller.answer()
         app.navigate(if (call.kind == "dm") "/channels/${call.target.encodeURLPathPart()}" else "/settings?tab=sip")
         return true
