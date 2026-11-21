@@ -35,7 +35,7 @@ internal fun NotificationPage(
     loadMore: () -> Unit,
     respond: (String, String, Boolean) -> Unit,
 ) {
-    PageHeader("通知", colors)
+    PageHeader("通知", colors, paintBackground = false)
     val scroll = rememberLazyListState()
     val visible by remember {
         derivedStateOf {

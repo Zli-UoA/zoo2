@@ -19,6 +19,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +65,11 @@ internal fun AndroidShell(
     screen: @Composable ColumnScope.(AndroidColors) -> Unit,
 ) {
     val colors = AndroidColors(dark)
+    val background = if (selected == TopPage.Notifications) {
+        val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val fadeHeight = with(LocalDensity.current) { (statusBar + 144.dp).toPx() }
+        Brush.verticalGradient(listOf(colors.headerLight, colors.background), endY = fadeHeight)
+    } else null
     val scheme = (if (dark) darkColorScheme() else lightColorScheme()).copy(
         primary = colors.accent,
         onPrimary = Color.Black,
@@ -87,7 +93,9 @@ internal fun AndroidShell(
             fontFamily = FontFamily.SansSerif,
             localeList = LocaleList(locale),
         )) {
-            Column(Modifier.fillMaxSize().background(colors.background).safeDrawingPadding()) {
+            Column(Modifier.fillMaxSize()
+                .then(if (background != null) Modifier.background(background) else Modifier.background(colors.background))
+                .safeDrawingPadding()) {
                 Column(Modifier.weight(1f).fillMaxWidth()) { screen(colors) }
                 if (selected != null) {
                     Row(Modifier.fillMaxWidth().background(colors.quietSurface).selectableGroup()) {
@@ -127,10 +135,12 @@ internal fun PageHeader(
     onBack: (() -> Unit)? = null,
     onOpen: (() -> Unit)? = null,
     titleWeight: FontWeight = AndroidWeights.emphasis,
+    paintBackground: Boolean = true,
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     Row(
-        Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(colors.headerLight, colors.background)))
+        Modifier.fillMaxWidth()
+            .then(if (paintBackground) Modifier.background(Brush.verticalGradient(listOf(colors.headerLight, colors.background))) else Modifier)
             .heightIn(min = 56.dp).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
