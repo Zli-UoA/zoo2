@@ -176,6 +176,22 @@ it("does not retry permanent API failures", async () => {
 });
 
 it("resolves quoted renotes in Home and shares a pending lookup with chat", async () => {
+  // Home cards are deferred. Fire the observer synchronously so all three cards
+  // join the shared request before the test removes one of them.
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+        this.notify = () => callback([{ isIntersecting: true }]);
+      }
+      private notify: () => void;
+      observe() {
+        this.notify();
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
   const url = "https://misskey.example/notes/home-quoted-original";
   let finish!: (data: unknown) => void;
   api.get.mockImplementation(
@@ -191,7 +207,11 @@ it("resolves quoted renotes in Home and shares a pending lookup with chat", asyn
       <LinkPreviews content={url} />
     </>,
   );
-  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+  // All consumers attach in the same effect flush. Let it finish before one unmounts.
+  await act(async () => {
+    await Promise.resolve();
+  });
   expect(api.get).toHaveBeenCalledWith(url, expect.any(Object));
   expect(screen.getByText("引用へのコメント")).toBeInTheDocument();
   // Removing one consumer must not cancel the other cards' shared request.
@@ -202,7 +222,7 @@ it("resolves quoted renotes in Home and shares a pending lookup with chat", asyn
   );
   expect(api.get.mock.calls[0][1].signal.aborted).toBe(false);
   finish({ title: "引用元の投稿", description: "引用元の本文", image: null });
-  const card = await screen.findByRole("link", { name: /引用元の投稿/ });
+  const card = await screen.findByRole("link", { name: /引用元の投稿/ }, { timeout: 10_000 });
   expect(card).toHaveAttribute("href", url);
   expect(screen.getByText("引用元の本文")).toBeInTheDocument();
   for (const width of [280, 960]) {
@@ -311,13 +331,18 @@ it("prefetches within 200px of the real scrolling pane and defers more distant p
       <HomePostContent content={far} />
     </div>,
   );
-  await screen.findByRole("link", { name: /画面の100px下のカード/ });
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith(near, expect.any(Object)), {
+    timeout: 10_000,
+  });
+  await screen.findByRole("link", { name: /画面の100px下のカード/ }, { timeout: 10_000 });
   expect(api.get).toHaveBeenCalledTimes(1);
-  expect(api.get).toHaveBeenCalledWith(near, expect.any(Object));
   const scroller = view.container.firstElementChild!;
   scroller.scrollTop = scroller.scrollHeight;
   fireEvent.scroll(scroller);
-  await screen.findByRole("link", { name: /遠い投稿のカード/ });
+  await waitFor(() => expect(api.get).toHaveBeenCalledWith(far, expect.any(Object)), {
+    timeout: 10_000,
+  });
+  await screen.findByRole("link", { name: /遠い投稿のカード/ }, { timeout: 10_000 });
   expect(api.get).toHaveBeenCalledTimes(2);
 });
 

@@ -269,6 +269,8 @@
     "containedFiles": "含まれるファイル",
     "previousPage": "前のページ",
     "nextPage": "次のページ",
+    "pageNumber": "ページ番号",
+    "pdfPages": "PDFページ一覧",
     "pdfPage": "PDF {{page}}ページ",
     "mail": {
       "subject": "件名",

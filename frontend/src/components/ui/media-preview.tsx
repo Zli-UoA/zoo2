@@ -125,7 +125,7 @@ export function MediaPreview({
           onError={errorHandler}
         />
       );
-    if (expanded && kind === "pdf") return <PdfPreview key={src} src={src} />;
+    if (expanded && kind === "pdf") return <PdfPreview key={src} src={src} embedded={embedded} />;
     if (expanded && kind === "document")
       return (
         <DocumentPreview
@@ -151,7 +151,13 @@ export function MediaPreview({
   }
   if (embedded)
     return (
-      <div className="h-dvh min-w-0 overflow-auto bg-background text-foreground">
+      <div
+        className={
+          kind === "pdf"
+            ? "flex h-dvh min-w-0 flex-col overflow-hidden bg-background p-2 text-foreground"
+            : "h-dvh min-w-0 overflow-auto bg-background text-foreground"
+        }
+      >
         {renderMedia(true)}
       </div>
     );

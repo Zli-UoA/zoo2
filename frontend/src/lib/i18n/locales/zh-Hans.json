@@ -269,6 +269,8 @@
     "containedFiles": "包含的文件",
     "previousPage": "上一页",
     "nextPage": "下一页",
+    "pageNumber": "页码",
+    "pdfPages": "PDF 页面列表",
     "pdfPage": "PDF 第{{page}}页",
     "mail": {
       "subject": "主题",
