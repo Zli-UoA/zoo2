@@ -134,6 +134,7 @@
         "MobileSections",
         "Pinned",
         "MobilePinned",
+        "PinnedThreads",
         "PinnedReorderError"
       ]
     },
@@ -1071,7 +1072,7 @@
       "file": "src/components/chat/PinnedSection.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
     },
     {
       "file": "src/components/chat/ChannelThreadItems.tsx",

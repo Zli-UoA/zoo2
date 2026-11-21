@@ -129,6 +129,8 @@ export function ChannelSidebar({
           currentUserId={currentUserId}
           activeChannelId={shell.selectedChannelId}
           unreadChannelIds={unreadChannelIds}
+          threads={threadIndex.threads}
+          onObserveThread={threadIndex.observeThread}
           onOpen={() => shell.showChat()}
           loading={sidebarLoading}
         />

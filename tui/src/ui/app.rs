@@ -142,6 +142,8 @@ pub enum SidebarItem {
     Thread {
         channel_id: String,
         id: String,
+        /// ピン留めの行の下に出すスレッドか。通常の一覧にも同じスレッドが出るので、選択位置を区別する。
+        pinned: bool,
     },
     MoreThreads {
         archived: bool,
@@ -678,6 +680,7 @@ impl App {
                     selected = Some(SidebarItem::Thread {
                         channel_id: first.channel_id.clone(),
                         id: first.id.clone(),
+                        pinned: false,
                     });
                 }
                 self.thread_has_additional_pages[scope] = append || threads.len() > 100;
@@ -1075,45 +1078,65 @@ impl App {
         !archived
     }
 
+    /// チャンネルの下に出すスレッドの行。通常の一覧とピン留めで、同じスレッドを同じ並びで出す。
+    /// 参加していないチャンネルは、閲覧中の1件だけを出す。
+    fn thread_rows(&self, channel_id: &str, pinned: bool) -> Vec<SidebarItem> {
+        let joined = self
+            .store
+            .channel(channel_id)
+            .is_some_and(|channel| !channel.is_dm)
+            && self.store.is_member(channel_id, &self.me.id);
+        let row = |id: &str| SidebarItem::Thread {
+            channel_id: channel_id.to_owned(),
+            id: id.to_owned(),
+            pinned,
+        };
+        let mut rows: Vec<SidebarItem> = self
+            .threads()
+            .filter(|thread| {
+                joined
+                    && thread.channel_id == channel_id
+                    && !self.thread_is_archived(channel_id, &thread.id)
+            })
+            .map(|thread| row(&thread.id))
+            .collect();
+        if self.current.as_deref() == Some(channel_id)
+            && let Some(thread) = &self.thread
+        {
+            let selected = row(&thread.root_id);
+            if !rows.contains(&selected)
+                && self.store.message(channel_id, &thread.root_id).is_some()
+                && !self.thread_is_archived(channel_id, &thread.root_id)
+                && !self.store.replies(channel_id, &thread.root_id).is_empty()
+            {
+                rows.push(selected);
+            }
+        }
+        rows
+    }
+
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
         // ピン留めは先頭に出す。アーカイブ中は通常の一覧だけに残す（アンアーカイブで戻る）。
+        // 通常のチャンネルには、通常の一覧と同じスレッドを下に出す（DM には出さない）。
         for pin in self.store.pinned_channels() {
             let visible = self.store.channel(&pin.channel_id).is_some_and(|channel| {
                 channel.deleted_at.is_none() && channel.archive_at.is_none()
             });
             if visible {
                 items.push(SidebarItem::Pinned(pin.channel_id.clone()));
+                let is_dm = self
+                    .store
+                    .channel(&pin.channel_id)
+                    .is_some_and(|channel| channel.is_dm);
+                if !is_dm {
+                    items.extend(self.thread_rows(&pin.channel_id, true));
+                }
             }
         }
         for channel in self.store.channels() {
             items.push(SidebarItem::Channel(channel.id.clone()));
-            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
-            for thread in self.threads().filter(|thread| {
-                joined
-                    && thread.channel_id == channel.id
-                    && !self.thread_is_archived(&channel.id, &thread.id)
-            }) {
-                items.push(SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.id.clone(),
-                });
-            }
-            if self.current.as_deref() == Some(channel.id.as_str())
-                && let Some(thread) = &self.thread
-            {
-                let selected = SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.root_id.clone(),
-                };
-                if !items.contains(&selected)
-                    && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && !self.thread_is_archived(&channel.id, &thread.root_id)
-                    && !self.store.replies(&channel.id, &thread.root_id).is_empty()
-                {
-                    items.push(selected);
-                }
-            }
+            items.extend(self.thread_rows(&channel.id, false));
         }
         for archived in [false, true] {
             if !archived
@@ -1805,7 +1828,7 @@ impl App {
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { channel_id, id } => self
+                    SidebarItem::Thread { channel_id, id, .. } => self
                         .thread_content(channel_id, id)
                         .unwrap_or_default()
                         .to_owned(),
@@ -1924,7 +1947,11 @@ impl App {
                 self.open_channel(channel_id);
                 self.focus = Focus::Messages;
             }
-            Some(SidebarItem::Thread { channel_id, id }) => {
+            Some(SidebarItem::Thread {
+                channel_id,
+                id,
+                pinned,
+            }) => {
                 self.open_channel(channel_id);
                 self.thread = Some(ThreadView {
                     root_id: id.clone(),
@@ -1932,9 +1959,11 @@ impl App {
                     scroll: 0,
                     inner_scroll: 0,
                 });
+                // 開いた行（ピン留めの下か通常の一覧か）に、カーソルを残す。
                 self.restore_sidebar_selection(Some(SidebarItem::Thread {
                     channel_id: self.current.clone().unwrap_or_default(),
                     id: id.clone(),
+                    pinned,
                 }));
                 self.focus = Focus::Thread;
                 self.poll_typing();
@@ -2927,6 +2956,7 @@ mod tests {
         assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
+            pinned: false,
         }));
         let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await

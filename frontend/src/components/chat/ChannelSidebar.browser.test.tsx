@@ -333,6 +333,50 @@ it("shows pinned channels and unpins them from the row menu", async () => {
   expect(fixture.unpinChannel).toHaveBeenCalledWith("general");
 });
 
+it("shows the thread tree under a pinned channel as well as in the channel list, but not under a pinned DM", async () => {
+  fixture.memberships = [
+    { user_id: "me", channel_id: "general" },
+    { user_id: "me", channel_id: dmChannel.id },
+  ];
+  fixture.pins = [pinRow("general", 0), pinRow(dmChannel.id, 1)];
+  fixture.threads = [
+    {
+      id: "pinned-thread",
+      channel_id: "general",
+      content: "Pinned conversation",
+      thread_archive_at: null,
+      reply_count: 2,
+    },
+    {
+      id: "archived-thread",
+      channel_id: "general",
+      content: "Archived conversation",
+      thread_archive_at: "2020-01-01T00:00:00Z",
+      reply_count: 4,
+    },
+  ];
+  render(
+    <LocaleProvider>
+      <ChannelSidebar channels={[generalChannel, dmChannel]} loading={false} error={false} />
+    </LocaleProvider>,
+  );
+  const section = await screen.findByRole("region", { name: "ピン留め" });
+  // ピン留めの行の下にも、通常の一覧と同じアクティブなスレッドを出す（アーカイブ済みは出さない）。
+  const pinnedLink = await within(section).findByRole("link", { name: /Pinned conversation/ });
+  expect(pinnedLink.getAttribute("href")).toBe("/channels/general?thread=pinned-thread");
+  // 返信数は、ヘッダーの件数のバッジではなく、スレッドの行の中に出る。
+  expect(within(pinnedLink).getByText("2")).toBeTruthy();
+  expect(within(section).queryByRole("link", { name: /Archived conversation/ })).toBeNull();
+  // 通常のチャンネル一覧の行のツリーも残る。
+  expect(await screen.findAllByRole("link", { name: /Pinned conversation/ })).toHaveLength(2);
+  // ピン留めした DM にはスレッドのツリーを出さない。
+  expect(within(section).getAllByRole("link")).toHaveLength(3);
+  // スレッド一覧はサイドバー全体で共有し、ピン留めのために取り直さない。
+  expect(fixture.get.mock.calls.filter(([path]) => path.startsWith("/api/threads"))).toHaveLength(
+    1,
+  );
+});
+
 it("shows NSFW and in-call indicators on pinned rows", async () => {
   fixture.memberships = [{ user_id: "me", channel_id: "general" }];
   fixture.pins = [pinRow("general", 0)];
