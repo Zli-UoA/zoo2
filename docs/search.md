@@ -49,7 +49,7 @@
 CREATE INDEX messages_search_month ON messages USING gin (
   ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
   lower(content) public.gin_bigm_ops
-) WHERE deleted_at IS NULL AND content <> '';
+) WITH (fastupdate = off) WHERE deleted_at IS NULL AND content <> '';
 ```
 
 検索のトランザクションでは `plan_cache_mode = force_custom_plan` にして、値を埋めた計画だけを使う（generic plan では月と本文の GIN を使えないため。予算テストもこの計画を測る）。検索は新しい月から 1 か月ずつ、月の**等価条件**で引く（`backend/src/routes/search.rs` の `month_sql`）。GIN は月の posting と語の posting を突き合わせ、短いほうに合わせて読み飛ばす。そのため、1 か月分の SQL の索引の読み取りはその月の、語の 2 文字の組の posting（候補が 0 件でも読む）に、ヒープの走査は「その月の候補」（語の 2 文字の組をすべて含む行。再確認で除かれる行を含む）に限られ、どちらも総履歴には比例しない（1 文字の語のヒープの走査は、下のとおり「その月の行」）。範囲条件（`created_at >= …`）にすると、GIN は範囲の全行をビットマップに広げるので、使わない。
