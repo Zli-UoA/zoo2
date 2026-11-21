@@ -354,21 +354,9 @@ internal fun ConnectedScreens(
         )
     }
     state.inputMenu?.let { tool ->
-        val emoji = tool == InputTool.Emoji
-        val options = if (emoji) listOf("👍" to "👍", "😊" to "😊", "🎉" to "🎉", "❤️" to "❤️")
-            else listOf("B" to "**太字**", "I" to "*斜体*", "‹/›" to "`コード`", "❝" to "\n> 引用")
-        AlertDialog(
-            onDismissRequest = { state.inputMenu = null },
-            title = { Text(if (emoji) "絵文字" else "文字装飾") },
-            text = {
-                Row {
-                    options.forEach { (label, value) ->
-                        TextButton(onClick = { state.insertText(screen, channelId.orEmpty(), value) }) { Text(label) }
-                    }
-                }
-            },
-            confirmButton = {},
-        )
+        InputToolDialog(tool, onDismiss = { state.inputMenu = null }) { value ->
+            state.insertText(screen, channelId.orEmpty(), value)
+        }
     }
     state.confirmingEntry?.let { action ->
         val deleting = action.operation == EntryOperation.Delete

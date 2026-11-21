@@ -162,16 +162,19 @@ class AndroidSamplesTest {
         var screen by mutableStateOf<AndroidScreen>(cases.first().second)
         var dark by mutableStateOf(false)
         var foreground by mutableStateOf(false)
+        var emojiPicker by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
             AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
                 actions.add(action)
+                if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
                 if (action == AndroidUiAction.OpenChannelSettings("dev")) {
                     screen = AndroidScreen.ChannelSettings("開発", settings)
                 }
             }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
+            if (emojiPicker) InputToolDialog(InputTool.Emoji, onDismiss = { emojiPicker = false }) { emojiPicker = false }
         }
         for ((name, example) in cases) {
             for (night in listOf(false, true)) {
@@ -270,6 +273,14 @@ class AndroidSamplesTest {
                 }
                 capture("$name-${if (night) "dark" else "light"}")
             }
+        }
+        for (night in listOf(false, true)) {
+            ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second; dark = night }
+            ui.onNodeWithContentDescription("絵文字").performClick()
+            ui.onNodeWithText("絵文字").assertIsDisplayed()
+            ui.onNodeWithText("🎉").assertIsDisplayed()
+            capture("emoji-picker-${if (night) "dark" else "light"}", centeredDialog = true)
+            ui.onNodeWithText("🎉").performClick()
         }
         ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second }
         ui.onNodeWithContentDescription("公開範囲：公開").performClick()
@@ -383,19 +394,26 @@ class AndroidSamplesTest {
         capture("post-menu-dark", withSheet = true)
     }
 
-    private fun capture(name: String, withSheet: Boolean = false) {
+    private fun capture(name: String, withSheet: Boolean = false, centeredDialog: Boolean = false) {
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
             try {
                 val canvas = Canvas(bitmap)
                 view.draw(canvas)
-                if (withSheet) {
-                    val sheet = checkNotNull(ShadowDialog.getLatestDialog()?.window?.decorView)
-                    val location = IntArray(2)
-                    sheet.getLocationOnScreen(location)
-                    canvas.translate(location[0].toFloat(), location[1].toFloat())
-                    sheet.draw(canvas)
+                if (withSheet || centeredDialog) {
+                    val window = checkNotNull(ShadowDialog.getLatestDialog()?.window)
+                    val dialog = window.decorView
+                    if (centeredDialog) {
+                        // Robolectric exposes dialog decor before WindowManager positions it.
+                        canvas.drawColor((window.attributes.dimAmount * 255).toInt().coerceIn(0, 255) shl 24)
+                        canvas.translate((view.width - dialog.width) / 2f, (view.height - dialog.height) / 2f)
+                    } else {
+                        val location = IntArray(2)
+                        dialog.getLocationOnScreen(location)
+                        canvas.translate(location[0].toFloat(), location[1].toFloat())
+                    }
+                    dialog.draw(canvas)
                 }
                 val out = File("build/reports/android-ui").apply { mkdirs() }
                 out.resolve("$name.png").outputStream().use {

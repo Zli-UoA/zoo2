@@ -18,6 +18,7 @@
 | 投稿詳細 | [ライト](images/android-design/rebuild/post-light.png) | [ダーク](images/android-design/rebuild/post-dark.png) |
 | 新しい投稿・ActivityPub配信オン | [ライト](images/android-design/rebuild/post-compose-light.png) | [ダーク](images/android-design/rebuild/post-compose-dark.png) |
 | 新しい投稿・ActivityPub配信オフ | [ライト](images/android-design/rebuild/post-compose-federation-off-light.png) | [ダーク](images/android-design/rebuild/post-compose-federation-off-dark.png) |
+| 投稿の絵文字ピッカー | [ライト](images/android-design/rebuild/emoji-picker-light.png) | [ダーク](images/android-design/rebuild/emoji-picker-dark.png) |
 | プロフィール | [ライト](images/android-design/rebuild/profile-light.png) | [ダーク](images/android-design/rebuild/profile-dark.png) |
 | チャンネル検索 | [ライト](images/android-design/rebuild/directory-light.png) | [ダーク](images/android-design/rebuild/directory-dark.png) |
 | チャンネル作成 | [ライト](images/android-design/rebuild/channel-edit-light.png) | [ダーク](images/android-design/rebuild/channel-edit-dark.png) |

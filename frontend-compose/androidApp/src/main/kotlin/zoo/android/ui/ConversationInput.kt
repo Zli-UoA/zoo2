@@ -8,6 +8,8 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -154,5 +156,25 @@ private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputT
         action = { onTool(InputTool.Send) },
         enabled = enabled,
         fill = if (enabled) colors.accent else Color.Transparent,
+    )
+}
+
+
+@Composable
+internal fun InputToolDialog(tool: InputTool, onDismiss: () -> Unit, onSelect: (String) -> Unit) {
+    val emoji = tool == InputTool.Emoji
+    val options = if (emoji) listOf("👍" to "👍", "😊" to "😊", "🎉" to "🎉", "❤️" to "❤️")
+        else listOf("B" to "**太字**", "I" to "*斜体*", "‹/›" to "`コード`", "❝" to "\n> 引用")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (emoji) "絵文字" else "文字装飾") },
+        text = {
+            Row {
+                options.forEach { (label, value) ->
+                    TextButton(onClick = { onSelect(value) }) { Text(label) }
+                }
+            }
+        },
+        confirmButton = {},
     )
 }
