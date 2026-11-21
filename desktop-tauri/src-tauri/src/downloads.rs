@@ -920,26 +920,51 @@ fn open_probe(path: &Path) -> std::io::Result<File> {
 }
 
 fn probe_state(path: &Path) -> ProbeState {
-    let file = match open_probe(path) {
-        Ok(file) => file,
-        // 無い、読む権限が無い、リンクをたどらない指定で開けなかった。いずれも
-        // 自分が作った検査用のファイルではない（自分が作ったものは自分で読める）。
-        // 再試行しても結果は変わらないので、記録から外す。
-        Err(err)
-            if matches!(
-                err.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            return ProbeState::NotOurs;
-        }
-        Err(err) if is_symlink_error(&err) => return ProbeState::NotOurs,
-        Err(_) => return ProbeState::Unreadable,
-    };
+    classify_open_result(open_probe(path))
+}
+
+/// 開く操作の結果を、掃除の判断に変える。失敗を直接渡せるよう分けている。
+fn classify_open_result(result: std::io::Result<File>) -> ProbeState {
+    match result {
+        Ok(file) => probe_state_from_file(file),
+        Err(err) if is_transient_error(&err) => ProbeState::Unreadable,
+        // 無い、権限が無い、リンクをたどれない、ソケットのように種類が違う、など。
+        // 何度やり直しても結果は変わらないので、記録から外す。
+        Err(_) => ProbeState::NotOurs,
+    }
+}
+
+/// 開く・読むときの失敗が、次の起動でやり直す価値のある一時的なものか。
+///
+/// 資源の不足や割り込みだけを一時的な失敗として扱う。無い、権限が無い、種類が
+/// 違うといった失敗は、繰り返しても同じ結果になる。
+fn is_transient_error(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::Interrupted {
+        return true;
+    }
+    #[cfg(unix)]
+    if matches!(
+        err.raw_os_error(),
+        Some(libc::EIO | libc::EMFILE | libc::ENFILE | libc::ENOMEM | libc::EINTR)
+    ) {
+        return true;
+    }
+    #[cfg(windows)]
+    if matches!(err.raw_os_error(), Some(8 | 14)) {
+        // ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY
+        return true;
+    }
+    false
+}
+
+/// 開いた検査用のファイルが、このアプリが書いたものか。
+fn probe_state_from_file(file: File) -> ProbeState {
     // 開いたものの種類と長さを、パスではなく開いたものから読む（差し替えの影響を
     // 受けない）。FIFO は `O_NONBLOCK` で開けるが、通常のファイルではない。
-    let Ok(metadata) = file.metadata() else {
-        return ProbeState::Unreadable;
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(err) if is_transient_error(&err) => return ProbeState::Unreadable,
+        Err(_) => return ProbeState::NotOurs,
     };
     if !metadata.file_type().is_file() {
         return ProbeState::NotOurs;
@@ -951,29 +976,19 @@ fn probe_state(path: &Path) -> ProbeState {
         return ProbeState::NotOurs;
     }
     let mut marker = Vec::with_capacity(PROBE_MARKER.len() + 1);
-    if file
+    match file
         .take(PROBE_MARKER.len() as u64 + 1)
         .read_to_end(&mut marker)
-        .is_err()
     {
-        return ProbeState::Unreadable;
+        Ok(_) => {}
+        Err(err) if is_transient_error(&err) => return ProbeState::Unreadable,
+        Err(_) => return ProbeState::NotOurs,
     }
     if marker == PROBE_MARKER {
         ProbeState::Ours
     } else {
         ProbeState::NotOurs
     }
-}
-
-/// リンクをたどらない指定で開けなかったことを表すエラーか。
-#[cfg(unix)]
-fn is_symlink_error(err: &std::io::Error) -> bool {
-    err.raw_os_error() == Some(libc::ELOOP)
-}
-
-#[cfg(not(unix))]
-fn is_symlink_error(_err: &std::io::Error) -> bool {
-    false
 }
 
 /// 拡張子を残して、名前がファイルシステムの上限（バイト数）に収まるようにする。
@@ -2270,6 +2285,55 @@ mod tests {
         assert!(probe.symlink_metadata().is_ok(), "FIFO を消さない");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_cleanup_keeps_a_preexisting_probe_socket() {
+        let dir = temp_dir();
+        let target = dir.join("x.txt");
+        let part = part_path(&target, "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        // Unix ドメインソケットは、リンクをたどらず止まらない指定で開くと
+        // ENXIO（macOS では EOPNOTSUPP）で失敗する。中身は無いので消さない。
+        let listener = std::os::unix::net::UnixListener::bind(&probe).unwrap();
+
+        assert!(remove_stale_entry(&probe), "記録からは外す");
+        assert!(probe.symlink_metadata().is_ok(), "ソケットを消さない");
+
+        drop(listener);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_state_classifies_open_failures_by_whether_retrying_helps() {
+        for code in [
+            libc::EACCES,
+            libc::ENOENT,
+            libc::ELOOP,
+            libc::ENXIO,
+            libc::EPERM,
+        ] {
+            let state = classify_open_result(Err(std::io::Error::from_raw_os_error(code)));
+            assert!(
+                matches!(state, ProbeState::NotOurs),
+                "errno {code} はやり直しても変わらない"
+            );
+        }
+        for code in [
+            libc::EIO,
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOMEM,
+            libc::EINTR,
+        ] {
+            let state = classify_open_result(Err(std::io::Error::from_raw_os_error(code)));
+            assert!(
+                matches!(state, ProbeState::Unreadable),
+                "errno {code} は次の起動でやり直す"
+            );
+        }
     }
 
     #[test]
