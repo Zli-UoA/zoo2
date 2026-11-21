@@ -85,6 +85,7 @@ it("keeps rendered canvases intact while typing in the page input or stepping to
   const renders = new Map<number, number>();
   mocked.fetch.mockResolvedValue(new Uint8Array());
   mocked.getPage.mockImplementation(async (pageNumber: number) => ({
+    cleanup: () => {},
     getViewport: ({ scale }: { scale: number }) => ({ width: 400 * scale, height: 600 * scale }),
     render: () => {
       renders.set(pageNumber, (renders.get(pageNumber) ?? 0) + 1);

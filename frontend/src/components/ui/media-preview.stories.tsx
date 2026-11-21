@@ -49,12 +49,22 @@ export const MultiPagePDF: Story = {
     await waitFor(() => expect(pageInput).toHaveValue("3"), { timeout: 10_000 });
     await user.click(pageInput);
     await user.keyboard("10{Enter}");
+    await waitFor(() => expect(pageInput).toHaveValue("10"), { timeout: 10_000 });
     await waitFor(
       async () => {
-        await expect(pageInput).toHaveValue("10");
-        await expect(
-          (dialog.querySelector('[data-pdf-page="10"] canvas') as HTMLCanvasElement | null)?.width,
-        ).toBeGreaterThan(0);
+        const canvas = dialog.querySelector(
+          '[data-pdf-page="10"] canvas',
+        ) as HTMLCanvasElement | null;
+        await expect(canvas?.width).toBeGreaterThan(0);
+        const context = canvas?.getContext("2d");
+        if (!context || !canvas) throw new Error("page 10 canvas is unavailable");
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 0 && (data[i] < 250 || data[i + 1] < 250 || data[i + 2] < 250)) {
+            return;
+          }
+        }
+        throw new Error("page 10 has not been painted");
       },
       { timeout: 10_000 },
     );

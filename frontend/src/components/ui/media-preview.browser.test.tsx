@@ -132,6 +132,35 @@ it("does not jump while IME composition is active", async () => {
   );
 });
 
+it("jumps on Enter even with full-width digits and surrounding spaces", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, " １２ ");
+  await userEvent.keyboard("{Enter}");
+  await waitFor(() => expect(pageInput.value).toBe("12"), { timeout: 10_000 });
+});
+
+it("commits the draft page when tab moves focus to a page button", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "5");
+  await userEvent.tab();
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+  expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled();
+});
+
 it.each(["video/mp4", "audio/mpeg"])("provides controls without autoplay for %s", (contentType) => {
   const view = render(<MediaPreview src="/media" name="Media" contentType={contentType} />);
   const media = view.container.querySelector("video, audio") as HTMLMediaElement;

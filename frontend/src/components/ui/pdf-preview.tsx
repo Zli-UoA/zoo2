@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { PDFDocumentProxy } from "pdfjs-dist";
+import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import { useTranslation } from "react-i18next";
 import { fetchPreviewBytes } from "../../lib/documents/fetch";
 import { Button } from "./button";
@@ -120,13 +120,12 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
   const totalPagesId = useId();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const prevBtnRef = useRef<HTMLButtonElement>(null);
-  const nextBtnRef = useRef<HTMLButtonElement>(null);
-
   const pageRefs = useRef(new Map<number, HTMLDivElement>());
   const canvasRefs = useRef(new Map<number, HTMLCanvasElement>());
   const renderedCanvasesRef = useRef(new Map<number, HTMLCanvasElement>());
+  const pageProxiesRef = useRef(new Map<number, PDFPageProxy>());
   const kickRenderRef = useRef<(() => void) | null>(null);
+  const pageButtonPressRef = useRef(false);
 
   const inputFocusedRef = useRef(false);
   const justFocusedRef = useRef(false);
@@ -366,6 +365,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     setPageSizes({});
     setVisibleRange({ start: 1, end: 1 });
     renderedCanvasesRef.current.clear();
+    pageProxiesRef.current.clear();
     pendingAnchorRef.current = null;
     programmaticScrollTopRef.current = null;
     lastAlignedScrollTopRef.current = null;
@@ -423,6 +423,13 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     };
   }, [src]);
 
+  const releasePageProxy = useCallback((pageNumber: number) => {
+    const proxy = pageProxiesRef.current.get(pageNumber);
+    if (!proxy) return;
+    proxy.cleanup();
+    pageProxiesRef.current.delete(pageNumber);
+  }, []);
+
   // Sequential prioritized page renderer with 15s timeout per active render task.
   useEffect(() => {
     if (!document) return;
@@ -430,6 +437,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     let wake: (() => void) | null = null;
     let activePage: number | null = null;
     let activeCancel: (() => void) | null = null;
+    let renderCancel: (() => void) | null = null;
 
     const pickNextPage = (): number | null => {
       for (const candidate of keptPagesRef.current) {
@@ -473,7 +481,6 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         }
 
         let taskAborted = false;
-        let renderCancel: (() => void) | null = null;
         activePage = targetPage;
         activeCancel = () => {
           taskAborted = true;
@@ -481,7 +488,9 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         };
 
         const timeout = setTimeout(() => {
-          if (cancelled || taskAborted) return;
+          // 取得中に保持範囲外へ出ても期限は残し、取得完了時に描画だけを省略する。
+          // 描画をキャンセルした場合は既に render.cancel() が済んでいるので期限は不要。
+          if (cancelled || (taskAborted && renderCancel)) return;
           cancelled = true;
           taskAborted = true;
           renderCancel?.();
@@ -499,6 +508,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
             clearTimeout(timeout);
             break;
           }
+          pageProxiesRef.current.set(targetPage, pdfPage);
           const natural = pdfPage.getViewport({ scale: 1 });
           const viewport = pdfPage.getViewport({
             scale: Math.min(2, 1600 / natural.width, 2400 / natural.height),
@@ -517,6 +527,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           const element = canvasRefs.current.get(targetPage);
           if (taskAborted || !element) {
             clearTimeout(timeout);
+            releasePageProxy(targetPage);
             continue;
           }
           element.width = size.width;
@@ -527,6 +538,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           if (taskAborted) {
             render.cancel();
             clearTimeout(timeout);
+            releasePageProxy(targetPage);
             continue;
           }
           await render.promise;
@@ -538,7 +550,8 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         } catch (error) {
           clearTimeout(timeout);
           if (cancelled) break;
-          if (isRenderCancelled(error)) {
+          if (taskAborted || isRenderCancelled(error)) {
+            releasePageProxy(targetPage);
             continue;
           }
           setFailed(true);
@@ -547,6 +560,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
         } finally {
           activePage = null;
           activeCancel = null;
+          renderCancel = null;
         }
       }
     })();
@@ -559,7 +573,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       wake = null;
       resolve?.();
     };
-  }, [document]);
+  }, [document, releasePageProxy]);
 
   // Wake renderer whenever the active window changes.
   useEffect(() => {
@@ -573,11 +587,26 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     const anchor = pendingAnchorRef.current;
     if (anchor !== null && container) {
       const expectedTop = lastAlignedScrollTopRef.current;
-      if (expectedTop !== null && Math.abs(container.scrollTop - expectedTop) > 2) {
+      const anchorElement = pageRefs.current.get(anchor);
+      const anchorRect = anchorElement?.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const paddingTop = Number.parseFloat(getComputedStyle(container).paddingTop) || 0;
+      // ページ高の確定で上方が縮むと scrollTop がクランプされ、対象ページが画面上部から
+      // 押し出される。この場合はユーザー操作ではないので、アンカーを捨てず再整列する。
+      const clampedByLayout =
+        expectedTop !== null &&
+        container.scrollTop < expectedTop &&
+        anchorRect !== undefined &&
+        anchorRect.top - containerRect.top - paddingTop < -2;
+      if (
+        expectedTop === null ||
+        clampedByLayout ||
+        Math.abs(container.scrollTop - expectedTop) <= 2
+      ) {
+        alignScrollToPage(anchor);
+      } else {
         pendingAnchorRef.current = null;
         lastAlignedScrollTopRef.current = null;
-      } else {
-        alignScrollToPage(anchor);
       }
     }
     measureViewport(false);
@@ -587,7 +616,8 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     const container = scrollRef.current;
     if (!container || !document || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      measureViewport(false);
+      // ジャンプ中は現在ページを上書きしない。それ以外はリサイズ後の表示へ追従させる。
+      measureViewport(pendingAnchorRef.current === null);
     });
     observer.observe(container);
     return () => observer.disconnect();
@@ -608,16 +638,22 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     kickRenderRef.current?.();
   }, []);
 
-  const handleCanvasUnmount = useCallback((pageNumber: number, element: HTMLCanvasElement) => {
-    if (canvasRefs.current.get(pageNumber) === element) {
-      canvasRefs.current.delete(pageNumber);
-    }
-    if (renderedCanvasesRef.current.get(pageNumber) === element) {
-      renderedCanvasesRef.current.delete(pageNumber);
-    }
-    element.width = 0;
-    element.height = 0;
-  }, []);
+  const handleCanvasUnmount = useCallback(
+    (pageNumber: number, element: HTMLCanvasElement) => {
+      if (canvasRefs.current.get(pageNumber) === element) {
+        canvasRefs.current.delete(pageNumber);
+      }
+      if (renderedCanvasesRef.current.get(pageNumber) === element) {
+        renderedCanvasesRef.current.delete(pageNumber);
+      }
+      element.width = 0;
+      element.height = 0;
+      if (!keptPagesSetRef.current.has(pageNumber)) {
+        releasePageProxy(pageNumber);
+      }
+    },
+    [releasePageProxy],
+  );
 
   const loading = !failed && (!document || !primaryReady);
 
@@ -627,16 +663,22 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     >
       <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 sm:gap-3">
         <Button
-          ref={prevBtnRef}
           type="button"
           variant="outline"
           size="sm"
           disabled={!document || page <= 1 || failed}
-          onClick={() => jumpToPage(page - 1)}
+          onPointerDown={() => {
+            pageButtonPressRef.current = true;
+          }}
+          onClick={() => {
+            pageButtonPressRef.current = false;
+            jumpToPage(page - 1);
+          }}
         >
           {t("attachments.previousPage")}
         </Button>
         <form
+          noValidate
           className="flex items-center gap-1.5"
           onSubmit={(event) => {
             event.preventDefault();
@@ -692,15 +734,14 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
               dirtyInputRef.current = true;
               setPageInput(event.target.value);
             }}
-            onBlur={(event) => {
+            onBlur={() => {
               inputFocusedRef.current = false;
               justFocusedRef.current = false;
-              const nextTarget = event.relatedTarget as Node | null;
-              if (
-                nextTarget &&
-                (prevBtnRef.current?.contains(nextTarget) ||
-                  nextBtnRef.current?.contains(nextTarget))
-              ) {
+              const pressedPageButton = pageButtonPressRef.current;
+              pageButtonPressRef.current = false;
+              // Safari ではボタン_click_で relatedTarget が null になるため、
+              // ポインタ操作の有無で下書きの破棄を判断する。Tab 移動では値を確定する。
+              if (pressedPageButton) {
                 dirtyInputRef.current = false;
                 setPageInput(String(pageRef.current));
                 return;
@@ -715,12 +756,17 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           </span>
         </form>
         <Button
-          ref={nextBtnRef}
           type="button"
           variant="outline"
           size="sm"
           disabled={!document || page >= document.numPages || failed}
-          onClick={() => jumpToPage(page + 1)}
+          onPointerDown={() => {
+            pageButtonPressRef.current = true;
+          }}
+          onClick={() => {
+            pageButtonPressRef.current = false;
+            jumpToPage(page + 1);
+          }}
         >
           {t("attachments.nextPage")}
         </Button>
