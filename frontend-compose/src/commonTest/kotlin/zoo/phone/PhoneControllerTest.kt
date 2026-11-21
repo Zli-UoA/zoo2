@@ -116,6 +116,34 @@ class PhoneControllerTest {
         f.events.getValue("dm")("connected", obj()); assertEquals("active", f.controller.call?.status)
         f.controller.close(); runCurrent(); assertNull(f.controller.call); assertTrue("dm" in f.closed)
     }
+    @Test fun unsuccessfulOrMismatchedInviteAcceptanceDoesNotJoinDm() = runTest {
+        val responses = listOf(
+            Result.success(obj("data" to obj("channel_id" to "dm"))),
+            Result.success(obj("ok" to false, "channel_id" to "dm")),
+            Result.success(obj("ok" to true, "channel_id" to "other-dm")),
+            Result.success(obj("ok" to true)),
+            Result.failure(ApiException(404)),
+            Result.failure(ApiException(409)),
+        )
+        for (response in responses) {
+            val f = Fixture(backgroundScope)
+            f.controller.restoreDmWaiting()
+            f.controller.invites(listOf(f.invitation()), "alice", 1893456000000)
+            val accept = CompletableDeferred<JsonElement>()
+            response.fold({ accept.complete(it) }, { accept.completeExceptionally(it) })
+            f.pendingAccept = accept
+
+            f.controller.answer()
+            runCurrent()
+
+            assertTrue(f.requests.contains("POST /api/call-invites/invite/accept"))
+            assertNull(f.streamEvent)
+            assertNull(f.controller.call)
+            assertTrue(f.controller.error)
+            f.controller.close()
+        }
+    }
+
     @Test fun preferredInviteWaitsWhileAnUnrelatedInviteSyncsFirst() = runTest {
         val f = Fixture(backgroundScope)
         f.controller.restoreDmWaiting()

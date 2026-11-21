@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.*
 import android.telecom.*
@@ -40,6 +42,7 @@ internal class AndroidPhoneHost(
     private var pushedInviteExpiry: Job? = null
     private var audioReady: CompletableDeferred<Unit>? = null
     private var audioCallId: String? = null
+    private var ringback: ToneGenerator? = null
     private var service: PhoneService? = null
     internal var pendingMute: Boolean? = null
     val controller: PhoneController = PhoneController(
@@ -60,6 +63,7 @@ internal class AndroidPhoneHost(
         state = app.scope.launch {
             snapshotFlow { controller.call?.let { Triple(it.id, it.status, controller.busy) } }.collect {
                 val call = controller.call
+                if (call?.status != "dialing") stopRingback()
                 if (call != null && call.status == "active" && connection?.id == call.id && !controller.busy) {
                     connection?.setActive()
                     pendingMute?.let { mute -> pendingMute = null; controller.mute(mute) }
@@ -145,6 +149,7 @@ internal class AndroidPhoneHost(
         connectionReady?.cancel(); connectionReady = null; pendingMute = null
         clearIncomingNotification()
         if (audioCallId == id) {
+            stopRingback()
             audioCallId = null
             audioReady?.cancel()
             audioReady = null
@@ -216,10 +221,22 @@ internal class AndroidPhoneHost(
 
     fun audioCall(id: String?) = controller.call?.takeIf { it.id == id && id == audioCallId }
     fun audioStarted(instance: PhoneService, id: String) {
-        if (audioCall(id) == null) return
+        val call = audioCall(id) ?: return
         service = instance
+        if (call.status == "dialing" && ringback == null) {
+            ringback = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 55) }
+                .getOrNull()?.let { tone ->
+                    if (runCatching { tone.startTone(ToneGenerator.TONE_SUP_RINGTONE) }.getOrDefault(false)) tone
+                    else { tone.release(); null }
+                }
+        }
         clearIncomingNotification()
         audioReady?.complete(Unit)
+    }
+
+    private fun stopRingback() {
+        ringback?.release()
+        ringback = null
     }
 
     fun audioFailed(id: String) {

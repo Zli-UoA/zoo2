@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.pm.ServiceInfo
 import android.content.Intent
+import android.media.ToneGenerator
 import android.telecom.CallAudioState
 import android.telecom.Connection
 import io.ktor.client.HttpClient
@@ -30,6 +31,7 @@ import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowActivity
 import org.robolectric.shadows.ShadowService
 import org.robolectric.shadows.ShadowToast
+import org.robolectric.shadows.ShadowToneGenerator
 import org.robolectric.util.ReflectionHelpers
 import zoo.Environment
 import zoo.Platform
@@ -187,6 +189,7 @@ class TelecomIntegrationTest {
             val service = Robolectric.buildService(PhoneService::class.java).create().get()
             assertTrue(it.host.controller.busy)
             service.onStartCommand(start, 0, 1)
+            assertTrue(ShadowToneGenerator.getPlayedTones().isEmpty())
             assertNotNull(shadowOf(service).lastForegroundNotification)
             assertTrue(it.notifications.activeNotifications.none { n -> n.id == 604 })
 
@@ -308,10 +311,25 @@ class TelecomIntegrationTest {
         override fun incomingUi(id: String) { calls.add("incoming:$id") }
         override fun audio(id: String, speaker: Boolean, muted: Boolean?) { calls.add("audio:$speaker:$muted"); if (muted != null) appMuted = muted }
     }
-    @Test fun selfManagedOutgoingCallDoesNotAskTelecomToPlayRingback() {
-        val connection = ZooConnection(Actions(), "call", incoming = false)
-        assertEquals(Connection.STATE_DIALING, connection.state)
-        assertFalse(connection.isRingbackRequested)
+    @Test fun selfManagedOutgoingCallPlaysRingbackWithoutAskingTelecom() = runTest {
+        Fixture(backgroundScope).use { f ->
+            f.host.controller.callDm("target-dm", "Bob")
+            runCurrent()
+            val native = f.host.connection(incoming = false, address = null)
+            assertEquals(Connection.STATE_DIALING, native.state)
+            assertFalse(native.isRingbackRequested)
+            runCurrent()
+            val start = assertNotNull(f.shadow.nextStartedService)
+            val service = Robolectric.buildService(PhoneService::class.java).create().get()
+            try {
+                service.onStartCommand(start, 0, 1)
+                assertEquals(ToneGenerator.TONE_SUP_RINGTONE, ShadowToneGenerator.getPlayedTones().single().type())
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
     }
 
     @Test fun telecomAnswerHeadsetDisconnectAndDtmfReachOnlyTheCurrentCall() {
