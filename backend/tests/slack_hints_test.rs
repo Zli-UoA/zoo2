@@ -749,6 +749,102 @@ async fn test_hints_attach_a_reply_outside_the_watched_threads_to_its_parent() -
     Ok(())
 }
 
+/// Slack のスレッドの返信 (`ts`) を、返信のイベントと取り直しの応答で、Zoo に取り込む
+async fn deliver_reply(f: &Fixture, parent: &str, ts: &str) -> anyhow::Result<()> {
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", parent))
+        .and(query_param("latest", ts))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+            "messages": [{"type":"message","ts":ts,"user":"UA","text":"a reply","thread_ts":parent}],
+            "has_more": false})))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    let event = json!({"type":"event_callback","team_id":&f.team,"event":{"type":"message",
+        "channel":"C1","user":"UA","ts":ts,"thread_ts":parent,"text":"a reply"}});
+    deliver(f, &event).await
+}
+
+/// スレッドの親が閉じているか、と、親の投稿者・返信者の参加の状態を返す。
+/// `(archived, [参加行の left_at が NULL でないか])`
+async fn thread_state(f: &Fixture, parent_id: &str) -> anyhow::Result<(bool, Vec<bool>)> {
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('archived',m.thread_archive_at IS NOT NULL,\
+         'left',COALESCE((SELECT json_agg(p.left_at IS NOT NULL ORDER BY p.user_id) FROM thread_participants p \
+           WHERE p.thread_id=m.id),'[]'::json))::text FROM messages m WHERE m.id=$1",
+        &[parent_id],
+    )
+    .await?;
+    let archived = rows[0]["archived"] == true;
+    let left = rows[0]["left"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v == true)
+        .collect();
+    Ok((archived, left))
+}
+
+/// Slack の直近の返信は、zoo の返信と同じライブの投稿として、閉じたスレッドを再Openし、退出済みの投稿者を再参加させる。
+/// 古い返信 (履歴) と、同じ返信の再送では、何も変えない
+#[tokio::test]
+async fn test_slack_live_reply_reopens_the_thread_and_rejoins_the_replier() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    let close_and_leave = || async {
+        sql(
+            &f.state,
+            "WITH a AS (UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1 RETURNING id), \
+                  l AS (UPDATE thread_participants SET left_at=now() AT TIME ZONE 'UTC' WHERE thread_id=$1 RETURNING thread_id) \
+             SELECT json_build_object('a',(SELECT count(*) FROM a),'l',(SELECT count(*) FROM l))::text",
+            &[&parent_id],
+        )
+        .await
+    };
+
+    // 最初の返信。親の投稿者と返信者が参加する (参加は、これまでどおり)
+    let first = format!("{}.000200", now_secs() - 50);
+    deliver_reply(&f, &parent, &first).await?;
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(!archived);
+    assert!(!left.is_empty() && left.iter().all(|l| !l), "{left:?}");
+
+    // 閉じて、全員が退出したあとの、直近の返信は、再Openして再参加させる
+    let rows = close_and_leave().await?;
+    assert_eq!(rows[0]["l"], 1, "{rows:?}");
+    let second = format!("{}.000300", now_secs() - 40);
+    deliver_reply(&f, &parent, &second).await?;
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(!archived, "a live Slack reply reopens the thread");
+    assert!(left.iter().all(|l| !l), "the replier rejoins: {left:?}");
+
+    // 同じ返信の再送 (すでにある行) は、閉じたスレッドを開かず、退出も取り消さない
+    close_and_leave().await?;
+    deliver_reply(&f, &parent, &second).await?;
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(archived, "a resend does not reopen the thread");
+    assert!(
+        left.iter().all(|l| *l),
+        "a resend does not rejoin: {left:?}"
+    );
+
+    // 期間より古い返信は、履歴として取り込む。再Openも再参加もしない
+    let old = format!("{}.000400", now_secs() - 3 * 86_400);
+    deliver_reply(&f, &parent, &old).await?;
+    assert_eq!(count_messages(&f.state, &f.channel).await, 4);
+    let (archived, left) = thread_state(&f, &parent_id).await?;
+    assert!(archived, "an old reply is history");
+    assert!(
+        left.iter().all(|l| *l),
+        "an old reply does not rejoin: {left:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_hints_do_not_create_messages_zoo_does_not_have() -> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;

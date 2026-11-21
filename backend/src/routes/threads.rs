@@ -14,7 +14,9 @@ use crate::{
     state::AppState,
 };
 
-const THREAD_IDLE_DAYS: i64 = 1;
+/// 活動がこの日数ない（返信・再Openのどちらもない）スレッドを、自動でアーカイブする。
+/// Slack の取り込みが、直近の返信かどうかを決めるのにも使う（`slack::is_live_reply_ts`）。
+pub const THREAD_IDLE_DAYS: i64 = 1;
 
 /// How long the participants read after a join / leave / unarchive may take (`statement_timeout`).
 /// Shorter than the 10 s the Web client waits for the POST: a read that needs longer is left out of

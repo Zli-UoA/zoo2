@@ -57,9 +57,39 @@ pub fn is_valid_ts(ts: &str) -> bool {
         && frac.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Slack の投稿が、スレッドの自動アーカイブの期間 (`THREAD_IDLE_DAYS`) に収まる、直近のものか。
+///
+/// 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、スレッドを再Openし、
+/// 退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`、フラグ `zoo.thread_live_import`)。
+/// 期間より古い返信は、再Openしても次のアーカイブの処理 (60 秒ごと) が閉じ直すだけなので、履歴として扱う。
+/// 初回の全履歴の取り込みや、止まっていた同期の追いつきが、古いスレッドを開き直さないための境でもある。
+pub fn is_live_reply_ts(ts: &str, now_secs: u64) -> bool {
+    let Some(secs) = ts.split('.').next().and_then(|s| s.parse::<u64>().ok()) else {
+        return false;
+    };
+    let window = crate::routes::threads::THREAD_IDLE_DAYS as u64 * 24 * 3600;
+    secs >= now_secs.saturating_sub(window)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_reply_ts_is_bounded_by_the_thread_idle_window() {
+        let now = 1_800_000_000;
+        let window = crate::routes::threads::THREAD_IDLE_DAYS as u64 * 24 * 3600;
+        assert!(is_live_reply_ts("1800000000.000100", now));
+        assert!(is_live_reply_ts(&format!("{}.000000", now - window), now));
+        assert!(!is_live_reply_ts(
+            &format!("{}.999999", now - window - 1),
+            now
+        ));
+        // 少し先の時刻 (時計のずれ) も直近として扱う
+        assert!(is_live_reply_ts(&format!("{}.000000", now + 30), now));
+        assert!(!is_live_reply_ts("", now));
+        assert!(!is_live_reply_ts("abc.def", now));
+    }
 
     #[test]
     fn stable_ids_are_deterministic_and_namespaced() {

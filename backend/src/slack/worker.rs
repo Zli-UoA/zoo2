@@ -1546,6 +1546,23 @@ pub(super) async fn insert_message(
         components,
         filled,
     } = render_message(tx, ctx, message).await?;
+    // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
+    // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
+    // (`job_id` あり) と、期間より古い返信は、立てない。同じトランザクションで返信ごとに値を決め直すので、
+    // 直前の返信のフラグを引き継がない。同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
+    if job_id.is_empty() && !parent.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let live = super::is_live_reply_ts(&message.ts, now);
+        one(
+            tx,
+            "SELECT json_build_object('ok',set_config('zoo.thread_live_import',$1,true))::text",
+            &[if live { "on" } else { "off" }],
+        )
+        .await?;
+    }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
     // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
