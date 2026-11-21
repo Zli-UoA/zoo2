@@ -18,7 +18,7 @@ final class WatchCompanionService {
 
     init(calls: SystemCallController, workspace: @escaping @MainActor () -> WorkspaceStore?,
          prepare: @escaping @MainActor () async -> WorkspaceStore?,
-         refresh: @escaping @MainActor (WorkspaceStore) async -> Void = { await $0.inbox.refresh() }) {
+         refresh: @escaping @MainActor (WorkspaceStore) async -> Void = { await $0.inbox.refresh(clearActionError: false) }) {
         currentWorkspace = workspace
         prepareWorkspace = prepare
         refreshNotices = refresh

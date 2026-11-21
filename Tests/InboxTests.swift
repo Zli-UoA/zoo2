@@ -6,6 +6,30 @@ import Testing
 @MainActor
 @Suite("アプリ内通知", .timeLimit(.minutes(1)))
 struct InboxTests {
+    @Test("Watchの自動更新はiPhone側の操作エラーを消さず、手動更新で解除する")
+    func automaticRefreshKeepsActionError() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { request in
+            if request.url?.path == "/api/shapes/notifications" {
+                return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            }
+            if request.url?.path == "/api/notifications/read-all" { return (500, [:], Data("{}".utf8)) }
+            #expect(request.url?.path == "/api/activitypub/notifications")
+            return (200, [:], Data(#"{"items":[],"unread_count":1,"next_cursor":null}"#.utf8))
+        }
+        let inbox = InboxStore(client: harness.client, userID: "u")
+        defer { inbox.shutdown() }
+        await inbox.refresh()
+        await inbox.markAllRead()
+        let failure = try #require(inbox.error)
+        #expect(failure == "すべての通知を既読にできませんでした。")
+        await inbox.refresh(clearActionError: false)
+        #expect(inbox.error == failure)
+        await inbox.refresh()
+        #expect(inbox.error == nil)
+    }
+
     @Test("Electric の文字列化された既読値とメッセージの抜粋を読み取る")
     func shape() throws {
         let json = """
