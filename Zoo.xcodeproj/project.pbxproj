@@ -15,6 +15,7 @@
 		070C2FD149347CE8B7E7FDE4 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 805443D6BD58FDE63B07CA86 /* RootView.swift */; };
 		07392C24AF69434194F5765B /* NativeChatClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFB20D19A70D52502D3CA4E0 /* NativeChatClient.swift */; };
 		0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */; };
+		0C6AFE557CC8B3C3E00EB5AC /* ChannelReadUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8C8EF926E9B5EC28CCC7620 /* ChannelReadUITests.swift */; };
 		0DDF8964D628DB378194A0D4 /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 898A7E900CC70E6A6DD4AB58 /* AppSession.swift */; };
 		0F2A21BDAE9B9F70EC671CAA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 12EEE47E3CEF468606320831 /* Assets.xcassets */; };
 		10BB2C6455AAF407C2416BDB /* Transport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05000AC84EE5E734A2AFE311 /* Transport.swift */; };
@@ -138,6 +139,7 @@
 		B984FA8E5A82AF20856F708C /* IncomingCallUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93CB3DE492744BAB29A5EBC9 /* IncomingCallUITests.swift */; };
 		BADBA7C701C6D031CB67657B /* ReactionAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715B4A6037103403F6BAB12C /* ReactionAPITests.swift */; };
 		BC8C3D14F46CC3B9D8684DC3 /* ElectricTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96F6015E6B7D6AF3165BB826 /* ElectricTransport.swift */; };
+		BCD3133A011897F76683ED45 /* ChannelReadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */; };
 		BD43708051C7990E25AA94FB /* RecentEmojiTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21BD9F627E87B53FCAE111D3 /* RecentEmojiTests.swift */; };
 		BE7DA1EC2DC261567099EB0F /* MessageContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01020741494B6B776CDE495 /* MessageContentView.swift */; };
 		BEEF1A1A714CBB47266B98B4 /* CallSessionJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F7B87B8B0F657CCE321046B /* CallSessionJournal.swift */; };
@@ -389,6 +391,7 @@
 		C01020741494B6B776CDE495 /* MessageContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentView.swift; sourceTree = "<group>"; };
 		C6A9A3127AF80FE4B7F07EEC /* CallRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallRecoveryTests.swift; sourceTree = "<group>"; };
 		C6BEC97D3AE34D98ED3B5376 /* Zoo.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Zoo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C8C8EF926E9B5EC28CCC7620 /* ChannelReadUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelReadUITests.swift; sourceTree = "<group>"; };
 		CA78686A20D1C23336E5059B /* AttachmentDiskCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentDiskCache.swift; sourceTree = "<group>"; };
 		CD2555E76421440BBC09003A /* CachedRemoteImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedRemoteImage.swift; sourceTree = "<group>"; };
 		CD793353F54041D2944CEE92 /* IncomingCallNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncomingCallNotificationTests.swift; sourceTree = "<group>"; };
@@ -428,6 +431,7 @@
 		F9013878118EB556FFF8679B /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		F9F30F10363C425009A500BC /* SyncCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncCache.swift; sourceTree = "<group>"; };
 		FC080878D2B6AA8B561E7434 /* MessageContentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageContentTests.swift; sourceTree = "<group>"; };
+		FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelReadTests.swift; sourceTree = "<group>"; };
 		FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		FFB20D19A70D52502D3CA4E0 /* NativeChatClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeChatClient.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -465,6 +469,7 @@
 				59342B1C0C9D168C816DD989 /* AttachmentVideoUITests.swift */,
 				A425CE6E446FF381CB83ED52 /* CallBannerLayoutUITests.swift */,
 				021C7A2A8F4C24BCFB0C47DB /* ChannelManagementUITests.swift */,
+				C8C8EF926E9B5EC28CCC7620 /* ChannelReadUITests.swift */,
 				93CB3DE492744BAB29A5EBC9 /* IncomingCallUITests.swift */,
 				89F4F93B7B05D3A5B0764F05 /* IPadWorkspaceUITests.swift */,
 				A207CEFA59094C7050CE45B8 /* ShortcutActionsUITests.swift */,
@@ -512,6 +517,7 @@
 				C6A9A3127AF80FE4B7F07EEC /* CallRecoveryTests.swift */,
 				B5DD821D3B8BF904D7F0157B /* CallTests.swift */,
 				EA60D7EE6FE8038A5F10D9A0 /* ChannelManagementTests.swift */,
+				FF0CFDBEA15C95A3C360562D /* ChannelReadTests.swift */,
 				6E574B38B51C1F97994593C4 /* ChannelThreadsTests.swift */,
 				B38BCEDE645D8F594A866F0A /* ChatPresentationTests.swift */,
 				4AF636CE5F5200DE9C254331 /* DeviceAuthorizationTests.swift */,
@@ -1093,6 +1099,7 @@
 				DF6C0A6C562160CE0999C74D /* CallRecoveryTests.swift in Sources */,
 				A74D571581DA830C6D2CDBBE /* CallTests.swift in Sources */,
 				3433B75975D40B3A19FC5392 /* ChannelManagementTests.swift in Sources */,
+				BCD3133A011897F76683ED45 /* ChannelReadTests.swift in Sources */,
 				A8431E8A8F001AEC5FD6EB2D /* ChannelThreadsTests.swift in Sources */,
 				68A8F60E90FC71AB8BF78D0C /* ChatPresentationTests.swift in Sources */,
 				0BDE0D56316999925653EA9F /* DeviceAuthorizationTests.swift in Sources */,
@@ -1142,6 +1149,7 @@
 				A8522D6851CF9438AD36DDB3 /* AttachmentVideoUITests.swift in Sources */,
 				7CD732C011B7177319DE3B77 /* CallBannerLayoutUITests.swift in Sources */,
 				9581FDBC6E934A09B3341100 /* ChannelManagementUITests.swift in Sources */,
+				0C6AFE557CC8B3C3E00EB5AC /* ChannelReadUITests.swift in Sources */,
 				DFEC52A76256133EEB122D30 /* IPadWorkspaceUITests.swift in Sources */,
 				B984FA8E5A82AF20856F708C /* IncomingCallUITests.swift in Sources */,
 				1E45AF3447442D972CC66160 /* ShortcutActionsUITests.swift in Sources */,

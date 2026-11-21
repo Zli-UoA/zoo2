@@ -244,6 +244,37 @@ struct NativeChatClient: ChatClient {
                                body: ["message_id": .string(try segment(messageID))])
     }
 
+    func markChannelRead(channelID: String) async throws -> ChannelReadState {
+        let id = try segment(channelID)
+        if sync?.isRevoked(id) == true { _ = try await channel(id: id) }
+        let version = sync?.channelVersion(id)
+        try sync?.check(channelID: id, channelVersion: version)
+        // 全履歴や端末のキャッシュではなく、サーバーの最新の親投稿を1件だけ取得する。
+        let data = try await api.data("api/shapes/messages", query: [
+            "channel_id": id, "offset": "-1", "log": "changes_only", "replica": "full",
+            "subset__where": "parent_id IS NULL AND deleted_at IS NULL",
+            "subset__order_by": "created_at DESC, id DESC", "subset__limit": "1"
+        ])
+        let snapshot = try JSONDecoder().decode(Envelope<[ShapeEvent]>.self, from: data)
+        try Task.checkCancellation()
+        try sync?.check(channelID: id, channelVersion: version)
+        let path = "api/channels/\(id)/read-state"
+        let state: ChannelReadState
+        if let event = snapshot.data.first {
+            guard snapshot.data.count == 1, event.headers.operation == "insert",
+                  let row = event.value, row["channel_id"]?.text == id,
+                  row["parent_id"]?.text == nil, row["deleted_at"]?.text == nil,
+                  let messageID = row["id"]?.text else { throw ZooError.invalidResponse }
+            state = try await api.write(path, body: ["message_id": .string(try segment(messageID))])
+        } else {
+            state = try await api.get(path)
+        }
+        try Task.checkCancellation()
+        try sync?.check(channelID: id, channelVersion: version)
+        guard state.channel_id == id else { throw ZooError.invalidResponse }
+        return state
+    }
+
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel {
         try await api.write("api/channels", body: ["id": .string(try segment(id)), "channel_name": .string(name),
                                                   "description": .string(description), "is_private": .bool(isPrivate)])

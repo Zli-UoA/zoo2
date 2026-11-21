@@ -443,6 +443,15 @@ final class PreviewChatClient: ChatClient {
         allChannels.append(channel)
         return channel
     }
+
+    func markChannelRead(channelID: String) async throws -> ChannelReadState {
+        if let latest = allMessages.filter({ $0.channel_id == channelID && $0.parent_id == nil && $0.deleted_at == nil })
+            .max(by: { $0.created_at < $1.created_at }) {
+            try await markRead(channelID: channelID, messageID: latest.id)
+        }
+        return try await readStates().first { $0.channel_id == channelID }
+            ?? ChannelReadState(channel_id: channelID, has_unread: false, last_read_at: nil)
+    }
     func updateChannel(id: String, name: String?, description: String) async throws -> Channel {
         guard let index = allChannels.firstIndex(where: { $0.id == id }), allChannels[index].canManage(by: currentUser) else {
             throw ZooError.rejected(403, "チャンネルを変更できません。")

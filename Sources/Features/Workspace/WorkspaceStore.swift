@@ -65,6 +65,8 @@ final class WorkspaceStore {
     private(set) var people: [String: Person] = [:]
     @ObservationIgnored var onPeopleChanged: (() -> Void)?
     private(set) var unread: Set<String> = []
+    private(set) var markingReadChannelIDs: Set<String> = []
+    private(set) var readUpdateError: String?
     private(set) var joinedChannelIDs: Set<String> = []
     private(set) var pinnedChannelIDs: [String] = []
     private(set) var pinsError: String?
@@ -131,7 +133,7 @@ final class WorkspaceStore {
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
-    @ObservationIgnored private var readDuringRefresh: Set<String> = []
+    @ObservationIgnored private var readChangesDuringRefresh: [String: Bool] = [:]
 
     init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard, calls: CallStore? = nil) {
         self.client = client
@@ -170,8 +172,8 @@ final class WorkspaceStore {
         guard active, !loading else { return }
         let epoch = channelGeneration
         loading = true
-        readDuringRefresh = []
-        defer { loading = false; readDuringRefresh = [] }
+        readChangesDuringRefresh = [:]
+        defer { loading = false; readChangesDuringRefresh = [:] }
         do {
             async let channelResult = client.channels()
             async let peopleResult = client.people()
@@ -201,8 +203,11 @@ final class WorkspaceStore {
             self.people = Dictionary(people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
             self.people.merge(resolvedAuthors) { current, _ in current }
             if self.people != previousPeople { onPeopleChanged?() }
-            // 取得開始後に確定した既読を、遅れて届く一覧の未読状態で巻き戻さない。
-            unread = Set(states.filter(\.has_unread).map(\.channel_id)).subtracting(readDuringRefresh)
+            // 取得開始後に確定した既読・新着の未読を、遅れて届く一覧で巻き戻さない。
+            unread = Set(states.filter(\.has_unread).map(\.channel_id))
+            for (id, hasUnread) in readChangesDuringRefresh {
+                if hasUnread { unread.insert(id) } else { unread.remove(id) }
+            }
             joinedChannelIDs = Set(states.map(\.channel_id))
             let visibleIDs = Set(self.channels.map(\.id))
             channelWrites = channelWrites.filter { visibleIDs.contains($0.key) }
@@ -246,6 +251,26 @@ final class WorkspaceStore {
             await refresh()
             await loadPins()
             do { try await Task.sleep(for: .seconds(30)) } catch { return }
+        }
+    }
+
+    func markChannelRead(_ channel: Channel) async {
+        guard active, !Task.isCancelled, !channel.is_dm, channel.encrypted != true,
+              channel.deleted_at == nil, unread.contains(channel.id),
+              markingReadChannelIDs.insert(channel.id).inserted else { return }
+        readUpdateError = nil
+        defer { markingReadChannelIDs.remove(channel.id) }
+        do {
+            let state = try await client.markChannelRead(channelID: channel.id)
+            try Task.checkCancellation()
+            guard active else { return }
+            if state.has_unread { unread.insert(channel.id) }
+            else { unread.remove(channel.id) }
+            if loading { readChangesDuringRefresh[channel.id] = state.has_unread }
+        } catch {
+            guard active, !Task.isCancelled, !(error is CancellationError) else { return }
+            if case ZooError.expiredSession = error { onExpiredSession?() }
+            else { readUpdateError = "「\(name(for: channel))」を既読にできませんでした。もう一度お試しください。" }
         }
     }
 
@@ -354,7 +379,7 @@ final class WorkspaceStore {
         store.onRead = { [weak self] in
             guard let self else { return }
             unread.remove(channel.id)
-            if loading { readDuringRefresh.insert(channel.id) }
+            if loading { readChangesDuringRefresh[channel.id] = false }
         }
         store.onReactionAdded = { [weak self] emoji in self?.recentEmojis.record(emoji) }
         conversations[channel.id] = store
@@ -562,6 +587,8 @@ final class WorkspaceStore {
         people = [:]
         resolvedAuthors = [:]
         unread = []
+        markingReadChannelIDs = []
+        readUpdateError = nil
         emojis = []
         emojisByKey = [:]
         emojiError = nil

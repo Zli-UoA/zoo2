@@ -32,6 +32,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func edit(id: String, content: String) async throws -> Message
     func delete(id: String) async throws
     func markRead(channelID: String, messageID: String) async throws
+    func markChannelRead(channelID: String) async throws -> ChannelReadState
     func createChannel(id: String, name: String, description: String, isPrivate: Bool) async throws -> Channel
     func updateChannel(id: String, name: String?, description: String) async throws -> Channel
     func archiveChannel(id: String) async throws -> Channel
