@@ -49,8 +49,6 @@ export interface ThreadPaneProps {
   membershipLoading?: boolean;
   /** 参加中の人数と一覧（先頭から最大50人）。 */
   participantCount?: number;
-  /** 参加行が1つでもあるか。省略時は参加者数で判断する。 */
-  threadTracked?: boolean;
   participants?: ThreadParticipant[];
   onMembershipRetry?: () => void;
   onJoinThread?: () => void;
@@ -124,7 +122,6 @@ export function ThreadPane({
   membershipError = false,
   membershipLoading = false,
   participantCount,
-  threadTracked,
   participants,
   onMembershipRetry,
   onJoinThread,
@@ -166,14 +163,10 @@ export function ThreadPane({
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   const paneRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
-  // チャンネルと同様、参加してから返信する。最初の返信（参加者がまだ居ない）はスレッドを作るので参加不要。
-  const needsJoin =
-    isMember &&
-    membership !== "joined" &&
-    (membership === "left" || (threadTracked ?? (participantCount ?? 0) > 0));
-  // 参加者がまだ居ない最初の返信前でも、投稿せずに参加できる（入力欄は残す）。
-  const canJoinBeforeFirstReply =
-    isMember && membership === "none" && !needsJoin && !isArchived && !!onJoinThread;
+  // チャンネルと同様、参加してから返信する。返信がまだないメッセージも同じで、最初の返信の前に参加する
+  // （サーバーは、参加行がないスレッドの最初の返信を、旧版のクライアントのために、参加なしで受け付ける）。
+  // 参加状態の取得中（`membership` が未定）は、入力欄を止めるだけで、参加の案内は出さない。
+  const needsJoin = isMember && (membership === "none" || membership === "left");
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -356,21 +349,8 @@ export function ThreadPane({
       ) : null}
       {!readOnly &&
       isMember &&
-      ((isArchived && onReopenThread && !postingForbidden) ||
-        membershipError ||
-        canJoinBeforeFirstReply) ? (
+      ((isArchived && onReopenThread && !postingForbidden) || membershipError) ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-          {canJoinBeforeFirstReply ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={membershipPending || isOffline}
-              aria-busy={membershipPending}
-              onClick={onJoinThread}
-            >
-              {t("threads.join")}
-            </Button>
-          ) : null}
           {isArchived && onReopenThread && !postingForbidden ? (
             <Button
               variant="outline"

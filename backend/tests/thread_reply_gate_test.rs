@@ -476,3 +476,66 @@ async fn participants_can_be_left_out_of_the_answer() -> anyhow::Result<()> {
     }
     w.fixture.cleanup().await
 }
+
+/// 返信がまだないメッセージにも、最初の返信の前に参加できる（Web は、入力欄の代わりに参加ボタンを出す）。
+/// 参加しただけでは、スレッド一覧に出ない。参加後は参加行があるので、親投稿者も参加が要る。
+#[tokio::test]
+async fn a_message_without_replies_can_be_joined_before_the_first_reply() -> anyhow::Result<()> {
+    let w = world().await?;
+    let root = w.root().await?;
+    let path = format!("/api/threads/{root}");
+    let joined = ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        &format!("{path}/join"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(joined["data"]["membership"], "joined");
+    assert_eq!(joined["data"]["tracked"], true);
+    assert_eq!(joined["data"]["participant_count"], 1);
+    // Joining alone creates no thread: it stays out of the index until a reply exists.
+    let index = ok(&w.app, &w.users[1], "GET", "/api/threads", Value::Null).await?;
+    assert!(
+        !index["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == root.as_str())
+    );
+    // The thread now has a participant row, so the author needs a join too.
+    let (status, body) = call(
+        &w.app,
+        &w.users[0],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "author"),
+    )
+    .await?;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::FORBIDDEN, &json!("THREAD_JOIN_REQUIRED"))
+    );
+    // The first reply goes through, and the parent author joins with it.
+    let (status, _) = call(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let after = w.thread(&w.users[1], &root).await?;
+    assert_eq!(after["participant_count"], 2);
+    let index = ok(&w.app, &w.users[1], "GET", "/api/threads", Value::Null).await?;
+    assert!(
+        index["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == root.as_str())
+    );
+    w.fixture.cleanup().await
+}

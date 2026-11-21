@@ -1047,7 +1047,6 @@ export function MessagePane({
             membershipError={threadMembership.error}
             membershipLoading={!threadMembership.data}
             participantCount={threadMembership.data?.participant_count}
-            threadTracked={threadMembership.data?.tracked}
             participants={threadMembership.data?.participants}
             onMembershipRetry={() => void threadMembership.retry?.()}
             onJoinThread={() => void threadMembership.change?.("join")}
