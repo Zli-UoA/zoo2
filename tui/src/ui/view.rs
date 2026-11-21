@@ -325,7 +325,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         Line::styled("検索中…", DIM)
     } else if let Some(error) = &search.error {
         Line::styled(
-            format!("検索できませんでした: {error}"),
+            format!("検索できませんでした: {error}  Enter で再試行します。"),
             Style::new().fg(Color::Red),
         )
     } else if search.searched.is_none() {

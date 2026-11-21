@@ -20,6 +20,8 @@ pub struct GlobalSearch {
     pub selected: usize,
     pub loading: bool,
     pub error: Option<String>,
+    /// 直近の取得が続きのページだったか。失敗したとき、Enter で同じ取得をやり直すのに使う。
+    pub last_append: bool,
     /// 遅れて届いた古い取得結果を捨てるための番号。
     pub generation: u64,
 }
@@ -48,14 +50,6 @@ pub struct Destination {
 }
 
 impl GlobalSearch {
-    pub fn kind(&self) -> SearchKind {
-        if self.files {
-            SearchKind::Files
-        } else {
-            SearchKind::Messages
-        }
-    }
-
     fn current(&self) -> Option<(String, bool)> {
         let query = self.query.split_whitespace().collect::<Vec<_>>().join(" ");
         (!query.is_empty()).then_some((query, self.files))
@@ -66,14 +60,28 @@ impl GlobalSearch {
             KeyCode::Esc => Action::Close,
             KeyCode::Enter => match self.current() {
                 Some(current) if self.searched.as_ref() != Some(&current) => Action::Search,
+                // 失敗した取得を同じ位置からやり直す（最初のページは検索、続きは続き）。
+                _ if self.error.is_some() && !self.loading && self.searched.is_some() => {
+                    if self.last_append {
+                        Action::More
+                    } else {
+                        Action::Search
+                    }
+                }
                 _ if !self.items.is_empty() => Action::Open,
                 _ => Action::None,
             },
             KeyCode::Tab | KeyCode::BackTab => {
                 self.files = !self.files;
-                if self.searched.is_some() && self.current().is_some() {
-                    Action::Search
+                if self.current().is_some() {
+                    if self.searched.is_some() {
+                        Action::Search
+                    } else {
+                        Action::None
+                    }
                 } else {
+                    // 語がなければ検索し直せないので、別の種類の結果を残さない。
+                    self.clear();
                     Action::None
                 }
             }
@@ -110,7 +118,19 @@ impl GlobalSearch {
         }
     }
 
-    /// 取得を始める。返した番号と一緒に結果を `apply` に渡す。
+    fn clear(&mut self) {
+        self.generation += 1;
+        self.searched = None;
+        self.items.clear();
+        self.selected = 0;
+        self.next_cursor = None;
+        self.searched_until = None;
+        self.loading = false;
+        self.error = None;
+    }
+
+    /// 取得を始める。返した番号と一緒に結果を `apply` に渡す。続きのページは、今の表示ではなく
+    /// 結果を取ったときの語と種類で取る（途中で種類を切り替えても、別の種類のカーソルを使わない）。
     pub fn start(&mut self, append: bool) -> Option<(u64, String, SearchKind, Option<String>)> {
         let (query, files) = if append {
             self.searched.clone()?
@@ -120,6 +140,7 @@ impl GlobalSearch {
         self.generation += 1;
         self.loading = true;
         self.error = None;
+        self.last_append = append;
         if !append {
             self.items.clear();
             self.selected = 0;
@@ -132,7 +153,12 @@ impl GlobalSearch {
         } else {
             None
         };
-        Some((self.generation, query, self.kind(), cursor))
+        let kind = if files {
+            SearchKind::Files
+        } else {
+            SearchKind::Messages
+        };
+        Some((self.generation, query, kind, cursor))
     }
 
     pub fn apply(&mut self, generation: u64, append: bool, page: SearchPage) {
@@ -223,6 +249,80 @@ mod tests {
             Action::None,
             "already loading"
         );
+    }
+
+    #[test]
+    fn enter_retries_the_failed_request_from_the_same_place() {
+        let mut s = GlobalSearch {
+            query: "会議".into(),
+            ..Default::default()
+        };
+        let (first, ..) = s.start(false).unwrap();
+        s.fail(first, "timeout".into());
+        assert_eq!(
+            s.on_key(key(KeyCode::Enter)),
+            Action::Search,
+            "first page retries"
+        );
+        let (second, ..) = s.start(false).unwrap();
+        s.apply(
+            second,
+            false,
+            SearchPage {
+                items: vec![item("m1", None, None)],
+                next_cursor: Some("c".into()),
+                searched_until: None,
+            },
+        );
+        assert_eq!(s.on_key(key(KeyCode::Down)), Action::More);
+        let (third, _, _, cursor) = s.start(true).unwrap();
+        assert_eq!(cursor.as_deref(), Some("c"));
+        s.fail(third, "timeout".into());
+        assert_eq!(
+            s.on_key(key(KeyCode::Enter)),
+            Action::More,
+            "older page retries"
+        );
+        let (_, _, _, cursor) = s.start(true).unwrap();
+        assert_eq!(cursor.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn older_pages_keep_the_kind_they_were_searched_with() {
+        let mut s = GlobalSearch {
+            query: "pdf".into(),
+            ..Default::default()
+        };
+        let (generation, ..) = s.start(false).unwrap();
+        s.apply(
+            generation,
+            false,
+            SearchPage {
+                items: vec![item("m1", None, None)],
+                next_cursor: Some("c".into()),
+                searched_until: None,
+            },
+        );
+        // 語を消して Tab: 検索し直せないので結果を消す（別の種類の結果を残さない）。
+        s.query.clear();
+        assert_eq!(s.on_key(key(KeyCode::Tab)), Action::None);
+        assert!(s.items.is_empty() && s.next_cursor.is_none() && s.start(true).is_none());
+        // 結果を残したまま種類だけ変わることはないが、start(true) は取ったときの種類を使う。
+        s.query = "pdf".into();
+        s.files = false;
+        let (generation, ..) = s.start(false).unwrap();
+        s.apply(
+            generation,
+            false,
+            SearchPage {
+                items: vec![item("m1", None, None)],
+                next_cursor: Some("c".into()),
+                searched_until: None,
+            },
+        );
+        s.files = true;
+        let (_, _, kind, _) = s.start(true).unwrap();
+        assert_eq!(kind, SearchKind::Messages);
     }
 
     #[test]

@@ -63,6 +63,7 @@ icons! {
     ExternalLink => "external-link",
     Eye => "eye",
     EyeOff => "eye-off",
+    FileText => "file-text",
     Fingerprint => "fingerprint",
     Globe => "globe",
     GripVertical => "grip-vertical",
