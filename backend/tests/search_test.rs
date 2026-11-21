@@ -162,6 +162,43 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         vec![m(4)]
     );
 
+    // 取り込みで、チャンネルの作成日時より古い履歴を持つチャンネル。最古のトップレベル（親）が削除されても、
+    // 生きている返信は、生きている最古のトップレベルより古くても、続きをたどれば見つかる（next_cursor が途中で
+    // null にならない）。
+    let imported = channel(false).await;
+    sql.batch_execute(&format!(
+        "INSERT INTO messages (id, user_id, channel_id, content, created_at, deleted_at) \
+           VALUES ('{p}', '{alice}', '{imported}', '消した親', LOCALTIMESTAMP - interval '900 days', LOCALTIMESTAMP);
+         INSERT INTO messages (id, user_id, channel_id, parent_id, content, created_at) \
+           VALUES ('{r}', '{alice}', '{imported}', '{p}', '取込返信の本文', LOCALTIMESTAMP - interval '899 days');
+         INSERT INTO messages (id, user_id, channel_id, content, created_at) \
+           VALUES ('{t}', '{alice}', '{imported}', '最近の投稿', LOCALTIMESTAMP - interval '1 minute');",
+        p = m(30),
+        r = m(31),
+        t = m(32),
+    ))
+    .await?;
+    let mut found = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..6 {
+        let mut path = format!("q={}&channel_id={imported}&limit=50", q("取込返信"));
+        if let Some(c) = &cursor {
+            path += &format!("&cursor={}", q(c));
+        }
+        let page = search(&app, &alice, &path).await;
+        found.extend(ids(&page));
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        found,
+        vec![m(31)],
+        "reply older than every live top-level message"
+    );
+    assert!(cursor.is_none());
+
     // 1 文字、複数の語、英字の大文字・小文字。
     assert_eq!(
         ids(&search(&app, &alice, &format!("q={}", q("秘"))).await),

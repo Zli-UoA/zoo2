@@ -253,9 +253,11 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
 /// 見えるチャンネルと、探す月の範囲。
 ///
 /// 見える: 削除されていない、暗号化されていない、そして（ゲストでない人の公開チャンネル、または所属）。
-/// `floor` は見えるチャンネルのうち、最も古いトップレベルのメッセージかチャンネル作成の月の 1 つ前。
+/// `floor` は見えるチャンネルのうち、最も古い生きているメッセージ（トップレベルと返信）かチャンネル作成の月の
+/// 1 つ前。親が削除されても返信は残り、取り込みではチャンネルの作成日時より古いこともあるので、返信も入れる。
 /// 添付はメッセージより少し前にアップロードされうるので 1 か月の余裕を持たせる。
-/// 計算量は見えるチャンネル数 V に対し O(V log N)（idx_messages_channel_unread を 1 行ずつ引く）。
+/// 計算量は見えるチャンネル数 V に対し O(V log N)（idx_messages_channel_unread と
+/// messages_search_reply_floor を、チャンネルごとに 1 行ずつ引く）。
 pub const SCOPE_SQL: &str = "WITH me AS (SELECT COALESCE((SELECT is_guest FROM users WHERE id = $1), true) AS guest), \
   visible AS MATERIALIZED ( \
     SELECT c.id, c.created_at FROM channels c, me \
@@ -267,10 +269,13 @@ pub const SCOPE_SQL: &str = "WITH me AS (SELECT COALESCE((SELECT is_guest FROM u
     'ids', COALESCE((SELECT json_agg(id) FROM visible), '[]'::json), \
     'now', (date_part('year', LOCALTIMESTAMP) * 12 + date_part('month', LOCALTIMESTAMP))::bigint, \
     'floor', (SELECT (date_part('year', t) * 12 + date_part('month', t))::bigint - 1 FROM ( \
-      SELECT least(min(v.created_at), min(first.created_at)) AS t FROM visible v \
+      SELECT least(min(v.created_at), min(first.created_at), min(reply.created_at)) AS t FROM visible v \
       LEFT JOIN LATERAL (SELECT m.created_at FROM messages m \
         WHERE m.channel_id = v.id AND m.parent_id IS NULL AND m.deleted_at IS NULL \
-        ORDER BY m.created_at LIMIT 1) first ON true) bounds) \
+        ORDER BY m.created_at LIMIT 1) first ON true \
+      LEFT JOIN LATERAL (SELECT m.created_at FROM messages m \
+        WHERE m.channel_id = v.id AND m.parent_id IS NOT NULL AND m.deleted_at IS NULL \
+        ORDER BY m.created_at LIMIT 1) reply ON true) bounds) \
   )::text";
 
 async fn search(
