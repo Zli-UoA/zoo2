@@ -114,7 +114,10 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
             val incoming = response["items"]?.rows().orEmpty()
             items =
                 if (request.cursor == null) incoming
-                else items + incoming.filterNot { row -> items.any { it.text("id") == row.text("id") } }
+                else {
+                    val seen = items.map { globalSearchKey(it, request.type) }.toSet()
+                    items + incoming.filterNot { globalSearchKey(it, request.type) in seen }
+                }
             nextCursor = response.text("next_cursor").ifEmpty { null }
             searchedUntil = response.text("searched_until").ifEmpty { null }
             loaded = true
@@ -165,3 +168,7 @@ internal fun isGlobalSearchPath(path: String): Boolean = path.substringBefore('?
 /** A file result: `type=files`, or an `all` result the server marked `kind: "file"`. */
 fun isGlobalSearchFile(row: Row, type: GlobalSearchType): Boolean =
     type == GlobalSearchType.Files || row.text("kind") == "file"
+
+/** A list key unique across kinds: in `all`, a message and an attachment could share an id. */
+fun globalSearchKey(row: Row, type: GlobalSearchType): String =
+    (if (isGlobalSearchFile(row, type)) "file:" else "message:") + row.text("id")

@@ -156,7 +156,7 @@ private fun GlobalSearchResults(
                 contentPadding = PaddingValues(if (touch) AndroidDesign.screenInset else 16.dp),
                 verticalArrangement = Arrangement.spacedBy(if (touch) AndroidDesign.spaceLarge else 12.dp),
             ) {
-                items(controller.items, key = { "${controller.type.value}:${it.text("id")}" }) { row ->
+                items(controller.items, key = { globalSearchKey(it, controller.type) }) { row ->
                     GlobalSearchResult(app, row, controller.type, users, channels, memberships)
                 }
                 item("search-footer") {

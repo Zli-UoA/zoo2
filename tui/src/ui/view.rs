@@ -288,47 +288,6 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         ]),
         Line::from(""),
     ];
-    // 結果の行数は画面の高さに合わせ、選択が見える範囲を出す。
-    let room = usize::from(frame.area().height.saturating_sub(12)).max(2) / 2;
-    let first = search.selected.saturating_sub(room.saturating_sub(1));
-    for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
-        let selected = index == search.selected;
-        let place = match app.store.channel(&item.channel_id) {
-            Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
-            _ => format!("#{}", item.channel_name),
-        };
-        let mut head = vec![
-            Span::styled(if selected { "▶ " } else { "  " }, accent),
-            Span::styled(place, if selected { accent } else { Style::new() }),
-        ];
-        if let Some(author) = &item.author {
-            head.push(Span::styled(format!("  {author}"), DIM));
-        }
-        head.push(Span::styled(
-            format!(
-                "  {}",
-                item.created_at.get(..10).unwrap_or(&item.created_at)
-            ),
-            DIM,
-        ));
-        if item.parent_id.is_some() {
-            head.push(Span::styled("  スレッドの返信", DIM));
-        }
-        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
-        lines.push(Line::from(truncate_spans(head, inner)));
-        let text = item.file_name.as_deref().unwrap_or(&item.snippet);
-        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let text = truncate_width(&text, inner.saturating_sub(4));
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            if selected {
-                Span::styled(text, Style::new().add_modifier(Modifier::BOLD))
-            } else {
-                Span::raw(text)
-            },
-        ]));
-    }
-    lines.push(Line::from(""));
     let status = if search.loading {
         Line::styled("検索中…", DIM)
     } else if let Some(error) = &search.error {
@@ -370,15 +329,56 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             _ => Line::styled(format!("{} 件", search.items.len()), DIM),
         }
     };
-    lines.push(status);
-    lines.push(Line::styled(
-        "暗号化されたチャンネルは検索の対象外です。",
-        DIM,
-    ));
-    lines.push(Line::styled(
-        "Enter: 検索 / 開く  ↑↓: 選ぶ  Tab: 種類  Esc: 閉じる",
-        DIM,
-    ));
+    let footer = vec![
+        Line::from(""),
+        status,
+        Line::styled("暗号化されたチャンネルは検索の対象外です。", DIM),
+        Line::styled("Enter: 検索 / 開く  ↑↓: 選ぶ  Tab: 種類  Esc: 閉じる", DIM),
+    ];
+    // 結果は 1 件 2 行（見出しと抜粋はどちらも 1 行に切り詰める）。見出しと末尾の案内が折り返した後の
+    // 行数と枠の 2 行を先に取り、残りの高さに入る件数だけ、選択が見える範囲を出す。
+    let width = WIDTH.min(frame.area().width);
+    let fixed = popup_rows(&lines, width) + popup_rows(&footer, width) + 2;
+    let room = (usize::from(frame.area().height).saturating_sub(fixed) / 2).max(1);
+    let first = search.selected.saturating_sub(room.saturating_sub(1));
+    for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
+        let selected = index == search.selected;
+        let place = match app.store.channel(&item.channel_id) {
+            Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
+            _ => format!("#{}", item.channel_name),
+        };
+        let mut head = vec![
+            Span::styled(if selected { "▶ " } else { "  " }, accent),
+            Span::styled(place, if selected { accent } else { Style::new() }),
+        ];
+        if let Some(author) = &item.author {
+            head.push(Span::styled(format!("  {author}"), DIM));
+        }
+        head.push(Span::styled(
+            format!(
+                "  {}",
+                item.created_at.get(..10).unwrap_or(&item.created_at)
+            ),
+            DIM,
+        ));
+        if item.parent_id.is_some() {
+            head.push(Span::styled("  スレッドの返信", DIM));
+        }
+        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
+        lines.push(Line::from(truncate_spans(head, inner)));
+        let text = item.file_name.as_deref().unwrap_or(&item.snippet);
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = truncate_width(&text, inner.saturating_sub(4));
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            if selected {
+                Span::styled(text, Style::new().add_modifier(Modifier::BOLD))
+            } else {
+                Span::raw(text)
+            },
+        ]));
+    }
+    lines.extend(footer);
     draw_popup_sized(frame, "全文検索", lines, WIDTH);
 }
 
@@ -2324,6 +2324,34 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("親なしの返信"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn global_search_keeps_the_help_line_on_a_small_terminal() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), SearchKind::All));
+        app.global_search.items = (0..6)
+            .map(|i| {
+                serde_json::from_value(json!({
+                    "id": format!("m{i}"), "channel_id": "c1", "channel_name": "general",
+                    "snippet": "会議の資料", "created_at": "2026-11-21T00:00:00.000"
+                }))
+                .unwrap()
+            })
+            .collect();
+        let mut terminal = Terminal::new(TestBackend::new(40, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Esc"), "{screen}");
     }
 
     #[tokio::test]

@@ -101,6 +101,20 @@ const PERIOD_DAYS: Record<"last7" | "last30" | "last365", number> = {
   last365: 365,
 };
 
+/** UTC の日付（`YYYY-MM-DD`）を `days` 日ずらす。 */
+export function shiftDay(day: string, days: number): string {
+  return utcDay(new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000));
+}
+
+/** 画面の「終了日」はその日を含む。API の `before` は含まないので、翌日にして送る。 */
+export function beforeFromEndDay(end: string | undefined): string | undefined {
+  return end ? shiftDay(end, 1) : undefined;
+}
+
+export function endDayFromBefore(before: string | undefined): string | undefined {
+  return before ? shiftDay(before, -1) : undefined;
+}
+
 /** UTC の日付（`YYYY-MM-DD`）。 */
 export function utcDay(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -162,8 +176,13 @@ export function searchResultLink(item: SearchItem): {
   };
 }
 
+/** 一覧のキー。「すべて」ではメッセージと添付の ID が重なりうるので、種類も含める。 */
+export function searchItemKey(item: SearchItem): string {
+  return `${isFileItem(item) ? "file" : "message"}:${item.id}`;
+}
+
 /** 新しい順を保ったまま、前のページと重なった項目を除いてつなぐ。 */
 export function appendSearchItems(current: readonly SearchItem[], next: readonly SearchItem[]) {
-  const seen = new Set(current.map((item) => item.id));
-  return [...current, ...next.filter((item) => !seen.has(item.id))];
+  const seen = new Set(current.map(searchItemKey));
+  return [...current, ...next.filter((item) => !seen.has(searchItemKey(item)))];
 }

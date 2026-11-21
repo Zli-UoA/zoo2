@@ -16,12 +16,15 @@ import { Input } from "../../ui/input";
 import { Select } from "../../ui/select";
 import { Spinner } from "../../ui/spinner";
 import {
+  beforeFromEndDay,
+  endDayFromBefore,
   hasSearchFilters,
   normalizeSearchQuery,
   parseSearchRouteParams,
   periodAfter,
   periodOf,
   searchFiltersOf,
+  searchItemKey,
   searchKindOf,
   SEARCH_KINDS,
   SEARCH_PERIODS,
@@ -236,7 +239,7 @@ export function SearchScreen() {
               <Input
                 type="date"
                 value={filters.after ?? ""}
-                max={filters.before}
+                max={endDayFromBefore(filters.before)}
                 onChange={(event) => filter({ after: event.target.value || undefined })}
                 aria-label={t("globalSearch.filters.after")}
                 className="h-8 w-40 text-sm"
@@ -246,9 +249,12 @@ export function SearchScreen() {
               </span>
               <Input
                 type="date"
-                value={filters.before ?? ""}
+                // 終了日はその日を含む（API の before は翌日）。
+                value={endDayFromBefore(filters.before) ?? ""}
                 min={filters.after}
-                onChange={(event) => filter({ before: event.target.value || undefined })}
+                onChange={(event) =>
+                  filter({ before: beforeFromEndDay(event.target.value || undefined) })
+                }
                 aria-label={t("globalSearch.filters.before")}
                 className="h-8 w-40 text-sm"
               />
@@ -298,7 +304,7 @@ export function SearchScreen() {
               <ul className="w-full space-y-3 p-4" aria-label={kindLabel(kind)}>
                 {search.items.map((item) => (
                   <SearchResultRow
-                    key={item.id}
+                    key={searchItemKey(item)}
                     item={item}
                     users={users}
                     members={item.is_dm ? membersByChannel.get(item.channel_id) : undefined}

@@ -4,8 +4,11 @@ import {
   appendSearchItems,
   normalizeSearchQuery,
   parseSearchRouteParams,
+  beforeFromEndDay,
+  endDayFromBefore,
   periodAfter,
   periodOf,
+  searchItemKey,
   searchKindOf,
   searchRequestPath,
   searchResultLink,
@@ -65,6 +68,20 @@ describe("parseSearchRouteParams", () => {
   it("defaults the kind to messages and files together", () => {
     expect(searchKindOf({})).toBe("all");
     expect(searchKindOf({ type: "files" })).toBe("files");
+  });
+});
+
+describe("end day", () => {
+  it("includes the chosen end day by sending the next day as before", () => {
+    expect(beforeFromEndDay("2026-11-30")).toBe("2026-12-01");
+    expect(endDayFromBefore("2026-12-01")).toBe("2026-11-30");
+    expect(beforeFromEndDay(undefined)).toBeUndefined();
+  });
+});
+
+describe("searchItemKey", () => {
+  it("keeps a message and an attachment with the same id apart", () => {
+    expect(searchItemKey(message)).not.toBe(searchItemKey({ ...file, id: message.id }));
   });
 });
 
