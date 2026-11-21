@@ -130,6 +130,17 @@ export const Loading: Story = {
   },
 };
 
+export const LoadingOlder: Story = {
+  args: {
+    isLoadingOlder: true,
+  },
+  play: playForImplementation(async () => {
+    // 文言を固定せず、7 ロケールすべてで通るように空白以外のテキストがあることを検証する。
+    const status = await screen.findByTestId("loading-older-status");
+    await expect(status).toHaveTextContent(/\S/);
+  }),
+};
+
 export const Error: Story = {
   args: {
     messages: [],

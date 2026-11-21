@@ -16,6 +16,11 @@ use crate::{
 
 const THREAD_IDLE_DAYS: i64 = 1;
 
+/// How long the participants read after a join / leave / unarchive may take (`statement_timeout`).
+/// Shorter than the 10 s the Web client waits for the POST: a read that needs longer is left out of
+/// the answer (the write is already committed) instead of making the client give up on the write.
+pub const THREAD_PARTICIPANTS_READ_TIMEOUT_MS: u64 = 5_000;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/threads", get(list_threads))
@@ -120,36 +125,100 @@ async fn list_threads(
 
 // Membership is a personal subscription, not a read permission. Public-channel
 // readers can inspect this state even when they have never joined the thread.
+/// `?participants=none` leaves out the participant count and list, which cost O(P) to read.
+/// Clients that never show them (Android, TUI, desktop) ask for that; `tracked` is always
+/// answered. Anything else keeps the full answer.
+#[derive(Default, Deserialize)]
+struct DetailQuery {
+    participants: Option<String>,
+}
+
+impl DetailQuery {
+    fn with_participants(&self) -> bool {
+        self.participants.as_deref() != Some("none")
+    }
+}
+
 async fn thread_detail(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "read").await
+    thread_operation(state, auth, id, "read", query.with_participants()).await
 }
 
 async fn join_thread(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "join").await
+    thread_operation(state, auth, id, "join", query.with_participants()).await
 }
 
 async fn leave_thread(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "leave").await
+    thread_operation(state, auth, id, "leave", query.with_participants()).await
 }
 
 async fn unarchive_thread(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "unarchive").await
+    thread_operation(state, auth, id, "unarchive", query.with_participants()).await
+}
+
+/// Whether the thread (`$1`) has any participant row, left ones included: the `tracked` of an
+/// answer without the participant list. One index entry, as the reply gate reads it (see
+/// `reply_participation_sql`); shared with the scale test.
+pub fn thread_tracked_sql() -> &'static str {
+    "SELECT json_build_object('tracked',(SELECT true FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1) IS NOT NULL)::text"
+}
+
+/// Participants of one thread (`$1` = thread id, `$2` = its channel id): `tracked`, live count and
+/// the first 50. Live = joined, not deactivated, and still a member of the channel (a participant
+/// who left the channel keeps the thread row, but is not listed or counted: the list must not show
+/// profiles beyond what the viewer's channels already reveal). Shared with the scale test so it
+/// measures exactly the SQL the route runs.
+pub fn participants_sql() -> &'static str {
+    "WITH keys AS MATERIALIZED (SELECT p.user_id,p.joined_at,p.left_at FROM thread_participants p WHERE p.thread_id=$1), \
+              live AS MATERIALIZED (SELECT u.id,u.user_name,u.display_name,u.avatar_url,k.joined_at FROM keys k CROSS JOIN LATERAL (SELECT x.id,x.user_name,x.display_name,x.avatar_url FROM users x WHERE x.id=k.user_id AND NOT x.is_deactivated AND (SELECT true FROM channel_user cu WHERE cu.user_id=x.id AND cu.channel_id=$2) IS NOT NULL OFFSET 0) u WHERE k.left_at IS NULL) \
+         SELECT json_build_object('tracked',EXISTS(SELECT 1 FROM keys),'count',(SELECT count(*) FROM live),'items',COALESCE((SELECT json_agg(json_build_object('id',id,'user_name',user_name,'display_name',display_name,'avatar_url',avatar_url) ORDER BY joined_at,id) FROM (SELECT * FROM live ORDER BY joined_at,id LIMIT 50) top),'[]'::json))::text"
+}
+
+/// The participants of a thread, read in a transaction of their own (after a write committed).
+/// - The viewer's access to the channel is checked again here, as a read: the write committed
+///   before this read, and a membership can be revoked in between. Without access the read fails,
+///   and the caller leaves the list out of the answer.
+/// - Postgres cancels a statement that runs longer than `timeout_ms` (`statement_timeout`; dropping
+///   the future instead would leave the statement running), which also fails the read.
+pub async fn read_participants(
+    db: &mut toasty::Db,
+    viewer: &AuthUser,
+    root_id: &str,
+    channel_id: &str,
+    timeout_ms: u64,
+) -> Result<Value, AppError> {
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(format!("SET LOCAL statement_timeout={timeout_ms}"))
+        .exec(&mut tx)
+        .await?;
+    let actor = crate::apps::events::Actor {
+        user: viewer.clone(),
+        principal: None,
+    };
+    actor.channel(&mut tx, channel_id, false).await?;
+    let participants =
+        crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?;
+    tx.commit().await?;
+    Ok(participants)
 }
 
 async fn thread_operation(
@@ -157,6 +226,7 @@ async fn thread_operation(
     auth: AuthUser,
     id: String,
     operation: &str,
+    with_participants: bool,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::BadRequest("Invalid message ID".into()))?;
     let mut db = state.db.clone();
@@ -210,8 +280,15 @@ async fn thread_operation(
                 "INSERT INTO thread_participants(thread_id,user_id) VALUES($1,$2) ON CONFLICT(thread_id,user_id) DO UPDATE SET left_at=NULL,joined_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC' WHERE thread_participants.left_at IS NOT NULL RETURNING '{}'::text",
                 &[root_id,&auth.id]).await?
         }
-        "leave" => crate::apps::query(&mut tx,
+        // A member can leave a thread that has no row yet (the row records the leave). A reader who is
+        // not a member (a public channel can be read without joining it) may only end a row it
+        // already has: a new row would make the thread tracked, and the first reply of every member
+        // would then need a join.
+        "leave" if channel["member"] == true => crate::apps::query(&mut tx,
             "INSERT INTO thread_participants(thread_id,user_id,left_at) VALUES($1,$2,now() AT TIME ZONE 'UTC') ON CONFLICT(thread_id,user_id) DO UPDATE SET left_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC' WHERE thread_participants.left_at IS NULL RETURNING '{}'::text",
+            &[root_id,&auth.id]).await?,
+        "leave" => crate::apps::query(&mut tx,
+            "UPDATE thread_participants SET left_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC' WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL RETURNING '{}'::text",
             &[root_id,&auth.id]).await?,
         "unarchive" => crate::apps::query(&mut tx,
             "UPDATE messages SET thread_archive_at=NULL,thread_activity_at=now() AT TIME ZONE 'UTC' WHERE id=$1 AND thread_archive_at IS NOT NULL RETURNING '{}'::text",
@@ -222,12 +299,67 @@ async fn thread_operation(
         "SELECT json_build_object('id',m.id,'channel_id',m.channel_id,'thread_archive_at',m.thread_archive_at,'membership',CASE WHEN p.user_id IS NULL THEN 'none' WHEN p.left_at IS NULL THEN 'joined' ELSE 'left' END)::text FROM messages m LEFT JOIN thread_participants p ON p.thread_id=m.id AND p.user_id=$2 WHERE m.id=$1",
         &[root_id,&auth.id]).await?;
     row["can_participate"] = json!(channel["member"] == true);
+    // Who is in the thread, and whether replies need a join. Reading is already authorized by
+    // the channel check above. P = participant rows of this one thread (left rows included).
+    // - `keys`: the single primary-key range scan (thread_id,*) of those P rows. `tracked`,
+    //   the count and the list are all derived from it; no second probe of the table. A separate
+    //   `EXISTS`/`LIMIT 1` probe let the planner choose a sequential scan that skipped every
+    //   other thread's rows before reaching the target.
+    // - `users` is read through a LATERAL primary-key probe per live key (`OFFSET 0` keeps the
+    //   planner from flattening it into a join), so it costs P probes whichever join method is
+    //   chosen. A plain `JOIN keys` with `id = ANY(ARRAY(keys))` was seen to become a Nested Loop
+    //   with a Join Filter on PostgreSQL 16 (P x P `users` rows), or a Hash Join over all users.
+    //   The channel membership check is a scalar subquery, so it stays one primary-key probe per
+    //   key as well (an `EXISTS` could be planned as a semi-join that scans the channel's members).
+    // The list sorts the live rows (top-N, LIMIT 50): O(P log 50), independent of other threads.
+    // A write holds the root lock (it serializes replies, joins and leaves of this thread) until
+    // it commits, so its O(P) read runs after the commit, in its own transaction: the lock is held
+    // for the write only, whatever P is. A read has no lock and stays in its transaction.
+    let participants = if with_participants && operation == "read" {
+        Some(crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?)
+    } else {
+        // `tracked` is always answered, one index entry, inside the transaction (after the write):
+        // a write whose list is read afterwards, and fails or runs out of time, still says it.
+        let tracked = crate::apps::one(&mut tx, thread_tracked_sql(), &[root_id]).await?;
+        row["tracked"] = tracked["tracked"].clone();
+        None
+    };
     let txid = if changed.is_empty() {
         None
     } else {
         Some(get_current_txid(&mut tx).await?)
     };
     tx.commit().await?;
+    let participants = match participants {
+        Some(participants) => Some(participants),
+        None if !with_participants => None,
+        // The write is already committed. If only this read fails, answer without the list
+        // (the client keeps what it has and refreshes) instead of reporting a failed write.
+        None => match read_participants(
+            &mut db,
+            &auth,
+            root_id,
+            channel_id,
+            state.config.thread_participants_read_timeout_ms,
+        )
+        .await
+        {
+            Ok(participants) => Some(participants),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    thread = root_id,
+                    "reading participants after a write failed"
+                );
+                None
+            }
+        },
+    };
+    if let Some(participants) = participants {
+        row["tracked"] = participants["tracked"].clone();
+        row["participant_count"] = participants["count"].clone();
+        row["participants"] = participants["items"].clone();
+    }
     Ok(Json(ApiResponse::new(row, txid)))
 }
 

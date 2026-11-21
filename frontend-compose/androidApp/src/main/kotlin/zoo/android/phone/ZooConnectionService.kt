@@ -16,7 +16,7 @@ class ZooConnectionService : ConnectionService() {
         val extras = request.extras ?: Bundle.EMPTY
         val nested = extras.getBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS) ?: extras
         if (host == null || !host.matches(nested.getString(PHONE_SESSION), nested.getString(PHONE_CALL))) return Connection.createFailedConnection(DisconnectCause(DisconnectCause.ERROR))
-        return host.connection(incoming)
+        return host.connection(incoming, request.address)
     }
     override fun onCreateOutgoingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) { failed(request) }
     override fun onCreateIncomingConnectionFailed(account: PhoneAccountHandle?, request: ConnectionRequest) { failed(request) }

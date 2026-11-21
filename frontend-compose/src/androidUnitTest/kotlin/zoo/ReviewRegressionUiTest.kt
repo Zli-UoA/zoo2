@@ -405,6 +405,98 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun channelListUpdatesWhenAJoinedChannelIsArchivedOrRestored() {
+        val fixture = Fixture()
+        val channel = obj("id" to "general", "channel_name" to "General")
+        val archivedAt = "2026-11-15T00:00:00Z"
+        val dm = obj("id" to "dm", "channel_name" to "Support", "is_dm" to true,
+            "archive_at" to archivedAt)
+        var rows by mutableStateOf(listOf(channel, dm))
+        val members = listOf(
+            obj("channel_id" to "general", "user_id" to "alice"),
+            obj("channel_id" to "dm", "user_id" to "alice"),
+            obj("channel_id" to "dm", "user_id" to "bob"),
+        )
+        val users = listOf(obj("id" to "bob", "user_name" to "bob", "display_name" to "Support"))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        Sidebar(fixture.app, rows, users, members, false,
+                            Modifier.width(400.dp).height(1000.dp), narrow = true)
+                    }
+                }
+            }
+            ui.onNodeWithText("General").assertIsDisplayed()
+            ui.runOnIdle {
+                rows = listOf(obj("id" to "general", "channel_name" to "General",
+                    "archive_at" to archivedAt), dm)
+            }
+            ui.onNodeWithText("General").assertDoesNotExist()
+            ui.onNodeWithText("channels.noJoined").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Support").assertIsDisplayed()
+            ui.runOnIdle { rows = listOf(channel, dm) }
+            ui.onNodeWithText("General").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun channelBrowserShowsAccessibleArchivedChannelsOnlyWhenIncluded() {
+        val fixture = Fixture()
+        val archivedAt = "2026-11-15T00:00:00Z"
+        val channels = listOf(
+            obj("id" to "active", "channel_name" to "Active"),
+            obj("id" to "active-joined", "channel_name" to "Active joined"),
+            obj("id" to "public", "channel_name" to "Archived public", "archive_at" to archivedAt),
+            obj("id" to "public-joined", "channel_name" to "Archived joined public",
+                "archive_at" to archivedAt),
+            obj("id" to "joined", "channel_name" to "Archived joined private",
+                "archive_at" to archivedAt, "is_private" to true),
+            obj("id" to "private", "channel_name" to "Archived unjoined private",
+                "archive_at" to archivedAt, "is_private" to true),
+        )
+        val members = listOf("active-joined", "public-joined", "joined").map { id ->
+            obj("channel_id" to id, "user_id" to "alice")
+        }
+        try {
+            fixture.app.dialog = "browse"
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    MaterialTheme {
+                        NativeWindow(fixture.app) {
+                            AppDialogs(fixture.app, null, channels, emptyList(), members)
+                        }
+                    }
+                }
+            }
+            ui.onNodeWithText("Active").assertIsDisplayed()
+            ui.onNodeWithText("Archived public").assertDoesNotExist()
+            ui.onNodeWithText("Archived joined public").assertDoesNotExist()
+            ui.onNodeWithText("Archived joined private").assertDoesNotExist()
+            ui.onNodeWithText("channels.includeArchived").performClick()
+            ui.onNodeWithText("Active").assertIsDisplayed()
+            ui.onNodeWithText("Archived public").assertIsDisplayed()
+            ui.onNodeWithText("Archived joined private").assertIsDisplayed()
+            ui.onNodeWithText("Archived unjoined private").assertDoesNotExist()
+            ui.onNodeWithText("Active joined").assertDoesNotExist()
+
+            ui.onNode(hasSetTextAction()).performTextInput("JoInEd PuB")
+            val archivedMatch = ui.onNode(
+                hasText("Archived joined public") and hasText("moderation.archived")
+            )
+            archivedMatch.assertIsDisplayed()
+            ui.onNodeWithText("Active").assertDoesNotExist()
+            ui.onNodeWithText("Archived public").assertDoesNotExist()
+            ui.onNodeWithText("Archived joined private").assertDoesNotExist()
+            archivedMatch.performClick()
+            ui.runOnIdle { assertEquals("/channels/public-joined", fixture.app.env.path) }
+            ui.runOnIdle { fixture.app.dialog = "browse" }
+            ui.onNodeWithText("Active").assertIsDisplayed()
+            ui.onNodeWithText("Archived public").assertDoesNotExist()
+        } finally { fixture.close() }
+    }
+
+    @Test
     fun reselectingTheCurrentDmReturnsFromTheSidebarToChat() {
         val fixture = Fixture(Environment(path = "/channels/dm", touch = true))
         fixture.app.pane = "sidebar"

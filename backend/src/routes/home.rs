@@ -189,6 +189,13 @@ async fn create(
             body.channel_id = None;
         }
     }
+    // Unlike the thread pane, a Home reply replicated into a channel joins the thread as it posts:
+    // the channel message's `update_thread_activity` trigger adds (or re-adds) the replier, so no
+    // prior join is required here. A reply without a channel (a nonmember's reply to a public
+    // channel post lost its `channel_id` above) makes no channel message, so the trigger does not
+    // run and the replier does not join. Reading needs no join either. A channel reply can be
+    // refused by the followers-only audience, the private / DM check and the channel's posting
+    // policy below.
     if body.channel_id.is_some() && body.visibility == "followers" {
         return Err(AppError::BadRequest(
             "Channel replies cannot use a followers-only audience".into(),

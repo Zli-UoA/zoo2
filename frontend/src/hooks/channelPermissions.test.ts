@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { canAddChannelMember, canKickChannelMember, canManageChannel } from "./channelPermissions";
+import {
+  canAddChannelMember,
+  canKickChannelMember,
+  canManageChannel,
+  canPostInChannel,
+} from "./channelPermissions";
 
 describe("canManageChannel", () => {
   it("allows the creator or a workspace admin", () => {
@@ -56,5 +61,22 @@ describe("canKickChannelMember", () => {
         targetIsAdmin: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("canPostInChannel", () => {
+  it("lets everyone post unless the policy is managers", () => {
+    expect(canPostInChannel({ isAdmin: false, isCreator: false })).toBe(true);
+    expect(canPostInChannel({ postingPolicy: "members", isAdmin: false, isCreator: false })).toBe(
+      true,
+    );
+  });
+  it("limits managers channels to the creator and workspace admins", () => {
+    const policy = "managers" as const;
+    expect(canPostInChannel({ postingPolicy: policy, isAdmin: false, isCreator: false })).toBe(
+      false,
+    );
+    expect(canPostInChannel({ postingPolicy: policy, isAdmin: false, isCreator: true })).toBe(true);
+    expect(canPostInChannel({ postingPolicy: policy, isAdmin: true, isCreator: false })).toBe(true);
   });
 });

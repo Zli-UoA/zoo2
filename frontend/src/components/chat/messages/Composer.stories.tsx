@@ -59,6 +59,41 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+export const SingleLineActionsAlignWithText: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const textbox = canvas.getByRole("textbox");
+    const textCenter = (() => {
+      const box = textbox.getBoundingClientRect();
+      const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
+      const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
+      return box.top + paddingTop + lineHeight / 2;
+    })();
+    for (const name of ["絵文字", "送信"]) {
+      const box = canvas.getByRole("button", { name }).getBoundingClientRect();
+      await expect(Math.abs(box.top + box.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+    }
+  }),
+};
+
+export const SingleLineActionsAlignWithTextMobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const textbox = canvas.getByRole("textbox");
+    const textCenter = (() => {
+      const box = textbox.getBoundingClientRect();
+      const paddingTop = Number.parseFloat(getComputedStyle(textbox).paddingTop);
+      const lineHeight = Number.parseFloat(getComputedStyle(textbox).lineHeight);
+      return box.top + paddingTop + lineHeight / 2;
+    })();
+    for (const name of ["絵文字", "送信"]) {
+      const box = canvas.getByRole("button", { name }).getBoundingClientRect();
+      await expect(Math.abs(box.top + box.height / 2 - textCenter)).toBeLessThanOrEqual(2);
+    }
+  }),
+};
+
 export const Disabled: Story = {
   args: {
     disabled: true,
@@ -75,6 +110,13 @@ export const Multiline: Story = {
     const textarea = await canvas.findByRole("textbox");
     await userEvent.type(textarea, "1行目{enter}2行目{enter}3行目");
     await expect(textarea).toHaveValue("1行目\n2行目\n3行目");
+    const frameBox = textarea.parentElement!.getBoundingClientRect();
+    for (const name of ["絵文字", "送信"]) {
+      const box = canvas.getByRole("button", { name }).getBoundingClientRect();
+      // 複数行になっても先頭行に固定され、下端に寄らない。
+      await expect(box.top - frameBox.top).toBeLessThanOrEqual(12);
+      await expect(box.top - frameBox.top).toBeGreaterThanOrEqual(0);
+    }
   }),
 };
 

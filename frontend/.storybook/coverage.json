@@ -247,6 +247,8 @@
       "file": "src/components/chat/messages/Composer.stories.tsx",
       "states": [
         "Default",
+        "SingleLineActionsAlignWithText",
+        "SingleLineActionsAlignWithTextMobile",
         "Disabled",
         "Multiline",
         "MentionSuggestions",
@@ -283,6 +285,7 @@
         "Default",
         "Empty",
         "Loading",
+        "LoadingOlder",
         "Error",
         "UnreadSeparator",
         "LongMessages",
@@ -299,7 +302,8 @@
         "Mobile",
         "FederatedReactions",
         "Encrypted",
-        "EncryptionDowngraded"
+        "EncryptionDowngraded",
+        "PostingForbidden"
       ]
     },
     {
@@ -398,7 +402,14 @@
         "LeftThread",
         "MembershipPending",
         "MembershipFailed",
-        "ReopenArchived"
+        "ReopenArchived",
+        "WithParticipants",
+        "ReopenAndJoin",
+        "MembershipLoadingBlocksComposer",
+        "LeftWithNoParticipants",
+        "PostingForbidden",
+        "NoRepliesYet",
+        "PostingForbiddenNotJoined"
       ]
     },
     {
@@ -455,7 +466,7 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile", "UserAvatar"]
+      "states": ["Default", "Mobile", "UserAvatar", "AboutZoo", "AboutZooUnknownVersion"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
@@ -876,6 +887,7 @@
         "Loading",
         "Image",
         "PDF",
+        "MultiPagePDF",
         "Video",
         "Audio",
         "Failed",
@@ -1223,6 +1235,12 @@
       "story": "src/components/chat/messages/ReactionPicker.stories.tsx"
     },
     {
+      "file": "src/components/chat/messages/JoinPrompt.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "ThreadPaneのNotParticipating・ReopenAndJoin・PostingForbiddenNotJoinedで、参加の案内・再Openして参加・権限がないときの理由だけの表示を確認する。チャンネルの参加案内はMessagePaneのNotJoinedで確認する。"
+    },
+    {
       "file": "src/components/chat/messages/ThreadPaneStatus.tsx",
       "story": "src/components/chat/messages/ThreadPane.stories.tsx",
       "composed": true,
@@ -1261,7 +1279,7 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
+      "reason": "DefaultとMobileで実験版切り替えボタンが表示されないこと、AboutZooで版情報の表示と開閉、AboutZooUnknownVersionで版情報がない場合の表示を確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -1453,7 +1471,7 @@
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
-      "reason": "Default/Mobileで投稿下のアクションの従来のボタンサイズ・均等配置・下側の余白・三点メニューの配置を確認する。タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
+      "reason": "Default/Mobileで投稿下のアクションの従来のボタンサイズ・均等配置・下側の余白・三点メニューの配置を確認する。タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、メディアプレビューを背景または閉じるボタンで閉じてもタイムラインに留まることを確認する。個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
     },
     {
       "file": "src/components/home/ActivityPubBadge.tsx",
@@ -1466,7 +1484,7 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "checks": ["src/components/home/HomeComposer.browser.test.tsx"],
       "composed": true,
-      "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
+      "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。管理者のみ投稿できるチャンネルへの返信の無効化と、チャンネルに参加していない人の返信（無効にしない）は、HomeComposer.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubNotifications.tsx",
@@ -1647,8 +1665,9 @@
       "file": "src/components/ui/pdf-preview.tsx",
       "story": "src/components/ui/media-preview.stories.tsx",
       "composed": true,
-      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
+      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画・縦スクロール・前後ページボタン・ページ番号ジャンプを確認する。",
       "checks": [
+        "src/components/ui/pdf-preview.test.ts",
         "src/components/ui/media-preview.browser.test.tsx",
         "src/components/ui/pdf-preview-timeout.browser.test.tsx"
       ]

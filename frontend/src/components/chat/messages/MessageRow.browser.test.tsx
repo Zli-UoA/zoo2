@@ -14,7 +14,7 @@ vi.mock("../../../hooks/useAttachments", () => ({
     status: "ready",
     expiresAt: null,
     reload: () => {},
-    getFreshUrl: () => Promise.resolve(),
+    getFreshUrl: () => Promise.resolve("/media/image.png"),
   }),
 }));
 

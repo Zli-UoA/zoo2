@@ -810,10 +810,12 @@ function HomeScreenContent({
                       className="flex min-w-0 cursor-pointer gap-3"
                       onClick={(event) => {
                         if (editingId === (post.entry_id ?? post.id) || post.id === postId) return;
+                        const target = event.target;
+                        // Dialog portals bubble clicks through React even outside the article.
                         if (
-                          (event.target as HTMLElement).closest(
-                            "a,button,input,textarea,[role=button],pre",
-                          ) ||
+                          !(target instanceof Element) ||
+                          !event.currentTarget.contains(target) ||
+                          target.closest("a,button,input,textarea,[role=button],pre") ||
                           window.getSelection()?.toString()
                         )
                           return;

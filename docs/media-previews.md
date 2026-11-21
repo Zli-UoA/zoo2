@@ -7,7 +7,7 @@ Androidの通常添付とAPub投稿にも、アプリ内でプレビューを開
 | 形式 | 表示 |
 | --- | --- |
 | PNG・JPEG・WebP・GIF、通常添付のAVIF | 画像と拡大表示 |
-| PDF | PDF.jsのキャンバス描画、ページ送り。日本語用CMap・JPEG 2000などのデコーダー・標準フォントをWeb/Androidへ同梱し、外部CDNやPDFプラグインに依存しない |
+| PDF | PDF.jsのキャンバス描画、縦スクロールによる連続表示、前後ページボタンとページ番号入力によるジャンプ。日本語用CMap・JPEG 2000などのデコーダー・標準フォントをWeb/Androidへ同梱し、外部CDNやPDFプラグインに依存しない |
 | MP4・WebM・Ogg・QuickTime動画、MP3・MP4・WAV・Ogg・WebM・FLAC・AAC音声 | 標準プレイヤー。対応コーデックはブラウザー・WebViewによる |
 | EML・MSG | 件名・差出人・宛先・日時、本文、メール内の添付ファイル |
 | TXT・Markdown・CSV・JSON・XML・HTML・ログ・コード・予定表・連絡先などのテキスト | テキスト表示。JSONは整形し、HTMLやコードは実行しない |
@@ -28,7 +28,7 @@ PDF・文書・メール・アーカイブのファイル取得と解析は、�
 PDF・文書の取得は12 MiB、アーカイブの展開結果は16 MiB・100エントリー、表示テキストは50万文字、解析・描画の待機は15秒まで。
 ZIP内とメール内の添付も共通部品を使い、入れ子は3段までプレビューする。
 文書解析は専用Workerで実行し、閉じる・URLが変わる・アンマウント時はWorkerと取得を終了する。
-PDFはファイルを1回読み込み、ページ送りでは同じ文書を使う。
+PDFはファイルを1回読み込み、スクロールやページ移動では同じ文書を使う。表示範囲周辺のページだけを描画し、離れたページのキャンバスは解放する。縦スクロール表示は全ページ分の枠を並べるため、1000ページまでを対象とし、超過時はプレビューを表示せずダウンロードを案内する。
 PDF.jsのworkerはmodule workerとして読み込むため、`.mjs` をJavaScriptのMIMEタイプ（`text/javascript` など）で配信する。
 配信先のnginxはバージョンによって `.mjs` を知らないので、`infra/Dockerfile-frontend-deploy` で `mime.types` に追加し、CIで実際の応答を検証する。
 デコーダー・フォント・workerは `/assets/pdfjs/<version>/` に置き、PDF.jsの版が変わったときだけURLを変える。
@@ -63,7 +63,7 @@ TUIにはメディア描画画面がないため、既存の添付名・種類�
 
 ## 検証
 
-Storybookの `Components/Media/MediaPreview` と関連するブラウザーテストで形式・読み込み・失敗・狭い幅・ページ送りを確認する。
+Storybookの `Components/Media/MediaPreview` と関連するブラウザーテストで形式・読み込み・失敗・狭い幅・縦スクロール・前後ページボタン・ページ番号ジャンプを確認する。
 `.storybook/fixtures/README.md` にサンプルの由来を記載する。
 
 Androidの端末テスト（`connectedDebugAndroidTest`）でネイティブPDFの複数ページ描画を確認する。CIでは端末テストAPKのビルドまでを行う。Robolectricの回帰テストでは、サイズ上限、読み込み中のキャンセル、一時ファイル削除、文書WebViewの取り外し後の破棄、閉じる・開き直す操作を確認する。
