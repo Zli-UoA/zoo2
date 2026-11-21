@@ -2,6 +2,11 @@
   "a11y": {
     "skipToContent": "Skip to content"
   },
+  "aboutZoo": {
+    "title": "About Zoo",
+    "version": "Version: {{version}}",
+    "versionUnknown": "Unknown"
+  },
   "notFoundPage": {
     "title": "Page not found",
     "description": "The page you are looking for may have moved or no longer exists."

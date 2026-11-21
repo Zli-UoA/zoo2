@@ -2,6 +2,11 @@
   "a11y": {
     "skipToContent": "跳到主要内容"
   },
+  "aboutZoo": {
+    "title": "关于 Zoo",
+    "version": "版本：{{version}}",
+    "versionUnknown": "未知"
+  },
   "notFoundPage": {
     "title": "找不到页面",
     "description": "你访问的页面可能已移动或不存在。"

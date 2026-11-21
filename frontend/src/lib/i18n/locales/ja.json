@@ -2,6 +2,11 @@
   "a11y": {
     "skipToContent": "本文へスキップ"
   },
+  "aboutZoo": {
+    "title": "Zooについて",
+    "version": "バージョン: {{version}}",
+    "versionUnknown": "不明"
+  },
   "notFoundPage": {
     "title": "ページが見つかりません",
     "description": "お探しのページは移動または削除された可能性があります。"
