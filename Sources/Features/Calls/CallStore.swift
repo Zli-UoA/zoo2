@@ -9,6 +9,9 @@ final class CallStore {
     private let makeMedia: @MainActor () -> any CallMedia
     private let permission: @MainActor () async -> Bool
     private let retryDelay: Duration
+    private let recoveryWaitLimit: Duration
+    private let sessionJournal: (any CallSessionJournal)?
+    @ObservationIgnored private var recovery: Task<Void, Error>?
     private(set) var channel: Channel?
     private(set) var participants: [CallParticipant] = []
     private(set) var activeChannelIDs: Set<String> = []
@@ -59,9 +62,12 @@ final class CallStore {
     init(client: any CallClient, userID: String,
          makeMedia: @escaping @MainActor () -> any CallMedia = { NativeCallMedia() },
          permission: @escaping @MainActor () async -> Bool = { await AVAudioApplication.requestRecordPermission() },
-         retryDelay: Duration = .seconds(1)) {
+         retryDelay: Duration = .seconds(1), sessionJournal: (any CallSessionJournal)? = nil,
+         recoveryWaitLimit: Duration = .seconds(2)) {
         self.client = client; self.userID = userID; self.makeMedia = makeMedia; self.permission = permission
         self.retryDelay = retryDelay
+        self.recoveryWaitLimit = recoveryWaitLimit
+        self.sessionJournal = sessionJournal
     }
 
     var connectionStatus: String {
@@ -97,6 +103,14 @@ final class CallStore {
         let generation = UUID()
         activeCallsGeneration = generation
         do {
+            do {
+                try await recoverInterruptedCalls()
+            } catch {
+                // 自端末の退出失敗だけで、ほかの参加者の通話一覧まで取得不能にしない。
+                if case ZooError.expiredSession = error { throw error }
+            }
+            try Task.checkCancellation()
+            guard active else { return }
             let calls = try await client.activeCalls()
             try Task.checkCancellation()
             guard active, activeCallsGeneration == generation else { return }
@@ -133,12 +147,16 @@ final class CallStore {
                 guard await permission() else { throw ZooError.rejected(403, "設定でマイクへのアクセスを許可してください。") }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
+                try await prepareInterruptedCalls(in: channel.id)
+                guard sessionID == session else { return }
                 if let prepareSystemCall { try await prepareSystemCall(callID, channel) }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
                 if let invitationID { try await client.answerCallInvitation(id: invitationID, accept: true) }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
+                // 強制終了時は終了通知が届かないため、入室要求より先にこの端末のセッションを残す。
+                try sessionJournal?.record(CallSessionRecord(channelID: channel.id, sessionID: session))
                 timeout = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(20)) } catch { return }
                     guard let self, sessionID == session, !ready else { return }
@@ -359,7 +377,76 @@ final class CallStore {
         if let oldChannel, let oldSession {
             onFinished?()
             let client = client
-            Task { try? await client.callCommand(channelID: oldChannel, action: "leave", body: ["session_id": .string(oldSession)]) }
+            let journal = sessionJournal
+            Task { [weak self] in
+                do {
+                    let record = CallSessionRecord(channelID: oldChannel, sessionID: oldSession)
+                    try await Self.leave(record, client: client)
+                    try journal?.remove(record)
+                    await self?.refreshActiveCalls()
+                } catch {
+                    // 退出できなかった記録は、次回の一覧更新・発信・再起動で再試行する。
+                }
+            }
+        }
+    }
+
+    private func prepareInterruptedCalls(in channelID: String) async throws {
+        guard let sessionJournal, try sessionJournal.load().contains(where: { $0.sessionID != sessionID }) else { return }
+        let completed = AsyncStream<Void>.makeStream()
+        Task { [weak self] in
+            defer { completed.continuation.yield(()) }
+            do { try await self?.recoverInterruptedCalls(preferredChannelID: channelID) }
+            catch {
+                if self?.active == true, case ZooError.expiredSession = error { self?.onExpiredSession?() }
+            }
+        }
+        let limit = recoveryWaitLimit
+        let deadline = Task {
+            do { try await Task.sleep(for: limit) } catch { return }
+            completed.continuation.yield(())
+        }
+        defer { deadline.cancel(); completed.continuation.finish() }
+        // 通常は退出を先行させるが、応答期限を使い切らないよう回収の完了待ちを制限する。
+        for await _ in completed.stream { break }
+        try Task.checkCancellation()
+    }
+
+    private func recoverInterruptedCalls(preferredChannelID: String? = nil) async throws {
+        guard active, !Task.isCancelled else { throw CancellationError() }
+        if let recovery { try await recovery.value; return }
+        guard let sessionJournal else { return }
+        let interrupted = try sessionJournal.load().filter { $0.sessionID != sessionID }.sorted {
+            $0.channelID == preferredChannelID && $1.channelID != preferredChannelID
+        }
+        guard !interrupted.isEmpty else { return }
+        let client = client
+        let task = Task {
+            for record in interrupted {
+                try Task.checkCancellation()
+                do {
+                    try await Self.leave(record, client: client)
+                    try Task.checkCancellation()
+                    try sessionJournal.remove(record)
+                } catch {
+                    try Task.checkCancellation()
+                    if error is CancellationError { throw error }
+                    if case ZooError.expiredSession = error { throw error }
+                    // 失敗した記録は保持し、ほかの退出処理と新しい通話を妨げない。
+                }
+            }
+        }
+        recovery = task
+        defer { recovery = nil }
+        try await task.value
+    }
+
+    private static func leave(_ record: CallSessionRecord, client: any CallClient) async throws {
+        do {
+            try await client.callCommand(channelID: record.channelID, action: "leave",
+                                         body: ["session_id": .string(record.sessionID)])
+        } catch ZooError.rejected(let status, _) where status == 403 || status == 404 {
+            // 既に退出済みか閲覧権限を失った通話は、後続の発信を妨げない。
         }
     }
 
@@ -487,6 +574,7 @@ final class CallStore {
     }
 
     func shutdown() {
+        recovery?.cancel()
         active = false; finish(); invitations = []; outgoingInvitations = []; cancelledInvitationExpirations = [:]
         activeChannelIDs = []
         error = nil; showingCall = false
