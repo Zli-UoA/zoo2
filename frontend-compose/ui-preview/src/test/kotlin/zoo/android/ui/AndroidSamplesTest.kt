@@ -124,6 +124,9 @@ class AndroidSamplesTest {
             "post-compose" to AndroidScreen.NewPost(
                 InputState("新しい画面を共有します。"), emptyList(), true, visibility = "public", federate = true,
             ),
+            "post-compose-federation-off" to AndroidScreen.NewPost(
+                InputState("新しい画面を共有します。"), emptyList(), true, visibility = "unlisted", federate = false,
+            ),
             "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。写真と通話の感想を投稿します。",
                 homePosts.map {
                     it.copy(author = "はる", postHeader = it.postHeader?.copy(handle = "@haru", channel = null, server = "social.example"))
@@ -226,10 +229,9 @@ class AndroidSamplesTest {
                     ui.onNodeWithText("フォロー").assertHasClickAction()
                 }
                 if (name == "post-compose") {
-                    ui.onNodeWithText("ActivityPub で配信").assertIsDisplayed()
-                    for (audience in listOf("公開", "未収載", "フォロワー", "ローカル")) {
-                        ui.onNodeWithText(audience).assertIsDisplayed()
-                    }
+                    val audience = ui.onNodeWithContentDescription("公開範囲：公開").assertHasClickAction()
+                    val federation = ui.onNodeWithContentDescription("ActivityPub で配信").assertIsOn()
+                    check(audience.getUnclippedBoundsInRoot().top == federation.getUnclippedBoundsInRoot().top)
                     val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()
                     val post = ui.onNodeWithText("投稿").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
                     val photos = ui.onNodeWithContentDescription("写真").getUnclippedBoundsInRoot()
@@ -237,6 +239,10 @@ class AndroidSamplesTest {
                         post.top - toolbar.top == 8.dp && toolbar.bottom - post.bottom == 8.dp &&
                             toolbar.right - post.right == 8.dp && photos.left - toolbar.left == 8.dp,
                     ) { "Expected an 8dp inset around the post actions: $post / $photos / $toolbar" }
+                }
+                if (name == "post-compose-federation-off") {
+                    ui.onNodeWithContentDescription("公開範囲：未収載").assertIsDisplayed()
+                    ui.onNodeWithContentDescription("ActivityPub で配信").assertIsOff()
                 }
                 if (name == "call") {
                     ui.onNodeWithText("応答").assertHasClickAction()
@@ -258,7 +264,20 @@ class AndroidSamplesTest {
                 capture("$name-${if (night) "dark" else "light"}")
             }
         }
-        ui.runOnIdle { screen = AndroidScreen.Home(homePosts) }
+        ui.runOnIdle { screen = cases.first { it.first == "post-compose" }.second }
+        ui.onNodeWithContentDescription("公開範囲：公開").performClick()
+        for (audience in listOf("公開", "未収載", "フォロワー限定", "ローカル")) {
+            ui.onNodeWithText(audience).assertIsDisplayed()
+        }
+        ui.onNodeWithText("未収載").performClick()
+        ui.onNodeWithContentDescription("ActivityPub で配信").performClick()
+        ui.runOnIdle {
+            check(actions.takeLast(2) == listOf(
+                AndroidUiAction.SelectPostVisibility("unlisted"),
+                AndroidUiAction.OpenSetting("toggle-federation"),
+            ))
+            screen = AndroidScreen.Home(homePosts)
+        }
         val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
         ui.onNode(firstPost and hasContentDescription("返信"), useUnmergedTree = true).performTouchInput {
             click(center.copy(x = center.x + 15.dp.toPx()))

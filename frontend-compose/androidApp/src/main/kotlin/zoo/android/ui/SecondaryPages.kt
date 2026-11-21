@@ -1,5 +1,6 @@
 package zoo.android.ui
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -11,17 +12,28 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -94,7 +106,12 @@ internal fun NewPostPage(
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val input = screen.input
-    PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) })
+    PageHeader("新しい投稿", colors, onBack = { dispatch(AndroidUiAction.Back) }) {
+        screen.visibility?.let { PostAudienceButton(it, colors, dispatch) }
+        screen.federate?.let { enabled ->
+            FederationButton(enabled, colors) { dispatch(AndroidUiAction.OpenSetting("toggle-federation")) }
+        }
+    }
     Column(Modifier.fillMaxSize().imePadding()) {
         BasicTextField(
             input.text, { dispatch(AndroidUiAction.TextChanged(it)) },
@@ -134,20 +151,6 @@ internal fun NewPostPage(
                     photo(item, Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)))
                     TextAction("削除", colors, icon = UiIcon.Delete, style = TextActionStyle.Plain) { dispatch(AndroidUiAction.RemoveFile(item.id)) }
                 }
-            }
-        }
-        screen.federate?.let { enabled ->
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp).heightIn(min = 48.dp)
-                .clickable { dispatch(AndroidUiAction.OpenSetting("toggle-federation")) },
-                verticalAlignment = Alignment.CenterVertically) {
-                Text("ActivityPub で配信", Modifier.weight(1f), color = colors.foreground)
-                androidx.compose.material3.Switch(enabled, onCheckedChange = null)
-            }
-        }
-        if (screen.visibility != null) Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
-            for ((id, label) in listOf("public" to "公開", "unlisted" to "未収載", "followers" to "フォロワー", "local" to "ローカル")) {
-                TextAction(label, colors, style = if (id == screen.visibility) TextActionStyle.Neutral else TextActionStyle.Plain,
-                    modifier = Modifier.weight(1f)) { dispatch(AndroidUiAction.SelectPostVisibility(id)) }
             }
         }
         Row(
@@ -241,5 +244,56 @@ private fun ChannelField(
             textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
             cursorBrush = SolidColor(colors.inputText),
         )
+    }
+}
+
+
+@Composable
+private fun PostAudienceButton(visibility: String, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
+    val audience = PostAudience.fromApi(visibility) ?: return
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        UiIconButton(audience.icon, "公開範囲：${audience.label}", colors.foreground, { expanded = true })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
+            val options = listOf("public", "unlisted", "followers", "local")
+            for (id in options) {
+                val option = requireNotNull(PostAudience.fromApi(id))
+                DropdownMenuItem(
+                    text = { Text(option.label, color = colors.foreground) },
+                    leadingIcon = { UiGlyph(option.icon, colors.secondary, AndroidControlSize.inlineIcon) },
+                    trailingIcon = if (id == visibility) {
+                        { UiGlyph(UiIcon.Check, colors.foreground, AndroidControlSize.inlineIcon) }
+                    } else null,
+                    onClick = {
+                        expanded = false
+                        dispatch(AndroidUiAction.SelectPostVisibility(id))
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FederationButton(enabled: Boolean, colors: AndroidColors, onToggle: () -> Unit) {
+    Box(
+        Modifier.size(AndroidControlSize.target).clip(CircleShape)
+            .toggleable(value = enabled, role = Role.Switch, onValueChange = { onToggle() })
+            .semantics { contentDescription = "ActivityPub で配信" },
+        contentAlignment = Alignment.Center,
+    ) {
+        // ActivityPub mark by mray, CC0. https://activitypub.rocks/images/ActivityPub-logo.svg
+        val left = remember {
+            PathParser().parsePathString("M10.91,4.44 0,10.74 0,13.26 8.73,8.22 8.73,18.30 10.91,19.56ZM6.55,12 2.18,14.52 6.55,17.04Z").toPath()
+        }
+        val right = remember {
+            PathParser().parsePathString("M13.09,4.44 24,10.74 24,13.26 13.09,19.56 13.09,17.04 21.82,12 13.09,6.96ZM13.09,9.48 17.45,12 13.09,14.52Z").toPath()
+        }
+        Canvas(Modifier.size(AndroidControlSize.icon)) {
+            scale(size.width / 24f, size.height / 24f, pivot = Offset.Zero) {
+                drawPath(left, if (enabled) Color(0xff6d6d6d) else colors.secondary)
+                drawPath(right, if (enabled) Color(0xfff1007e) else colors.secondary)
+            }
+        }
     }
 }
