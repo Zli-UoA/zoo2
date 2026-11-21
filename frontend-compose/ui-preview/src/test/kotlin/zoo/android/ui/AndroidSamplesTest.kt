@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.dp
 import java.io.File
 import org.junit.Rule
 import org.junit.Test
@@ -87,6 +88,15 @@ class AndroidSamplesTest {
             for (night in listOf(false, true)) {
                 ui.runOnIdle { screen = example; dark = night }
                 ui.waitForIdle()
+                if (name == "conversation" || name == "composer") {
+                    val send = ui.onNodeWithContentDescription("送信")
+                    send.assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
+                    val bounds = send.getUnclippedBoundsInRoot()
+                    val root = ui.onRoot().getUnclippedBoundsInRoot()
+                    check(root.right - bounds.right == 4.dp && root.bottom - bounds.bottom == 4.dp) {
+                        "Expected 4dp between send action and screen edges: $bounds / $root"
+                    }
+                }
                 capture("$name-${if (night) "dark" else "light"}")
             }
         }
