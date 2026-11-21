@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { ArrowLeftIcon, XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { ArrowLeftIcon, LogOutIcon, UsersIcon, XIcon } from "lucide-react";
+import { type KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -8,12 +8,15 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
+import { AppAvatar } from "../AppIdentity";
+import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
 import { useMediaQuery } from "../../layout/useMediaQuery";
 
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { JoinPrompt } from "./JoinPrompt";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
@@ -33,6 +36,8 @@ export interface ThreadPaneProps {
   isOffline?: boolean;
   /** 返信を送れない理由（暗号化チャンネルで暗号化の送信がまだ使えない、など）。指定すると入力欄を止める。 */
   composeDisabledReason?: string;
+  /** 投稿権限がない。閲覧と参加はでき、返信・再Openだけを止める（理由は `composeDisabledReason`）。 */
+  postingForbidden?: boolean;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
@@ -40,10 +45,17 @@ export interface ThreadPaneProps {
   membership?: "none" | "joined" | "left";
   membershipPending?: boolean;
   membershipError?: boolean;
+  /** 参加状態の初回取得中。確定するまで入力を止める（未参加で送れてしまうのを防ぐ）。 */
+  membershipLoading?: boolean;
+  /** 参加中の人数と一覧（先頭から最大50人）。 */
+  participantCount?: number;
+  participants?: ThreadParticipant[];
   onMembershipRetry?: () => void;
   onJoinThread?: () => void;
   onLeaveThread?: () => void;
   onReopenThread?: () => void;
+  /** アーカイブ済みを再Openして参加する（参加ボタンの代わりに出す）。 */
+  onReopenAndJoinThread?: () => void;
   isLoading: boolean;
   isError: boolean;
   currentUserId: string | null;
@@ -100,6 +112,7 @@ export function ThreadPane({
   isMember = true,
   isOffline = false,
   composeDisabledReason,
+  postingForbidden = false,
   typingUsers = [],
   onTyping,
   root,
@@ -107,10 +120,14 @@ export function ThreadPane({
   membership,
   membershipPending = false,
   membershipError = false,
+  membershipLoading = false,
+  participantCount,
+  participants,
   onMembershipRetry,
   onJoinThread,
   onLeaveThread,
   onReopenThread,
+  onReopenAndJoinThread,
   isLoading,
   isError,
   currentUserId,
@@ -139,12 +156,31 @@ export function ThreadPane({
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
+  const [participantsOpen, setParticipantsOpen] = useState(false);
   // 狭幅（sm 未満）は absolute のオーバーレイ。ダイアログとして扱うのはこのときだけ。
   // 広幅の sm:static なサイドペインは従来どおりインラインのままにする。
   const isWidePane = useMediaQuery("(min-width: 640px)");
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   const paneRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  // チャンネルと同様、参加してから返信する。返信がまだないメッセージも同じで、最初の返信の前に参加する
+  // （サーバーは、参加行がないスレッドの最初の返信を、旧版のクライアントのために、参加なしで受け付ける）。
+  // 参加状態の取得中（`membership` が未定）は、入力欄を止めるだけで、参加の案内は出さない。
+  const needsJoin = isMember && (membership === "none" || membership === "left");
+  // 参加ボタンを押したあと、入力欄が使えるようになったら、入力欄へフォーカスを移す。ボタンは消えるので、
+  // 何もしないとフォーカスが失われ、キーボード・スクリーンリーダーの利用者が入力欄を探し直すことになる。
+  const composerRef = useRef<HTMLDivElement>(null);
+  const focusComposerAfterJoin = useRef(false);
+  useEffect(() => {
+    if (!needsJoin && focusComposerAfterJoin.current) {
+      focusComposerAfterJoin.current = false;
+      composerRef.current?.querySelector("textarea")?.focus();
+    } else if (membershipError) {
+      // 参加に失敗したら、あとで別の理由で入力欄が使えるようになっても、フォーカスを奪わない。
+      focusComposerAfterJoin.current = false;
+    }
+  }, [needsJoin, membershipError]);
+  const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -285,6 +321,32 @@ export function ThreadPane({
         {isArchived ? (
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
+        {participantCount !== undefined ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            id="thread-participants-toggle"
+            aria-expanded={participantsOpen}
+            aria-controls={participantsOpen ? "thread-participants" : undefined}
+            aria-label={t("threads.participants", { count: participantCount })}
+            onClick={() => setParticipantsOpen((value) => !value)}
+          >
+            <UsersIcon aria-hidden="true" />
+            <span className="tabular-nums">{participantCount}</span>
+          </Button>
+        ) : null}
+        {!readOnly && isMember && membership === "joined" && onLeaveThread ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("threads.leave")}
+            title={t("threads.leave")}
+            disabled={membershipPending || isOffline}
+            onClick={onLeaveThread}
+          >
+            <LogOutIcon />
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="icon-sm"
@@ -296,9 +358,14 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
-      {!readOnly && isMember ? (
+      {participantCount !== undefined && participantsOpen ? (
+        <ThreadParticipants count={participantCount} participants={participants ?? []} />
+      ) : null}
+      {!readOnly &&
+      isMember &&
+      ((isArchived && onReopenThread && !postingForbidden) || membershipError) ? (
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-          {isArchived && onReopenThread ? (
+          {isArchived && onReopenThread && !postingForbidden ? (
             <Button
               variant="outline"
               size="sm"
@@ -306,25 +373,6 @@ export function ThreadPane({
               onClick={onReopenThread}
             >
               {t("threads.reopen")}
-            </Button>
-          ) : null}
-          {membership === "joined" && onLeaveThread ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={membershipPending || isOffline}
-              onClick={onLeaveThread}
-            >
-              {t("threads.leave")}
-            </Button>
-          ) : !isArchived && onJoinThread ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={membership === undefined || membershipPending || isOffline}
-              onClick={onJoinThread}
-            >
-              {t("threads.join")}
             </Button>
           ) : null}
           {membershipError ? (
@@ -457,25 +505,50 @@ export function ThreadPane({
 
       {!readOnly ? (
         <>
-          {isArchived ? (
+          {isArchived && !needsJoin && !postingForbidden ? (
             <p className="px-3 py-2 text-xs text-muted-foreground">{t("threads.reopenOnSend")}</p>
           ) : null}
           <TypingIndicator users={typingUsers} />
-          <Composer
-            commands={commands}
-            onRequestCommands={onRequestCommands}
-            mentionUsers={mentionUsers}
-            mentionMemberIds={mentionMemberIds}
-            disabled={!isMember || isOffline || composeDisabledReason !== undefined}
-            onTyping={onTyping}
-            onSend={onSendReply}
-            onUploadAttachment={onUploadAttachment}
-            placeholder={
-              composeDisabledReason ??
-              (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
-            }
-            ariaLabel={t("threads.compose")}
-          />
+          {needsJoin ? (
+            <ThreadJoinPrompt
+              archived={!!isArchived}
+              reason={postingForbidden ? composeDisabledReason : undefined}
+              pending={membershipPending}
+              disabled={membership === undefined || isOffline}
+              onJoin={
+                joinThread
+                  ? () => {
+                      focusComposerAfterJoin.current = true;
+                      joinThread();
+                    }
+                  : undefined
+              }
+            />
+          ) : null}
+          {/* 参加が必要になっても Composer はアンマウントせず隠す。入力中の本文・添付の下書きを保つ。 */}
+          <div ref={composerRef} hidden={needsJoin}>
+            <Composer
+              commands={commands}
+              onRequestCommands={onRequestCommands}
+              mentionUsers={mentionUsers}
+              mentionMemberIds={mentionMemberIds}
+              disabled={
+                needsJoin ||
+                !isMember ||
+                isOffline ||
+                membershipLoading ||
+                composeDisabledReason !== undefined
+              }
+              onTyping={onTyping}
+              onSend={onSendReply}
+              onUploadAttachment={onUploadAttachment}
+              placeholder={
+                composeDisabledReason ??
+                (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
+              }
+              ariaLabel={t("threads.compose")}
+            />
+          </div>
         </>
       ) : null}
     </>
@@ -493,5 +566,77 @@ export function ThreadPane({
     >
       {paneContent}
     </div>
+  );
+}
+
+function ThreadParticipants({
+  count,
+  participants,
+}: {
+  count: number;
+  participants: ThreadParticipant[];
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="border-b px-3 py-2">
+      <ul
+        id="thread-participants"
+        aria-label={t("threads.participants", { count })}
+        className="max-h-40 overflow-y-auto text-xs"
+      >
+        {participants.length === 0 ? (
+          <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
+        ) : (
+          participants.map((participant) => {
+            const label = participant.display_name || participant.user_name;
+            return (
+              <li key={participant.id} className="flex items-center gap-2 py-0.5">
+                <AppAvatar label={label} src={participant.avatar_url} size="sm" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {label !== participant.user_name ? (
+                  <span className="max-w-[40%] shrink-0 truncate text-muted-foreground">
+                    @{participant.user_name}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })
+        )}
+        {count > participants.length ? (
+          <li className="text-muted-foreground">
+            {t("threads.participantsMore", { count: count - participants.length })}
+          </li>
+        ) : null}
+      </ul>
+    </div>
+  );
+}
+
+function ThreadJoinPrompt({
+  archived,
+  reason,
+  pending,
+  disabled,
+  onJoin,
+}: {
+  archived: boolean;
+  /** 投稿権限がないときの理由。出すと、返信を促す文の代わりになる。 */
+  reason?: string;
+  pending: boolean;
+  disabled: boolean;
+  onJoin?: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <JoinPrompt
+      description={reason ?? t("threads.joinToReply")}
+      // アーカイブ済みの再Openは投稿権限が要るので、権限がないときはボタンを出さない。
+      actionLabel={
+        reason && archived ? undefined : archived ? t("threads.reopenAndJoin") : t("threads.join")
+      }
+      onAction={onJoin}
+      pending={pending}
+      disabled={disabled}
+    />
   );
 }

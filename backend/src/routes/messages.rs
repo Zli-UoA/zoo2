@@ -226,6 +226,24 @@ fn get_or_create_test_gate(key: &str) -> Arc<Notify> {
         .clone()
 }
 
+/// The test gate of `key`, for a test that runs the router in its own process: it waits for a
+/// request to reach a gate (`TestGate::reached`) and releases one that waits (`TestGate::wait`).
+#[doc(hidden)]
+pub fn test_gate(key: &str) -> Arc<Notify> {
+    get_or_create_test_gate(key)
+}
+
+/// A request that pauses after its first idempotency check (development authentication only).
+/// `X-Test-Gate-Wait` names the gate it waits at; `X-Test-Gate-Reached` names a gate it signals on
+/// arriving (a permit, so a test that looks later still sees it); `X-Test-Gate-Wait-Ms` is how long
+/// it waits at most (default 1000). A test that needs an exact order releases the gate itself and
+/// uses the timeout only so that it cannot hang.
+pub(crate) struct TestGate {
+    wait: String,
+    reached: Option<String>,
+    timeout_ms: u64,
+}
+
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -242,10 +260,14 @@ async fn create_message(
         None
     };
     let test_gate_wait = if state.config.dev_auth_enabled {
-        headers
-            .get("X-Test-Gate-Wait")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        header("X-Test-Gate-Wait").map(|wait| TestGate {
+            wait: wait.to_string(),
+            reached: header("X-Test-Gate-Reached").map(str::to_string),
+            timeout_ms: header("X-Test-Gate-Wait-Ms")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map_or(1000, |ms| ms.min(30_000)),
+        })
     } else {
         None
     };
@@ -406,6 +428,24 @@ async fn idempotent_existing_message_in_snapshot(
     Err(AppError::Conflict("Idempotency key already used".into()))
 }
 
+/// `code` of the 403 for a reply to a thread that tracks participants, from someone who has not
+/// joined it. Joining (after reopening an archived thread) lets the same reply go through.
+pub const THREAD_JOIN_REQUIRED_CODE: &str = "THREAD_JOIN_REQUIRED";
+
+/// Reply gate lookup (`$1` = thread root, `$2` = author): whether the thread has participant
+/// rows and whether the author is joined. Shared with the scale test so it measures exactly the
+/// SQL the write path runs.
+///
+/// Both terms are bounded independent of other threads' rows. `joined` is one primary-key probe
+/// on (thread_id,user_id). `tracked` only asks whether any row exists, as a scalar subquery with
+/// a real `ORDER BY user_id LIMIT 1`: inside `EXISTS` the planner drops the `ORDER BY`, and for a
+/// thread that holds a few percent of the table it then chose a sequential scan that skipped
+/// every other thread's rows. With the `LIMIT` kept, it reads the first index entry of this
+/// thread instead.
+pub fn reply_participation_sql() -> &'static str {
+    "SELECT json_build_object('tracked',(SELECT true FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1) IS NOT NULL,'joined',EXISTS(SELECT 1 FROM thread_participants WHERE thread_id=$1 AND user_id=$2 AND left_at IS NULL))::text"
+}
+
 pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
@@ -413,7 +453,7 @@ pub(crate) async fn create_message_impl(
     notify: bool,
     components: Option<String>,
     test_delay_ms: Option<u64>,
-    test_gate_wait: Option<String>,
+    test_gate_wait: Option<TestGate>,
     test_gate_notify: Option<String>,
 ) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
@@ -595,10 +635,16 @@ pub(crate) async fn create_message_impl(
         }
     }
 
-    if let Some(gate_key) = test_gate_wait {
-        let gate = get_or_create_test_gate(&gate_key);
-        let _ =
-            tokio::time::timeout(tokio::time::Duration::from_millis(1000), gate.notified()).await;
+    if let Some(test_gate) = test_gate_wait {
+        if let Some(reached) = &test_gate.reached {
+            get_or_create_test_gate(reached).notify_one();
+        }
+        let gate = get_or_create_test_gate(&test_gate.wait);
+        let _ = tokio::time::timeout(
+            tokio::time::Duration::from_millis(test_gate.timeout_ms),
+            gate.notified(),
+        )
+        .await;
     }
 
     if let Some(delay_ms) = test_delay_ms {
@@ -828,6 +874,80 @@ pub(crate) async fn create_message_impl(
                     "Encrypted replies must target the thread root; encrypt again with that parent_id".into(),
                 ));
             }
+        }
+
+        // Like a channel, replying needs membership: join the thread first. The first reply
+        // creates the thread, so only threads that already track participants are gated.
+        // The target is the one join/leave act on (the requested ID until a staged migration has
+        // moved the thread), and the row is locked as a leave does, so a leave and a reply serialize.
+        // Lock order matches thread_operation: the canonical root first, then the join target.
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=thread_root($1) FOR NO KEY UPDATE",
+            &[parent_id.as_str()],
+        )
+        .await?;
+        let gate = crate::apps::one(&mut tx,
+            "SELECT json_build_object('id',CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root($1))) THEN $1 ELSE thread_root($1) END)::text",
+            &[parent_id.as_str()]).await?;
+        let gate_root = gate["id"].as_str().unwrap_or(parent_id.as_str()).to_owned();
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=$1 FOR NO KEY UPDATE",
+            &[gate_root.as_str()],
+        )
+        .await?;
+        let participation = crate::apps::one(
+            &mut tx,
+            reply_participation_sql(),
+            &[gate_root.as_str(), auth_user.id.as_str()],
+        )
+        .await?;
+        // Bots (Apps API) have no way to join a thread, so they are not gated.
+        if participation["tracked"] == true && participation["joined"] != true && !bot_actor {
+            // A concurrent request with the same ID may have committed (and its author then left)
+            // while this one waited for the root lock. That is a retry of a stored post, not a
+            // new reply, so return it instead of refusing.
+            let _ = tx.rollback().await;
+            if supplied_id.is_some() {
+                let mut retry_db = state.db.clone();
+                match check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await
+                {
+                    Ok(Some(msg_res)) => {
+                        let mut headers = HeaderMap::new();
+                        // Lets a test tell this branch from the ordinary path of the same answer.
+                        if state.config.dev_auth_enabled {
+                            headers.insert("X-Test-Fallback", "thread-join-retry".parse().unwrap());
+                        }
+                        return Ok((headers, Json(ApiResponse::new(msg_res, None))));
+                    }
+                    // Not a retry of this author's stored post. A reused ID that belongs to
+                    // someone else (409) or to another channel (404) must not reveal that the
+                    // ID exists to a non-participant, so it falls through to the 403 below.
+                    Ok(None) | Err(AppError::Conflict(_) | AppError::NotFound(_)) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            // Clients decide on `code` (a changed or translated message cannot break them). The message
+            // text stays as it was: clients released before the code existed match it instead.
+            return Err(AppError::Coded {
+                status: axum::http::StatusCode::FORBIDDEN,
+                code: THREAD_JOIN_REQUIRED_CODE,
+                message: "Join the thread before replying".into(),
+                extra: serde_json::Map::new(),
+            });
         }
 
         parent_author_id = Some(parent.user_id);

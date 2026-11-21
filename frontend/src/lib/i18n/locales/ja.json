@@ -60,6 +60,7 @@
     "notFound": "チャンネルが見つかりません。",
     "duplicateName": "同名のチャンネルが既に存在します。",
     "privateMessages": "このチャンネルは非公開です。招待されるとメッセージを表示できます。",
+    "postingManagersOnly": "このチャンネルは管理者のみ投稿できます。",
     "back": "チャンネル一覧へ戻る",
     "noDescription": "説明はまだありません",
     "visibilityHelp": "公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。",
@@ -313,8 +314,14 @@
     "join": "参加する",
     "leave": "退出する",
     "reopen": "再Open",
-    "reopenOnSend": "送信すると再Openして参加します。",
-    "membershipError": "スレッドの参加状態を更新できませんでした。"
+    "reopenOnSend": "送信すると再Openします。",
+    "membershipError": "スレッドの参加状態を更新できませんでした。",
+    "participants_one": "参加者 {{count}}人",
+    "participants_other": "参加者 {{count}}人",
+    "participantsMore": "ほか {{count}}人",
+    "participantsEmpty": "参加者はいません",
+    "joinToReply": "参加するとこのスレッドに返信できます。",
+    "reopenAndJoin": "再Openして参加する"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -811,6 +818,7 @@
     "post": "投稿",
     "sending": "投稿中…",
     "sendError": "投稿できませんでした。下書きは残っています。もう一度お試しください。",
+    "postForbidden": "このチャンネルには投稿できません。",
     "loadError": "タイムラインを取得できませんでした。",
     "loading": "読み込み中…",
     "empty": "まだ投稿がありません",

@@ -3,7 +3,7 @@ import {
   THREAD_REPLY_REDIRECTED,
   type ThreadReplyRedirect,
 } from "../../../lib/electric/threads";
-import { useThreadMembership } from "../../../hooks/useThreadMembership";
+import { isThreadJoinRequired, useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
@@ -37,11 +37,11 @@ import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
 import { useShell } from "../../layout/shell-context";
-import { Button } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { JoinPrompt } from "./JoinPrompt";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
@@ -89,14 +89,13 @@ function JoinToPostPrompt({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="border-t px-3 py-3">
-      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
-        <p className="text-sm text-muted-foreground">{t("messages.joinToPostDescription")}</p>
-        <Button size="sm" onClick={onJoin} disabled={disabled || joining} aria-busy={joining}>
-          {t("messages.joinToPost")}
-        </Button>
-      </div>
-    </div>
+    <JoinPrompt
+      description={t("messages.joinToPostDescription")}
+      actionLabel={t("messages.joinToPost")}
+      onAction={onJoin}
+      pending={joining}
+      disabled={disabled}
+    />
   );
 }
 
@@ -117,6 +116,7 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  postingForbidden = false,
   encrypted = false,
   membershipEpoch,
   channelName,
@@ -126,6 +126,8 @@ export function MessagePane({
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** 投稿権限がない（`posting_policy=managers` で管理者・作成者ではない）。閲覧はでき、入力欄だけを理由付きで止める。 */
+  postingForbidden?: boolean;
   /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
   encrypted?: boolean;
   /** 暗号化チャンネルの Channels Shape の `membership_epoch`（int8 なので文字列）。 */
@@ -293,6 +295,19 @@ export function MessagePane({
   );
   const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
   const threadMembership = useThreadMembership(currentUserId, threadRootId);
+  const retryMembership = threadMembership.retry;
+  // 参加が必要な 403 への対応（平文・暗号化の返信で共通）。表示している参加状態が古かった（ほかの画面・
+  // クライアントで退出した、など）ので、参加状態を取り直す。すると入力欄の代わりに参加ボタンが出る。
+  // 入力欄は隠れるだけなので、下書きは残る。対象のエラーなら true を返す。
+  const noticeJoinRequired = useCallback(
+    (cause: unknown): boolean => {
+      if (!isThreadJoinRequired(cause)) return false;
+      void retryMembership?.();
+      toast.info(t("threads.joinToReply"), { id: "thread-join-required" });
+      return true;
+    },
+    [retryMembership, t],
+  );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
@@ -367,13 +382,14 @@ export function MessagePane({
   /** 暗号化した送信の失敗を利用者に知らせる。 */
   const reportEncryptedFailure = useCallback(
     (cause: unknown) => {
+      if (noticeJoinRequired(cause)) return;
       const code = (cause as { code?: unknown } | null)?.code;
       if (code === "NeedsUnlock") toast.error(t("e2ee.sendNeedsUnlock"));
       else if (cause instanceof EncryptedSendError) toast.error(t("e2ee.sendStaleEpoch"));
       else if (apiErrorCode(cause) === "E2EE_STALE_REVISION") toast.error(t("e2ee.editConflict"));
       else toast.error(t("common.writeErrorDetail", { error: localizeApiError(cause, t) }));
     },
-    [t],
+    [noticeJoinRequired, t],
   );
 
   const attachmentsQuery = useMessageAttachments(
@@ -564,10 +580,14 @@ export function MessagePane({
     if (!error) {
       return;
     }
+    if (noticeJoinRequired(errorCause)) {
+      setError(null);
+      return;
+    }
     const description = errorCause == null ? error : localizeApiError(errorCause, t);
     toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
-  }, [error, errorCause, setError, t]);
+  }, [error, errorCause, noticeJoinRequired, setError, t]);
 
   const handleJoin = useCallback(async () => {
     if (!currentUserId || isJoining) {
@@ -993,17 +1013,25 @@ export function MessagePane({
                 onTyping={typing.onTyping}
                 // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
                 // 最初のページの取得を止めるため、互いに待ち合って失敗する。
-                disabled={readOnly || sendBlocked || !isOnline || messagesQuery.isLoading}
+                disabled={
+                  readOnly ||
+                  postingForbidden ||
+                  sendBlocked ||
+                  !isOnline ||
+                  messagesQuery.isLoading
+                }
                 placeholder={
-                  downgraded
-                    ? t("e2ee.downgraded")
-                    : checkingEncryption
-                      ? t("e2ee.checking")
-                      : sendBlocked
-                        ? t("e2ee.deviceNotReady")
-                        : isOnline
-                          ? undefined
-                          : t("offline.composeDisabled")
+                  postingForbidden
+                    ? t("channels.postingManagersOnly")
+                    : downgraded
+                      ? t("e2ee.downgraded")
+                      : checkingEncryption
+                        ? t("e2ee.checking")
+                        : sendBlocked
+                          ? t("e2ee.deviceNotReady")
+                          : isOnline
+                            ? undefined
+                            : t("offline.composeDisabled")
                 }
               />
             </>
@@ -1035,10 +1063,21 @@ export function MessagePane({
             membership={threadMembership.data?.membership}
             membershipPending={threadMembership.pending}
             membershipError={threadMembership.error}
+            membershipLoading={!threadMembership.data}
+            participantCount={threadMembership.data?.participant_count}
+            participants={threadMembership.data?.participants}
             onMembershipRetry={() => void threadMembership.retry?.()}
             onJoinThread={() => void threadMembership.change?.("join")}
             onLeaveThread={() => void threadMembership.change?.("leave")}
             onReopenThread={() => void threadMembership.change?.("unarchive")}
+            onReopenAndJoinThread={() =>
+              void (async () => {
+                // 再Openに失敗したら参加しない（アーカイブ中の参加は 409 になり、原因が分からなくなる）。
+                if (await threadMembership.change?.("unarchive")) {
+                  await threadMembership.change?.("join");
+                }
+              })()
+            }
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived ? null : currentUserId}
@@ -1066,14 +1105,17 @@ export function MessagePane({
             onSendReply={handleSendReply}
             onOpenThread={openThread}
             composeDisabledReason={
-              downgraded
-                ? t("e2ee.downgraded")
-                : checkingEncryption
-                  ? t("e2ee.checking")
-                  : sendBlocked
-                    ? t("e2ee.deviceNotReady")
-                    : undefined
+              postingForbidden
+                ? t("channels.postingManagersOnly")
+                : downgraded
+                  ? t("e2ee.downgraded")
+                  : checkingEncryption
+                    ? t("e2ee.checking")
+                    : sendBlocked
+                      ? t("e2ee.deviceNotReady")
+                      : undefined
             }
+            postingForbidden={postingForbidden}
             hasOlder={threadQuery.hasOlder}
             isLoadingOlder={threadQuery.isLoadingOlder}
             onLoadOlder={() => void threadQuery.loadOlder()}

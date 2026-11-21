@@ -156,4 +156,28 @@ describe("ThreadPane のダイアログ挙動", () => {
     expect(await screen.findByRole("complementary", { name: "スレッド" })).toBeVisible();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  it("moves focus to the reply box once joining makes it available", async () => {
+    await page.viewport(1200, 800);
+    function JoinHarness() {
+      const [membership, setMembership] = useState<"none" | "joined">("none");
+      return (
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({
+              membership,
+              participantCount: 0,
+              onJoinThread: () => setMembership("joined"),
+            })}
+          />
+        </LocaleProvider>
+      );
+    }
+    render(<JoinHarness />);
+    // The reply box is hidden until the thread is joined.
+    expect(screen.queryByRole("textbox", { name: "返信を送信" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "参加する" }));
+    const input = await screen.findByRole("textbox", { name: "返信を送信" });
+    await waitFor(() => expect(input).toHaveFocus());
+  });
 });

@@ -60,6 +60,7 @@
     "notFound": "搵唔到頻道。",
     "duplicateName": "同名頻道已經存在。",
     "privateMessages": "呢個係私人頻道，收到邀請之後就可以睇訊息。",
+    "postingManagersOnly": "呢個頻道淨係管理員先可以發文。",
     "back": "返去頻道列表",
     "noDescription": "仲未有簡介",
     "visibilityHelp": "任何人都可以加入公開頻道。私人頻道就要開頻道嘅人邀請先入得。",
@@ -313,8 +314,14 @@
     "join": "加入討論串",
     "leave": "退出討論串",
     "reopen": "重新開啟",
-    "reopenOnSend": "傳送回覆會重新開啟並加入呢個討論串。",
-    "membershipError": "無法更新討論串參與狀態。"
+    "reopenOnSend": "傳送回覆會重新開啟呢個討論串。",
+    "membershipError": "無法更新討論串參與狀態。",
+    "participants_one": "參加者 {{count}} 人",
+    "participants_other": "參加者 {{count}} 人",
+    "participantsMore": "仲有 {{count}} 人",
+    "participantsEmpty": "冇參加者",
+    "joinToReply": "參加之後就可以喺呢個討論串回覆。",
+    "reopenAndJoin": "重開並參加"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",
@@ -811,6 +818,7 @@
     "post": "發佈",
     "sending": "發佈中…",
     "sendError": "發佈失敗，草稿仲喺度，請再試。",
+    "postForbidden": "你唔可以喺呢個頻道發佈。",
     "loadError": "載入唔到時間線。",
     "loading": "載入中…",
     "empty": "仲未有帖文",
