@@ -1732,6 +1732,9 @@
     "empty": "No public channels are available.",
     "saved": "Saved."
   },
+  "androidUpdate": {
+    "title": "App updates"
+  },
   "androidNotifications": {
     "enable": "Enable notifications",
     "scope": "Receive new notifications while your signed-in session is syncing.",

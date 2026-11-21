@@ -1732,6 +1732,9 @@
     "empty": "사용 가능한 공개 채널이 없습니다.",
     "saved": "저장했습니다."
   },
+  "androidUpdate": {
+    "title": "앱 업데이트"
+  },
   "androidNotifications": {
     "enable": "알림 사용",
     "scope": "로그인한 세션이 동기화되는 동안 새 알림을 받습니다.",

@@ -1732,6 +1732,9 @@
     "empty": "没有可用的公开频道。",
     "saved": "已保存。"
   },
+  "androidUpdate": {
+    "title": "应用更新"
+  },
   "androidNotifications": {
     "enable": "启用通知",
     "scope": "登录会话同步期间接收新通知。",

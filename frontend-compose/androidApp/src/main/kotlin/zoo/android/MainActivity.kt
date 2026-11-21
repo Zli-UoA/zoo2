@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,14 +12,11 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -38,7 +36,7 @@ import zoo.phone.LocalPhoneController
 import zoo.phone.PhoneCallBanner
 import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
-import zoo.android.update.AndroidUpdateFrame
+import zoo.android.update.UpdateSettingsContent
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
 
@@ -140,6 +138,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         notificationIntent = intent
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
@@ -175,7 +174,7 @@ class MainActivity : ComponentActivity() {
         val dark = isSystemInDarkTheme()
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
-        var restoring by remember { mutableStateOf(true) }
+        var restoring by remember { mutableStateOf(loginStore.hasSession) }
         var restoreCancelRequested by remember { mutableStateOf(false) }
         var restoreAttempt by remember { mutableIntStateOf(0) }
         var restoreJob by remember { mutableStateOf<Job?>(null) }
@@ -237,7 +236,7 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(restoreAttempt) {
             restoreJob = currentCoroutineContext()[Job]
-            restoring = true
+            restoring = loginStore.hasSession
             restoreCancelRequested = false
             restoreError = ""
             try {
@@ -259,29 +258,17 @@ class MainActivity : ComponentActivity() {
                 restoreJob = null
             }
         }
-        AndroidUpdateFrame(this, current?.platform?.env?.dark ?: dark) {
-            if (current == null) {
+        if (current == null) {
+            CompositionLocalProvider(LocalTouchUi provides true) {
                 ZooTheme(dark = dark) {
-                    if (restoring) {
-                        Surface(Modifier.fillMaxSize()) {
-                            Column(
-                                Modifier.safeDrawingPadding().padding(24.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp),
-                            ) {
-                                Text(if (restoreCancelRequested) "トークン更新の終了を待っています" else "ログインを復元しています")
-                                CircularProgressIndicator()
-                                TextButton(
-                                    enabled = !restoreCancelRequested,
-                                    onClick = {
-                                        restoreCancelRequested = true
-                                        restoreJob?.cancel()
-                                    },
-                                ) { Text("ログイン画面を開く") }
-                            }
-                        }
-                    } else Login(
+                    Login(
                         initialError = restoreError,
                         retryRestore = if (canRestore) ({ restoreAttempt++ }) else null,
+                        restoring = restoring,
+                        cancelRestore = if (restoreCancelRequested) null else ({
+                            restoreCancelRequested = true
+                            restoreJob?.cancel()
+                        }),
                     ) { base, issuer, client, resource ->
                         canRestore = false
                         loginStore.clear()
@@ -289,86 +276,89 @@ class MainActivity : ComponentActivity() {
                         connect(LoginConnection(base, issuer, client, resource), null)
                     }
                 }
-            } else {
-                val platform = current.platform
-                LaunchedEffect(platform.env, dark) {
-                    platform.systemDark(dark)
-                    current.session.update(platform.env)
-                }
-                DisposableEffect(current) {
-                    var disposed = false
-                    val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
-                        platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                        current.session.update(platform.env)
-                    }
-                    lifecycle.addObserver(observer)
+            }
+        } else {
+            val platform = current.platform
+            LaunchedEffect(platform.env, dark) {
+                platform.systemDark(dark)
+                current.session.update(platform.env)
+            }
+            DisposableEffect(current) {
+                var disposed = false
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
                     platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     current.session.update(platform.env)
-                    val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-                    fun updateOnline() = runOnUiThread {
-                        if (!disposed) platform.online(hasInternet(
-                            connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
-                        ))
+                }
+                lifecycle.addObserver(observer)
+                platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                current.session.update(platform.env)
+                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+                fun updateOnline() = runOnUiThread {
+                    if (!disposed) platform.online(hasInternet(
+                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
+                    ))
+                }
+                val callback =
+                    object : android.net.ConnectivityManager.NetworkCallback() {
+                        override fun onAvailable(network: android.net.Network) = updateOnline()
+
+                        override fun onLost(network: android.net.Network) = updateOnline()
+
+                        override fun onCapabilitiesChanged(
+                            network: android.net.Network,
+                            caps: android.net.NetworkCapabilities,
+                        ) = updateOnline()
                     }
-                    val callback =
-                        object : android.net.ConnectivityManager.NetworkCallback() {
-                            override fun onAvailable(network: android.net.Network) = updateOnline()
-
-                            override fun onLost(network: android.net.Network) = updateOnline()
-
-                            override fun onCapabilitiesChanged(
-                                network: android.net.Network,
-                                caps: android.net.NetworkCapabilities,
-                            ) = updateOnline()
-                        }
-                    connectivity.registerDefaultNetworkCallback(callback)
-                    updateOnline()
-                    onDispose {
-                        disposed = true
-                        lifecycle.removeObserver(observer)
-                        connectivity.unregisterNetworkCallback(callback)
+                connectivity.registerDefaultNetworkCallback(callback)
+                updateOnline()
+                onDispose {
+                    disposed = true
+                    lifecycle.removeObserver(observer)
+                    connectivity.unregisterNetworkCallback(callback)
+                }
+            }
+            BackHandler {
+                when {
+                    current.session.escape() -> Unit
+                    current.session.thread != null -> current.session.thread = null
+                    platform.back() -> Unit
+                    else -> moveTaskToBack(true)
+                }
+            }
+            val encryption =
+                remember(current) {
+                    current.e2eeSettings?.let { host ->
+                        @Composable { app: Session -> zoo.crypto.EncryptionSettings(app, host) }
                     }
                 }
-                BackHandler {
-                    when {
-                        current.session.escape() -> Unit
-                        current.session.thread != null -> current.session.thread = null
-                        platform.back() -> Unit
-                        else -> moveTaskToBack(true)
+            CompositionLocalProvider(
+                LocalWebPlatform provides platform,
+                LocalApp provides current.session,
+                LocalEncryptionSettings provides encryption,
+                LocalAndroidUpdateSettings provides { UpdateSettingsContent(this@MainActivity) },
+                LocalAndroidNotificationSettings provides {
+                    val allowed = remember(notificationPermissionRevision, platform.env.visible) {
+                        current.notifications.allowed()
                     }
-                }
-                val encryption =
-                    remember(current) {
-                        current.e2eeSettings?.let { host ->
-                            @Composable { app: Session -> zoo.crypto.EncryptionSettings(app, host) }
+                    zoo.Text(current.session.t("androidNotifications.scope"))
+                    zoo.Button(
+                        current.session.t(if (allowed) "settings.navTitle" else "androidNotifications.enable"),
+                        icon = "bell",
+                        click = ::enableNotifications,
+                    )
+                },
+                LocalTouchUi provides true,
+                LocalPhoneController provides current.phone.controller,
+            ) {
+                ZooTheme(platform.env.dark, locale = platform.env.locale) {
+                    Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics(platform.env.operationHaptics)) {
+                        Box(Modifier.weight(1f)) {
+                            NativeWindow(current.session) { ZooApp(current.session) }
                         }
+                        PhoneCallBanner(current.session, current.phone.controller)
                     }
-                CompositionLocalProvider(
-                    LocalWebPlatform provides platform,
-                    LocalApp provides current.session,
-                    LocalEncryptionSettings provides encryption,
-                    LocalTouchUi provides true,
-                    LocalPhoneController provides current.phone.controller,
-                ) {
-                    ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics(platform.env.operationHaptics)) {
-                            val notificationsAllowed = remember(notificationPermissionRevision, platform.env.visible) {
-                                current.notifications.allowed()
-                            }
-                            if (!notificationsAllowed) {
-                                TextButton(onClick = ::enableNotifications) {
-                                    Text(current.session.t("androidNotifications.enable"))
-                                }
-                                Text(current.session.t("androidNotifications.scope"), style = MaterialTheme.typography.bodySmall)
-                            }
-                            Box(Modifier.weight(1f)) {
-                                NativeWindow(current.session) { ZooApp(current.session) }
-                            }
-                            PhoneCallBanner(current.session, current.phone.controller)
-                        }
-                        unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
-                    }
+                    unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                 }
             }
         }
@@ -484,6 +474,8 @@ class MainActivity : ComponentActivity() {
     private fun Login(
         initialError: String = "",
         retryRestore: (() -> Unit)? = null,
+        restoring: Boolean = false,
+        cancelRestore: (() -> Unit)? = null,
         connect: suspend (String, String, String, String) -> Unit
     ) {
         val prefs = remember { getSharedPreferences("connection", 0) }
@@ -499,80 +491,57 @@ class MainActivity : ComponentActivity() {
         var resource by rememberSaveable {
             mutableStateOf(prefs.getString("resource", "https://zli.chat/api").orEmpty())
         }
-        var advanced by rememberSaveable { mutableStateOf(client.isBlank()) }
-        var error by remember { mutableStateOf(initialError) }
+        var advanced by rememberSaveable { mutableStateOf(false) }
+        var error by remember(initialError) { mutableStateOf(initialError) }
         var job by remember { mutableStateOf<Job?>(null) }
         val scope = rememberCoroutineScope()
         AndroidSignInScreen(
-            message = "ブラウザーで認証を完了すると、Zooに戻ります。",
-            detailsVisible = advanced,
+            message = if (restoring) "" else "ブラウザーで認証を完了すると、Zooに戻ります。",
+            detailsVisible = advanced && !restoring,
+            busy = restoring || job != null,
             details = {
-                if (advanced) {
-                    OutlinedTextField(
-                        base,
-                        { base = it },
-                        label = { Text("Zoo サーバー URL") },
-                        enabled = job == null,
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                    )
-                    OutlinedTextField(
-                        issuer,
-                        { issuer = it },
-                        label = { Text("OIDC issuer") },
-                        enabled = job == null,
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                    )
-                    OutlinedTextField(
-                        client,
-                        { client = it },
-                        label = { Text("Android 用 public client ID") },
-                        enabled = job == null,
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
-                    )
-                    OutlinedTextField(
-                        resource,
-                        { resource = it },
-                        label = { Text("Resource / audience") },
-                        enabled = job == null,
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-                    )
+                if (advanced && !restoring) {
+                    Field(base, "Zoo サーバー URL", Modifier.fillMaxWidth(), enabled = job == null,
+                        inputAttributes = mapOf("type" to "url")) { base = it }
+                    Field(issuer, "OIDC issuer", Modifier.fillMaxWidth(), enabled = job == null,
+                        inputAttributes = mapOf("type" to "url")) { issuer = it }
+                    Field(client, "Android 用 public client ID", Modifier.fillMaxWidth(), enabled = job == null) {
+                        client = it
+                    }
+                    Field(resource, "Resource / audience", Modifier.fillMaxWidth(), enabled = job == null,
+                        inputAttributes = mapOf("type" to "url")) { resource = it }
                 }
-                if (error.isNotEmpty()) Text(
+                if (!restoring && error.isNotEmpty()) Text(
                     error,
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     color = MaterialTheme.colorScheme.error,
                 )
             },
             actions = {
-                TextButton(onClick = { advanced = !advanced }, enabled = job == null) {
-                    Text("接続先の設定")
-                }
-                if (retryRestore != null && job == null) {
-                    TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
-                }
-                if (job != null) {
-                    CircularProgressIndicator(Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally))
-                    TextButton(
-                        modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally),
-                        onClick = {
-                            job?.cancel()
-                        }
-                    ) {
-                        Text("キャンセル")
+                when {
+                    restoring -> zoo.Button("ログイン画面を開く", enabled = cancelRestore != null, variant = "ghost") {
+                        cancelRestore?.invoke()
                     }
-                } else {
-                    androidx.compose.material3.Button(
-                        modifier = Modifier.align(androidx.compose.ui.Alignment.CenterHorizontally).widthIn(min = 170.dp),
-                        enabled = client.isNotBlank(),
-                        onClick = {
+                    job != null -> zoo.Button("キャンセル", variant = "ghost") { job?.cancel() }
+                    else -> {
+                        if (client.isNotBlank() || advanced) {
+                            zoo.Button(if (advanced) "接続先の設定を閉じる" else "接続先の設定", variant = "ghost") {
+                                advanced = !advanced
+                            }
+                        }
+                        if (retryRestore != null) {
+                            zoo.Button("自動ログインを再試行", variant = "ghost", click = retryRestore)
+                        }
+                        zoo.Button(
+                            if (client.isBlank() && !advanced) "接続先を設定" else "ログイン",
+                            enabled = client.isNotBlank() || !advanced,
+                            primary = true,
+                            contentInset = 24.dp,
+                        ) {
+                            if (client.isBlank()) {
+                                advanced = true
+                                return@Button
+                            }
                             job =
                                 scope.launch {
                                     error = ""
@@ -614,9 +583,7 @@ class MainActivity : ComponentActivity() {
                                         job = null
                                     }
                                 }
-                        },
-                    ) {
-                        Text("ログイン")
+                        }
                     }
                 }
             },

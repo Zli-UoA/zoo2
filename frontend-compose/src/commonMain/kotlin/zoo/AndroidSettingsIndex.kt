@@ -48,6 +48,8 @@ internal fun AndroidSettingsIndex(
                 "members" -> "users"
                 "emojis" -> "smile-plus"
                 "apps" -> "bot"
+                "android-notifications" -> "bell"
+                "android-update" -> "refresh-cw"
                 else -> "settings"
             }) { onOpen(destination) }
         }

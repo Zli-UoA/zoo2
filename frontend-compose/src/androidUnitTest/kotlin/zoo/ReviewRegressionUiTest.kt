@@ -185,6 +185,35 @@ class ReviewRegressionUiTest {
     }
 
     @Test
+    fun androidUpdateSettingsOpensAsAChildWithoutBottomNavigation() {
+        val fixture = Fixture(Environment(path = "/settings", touch = true, online = false), mapOf(
+            "androidUpdate.title" to "アプリの更新",
+            "nav.main" to "メインナビゲーション",
+        ))
+        try {
+            ui.setContent {
+                CompositionLocalProvider(
+                    LocalTouchUi provides true,
+                    LocalApp provides fixture.app,
+                    LocalAndroidUpdateSettings provides { Text("バージョン 0.1.0") },
+                ) {
+                    ZooTheme(dark = false) {
+                        NativeWindow(fixture.app) { ZooApp(fixture.app) }
+                    }
+                }
+            }
+            ui.onNodeWithText("バージョン 0.1.0").assertDoesNotExist()
+            ui.onNodeWithContentDescription("メインナビゲーション").assertIsDisplayed()
+            ui.onNodeWithText("アプリの更新").performScrollTo().performClick()
+            ui.onNodeWithText("バージョン 0.1.0").assertIsDisplayed()
+            ui.onNodeWithContentDescription("メインナビゲーション").assertDoesNotExist()
+            ui.runOnIdle { assertEquals("android-update", fixture.app.query["tab"]) }
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
     fun androidThreadScreenUsesFlatConversationLayoutAndReturnsToItsParent() {
         val fixture = Fixture(Environment(touch = true, online = false), mapOf(
             "threads.title" to "スレッド", "threads.close" to "会話に戻る",

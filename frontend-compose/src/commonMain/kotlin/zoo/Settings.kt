@@ -46,10 +46,15 @@ fun searchUrl(engine: String, query: String): String {
  */
 val LocalEncryptionSettings = staticCompositionLocalOf<(@Composable (Session) -> Unit)?> { null }
 
+val LocalAndroidUpdateSettings = staticCompositionLocalOf<(@Composable () -> Unit)?> { null }
+val LocalAndroidNotificationSettings = staticCompositionLocalOf<(@Composable () -> Unit)?> { null }
+
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
     val encryption = LocalEncryptionSettings.current
     val phone = LocalPhoneController.current
+    val updateSettings = LocalAndroidUpdateSettings.current
+    val notificationSettings = LocalAndroidNotificationSettings.current
     val android = LocalTouchUi.current
     val tabs =
         listOfNotNull(
@@ -62,6 +67,8 @@ fun ZooSettings(app: Session, users: List<Row>) {
             "apps" to "apps.title",
             "members" to "members.title",
             "slack" to "slackLink.tab",
+            ("android-notifications" to "notifications.title").takeIf { android && notificationSettings != null },
+            ("android-update" to "androidUpdate.title").takeIf { android && updateSettings != null },
         )
     val selectedTab = app.query["tab"]?.takeIf { value -> tabs.any { it.first == value } }
     val tab = selectedTab ?: "general"
@@ -182,6 +189,8 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)
                     "slack" -> SlackLinkPanel(app)
+                    "android-notifications" -> notificationSettings?.invoke()
+                    "android-update" -> updateSettings?.invoke()
                     "encryption" -> encryption?.invoke(app) ?: GeneralSettings(app)
                     else -> GeneralSettings(app, showAppearance = !android)
                 }

@@ -1732,6 +1732,9 @@
     "empty": "選択できる公開チャンネルがありません。",
     "saved": "保存しました。"
   },
+  "androidUpdate": {
+    "title": "アプリの更新"
+  },
   "androidNotifications": {
     "enable": "通知を有効にする",
     "scope": "ログイン中に同期した新着通知を受信します。",
