@@ -51,6 +51,7 @@
         <activity
             android:name="zoo.android.phone.PhonePictureInPictureActivity"
             android:exported="false"
+            android:launchMode="singleTop"
             android:taskAffinity="${applicationId}.callpreview"
             android:excludeFromRecents="true"
             android:supportsPictureInPicture="true"

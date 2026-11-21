@@ -18,6 +18,8 @@ import zoo.android.phone.DM_PUSH_ANSWER_ACTION
 import zoo.android.phone.DM_PUSH_OPEN_ACTION
 import zoo.android.phone.DmCallPushAnswer
 import zoo.android.phone.IncomingCallActivity
+import zoo.android.phone.incomingCallerInitials
+import zoo.android.phone.phoneDictionaryLocale
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -130,6 +132,23 @@ class AndroidPushTest {
         assertTrue(manager.activeNotifications.isEmpty())
         showPushNotification(context, payload)
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun phoneLabelsUseTheCurrentBindingsSavedLocale() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+
+        store.setPhoneLocale("stale-binding", "ja")
+        assertNull(store.phoneLocale())
+        store.setPhoneLocale(binding, "ja")
+        store.setPhoneLocale("stale-binding", "en")
+        assertEquals("ja", PushBinding(context).phoneLocale())
+        assertEquals("ja", phoneDictionaryLocale(context))
+    }
+
+    @Test fun initialsPreserveWholeEmoji() {
+        assertEquals("A😀", incomingCallerInitials("A😀B"))
+        assertEquals("👩‍💻B", incomingCallerInitials("👩‍💻Bob"))
     }
 
     @Test fun lockScreenFinishesIfRingEndedBeforeItWasCreated() {

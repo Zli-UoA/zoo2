@@ -3,11 +3,12 @@ package zoo.phone
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.*
 import zoo.*
@@ -145,22 +146,23 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
     val status = app.t("sip.status.${call.status}")
     val pip = LocalPhonePictureInPicture.current
     if (minimized && call.status != "incoming" && !controller.error) {
-        Box(Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.screenInset),
-            contentAlignment = Alignment.CenterEnd) {
+        Box(
+            Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.screenInset, vertical = AndroidDesign.spaceSmall),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            val expand = app.t("androidPhone.expandCall")
             Surface(
-                shape = RoundedCornerShape(AndroidDesign.surfaceRadius),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                onClick = { minimized = false },
+                modifier = Modifier.size(AndroidDesign.touchTarget).semantics {
+                    contentDescription = expand
+                    stateDescription = status
+                    role = Role.Button
+                },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary,
             ) {
-                Row(Modifier.widthIn(max = 400.dp).padding(horizontal = AndroidDesign.spaceMedium),
-                    horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f, fill = false)) {
-                        Text(call.label.ifBlank { app.t("sip.title") }, maxLines = 1)
-                        Text(status, small = true, muted = true, maxLines = 1)
-                    }
-                    Button(app.t("androidPhone.expandCall"), variant = "outline") { minimized = false }
-                    Button(app.t("sip.hangup"), destructive = true) { controller.hangup() }
+                Box(contentAlignment = Alignment.Center) {
+                    PhonePeerAvatar(app, call, AndroidDesign.avatar)
                 }
             }
         }
@@ -189,6 +191,30 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
             Button(app.t("sip.sendTone"), enabled = !controller.busy && Regex("[0-9*#]").matches(tone), variant = "outline") { controller.dtmf(tone) }
         }
         if (controller.error) PhoneErrorText(app.t("androidPhone.callError"))
+    }
+}
+
+@Composable
+fun PhonePeerAvatar(app: Session, call: PhoneCall, size: Dp) {
+    if (call.kind == "dm") {
+        val channels by app.repo.channels.replicatedRows.collectAsState()
+        val users by app.repo.users.replicatedRows.collectAsState()
+        val channel = channels.firstOrNull { it.text("id") == call.target }
+        val peerId = channel?.let { oneToOneDmIds(it.text("channel_name")) }
+            ?.singleOrNull { it != app.config.userId }
+        val peer = users.firstOrNull { it.text("id") == peerId }
+        val initials = call.label.trim().split(Regex("\\s+")).take(2)
+            .joinToString("") { it.take(1) }.uppercase().ifBlank { "?" }
+        CompositionLocalProvider(LocalApp provides app) {
+            Avatar(peer, size = size, fallback = initials)
+        }
+    } else {
+        Surface(modifier = Modifier.size(size), shape = CircleShape,
+            color = MaterialTheme.colorScheme.surfaceVariant) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon("phone", modifier = Modifier.size(size / 2))
+            }
+        }
     }
 }
 

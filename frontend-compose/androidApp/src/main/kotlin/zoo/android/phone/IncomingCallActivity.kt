@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.icu.text.BreakIterator
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -36,6 +37,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -89,6 +93,15 @@ internal fun incomingPresentation(
     builder.setFullScreenIntent(PendingIntent.getActivity(
         context, 0, screen, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     ), true)
+}
+
+internal fun incomingCallerInitials(name: String): String {
+    val firstWord = name.trim().takeWhile { !it.isWhitespace() }
+    val characters = BreakIterator.getCharacterInstance().apply { setText(firstWord) }
+    repeat(2) {
+        if (characters.next() == BreakIterator.DONE) return firstWord.uppercase()
+    }
+    return firstWord.substring(0, characters.current()).uppercase()
 }
 
 /** A lock-screen surface contains call controls only. The main app opens after unlocking. */
@@ -160,7 +173,8 @@ class IncomingCallActivity : ComponentActivity() {
                                     Box(
                                         Modifier.size(128.dp)
                                             .border(1.dp, colors.primary.copy(alpha = 0.24f), CircleShape)
-                                            .background(colors.primary.copy(alpha = 0.08f), CircleShape),
+                                            .background(colors.primary.copy(alpha = 0.08f), CircleShape)
+                                            .clearAndSetSemantics {},
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         when {
@@ -171,7 +185,7 @@ class IncomingCallActivity : ComponentActivity() {
                                                 Modifier.size(88.dp).background(colors.primary, CircleShape),
                                                 contentAlignment = Alignment.Center,
                                             ) {
-                                                Text(callerName.takeWhile { !it.isWhitespace() }.take(2).uppercase(),
+                                                Text(incomingCallerInitials(callerName),
                                                     color = colors.onPrimary, size = MaterialTheme.typography.headlineMedium.fontSize,
                                                     weight = FontWeight.SemiBold)
                                             }
@@ -180,12 +194,17 @@ class IncomingCallActivity : ComponentActivity() {
                                         }
                                     }
                                     Spacer(Modifier.height(24.dp))
-                                    Text(callerName ?: "Zoo", color = colors.primary, weight = FontWeight.SemiBold,
-                                        textAlign = TextAlign.Center, maxLines = 2)
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(title, size = MaterialTheme.typography.headlineMedium.fontSize,
-                                        lineHeight = MaterialTheme.typography.headlineMedium.lineHeight,
-                                        weight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                                    Column(
+                                        Modifier.semantics(mergeDescendants = true) { heading() },
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                    ) {
+                                        Text(callerName ?: "Zoo", color = colors.primary, weight = FontWeight.SemiBold,
+                                            textAlign = TextAlign.Center, maxLines = 2)
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(title, size = MaterialTheme.typography.headlineMedium.fontSize,
+                                            lineHeight = MaterialTheme.typography.headlineMedium.lineHeight,
+                                            weight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                                    }
                                 }
                                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(onClick = { answerWhenUnlocked(answer) },

@@ -1815,6 +1815,7 @@
     "minimizeCall": "最小化",
     "expandCall": "通話を開く",
     "floatCall": "フローティング表示",
+    "pipUnavailable": "Androidの設定でピクチャーインピクチャーを確認してください。",
     "incomingScreenSettings": "着信時の全画面表示を設定",
     "receiveDm": "DM通話の着信を受ける",
     "callError": "通話の準備または操作に失敗しました。マイク権限、端末の通話対応、ネットワークと回線設定を確認してください。",

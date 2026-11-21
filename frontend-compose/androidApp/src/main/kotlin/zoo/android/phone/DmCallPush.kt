@@ -106,14 +106,19 @@ private fun showBoundDmCallPush(context: Context, store: PushBinding, user: Stri
 }
 
 
-internal fun phoneLabel(context: Context, key: String, fallback: String): String {
-    val locale = context.resources.configuration.locales[0] ?: return fallback
-    val dictionaryLocale = PushBinding(context).phoneLocale() ?: when (locale.language) {
+internal fun phoneDictionaryLocale(context: Context): String {
+    PushBinding(context).phoneLocale()?.let { return it }
+    val locale = context.resources.configuration.locales[0] ?: return "en"
+    return when (locale.language) {
         "ja", "yue" -> locale.language
         "ko" -> if (locale.country == "KP") "ko-KP" else "ko-KR"
         "zh" -> if (locale.script == "Hant" || locale.country in setOf("TW", "HK", "MO")) "zh-Hant" else "zh-Hans"
         else -> "en"
     }
+}
+
+internal fun phoneLabel(context: Context, key: String, fallback: String): String {
+    val dictionaryLocale = phoneDictionaryLocale(context)
     return runCatching {
         val dictionary = phoneDictionaries.getOrPut(dictionaryLocale) {
             context.assets.open("locales/$dictionaryLocale.json")

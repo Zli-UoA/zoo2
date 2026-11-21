@@ -76,6 +76,26 @@ class TelecomIntegrationTest {
         }
     }
 
+    @Test fun pictureInPictureRejectsUnconnectedAndMismatchedCalls() = runTest {
+        Fixture(backgroundScope).use { f ->
+            f.host.controller.receiveDmCalls(true)
+            runCurrent()
+            f.ring()
+            val id = assertNotNull(f.host.controller.call).id
+            assertNull(f.host.incomingCaller("other-call"))
+            assertNull(f.host.incomingCaller(id)) // The authenticated invite and user have not synced.
+            PhonePictureInPictureActivity.open(f.context, f.host, id)
+            assertNull(f.shadow.nextStartedActivity)
+
+            for ((token, call) in listOf(f.host.token to id, "stale-session" to id, f.host.token to "other-call")) {
+                val intent = Intent(f.context, PhonePictureInPictureActivity::class.java)
+                    .putExtra(PHONE_SESSION, token).putExtra(PHONE_CALL, call)
+                val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, intent).create().get()
+                assertTrue(activity.isFinishing)
+            }
+        }
+    }
+
     @Test fun enablingDmWaitingDoesNotStartAServiceOrPostANotification() = runTest {
         Fixture(backgroundScope).use {
             it.host.controller.receiveDmCalls(true)

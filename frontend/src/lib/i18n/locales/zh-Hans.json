@@ -1815,6 +1815,7 @@
     "minimizeCall": "最小化",
     "expandCall": "展开通话",
     "floatCall": "画中画",
+    "pipUnavailable": "请在 Android 设置中检查画中画。",
     "incomingScreenSettings": "全屏来电设置",
     "receiveDm": "接收私信来电",
     "callError": "无法准备或操作通话，请检查麦克风权限、设备通话支持、网络和线路设置。",

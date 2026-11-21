@@ -8,6 +8,7 @@ import android.content.res.Configuration
 import android.graphics.drawable.Icon
 import android.os.Bundle
 import android.util.Rational
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -20,7 +21,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
+import works.zli.zoo.R
+import zoo.phone.PhonePeerAvatar
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
@@ -29,7 +31,7 @@ import zoo.LocalTouchUi
 import zoo.Text
 import zoo.ZooTheme
 
-/** Only the call status is rendered here, including during the transition into PiP. */
+/** A separate activity keeps the caller display and controls independent of the chat UI. */
 class PhonePictureInPictureActivity : ComponentActivity() {
     private var inPictureInPicture by mutableStateOf(false)
     private var enterOnResume = true
@@ -45,14 +47,15 @@ class PhonePictureInPictureActivity : ComponentActivity() {
             finish()
             return
         }
+        val call = checkNotNull(host.controller.call)
         inPictureInPicture = isInPictureInPictureMode
         enterOnResume = savedInstanceState == null && !inPictureInPicture
         val hangup = host.app.t("sip.hangup")
         val open = callActivity(this, host, id, "OPEN")
         val end = endCall(this, host, id)
         parameters = PictureInPictureParams.Builder()
-            .setAspectRatio(Rational(2, 1))
-            .setActions(listOf(RemoteAction(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), hangup, hangup, end)))
+            .setAspectRatio(Rational(1, 1))
+            .setActions(listOf(RemoteAction(Icon.createWithResource(this, R.drawable.ic_phone_hangup), hangup, hangup, end)))
             .build()
         lifecycleScope.launch {
             snapshotFlow { host.valid(id) && host.controller.call?.status == "active" }.collect { active ->
@@ -63,20 +66,22 @@ class PhonePictureInPictureActivity : ComponentActivity() {
             CompositionLocalProvider(LocalTouchUi provides true) {
                 ZooTheme(dark = true, locale = host.app.env.locale) {
                     Surface(color = MaterialTheme.colorScheme.surface) {
-                        Column(
+                        if (inPictureInPicture) {
+                            BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                PhonePeerAvatar(host.app, call, minOf(maxWidth, maxHeight) * 0.64f)
+                            }
+                        } else Column(
                             Modifier.fillMaxSize().padding(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
-                            Text("Zoo", color = MaterialTheme.colorScheme.primary, weight = FontWeight.SemiBold)
                             Text(host.app.t("sip.status.active"), small = true)
-                            if (!inPictureInPicture) {
-                                Button(host.app.t("androidPhone.expandCall"), primary = true) {
-                                    runCatching { open.send() }
-                                    finish()
-                                }
-                                Button(hangup, destructive = true) { runCatching { end.send() } }
+
+                            Button(host.app.t("androidPhone.expandCall"), primary = true) {
+                                runCatching { open.send() }
+                                finish()
                             }
+                            Button(hangup, destructive = true) { runCatching { end.send() } }
                         }
                     }
                 }
@@ -89,7 +94,11 @@ class PhonePictureInPictureActivity : ComponentActivity() {
         val params = parameters ?: return
         if (!enterOnResume || isFinishing) return
         enterOnResume = false
-        if (!runCatching { enterPictureInPictureMode(params) }.getOrDefault(false)) finish()
+        if (!runCatching { enterPictureInPictureMode(params) }.getOrDefault(false)) {
+            Toast.makeText(this, phoneLabel(this, "androidPhone.pipUnavailable",
+                "Check Picture-in-picture in Android settings."), Toast.LENGTH_LONG).show()
+            finish()
+        }
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {

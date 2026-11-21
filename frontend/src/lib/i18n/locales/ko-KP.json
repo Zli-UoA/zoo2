@@ -1815,6 +1815,7 @@
     "minimizeCall": "최소화",
     "expandCall": "통화 열기",
     "floatCall": "작은 창으로 보기",
+    "pipUnavailable": "안드로이드 설정에서 화면 속 화면을 확인하세요.",
     "incomingScreenSettings": "전체 화면 수신 설정",
     "receiveDm": "DM 전화 받기",
     "callError": "통화 준비 또는 조작에 실패했습니다. 마이크 권한, 기기의 통화 지원, 네트워크와 회선 설정을 확인하세요.",

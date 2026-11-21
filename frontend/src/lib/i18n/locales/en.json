@@ -1815,6 +1815,7 @@
     "minimizeCall": "Minimize",
     "expandCall": "Expand call",
     "floatCall": "Picture-in-picture",
+    "pipUnavailable": "Check Picture-in-picture in Android settings.",
     "incomingScreenSettings": "Full-screen call settings",
     "receiveDm": "Receive DM calls",
     "callError": "Could not prepare or control the call. Check microphone permission, device calling support, network and line configuration.",

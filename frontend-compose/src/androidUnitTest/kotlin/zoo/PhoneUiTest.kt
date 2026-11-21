@@ -112,7 +112,7 @@ class PhoneUiTest {
             ui.onNodeWithText("common.close").assertDoesNotExist()
         } finally { f.close() }
     }
-    @Test fun minimizedCallCanBeExpandedOrEndedWithoutInterruptingTheCall() {
+    @Test fun minimizedCallCanBeExpandedWithoutInterruptingTheCall() {
         val f = Fixture()
         try {
             ui.runOnIdle { f.controller.callDm("dm", "Bob") }
@@ -122,13 +122,12 @@ class PhoneUiTest {
                 }
             }
             ui.onNodeWithText("androidPhone.minimizeCall").performClick()
-            ui.onNodeWithText("androidPhone.expandCall").assertIsDisplayed()
+            ui.onNodeWithContentDescription("androidPhone.expandCall").assertIsDisplayed()
             ui.runOnIdle { assertEquals("call", f.controller.call?.id) }
-            ui.onNodeWithText("androidPhone.expandCall").performClick()
-            ui.onNodeWithText("androidPhone.minimizeCall").performClick()
+            ui.onNodeWithContentDescription("androidPhone.expandCall").performClick()
             ui.onNodeWithText("sip.hangup").performClick()
             ui.runOnIdle { assertNull(f.controller.call) }
-            ui.onNodeWithText("androidPhone.expandCall").assertDoesNotExist()
+            ui.onNodeWithContentDescription("androidPhone.expandCall").assertDoesNotExist()
         } finally { f.close() }
     }
 

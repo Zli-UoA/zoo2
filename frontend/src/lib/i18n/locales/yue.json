@@ -1815,6 +1815,7 @@
     "minimizeCall": "最小化",
     "expandCall": "開啟通話",
     "floatCall": "浮動視窗",
+    "pipUnavailable": "請喺 Android 設定入面檢查子母畫面。",
     "incomingScreenSettings": "全螢幕來電設定",
     "receiveDm": "接收私訊來電",
     "callError": "準備或操作通話失敗，請檢查咪高峰權限、裝置通話支援、網絡同線路設定。",

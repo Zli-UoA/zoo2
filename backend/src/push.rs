@@ -619,6 +619,24 @@ fn call_invite_tag(invite_id: &str) -> String {
     format!("zoo-call-{invite_id}")
 }
 
+fn call_invite_end_notification(
+    invite: &CallInvitePush,
+    channel_is_dm: bool,
+) -> (NotificationPayload, bool) {
+    (
+        NotificationPayload {
+            title: String::new(),
+            body: String::new(),
+            url: format!("/channels/{}", invite.channel_id),
+            tag: call_invite_tag(&invite.id),
+            notification_type: "call_invite_end".into(),
+            e2ee: None,
+            invite_id: Some(invite.id.clone()),
+        },
+        channel_is_dm,
+    )
+}
+
 async fn deliver_call_invites(
     mut db: toasty::Db,
     invites: Vec<CallInvitePush>,
@@ -636,22 +654,13 @@ async fn deliver_call_invites(
         let result: anyhow::Result<()> = async {
             let mut android_for_invite = android.as_ref();
             let payload = if end {
-                if android_for_invite.is_some()
-                    && !Channel::get_by_id(&mut db, invite.channel_id.as_str())
+                let channel_is_dm = android_for_invite.is_some()
+                    && Channel::get_by_id(&mut db, invite.channel_id.as_str())
                         .await
-                        .is_ok_and(|channel| channel.is_dm)
-                {
-                    android_for_invite = None;
-                }
-                NotificationPayload {
-                    title: String::new(),
-                    body: String::new(),
-                    url: format!("/channels/{}", invite.channel_id),
-                    tag: call_invite_tag(&invite.id),
-                    notification_type: "call_invite_end".into(),
-                    e2ee: None,
-                    invite_id: Some(invite.id.clone()),
-                }
+                        .is_ok_and(|channel| channel.is_dm);
+                let (payload, send_android) = call_invite_end_notification(&invite, channel_is_dm);
+                android_for_invite = android_for_invite.filter(|_| send_android);
+                payload
             } else {
                 let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
                 let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
@@ -758,6 +767,25 @@ async fn send_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ending_a_public_channel_invite_keeps_web_delivery_only() {
+        let invite = super::CallInvitePush {
+            id: "invite".into(),
+            channel_id: "channel".into(),
+            inviter_id: "caller".into(),
+            invitee_id: "recipient".into(),
+        };
+
+        let (payload, send_android) = super::call_invite_end_notification(&invite, false);
+        assert!(!send_android);
+        assert_eq!(payload.notification_type, "call_invite_end");
+        assert_eq!(payload.url, "/channels/channel");
+        assert_eq!(payload.invite_id.as_deref(), Some("invite"));
+
+        let (_, send_android) = super::call_invite_end_notification(&invite, true);
+        assert!(send_android);
+    }
+
     #[test]
     fn expired_delivery_has_no_ttl() {
         let delivery = super::Delivery {

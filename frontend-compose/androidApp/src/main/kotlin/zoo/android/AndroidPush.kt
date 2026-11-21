@@ -156,6 +156,18 @@ internal class PushSubscriptionRegistration(
     private val binding: String,
     private val request: suspend (method: String, endpoint: String) -> Unit,
 ) {
+    private var registeredEndpoint: String? = null
+
+    suspend fun refresh(token: String, supportsDmCalls: Boolean) {
+        val suffix = if (supportsDmCalls && store.dmCallsEnabled(user)) ":dm-calls" else ""
+        val endpoint = "fcm:$token:$binding$suffix"
+        cleanup()
+        if (endpoint == registeredEndpoint) return
+        registeredEndpoint = null
+        register(endpoint)
+        registeredEndpoint = endpoint
+    }
+
     suspend fun cleanup() {
         for (endpoint in store.pendingRemovals(base, user)) {
             request("DELETE", endpoint)
@@ -209,7 +221,6 @@ internal class AndroidPushRegistration(
     private var closed = false
     private var projectId: String? = null
     private var supportsDmCalls = false
-    private var registeredEndpoint: String? = null
     private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
         app.api.request("/api/push/subscriptions", method,
             if (method == "POST") obj("transport" to "fcm", "endpoint" to endpoint) else obj("endpoint" to endpoint))
@@ -235,15 +246,7 @@ internal class AndroidPushRegistration(
                 val messaging = FirebaseMessaging.getInstance()
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
-                val suffix = if (supportsDmCalls && store.dmCallsEnabled(app.config.userId)) ":dm-calls" else ""
-                val endpoint = "fcm:$token:$binding$suffix"
-                registration.cleanup()
-                if (endpoint != registeredEndpoint) {
-                    registeredEndpoint = null
-                    registration.register(endpoint)
-                    if (!closed) registeredEndpoint = endpoint
-                }
-
+                registration.refresh(token, supportsDmCalls)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
