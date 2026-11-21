@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
@@ -42,7 +44,6 @@ import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import zoo.Button
 import zoo.LocalTouchUi
 import zoo.Text
 import works.zli.zoo.R
@@ -163,10 +164,14 @@ class IncomingCallActivity : ComponentActivity() {
                                         weight = FontWeight.SemiBold, textAlign = TextAlign.Center)
                                 }
                                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(answerLabel, primary = true, modifier = Modifier.fillMaxWidth(),
-                                        minimumTouchTarget = 56.dp) { answerWhenUnlocked(answer) }
-                                    Button(dismissLabel, variant = "outline", modifier = Modifier.fillMaxWidth(),
-                                        minimumTouchTarget = 56.dp) { dispatch(dismiss) }
+                                    Button(onClick = { answerWhenUnlocked(answer) },
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+                                        Text(answerLabel, color = colors.onPrimary, weight = FontWeight.SemiBold)
+                                    }
+                                    OutlinedButton(onClick = { dispatch(dismiss) },
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
+                                        Text(dismissLabel, color = colors.onSurface)
+                                    }
                                 }
                             }
                         }

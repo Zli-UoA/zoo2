@@ -758,6 +758,15 @@ async fn send_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expired_delivery_has_no_ttl() {
+        let delivery = super::Delivery {
+            expires: Some(std::time::Instant::now()),
+            ..super::Delivery::NORMAL
+        };
+        assert_eq!(delivery.remaining_ttl(), 0);
+    }
+
     use super::*;
     #[test]
     fn endpoint_validation_prevents_ssrf() {
