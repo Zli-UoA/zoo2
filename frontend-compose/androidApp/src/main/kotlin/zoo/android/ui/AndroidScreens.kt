@@ -115,7 +115,8 @@ internal sealed interface AndroidScreen {
     data class SignIn(val restoring: Boolean) : AndroidScreen
     data class Call(val caller: String, val incoming: Boolean, val active: Boolean = false,
         val muted: Boolean = false, val speaker: Boolean = false, val avatar: ImageBitmap? = null,
-        val hasUser: Boolean = false) : AndroidScreen
+        val hasUser: Boolean = false, val minimize: Boolean = false, val pictureInPicture: Boolean = false,
+        val status: String? = null) : AndroidScreen
 }
 
 internal sealed interface AndroidUiAction {
@@ -145,6 +146,8 @@ internal sealed interface AndroidUiAction {
     data class SelectPhoto(val id: String) : AndroidUiAction
     data object SystemPhotos : AndroidUiAction
     data object SignIn : AndroidUiAction
+    data object MinimizeCall : AndroidUiAction
+    data object FloatCall : AndroidUiAction
     data object Answer : AndroidUiAction
     data object HangUp : AndroidUiAction
     data object Browse : AndroidUiAction
@@ -325,41 +328,8 @@ private fun RenderAndroidScreen(
                     TextAction("ログイン画面を開く", colors, icon = UiIcon.SignIn, style = TextActionStyle.Plain, click = back)
                 } else TextAction("ログイン", colors, icon = UiIcon.SignIn) { dispatch(AndroidUiAction.SignIn) }
             }
-            is AndroidScreen.Call -> BrandPage(
-                if (screen.incoming) "着信中" else "通話中", screen.caller, colors,
-                detailWeight = AndroidWeights.userName,
-                badge = {
-                    CallAvatar(screen, colors, foreground && !interaction.reducedMotion, remoteAudioLevel)
-                },
-            ) {
-                if (screen.incoming) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceAround,
-                    ) {
-                        IncomingCallAction("応答", UiIcon.Phone, Color(0xff1b743d), colors) {
-                            dispatch(AndroidUiAction.Answer)
-                        }
-                        IncomingCallAction("拒否", UiIcon.PhoneOff, Color(0xffbc3037), colors) {
-                            dispatch(AndroidUiAction.HangUp)
-                        }
-                    }
-                } else Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (screen.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
-                        CallToggle("ミュート", if (screen.muted) UiIcon.MicOff else UiIcon.Mic, screen.muted, colors) {
-                            dispatch(AndroidUiAction.MuteCall)
-                        }
-                        CallToggle("スピーカー", if (screen.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, screen.speaker, colors) {
-                            dispatch(AndroidUiAction.SpeakerCall)
-                        }
-                    }
-
-                    TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
-                        icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) {
-                        dispatch(AndroidUiAction.HangUp)
-                    }
-                }
-            }
+            is AndroidScreen.Call -> CallPage(screen, colors, foreground && !interaction.reducedMotion,
+                remoteAudioLevel, dispatch)
         }
     }
 }

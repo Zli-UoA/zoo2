@@ -382,7 +382,7 @@ internal class ConnectedScreenState(
         return listOf(SettingsGroup("チャンネル", entries))
     }
 
-    fun settings(env: Environment, dmWaiting: Boolean): List<SettingsGroup> = listOf(
+    fun settings(env: Environment, incomingSettingsAvailable: Boolean): List<SettingsGroup> = listOf(
         SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", env.theme),
             SettingsEntry.Destination("language", "言語", env.locale))),
         SettingsGroup("操作", listOf(SettingsEntry.Toggle("swipe", "スワイプで返信", env.swipeReply),
@@ -391,8 +391,15 @@ internal class ConnectedScreenState(
             SettingsEntry.Destination("notifications", "通知"),
             SettingsEntry.Destination("app-update", "アプリの更新"),
             SettingsEntry.Destination("encryption", "エンドツーエンド暗号化"),
-            SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", dmWaiting),
             SettingsEntry.Destination("logout", "ログアウト"))),
+        SettingsGroup("通話", buildList {
+            add(SettingsEntry.Destination("sip", app.t("sip.title")))
+            add(SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", phone.dmWaiting))
+            if (phone.dmWaitingError) add(SettingsEntry.Information("dm-call-error", app.t("androidPhone.callError")))
+            if (incomingSettingsAvailable) {
+                add(SettingsEntry.Destination("incoming-screen", app.t("androidPhone.incomingScreenSettings")))
+            }
+        }),
     )
 
     fun settingsDetail(env: Environment): AndroidScreen {
@@ -572,6 +579,7 @@ internal class ConnectedScreenState(
             is AndroidUiAction.SelectTimeline -> home.select(action.id)
             AndroidUiAction.LoadOlderPosts -> home.older()
             is AndroidUiAction.SelectPostVisibility -> postVisibility = action.id
+            AndroidUiAction.MinimizeCall, AndroidUiAction.FloatCall -> Unit
             AndroidUiAction.Answer -> phone.answer()
             AndroidUiAction.HangUp -> phone.hangup()
             AndroidUiAction.MuteCall -> phone.mute()

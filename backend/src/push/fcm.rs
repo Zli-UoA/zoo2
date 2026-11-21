@@ -363,6 +363,7 @@ mod tests {
             notification_type: "call_invite".into(),
             e2ee: None,
             invite_id: Some("invite".into()),
+            android_preview: None,
         };
         let body = message("token", "binding", "user", &payload, 17);
         assert_eq!(body["message"]["android"]["ttl"], "17s");
@@ -386,6 +387,7 @@ mod tests {
             notification_type: "call_invite_end".into(),
             e2ee: None,
             invite_id: Some("invite".into()),
+            android_preview: None,
         };
         let body = message("token", "binding", "user", &payload, 60);
         assert_eq!(body["message"]["android"]["priority"], "NORMAL");

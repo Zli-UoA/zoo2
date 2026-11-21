@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import zoo.*
 import zoo.android.ui.*
 import zoo.phone.PhoneController
+import zoo.android.phone.rememberCallImage
 
 @Composable
 internal fun ConnectedScreens(
@@ -29,6 +30,9 @@ internal fun ConnectedScreens(
     phone: PhoneController,
     enableNotifications: () -> Unit,
     background: () -> Unit,
+    callPresentation: Int = 0,
+    openIncomingSettings: (() -> Unit)? = null,
+    openPictureInPicture: ((String) -> Unit)? = null,
 ) {
     val state = remember(session) { ConnectedScreenState(session, platform, phone) }
     DisposableEffect(state) { onDispose { state.close() } }
@@ -94,16 +98,18 @@ internal fun ConnectedScreens(
         .map { it.text("user_id") }.distinct().singleOrNull()
     val callUserId = if (call?.kind == "dm") call.peerUserId ?: dmPeer else null
     val caller = usersById[callUserId]
-    val avatarUrl = caller?.text("avatar_url").orEmpty()
-    val callAvatar = key(call?.id, callUserId, avatarUrl) {
-        produceState<ImageBitmap?>(null) {
-            if (avatarUrl.isNotBlank()) {
-                value = try { session.imageBitmap(avatarUrl) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { null }
-            }
-        }.value
+    val callAvatar = rememberCallImage(session, caller?.text("avatar_url"))
+    var minimized by remember(call?.id, callPresentation) { mutableStateOf(false) }
+    val callScreen = call?.let {
+        AndroidScreen.Call(
+            caller?.let(::author).orEmpty().ifBlank { call.label },
+            call.status == "incoming", call.status == "active", call.muted, call.speaker,
+            avatar = callAvatar, hasUser = callUserId != null, minimize = !phone.error,
+            pictureInPicture = call.status == "active" && openPictureInPicture != null,
+            status = session.t("sip.status.${call.status}"),
+        )
     }
+    val showFullCall = callScreen != null && (!minimized || callScreen.incoming || phone.error)
     val bubbleDraft by state.bubble.input.collectAsState()
     val bubbles by state.bubble.entries.collectAsState()
     val bubbleParticipants = remember(bubbles, usersById, session.config.userId) {
@@ -151,9 +157,11 @@ internal fun ConnectedScreens(
         val unsubscribe = if (route == "/home" && env.visible) session.homeLive.subscribe { state.home.refresh(retain = true) } else null
         onDispose { unsubscribe?.invoke() }
     }
+    val sipRoute = route == "/settings" && env.path.substringAfter('?', "").split('&').contains("tab=sip")
     fun back() {
         when {
-            call != null -> background()
+            showFullCall -> background()
+            sipRoute && state.overlay == null -> platform.navigate("/settings")
             state.overlay == "edit-entry" -> state.finishEditing()
             state.overlay == "post" -> state.closePost()
             state.overlay == "profile" -> state.overlay = "people"
@@ -194,11 +202,7 @@ internal fun ConnectedScreens(
         }
     } else null
     val screen = when {
-        call != null -> AndroidScreen.Call(
-            caller?.let(::author).orEmpty().ifBlank { call.label },
-            call.status == "incoming", call.status == "active", call.muted, call.speaker,
-            avatar = callAvatar, hasUser = callUserId != null,
-        )
+        showFullCall -> checkNotNull(callScreen)
         state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
             state.people.map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) })
         state.overlay == "profile" -> AndroidScreen.Profile(
@@ -258,7 +262,7 @@ internal fun ConnectedScreens(
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
-        route == "/settings" -> AndroidScreen.Settings(state.settings(env, phone.dmWaiting))
+        route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
         channel != null && threadRoot != null -> AndroidScreen.Thread(
             channel.text("channel_name"), threadRoot, messages.filter { it.id in threadReplies },
             state.input("$channelId:$currentThread", canPost && !threadDetail.present("thread_archive_at") &&
@@ -294,32 +298,60 @@ internal fun ConnectedScreens(
             for (url in previewLinks) session.previews.load(previewService, url)
         }
     }
-    AndroidScreens(screen, env.dark, env.visible && env.focused,
-        dispatch = { action ->
-            when {
-                action == AndroidUiAction.Back -> back()
-                action is AndroidUiAction.SelectResult && state.overlay == "members" && channel != null &&
-                    state.canEditMembers(channel) && action.id != session.config.userId -> {
-                    usersById[action.id]?.let { state.memberToRemove = SelectionItem(action.id, author(it)) }
-                }
-                else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
+    val compactCall = callScreen?.takeIf { !showFullCall }
+    Column(Modifier.fillMaxSize().then(if (compactCall != null) Modifier.statusBarsPadding() else Modifier)) {
+        if (compactCall != null) {
+            val colors = AndroidColors(env.dark)
+            Row(Modifier.fillMaxWidth().background(colors.background).padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                Text(compactCall.status.orEmpty(), Modifier.weight(1f), color = colors.secondary)
+                UiIconButton(UiIcon.Phone, session.t("androidPhone.expandCall"), colors.foreground,
+                    { minimized = false }, fill = colors.quietSurface)
             }
-        },
-        language = env.locale, interaction = state.interaction.snapshot(),
-        remoteAudioLevel = { phone.remoteAudioLevel },
-        loadNotificationReactions = state.inbox::loadReactions,
-        loadNotificationAvatar = { url ->
-            try { session.imageBitmap(url) }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { null }
-        }) { item, modifier ->
-        val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
-            value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
-                ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }
         }
-        image?.let { Image(it, item.label, modifier, contentScale = ContentScale.Crop) }
-            ?: Box(modifier.background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center) { Text(item.label, maxLines = 1) }
+        Box(Modifier.weight(1f)) {
+            if (!showFullCall && (state.overlay == "sip" || (state.overlay == null && sipRoute))) {
+                SipRoute(session, phone, users, ::back)
+            } else {
+                AndroidScreens(screen, env.dark, env.visible && env.focused,
+                    dispatch = { action ->
+                        when {
+                            action == AndroidUiAction.Back -> back()
+                            action == AndroidUiAction.MinimizeCall -> minimized = true
+                            action == AndroidUiAction.FloatCall -> call?.let { openPictureInPicture?.invoke(it.id) }
+                            action == AndroidUiAction.OpenSetting("incoming-screen") -> openIncomingSettings?.invoke()
+                            action is AndroidUiAction.SelectResult && state.overlay == "members" && channel != null &&
+                                state.canEditMembers(channel) && action.id != session.config.userId -> {
+                                usersById[action.id]?.let { state.memberToRemove = SelectionItem(action.id, author(it)) }
+                            }
+                            else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
+                        }
+                    },
+                    language = env.locale, interaction = state.interaction.snapshot(),
+                    remoteAudioLevel = { phone.remoteAudioLevel },
+                    loadNotificationReactions = state.inbox::loadReactions,
+                    loadNotificationAvatar = { url ->
+                        try { session.imageBitmap(url) }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { null }
+                    }) { item, modifier ->
+                    val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
+                        value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
+                            ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }
+                    }
+                    image?.let { Image(it, item.label, modifier, contentScale = ContentScale.Crop) }
+                        ?: Box(modifier.background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center) { Text(item.label, maxLines = 1) }
+                }
+            }
+        }
+    }
+    if (phone.error) {
+        AlertDialog(
+            onDismissRequest = phone::clearError,
+            title = { Text(session.t("androidPhone.callError")) },
+            confirmButton = { TextButton(onClick = phone::clearError) { Text(session.t("common.close")) } },
+        )
     }
     state.inputMenu?.let { tool ->
         val emoji = tool == InputTool.Emoji

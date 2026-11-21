@@ -55,6 +55,8 @@ class AndroidSamplesTest {
                 SettingsEntry.Toggle("haptics", "触覚フィードバック", true))),
             SettingsGroup("Zoo", listOf(SettingsEntry.Destination("general", "一般"),
                 SettingsEntry.Destination("notifications", "通知"), SettingsEntry.Destination("update", "アプリの更新"))),
+            SettingsGroup("通話", listOf(SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", true),
+                SettingsEntry.Destination("incoming-screen", "着信時の全画面表示を設定"))),
         )
         val channels = AndroidScreen.Channels(listOf(
             ChannelSection("参加中", listOf(ChannelItem("dev", "開発", true), ChannelItem("chat", "雑談"),
@@ -152,7 +154,10 @@ class AndroidSamplesTest {
             "login" to AndroidScreen.SignIn(false),
             "login-restoring" to AndroidScreen.SignIn(true),
             "call" to AndroidScreen.Call("はる", true, avatar = avatar, hasUser = true),
-            "call-active" to AndroidScreen.Call("はる", false, active = true, avatar = avatar, hasUser = true),
+            "call-active" to AndroidScreen.Call("はる", false, active = true, avatar = avatar, hasUser = true,
+                minimize = true, pictureInPicture = true),
+            "call-outgoing" to AndroidScreen.Call("はる", false, avatar = avatar, hasUser = true,
+                minimize = true, status = "呼出中"),
         )
         var screen by mutableStateOf<AndroidScreen>(cases.first().second)
         var dark by mutableStateOf(false)
@@ -256,6 +261,8 @@ class AndroidSamplesTest {
                 if (name == "call-active") {
                     ui.onNodeWithText("ミュート").assertIsOff()
                     ui.onNodeWithText("スピーカー").assertIsOff()
+                    ui.onNodeWithContentDescription("通話画面をしまう").assertHasClickAction()
+                    ui.onNodeWithContentDescription("通話を小窓で表示").assertHasClickAction()
                 }
                 if (example is AndroidScreen.Call) {
                     if (example.active) ui.mainClock.advanceTimeBy(150)

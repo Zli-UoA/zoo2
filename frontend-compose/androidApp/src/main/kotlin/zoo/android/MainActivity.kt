@@ -25,6 +25,7 @@ import kotlinx.serialization.json.*
 import zoo.*
 import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
+import zoo.android.phone.PhonePictureInPictureActivity
 import zoo.android.ui.DialogAction
 import zoo.android.ui.UiIcon
 import zoo.android.update.UpdatePreferences
@@ -61,6 +62,16 @@ class MainActivity : ComponentActivity() {
             prefs.edit().putBoolean("requested", true).apply()
             notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         } else {
+            startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+        }
+    }
+
+    private fun openIncomingSettings() {
+        try {
+            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                android.net.Uri.fromParts("package", packageName, null)))
+        } catch (_: android.content.ActivityNotFoundException) {
             startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
         }
@@ -178,6 +189,7 @@ class MainActivity : ComponentActivity() {
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        var callPresentation by remember(current) { mutableIntStateOf(0) }
         LaunchedEffect(current) {
             if (current != null && android.os.Build.VERSION.SDK_INT >= 33 &&
                 !current.notifications.allowed() &&
@@ -187,7 +199,13 @@ class MainActivity : ComponentActivity() {
         }
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
-                notificationIntent?.let { if (!current.phone.open(it) && !current.push.open(it, current.notifications::dismissTag)) current.notifications.open(it) }
+                notificationIntent?.let { intent ->
+                    if (current.phone.open(intent)) {
+                        callPresentation++
+                    } else if (!current.push.open(intent, current.notifications::dismissTag)) {
+                        current.notifications.open(intent)
+                    }
+                }
                 notificationIntent = null
             }
         }
@@ -312,7 +330,13 @@ class MainActivity : ComponentActivity() {
             }
             ConnectedScreens(current.session, platform, current.phone.controller,
                 enableNotifications = ::enableNotifications,
-                background = { moveTaskToBack(true) })
+                background = { moveTaskToBack(true) },
+                callPresentation = callPresentation,
+                openIncomingSettings = if (android.os.Build.VERSION.SDK_INT >= 34) ::openIncomingSettings else null,
+                openPictureInPicture = if (packageManager.hasSystemFeature(
+                    android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE,
+                )) { id -> PhonePictureInPictureActivity.open(this, current.phone, id) } else null,
+            )
             unbackedKeysPrompt?.let { prompt ->
                 val args = "count" to prompt.count.toString()
                 val detail = when {

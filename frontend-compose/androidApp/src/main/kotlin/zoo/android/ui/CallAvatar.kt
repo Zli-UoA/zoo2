@@ -11,13 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,6 +23,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.sqrt
@@ -72,15 +67,7 @@ internal fun CallAvatar(
                 }
             }
         }
-        val modifier = Modifier.size(88.dp).clip(CircleShape).testTag("call-avatar")
-        val avatar = call.avatar
-        when {
-            avatar != null -> Image(avatar, contentDescription = null, modifier, contentScale = ContentScale.Crop)
-            call.hasUser -> Box(modifier.background(colors.headerLight), contentAlignment = Alignment.Center) {
-                Text(call.caller.take(1), color = colors.foreground, fontSize = 32.sp, fontWeight = AndroidWeights.userName)
-            }
-            else -> ZooBadge(colors, modifier)
-        }
+        CallPortrait(call, colors, 88.dp)
     }
 }
 
@@ -114,5 +101,57 @@ internal fun IncomingCallAction(label: String, icon: UiIcon, fill: Color, colors
             UiGlyph(icon, Color.White, iconSize = 36.dp)
         }
         Text(label, color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.emphasis)
+    }
+}
+
+
+@Composable
+internal fun CallPortrait(call: AndroidScreen.Call, colors: AndroidColors, size: Dp) {
+    val modifier = Modifier.size(size).clip(CircleShape).testTag("call-avatar")
+    val avatar = call.avatar
+    when {
+        avatar != null -> Image(avatar, contentDescription = null, modifier, contentScale = ContentScale.Crop)
+        call.hasUser -> Box(modifier.background(colors.headerLight), contentAlignment = Alignment.Center) {
+            Text(call.caller.take(1), color = colors.foreground, fontSize = (size.value * .36f).sp,
+                fontWeight = AndroidWeights.userName)
+        }
+        else -> ZooBadge(colors, modifier)
+    }
+}
+
+@Composable
+internal fun CallPage(
+    call: AndroidScreen.Call, colors: AndroidColors, motion: Boolean,
+    remoteAudioLevel: () -> Float, dispatch: (AndroidUiAction) -> Unit,
+    answerLabel: String = "応答", dismissLabel: String = "拒否",
+) {
+    BrandPage(call.status ?: if (call.incoming) "着信中" else "通話中", call.caller, colors,
+        detailWeight = AndroidWeights.userName, badge = { CallAvatar(call, colors, motion, remoteAudioLevel) }) {
+        if (call.incoming) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+            ) {
+                IncomingCallAction(answerLabel, UiIcon.Phone, Color(0xff1b743d), colors) { dispatch(AndroidUiAction.Answer) }
+                IncomingCallAction(dismissLabel, UiIcon.PhoneOff, Color(0xffbc3037), colors) { dispatch(AndroidUiAction.HangUp) }
+            }
+        } else Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (call.minimize || call.pictureInPicture) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                if (call.minimize) UiIconButton(UiIcon.Minimize, "通話画面をしまう", colors.foreground,
+                    { dispatch(AndroidUiAction.MinimizeCall) })
+                if (call.pictureInPicture) UiIconButton(UiIcon.Float, "通話を小窓で表示", colors.foreground,
+                    { dispatch(AndroidUiAction.FloatCall) })
+            }
+            if (call.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally)) {
+                CallToggle("ミュート", if (call.muted) UiIcon.MicOff else UiIcon.Mic, call.muted, colors) {
+                    dispatch(AndroidUiAction.MuteCall)
+                }
+                CallToggle("スピーカー", if (call.speaker) UiIcon.Speaker else UiIcon.SpeakerOff, call.speaker, colors) {
+                    dispatch(AndroidUiAction.SpeakerCall)
+                }
+            }
+            TextAction("通話を終了", colors, style = TextActionStyle.Neutral, modifier = Modifier.fillMaxWidth(),
+                icon = UiIcon.PhoneOff, labelWeight = AndroidWeights.emphasis) { dispatch(AndroidUiAction.HangUp) }
+        }
     }
 }
