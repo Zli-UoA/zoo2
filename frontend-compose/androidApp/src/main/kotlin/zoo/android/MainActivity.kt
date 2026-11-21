@@ -148,6 +148,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         notificationIntent = intent
+        UpdatePreferences(this).confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
     }

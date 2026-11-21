@@ -94,8 +94,7 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
                 "ZooUpdaterService",
                 "Install finished: exit=${process.exitValue()}, output=${result.take(1000)}",
             )
-            if (process.exitValue() == 0 && result.lineSequence().any { it == "Success" }) "Success"
-            else "インストールできませんでした: ${result.take(1000)}"
+            completeInstall(process.exitValue(), result) { restartApp(userId) }
         } catch (failure: IOException) {
             // pm may reject the install before consuming stdin. Preserve its
             // diagnostic instead of sending an IOException through Binder.
@@ -118,4 +117,37 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
             watchdog.interrupt()
         }
     }
+    // The Zoo process is replaced by Package Manager. Relaunch from this shell daemon instead.
+    private fun restartApp(userId: Int) {
+        try {
+            val launch = ProcessBuilder(restartCommand(userId)).redirectErrorStream(true).start()
+            try {
+                if (!launch.waitFor(10, TimeUnit.SECONDS)) {
+                    Log.w("ZooUpdaterService", "Zoo restart timed out")
+                } else if (launch.exitValue() != 0) {
+                    Log.w("ZooUpdaterService", "Zoo restart failed with exit code ${launch.exitValue()}")
+                }
+            } finally {
+                launch.destroyForcibly()
+            }
+        } catch (failure: Exception) {
+            Log.w("ZooUpdaterService", "Could not reopen Zoo after installation", failure)
+        }
+    }
+
 }
+
+
+internal fun completeInstall(exitCode: Int, output: String, restart: () -> Unit): String {
+    if (exitCode != 0 || output.lineSequence().none { it.trim() == "Success" }) {
+        return "インストールできませんでした: ${output.take(1000)}"
+    }
+    restart()
+    return "Success"
+}
+
+internal fun restartCommand(userId: Int): List<String> = listOf(
+    "/system/bin/am", "start", "--user", userId.toString(),
+    "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER",
+    "-n", "works.zli.zoo/zoo.android.MainActivity",
+)

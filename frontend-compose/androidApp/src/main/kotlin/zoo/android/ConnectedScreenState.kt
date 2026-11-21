@@ -352,6 +352,7 @@ internal class ConnectedScreenState(
             SettingsEntry.Toggle("haptics", "触覚フィードバック", env.operationHaptics))),
         SettingsGroup("Zoo", listOf(SettingsEntry.Destination("search-engine", "検索エンジン", app.searchEngine),
             SettingsEntry.Destination("notifications", "通知"),
+            SettingsEntry.Destination("app-update", "アプリの更新"),
             SettingsEntry.Destination("encryption", "エンドツーエンド暗号化"),
             SettingsEntry.Toggle("dm-calls", "DMの着信を受ける", dmWaiting),
             SettingsEntry.Destination("logout", "ログアウト"))),

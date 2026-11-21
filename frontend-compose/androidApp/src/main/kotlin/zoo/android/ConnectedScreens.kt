@@ -167,6 +167,10 @@ internal fun ConnectedScreens(
         }
     }
     BackHandler { back() }
+    if (call == null && state.overlay == "app-update") {
+        zoo.android.update.UpdateSettings(androidx.compose.ui.platform.LocalContext.current, env.dark, env.locale, ::back)
+        return
+    }
     if (call == null && state.overlay == "encryption" && platform.e2ee != null) {
         EncryptionRoute(session, platform, ::back)
         return
