@@ -104,9 +104,10 @@ internal fun ConversationInput(
 @Composable
 private fun SendAction(state: InputState, colors: AndroidColors, onTool: (InputTool) -> Unit) {
     val enabled = state.text.isNotBlank() && state.canSend
-    Box(Modifier.padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
-        if (enabled) Box(Modifier.size(38.dp).background(colors.accent, CircleShape))
-        UiIconButton(UiIcon.Send, "送信", if (enabled) Color.Black else colors.inputHint,
-            action = { onTool(InputTool.Send) }, enabled = enabled)
-    }
+    UiIconButton(
+        UiIcon.Send, "送信", if (enabled) Color.Black else colors.inputHint,
+        action = { onTool(InputTool.Send) },
+        enabled = enabled,
+        fill = if (enabled) colors.accent else Color.Transparent,
+    )
 }

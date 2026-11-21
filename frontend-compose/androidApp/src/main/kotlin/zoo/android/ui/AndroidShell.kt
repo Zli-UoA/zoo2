@@ -64,14 +64,15 @@ internal fun AndroidShell(
                     for (page in TopPage.entries) {
                         val active = page == selected
                         Column(
-                            Modifier.weight(1f).heightIn(min = 60.dp)
+                            Modifier.weight(1f).heightIn(min = AndroidControlSize.navigationHeight)
                                 .selectable(active, role = Role.Tab) { onSelect(page) },
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Box(
                                 Modifier.background(if (active) colors.headerLight else Color.Transparent, CircleShape)
-                                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                                    .size(width = AndroidControlSize.target, height = AndroidControlSize.navigationIndicatorHeight),
+                                contentAlignment = Alignment.Center,
                             ) {
                                 UiGlyph(page.icon, if (active) colors.foreground else colors.secondary)
                             }
@@ -105,7 +106,7 @@ internal fun PageHeader(
             UiIconButton(UiIcon.Back, "戻る", colors.foreground, onBack)
         } else ZooBadge(colors, Modifier.size(26.dp))
         Column(Modifier.weight(1f).then(
-            if (onOpen == null) Modifier else Modifier.heightIn(min = 48.dp).clickable(onClick = onOpen),
+            if (onOpen == null) Modifier else Modifier.heightIn(min = AndroidControlSize.target).clickable(onClick = onOpen),
         ), verticalArrangement = Arrangement.Center) {
             Text(title, color = colors.foreground, fontSize = if (description == null) 20.sp else 16.sp,
                 fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)

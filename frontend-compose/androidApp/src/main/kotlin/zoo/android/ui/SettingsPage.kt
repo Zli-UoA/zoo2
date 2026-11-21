@@ -53,7 +53,7 @@ internal fun SettingsPage(
                         is SettingsEntry.Toggle -> Modifier.toggleable(entry.enabled, role = Role.Switch) { toggle(entry.id, it) }
                     }
                     Row(
-                        Modifier.fillMaxWidth().then(action).heightIn(min = 48.dp).padding(vertical = 8.dp),
+                        Modifier.fillMaxWidth().then(action).heightIn(min = AndroidControlSize.target).padding(vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -64,7 +64,7 @@ internal fun SettingsPage(
                             }
                         }
                         when (entry) {
-                            is SettingsEntry.Destination -> Text("›", color = colors.secondary, fontSize = 22.sp)
+                            is SettingsEntry.Destination -> UiGlyph(UiIcon.Next, colors.secondary)
                             is SettingsEntry.Toggle -> Switch(checked = entry.enabled, onCheckedChange = null)
                         }
                     }
