@@ -8,6 +8,7 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
+import { AppAvatar } from "../AppIdentity";
 import type { ThreadParticipant } from "../../../hooks/useThreadMembership";
 import { PaneHeader } from "../../layout/PaneHeader";
 import { useMediaQuery } from "../../layout/useMediaQuery";
@@ -15,6 +16,7 @@ import { useMediaQuery } from "../../layout/useMediaQuery";
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { JoinPrompt } from "./JoinPrompt";
 import { MessageRow } from "./MessageRow";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
@@ -584,12 +586,20 @@ function ThreadParticipants({
         {participants.length === 0 ? (
           <li className="text-muted-foreground">{t("threads.participantsEmpty")}</li>
         ) : (
-          participants.map((participant) => (
-            <li key={participant.id} className="truncate py-0.5">
-              {participant.display_name || participant.user_name}
-              <span className="text-muted-foreground"> @{participant.user_name}</span>
-            </li>
-          ))
+          participants.map((participant) => {
+            const label = participant.display_name || participant.user_name;
+            return (
+              <li key={participant.id} className="flex items-center gap-2 py-0.5">
+                <AppAvatar label={label} src={participant.avatar_url} size="sm" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {label !== participant.user_name ? (
+                  <span className="max-w-[40%] shrink-0 truncate text-muted-foreground">
+                    @{participant.user_name}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })
         )}
         {count > participants.length ? (
           <li className="text-muted-foreground">
@@ -617,21 +627,15 @@ function ThreadJoinPrompt({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="border-t px-3 py-3">
-      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
-        <p className="text-sm text-muted-foreground">{reason ?? t("threads.joinToReply")}</p>
-        {/* アーカイブ済みの再Openは投稿権限が要るので、権限がないときはボタンを出さない。 */}
-        {reason && archived ? null : (
-          <Button
-            size="sm"
-            onClick={onJoin}
-            disabled={disabled || pending || !onJoin}
-            aria-busy={pending}
-          >
-            {archived ? t("threads.reopenAndJoin") : t("threads.join")}
-          </Button>
-        )}
-      </div>
-    </div>
+    <JoinPrompt
+      description={reason ?? t("threads.joinToReply")}
+      // アーカイブ済みの再Openは投稿権限が要るので、権限がないときはボタンを出さない。
+      actionLabel={
+        reason && archived ? undefined : archived ? t("threads.reopenAndJoin") : t("threads.join")
+      }
+      onAction={onJoin}
+      pending={pending}
+      disabled={disabled}
+    />
   );
 }

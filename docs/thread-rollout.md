@@ -8,7 +8,7 @@ Openの参加スレッドをツリーへ表示する。未参加のOpenは閲覧
 
 返信ゲートの403は、`code` が `THREAD_JOIN_REQUIRED`、本文が `Join the thread before replying` で返る。クライアントは `code` を優先して判定し、`code` のない応答（コードを返す前のサーバー）だけ本文で判定する。本文は、コードを返す前のクライアントのために変えない。投稿権限の403（`Only channel managers may post here`）は、Homeの専用文言のためだけに本文を見る。
 
-スレッドのペインのヘッダーに、参加中の人数と一覧（先頭から最大50人）を出す。一覧と人数に載るのは、参加していて、無効化されておらず、いまそのチャンネルのメンバーである人だけ。チャンネルを退出してもスレッドの参加行は残るが、共有チャンネルのユーザーだけを見せる既存の可視性（ゲストの `users` Shape）を超えて、プロフィールを返さないため。`GET /api/threads/{id}` の応答の `participant_count` と `participants` を使い、参加状態と同じ取得・更新周期で更新する。参加・退出・再Openの応答でも同じ項目を返すが、親行のロックを書き込みだけに限るため、参加者はコミット後に別のトランザクションで読む（読めなかったときは、書き込みの結果だけを返す）。退出した人と無効化したユーザーは含めない。閲覧権限は付与しない。
+スレッドのペインのヘッダーに、参加中の人数と一覧（先頭から最大50人）を出す。一覧と人数に載るのは、参加していて、無効化されておらず、いまそのチャンネルのメンバーである人だけ。チャンネルを退出してもスレッドの参加行は残るが、共有チャンネルのユーザーだけを見せる既存の可視性（ゲストの `users` Shape）を超えて、プロフィールを返さないため。`GET /api/threads/{id}` の応答の `participant_count` と `participants` を使い、参加状態と同じ取得・更新周期で更新する。参加・退出・再Openの応答でも同じ項目を返すが、親行のロックを書き込みだけに限るため、参加者はコミット後に別のトランザクションで読む（読めなかったときは、書き込みの結果だけを返す）。参加者を表示しないクライアント（Android・TUI・デスクトップ）は、4つのエンドポイントに `?participants=none` を付けて、人数と一覧（O(P) の読み取り）を省く。`tracked` と参加状態は、省いても返る。閲覧権限は付与しない。
 
 アーカイブでは参加行を消さない。手動再Openと投稿による再Openの両方で、退出していない参加者のツリーへ戻る。再Open操作自体は操作者を新しく参加させない。Archived中は退出できるが、新規参加は再Open後に行う。
 
@@ -104,9 +104,9 @@ TUI以外は、対応版が配布済みであることを確認してからマ�
 ## 検証
 
 - `backend/tests/thread_participation_test.rs`: 参加と閲覧権限の分離、手動参加・退出、再Open、参加者一覧、退出者の返信は参加し直すまで403、Home返信は返信と同時に再参加、再送、非公開権限。
-- `backend/tests/thread_reply_gate_test.rs`: 返信ゲート。最初の返信は参加なしで通り、参加行ができる。一度も参加していないメンバーは `THREAD_JOIN_REQUIRED`（403）で、参加すれば通る。ロック待ちの間に保存された同じIDの再送は、保存済みの投稿を返して再参加しない。Apps APIのbotは対象外。チャンネルを退出した参加者は一覧と人数に載らない。
+- `backend/tests/thread_reply_gate_test.rs`: 返信ゲート。最初の返信は参加なしで通り、参加行ができる。一度も参加していないメンバーは `THREAD_JOIN_REQUIRED`（403）で、参加すれば通る。ロック待ちの間に保存された同じIDの再送は、保存済みの投稿を返して再参加しない。Apps APIのbotは対象外。チャンネルを退出した参加者は一覧と人数に載らない。`participants=none` は、人数と一覧を省いて `tracked` を返す。ロック待ちの再送は、開発用のヘッダー `X-Test-Fallback` で、ゲートの再確認の分岐を通ったことを確かめる。
 - `backend/tests/e2ee_channels_test.rs`: 暗号化チャンネルの返信にもゲートが効く。
-- `backend/tests/thread_participants_scale_test.rs`: 参加者一覧SQLと返信ゲートSQLを、ユーザー30万・100万、参加者50・10,000・空・全員退出で、custom/genericの計画ごとに測る（Seq Scanなし、走査行数と論理ブロックの上限）。`infra/db/compare-thread-participants-work.py` が30万→100万の増加を確かめる。CIは `ci-read-state-worker-budget.yaml` の追加ステップで実行する。
+- `backend/tests/thread_participants_scale_test.rs`: 参加者一覧SQL・返信ゲートSQL・`tracked` だけを返すSQL（`?participants=none`）を、ユーザー30万・100万、参加者50・10,000・空・全員退出で、custom/genericの計画ごとに測る（Seq Scanなし、走査行数と論理ブロックの上限）。`infra/db/compare-thread-participants-work.py`（32件）が30万→100万の増加を確かめる。CIは `ci-read-state-worker-budget.yaml` の追加ステップで実行する。
 - `backend/tests/thread_migration_test.rs`: 実スキーマでcollectingから段階移行、移行中投稿、元親保持、退出維持、再実行、イベント抑止、Home、履歴取り込み。
 - 既存threads/archive統合テスト、Reactの一覧・参加状態単体テスト、ツリー遷移ブラウザーテスト、ThreadPaneのStorybook操作・a11y、`make tui-check`。
 - schema.sqlから作ったDBと全マイグレーションから作ったDBを比較する。ER図はAtlas 1.3.0で生成する。

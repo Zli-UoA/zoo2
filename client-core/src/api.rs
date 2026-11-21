@@ -454,10 +454,12 @@ impl ApiClient {
 
     /// Thread membership does not grant channel access. Joining is available
     /// without having sent a message; leaving persists across reopen operations.
+    /// The three operations ask for the answer without the participant count and list
+    /// (`participants=none`): these clients never show them, and reading them costs O(P).
     pub async fn join_thread(&self, id: &str) -> Result<Option<String>> {
         self.write(
             Method::POST,
-            &format!("/api/threads/{}/join", segment(id)),
+            &format!("/api/threads/{}/join?participants=none", segment(id)),
             None,
         )
         .await
@@ -466,14 +468,14 @@ impl ApiClient {
     pub async fn leave_thread(&self, id: &str) -> Result<Option<String>> {
         self.write(
             Method::POST,
-            &format!("/api/threads/{}/leave", segment(id)),
+            &format!("/api/threads/{}/leave?participants=none", segment(id)),
             None,
         )
         .await
     }
 
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
-        let path = format!("/api/threads/{}/unarchive", segment(id));
+        let path = format!("/api/threads/{}/unarchive?participants=none", segment(id));
         self.write(Method::POST, &path, None).await
     }
 

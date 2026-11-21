@@ -92,7 +92,8 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
         while (isActive) {
             try {
                 mutex.withLock {
-                    val result = app.api.request("/api/threads/$id").jsonObject["data"]!!.jsonObject
+                    // 参加者の人数と一覧は表示しないので、O(P) の読み取りを省く。
+                    val result = app.api.request("/api/threads/$id?participants=none").jsonObject["data"]!!.jsonObject
                     detail = result
                     failed = false
                     if (app.thread == id && result.text("id") != id) app.thread = result.text("id")
@@ -105,7 +106,7 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
     fun change(action: String) {
         app.run("thread:$id") {
             mutex.withLock {
-                detail = app.api.request("/api/threads/$id/$action", "POST", obj()).jsonObject["data"]!!.jsonObject
+                detail = app.api.request("/api/threads/$id/$action?participants=none", "POST", obj()).jsonObject["data"]!!.jsonObject
                 failed = false
             }
         }

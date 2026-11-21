@@ -64,6 +64,18 @@ export const NotJoined: Story = {
   },
 };
 
+// 管理者のみ投稿できるチャンネルの一般メンバー。閲覧はでき、入力欄だけが理由付きで止まる。
+// a11y は、このPaneの既存のStoryに合わせて、ファイルの設定（todo）のままにする。
+export const PostingForbidden: Story = {
+  args: { postingForbidden: true },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
+    await expect(
+      screen.getByPlaceholderText("このチャンネルは管理者のみ投稿できます。"),
+    ).toBeDisabled();
+  }),
+};
+
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
 };

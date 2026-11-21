@@ -298,7 +298,10 @@ export const WithParticipants: Story = {
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     const list = within(canvas.getByRole("list", { name: "参加者 53人" }));
     await expect(list.getByText("Alice")).toBeVisible();
-    await expect(list.getByText("@bob")).toBeVisible();
+    await expect(list.getByText("@alice")).toBeVisible();
+    // 表示名がないときは、ユーザー名を表示名として出し、`@` の行は重ねない。
+    await expect(list.getByText("bob")).toBeVisible();
+    await expect(list.queryByText("@bob")).not.toBeInTheDocument();
     await expect(list.getByText("ほか 51人")).toBeVisible();
   }),
 };

@@ -36,6 +36,35 @@ async fn send(
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
     Ok((status, serde_json::from_slice(&bytes)?))
 }
+/// Like `send`, with the `X-Test-Fallback` header of the answer (the branch that produced it).
+async fn send_with_fallback(
+    app: &Router,
+    user: &str,
+    path: &str,
+    body: Value,
+    headers: &[(&str, &str)],
+) -> anyhow::Result<(StatusCode, Value, Option<String>)> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("X-Dev-User", user)
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string()))?)
+        .await?;
+    let status = response.status();
+    let fallback = response
+        .headers()
+        .get("X-Test-Fallback")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+    Ok((status, serde_json::from_slice(&bytes)?, fallback))
+}
 async fn call(
     app: &Router,
     user: &str,
@@ -237,10 +266,9 @@ async fn a_retry_that_waited_for_the_lock_returns_the_stored_post() -> anyhow::R
     // The retry passes the pre-check (nothing is stored yet), then waits up to a second at the
     // test gate, which nobody notifies.
     let retry = tokio::spawn(async move {
-        send(
+        send_with_fallback(
             &app,
             &author,
-            "POST",
             "/api/messages",
             retry_payload,
             &[("X-Test-Gate-Wait", "never-notified")],
@@ -264,9 +292,12 @@ async fn a_retry_that_waited_for_the_lock_returns_the_stored_post() -> anyhow::R
         json!({}),
     )
     .await?;
-    let (status, body) = retry.await??;
+    let (status, body, fallback) = retry.await??;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["id"], id);
+    // The answer came from the gate's recheck, not from the ordinary path (a slow machine could
+    // otherwise let the retry through before the leave and still answer 200).
+    assert_eq!(fallback.as_deref(), Some("thread-join-retry"));
     // The leave stays: returning the stored post is not a new reply.
     assert_eq!(w.thread(&w.users[1], &root).await?["membership"], "left");
     w.fixture.cleanup().await
@@ -378,5 +409,70 @@ async fn a_participant_who_left_the_channel_is_not_listed() -> anyhow::Result<()
     assert!(!listed(&after).contains(&w.users[2]));
     // The thread still tracks participants (the row of the member who left is kept).
     assert_eq!(after["tracked"], true);
+    w.fixture.cleanup().await
+}
+
+/// 参加者を表示しないクライアントは、`participants=none` で人数と一覧（O(P) の読み取り）を省く。
+/// `tracked` と参加状態は、省いても返る。
+#[tokio::test]
+async fn participants_can_be_left_out_of_the_answer() -> anyhow::Result<()> {
+    let w = world().await?;
+    let root = w.root().await?;
+    let path = format!("/api/threads/{root}");
+    // Untracked: no participant rows yet.
+    let (_, empty) = call(
+        &w.app,
+        &w.users[1],
+        "GET",
+        &format!("{path}?participants=none"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(empty["data"]["tracked"], false);
+    ok(
+        &w.app,
+        &w.users[1],
+        "POST",
+        "/api/messages",
+        w.reply(&root, "first"),
+    )
+    .await?;
+    let lean = ok(
+        &w.app,
+        &w.users[2],
+        "GET",
+        &format!("{path}?participants=none"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(lean["data"]["tracked"], true);
+    assert_eq!(lean["data"]["membership"], "none");
+    assert!(lean["data"].get("participants").is_none());
+    assert!(lean["data"].get("participant_count").is_none());
+    // A write leaves them out too, and still answers the state it produced.
+    let joined = ok(
+        &w.app,
+        &w.users[2],
+        "POST",
+        &format!("{path}/join?participants=none"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(joined["data"]["membership"], "joined");
+    assert_eq!(joined["data"]["tracked"], true);
+    assert!(joined["data"].get("participants").is_none());
+    // Without the parameter, or with another value, the answer is the full one.
+    for query in ["", "?participants=list"] {
+        let full = ok(
+            &w.app,
+            &w.users[2],
+            "GET",
+            &format!("{path}{query}"),
+            Value::Null,
+        )
+        .await?;
+        assert_eq!(full["data"]["participant_count"], 3);
+        assert_eq!(full["data"]["participants"].as_array().unwrap().len(), 3);
+    }
     w.fixture.cleanup().await
 }

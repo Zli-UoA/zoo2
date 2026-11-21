@@ -898,7 +898,12 @@ pub(crate) async fn create_message_impl(
                 .await
                 {
                     Ok(Some(msg_res)) => {
-                        return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                        let mut headers = HeaderMap::new();
+                        // Lets a test tell this branch from the ordinary path of the same answer.
+                        if state.config.dev_auth_enabled {
+                            headers.insert("X-Test-Fallback", "thread-join-retry".parse().unwrap());
+                        }
+                        return Ok((headers, Json(ApiResponse::new(msg_res, None))));
                     }
                     // Not a retry of this author's stored post. A reused ID that belongs to
                     // someone else (409) or to another channel (404) must not reveal that the

@@ -120,36 +120,61 @@ async fn list_threads(
 
 // Membership is a personal subscription, not a read permission. Public-channel
 // readers can inspect this state even when they have never joined the thread.
+/// `?participants=none` leaves out the participant count and list, which cost O(P) to read.
+/// Clients that never show them (Android, TUI, desktop) ask for that; `tracked` is always
+/// answered. Anything else keeps the full answer.
+#[derive(Default, Deserialize)]
+struct DetailQuery {
+    participants: Option<String>,
+}
+
+impl DetailQuery {
+    fn with_participants(&self) -> bool {
+        self.participants.as_deref() != Some("none")
+    }
+}
+
 async fn thread_detail(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "read").await
+    thread_operation(state, auth, id, "read", query.with_participants()).await
 }
 
 async fn join_thread(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "join").await
+    thread_operation(state, auth, id, "join", query.with_participants()).await
 }
 
 async fn leave_thread(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "leave").await
+    thread_operation(state, auth, id, "leave", query.with_participants()).await
 }
 
 async fn unarchive_thread(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    thread_operation(state, auth, id, "unarchive").await
+    thread_operation(state, auth, id, "unarchive", query.with_participants()).await
+}
+
+/// Whether the thread (`$1`) has any participant row, left ones included: the `tracked` of an
+/// answer without the participant list. One index entry, as the reply gate reads it (see
+/// `reply_participation_sql`); shared with the scale test.
+pub fn thread_tracked_sql() -> &'static str {
+    "SELECT json_build_object('tracked',(SELECT true FROM thread_participants WHERE thread_id=$1 ORDER BY user_id LIMIT 1) IS NOT NULL)::text"
 }
 
 /// Participants of one thread (`$1` = thread id, `$2` = its channel id): `tracked`, live count and
@@ -181,6 +206,7 @@ async fn thread_operation(
     auth: AuthUser,
     id: String,
     operation: &str,
+    with_participants: bool,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     uuid::Uuid::parse_str(&id).map_err(|_| AppError::BadRequest("Invalid message ID".into()))?;
     let mut db = state.db.clone();
@@ -262,7 +288,12 @@ async fn thread_operation(
     // A write holds the root lock (it serializes replies, joins and leaves of this thread) until
     // it commits, so its O(P) read runs after the commit, in its own transaction: the lock is held
     // for the write only, whatever P is. A read has no lock and stays in its transaction.
-    let participants = if operation == "read" {
+    let participants = if !with_participants {
+        // No list was asked for: only `tracked`, one index entry, inside the transaction.
+        let tracked = crate::apps::one(&mut tx, thread_tracked_sql(), &[root_id]).await?;
+        row["tracked"] = tracked["tracked"].clone();
+        None
+    } else if operation == "read" {
         Some(crate::apps::one(&mut tx, participants_sql(), &[root_id, channel_id]).await?)
     } else {
         None
@@ -275,6 +306,7 @@ async fn thread_operation(
     tx.commit().await?;
     let participants = match participants {
         Some(participants) => Some(participants),
+        None if !with_participants => None,
         // The write is already committed. If only this read fails, answer without the list
         // (the client keeps what it has and refreshes) instead of reporting a failed write.
         None => match read_participants(&mut db, root_id, channel_id).await {

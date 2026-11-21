@@ -37,11 +37,11 @@ import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
 import { useShell } from "../../layout/shell-context";
-import { Button } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { JoinPrompt } from "./JoinPrompt";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
@@ -89,14 +89,13 @@ function JoinToPostPrompt({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="border-t px-3 py-3">
-      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
-        <p className="text-sm text-muted-foreground">{t("messages.joinToPostDescription")}</p>
-        <Button size="sm" onClick={onJoin} disabled={disabled || joining} aria-busy={joining}>
-          {t("messages.joinToPost")}
-        </Button>
-      </div>
-    </div>
+    <JoinPrompt
+      description={t("messages.joinToPostDescription")}
+      actionLabel={t("messages.joinToPost")}
+      onAction={onJoin}
+      pending={joining}
+      disabled={disabled}
+    />
   );
 }
 

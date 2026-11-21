@@ -4,12 +4,16 @@
 //! deactivated, still a channel member) ones. Bound: no Seq Scan on users/thread_participants/
 //! channel_user, `thread_participants` rows <= P, `users` and `channel_user` rows <= joined (not
 //! left), sort input <= L, logical blocks <= BLOCKS_PER_KEY*joined + 2P + 64.
-//! The reply gate SQL (`reply_participation_sql`, run on every thread reply) is measured too:
+//! The reply gate SQL (`reply_participation_sql`, run on every thread reply) and the `tracked`-only
+//! SQL (`thread_tracked_sql`, the answer without the list) are measured too:
 //! no Seq Scan, `thread_participants` rows <= 2, `users` not read, logical blocks <= 64.
 //! Each plan is written to `SCALE_PLAN_DIR` before the bounds are checked, so a failing plan survives.
 use backend::{
     config::Config,
-    routes::{messages::reply_participation_sql, threads::participants_sql},
+    routes::{
+        messages::reply_participation_sql,
+        threads::{participants_sql, thread_tracked_sql},
+    },
 };
 use serde_json::{Value, json};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
@@ -343,6 +347,49 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         metrics.insert(
             format!("{}/gate_generic", case.name),
             gate_work(&format!("{}/gate_generic", case.name), &plan[0]),
+        );
+        client
+            .batch_execute("DEALLOCATE ALL; RESET plan_cache_mode")
+            .await?;
+
+        // `tracked` alone (the answer without the participant list, `?participants=none`).
+        let tracked = thread_tracked_sql();
+        let raw = client
+            .simple_query(&format!(
+                "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) {}",
+                tracked.replace("$1", &quoted(&case.thread))
+            ))
+            .await?;
+        let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        save_plan(
+            &output,
+            &format!("{}-tracked_custom.json", case.name),
+            &plan,
+        )?;
+        metrics.insert(
+            format!("{}/tracked_custom", case.name),
+            gate_work(&format!("{}/tracked_custom", case.name), &plan[0]),
+        );
+        client
+            .batch_execute(&format!(
+                "PREPARE tracked(text) AS {tracked}; SET plan_cache_mode=force_generic_plan"
+            ))
+            .await?;
+        let raw = client
+            .simple_query(&format!(
+                "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) EXECUTE tracked({})",
+                quoted(&case.thread)
+            ))
+            .await?;
+        let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        save_plan(
+            &output,
+            &format!("{}-tracked_generic.json", case.name),
+            &plan,
+        )?;
+        metrics.insert(
+            format!("{}/tracked_generic", case.name),
+            gate_work(&format!("{}/tracked_generic", case.name), &plan[0]),
         );
         client
             .batch_execute("DEALLOCATE ALL; RESET plan_cache_mode")
