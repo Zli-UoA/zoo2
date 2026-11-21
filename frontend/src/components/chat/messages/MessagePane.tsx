@@ -296,6 +296,18 @@ export function MessagePane({
   const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
   const threadMembership = useThreadMembership(currentUserId, threadRootId);
   const retryMembership = threadMembership.retry;
+  // 参加が必要な 403 への対応（平文・暗号化の返信で共通）。表示している参加状態が古かった（ほかの画面・
+  // クライアントで退出した、など）ので、参加状態を取り直す。すると入力欄の代わりに参加ボタンが出る。
+  // 入力欄は隠れるだけなので、下書きは残る。対象のエラーなら true を返す。
+  const noticeJoinRequired = useCallback(
+    (cause: unknown): boolean => {
+      if (!isThreadJoinRequired(cause)) return false;
+      void retryMembership?.();
+      toast.info(t("threads.joinToReply"), { id: "thread-join-required" });
+      return true;
+    },
+    [retryMembership, t],
+  );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
@@ -370,13 +382,14 @@ export function MessagePane({
   /** 暗号化した送信の失敗を利用者に知らせる。 */
   const reportEncryptedFailure = useCallback(
     (cause: unknown) => {
+      if (noticeJoinRequired(cause)) return;
       const code = (cause as { code?: unknown } | null)?.code;
       if (code === "NeedsUnlock") toast.error(t("e2ee.sendNeedsUnlock"));
       else if (cause instanceof EncryptedSendError) toast.error(t("e2ee.sendStaleEpoch"));
       else if (apiErrorCode(cause) === "E2EE_STALE_REVISION") toast.error(t("e2ee.editConflict"));
       else toast.error(t("common.writeErrorDetail", { error: localizeApiError(cause, t) }));
     },
-    [t],
+    [noticeJoinRequired, t],
   );
 
   const attachmentsQuery = useMessageAttachments(
@@ -567,18 +580,14 @@ export function MessagePane({
     if (!error) {
       return;
     }
-    if (isThreadJoinRequired(errorCause)) {
-      // 表示している参加状態が古かった（ほかの画面・クライアントで退出した、など）。参加状態を取り直すと、
-      // 入力欄の代わりに参加ボタンが出る。入力欄は隠れるだけなので、下書きは残る。
-      void retryMembership?.();
-      toast.info(t("threads.joinToReply"), { id: "thread-join-required" });
+    if (noticeJoinRequired(errorCause)) {
       setError(null);
       return;
     }
     const description = errorCause == null ? error : localizeApiError(errorCause, t);
     toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
-  }, [error, errorCause, retryMembership, setError, t]);
+  }, [error, errorCause, noticeJoinRequired, setError, t]);
 
   const handleJoin = useCallback(async () => {
     if (!currentUserId || isJoining) {

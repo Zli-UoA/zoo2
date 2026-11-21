@@ -6,6 +6,7 @@ import { beforeEach, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../i18n/LocaleProvider";
 import { createRef } from "react";
 import { HomeComposer, type HomeComposerHandle } from "./HomeComposer";
+import { ApiError } from "../../lib/api/client";
 import { loadHomePostSettings, saveHomePostSettings } from "../../lib/homePreferences";
 
 type ChannelFixture = {
@@ -202,3 +203,44 @@ it("does not stop a reply from someone who has not joined the channel", async ()
     expect(screen.getByRole("button", { name: "投稿" }).hasAttribute("disabled")).toBe(false),
   );
 });
+
+/** サーバーが 403 を返したあとの表示: 投稿権限の拒否だけ専用の文言で、ほかの 403 は汎用の送信エラー。 */
+it.each([
+  ["the code", { error: "any text", code: "POSTING_RESTRICTED" }, true],
+  [
+    "the old message, from a server that sends no code",
+    { error: "Only channel managers may post here" },
+    true,
+  ],
+  [
+    "another code, even with the old message",
+    { error: "Only channel managers may post here", code: "OTHER" },
+    false,
+  ],
+  ["another 403", { error: "Account is deactivated" }, false],
+])(
+  "shows the posting restriction only for the right 403 (%s)",
+  async (_label, body, restricted) => {
+    fixture.syncing = false;
+    const post = vi.fn(async () => {
+      throw new ApiError(403, "forbidden", body);
+    });
+    render(
+      <LocaleProvider>
+        <HomeComposer settingsKey={null} federationEnabled={false} onPost={post} />
+      </LocaleProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "投稿を書く" }));
+    await user.type(await screen.findByRole("textbox", { name: "近況を投稿" }), "hello");
+    await user.click(screen.getByRole("button", { name: "投稿" }));
+    const alert = await screen.findByRole("alert");
+    if (restricted) expect(alert).toHaveTextContent("このチャンネルには投稿できません。");
+    else
+      expect(alert).toHaveTextContent(
+        "投稿できませんでした。下書きは残っています。もう一度お試しください。",
+      );
+    // The draft stays in either case.
+    expect(screen.getByRole("textbox", { name: "近況を投稿" })).toHaveValue("hello");
+  },
+);

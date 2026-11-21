@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
+import { ApiError } from "../../../lib/api/client";
 import { MessagePane } from "./MessagePane";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn() } }));
@@ -53,6 +54,8 @@ const fixture = vi.hoisted(() => {
     writeError: null as string | null,
     writeErrorCause: null as unknown,
     setWriteError: vi.fn(),
+    /** `useThreadMembership` の取り直し（`retry`）。参加が必要な 403 のあとに呼ばれる。 */
+    retryMembership: vi.fn(),
   };
 });
 const collection = {
@@ -75,6 +78,16 @@ vi.mock("../../../lib/api/client", async (original) => ({
 }));
 vi.mock("../../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ currentUserId: "alice" }),
+}));
+vi.mock("../../../hooks/useThreadMembership", async (original) => ({
+  ...(await original<typeof import("../../../hooks/useThreadMembership")>()),
+  useThreadMembership: () => ({
+    data: null,
+    pending: false,
+    error: false,
+    change: vi.fn(),
+    retry: fixture.retryMembership,
+  }),
 }));
 vi.mock("../../../hooks/useKitchenCatalog", () => ({
   useKitchenCatalog: () => ({ catalog: null }),
@@ -201,6 +214,7 @@ beforeEach(() => {
   fixture.writeError = null;
   fixture.writeErrorCause = null;
   fixture.setWriteError.mockClear();
+  fixture.retryMembership.mockClear();
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.info).mockClear();
 });
@@ -353,4 +367,42 @@ it("shows a localized description for an offline write failure", async () => {
     if (previousLocale === null) localStorage.removeItem(LOCALE_STORAGE_KEY);
     else localStorage.setItem(LOCALE_STORAGE_KEY, previousLocale);
   }
+});
+
+describe("a reply that the server refuses until the thread is joined", () => {
+  async function failWith(cause: unknown) {
+    fixture.writeError = "Forbidden";
+    fixture.writeErrorCause = cause;
+    render(pane());
+    await waitFor(() => expect(fixture.setWriteError).toHaveBeenCalledWith(null));
+  }
+
+  it.each([
+    ["the code", { error: "any text", code: "THREAD_JOIN_REQUIRED" }],
+    [
+      "the old message, from a server that sends no code",
+      { error: "Join the thread before replying" },
+    ],
+  ])("refreshes the membership and asks for a join (%s)", async (_label, body) => {
+    await failWith(new ApiError(403, "forbidden", body));
+    expect(fixture.retryMembership).toHaveBeenCalled();
+    expect(toast.info).toHaveBeenCalledWith(
+      expect.stringContaining("参加"),
+      expect.objectContaining({ id: "thread-join-required" }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another code", { error: "Join the thread before replying", code: "OTHER" }],
+    [
+      "a posting restriction",
+      { error: "Only channel managers may post here", code: "POSTING_RESTRICTED" },
+    ],
+  ])("keeps the generic error for a 403 that a join does not cure (%s)", async (_label, body) => {
+    await failWith(new ApiError(403, "forbidden", body));
+    expect(fixture.retryMembership).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalled();
+  });
 });
