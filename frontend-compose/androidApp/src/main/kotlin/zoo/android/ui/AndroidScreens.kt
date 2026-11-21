@@ -8,6 +8,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -88,7 +89,8 @@ internal sealed interface AndroidScreen {
         val visibility: String? = null, val attached: List<RecentPhoto> = emptyList()) : AndroidScreen
     data class SignIn(val restoring: Boolean) : AndroidScreen
     data class Call(val caller: String, val incoming: Boolean, val active: Boolean = false,
-        val muted: Boolean = false, val speaker: Boolean = false) : AndroidScreen
+        val muted: Boolean = false, val speaker: Boolean = false, val avatar: ImageBitmap? = null,
+        val hasUser: Boolean = false) : AndroidScreen
 }
 
 internal sealed interface AndroidUiAction {
@@ -144,6 +146,7 @@ internal fun AndroidScreens(
     dispatch: (AndroidUiAction) -> Unit,
     language: String? = null,
     interaction: AndroidInteractionSettings = AndroidInteractionSettings(),
+    remoteAudioLevel: () -> Float = { 0f },
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val systemHaptics = LocalHapticFeedback.current
@@ -169,11 +172,11 @@ internal fun AndroidScreens(
             if (visibleScreen is AndroidScreen.Conversation) {
                 conversationState.SaveableStateProvider(visibleScreen.id) {
                     RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                        dispatch, language, interaction.swipeReply, photo)
+                        dispatch, language, interaction, remoteAudioLevel, photo)
                 }
             } else {
                 RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
-                    dispatch, language, interaction.swipeReply, photo)
+                    dispatch, language, interaction, remoteAudioLevel, photo)
             }
         }
     }
@@ -193,7 +196,8 @@ private fun RenderAndroidScreen(
     foreground: Boolean,
     dispatch: (AndroidUiAction) -> Unit,
     language: String?,
-    swipeReply: Boolean,
+    interaction: AndroidInteractionSettings,
+    remoteAudioLevel: () -> Float,
     photo: @Composable (RecentPhoto, Modifier) -> Unit,
 ) {
     val top = when (screen) {
@@ -231,7 +235,7 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = swipeReply, allowThreads = true, focusMessage = screen.focusMessage)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage)
                 }
             }
             is AndroidScreen.Thread -> {
@@ -269,6 +273,9 @@ private fun RenderAndroidScreen(
             is AndroidScreen.Call -> BrandPage(
                 if (screen.incoming) "着信中" else "通話中", screen.caller, colors,
                 detailWeight = AndroidWeights.userName,
+                badge = {
+                    CallAvatar(screen, colors, foreground && !interaction.reducedMotion, remoteAudioLevel)
+                },
             ) {
                 Column(Modifier.width(IntrinsicSize.Max), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (screen.active) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {

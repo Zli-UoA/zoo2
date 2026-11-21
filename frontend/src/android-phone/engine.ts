@@ -8,8 +8,20 @@ declare global {
 }
 let token = "";
 let media: AudioCallMedia | null = null;
+let audioLevelTimer: ReturnType<typeof setTimeout> | undefined;
 const emit = (event: string, payload?: unknown) =>
   window.ZooNativePhone.postMessage(JSON.stringify({ token, event, payload }));
+function watchRemoteAudio(current: AudioCallMedia, userId?: string) {
+  let previous = 0;
+  async function sample() {
+    const level = Math.round((await current.remoteAudioLevel(userId)) * 100) / 100;
+    if (media !== current) return;
+    if (level !== previous) emit("remote_audio_level", { level });
+    previous = level;
+    audioLevelTimer = setTimeout(() => void sample(), 100);
+  }
+  audioLevelTimer = setTimeout(() => void sample(), 100);
+}
 window.ZooPhone = {
   execute(id, nextToken, method, payload) {
     if (token && nextToken !== token) return;
@@ -17,11 +29,19 @@ window.ZooPhone = {
     void (async () => {
       const value = payload as Record<string, unknown>;
       if (method === "rtc.start") {
+        if (audioLevelTimer !== undefined) clearTimeout(audioLevelTimer);
         media?.close();
         const next = new AudioCallMedia(
           value.session_id as string,
           value.ice_servers as RTCIceServer[],
-          emit,
+          (event, payload) => {
+            emit(event, payload);
+            if (event === "connected" && media === next)
+              watchRemoteAudio(
+                next,
+                typeof value.peer_user_id === "string" ? value.peer_user_id : undefined,
+              );
+          },
           undefined,
           value.relay === true,
         );
@@ -34,6 +54,7 @@ window.ZooPhone = {
       } else if (method === "mute") {
         media?.mute(value.muted === true);
       } else if (method === "close") {
+        if (audioLevelTimer !== undefined) clearTimeout(audioLevelTimer);
         media?.close();
         media = null;
       } else throw new Error("Unknown phone command");

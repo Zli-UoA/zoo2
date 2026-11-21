@@ -70,6 +70,21 @@ internal fun ConnectedScreens(
         if (!focusParent.isNullOrBlank()) session.thread = focusParent
     }
     val call = phone.call
+    val callChannelId = call?.target ?: channelId
+    val dmPeer = memberships.filter { it.text("channel_id") == callChannelId && it.text("user_id") != session.config.userId }
+        .map { it.text("user_id") }.distinct().singleOrNull()
+    val callUserId = if (call?.kind == "dm") call.peerUserId ?: dmPeer else null
+    val caller = usersById[callUserId]
+    val avatarUrl = caller?.text("avatar_url").orEmpty()
+    val callAvatar = key(call?.id, callUserId, avatarUrl) {
+        produceState<ImageBitmap?>(null) {
+            if (avatarUrl.isNotBlank()) {
+                value = try { session.imageBitmap(avatarUrl) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+            }
+        }.value
+    }
     val bubbleDraft by state.bubble.input.collectAsState()
     val bubbles by state.bubble.entries.collectAsState()
     LaunchedEffect(route, env.online, env.visible) {
@@ -99,7 +114,11 @@ internal fun ConnectedScreens(
     }
     BackHandler { back() }
     val screen = when {
-        call != null -> AndroidScreen.Call(call.label, call.status == "incoming", call.status == "active", call.muted, call.speaker)
+        call != null -> AndroidScreen.Call(
+            caller?.let(::author).orEmpty().ifBlank { call.label },
+            call.status == "incoming", call.status == "active", call.muted, call.speaker,
+            avatar = callAvatar, hasUser = callUserId != null,
+        )
         state.overlay == "browse" -> AndroidScreen.Directory("チャンネルを探す", state.query,
             visibleChannels(channels).filterNot { it.flag("is_dm") }
                 .filter { it.text("channel_name").contains(state.query, ignoreCase = true) }
@@ -150,10 +169,11 @@ internal fun ConnectedScreens(
                     state.canEditMembers(channel) && action.id != session.config.userId -> {
                     usersById[action.id]?.let { state.memberToRemove = SelectionItem(action.id, author(it)) }
                 }
-                else -> state.dispatch(action, screen, channel, enableNotifications)
+                else -> state.dispatch(action, screen, channel, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
             }
         },
-        language = env.locale, interaction = state.interaction.snapshot()) { item, modifier ->
+        language = env.locale, interaction = state.interaction.snapshot(),
+        remoteAudioLevel = { phone.remoteAudioLevel }) { item, modifier ->
         val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
             value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
                 ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }

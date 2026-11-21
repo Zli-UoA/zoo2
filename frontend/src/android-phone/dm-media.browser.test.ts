@@ -1,8 +1,27 @@
 import { expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser/context";
 import { AudioCallMedia as DmMedia } from "../lib/call/audio-media";
 it("negotiates two real audio-only WebRTC peers and releases capture on close", async () => {
   const context = new AudioContext();
-  const source = context.createMediaStreamDestination().stream;
+  const output = context.createMediaStreamDestination();
+  const source = output.stream;
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  gain.gain.value = 0.3;
+  oscillator.connect(gain).connect(output);
+  oscillator.start();
+  const startAudio = document.createElement("button");
+  startAudio.textContent = "Start test audio";
+  document.body.append(startAudio);
+  try {
+    const resumed = new Promise<void>((resolve, reject) => {
+      startAudio.onclick = () => void context.resume().then(resolve, reject);
+    });
+    await page.getByRole("button", { name: "Start test audio" }).click();
+    await resumed;
+  } finally {
+    startAudio.remove();
+  }
   const captures: MediaStream[] = [];
   const acquire = async () => {
     const stream = new MediaStream(source.getAudioTracks().map((track) => track.clone()));
@@ -48,9 +67,13 @@ it("negotiates two real audio-only WebRTC peers and releases capture on close", 
   );
   try {
     await Promise.all([a.start(), b.start()]);
+    const participants = [
+      { session_id: "a", user_id: "alice" },
+      { session_id: "b", user_id: "bob" },
+    ];
     await Promise.all([
-      a.event("room_state", { participants: [{ session_id: "a" }, { session_id: "b" }] }),
-      b.event("room_state", { participants: [{ session_id: "a" }, { session_id: "b" }] }),
+      a.event("room_state", { participants }),
+      b.event("room_state", { participants }),
     ]);
     await vi.waitFor(
       () => {
@@ -66,9 +89,16 @@ it("negotiates two real audio-only WebRTC peers and releases capture on close", 
       { timeout: 10000 },
     );
     expect(failed).not.toHaveBeenCalled();
+    await vi.waitFor(async () => expect(await a.remoteAudioLevel("bob")).toBeGreaterThan(0.05), {
+      timeout: 10000,
+    });
+    expect(await a.remoteAudioLevel("alice")).toBe(0);
     a.mute(true);
     expect(captures[0].getAudioTracks()[0].enabled).toBe(false);
+    await vi.waitFor(async () => expect(await b.remoteAudioLevel("alice")).toBeLessThan(0.01));
+    expect(await a.remoteAudioLevel("bob")).toBeGreaterThan(0.05);
     a.close();
+    expect(await a.remoteAudioLevel("bob")).toBe(0);
     b.close();
     expect(captures.every((s) => s.getTracks().every((t) => t.readyState === "ended"))).toBe(true);
   } finally {

@@ -2,6 +2,7 @@ package zoo.android.ui
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.background
@@ -12,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -60,6 +62,13 @@ class AndroidSamplesTest {
         ))
         val conversation = AndroidScreen.Conversation("dev", "開発", "Zoo の開発と通話のテストについて相談するチャンネルです。",
             posts, InputState("確認しました。"))
+        val avatar = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(0xffd6e9df.toInt())
+            val canvas = Canvas(this)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xff38594b.toInt() }
+            canvas.drawCircle(64f, 48f, 24f, paint)
+            canvas.drawOval(22f, 77f, 106f, 160f, paint)
+        }.asImageBitmap()
         val cases = listOf(
             "home" to AndroidScreen.Home(posts),
             "channels" to channels,
@@ -92,20 +101,20 @@ class AndroidSamplesTest {
             "settings-detail" to AndroidScreen.SettingsDetail("通知", settings.take(1)),
             "login" to AndroidScreen.SignIn(false),
             "login-restoring" to AndroidScreen.SignIn(true),
-            "call" to AndroidScreen.Call("はる", true),
-            "call-active" to AndroidScreen.Call("はる", false, active = true),
+            "call" to AndroidScreen.Call("はる", true, avatar = avatar, hasUser = true),
+            "call-active" to AndroidScreen.Call("はる", false, active = true, avatar = avatar, hasUser = true),
         )
         var screen by mutableStateOf<AndroidScreen>(cases.first().second)
         var dark by mutableStateOf(false)
         var foreground by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
-            AndroidScreens(screen, dark, foreground, dispatch = { action ->
+            AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
                 actions.add(action)
                 if (action == AndroidUiAction.OpenChannelSettings("dev")) {
                     screen = AndroidScreen.ChannelSettings("開発", settings)
                 }
-            }, language = "ja") { item, modifier ->
+            }, language = "ja", remoteAudioLevel = { .4f }) { item, modifier ->
                 Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
         }
@@ -136,6 +145,10 @@ class AndroidSamplesTest {
                     val hangUp = ui.onNodeWithText("通話を終了").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
                     check(answer.left == hangUp.left && answer.right == hangUp.right &&
                         hangUp.top - answer.bottom == 12.dp) { "Incoming call actions should align: $answer / $hangUp" }
+                }
+                if (example is AndroidScreen.Call) {
+                    if (example.active) ui.mainClock.advanceTimeBy(150)
+                    ui.onNodeWithTag("call-avatar").assertWidthIsEqualTo(88.dp).assertHeightIsEqualTo(88.dp)
                 }
                 capture("$name-${if (night) "dark" else "light"}")
             }

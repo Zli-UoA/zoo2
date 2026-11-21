@@ -26,8 +26,8 @@
 | 設定の子画面 | [ライト](images/android-design/rebuild/settings-detail-light.png) | [ダーク](images/android-design/rebuild/settings-detail-dark.png) |
 | ログイン | [ライト](images/android-design/rebuild/login-light.png) | [ダーク](images/android-design/rebuild/login-dark.png) |
 | ログイン復元中 | [ライト](images/android-design/rebuild/login-restoring-light.png) | [ダーク](images/android-design/rebuild/login-restoring-dark.png) |
-| 着信 | [ライト](images/android-design/rebuild/call-light.png) | [ダーク](images/android-design/rebuild/call-dark.png) |
-| 通話中 | [ライト](images/android-design/rebuild/call-active-light.png) | [ダーク](images/android-design/rebuild/call-active-dark.png) |
+| 着信（相手のアバターと一定間隔の波紋） | [ライト](images/android-design/rebuild/call-light.png) | [ダーク](images/android-design/rebuild/call-dark.png) |
+| 通話中（受信音声に合わせた波紋） | [ライト](images/android-design/rebuild/call-active-light.png) | [ダーク](images/android-design/rebuild/call-active-dark.png) |
 
 ```sh
 cd frontend-compose
