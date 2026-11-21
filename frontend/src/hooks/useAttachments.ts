@@ -161,7 +161,12 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
           // ダウンロードの再試行が失敗しても、まだ使える URL を表示しているプレビューは壊さない。
           // 期限切れの URL だけは `ready` のまま残さず、読み込み直せるようにする。
           // 1回目の取得で表示 URL が更新されている場合は、その新しい期限で判定する。
-          if (!options.refresh || shouldRefreshAttachmentUrl(visible.current.expiresAt)) {
+          // 取得開始の判定と違い、ここでは更新マージンではなく実際の期限だけを見る。
+          if (
+            !options.refresh ||
+            visible.current.expiresAt === null ||
+            visible.current.expiresAt <= Date.now()
+          ) {
             show(null, null);
             setStatus("error");
           }

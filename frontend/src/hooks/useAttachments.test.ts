@@ -29,6 +29,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount());
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 it("shares one URL request across image copies and reuses the signed URL", async () => {
@@ -202,6 +203,29 @@ it("keeps the URL refreshed by the first download attempt when the retry fails",
   });
   // クリック時点の期限ではなく、いま表示している URL の期限で判定する。
   expect(results[0].url).toBe("https://files.test/fresh.png");
+  expect(results[0].status).toBe("ready");
+});
+
+it("keeps a URL that is still valid near its expiry when a download refresh fails", async () => {
+  // 更新マージン（5秒）の中でも、実際の期限前なら表示中の URL は使える。
+  vi.useFakeTimers({ now: Date.parse("2026-01-01T00:00:00Z"), toFake: ["Date"] });
+  mocks.requestWithTx.mockResolvedValueOnce({
+    data: {
+      download_url: "https://files.test/image.png?X-Amz-Date=20260101T000000Z&X-Amz-Expires=3",
+    },
+    txid: null,
+  });
+  await act(async () => root.render(tree()));
+  expect(results[0].status).toBe("ready");
+  mocks.requestWithTx.mockRejectedValue(
+    Object.assign(new Error("Request failed"), { status: 503 }),
+  );
+  await act(async () => {
+    await results[0].getFreshUrl({ refresh: true }).catch(() => undefined);
+  });
+  expect(results[0].url).toBe(
+    "https://files.test/image.png?X-Amz-Date=20260101T000000Z&X-Amz-Expires=3",
+  );
   expect(results[0].status).toBe("ready");
 });
 
