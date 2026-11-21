@@ -482,9 +482,18 @@ SET session_replication_role = DEFAULT;
     let state = backend::state::AppState::new(backend::db::init_db(&url).await?, config);
     let app = backend::routes::create_router(state);
     let api = [
-        ("api-messages", "/api/search?q=%E3%81%A7%E3%81%99"),
+        (
+            "api-messages",
+            "/api/search?type=messages&q=%E3%81%A7%E3%81%99",
+        ),
         (
             "api-messages-12-months",
+            "/api/search?type=messages&q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
+        ),
+        // 既定（メッセージとファイル）。月ごとに 2 本。
+        ("api-all", "/api/search?q=%E3%81%A7%E3%81%99"),
+        (
+            "api-all-12-months",
             "/api/search?q=%E5%AD%98%E5%9C%A8%E3%81%97%E3%81%AA%E3%81%84",
         ),
         ("api-files", "/api/search?type=files&q=pdf"),
@@ -552,12 +561,14 @@ SET session_replication_role = DEFAULT;
                 "api-messages-12-months" => Some(12.),
                 // よくある語は今月だけでページがそろう。
                 "api-messages" => Some(1.),
+                "api-all-12-months" => Some(24.),
+                "api-all" => Some(2.),
                 _ => None,
             };
             if let Some(expected) = expected {
                 assert_eq!(months, expected, "{name}: month SQL count");
             }
-            assert!((1. ..=12.).contains(&months), "{name}: {months} month SQLs");
+            assert!((1. ..=24.).contains(&months), "{name}: {months} month SQLs");
             api_sql.push(json!({
                 "name": name, "month_sql": months, "statements": all["calls"],
                 "blocks": all["blocks"], "db_ms": all["db_ms"],
@@ -577,7 +588,7 @@ SET session_replication_role = DEFAULT;
                         let response = app.clone().oneshot(Request::builder().uri(uri).header("X-Dev-User", ACTOR).body(Body::empty()).unwrap()).await.unwrap();
                         assert_eq!(response.status(), 200, "{name}");
                         let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
-                        if name == "api-messages-12-months" {
+                        if name.ends_with("-12-months") {
                             assert!(body["items"].as_array().unwrap().is_empty());
                             assert!(body["next_cursor"].is_string(), "older months remain after 12");
                             // ちょうど 12 か月（今月から 11 か月前まで）を見て止まる。

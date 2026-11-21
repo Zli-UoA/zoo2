@@ -44,10 +44,33 @@ pub fn router() -> Router<AppState> {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchKind {
+    /// メッセージと添付ファイル名をまとめて、新しい順に（既定。ノートは含めない）。
     #[default]
+    All,
     Messages,
     Files,
     Notes,
+}
+
+impl SearchKind {
+    /// 月ごとに流す SQL の種類。`All` はメッセージとファイルの 2 本を流し、時刻順に合わせる。
+    pub fn parts(self) -> &'static [SearchKind] {
+        match self {
+            SearchKind::All => &[SearchKind::Messages, SearchKind::Files],
+            SearchKind::Messages => &[SearchKind::Messages],
+            SearchKind::Files => &[SearchKind::Files],
+            SearchKind::Notes => &[SearchKind::Notes],
+        }
+    }
+
+    /// 応答の各項目の `kind`。
+    fn item_kind(self) -> &'static str {
+        match self {
+            SearchKind::Files => "file",
+            SearchKind::Notes => "note",
+            _ => "message",
+        }
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -196,7 +219,13 @@ fn cut_snippet(text: &str, cut_start: bool, cut_end: bool) -> String {
 /// （予算テストで 100 万件中 22 万行を読んだ）。条件はヒープの行の絞り込みとしてだけ使う。
 ///パラメーター: $1 月、$2 見えるチャンネル（JSON 配列）、$3 投稿者、
 /// $4/$5 keyset（作成日時・ID）、$6/$7 期間、$8 件数、$9 以降が語。
+/// `kind` は `SearchKind::parts` の 1 つ（`All` は渡さない）。
 pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
+    assert_ne!(
+        kind,
+        SearchKind::All,
+        "month_sql takes one part of SearchKind::All"
+    );
     const MONTH: &str = "(date_part('year', {t}.created_at) * 12 + date_part('month', {t}.created_at))::integer = $1::int";
     let common = |t: &str, author: &str| {
         format!(
@@ -210,6 +239,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
         )
     };
     match kind {
+        SearchKind::All => unreachable!(),
         SearchKind::Messages => format!(
             "SELECT json_build_object('id', m.id, 'channel_id', m.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'parent_id', m.parent_id, 'user_id', m.user_id, \
@@ -325,7 +355,12 @@ async fn search(
     let after_ts = after.map(|d| d.to_string()).unwrap_or_default();
     let before_ts = before.map(|d| d.to_string()).unwrap_or_default();
     let term_refs: Vec<&str> = terms.iter().map(String::as_str).collect();
-    let sql = month_sql(query.kind, &term_refs);
+    let parts: Vec<(SearchKind, String)> = query
+        .kind
+        .parts()
+        .iter()
+        .map(|&part| (part, month_sql(part, &term_refs)))
+        .collect();
 
     let mut items: Vec<Value> = Vec::new();
     let mut month = start;
@@ -353,7 +388,26 @@ async fn search(
             &need,
         ];
         params.extend(terms.iter().map(String::as_str));
-        let rows = crate::apps::query(&mut tx, &sql, &params).await?;
+        // 種類ごとに、この月の上位 need 件。合わせて (created_at, id) の新しい順に並べれば、
+        // 種類をまたいでも同じ keyset で続きを取れる（月の中で閉じるので、月の順は崩れない）。
+        let mut rows = Vec::new();
+        for (part, sql) in &parts {
+            for mut row in crate::apps::query(&mut tx, sql, &params).await? {
+                if let Some(object) = row.as_object_mut() {
+                    object.insert("kind".into(), Value::from(part.item_kind()));
+                }
+                rows.push(row);
+            }
+        }
+        if parts.len() > 1 {
+            let key = |row: &Value| {
+                (
+                    row["created_at"].as_str().unwrap_or("").to_string(),
+                    row["id"].as_str().unwrap_or("").to_string(),
+                )
+            };
+            rows.sort_by_key(|row| std::cmp::Reverse(key(row)));
+        }
         scanned += 1;
         last_month = Some(month);
         items.extend(rows);

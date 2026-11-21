@@ -126,7 +126,12 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     .await?;
 
     // alice: 公開・private が見える。暗号化チャンネル（切り替え前の平文も）と削除済みは出ない。
-    let all = search(&app, &alice, &format!("q={}&limit=50", q("会議"))).await;
+    let all = search(
+        &app,
+        &alice,
+        &format!("type=messages&q={}&limit=50", q("会議")),
+    )
+    .await;
     let got = ids(&all);
     assert_eq!(&got[..4], &[m(1), m(2), m(3), m(4)], "{all}");
     assert!(!got.contains(&m(5)) && !got.contains(&m(6)));
@@ -139,7 +144,11 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let older = search(
         &app,
         &alice,
-        &format!("q={}&limit=50&cursor={}", q("会議"), q(cursor)),
+        &format!(
+            "type=messages&q={}&limit=50&cursor={}",
+            q("会議"),
+            q(cursor)
+        ),
     )
     .await;
     assert_eq!(ids(&older), vec![m(8)], "{older}");
@@ -154,11 +163,16 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     );
 
     // bob は private に入っていない。
-    let bob_ids = ids(&search(&app, &bob, &format!("q={}&limit=50", q("会議"))).await);
+    let bob_ids = ids(&search(
+        &app,
+        &bob,
+        &format!("type=messages&q={}&limit=50", q("会議")),
+    )
+    .await);
     assert!(bob_ids.contains(&m(1)) && !bob_ids.contains(&m(4)));
     // ゲストは入っているチャンネルだけ（公開チャンネルも見えない）。
     assert_eq!(
-        ids(&search(&app, &guest, &format!("q={}", q("会議"))).await),
+        ids(&search(&app, &guest, &format!("type=messages&q={}", q("会議"))).await),
         vec![m(4)]
     );
 
@@ -181,7 +195,10 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let mut found = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..6 {
-        let mut path = format!("q={}&channel_id={imported}&limit=50", q("取込返信"));
+        let mut path = format!(
+            "type=messages&q={}&channel_id={imported}&limit=50",
+            q("取込返信")
+        );
         if let Some(c) = &cursor {
             path += &format!("&cursor={}", q(c));
         }
@@ -201,28 +218,33 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
 
     // 1 文字、複数の語、英字の大文字・小文字。
     assert_eq!(
-        ids(&search(&app, &alice, &format!("q={}", q("秘"))).await),
+        ids(&search(&app, &alice, &format!("type=messages&q={}", q("秘"))).await),
         vec![m(4)]
     );
     assert_eq!(
-        ids(&search(&app, &alice, &format!("q={}", q("会議 資料"))).await),
+        ids(&search(&app, &alice, &format!("type=messages&q={}", q("会議 資料"))).await),
         vec![m(1)]
     );
     assert_eq!(
-        ids(&search(&app, &alice, "q=hello%20world").await),
+        ids(&search(&app, &alice, "type=messages&q=hello%20world").await),
         vec![m(2)]
     );
     // LIKE の特殊文字は文字どおりに扱う。
-    assert!(ids(&search(&app, &alice, &format!("q={}", q("%"))).await).is_empty());
+    assert!(ids(&search(&app, &alice, &format!("type=messages&q={}", q("%"))).await).is_empty());
 
     // 同じ月の中の keyset ページング。
-    let page1 = search(&app, &alice, &format!("q={}&limit=2", q("会議"))).await;
+    let page1 = search(
+        &app,
+        &alice,
+        &format!("type=messages&q={}&limit=2", q("会議")),
+    )
+    .await;
     assert_eq!(ids(&page1), vec![m(1), m(2)]);
     let c = page1["next_cursor"].as_str().unwrap();
     let page2 = search(
         &app,
         &alice,
-        &format!("q={}&limit=2&cursor={}", q("会議"), q(c)),
+        &format!("type=messages&q={}&limit=2&cursor={}", q("会議"), q(c)),
     )
     .await;
     assert_eq!(ids(&page2), vec![m(3), m(4)]);
@@ -232,19 +254,25 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         ids(&search(
             &app,
             &alice,
-            &format!("q={}&channel_id={private}", q("会議"))
+            &format!("type=messages&q={}&channel_id={private}", q("会議"))
         )
         .await),
         vec![m(4)]
     );
     assert!(
-        ids(&search(&app, &bob, &format!("q={}&channel_id={private}", q("会議"))).await).is_empty()
+        ids(&search(
+            &app,
+            &bob,
+            &format!("type=messages&q={}&channel_id={private}", q("会議"))
+        )
+        .await)
+        .is_empty()
     );
     assert!(
         ids(&search(
             &app,
             &alice,
-            &format!("q={}&channel_id={encrypted}", q("会議"))
+            &format!("type=messages&q={}&channel_id={encrypted}", q("会議"))
         )
         .await)
         .is_empty()
@@ -259,21 +287,26 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let recent = ids(&search(
         &app,
         &alice,
-        &format!("q={}&limit=50&after={today}", q("会議")),
+        &format!("type=messages&q={}&limit=50&after={today}", q("会議")),
     )
     .await);
     assert_eq!(recent, vec![m(1), m(2), m(3), m(4), m(9)]);
 
     // 投稿者で絞る。
     assert_eq!(
-        ids(&search(&app, &alice, &format!("q={}&user_id={bob}", q("会議"))).await),
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=messages&q={}&user_id={bob}", q("会議"))
+        )
+        .await),
         vec![m(9)]
     );
     assert!(
         !ids(&search(
             &app,
             &alice,
-            &format!("q={}&limit=50&user_id={alice}", q("会議"))
+            &format!("type=messages&q={}&limit=50&user_id={alice}", q("会議"))
         )
         .await)
         .contains(&m(9))
@@ -307,19 +340,30 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let before_month = ids(&search(
         &app,
         &alice,
-        &format!("q={}&before={month_start}", q("月境界")),
+        &format!("type=messages&q={}&before={month_start}", q("月境界")),
     )
     .await);
     assert_eq!(before_month, vec![m(12)], "{before_month:?}");
-    let all_boundary = ids(&search(&app, &alice, &format!("q={}", q("月境界"))).await);
+    let all_boundary =
+        ids(&search(&app, &alice, &format!("type=messages&q={}", q("月境界"))).await);
     assert_eq!(all_boundary, vec![m(11), m(12)]);
     // 指定した日の 0 時ちょうどの行は出ず、その 1 秒前の行は出る。
     assert_eq!(
-        ids(&search(&app, &alice, &format!("q={}&before={day}", q("日境界"))).await),
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=messages&q={}&before={day}", q("日境界"))
+        )
+        .await),
         vec![m(16)]
     );
     assert_eq!(
-        ids(&search(&app, &alice, &format!("q={}&after={day}", q("日境界"))).await),
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=messages&q={}&after={day}", q("日境界"))
+        )
+        .await),
         vec![m(15)]
     );
     let tomorrow = sql
@@ -333,7 +377,7 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         ids(&search(
             &app,
             &alice,
-            &format!("q={}&limit=50&before={tomorrow}", q("会議"))
+            &format!("type=messages&q={}&limit=50&before={tomorrow}", q("会議"))
         )
         .await)
         .contains(&m(1))
@@ -350,6 +394,30 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
                   ('n2', '{private}', '秘密のメモ', '障害の記録', '{alice}');",
         m1 = m(1), m6 = m(6)
     )).await?;
+    // 既定（type なし）はメッセージとファイルをまとめて新しい順。種類をまたいで続きを取れる。
+    sql.batch_execute(&format!(
+        "INSERT INTO messages (id, user_id, channel_id, content, created_at) \
+           VALUES ('{m40}', '{alice}', '{public}', '議事録を共有しました', LOCALTIMESTAMP - interval '1 hour');",
+        m40 = m(40)
+    ))
+    .await?;
+    let mixed = search(&app, &alice, &format!("q={}", q("議事録"))).await;
+    assert_eq!(ids(&mixed), vec!["a1".to_string(), m(40)], "{mixed}");
+    assert_eq!(mixed["items"][0]["kind"], json!("file"));
+    assert_eq!(mixed["items"][1]["kind"], json!("message"));
+    let first = search(&app, &alice, &format!("q={}&limit=1", q("議事録"))).await;
+    assert_eq!(ids(&first), vec!["a1"]);
+    let rest = search(
+        &app,
+        &alice,
+        &format!(
+            "q={}&limit=1&cursor={}",
+            q("議事録"),
+            q(first["next_cursor"].as_str().unwrap())
+        ),
+    )
+    .await;
+    assert_eq!(ids(&rest), vec![m(40)], "{rest}");
     let files = search(&app, &alice, &format!("type=files&q={}", q("議事録 pdf"))).await;
     assert_eq!(ids(&files), vec!["a1"], "{files}");
     assert_eq!(files["items"][0]["message_id"], json!(m(1)));
@@ -402,12 +470,22 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let long = format!("{}末尾の会議メモ", "あ".repeat(5000));
     sql.batch_execute(&insert(&m(10), &public, &long, "8 minutes"))
         .await?;
-    let hit = search(&app, &alice, &format!("q={}", q("末尾の会議"))).await;
+    let hit = search(
+        &app,
+        &alice,
+        &format!("type=messages&q={}", q("末尾の会議")),
+    )
+    .await;
     // 語の順番によらず、最初に当たった位置から切り出す（先頭の「資料」も残る）。
     let spread = format!("資料{}会議の続き", "い".repeat(1500));
     sql.batch_execute(&insert(&m(13), &public, &spread, "9 minutes"))
         .await?;
-    let both = search(&app, &alice, &format!("q={}", q("会議の続き 資料"))).await;
+    let both = search(
+        &app,
+        &alice,
+        &format!("type=messages&q={}", q("会議の続き 資料")),
+    )
+    .await;
     assert!(
         both["items"][0]["snippet"]
             .as_str()
@@ -426,7 +504,10 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     let summer = search(
         &app,
         &alice,
-        &format!("q={}", q(if lower_matches { "été" } else { "ÉTÉ" })),
+        &format!(
+            "type=messages&q={}",
+            q(if lower_matches { "été" } else { "ÉTÉ" })
+        ),
     )
     .await;
     let summer_snippet = summer["items"][0]["snippet"].as_str().unwrap();
@@ -465,14 +546,14 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
     );
 
     // 入力の検証。
-    let bad_cursor = format!("q=x&cursor={}", q(r#"{"m":3000000000}"#));
+    let bad_cursor = format!("type=messages&q=x&cursor={}", q(r#"{"m":3000000000}"#));
     for bad in [
         bad_cursor.as_str(),
-        "q=",
-        "q=a%20b%20c%20d%20e%20f",
-        "q=x&cursor=nope",
-        "q=x&after=2026-13-01",
-        "q=x&type=users",
+        "type=messages&q=",
+        "type=messages&q=a%20b%20c%20d%20e%20f",
+        "type=messages&q=x&cursor=nope",
+        "type=messages&q=x&after=2026-13-01",
+        "type=messages&q=x&type=users",
     ] {
         let (status, _) = call(&app, "GET", &format!("/api/search?{bad}"), &alice, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
