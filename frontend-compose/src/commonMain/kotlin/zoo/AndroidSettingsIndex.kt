@@ -14,19 +14,33 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+internal data class AndroidSettingsLabels(
+    val appearance: String,
+    val theme: String,
+    val themeValue: String,
+    val interaction: String,
+    val swipeReply: String,
+    val haptics: String,
+    val options: String,
+)
+
 @Composable
-internal fun AndroidSettingsIndex(app: Session, destinations: List<Pair<String, String>>, onOpen: (String) -> Unit) {
+internal fun AndroidSettingsIndex(
+    labels: AndroidSettingsLabels,
+    destinations: List<Pair<String, String>>,
+    swipeReply: Boolean,
+    haptics: Boolean,
+    onOpen: (String) -> Unit,
+    onToggleSwipeReply: () -> Unit,
+    onToggleHaptics: () -> Unit,
+) {
     Column(Modifier.fillMaxWidth()) {
-        SettingsIndexHeading(app.t("settings.appearance"))
-        SettingsIndexRow(app.t("theme.title"), app.t("theme.${app.env.theme}"), "palette") { onOpen("appearance") }
-        SettingsIndexHeading(app.t("settings.interaction"))
-        SettingsIndexSwitch(app.t("settings.swipeReply"), "reply", app.env.swipeReply) {
-            app.platform.action("toggleSwipeReply")
-        }
-        SettingsIndexSwitch(app.t("settings.operationHaptics"), "activity", app.env.operationHaptics) {
-            app.platform.action("toggleOperationHaptics")
-        }
-        SettingsIndexHeading(app.t("settings.zooTitle"))
+        SettingsIndexHeading(labels.appearance)
+        SettingsIndexRow(labels.theme, labels.themeValue, "palette") { onOpen("appearance") }
+        SettingsIndexHeading(labels.interaction)
+        SettingsIndexSwitch(labels.swipeReply, "reply", swipeReply, onToggleSwipeReply)
+        SettingsIndexSwitch(labels.haptics, "activity", haptics, onToggleHaptics)
+        SettingsIndexHeading(labels.options)
         for ((destination, title) in destinations.filter { it.first != "appearance" }) {
             SettingsIndexRow(title, null, when (destination) {
                 "sip" -> "message-circle-more"
