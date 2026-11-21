@@ -39,6 +39,7 @@ class OverlaySlot {
     var tooltip = false
     var placementAbove = false
     var alignEnd = false
+    var bottomAligned = false
     var anchorOffset = 0.dp
     var description by mutableStateOf("")
     var footer by mutableStateOf<(@Composable () -> Unit)?>(null)
@@ -70,6 +71,7 @@ fun OverlayRegistration(
     placementAbove: Boolean = false,
     alignEnd: Boolean = false,
     anchorOffset: Dp = 0.dp,
+    bottomAligned: Boolean = false,
     onEscape: (() -> Boolean)? = null,
     body: @Composable ColumnScope.() -> Unit,
 ) {
@@ -89,6 +91,7 @@ fun OverlayRegistration(
         slot.tooltip = tooltip
         slot.placementAbove = placementAbove
         slot.alignEnd = alignEnd
+        slot.bottomAligned = bottomAligned
         slot.anchorOffset = anchorOffset
         slot.onEscape = onEscape
         slot.close = close
@@ -213,6 +216,7 @@ private fun OverlayCard(slot: OverlaySlot) {
         val position =
             if (slot.fullScreen)
                 Modifier.align(Alignment.TopStart).offset(y = app.env.visualViewportTop.dp)
+            else if (slot.bottomAligned) Modifier.align(Alignment.BottomCenter)
             else if (anchor == null) Modifier.align(Alignment.Center)
             else if (slot.tooltip) Modifier.offset(tooltipLeft, tooltipTop)
             else
@@ -250,6 +254,7 @@ private fun OverlayCard(slot: OverlaySlot) {
                             ?.dp
                             ?.coerceAtMost(screenHeight) ?: screenHeight
                     )
+            else if (slot.bottomAligned) Modifier.fillMaxWidth()
             else if (slot.tooltip) Modifier.widthIn(max = width.coerceAtMost(screenWidth - 16.dp))
             else Modifier.width(width.coerceAtMost(screenWidth - 32.dp))
         val role =

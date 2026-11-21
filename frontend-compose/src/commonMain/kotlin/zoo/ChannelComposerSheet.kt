@@ -1,8 +1,7 @@
 package zoo
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,10 +36,9 @@ internal fun ChannelComposerSheet(
         return
     }
     if (!expanded) {
-        val shape = RoundedCornerShape(topStart = AndroidDesign.surfaceRadius, topEnd = AndroidDesign.surfaceRadius)
-        Column(Modifier.fillMaxWidth().semantics { testTag = "channel-composer-dock" }.clip(shape)
-            .background(MaterialTheme.colorScheme.background)
-            .border(1.dp, MaterialTheme.colorScheme.outline, shape)) {
+        Column(Modifier.fillMaxWidth().semantics { testTag = "channel-composer-dock" }
+            .background(MaterialTheme.colorScheme.surface)) {
+            androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             ComposerDragHandle(app, expanded = false, enabled = enabled) { changeExpanded(true) }
             editor(false)
         }
@@ -53,8 +51,6 @@ internal fun ChannelComposerSheet(
             Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 PaneHeader {
                     IconButton("arrow-left", app.t("composer.collapse")) { changeExpanded(false) }
-                    Text(app.t("composer.editorTitle"), Modifier.weight(1f),
-                        size = AndroidDesign.titleSize, lineHeight = AndroidDesign.titleLineHeight)
                 }
                 ComposerDragHandle(app, expanded = true, enabled = true) { changeExpanded(false) }
                 Box(Modifier.weight(1f).fillMaxWidth()) { editor(true) }
@@ -76,6 +72,7 @@ private fun ComposerDragHandle(app: Session, expanded: Boolean, enabled: Boolean
                 stateDescription = action
                 if (enabled) customActions = listOf(CustomAccessibilityAction(action) { latestChange(); true })
             }
+            .clickable(enabled = enabled, onClickLabel = action, onClick = { latestChange() })
             .pointerInput(expanded, enabled) {
                 var distance = 0f
                 detectVerticalDragGestures(

@@ -85,15 +85,15 @@ fun SettingsSection(
     borderColor: androidx.compose.ui.graphics.Color? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val touch = LocalTouchUi.current
+    val border = borderColor ?: MaterialTheme.colorScheme.outline
     Column(
-        modifier
-            .fillMaxWidth()
-            .border(
-                1.dp,
-                borderColor ?: MaterialTheme.colorScheme.outline,
-                RoundedCornerShape(if (LocalTouchUi.current) AndroidDesign.surfaceRadius else 10.dp),
+        modifier.fillMaxWidth()
+            .then(
+                if (touch && borderColor == null) Modifier
+                else Modifier.border(1.dp, border, RoundedCornerShape(if (touch) AndroidDesign.surfaceRadius else 10.dp)),
             )
-            .padding(if (LocalTouchUi.current) AndroidDesign.screenInset else 17.dp),
+            .padding(if (touch) AndroidDesign.screenInset else 17.dp),
         verticalArrangement = Arrangement.spacedBy(if (LocalTouchUi.current) AndroidDesign.spaceLarge else 12.dp),
     ) {
         if (title.isNotEmpty())

@@ -63,6 +63,23 @@ class ReauthAndPasskeyTest {
     }
 
     @Test
+    fun firstLoginRequestsRefreshAccessAndCanReuseTheBrowserSession() {
+        val request = ReauthRequest.create(
+            authorize,
+            "zoo-android",
+            ReauthRequest.redirectUri("https://zli.chat"),
+            "https://zli.chat/api",
+            forceReauth = false,
+        )
+        val parameters = Url(request.url).parameters
+        assertEquals("openid profile offline_access", parameters["scope"])
+        assertEquals("S256", parameters["code_challenge_method"])
+        assertNull(parameters["max_age"])
+        assertEquals(request.state, parameters["state"])
+        assertEquals(request.nonce, parameters["nonce"])
+    }
+
+    @Test
     fun acceptsOnlyTheMatchingCallback() {
         val request = request()
         val base = "https://zli.chat/android/reauth-callback"

@@ -379,7 +379,7 @@ class AttachmentDrafts(
         return handled
     }
 
-    fun pick() {
+    fun pick(photos: Boolean = false) {
         scope.launch {
             add(
                 app.platform.invoke(
@@ -388,6 +388,7 @@ class AttachmentDrafts(
                             put("owner", owner)
                             put("accept", acceptedTypes?.joinToString(",").orEmpty())
                             put("multiple", true)
+                            put("photos", photos)
                         }
                         .toString(),
                 )

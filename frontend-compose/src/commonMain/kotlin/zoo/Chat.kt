@@ -1,5 +1,8 @@
 package zoo
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.*
@@ -11,10 +14,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -22,8 +27,6 @@ import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
 import io.ktor.http.Url
 import io.ktor.http.encodeURLParameter
@@ -186,79 +189,110 @@ fun Chat(
         val legacy by app.repo.attachments(id).rows.collectAsState()
         legacy
     } else emptyList()
-    CompositionLocalProvider(LocalAttachments provides attachmentRows) {
-        Row(modifier.fillMaxWidth()) {
-            if (wide || app.thread == null)
-                Column(Modifier.weight(1f).fillMaxHeight()) {
-                    MessageList(
-                        app,
-                        channel,
-                        all,
-                        reactions,
-                        users,
-                        null,
-                        wide,
-                        Modifier.weight(1f),
-                        isLoading = loading,
-                        isError = error != null,
-                        canCompose = canPost,
-                        retry = { table.refresh() },
+    val showThreadAsScreen = LocalTouchUi.current && !wide
+    val activeThread = app.thread
+    var previousThread by remember(id) { mutableStateOf<String?>(null) }
+    SideEffect { if (activeThread != null) previousThread = activeThread }
+    val channelSurface: @Composable (Modifier) -> Unit = { channelModifier ->
+        Column(channelModifier.fillMaxHeight()) {
+            MessageList(
+                app,
+                channel,
+                all,
+                reactions,
+                users,
+                null,
+                wide,
+                Modifier.weight(1f),
+                isLoading = loading,
+                isError = error != null,
+                canCompose = canPost,
+                retry = { table.refresh() },
+            )
+            when {
+                channel.present("archive_at") ->
+                    Text(
+                        app.t("moderation.archivedReadOnly"),
+                        Modifier.padding(16.dp),
+                        muted = true,
                     )
-                    when {
-                        channel.present("archive_at") ->
-                            Text(
-                                app.t("moderation.archivedReadOnly"),
-                                Modifier.padding(16.dp),
-                                muted = true,
-                            )
-                        !joined -> JoinToPostPrompt(app, channel)
-                        else -> Composer(app, id, null, users, canPost, placeholder = composerPlaceholder, allowAttachments = !encrypted)
-                    }
-                }
-            app.thread?.let { parent ->
-                if (wide) VerticalDivider()
-                ThreadSurface(
-                    app,
-                    visibleMessages(all, parent).size,
-                    loading,
-                    close = { app.thread = null },
-                    root = {
-                        all.find { it.text("id") == parent && !it.present("deleted_at") }
-                            ?.let {
-                                Message(
-                                    app,
-                                    channel,
-                                    it,
-                                    all,
-                                    reactions,
-                                    users,
-                                    false,
-                                    wide,
-                                    canOpenThread = false,
-                                )
-                            }
-                    },
-                    replies = {
-                        MessageList(
+                !joined -> JoinToPostPrompt(app, channel)
+                else -> Composer(app, id, null, users, canPost, placeholder = composerPlaceholder, allowAttachments = !encrypted)
+            }
+        }
+    }
+    val threadSurface: @Composable (String) -> Unit = { parent ->
+        ThreadSurface(
+            app,
+            visibleMessages(all, parent).size,
+            loading,
+            close = { app.thread = null },
+            root = {
+                all.find { it.text("id") == parent && !it.present("deleted_at") }
+                    ?.let {
+                        Message(
                             app,
                             channel,
+                            it,
                             all,
                             reactions,
                             users,
-                            parent,
+                            false,
                             wide,
-                            Modifier.fillMaxSize(),
-                            isLoading = loading,
-                            isError = error != null,
-                            canCompose = canPost,
-                            retry = { table.refresh() },
+                            canOpenThread = false,
                         )
-                    },
-                    composer =
-                        if (joined && !channel.present("archive_at")) {
-                            { Composer(app, id, parent, users, canPost, placeholder = composerPlaceholder, allowAttachments = !encrypted) }
-                        } else null,
+                    }
+            },
+            replies = {
+                MessageList(
+                    app,
+                    channel,
+                    all,
+                    reactions,
+                    users,
+                    parent,
+                    wide,
+                    Modifier.fillMaxSize(),
+                    isLoading = loading,
+                    isError = error != null,
+                    canCompose = canPost,
+                    retry = { table.refresh() },
                 )
+            },
+            composer =
+                if (joined && !channel.present("archive_at")) {
+                    { Composer(app, id, parent, users, canPost, placeholder = composerPlaceholder, allowAttachments = !encrypted) }
+                } else null,
+        )
+    }
+    CompositionLocalProvider(LocalAttachments provides attachmentRows) {
+        if (showThreadAsScreen) {
+            Box(modifier.fillMaxWidth()) {
+                channelSurface(
+                    Modifier.fillMaxWidth().then(
+                        if (activeThread != null) Modifier.clearAndSetSemantics { hideFromAccessibility() }
+                        else Modifier,
+                    ),
+                )
+                AnimatedVisibility(
+                    visible = activeThread != null,
+                    modifier = Modifier.fillMaxSize(),
+                    enter = slideInHorizontally { it },
+                    exit = slideOutHorizontally { it },
+                ) {
+                    Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                        // Own hit testing even when the visible thread has an empty area.
+                        awaitPointerEventScope { while (true) awaitPointerEvent() }
+                    }) {
+                        (activeThread ?: previousThread)?.let { threadSurface(it) }
+                    }
+                }
+            }
+        } else Row(modifier.fillMaxWidth()) {
+            if (wide || activeThread == null) channelSurface(Modifier.weight(1f))
+            activeThread?.let {
+                if (wide) VerticalDivider()
+                threadSurface(it)
             }
         }
     }
@@ -734,6 +768,13 @@ internal fun Message(
     }
     val showThread =
         canOpenThread && (callbacks == null || callbacks.openThread != null)
+    var swipeOffset by remember(id) { mutableFloatStateOf(0f) }
+    val latestOpenThread by rememberUpdatedState(openThread)
+    val swipe = if (LocalTouchUi.current && showThread && !editing) Modifier.messageSwipe(
+        onOffset = { swipeOffset = it },
+        onThreshold = { app.platform.action("haptic:threshold") },
+        onCommit = { latestOpenThread() },
+    ) else Modifier
     val canDelete =
         mine ||
             (callbacks == null &&
@@ -746,8 +787,16 @@ internal fun Message(
                 app.platform.action("haptic:longPress")
                 menuOpen = true
             }
-                .semantics { testTag = "message:$id" }
+                .then(swipe)
+                .semantics {
+                    testTag = "message:$id"
+                    if (!editing) customActions = buildList {
+                        add(CustomAccessibilityAction(app.t("messages.more")) { menuOpen = true; true })
+                        if (showThread) add(CustomAccessibilityAction(app.t("threads.open")) { openThread(); true })
+                    }
+                }
                 .fillMaxWidth()
+                .clipToBounds()
                 .background(
                     if (hovered || focused)
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f)
@@ -756,8 +805,17 @@ internal fun Message(
                 )
                 .hoverable(interaction)
         ) {
+            if (swipeOffset < 0f) {
+                Box(
+                    Modifier.align(Alignment.CenterEnd).size(56.dp, 40.dp)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon("message-square-plus", color = MaterialTheme.colorScheme.onSecondaryContainer)
+                }
+            }
             Row(
-                Modifier.fillMaxWidth()
+                Modifier.fillMaxWidth().graphicsLayer { translationX = swipeOffset }
                     .padding(
                         start = if (LocalTouchUi.current) 0.dp else 12.dp,
                         end = if (LocalTouchUi.current) 0.dp else 12.dp,
@@ -1060,7 +1118,7 @@ internal fun Message(
                     }
                 }
             }
-            if (!editing)
+            if (!editing && (!LocalTouchUi.current || menuOpen))
                 Row(
                     Modifier.align(Alignment.TopEnd)
                         .padding(end = 6.dp)
@@ -1159,6 +1217,8 @@ internal fun Message(
                         },
                         size = 24.dp,
                         controlledOpen = menuOpen,
+                        showTrigger = !LocalTouchUi.current,
+                        bottomAligned = LocalTouchUi.current,
                         onOpenChange = { menuOpen = it },
                     )
                 }
@@ -1285,6 +1345,7 @@ internal fun Composer(
     var caret by remember(key) { mutableStateOf(0) }
     var expanded by remember(key) { mutableStateOf(false) }
     var formatting by remember(key) { mutableStateOf(false) }
+    var editorFocused by remember(key) { mutableStateOf(false) }
     var textRange by remember(key) { mutableStateOf(TextRange(initialValue.length)) }
     var requestedRange by remember(key) { mutableStateOf<TextRange?>(null) }
     var focusSelection by remember(key) { mutableStateOf<TextRange?>(null) }
@@ -1683,7 +1744,9 @@ internal fun Composer(
                         placeholder
                             ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
                     focusRequester = composerFocusRequester,
+                    onFocus = { editorFocused = true },
                     onBlur = {
+                        editorFocused = false
                         dismissed = true
                         updateTyping(false)
                     },
@@ -1714,44 +1777,35 @@ internal fun Composer(
                 ) { attachments.pick() }
             }
             if (LocalTouchUi.current) {
-                Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
-                    .then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
-                    // Keep this call site stable when moving the same editor into the fullscreen host.
-                    BoxWithConstraints(Modifier.fillMaxWidth()
-                        .then(if (fullScreen && !scrollEditor) Modifier.weight(1f) else Modifier)) {
-                        val editorHeight = if (fullScreen && !scrollEditor) maxHeight.coerceAtLeast(AndroidDesign.touchTarget)
-                            else if (scrollEditor) 96.dp else null
-                        editor(Modifier.fillMaxWidth().then(if (fullScreen && !scrollEditor) Modifier.fillMaxHeight() else Modifier), editorHeight)
-                    }
-                    if (formatting) Row(
-                        Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium)
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceSmall),
-                    ) {
-                        ComposerFormat.entries.forEach { format ->
-                            val codeAllowed = format != ComposerFormat.Code || !value.substring(
-                                textRange.min.coerceIn(0, value.length), textRange.max.coerceIn(0, value.length),
-                            ).contains("```")
-                            Button(format.label, variant = "ghost", enabled = enabled && !composing && codeAllowed,
-                                accessibleLabel = app.t(format.title),
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = if (format == ComposerFormat.Bold) FontWeight.Bold else FontWeight.Normal,
-                                    fontStyle = if (format == ComposerFormat.Italic) FontStyle.Italic else FontStyle.Normal,
-                                    textDecoration = if (format == ComposerFormat.Strike) TextDecoration.LineThrough else null,
-                                ),
-                            ) { applyEdit(formatComposerText(value, textRange, format)) }
+                AndroidComposerLayout(
+                    fullScreen = fullScreen,
+                    scrollEditor = scrollEditor,
+                    showTools = fullScreen || editorFocused || formatting,
+                    showFormatting = formatting,
+                    editor = editor,
+                    attach = attach,
+                    send = { ComposerSendButton(canSubmit, true, app.t("messages.send"), sendFromButton) },
+                    tools = {
+                        IconButton("case-sensitive", app.t("composer.formatting"), enabled, selected = formatting) {
+                            formatting = !formatting
                         }
-                    }
-                    Row(Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.spaceMedium),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        attach()
-                        Button("Aa", variant = if (formatting) "secondary" else "ghost", enabled = enabled, selected = formatting,
-                            accessibleLabel = app.t("composer.formatting")) { formatting = !formatting }
-                        IconButton("smile-plus", app.t("reactions.tabEmoji"), enabled && !composing) { pickerSelection = textRange; picker = true }
-                        Spacer(Modifier.weight(1f))
-                        ComposerSendButton(canSubmit, true, app.t("messages.send"), sendFromButton)
-                    }
-                }
+                        IconButton("smile-plus", app.t("reactions.tabEmoji"), enabled && !composing) {
+                            pickerSelection = textRange
+                            picker = true
+                        }
+                    },
+                    formatting = {
+                        val selected = value.substring(
+                            textRange.min.coerceIn(0, value.length), textRange.max.coerceIn(0, value.length),
+                        )
+                        ComposerFormat.entries.forEach { format ->
+                            val codeAllowed = format != ComposerFormat.Code || !selected.contains("```")
+                            IconButton(format.icon, app.t(format.title), enabled && !composing && codeAllowed) {
+                                applyEdit(formatComposerText(value, textRange, format))
+                            }
+                        }
+                    },
+                )
             } else ComposerFrame(Modifier.fillMaxWidth()) {
                 attach()
                 editor(Modifier.weight(1f), null)
@@ -1847,7 +1901,7 @@ private fun ComposerSendButton(canSubmit: State<Boolean>, touch: Boolean, label:
     ) {
         Box(
             Modifier.size(if (touch) AndroidDesign.controlVisualSize else 34.dp)
-                .clip(RoundedCornerShape(if (touch) AndroidDesign.controlRadius else 9.dp))
+                .clip(if (touch) CircleShape else RoundedCornerShape(9.dp))
                 .background(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {

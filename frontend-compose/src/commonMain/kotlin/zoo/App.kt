@@ -98,6 +98,7 @@ fun ZooApp(app: Session) {
         val membersChannel = channel?.takeUnless { it.flag("is_dm") }
         val showMembersScreen = app.membersOpen && !wide && membersChannel != null
         val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+        val channelHeaderScroll = rememberAndroidHeaderScroll(channel?.text("id"), narrow && LocalTouchUi.current)
         Column(Modifier.fillMaxSize()) {
             OfflineBanner(
                 app,
@@ -143,9 +144,14 @@ fun ZooApp(app: Session) {
                                     Modifier.padding(24.dp),
                                 )
                             else -> {
-                                Header(app, channel, users, members, narrow, wide)
-                                HorizontalDivider()
-                                Chat(app, channel, users, members, wide, Modifier.weight(1f))
+                                if (!LocalTouchUi.current || wide || app.thread == null) AndroidScrollingHeader(channelHeaderScroll) {
+                                    Column {
+                                        Header(app, channel, users, members, narrow, wide)
+                                        HorizontalDivider()
+                                    }
+                                }
+                                Chat(app, channel, users, members, wide,
+                                    Modifier.weight(1f).withAndroidHeaderScroll(channelHeaderScroll))
                             }
                         }
                     }
@@ -156,7 +162,9 @@ fun ZooApp(app: Session) {
                     }
                 }
             }
-            if (narrow && !keyboardOpen && !showMembersScreen && app.thread == null) {
+            if (narrow && !keyboardOpen && !showMembersScreen && app.thread == null &&
+                (!LocalTouchUi.current || showMobileNavigation(app.env.path, app.pane == "sidebar"))
+            ) {
                 HorizontalDivider()
                 MobileNavigation(
                     app.env.path,
@@ -225,62 +233,70 @@ internal fun AppDialogs(
                             )
                         }
                     }
-                    Column(
-                        Modifier.fillMaxWidth()
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline,
-                                RoundedCornerShape(10.dp),
-                            )
-                    ) {
-                        SettingRow(
-                            app.t("channels.editTitle"),
-                            channel.text("description").trim().ifEmpty {
-                                app.t("channels.noDescription")
-                            },
-                        ) {
-                            Button(
-                                app.t("messages.edit"),
-                                !channel.present("archive_at"),
-                                variant = "outline",
-                                icon = "pencil",
-                            ) {
-                                app.dialog = "rename"
-                            }
-                        }
-                        HorizontalDivider()
-                        SettingRow(app.t("webhooks.title")) {
-                            Button(app.t("common.open"), variant = "outline", icon = "webhook") {
-                                app.dialog = "webhooks"
-                            }
+                    if (LocalTouchUi.current) SettingRow(app.t("members.title")) {
+                        Button(app.t("common.open"), variant = "outline", icon = "users") {
+                            app.dialog = null
+                            app.openMembers(false)
                         }
                     }
-                    SettingsSection("") {
-                        Text(
-                            app.t(
-                                if (channel.present("archive_at")) "moderation.unarchive"
-                                else "moderation.archive"
-                            ),
-                            weight = FontWeight.Medium,
-                        )
-                        Text(
-                            app.t(
-                                if (channel.present("archive_at")) "moderation.unarchiveDescription"
-                                else "moderation.archiveDescription"
-                            ),
-                            small = true,
-                            muted = true,
-                        )
-                        Button(
-                            app.t(
-                                if (channel.present("archive_at")) "moderation.unarchive"
-                                else "moderation.archive"
-                            ),
-                            variant =
-                                if (channel.present("archive_at")) "outline" else "destructive",
-                            icon = "archive",
+                    if (canManage(channel, app.config.userId, app.config.isAdmin)) {
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .border(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.outline,
+                                    RoundedCornerShape(10.dp),
+                                )
                         ) {
-                            app.dialog = "moderate"
+                            SettingRow(
+                                app.t("channels.editTitle"),
+                                channel.text("description").trim().ifEmpty {
+                                    app.t("channels.noDescription")
+                                },
+                            ) {
+                                Button(
+                                    app.t("messages.edit"),
+                                    !channel.present("archive_at"),
+                                    variant = "outline",
+                                    icon = "pencil",
+                                ) {
+                                    app.dialog = "rename"
+                                }
+                            }
+                            HorizontalDivider()
+                            SettingRow(app.t("webhooks.title")) {
+                                Button(app.t("common.open"), variant = "outline", icon = "webhook") {
+                                    app.dialog = "webhooks"
+                                }
+                            }
+                        }
+                        SettingsSection("") {
+                            Text(
+                                app.t(
+                                    if (channel.present("archive_at")) "moderation.unarchive"
+                                    else "moderation.archive"
+                                ),
+                                weight = FontWeight.Medium,
+                            )
+                            Text(
+                                app.t(
+                                    if (channel.present("archive_at")) "moderation.unarchiveDescription"
+                                    else "moderation.archiveDescription"
+                                ),
+                                small = true,
+                                muted = true,
+                            )
+                            Button(
+                                app.t(
+                                    if (channel.present("archive_at")) "moderation.unarchive"
+                                    else "moderation.archive"
+                                ),
+                                variant =
+                                    if (channel.present("archive_at")) "outline" else "destructive",
+                                icon = "archive",
+                            ) {
+                                app.dialog = "moderate"
+                            }
                         }
                     }
                 }
@@ -641,6 +657,14 @@ internal fun Header(
         "memberCount" in presentation ||
             !channel.flag("is_private") ||
             isMember(memberships, id, app.config.userId)
+    val channelName = presentation.text("displayTitle").ifEmpty {
+        if (channel.flag("is_dm")) dmTitle(app, channel, users, memberships)
+        else channel.text("channel_name")
+    }
+    val description = presentation.text("subtitle").ifEmpty {
+        channel.text("description").trim().ifEmpty { app.t("channels.noDescription") }
+    }
+    val touchSettings = narrow && LocalTouchUi.current && !channel.flag("is_dm")
     PaneHeader {
         if (narrow) {
             IconButton("arrow-left", app.t("channels.back"), size = 44.dp) { app.pane = "sidebar" }
@@ -663,34 +687,45 @@ internal fun Header(
             }
             Spacer(Modifier.width(12.dp))
         }
-        Column(Modifier.weight(1f)) {
+        if (touchSettings) {
             Row(
+                Modifier.weight(1f).heightIn(min = AndroidDesign.touchTarget)
+                    .clickable(role = Role.Button) { app.dialog = "channel-settings" }
+                    .semantics { onClick(label = app.t("settings.channelTitle"), action = null) },
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                Column(Modifier.weight(1f)) {
+                    Text(channelName, Modifier.semantics { heading() }, weight = FontWeight.SemiBold,
+                        size = 16.sp, maxLines = 1)
+                    Text(description, weight = FontWeight.Normal, size = 13.sp, maxLines = 1)
+                }
+                Icon("chevron-right", modifier = Modifier.size(16.dp))
+            }
+        } else {
+            Column(Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        channelName,
+                        Modifier.then(
+                                webControlModifier("heading", attributes = mapOf("aria-level" to "2"))
+                            )
+                            .semantics { heading() },
+                        weight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                    if (channel.present("archive_at") && !channel.flag("is_dm"))
+                        ChannelArchiveBadge(app)
+                }
                 Text(
-                    presentation.text("displayTitle").ifEmpty {
-                        if (channel.flag("is_dm")) dmTitle(app, channel, users, memberships)
-                        else channel.text("channel_name")
-                    },
-                    Modifier.then(
-                            webControlModifier("heading", attributes = mapOf("aria-level" to "2"))
-                        )
-                        .semantics { heading() },
-                    weight = FontWeight.SemiBold,
+                    description,
+                    muted = true,
+                    small = true,
                     maxLines = 1,
                 )
-                if (channel.present("archive_at") && !channel.flag("is_dm"))
-                    ChannelArchiveBadge(app)
             }
-            Text(
-                presentation.text("subtitle").ifEmpty {
-                    channel.text("description").trim().ifEmpty { app.t("channels.noDescription") }
-                },
-                muted = true,
-                small = true,
-                maxLines = 1,
-            )
         }
         Spacer(Modifier.width(12.dp))
         zoo.phone.LocalPhoneController.current?.let { phone ->
@@ -733,7 +768,7 @@ internal fun Header(
                 if (showCount) Text(count.ifEmpty { "…" }, size = 12.8.sp, muted = true)
             }
         Spacer(Modifier.width(4.dp))
-        if (manage && !channel.flag("is_dm"))
+        if (manage && !channel.flag("is_dm") && !touchSettings)
             IconButton(
                 "settings",
                 app.t("settings.channelTitle"),

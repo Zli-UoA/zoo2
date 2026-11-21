@@ -13,6 +13,7 @@ import androidx.compose.ui.*
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -96,6 +97,9 @@ internal fun unifiedNotificationFeed(rows: List<Row>, federated: List<Row>, hasO
 @Composable
 internal fun Modifier.notificationSurface(read: Boolean): Modifier {
     val colors = MaterialTheme.colorScheme
+    if (LocalTouchUi.current) return fillMaxWidth().drawBehind {
+        drawLine(colors.outlineVariant, Offset(0f, size.height - .5f), Offset(size.width, size.height - .5f))
+    }
     val shape = RoundedCornerShape(8.dp)
     return fillMaxWidth().clip(shape).background(if (read) colors.background else colors.secondaryContainer.copy(alpha = .5f)).border(1.dp, colors.outlineVariant, shape)
 }
@@ -103,6 +107,12 @@ internal fun Modifier.notificationSurface(read: Boolean): Modifier {
 @Composable
 internal fun NotificationReadStatus(app: Session, read: Boolean) {
     if (read) Icon("check-check", app.t("notifications.readStatus"), Modifier.size(16.dp))
+    else if (LocalTouchUi.current) Text(
+        app.t("notifications.unreadStatus"),
+        Modifier.background(MaterialTheme.colorScheme.secondaryContainer, CircleShape)
+            .padding(horizontal = AndroidDesign.spaceSmall),
+        small = true, color = MaterialTheme.colorScheme.onSecondaryContainer,
+    )
     else Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape).then(webControlModifier("img", attributes = mapOf("aria-label" to app.t("notifications.unreadStatus")))))
 }
 

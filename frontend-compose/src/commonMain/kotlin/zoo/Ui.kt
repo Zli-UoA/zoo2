@@ -772,6 +772,7 @@ fun Field(
     role: String? = inputRole,
     inputTextStyle: TextStyle? = null,
     onBlur: () -> Unit = {},
+    onFocus: () -> Unit = {},
     leadingIcon: String? = null,
     autoFocus: Boolean = false,
     focusRequester: androidx.compose.ui.focus.FocusRequester? = null,
@@ -907,9 +908,12 @@ fun Field(
                         }
                         .onFocusChanged {
                             val leaving = focused && !it.isFocused
+                            val entering = !focused && it.isFocused
                             focused = it.isFocused
-                            if (it.isFocused)
+                            if (entering) {
                                 webPlatform?.action("fileFocus:${fileOwner.orEmpty()}")
+                                onFocus()
+                            }
                             if (leaving) blur()
                         }
                         .fillMaxWidth()
@@ -1140,6 +1144,8 @@ fun Menu(
     size: Dp = 28.dp,
     controlledOpen: Boolean? = null,
     minimumTouchTarget: Dp? = null,
+    showTrigger: Boolean = true,
+    bottomAligned: Boolean = false,
     onOpenChange: (Boolean) -> Unit = {},
 ) {
     var internalOpen by remember { mutableStateOf(false) }
@@ -1153,10 +1159,10 @@ fun Menu(
     fun setOpen(value: Boolean) {
         internalOpen = value
         onOpenChange(value)
-        if (!value) trigger.requestFocus()
+        if (!value && showTrigger) trigger.requestFocus()
     }
     var anchor by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-    Box(
+    if (showTrigger) Box(
         Modifier.focusRequester(trigger)
             .onGloballyPositioned { anchor = it.boundsInRoot() }
             .onPreviewKeyEvent {
@@ -1172,7 +1178,8 @@ fun Menu(
         IconButton(icon, label, size = size, minimumTouchTarget = minimumTouchTarget) { setOpen(true) }
     }
     if (open)
-        OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor, role = "menu", alignEnd = LocalTouchUi.current) {
+        OverlayRegistration(label, { setOpen(false) }, 224.dp, anchor.takeUnless { bottomAligned },
+            role = "menu", alignEnd = LocalTouchUi.current, bottomAligned = bottomAligned) {
             LaunchedEffect(Unit) {
                 withFrameNanos {}
                 actions

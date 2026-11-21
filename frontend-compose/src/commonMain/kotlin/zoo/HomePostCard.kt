@@ -7,6 +7,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
@@ -30,9 +31,18 @@ fun HomePostCard(
     var draft by remember(post.text("id")) { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var editError by remember { mutableStateOf(false) }
+    val touch = LocalTouchUi.current
+    var menuOpen by remember(post.text("id")) { mutableStateOf(false) }
+    val gestures = remember(post.text("id")) { MessageGestureArbitration() }
+    val postMenu = if (touch && !editing) Modifier.messageHold(true, gestures) {
+        app.platform.action("haptic:longPress")
+        menuOpen = true
+    }.semantics {
+        customActions = listOf(CustomAccessibilityAction(app.t("home.postActions")) { menuOpen = true; true })
+    } else Modifier
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
-        Modifier.fillMaxWidth().then(webControlModifier("article"))
+        Modifier.fillMaxWidth().then(postMenu).then(webControlModifier("article"))
             .then(
                 if (!editing) Modifier.nativeNavigation(
                     "/home/posts/${post.text("id").encodeURLParameter()}",
@@ -283,6 +293,10 @@ fun HomePostCard(
                     Menu(
                         app.t("home.postActions"),
                         buildList {
+                            if (touch) {
+                                add(MenuAction("message-circle", app.t("home.reply"), !pending, reply))
+                                add(MenuAction("smile-plus", app.t("home.react"), !pending, react))
+                            }
                             if (own) {
                                 add(
                                     MenuAction("pencil", app.t("home.edit")) {
@@ -304,6 +318,10 @@ fun HomePostCard(
                                 }
                             )
                         },
+                        controlledOpen = if (touch) menuOpen else null,
+                        showTrigger = !touch,
+                        bottomAligned = touch,
+                        onOpenChange = { menuOpen = it },
                         size = AndroidDesign.controlVisualSize,
                         minimumTouchTarget = AndroidDesign.controlVisualSize,
                     )

@@ -246,6 +246,10 @@
     "edited": "Edited"
   },
   "attachments": {
+    "recentPhotos": "Recent photos",
+    "systemPhotos": "Open photo picker",
+    "allowRecentPhotos": "Allow photo access",
+    "noRecentPhotos": "No photos available",
     "play": "Play",
     "pause": "Pause",
     "add": "Attach files",

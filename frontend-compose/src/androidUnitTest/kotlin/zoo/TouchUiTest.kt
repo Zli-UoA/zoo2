@@ -2,8 +2,10 @@ package zoo
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -197,9 +199,26 @@ class TouchUiTest {
     fun offlineComposerAllowsDraftingButNeverSendsOrUploads() {
         var requests = 0
         var sends = 0
+        var threadsOpened = 0
+        val haptics = mutableListOf<String>()
+        val channel = obj("id" to "general", "channel_name" to "開発",
+            "description" to "Zooの開発やリリースについて話すチャンネル。")
+        val users = listOf(
+            obj("id" to "haru", "display_name" to "はる"),
+            obj("id" to "mizuki", "display_name" to "みずき"),
+        )
+        val messages = listOf(
+            obj("id" to "first", "user_id" to "haru", "content" to "リリースノートの下書きを共有しました。",
+                "created_at" to "2026-11-15T00:00:00Z"),
+            obj("id" to "second", "user_id" to "mizuki", "content" to "Androidの画面を確認します。",
+                "created_at" to "2026-11-15T00:01:00Z"),
+        )
         var editAllowed by mutableStateOf(true)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        val http = HttpClient(MockEngine { requests++; error("Offline composer made a request") })
+        val http = HttpClient(MockEngine {
+            if (it.method != io.ktor.http.HttpMethod.Get) requests++
+            error("Offline fixture cannot use the network")
+        })
         val platform = object : Platform {
             override suspend fun headers() = emptyMap<String, String>()
             override suspend fun readCache(key: String): String? = null
@@ -207,7 +226,7 @@ class TouchUiTest {
             override fun uuid() = "offline-composer"
             override fun now() = "2026-11-15T00:00:00Z"
             override fun navigate(path: String) {}
-            override fun action(name: String) {}
+            override fun action(name: String) { if (name.startsWith("haptic:")) haptics.add(name) }
             override fun translate(key: String, args: Map<String, String>) = mapOf(
                     "messages.compose" to "メッセージを送信",
                     "messages.send" to "送信",
@@ -233,7 +252,13 @@ class TouchUiTest {
                         Box(Modifier.width(320.dp).height(800.dp).testTag("channel-editor")) {
                             NativeWindow(app) {
                                 Column(Modifier.fillMaxSize()) {
-                                    Spacer(Modifier.weight(1f))
+                                    Header(app, channel, users, emptyList(), narrow = true, wide = false)
+                                    HorizontalDivider()
+                                    Column(Modifier.weight(1f).padding(horizontal = AndroidDesign.feedInset)) {
+                                        for (message in messages) Message(app, channel, message, messages, emptyList(),
+                                            users, grouped = false, wide = false,
+                                            callbacks = MessageCallbacks(openThread = { threadsOpened++ }))
+                                    }
                                     Composer(app, "general", null, emptyList(), enabled = editAllowed, showTyping = false,
                                         sendMessage = { _, _, _ -> sends++; true })
                                 }
@@ -242,6 +267,20 @@ class TouchUiTest {
                     }
                 }
             }
+            ui.onNodeWithText("開発").performClick()
+            ui.runOnIdle {
+                assertEquals("channel-settings", app.dialog)
+                app.dialog = null
+            }
+            val firstMessage = ui.onNodeWithTag("message:first")
+            firstMessage.performTouchInput {
+                swipe(Offset(width * .8f, center.y), Offset(width * .25f, center.y), durationMillis = 240)
+            }
+            ui.runOnIdle {
+                assertEquals(1, threadsOpened)
+                assertEquals(listOf("haptic:threshold"), haptics)
+            }
+            screenshot("channel-editor", "channel-editor-idle")
             ui.onNodeWithContentDescription("メッセージを送信").performTextInput("通信が戻るまで下書き")
             ui.onNodeWithContentDescription("送信").assertIsNotEnabled()
             ui.onNodeWithContentDescription("ファイルを添付").assertIsNotEnabled()
@@ -251,7 +290,9 @@ class TouchUiTest {
             assertEquals(host.right, dock.right, 1f)
             assertEquals(host.bottom, dock.bottom, 1f)
             screenshot("channel-composer-dock", "channel-editor-compact")
-            ui.onNodeWithTag("composer-drag-handle").performTouchInput { swipeUp(endY = -150f) }
+            screenshot("channel-editor", "channel-editor-focused")
+            ui.onNodeWithTag("composer-drag-handle").performClick()
+            ui.onNodeWithText("メッセージの編集").assertDoesNotExist()
             ui.onNodeWithContentDescription("書式設定").performClick()
             screenshot("channel-editor", "channel-editor-expanded-formatting")
             ui.runOnIdle { editAllowed = false }

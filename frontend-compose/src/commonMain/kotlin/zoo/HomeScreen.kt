@@ -133,26 +133,31 @@ fun HomeScreen(
             feed.close(scroll.firstVisibleItemIndex, scroll.firstVisibleItemScrollOffset)
         }
     }
+    val headerScroll = rememberAndroidHeaderScroll(feed, LocalTouchUi.current && selectedPost == null && selectedActor == null)
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader(
-                "home",
-                app.t(
-                    if (selectedPost != null) "activitypubSettings.post"
-                    else if (selectedActor != null) "home.userDetails" else "home.title"
-                ),
-            ) {
-                IconButton("user-search", app.t("home.userSearch")) { search = true }
-                IconButton("refresh-cw", app.t("home.refresh")) {
-                    scope.launch { scroll.scrollToItem(0); feed.refresh() }
-                    controlUpdates.request()
+            AndroidScrollingHeader(headerScroll) {
+                Column {
+                    ScreenHeader(
+                        "home",
+                        app.t(
+                            if (selectedPost != null) "activitypubSettings.post"
+                            else if (selectedActor != null) "home.userDetails" else "home.title"
+                        ),
+                    ) {
+                        IconButton("user-search", app.t("home.userSearch")) { search = true }
+                        IconButton("refresh-cw", app.t("home.refresh")) {
+                            scope.launch { scroll.scrollToItem(0); feed.refresh() }
+                            controlUpdates.request()
+                        }
+                    }
+                    HorizontalDivider()
                 }
             }
-            HorizontalDivider()
             PullToRefreshBox(
                 isRefreshing = feed.refreshing && !feed.loading,
                 onRefresh = { if (app.env.online && !feed.refreshing) scope.launch { scroll.scrollToItem(0); feed.refresh() } },
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.weight(1f).fillMaxWidth().withAndroidHeaderScroll(headerScroll),
             ) {
                 LazyColumn(
                     state = scroll,

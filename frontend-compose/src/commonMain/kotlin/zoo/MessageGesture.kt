@@ -2,6 +2,8 @@ package zoo
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.platform.ViewConfiguration
@@ -86,3 +88,42 @@ internal fun Modifier.messageHold(
             }
         }
     }
+
+/** Left drag follows the finger. Exclude both system back edges and child gestures. */
+internal fun Modifier.messageSwipe(
+    onOffset: (Float) -> Unit,
+    onThreshold: () -> Unit,
+    onCommit: () -> Unit,
+): Modifier = pointerInput(Unit) {
+    val edge = 24.dp.toPx()
+    val threshold = 64.dp.toPx()
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        if (down.type != PointerType.Touch || down.position.x !in edge..(size.width - edge))
+            return@awaitEachGesture
+        var distance = 0f
+        var signalled = false
+        fun shiftBy(delta: Float) {
+            distance = (distance - delta).coerceIn(0f, threshold * 1.25f)
+            onOffset(-distance)
+            if (!signalled && distance >= threshold) {
+                signalled = true
+                onThreshold()
+            }
+        }
+        try {
+            val start = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                if (overSlop < 0f && down.id !in holdExcludedPointers) {
+                    change.consume()
+                    shiftBy(overSlop)
+                }
+            } ?: return@awaitEachGesture
+            if (horizontalDrag(start.id) { change ->
+                shiftBy(change.positionChange().x)
+                change.consume()
+            } && distance >= threshold) onCommit()
+        } finally {
+            onOffset(0f)
+        }
+    }
+}
