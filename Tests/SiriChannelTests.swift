@@ -7,6 +7,43 @@ import Testing
 @MainActor
 @Suite("Siriからのチャンネル投稿", .timeLimit(.minutes(1)))
 struct SiriChannelTests {
+    @Test("チャンネルの下書きは投稿せず、既存本文と変更された宛先を保護する",
+          arguments: ["new", "same", "empty", "conflict", "archived", "revoked", "stale", "long"])
+    func draftsChannelWithoutSending(kind: String) async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        let conversation = fixture.workspace.conversation(for: fixture.channel)
+        let key = conversation.draftKey(nil)
+        if ["same", "empty", "conflict"].contains(kind) { conversation.drafts[key] = "編集中の本文" }
+        let content = kind == "empty" ? "" : kind == "same" ? "編集中の本文" : kind == "long" ? String(repeating: "あ", count: 40_001) : "新しい本文"
+        var target = fixture.target
+        if kind == "archived" { fixture.state.value.withLock { $0.channel.archive_at = "2026-11-21T00:00:00Z" } }
+        if kind == "revoked" { fixture.state.value.withLock { $0.revoked = true } }
+        if kind == "stale" { target = ShortcutChannel(id: "別アカウント", channelID: target.channelID, name: target.name) }
+        let actions = ShortcutActions(workspace: fixture.workspace)
+        if ["new", "same", "empty"].contains(kind) {
+            try await actions.draft(content, to: target)
+            #expect(conversation.drafts[key] == (kind == "new" ? "新しい本文" : "編集中の本文"))
+        } else {
+            await #expect(throws: (any Error).self) { try await actions.draft(content, to: target) }
+            #expect(conversation.drafts[key] == (kind == "conflict" ? "編集中の本文" : nil))
+        }
+        #expect(fixture.state.value.withLock { $0.sent }.isEmpty)
+    }
+
+    @Test("Siri AIの全件取得でもアーカイブ済みチャンネルを返さない")
+    func enumeratesAvailableChannels() async throws {
+        let fixture = try Fixture()
+        defer { fixture.close() }
+        let query = ZooChannelQuery { fixture.workspace }
+        #expect(try await query.allEntities().map(\.id) == [fixture.target.id])
+        fixture.state.value.withLock {
+            $0.channel.archive_at = "2026-11-21T00:00:00Z"
+            $0.listedChannels = [$0.channel]
+        }
+        #expect(try await query.allEntities().isEmpty)
+    }
+
     @Test("保存後のアーカイブを候補・名前検索・Siri登録・実行で除外し、同名へ置き換えない")
     func excludesArchivedSavedChannel() async throws {
         let fixture = try Fixture()

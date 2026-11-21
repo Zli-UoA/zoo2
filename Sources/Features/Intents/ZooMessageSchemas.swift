@@ -50,6 +50,10 @@ struct ZooMessagePerson: IndexedEntity, Transferable {
     }
 
     var displayRepresentation: DisplayRepresentation {
+        Self.displayRepresentation(for: person)
+    }
+
+    static func displayRepresentation(for person: IntentPerson) -> DisplayRepresentation {
         let name: String
         switch person.name {
         case .displayName(let value): name = value
@@ -64,7 +68,7 @@ struct ZooMessagePerson: IndexedEntity, Transferable {
 }
 
 @available(iOS 27.0, *)
-struct ZooMessagePersonQuery: EntityStringQuery, IntentValueQuery {
+struct ZooMessagePersonQuery: EntityStringQuery, EnumerableEntityQuery, IntentValueQuery {
     @MainActor func values(for input: [IntentPerson]) async throws -> [ZooMessagePerson] {
         Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siriの連絡先をZooの宛先に変換します。")
         let workspace = try await AppSession.shared.prepareForShortcut()
@@ -104,6 +108,10 @@ struct ZooMessagePersonQuery: EntityStringQuery, IntentValueQuery {
 
     func entities(matching string: String) async throws -> [ZooMessagePerson] {
         try await ZooRecipientQuery().entities(matching: string).map { ZooMessagePerson($0.recipient) }
+    }
+
+    func allEntities() async throws -> [ZooMessagePerson] {
+        try await ZooRecipientQuery().allEntities().map { ZooMessagePerson($0.recipient) }
     }
 
     func suggestedEntities() async throws -> [ZooMessagePerson] {
@@ -292,6 +300,7 @@ final class ZooSentMessageStore {
 @AppIntent(schema: .messages.sendMessage)
 struct SendZooSchemaMessageIntent: AppIntent {
     static let title: LocalizedStringResource = "ZooでDMを送信する"
+    static let description = IntentDescription("Zooのメンバーを表示名またはユーザー名で指定し、その人とのDMにテキストを送信します。チャンネルへの投稿はチャンネル投稿操作を使います。")
     static let isAssistantOnly = true
     private static let logger = Logger(subsystem: "works.zli.zoo", category: "Siri")
     static var authenticationPolicy: IntentAuthenticationPolicy { .requiresAuthentication }
@@ -308,15 +317,24 @@ struct SendZooSchemaMessageIntent: AppIntent {
 
     @MainActor func perform() async throws -> some ReturnsValue<[ZooSentMessage]> {
         Self.logger.notice("Siri AIからの送信処理を開始しました。")
-        let text = try validatedContent()
-        try ShortcutActions.validateMessage(text)
-        let workspace = try await AppSession.shared.prepareForShortcut()
-        let recipient = try await destination.resolve(in: workspace)
-        let message = try await ShortcutActions(workspace: workspace).send(text, to: recipient)
-        let result = ZooSentMessage(message, recipient: recipient, workspace: workspace)
-        ZooSentMessageStore.shared.remember(result, in: workspace)
-        Self.logger.notice("Siri AIからの送信が完了しました。")
-        return .result(value: [result])
+        do {
+            let text = try validatedContent()
+            try ShortcutActions.validateMessage(text)
+            let workspace = try await AppSession.shared.prepareForShortcut()
+            let recipient = try await destination.resolve(in: workspace)
+            let actions = ShortcutActions(workspace: workspace)
+            let person = try await actions.resolve(recipient)
+            Self.logger.notice("DMの宛先を解決し、送信確認を要求します。")
+            try await requestConfirmation(dialog: "Zooで\(person.name)（@\(person.user_name)）さんに「\(text)」を送信しますか？")
+            let message = try await actions.send(text, to: recipient)
+            let result = ZooSentMessage(message, recipient: recipient, workspace: workspace)
+            ZooSentMessageStore.shared.remember(result, in: workspace)
+            Self.logger.notice("Siri AIからの送信が完了しました。")
+            return .result(value: [result])
+        } catch {
+            Logger(subsystem: "works.zli.zoo", category: "Siri").error("Siri AIのメッセージ処理が終了しました。エラー種別: \(String(describing: type(of: error)), privacy: .public)")
+            throw error
+        }
     }
 
     func validatedContent() throws -> String {
@@ -329,6 +347,7 @@ struct SendZooSchemaMessageIntent: AppIntent {
 @AppIntent(schema: .messages.draftMessage)
 struct DraftZooSchemaMessageIntent: AppIntent {
     static let title: LocalizedStringResource = "ZooでDMの下書きを作成する"
+    static let description = IntentDescription("ZooのメンバーとのDMの下書きを作り、Zooで編集できるようにします。送信はしません。")
     static let isAssistantOnly = true
     static var supportedModes: IntentModes { .foreground }
     static var authenticationPolicy: IntentAuthenticationPolicy { .requiresAuthentication }
@@ -345,13 +364,18 @@ struct DraftZooSchemaMessageIntent: AppIntent {
 
     @MainActor func perform() async throws -> some IntentResult {
         Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri AIからの下書き処理を開始しました。")
-        let text = try ZooSchemaContent.text(content, subject: subject, attachments: attachments, audioMessage: audioMessage,
-                                             locations: locations, links: links, scheduledDate: scheduledDate)
-        let workspace = try await AppSession.shared.prepareForShortcut()
-        let recipient = try await destination?.resolve(in: workspace)
-        try await ShortcutActions(workspace: workspace).draft(text, to: recipient)
-        Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri AIからの下書き作成が完了しました。")
-        return .result()
+        do {
+            let text = try ZooSchemaContent.text(content, subject: subject, attachments: attachments, audioMessage: audioMessage,
+                                                 locations: locations, links: links, scheduledDate: scheduledDate)
+            let workspace = try await AppSession.shared.prepareForShortcut()
+            let recipient = try await destination?.resolve(in: workspace)
+            try await ShortcutActions(workspace: workspace).draft(text, to: recipient)
+            Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri AIからの下書き作成が完了しました。")
+            return .result()
+        } catch {
+            Logger(subsystem: "works.zli.zoo", category: "Siri").error("Siri AIのメッセージ処理が終了しました。エラー種別: \(String(describing: type(of: error)), privacy: .public)")
+            throw error
+        }
     }
 }
 

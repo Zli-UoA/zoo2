@@ -230,6 +230,18 @@ struct ShortcutActions {
             return
         }
         let channel = try await directMessage(to: recipient)
+        try draft(content, in: channel)
+    }
+
+    func draft(_ content: String, to target: ShortcutChannel) async throws {
+        try check()
+        guard content.unicodeScalars.count <= 40_000 else {
+            throw ZooError.auth("メッセージは40,000文字以内で入力してください。")
+        }
+        try await draft(content, in: resolve(target))
+    }
+
+    private func draft(_ content: String, in channel: Channel) throws {
         guard channel.canPost else { throw ZooError.auth("この会話には下書きを作成できません。") }
         let conversation = workspace.conversation(for: channel)
         let key = conversation.draftKey(nil)
@@ -241,14 +253,14 @@ struct ShortcutActions {
         workspace.addAndOpen(channel)
     }
 
-    func call(_ recipient: ShortcutRecipient) async throws {
+    func call(_ recipient: ShortcutRecipient, requiresLiveActivity: Bool = false) async throws {
         try check()
         guard workspace.calls.channel == nil, workspace.systemCalls?.isManagingCall != true else {
             throw ZooError.auth("別の通話や着信を終了してから、もう一度お試しください。")
         }
         let channel = try await directMessage(to: recipient)
         workspace.addAndOpen(channel)
-        try await workspace.calls.startAndWait(channel: channel)
+        try await workspace.calls.startAndWait(channel: channel, requiresLiveActivity: requiresLiveActivity)
         try check()
     }
 }

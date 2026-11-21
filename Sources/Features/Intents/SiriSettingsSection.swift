@@ -12,9 +12,9 @@ struct SiriSettingsSection: View {
         Section {
             switch status {
             case .authorized:
-                Text("SiriからDMやチャンネルにメッセージを送信できます。")
+                Text("SiriからDM・チャンネルへの送信や音声通話を利用できます。")
             case .notDetermined:
-                Button("Siriでの送信を有効にする") { requesting = true }
+                Button("SiriでZooを使えるようにする") { requesting = true }
                     .disabled(requesting)
                     .accessibilityIdentifier("enable-siri")
             case .denied:
@@ -32,7 +32,7 @@ struct SiriSettingsSection: View {
         } header: {
             Text("Siri")
         } footer: {
-            Text("DMは「Zooで○○にこんにちはとメッセージを送って」と話しかけます。チャンネルは「Zooのチャンネルに投稿して」と話しかけ、チャンネル名、メッセージの順に答えます。メンバー名・チャンネル名とメッセージをSiriと共有します。")
+            Text("対応するSiri AIでは「Zooで○○に電話して」「Zooで○○にこんにちはと送って」「Zooの一般チャンネルにこんにちはと投稿して」のように話しかけます。チャンネルへの下書きも作成でき、ショートカットの手動作成は不要です。メンバー名・チャンネル名と依頼内容をSiriと共有します。")
         }
         .task(id: requesting) {
             guard requesting else { return }
@@ -55,7 +55,7 @@ private struct FixedRecipientShortcutGuide: View {
     var body: some View {
         AppForm {
             Section {
-                Text("よく使うチャンネルやDMの相手を一度選んで保存すると、Siriに宛先名を伝えず、本文だけを指定して送信できます。")
+                Text("Siriにはその都度宛先を指定できます。よく使うチャンネルやDMの相手を固定したい場合は、任意でショートカットを保存できます。")
                 ShortcutsLink()
                     .accessibilityIdentifier("open-zoo-shortcuts")
             }

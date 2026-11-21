@@ -57,12 +57,17 @@ enum SiriVocabulary {
                 guard !Task.isCancelled else { return }
                 do {
                     let index = CSSearchableIndex.default()
-                    try await index.deleteAppEntities(ofType: ZooMessagePerson.self)
-                    try await index.deleteAppEntities(ofType: ZooChannelEntity.self)
+                    // Zooの検索索引はSiri宛先だけ。型変更前や別アカウントの宛先もまとめて消す。
+                    try await index.deleteAllSearchableItems()
                     guard !Task.isCancelled else { return }
                     try await index.indexAppEntities(recipients.map(ZooMessagePerson.init))
                     guard !Task.isCancelled else { return }
+                    try await index.indexAppEntities(recipients.map(ZooRecipientEntity.init))
+                    guard !Task.isCancelled else { return }
+                    try await index.indexAppEntities(recipients.map(ZooPhonePerson.init))
+                    guard !Task.isCancelled else { return }
                     try await index.indexAppEntities(channels.map(ZooChannelEntity.init))
+                    guard !Task.isCancelled else { return }
                     Logger(subsystem: "works.zli.zoo", category: "Siri").notice("Siri向けの宛先登録を更新しました。メンバー: \(recipients.count)件、チャンネル: \(channels.count)件")
                 } catch {
                     Logger(subsystem: "works.zli.zoo", category: "Siri").error("Siri向けの宛先登録に失敗しました。")

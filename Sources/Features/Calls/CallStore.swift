@@ -8,6 +8,7 @@ final class CallStore {
     private let userID: String
     private let makeMedia: @MainActor () -> any CallMedia
     private let permission: @MainActor () async -> Bool
+    private let makeLiveActivity: @MainActor () -> any CallLiveActivity
     private let retryDelay: Duration
     private let recoveryWaitLimit: Duration
     private let sessionJournal: (any CallSessionJournal)?
@@ -49,6 +50,7 @@ final class CallStore {
     @ObservationIgnored var onFinished: (() -> Void)?
     @ObservationIgnored var onMutedChanged: ((Bool) -> Void)?
     @ObservationIgnored private var media: (any CallMedia)?
+    @ObservationIgnored private var liveActivity: (any CallLiveActivity)?
     @ObservationIgnored private var connection: Task<Void, Never>?
     @ObservationIgnored private var heartbeat: Task<Void, Never>?
     @ObservationIgnored private var outgoing: Task<Void, Never>?
@@ -63,11 +65,13 @@ final class CallStore {
          makeMedia: @escaping @MainActor () -> any CallMedia = { NativeCallMedia() },
          permission: @escaping @MainActor () async -> Bool = { await AVAudioApplication.requestRecordPermission() },
          retryDelay: Duration = .seconds(1), sessionJournal: (any CallSessionJournal)? = nil,
-         recoveryWaitLimit: Duration = .seconds(2)) {
+         recoveryWaitLimit: Duration = .seconds(2),
+         makeLiveActivity: @escaping @MainActor () -> any CallLiveActivity = { NativeCallLiveActivity() }) {
         self.client = client; self.userID = userID; self.makeMedia = makeMedia; self.permission = permission
         self.retryDelay = retryDelay
         self.recoveryWaitLimit = recoveryWaitLimit
         self.sessionJournal = sessionJournal
+        self.makeLiveActivity = makeLiveActivity
     }
 
     var connectionStatus: String {
@@ -131,7 +135,8 @@ final class CallStore {
 
     @discardableResult
     func start(channel: Channel, invitationID: String? = nil, systemAudio: Bool = false,
-               initialMuted: Bool = false, initialSpeaker: Bool = false) -> Task<Void, Never>? {
+               initialMuted: Bool = false, initialSpeaker: Bool = false,
+               requiresLiveActivity: Bool = false) -> Task<Void, Never>? {
         guard active, self.channel == nil, channel.canCall, canStart?(systemAudio) != false else { return nil }
         onWillStart?()
         let callID = UUID()
@@ -149,6 +154,15 @@ final class CallStore {
                 guard sessionID == session else { return }
                 try await prepareInterruptedCalls(in: channel.id)
                 guard sessionID == session else { return }
+                if requiresLiveActivity {
+                    let activity = makeLiveActivity()
+                    liveActivity = activity
+                    // Siriの録音用Intentは、音声セッションの開始前にLive Activityを必要とする。
+                    try activity.start { [weak self] in
+                        guard let self, sessionID == session else { return }
+                        finish()
+                    }
+                }
                 if let prepareSystemCall { try await prepareSystemCall(callID, channel) }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
@@ -222,8 +236,8 @@ final class CallStore {
         return connection
     }
 
-    func startAndWait(channel: Channel) async throws {
-        guard start(channel: channel) != nil, let requestedSession = sessionID else {
+    func startAndWait(channel: Channel, requiresLiveActivity: Bool = false) async throws {
+        guard start(channel: channel, requiresLiveActivity: requiresLiveActivity) != nil, let requestedSession = sessionID else {
             throw ZooError.auth("別の通話や着信を終了してから、もう一度お試しください。")
         }
         do {
@@ -369,6 +383,7 @@ final class CallStore {
         mutation?.cancel(); mutation = nil
         signals?.finish(); signals = nil
         media?.close(); media = nil
+        liveActivity?.finish(); liveActivity = nil
         channel = nil; participants = []; ready = false; muted = false; speakerEnabled = false; changingMute = false
         peerStates = [:]; diagnostics = []; iceServerKinds = []; heartbeatRetrying = false; retryChannel = nil
         retryMuted = false; retrySpeaker = false

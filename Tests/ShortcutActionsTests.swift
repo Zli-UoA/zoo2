@@ -26,7 +26,8 @@ struct ShortcutActionsTests {
         let harness = try ChatHarness()
         defer { harness.close() }
         let people = [Person(id: "person-a", user_name: "member", display_name: "Team"),
-                      Person(id: "person-b", user_name: "MEMBER", display_name: "TEAM")]
+                      Person(id: "person-b", user_name: "MEMBER", display_name: "TEAM"),
+                      Person(id: "person-c", user_name: "member-extra", display_name: "Team追加")]
         harness.stub { _ in
             var events = try people.map { person in
                 JSONValue.object(["key": .string(person.id), "headers": .object(["operation": .string("insert")]),
@@ -39,7 +40,9 @@ struct ShortcutActionsTests {
         defer { workspace.shutdown() }
         let recipientQuery = ZooRecipientQuery { workspace }
         let candidates = try await recipientQuery.entities(matching: query)
-        #expect(Set(candidates.map(\.personID)) == Set(people.map(\.id)))
+        #expect(Set(candidates.map(\.personID)) == Set(people.prefix(2).map(\.id)))
+        #expect(Set(try await recipientQuery.allEntities().map(\.personID)) == Set(people.map(\.id)))
+        #expect(Set(try await recipientQuery.entities(matching: "Tea").map(\.personID)) == Set(people.map(\.id)))
         let recipients = candidates.map(\.recipient)
         #expect(SiriMessageHandler.matchingRecipients(identifier: nil, name: query, handle: nil, in: recipients) == recipients)
         #expect(SiriMessageHandler.matchingRecipients(identifier: nil, name: "", handle: query, in: recipients) == recipients)
