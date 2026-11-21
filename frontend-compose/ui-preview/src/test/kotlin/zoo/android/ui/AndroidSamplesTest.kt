@@ -23,7 +23,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], qualifiers = "w360dp-h760dp-mdpi")
+@Config(sdk = [35], qualifiers = "w360dp-h760dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AndroidSamplesTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
