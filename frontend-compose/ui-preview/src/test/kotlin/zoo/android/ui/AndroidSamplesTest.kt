@@ -121,7 +121,9 @@ class AndroidSamplesTest {
                 SelectionItem("yui", "ゆい", isUserName = true),
             )),
             "post" to AndroidScreen.Post(homePosts.first(), homePosts.drop(1), InputState()),
-            "post-compose" to AndroidScreen.NewPost(InputState("新しい画面を共有します。"), emptyList(), true),
+            "post-compose" to AndroidScreen.NewPost(
+                InputState("新しい画面を共有します。"), emptyList(), true, visibility = "public", federate = true,
+            ),
             "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。写真と通話の感想を投稿します。",
                 homePosts.map {
                     it.copy(author = "はる", postHeader = it.postHeader?.copy(handle = "@haru", channel = null, server = "social.example"))
@@ -218,6 +220,10 @@ class AndroidSamplesTest {
                     ui.onNodeWithText("フォロー").assertHasClickAction()
                 }
                 if (name == "post-compose") {
+                    ui.onNodeWithText("ActivityPub で配信").assertIsDisplayed()
+                    for (audience in listOf("公開", "未収載", "フォロワー", "ローカル")) {
+                        ui.onNodeWithText(audience).assertIsDisplayed()
+                    }
                     val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()
                     val post = ui.onNodeWithText("投稿").assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
                     val photos = ui.onNodeWithContentDescription("写真").getUnclippedBoundsInRoot()
