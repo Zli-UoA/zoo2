@@ -15,6 +15,7 @@ use super::{
     encryption::Screen,
     timeline::{self, Context},
 };
+use crate::api::SearchKind;
 use crate::e2ee::reauth;
 use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
@@ -261,8 +262,8 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     let search = &app.global_search;
     let accent = Style::new().fg(ACCENT);
     let inner = usize::from(WIDTH.min(frame.area().width).saturating_sub(2));
-    let kind = |files: bool, label: &'static str| {
-        if search.files == files {
+    let kind = |value: SearchKind, label: &'static str| {
+        if search.kind == value {
             Span::styled(format!("[{label}]"), accent.add_modifier(Modifier::BOLD))
         } else {
             Span::styled(format!(" {label} "), DIM)
@@ -275,9 +276,15 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             Span::styled("▏", accent),
         ]),
         Line::from(vec![
-            kind(false, "メッセージ"),
+            kind(SearchKind::All, "すべて"),
             Span::raw(" "),
-            kind(true, "ファイル"),
+            kind(SearchKind::Messages, "メッセージ"),
+            Span::raw(" "),
+            kind(SearchKind::Files, "ファイル"),
+            Span::styled(
+                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD",
+                DIM,
+            ),
         ]),
         Line::from(""),
     ];
@@ -2323,7 +2330,7 @@ mod tests {
     async fn global_search_shows_the_searched_month_after_the_last_page() {
         let mut app = app();
         press(&mut app, KeyCode::Char('S'));
-        app.global_search.searched = Some(("会議".into(), false));
+        app.global_search.searched = Some(("会議".into(), SearchKind::All));
         app.global_search.searched_until = Some("2025-12".into());
         app.global_search.next_cursor = None;
         assert!(render(&mut app).contains("2025-12 まで検索しました。見つかりませんでした。"));

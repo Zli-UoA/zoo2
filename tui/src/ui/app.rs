@@ -1611,10 +1611,56 @@ impl App {
         let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
             return;
         };
+        // `from:@名前`・`in:#チャンネル`・`after:`・`before:` を絞り込みにする（名前は同期済みの一覧で引く）。
+        let parsed = global_search::parse_modifiers(&query);
+        let mut filters = crate::api::SearchFilters {
+            after: parsed.after,
+            before: parsed.before,
+            ..Default::default()
+        };
+        if let Some(name) = &parsed.from {
+            match self
+                .store
+                .users()
+                .find(|user| user.user_name.eq_ignore_ascii_case(name))
+            {
+                Some(user) => filters.user_id = Some(user.id.clone()),
+                None => {
+                    self.global_search
+                        .fail(generation, format!("@{name} という人は見つかりません"));
+                    return;
+                }
+            }
+        }
+        if let Some(name) = &parsed.channel {
+            match self
+                .store
+                .channels()
+                .into_iter()
+                .find(|channel| !channel.is_dm && channel.channel_name.eq_ignore_ascii_case(name))
+            {
+                Some(channel) => filters.channel_id = Some(channel.id.clone()),
+                None => {
+                    self.global_search.fail(
+                        generation,
+                        format!("#{name} というチャンネルは見つかりません"),
+                    );
+                    return;
+                }
+            }
+        }
+        if parsed.terms.is_empty() {
+            self.global_search.fail(
+                generation,
+                "絞り込みのほかに、探す語を入れてください".into(),
+            );
+            return;
+        }
+        let terms = parsed.terms;
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         tokio::spawn(async move {
-            let event = match api.search(kind, &query, cursor.as_deref()).await {
+            let event = match api.search(kind, &terms, &filters, cursor.as_deref()).await {
                 Ok(page) => AppEvent::SearchResults {
                     generation,
                     append,

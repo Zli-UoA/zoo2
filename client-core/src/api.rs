@@ -51,17 +51,29 @@ pub struct ThreadPage {
     pub next_cursor: Option<String>,
 }
 
-/// `GET /api/search` の種類。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `GET /api/search` の種類。`All`（既定）はメッセージとファイルをまとめて探す。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SearchKind {
+    #[default]
+    All,
     Messages,
     Files,
     Notes,
 }
 
+/// `GET /api/search` の絞り込み。日付は UTC の `YYYY-MM-DD`（`after` は含み、`before` は含まない）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchFilters {
+    pub user_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+}
+
 impl SearchKind {
     fn as_query(self) -> &'static str {
         match self {
+            SearchKind::All => "all",
             SearchKind::Messages => "messages",
             SearchKind::Files => "files",
             SearchKind::Notes => "notes",
@@ -74,6 +86,9 @@ impl SearchKind {
 pub struct SearchItem {
     /// メッセージ・添付・ノートの ID。
     pub id: String,
+    /// `message`・`file`・`note`。
+    #[serde(default)]
+    pub kind: Option<String>,
     pub channel_id: String,
     pub channel_name: String,
     #[serde(default)]
@@ -505,9 +520,20 @@ impl ApiClient {
         &self,
         kind: SearchKind,
         query: &str,
+        filters: &SearchFilters,
         cursor: Option<&str>,
     ) -> Result<SearchPage> {
         let mut path = format!("/api/search?type={}&q={}", kind.as_query(), segment(query));
+        for (name, value) in [
+            ("user_id", &filters.user_id),
+            ("channel_id", &filters.channel_id),
+            ("after", &filters.after),
+            ("before", &filters.before),
+        ] {
+            if let Some(value) = value {
+                path.push_str(&format!("&{name}={}", segment(value)));
+            }
+        }
         if let Some(cursor) = cursor {
             path.push_str(&format!("&cursor={}", segment(cursor)));
         }
@@ -1114,6 +1140,8 @@ mod tests {
             .and(wiremock::matchers::query_param("type", "files"))
             .and(wiremock::matchers::query_param("q", "会議 資料&x"))
             .and(wiremock::matchers::query_param("cursor", "{\"m\":1}"))
+            .and(wiremock::matchers::query_param("user_id", "u1"))
+            .and(wiremock::matchers::query_param("after", "2026-11-01"))
             .and(header("X-Dev-User", "u1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
                 {"id":"a1","message_id":"m1","channel_id":"c1","channel_name":"general","is_dm":false,
@@ -1124,7 +1152,16 @@ mod tests {
             .mount(&server)
             .await;
         let page = client(&server)
-            .search(SearchKind::Files, "会議 資料&x", Some("{\"m\":1}"))
+            .search(
+                SearchKind::Files,
+                "会議 資料&x",
+                &SearchFilters {
+                    user_id: Some("u1".into()),
+                    after: Some("2026-11-01".into()),
+                    ..Default::default()
+                },
+                Some("{\"m\":1}"),
+            )
             .await
             .unwrap();
         assert_eq!(page.items[0].author.as_deref(), Some("Bob"));

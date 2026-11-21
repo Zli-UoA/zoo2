@@ -10,10 +10,10 @@ use crate::api::{SearchItem, SearchKind, SearchPage};
 #[derive(Debug, Default)]
 pub struct GlobalSearch {
     pub query: String,
-    /// ファイル名を探す（false ならメッセージ）。
-    pub files: bool,
+    /// 探す種類（既定はメッセージとファイルの両方）。Tab で切り替える。
+    pub kind: SearchKind,
     /// 今の結果を取ったときの語と種類。違えば Enter で検索し直す。
-    pub searched: Option<(String, bool)>,
+    pub searched: Option<(String, SearchKind)>,
     pub items: Vec<SearchItem>,
     pub next_cursor: Option<String>,
     pub searched_until: Option<String>,
@@ -50,9 +50,9 @@ pub struct Destination {
 }
 
 impl GlobalSearch {
-    fn current(&self) -> Option<(String, bool)> {
+    fn current(&self) -> Option<(String, SearchKind)> {
         let query = self.query.split_whitespace().collect::<Vec<_>>().join(" ");
-        (!query.is_empty()).then_some((query, self.files))
+        (!query.is_empty()).then_some((query, self.kind))
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -72,7 +72,15 @@ impl GlobalSearch {
                 _ => Action::None,
             },
             KeyCode::Tab | KeyCode::BackTab => {
-                self.files = !self.files;
+                const ORDER: [SearchKind; 3] =
+                    [SearchKind::All, SearchKind::Messages, SearchKind::Files];
+                let at = ORDER.iter().position(|k| *k == self.kind).unwrap_or(0);
+                let step = if key.code == KeyCode::Tab {
+                    1
+                } else {
+                    ORDER.len() - 1
+                };
+                self.kind = ORDER[(at + step) % ORDER.len()];
                 if self.current().is_some() {
                     if self.searched.is_some() {
                         Action::Search
@@ -132,7 +140,7 @@ impl GlobalSearch {
     /// 取得を始める。返した番号と一緒に結果を `apply` に渡す。続きのページは、今の表示ではなく
     /// 結果を取ったときの語と種類で取る（途中で種類を切り替えても、別の種類のカーソルを使わない）。
     pub fn start(&mut self, append: bool) -> Option<(u64, String, SearchKind, Option<String>)> {
-        let (query, files) = if append {
+        let (query, kind) = if append {
             self.searched.clone()?
         } else {
             self.current()?
@@ -146,17 +154,12 @@ impl GlobalSearch {
             self.selected = 0;
             self.next_cursor = None;
             self.searched_until = None;
-            self.searched = Some((query.clone(), files));
+            self.searched = Some((query.clone(), kind));
         }
         let cursor = if append {
             self.next_cursor.clone()
         } else {
             None
-        };
-        let kind = if files {
-            SearchKind::Files
-        } else {
-            SearchKind::Messages
         };
         Some((self.generation, query, kind, cursor))
     }
@@ -192,6 +195,57 @@ impl GlobalSearch {
     }
 }
 
+/// 検索語に書ける絞り込み（Slack と同じ書き方）。
+/// `from:@user_name`・`in:#channel_name`・`after:YYYY-MM-DD`・`before:YYYY-MM-DD`。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    /// 残りの語（空白区切り）。
+    pub terms: String,
+    pub from: Option<String>,
+    pub channel: Option<String>,
+    pub after: Option<String>,
+    pub before: Option<String>,
+}
+
+fn is_day(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes.iter().enumerate().all(|(i, b)| match i {
+            4 | 7 => *b == b'-',
+            _ => b.is_ascii_digit(),
+        })
+}
+
+/// 語と絞り込みを分ける。日付の形が違うものは、ふつうの語として残す。
+pub fn parse_modifiers(query: &str) -> Modifiers {
+    let mut out = Modifiers::default();
+    let mut terms = Vec::new();
+    for word in query.split_whitespace() {
+        if let Some(name) = word.strip_prefix("from:") {
+            let name = name.trim_start_matches('@');
+            if !name.is_empty() {
+                out.from = Some(name.to_string());
+                continue;
+            }
+        } else if let Some(name) = word.strip_prefix("in:") {
+            let name = name.trim_start_matches('#');
+            if !name.is_empty() {
+                out.channel = Some(name.to_string());
+                continue;
+            }
+        } else if let Some(day) = word.strip_prefix("after:").filter(|d| is_day(d)) {
+            out.after = Some(day.to_string());
+            continue;
+        } else if let Some(day) = word.strip_prefix("before:").filter(|d| is_day(d)) {
+            out.before = Some(day.to_string());
+            continue;
+        }
+        terms.push(word);
+    }
+    out.terms = terms.join(" ");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,7 +273,7 @@ mod tests {
         let (generation, query, kind, cursor) = s.start(false).unwrap();
         assert_eq!(
             (query.as_str(), kind, cursor),
-            ("会議 資料", SearchKind::Messages, None)
+            ("会議 資料", SearchKind::All, None)
         );
         s.apply(
             generation,
@@ -309,7 +363,7 @@ mod tests {
         assert!(s.items.is_empty() && s.next_cursor.is_none() && s.start(true).is_none());
         // 結果を残したまま種類だけ変わることはないが、start(true) は取ったときの種類を使う。
         s.query = "pdf".into();
-        s.files = false;
+        s.kind = SearchKind::Messages;
         let (generation, ..) = s.start(false).unwrap();
         s.apply(
             generation,
@@ -320,7 +374,7 @@ mod tests {
                 searched_until: None,
             },
         );
-        s.files = true;
+        s.kind = SearchKind::Files;
         let (_, _, kind, _) = s.start(true).unwrap();
         assert_eq!(kind, SearchKind::Messages);
     }
@@ -334,7 +388,9 @@ mod tests {
         let (first, ..) = s.start(false).unwrap();
         assert_eq!(s.on_key(key(KeyCode::Tab)), Action::Search);
         let (second, _, kind, _) = s.start(false).unwrap();
-        assert_eq!(kind, SearchKind::Files);
+        assert_eq!(kind, SearchKind::Messages, "all → messages → files");
+        assert_eq!(s.on_key(key(KeyCode::BackTab)), Action::Search);
+        assert_eq!(s.kind, SearchKind::All);
         s.apply(
             first,
             false,
@@ -358,5 +414,22 @@ mod tests {
         assert_eq!(s.on_key(key(KeyCode::Down)), Action::None, "no more pages");
         s.fail(second, "x".into());
         assert_eq!(s.error.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn modifiers_are_split_from_the_terms() {
+        let parsed =
+            parse_modifiers("会議 from:@alice in:#general after:2026-11-01 before:11/30 資料");
+        assert_eq!(
+            parsed,
+            Modifiers {
+                terms: "会議 before:11/30 資料".into(),
+                from: Some("alice".into()),
+                channel: Some("general".into()),
+                after: Some("2026-11-01".into()),
+                before: None,
+            }
+        );
+        assert_eq!(parse_modifiers("from: in:#").terms, "from: in:#");
     }
 }
