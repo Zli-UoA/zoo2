@@ -320,6 +320,10 @@
     "participants_other": "参与者 {{count}} 人",
     "participantsMore": "另有 {{count}} 人",
     "participantsEmpty": "没有参与者",
+    "threadStarter": "讨论串发起人",
+    "participantsSearch": "搜索姓名",
+    "participantsFilterPartial": "仅在已加载的前 {{loaded}} 人中筛选（另有 {{count}} 人无法搜索）。",
+    "participantsDescription": "已加入此讨论串的人。",
     "joinToReply": "参与后才能回复此讨论串。",
     "reopenAndJoin": "重新打开并参与"
   },

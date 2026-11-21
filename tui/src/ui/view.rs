@@ -323,7 +323,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            if let SidebarItem::Thread { id, channel_id } = item {
+            if let SidebarItem::Thread { id, channel_id, .. } = item {
                 let thread = app.threads().find(|thread| thread.id == *id);
                 let archived = app.thread_is_archived(channel_id, id);
                 let content = app.thread_content(channel_id, id)?;
@@ -1146,6 +1146,7 @@ mod tests {
         let selected = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&selected));
         press(&mut app, KeyCode::Esc);
@@ -1172,6 +1173,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "empty".into(),
+            pinned: false,
         };
         assert!(app.thread.is_some());
         assert!(!app.sidebar_items().contains(&row));
@@ -1202,6 +1204,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -1244,6 +1247,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -1321,6 +1325,133 @@ mod tests {
         assert_eq!(items[1], SidebarItem::Pinned("c1".into()));
         assert_eq!(items[2], SidebarItem::Channel("c1".into()));
         assert!(render(&mut app).contains("★"));
+    }
+
+    fn pin_c1(app: &mut App) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p1",
+                json!({
+                    "user_id": "u1", "channel_id": "c1", "position": "0",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+    }
+
+    #[tokio::test]
+    async fn pinned_channels_show_their_threads_like_the_channel_list() {
+        let mut app = app();
+        pin_c1(&mut app);
+        let thread = |pinned| SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+            pinned,
+        };
+        let items = app.sidebar_items();
+        // ピン留めの行の下にも、通常の一覧と同じスレッドを出す。通常の一覧のスレッドも残る。
+        assert_eq!(items[0], SidebarItem::Pinned("c1".into()));
+        assert_eq!(items[1], thread(true));
+        assert_eq!(items[2], SidebarItem::Channel("c1".into()));
+        assert_eq!(items[3], thread(false));
+        // 閲覧中のスレッドは、どちらの行の下にも残る。
+        app.current = Some("c1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "m1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(true)).count(),
+            1
+        );
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(false)).count(),
+            1
+        );
+        assert_eq!(render(&mut app).matches("hello (1)").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn opening_a_pinned_thread_keeps_the_cursor_on_the_pinned_row() {
+        for pinned in [true, false] {
+            let mut app = app();
+            pin_c1(&mut app);
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+                pinned,
+            };
+            app.focus = Focus::Sidebar;
+            app.sidebar_index = app
+                .sidebar_items()
+                .iter()
+                .position(|item| *item == row)
+                .unwrap();
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("m1")
+            );
+            // 開いたあとも、カーソルは押した行（ピン留めの下か通常の一覧か）にある。
+            assert_eq!(app.sidebar_items()[app.sidebar_index], row, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
+        let mut app = app();
+        pin_c1(&mut app);
+        app.archived_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: Some("2026-11-10T00:00:00".into()),
+            reply_count: 1,
+        });
+        // アーカイブ済みは、ピン留めの下にも出さない。
+        app.active_threads.clear();
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+        // 参加していないチャンネルは、ピン留めしても、スレッドを出さない（通常の一覧と同じ）。
+        app.active_threads.push(ThreadSummary {
+            id: "m2".into(),
+            channel_id: "c2".into(),
+            content: "secret".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p2",
+                json!({
+                    "user_id": "u1", "channel_id": "c2", "position": "1",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
     }
 
     #[tokio::test]
@@ -1431,6 +1562,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.on_app_event(AppEvent::Threads {
@@ -1490,6 +1622,7 @@ mod tests {
                 let row = SidebarItem::Thread {
                     channel_id: "c1".into(),
                     id: "m1".into(),
+                    pinned: false,
                 };
                 assert!(app.sidebar_items().contains(&row));
                 let mut snapshot = batch(vec![(
@@ -1565,6 +1698,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             app.focus = Focus::Messages;
             app.selected = Some("m1".into());
@@ -1659,6 +1793,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if root_exists {
@@ -1820,6 +1955,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if archived {
@@ -1976,6 +2112,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(app.thread.is_none());
         assert!(!app.sidebar_items().contains(&row));
@@ -2026,6 +2163,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         assert!(!app.thread_is_archived("c1", "m1"));
@@ -2216,7 +2354,8 @@ mod tests {
             app.sidebar_items()[app.sidebar_index],
             SidebarItem::Thread {
                 channel_id: "c1".into(),
-                id: "older".into()
+                id: "older".into(),
+                pinned: false,
             }
         );
         assert!(render(&mut app).contains("Older thread"));

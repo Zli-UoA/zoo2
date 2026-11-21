@@ -2,7 +2,7 @@ import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { ArrowLeftIcon, SearchIcon, ShieldAlertIcon, UserMinusIcon } from "lucide-react";
-import { Fragment, useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
@@ -28,7 +28,8 @@ import { Button } from "../ui/button";
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
-import { AppAvatar, openApp } from "./AppIdentity";
+import { AppAvatar } from "./AppIdentity";
+import { MemberRow } from "./MemberRow";
 import { PaneHeader } from "../layout/PaneHeader";
 import {
   filterMemberCandidates,
@@ -317,19 +318,16 @@ export function MembersPanel({
                         targetIsAdmin: adminIds.has(member.user_id),
                       });
                     return (
-                      <Fragment key={member.user_id}>
-                        <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60">
-                          <AppAvatar label={label} isBot={isBot} src={bot?.avatar_url} size="sm" />
-                          <span className="min-w-0 flex-1 truncate text-sm">
-                            {isBot && bot?.app_id ? (
-                              <button type="button" onClick={() => openApp(bot.app_id!)}>
-                                {label} <span className="text-xs text-muted-foreground">APP</span>
-                              </button>
-                            ) : (
-                              label
-                            )}
-                          </span>
-                          {unreadableReason ? (
+                      <MemberRow
+                        key={member.user_id}
+                        label={label}
+                        avatarUrl={bot?.avatar_url}
+                        isBot={isBot}
+                        appId={bot?.app_id}
+                        creatorTag={isCreator ? t("members.creator") : undefined}
+                        isMe={isMe}
+                        badge={
+                          unreadableReason ? (
                             <span
                               className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[0.65rem] font-medium text-amber-800 dark:text-amber-300"
                               title={t(`e2ee.memberUnreadable.${unreadableReason}Description`)}
@@ -340,18 +338,10 @@ export function MembersPanel({
                                 {t(`e2ee.memberUnreadable.${unreadableReason}Description`)}
                               </span>
                             </span>
-                          ) : null}
-                          {isCreator ? (
-                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                              {t("members.creator")}
-                            </span>
-                          ) : null}
-                          {isMe ? (
-                            <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
-                              {t("members.you")}
-                            </span>
-                          ) : null}
-                          {canKick ? (
+                          ) : null
+                        }
+                        actions={
+                          canKick ? (
                             <Button
                               variant="ghost"
                               size="icon-xs"
@@ -363,9 +353,9 @@ export function MembersPanel({
                             >
                               <UserMinusIcon />
                             </Button>
-                          ) : null}
-                        </li>
-                      </Fragment>
+                          ) : null
+                        }
+                      />
                     );
                   })}
             </ul>
