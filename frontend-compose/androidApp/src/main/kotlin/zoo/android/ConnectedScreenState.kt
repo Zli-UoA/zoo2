@@ -74,6 +74,8 @@ internal class ConnectedScreenState(
     private var postOrigin: String? = null
     var editSelection by mutableStateOf<TextRange?>(null)
         private set
+    var replyFocusRequest by mutableIntStateOf(0)
+        private set
     var replySelection by mutableStateOf<TextRange?>(null)
         private set
     var editDraft by mutableStateOf("")
@@ -471,6 +473,9 @@ internal class ConnectedScreenState(
             }
             is AndroidUiAction.UseInputTool -> inputTool(action.tool, screen, channelId, draftKey, rows)
             is AndroidUiAction.OpenPost -> openPost(action.id)
+            is AndroidUiAction.ReplyToPost -> if (screen is AndroidScreen.Post && screen.root.id == action.id) {
+                replyFocusRequest++
+            } else openPost(action.id, focusReply = true)
             is AndroidUiAction.Search -> query = action.query
             is AndroidUiAction.SelectResult -> when (overlay) {
                 "people" -> people.firstOrNull { it.text("id") == action.id }?.let { person -> request { openProfile(person) } }
@@ -712,13 +717,14 @@ internal class ConnectedScreenState(
         }
     }
 
-    private fun openPost(id: String) = request {
+    private fun openPost(id: String, focusReply: Boolean = false) = request {
         val source = overlay
         val detail = app.api.request("/api/home/${id.encodeURLParameter()}/thread").rows()
         if (detail.isNotEmpty()) {
             if (source != "post") postOrigin = source
             postDetail = detail
             openedPostId = id
+            replyFocusRequest = if (focusReply) replyFocusRequest + 1 else 0
             overlay = "post"
         }
     }
@@ -728,6 +734,7 @@ internal class ConnectedScreenState(
         postDetail = emptyList()
         replyDraft = ""
         replySelection = null
+        replyFocusRequest = 0
         overlay = postOrigin
         postOrigin = null
     }

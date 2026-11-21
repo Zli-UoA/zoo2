@@ -13,6 +13,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -26,7 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 internal data class InputState(val text: String = "", val expanded: Boolean = false, val canSend: Boolean = true, val hasAttachments: Boolean = false, val mentions: List<String> = emptyList(),
-    val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false)
+    val selection: TextRange? = null, val files: List<Pair<String, String>> = emptyList(), val live: Boolean = false, val focusRequest: Int = 0)
 internal enum class InputTool { Attach, Format, Emoji, Send, Expand }
 
 @Composable
@@ -45,6 +47,10 @@ internal fun ConversationInput(
     val value = if (fieldValue.text == state.text && (state.selection == null || fieldValue.selection == state.selection)) {
         fieldValue
     } else TextFieldValue(state.text, state.selection ?: TextRange(state.text.length))
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(state.focusRequest) {
+        if (state.focusRequest != 0) focusRequester.requestFocus()
+    }
     var focused by remember { mutableStateOf(false) }
     var drag by remember { mutableFloatStateOf(0f) }
     val full = state.expanded
@@ -86,7 +92,7 @@ internal fun ConversationInput(
                     if (it.text != state.text) textChanged(it.text)
                     if (state.selection != it.selection) onSelection(it.selection)
                 },
-                modifier = placement.onFocusChanged { focused = it.isFocused }
+                modifier = placement.focusRequester(focusRequester).onFocusChanged { focused = it.isFocused }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp, lineHeight = 23.sp),
                 cursorBrush = SolidColor(colors.inputText),

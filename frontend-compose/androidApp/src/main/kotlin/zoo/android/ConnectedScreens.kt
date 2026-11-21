@@ -252,7 +252,7 @@ internal fun ConnectedScreens(
         state.overlay == "post" && state.postDetail.isNotEmpty() -> {
             val entries = state.postDetail.map { state.entry(it, usersById, previewService = previewService) }
             val root = entries.firstOrNull { it.id == state.openedPostId } ?: entries.first()
-            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving, selection = state.replySelection))
+            AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving, selection = state.replySelection, focusRequest = state.replyFocusRequest))
         }
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)

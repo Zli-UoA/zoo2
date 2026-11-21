@@ -43,10 +43,10 @@ class AndroidSamplesTest {
             TimelineItem("3", "ゆい", "今日の通話テストは夕方からです。", "11:42"),
         )
         val homePosts = listOf(
-            posts[0].copy(postHeader = PostHeaderData("@haru", "11/21 12:05", PostAudience.Public, null, "misskey.io",
+            posts[0].copy(canReact = true, canRepost = true, postHeader = PostHeaderData("@haru", "11/21 12:05", PostAudience.Public, null, "misskey.io",
                 remoteServer = true, serverRgb = 0x86b300)),
-            posts[1].copy(postHeader = PostHeaderData("@mizuki", "11/21 11:56", PostAudience.Local, "開発", "zli.chat")),
-            posts[2].copy(postHeader = PostHeaderData("@yui", "11/21 11:42", PostAudience.Unlisted, null, "zli.chat")),
+            posts[1].copy(canReact = true, postHeader = PostHeaderData("@mizuki", "11/21 11:56", PostAudience.Local, "開発", "zli.chat")),
+            posts[2].copy(canReact = true, canRepost = true, postHeader = PostHeaderData("@yui", "11/21 11:42", PostAudience.Unlisted, null, "zli.chat")),
         )
         val settings = listOf(
             SettingsGroup("外観", listOf(SettingsEntry.Destination("theme", "テーマ", "端末に従う"),
@@ -196,6 +196,17 @@ class AndroidSamplesTest {
                     check(nameBounds.right < dateBounds.left && serverBounds.top > dateBounds.top)
                     ui.onNodeWithContentDescription("公開", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithText("#開発", useUnmergedTree = true).assertIsDisplayed()
+                    val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
+                    val controls = listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作").map { label ->
+                        ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true)
+                            .assertHasClickAction().assertIsEnabled().assertHeightIsEqualTo(48.dp).getUnclippedBoundsInRoot()
+                    }
+                    check(controls.zipWithNext().all { (left, right) ->
+                        left.top == right.top && left.right == right.left &&
+                            kotlin.math.abs((left.right - left.left).value - (right.right - right.left).value) <= 1f
+                    })
+                    ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("再投稿"),
+                        useUnmergedTree = true).assertIsNotEnabled()
                 }
                 if (name == "profile") {
                     ui.onNodeWithText("@haru@social.example").assertIsDisplayed()
@@ -230,6 +241,20 @@ class AndroidSamplesTest {
                 }
                 capture("$name-${if (night) "dark" else "light"}")
             }
+        }
+        ui.runOnIdle { screen = AndroidScreen.Home(homePosts) }
+        val firstPost = hasAnyAncestor(hasTestTag("timeline-entry-1"))
+        for (label in listOf("返信", "再投稿", "リアクションを追加", "その他の投稿操作")) {
+            ui.onNode(firstPost and hasContentDescription(label), useUnmergedTree = true).performClick()
+        }
+        ui.onNodeWithText("本文をコピー").assertIsDisplayed()
+        ui.runOnIdle {
+            val entry = homePosts.first()
+            check(actions.takeLast(3) == listOf(
+                AndroidUiAction.ReplyToPost(entry.id),
+                AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost),
+                AndroidUiAction.ActOnEntry(entry, EntryOperation.React),
+            ))
         }
         ui.runOnIdle { screen = cases.first { it.first == "group-dm" }.second }
         ui.onNodeWithText("はる").performClick()

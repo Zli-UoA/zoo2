@@ -131,6 +131,7 @@ internal sealed interface AndroidUiAction {
     data class OpenChannel(val id: String) : AndroidUiAction
     data class OpenChannelSettings(val id: String) : AndroidUiAction
     data class OpenPost(val id: String) : AndroidUiAction
+    data class ReplyToPost(val id: String) : AndroidUiAction
     data class OpenThread(val id: String) : AndroidUiAction
     data class OpenSetting(val id: String) : AndroidUiAction
     data class Toggle(val id: String, val value: Boolean) : AndroidUiAction
@@ -502,7 +503,7 @@ private fun Timeline(
                         menu = { menuId = entry.id },
                         swipeReply = swipeReply,
                     ))
-                    .padding(vertical = 12.dp),
+                    .padding(top = 12.dp, bottom = if (posts) 4.dp else 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Box(Modifier.size(36.dp).background(colors.background, CircleShape), contentAlignment = Alignment.Center) {
@@ -540,6 +541,7 @@ private fun Timeline(
                             }
                         }
                     }
+                    if (posts) PostActions(entry, colors, dispatch, onMore = { menuId = entry.id })
                 }
             }
         }
@@ -559,6 +561,28 @@ private fun Timeline(
                 dispatch(if (posts) AndroidUiAction.OpenPost(entry.id) else AndroidUiAction.OpenThread(entry.id))
             }) else null,
         )
+    }
+}
+
+@Composable
+private fun PostActions(
+    entry: TimelineItem,
+    colors: AndroidColors,
+    dispatch: (AndroidUiAction) -> Unit,
+    onMore: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth()) {
+        UiIconButton(UiIcon.Bubble, "返信", colors.secondary,
+            { dispatch(AndroidUiAction.ReplyToPost(entry.id)) }, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
+        UiIconButton(UiIcon.Repost, if (entry.reposted) "再投稿を取り消す" else "再投稿",
+            if (entry.reposted) colors.foreground else colors.secondary.copy(alpha = if (entry.canRepost) 1f else .38f),
+            { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost)) },
+            enabled = entry.canRepost, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
+        UiIconButton(UiIcon.Emoji, "リアクションを追加",
+            colors.secondary.copy(alpha = if (entry.canReact) 1f else .38f),
+            { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.React)) },
+            enabled = entry.canReact, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
+        UiIconButton(UiIcon.More, "その他の投稿操作", colors.secondary, onMore, modifier = Modifier.weight(1f), iconSize = AndroidControlSize.inlineIcon)
     }
 }
 
