@@ -51,7 +51,7 @@ class AndroidSamplesTest {
         val channels = AndroidScreen.Channels(listOf(
             ChannelSection("参加中", listOf(ChannelItem("dev", "開発", true), ChannelItem("chat", "雑談"),
                 ChannelItem("ops", "運営"), ChannelItem("news", "お知らせ"))),
-            ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる"))),
+            ChannelSection("ダイレクトメッセージ", listOf(ChannelItem("dm", "はる", isUserName = true))),
         ))
         val inbox = AndroidScreen.Notifications(listOf(
             InboxItem("reply", "はる", "投稿に返信しました", "次のテストでも確認します。", "12:03", true),

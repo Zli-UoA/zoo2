@@ -51,6 +51,7 @@ internal class AndroidColors(dark: Boolean) {
 internal object AndroidWeights {
     val body = FontWeight.Normal
     val label = FontWeight.Medium
+    val userName = FontWeight.Medium
     val emphasis = FontWeight.SemiBold
 }
 
@@ -125,6 +126,7 @@ internal fun PageHeader(
     description: String? = null,
     onBack: (() -> Unit)? = null,
     onOpen: (() -> Unit)? = null,
+    titleWeight: FontWeight = AndroidWeights.emphasis,
 ) {
     Row(
         Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(colors.headerLight, colors.background)))
@@ -145,7 +147,7 @@ internal fun PageHeader(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(title, color = colors.foreground, fontSize = if (onOpen == null) 20.sp else 16.sp,
-                    fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    fontWeight = titleWeight, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 if (!description.isNullOrEmpty()) {
                     Text(description, color = colors.secondary, fontSize = 13.sp, maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
