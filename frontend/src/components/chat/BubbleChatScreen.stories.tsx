@@ -61,6 +61,10 @@ export const ActiveConversation: Story = {
     // 入力欄は即座にクリアされるが、吹き出しは破裂アニメーションのため少しの間表示される
     await expect(await within(list).findByText("ありがとう！準備してきます")).toBeInTheDocument();
     await expectClearButtonAlignedWithInput();
+
+    // 複数行入力でも先頭行に揃うことを検証する。
+    await userEvent.type(input, "1行目{Enter}2行目{Enter}3行目");
+    await expectClearButtonAlignedWithInput();
   }),
 };
 
@@ -80,6 +84,8 @@ export const Mobile: Story = {
     },
   },
   play: playForImplementation(async () => {
+    await expectClearButtonAlignedWithInput();
+    await userEvent.type(await screen.findByRole("textbox"), "1行目{Enter}2行目{Enter}3行目");
     await expectClearButtonAlignedWithInput();
   }),
 };
