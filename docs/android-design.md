@@ -141,14 +141,8 @@ Android専用の変更で共有APIの契約が変わらない場合、React・TU
 ## 検証
 
 [Androidの手順](android.md#ビルド)でビルド・単体テスト・lintを実行する。
-`ReviewRegressionUiTest.homeAndChannelAuthorsShareTheAvatarGutterAndTopAlignment` は
-320/440dpで通知・投稿の本文開始位置、投稿の左右位置・36dpアバター・グループ本文の開始位置と
-Homeのプロフィールリンクの48dp操作領域を検査する。
+現行のCompose画面は `ui-preview` の `AndroidSamplesTest` で検証する。画面遷移、通知の自動既読、投稿と絵文字ピッカー、タップ領域を確認し、ライト・ダークのキャプチャを生成する。
 `ComposerFormattingTest` は日本語・逆向き選択・入れ子・コードブロック・絵文字の挿入を検査する。
-`ReviewRegressionUiTest.channelComposerSwipesToFullScreenAndPreservesSelectedJapaneseText` は
-スワイプ展開・縮小、選択した日本語への書式、戻る操作、オフラインの制約を検査する。
-`TouchUiTest` は320/600dp、明暗、大きな日本語入力、48dpタッチ領域、無効状態を検査し、
-共通部品のデザイン確認用キャプチャも保存する。
 実機のIME・TalkBack・配布前の画面確認は別途行う。テスト追加だけを検証済みとは扱わない。
 
 ## 表示確認用キャプチャ

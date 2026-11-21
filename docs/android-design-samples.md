@@ -50,22 +50,7 @@
 
 接続前の表示例は [設定のライト](images/android-design/android-ui-first-settings-light.png) と [ダーク](images/android-design/android-ui-first-settings-dark.png)。画面のテストデータと操作コールバックだけで描画する。
 
-```sh
-cd frontend-compose
-./gradlew -Pzoo.android=true :testDebugUnitTest \
-  --tests 'zoo.AndroidDesignPresentationTest' \
-  --tests 'zoo.ReviewRegressionUiTest' \
-  --tests 'zoo.TouchUiTest'
-```
-
-生成先は `frontend-compose/build/reports/ui/`。変更した画面のキャプチャを [画像ディレクトリ](images/android-design/) に反映する。保存時にファイル名が変わる画像は次のとおり。
-
-| 生成名（拡張子は `.png`） | 保存名 |
-| --- | --- |
-| `android-root-0`、`android-root-2`、`android-root-3`、`android-root-4` | `home`、`notifications`、`bubble`、`settings` |
-| `android-channel-index`、`android-thread` | `channels`、`thread` |
-| `channel-editor-expanded-formatting` | `channel-editor-expanded` |
-| `design-320.0-1.0-false`、`design-320.0-1.8-true`、`design-600.0-1.0-true` | `primitives-320-light`、`primitives-320-large-text-dark`、`primitives-600-dark` |
+手順とキャプチャの保存先は [現行のComposeキャプチャ一覧](android-rebuild-samples.md) を参照する。Android CIでも `ui-preview:testDebugUnitTest` を実行し、画像をテストレポートとともに保存する。
 
 合意したデザインの変更があれば参照モックと操作説明も更新する。
 
