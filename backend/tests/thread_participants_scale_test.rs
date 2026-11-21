@@ -1,4 +1,8 @@
 //! SCALE_USERS=300000/1000000; use an empty migrated disposable database.
+//! `SCALE_HISTORY` (default: SCALE_USERS) is the number of unrelated `thread_participants` rows.
+//! Setting it apart from SCALE_USERS separates the two: a fixed `users` table with a growing
+//! history (the work must not grow), and a growing `users` table with a fixed history (only the
+//! index depth may).
 //! Measures `GET /api/threads/{id}`'s participant SQL (`participants_sql`) against a
 //! large `users` table. P = participant rows of one thread, L = live (joined, not
 //! deactivated, still a channel member) ones. Bound: no Seq Scan on users/thread_participants/
@@ -183,6 +187,10 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "300000".into())
         .parse()?;
     assert!(users >= 300000);
+    let history: i32 = std::env::var("SCALE_HISTORY")
+        .map(|value| value.parse())
+        .unwrap_or(Ok(users))?;
+    assert!(history >= 300000);
     let url = Config::from_env().database_url;
     let (mut client, connection) = tokio_postgres::connect(&url, NoTls).await?;
     tokio::spawn(connection);
@@ -242,9 +250,15 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             tx.execute("DELETE FROM channel_user WHERE channel_id=$2 AND user_id IN (SELECT user_id FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL ORDER BY joined_at LIMIT $3::integer)", &[&case.thread, &channel, &non_members]).await?;
         }
     }
-    // Unrelated history: `users` rows spread over users/30 other threads (30 rows each),
+    // Unrelated history: `history` rows spread over history/30 other threads (30 rows each),
     // so the planner sees many distinct thread_id values, as in production.
-    tx.execute("INSERT INTO thread_participants(thread_id,user_id) SELECT $1||'-noise-'||(n%($2::integer/30)),$1||'-u-'||lpad((1+(n*37)%$2::integer)::text,9,'0') FROM generate_series(1,$2::integer)n", &[&tag, &users]).await?;
+    if history == users {
+        tx.execute("INSERT INTO thread_participants(thread_id,user_id) SELECT $1||'-noise-'||(n%($2::integer/30)),$1||'-u-'||lpad((1+(n*37)%$2::integer)::text,9,'0') FROM generate_series(1,$2::integer)n", &[&tag, &users]).await?;
+    } else {
+        // Row n is the (n/T)-th user of thread n%T, T = history/30: the 30 users of one thread
+        // differ, so the primary key holds for any history, and the ids stay spread over `users`.
+        tx.execute("INSERT INTO thread_participants(thread_id,user_id) SELECT $1||'-noise-'||(n%($2::integer/30)),$1||'-u-'||lpad((1+((n%($2::integer/30))*37+(n/($2::integer/30))*1013)%$3::integer)::text,9,'0') FROM generate_series(1,$2::integer)n", &[&tag, &history, &users]).await?;
+    }
     tx.batch_execute("SET LOCAL session_replication_role=origin")
         .await?;
     tx.commit().await?;
@@ -290,7 +304,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             save_plan(&output, &format!("{}-{run}.json", case.name), &plan)?;
             let measured = work(case, run, &plan[0]);
             eprintln!(
-                "{users} {}/{run} work={measured} planning={} execution={}",
+                "U={users} H={history} {}/{run} work={measured} planning={} execution={}",
                 case.name, plan[0]["Planning Time"], plan[0]["Execution Time"]
             );
             metrics.insert(format!("{}/{run}", case.name), measured);
@@ -308,7 +322,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
             save_plan(&output, &format!("{}-{run}.json", case.name), &plan)?;
             let measured = work(case, run, &plan[0]);
             eprintln!(
-                "{users} {}/{run} work={measured} planning={} execution={}",
+                "U={users} H={history} {}/{run} work={measured} planning={} execution={}",
                 case.name, plan[0]["Planning Time"], plan[0]["Execution Time"]
             );
             metrics.insert(format!("{}/{run}", case.name), measured);
@@ -434,7 +448,7 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         concurrent.extend(task.await??);
     }
     eprintln!(
-        "{users} large single_ms={} concurrent8_ms={}",
+        "U={users} H={history} large single_ms={} concurrent8_ms={}",
         timings(single.clone()),
         timings(concurrent.clone())
     );
