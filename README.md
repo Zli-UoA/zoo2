@@ -6,7 +6,7 @@ iPhoneと幅の狭いiPadでは「チャンネル」「DM」「通知」「プ�
 iPadの通常幅では切り替えボタン・会話一覧・本文を並べ、縦・横・上下逆向きの表示に対応します。
 REST API と Electric の差分同期で `https://zli.chat` に直接接続します。
 
-この説明は2026-11-21時点のmain（[`02143f7`](https://github.com/Zli-UoA/zoo2-ios/commit/02143f7bc1157fa084fca99855f453c0e3a3d616)）の実装に基づきます。
+この説明は2026-11-21時点のmain（[`285e7c3`](https://github.com/Zli-UoA/zoo2-ios/commit/285e7c34111981e153cd2262bd0eb732e6e6f198)）の実装に基づきます。
 機能の構成は[構成と通信仕様](docs/architecture.md)、認証・通知の設定は[配備資料](docs/native-auth-push.md)にまとめています。
 スクリーンショットと検証結果には、それぞれ記録した時点の日付を記載しています。
 
