@@ -11,7 +11,7 @@ DO $$
 DECLARE name text;
 BEGIN
   PERFORM set_config('lock_timeout', '10s', true);
-  FOREACH name IN ARRAY ARRAY['messages_search_month', 'attachments_search_month', 'channel_notes_search_month'] LOOP
+  FOREACH name IN ARRAY ARRAY['messages_search_month', 'attachments_search_month', 'channel_notes_search_month', 'messages_search_reply_floor'] LOOP
     IF EXISTS (SELECT 1 FROM pg_index WHERE indexrelid = to_regclass(name) AND NOT indisvalid) THEN
       EXECUTE format('DROP INDEX %I', name);
     END IF;
@@ -20,3 +20,4 @@ END $$;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "messages_search_month" ON "messages" USING gin ((((date_part('year', created_at) * 12 + date_part('month', created_at)))::integer) public.int4_ops, lower(content) public.gin_bigm_ops) WITH (fastupdate = off) WHERE ((deleted_at IS NULL) AND (content <> ''::text));
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "attachments_search_month" ON "attachments" USING gin ((((date_part('year', created_at) * 12 + date_part('month', created_at)))::integer) public.int4_ops, lower(file_name) public.gin_bigm_ops) WITH (fastupdate = off) WHERE (message_id IS NOT NULL);
 CREATE INDEX CONCURRENTLY IF NOT EXISTS "channel_notes_search_month" ON "channel_notes" USING gin ((((date_part('year', created_at) * 12 + date_part('month', created_at)))::integer) public.int4_ops, lower((((title)::text || E'\n') || content)) public.gin_bigm_ops) WITH (fastupdate = off) WHERE (deleted_at IS NULL);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "messages_search_reply_floor" ON "messages" ("channel_id", "created_at") WHERE ((parent_id IS NOT NULL) AND (deleted_at IS NULL));

@@ -31,7 +31,7 @@
 
 - 新しい順（`created_at`、同じ時刻は `id`）。
 - **`items` が `limit` より少なくても、`next_cursor` があれば古い月がまだ残っている。** 1 回のリクエストで見るのは最大 12 か月で、その範囲で `limit` 件に届かなければ、見た所までで返す。クライアントは「さらに古い結果を検索」として続きを読む。`searched_until`（`YYYY-MM`）は、どの月まで見たかを表示するのに使う。
-- `next_cursor` が `null` なら、見えるチャンネルの最も古いメッセージまで見終わった。
+- `next_cursor` が `null` なら、見えるチャンネルの最も古いメッセージ（スレッドの返信も含む）まで見終わった。
 - `snippet` は最初に当たった語のまわり（最大 160 文字、前後を省いたら `…`）。語の強調はクライアントで行う。
 - メッセージは `parent_id`（スレッドの返信なら親の ID）、`author`（`display_data` の投稿者）、`emojis`（本文のカスタム絵文字）も返す。ファイルは `message_id`・`file_name`・`content_type`・`file_size`・`width`・`height`・`is_sensitive`、ノートは `title`・`updated_at` を返す。
 
@@ -60,7 +60,7 @@ CREATE INDEX messages_search_month ON messages USING gin (
 
 | SQL | 計算量 | 上限 |
 | --- | --- | --- |
-| 見える範囲（`SCOPE_SQL`） | O(C + V log N) | チャンネルを 1 回読み、見えるチャンネルごとに最古のトップレベルのメッセージを `idx_messages_channel_unread` で 1 行引く |
+| 見える範囲（`SCOPE_SQL`） | O(C + V log N) | チャンネルを 1 回読み、見えるチャンネルごとに、生きている最古のトップレベルのメッセージ（`idx_messages_channel_unread`）と最古の返信（`messages_search_reply_floor`）を 1 行ずつ引く。親が削除されても返信は残り、取り込みではチャンネルの作成日時より古いこともあるため、返信も下限に入れる |
 | 1 か月分（`month_sql`） | 2 文字以上の語だけ: O(Q log N + I_m + G_m + H_m log K)。1 文字の語を含む: O(M_m + H_m log K)。ファイルは候補ごとに親メッセージを確かめるので、さらに O(G_m log N)（1 文字の語を含むなら O(M_m log N)） | 2 文字以上の語だけなら、GIN の候補 G_m をヒープで再確認し（ヒットが 0 件でも G_m は読む）、ヒット H_m の上位 K+1 件をソートする。1 文字の語を含むと、その月の行 M_m をすべて確かめる。ファイルでは、LIMIT の前に候補ごとに親メッセージが削除されていないか（`EXISTS`）を主キーで引く。JOIN 先（`channels`、投稿者、添付の親メッセージ）は K 件分 |
 | 1 リクエスト | O(C + V log N + Σ_{B か月} (Q log N + I_m + G_m + H_m log K、1 文字の語を含むなら M_m + H_m log K)。ファイルはさらに Σ G_m log N（または Σ M_m log N）) | SQL は最大 1 + B 回。総履歴 N には比例しない |
 

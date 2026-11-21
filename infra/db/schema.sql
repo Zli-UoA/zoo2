@@ -4308,3 +4308,7 @@ CREATE INDEX channel_notes_search_month ON channel_notes USING gin (
   ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
   lower(title || E'\n' || content) public.gin_bigm_ops
 ) WITH (fastupdate = off) WHERE deleted_at IS NULL;
+-- 検索範囲の下限（SCOPE_SQL の floor）に、生きている最古の返信も入れるため。親が削除されても返信は残り、
+-- 取り込みでチャンネルの作成日時より古い返信もありうる。チャンネルごとに先頭の 1 行だけ引く。
+CREATE INDEX messages_search_reply_floor ON messages (channel_id, created_at)
+  WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
