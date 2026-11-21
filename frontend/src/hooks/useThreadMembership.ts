@@ -9,13 +9,19 @@ export interface ThreadParticipant {
   display_name: string | null;
   avatar_url: string | null;
 }
-/** `POST /api/messages` の 403 のうち、参加行があるスレッドへ、参加せずに返信したもの（`code`）。 */
+/** `POST /api/messages` の 403 のうち、参加行があるスレッドへ、参加せずに返信したもの（`code` と本文）。 */
 const THREAD_JOIN_REQUIRED_CODE = "THREAD_JOIN_REQUIRED";
+const THREAD_JOIN_REQUIRED_MESSAGE = "Join the thread before replying";
 
-/** `error` が、スレッドへ参加してから返信するよう求める 403 か。投稿権限などの 403 は含まない。 */
+/**
+ * `error` が、スレッドへ参加してから返信するよう求める 403 か。投稿権限などの 403 は含まない。
+ * `code` を優先し、`code` のない応答（コードを返す前のサーバー）だけ、本文で判定する。
+ */
 export function isThreadJoinRequired(error: unknown): boolean {
   if (!(error instanceof ApiError) || error.status !== 403) return false;
-  return (error.body as { code?: unknown } | null)?.code === THREAD_JOIN_REQUIRED_CODE;
+  const { code, error: message } = (error.body ?? {}) as { code?: unknown; error?: unknown };
+  if (typeof code === "string") return code === THREAD_JOIN_REQUIRED_CODE;
+  return typeof message === "string" && message.includes(THREAD_JOIN_REQUIRED_MESSAGE);
 }
 
 export interface ThreadMembership {

@@ -194,11 +194,13 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
     let owner = format!("{tag}-owner");
     // (name, participants P, left, deactivated, no longer channel members).
     // Live = P - left - deactivated - non-members.
-    let specs: [(&str, i32, i32, i32, i32); 4] = [
+    let specs: [(&str, i32, i32, i32, i32); 5] = [
         ("small", 50, 0, 0, 0),
         ("large", 10_000, 500, 500, 500),
         ("empty", 0, 0, 0, 0),
         ("all_left", 100, 100, 0, 0),
+        // Mostly left rows: the range scan reads them all, the `users` probes only the 500 joined.
+        ("many_left", 10_000, 9_500, 0, 0),
     ];
     let tx = client.transaction().await?;
     tx.execute(
@@ -217,7 +219,9 @@ async fn participants_sql_does_not_scan_users() -> anyhow::Result<()> {
         // Spread participants over the whole id space (37 is coprime with 300k/1m), so
         // index leaves and heap pages are not shared more than in production.
         // Rows 1..=left are left; the next `deactivated` users are deactivated.
-        tx.execute("INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+(n*37)%$3::integer)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$5::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$4::integer)n", &[&thread, &tag, &users, &p, &left]).await?;
+        // `many_left` uses other users than the cases above, whose fixtures deactivate or remove some.
+        let user_offset: i32 = if name == "many_left" { 100_000 } else { 0 };
+        tx.execute("INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at) SELECT $1,$2||'-u-'||lpad((1+((n+$6::integer)*37)%$3::integer)::text,9,'0'),timestamp '2025-01-01'+n*interval '1 second',CASE WHEN n<=$5::integer THEN timestamp '2025-02-01' END FROM generate_series(1,$4::integer)n", &[&thread, &tag, &users, &p, &left, &user_offset]).await?;
         if deactivated > 0 {
             tx.execute("UPDATE users SET is_deactivated=true WHERE id IN (SELECT user_id FROM thread_participants WHERE thread_id=$1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT $2::integer)", &[&thread, &deactivated]).await?;
         }

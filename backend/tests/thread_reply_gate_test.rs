@@ -251,6 +251,10 @@ async fn a_member_who_never_joined_is_refused_with_the_join_code() -> anyhow::Re
 /// A request that passed the idempotency check, then waited for the thread lock while the same
 /// post was stored and its author left, is a retry of the stored post: it returns that post
 /// instead of 403, and does not join the author again.
+///
+/// The order is fixed by the test, not by time: the retry signals that it passed the first
+/// idempotency check and waits at a gate that the test releases once the post and the leave are
+/// committed. The gate's timeout only keeps a broken run from hanging.
 #[tokio::test]
 async fn a_retry_that_waited_for_the_lock_returns_the_stored_post() -> anyhow::Result<()> {
     let w = world().await?;
@@ -265,22 +269,34 @@ async fn a_retry_that_waited_for_the_lock_returns_the_stored_post() -> anyhow::R
     .await?;
     let payload = w.reply(&root, "retry me");
     let id = payload["id"].as_str().unwrap().to_owned();
+    let (reached, release) = (
+        format!("reached-{}", uuid::Uuid::new_v4().simple()),
+        format!("release-{}", uuid::Uuid::new_v4().simple()),
+    );
     let app = w.app.clone();
     let author = w.users[1].clone();
     let retry_payload = payload.clone();
-    // The retry passes the pre-check (nothing is stored yet), then waits up to a second at the
-    // test gate, which nobody notifies.
+    let (retry_reached, retry_release) = (reached.clone(), release.clone());
     let retry = tokio::spawn(async move {
         send_with_fallback(
             &app,
             &author,
             "/api/messages",
             retry_payload,
-            &[("X-Test-Gate-Wait", "never-notified")],
+            &[
+                ("X-Test-Gate-Wait", retry_release.as_str()),
+                ("X-Test-Gate-Reached", retry_reached.as_str()),
+                ("X-Test-Gate-Wait-Ms", "20000"),
+            ],
         )
         .await
     });
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // The retry has passed its first idempotency check (nothing was stored yet) and waits.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        backend::routes::messages::test_gate(&reached).notified(),
+    )
+    .await?;
     ok(
         &w.app,
         &w.users[1],
@@ -297,11 +313,12 @@ async fn a_retry_that_waited_for_the_lock_returns_the_stored_post() -> anyhow::R
         json!({}),
     )
     .await?;
+    // Both are committed: let the retry go on to the thread lock.
+    backend::routes::messages::test_gate(&release).notify_one();
     let (status, body, fallback) = retry.await??;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["id"], id);
-    // The answer came from the gate's recheck, not from the ordinary path (a slow machine could
-    // otherwise let the retry through before the leave and still answer 200).
+    // The answer came from the gate's recheck, not from the ordinary path.
     assert_eq!(fallback.as_deref(), Some("thread-join-retry"));
     // The leave stays: returning the stored post is not a new reply.
     assert_eq!(w.thread(&w.users[1], &root).await?["membership"], "left");

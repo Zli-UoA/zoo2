@@ -404,6 +404,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 encryption.send(channel, platform.uuid(), parent, content)
                 true
             } catch (failure: CancellationException) { throw failure }
+            catch (failure: ApiException) {
+                // 暗号化チャンネルでも、参加が必要なスレッドへの返信は、参加を案内する。
+                toast = t(if (parent != null && failure.requiresThreadJoin) "threads.joinToReply" else "common.writeError")
+                false
+            }
             catch (failure: Exception) {
                 toast = t(failure.message?.takeIf { it.startsWith("e2ee.") } ?: "common.writeError")
                 false

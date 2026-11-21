@@ -226,6 +226,24 @@ fn get_or_create_test_gate(key: &str) -> Arc<Notify> {
         .clone()
 }
 
+/// The test gate of `key`, for a test that runs the router in its own process: it waits for a
+/// request to reach a gate (`TestGate::reached`) and releases one that waits (`TestGate::wait`).
+#[doc(hidden)]
+pub fn test_gate(key: &str) -> Arc<Notify> {
+    get_or_create_test_gate(key)
+}
+
+/// A request that pauses after its first idempotency check (development authentication only).
+/// `X-Test-Gate-Wait` names the gate it waits at; `X-Test-Gate-Reached` names a gate it signals on
+/// arriving (a permit, so a test that looks later still sees it); `X-Test-Gate-Wait-Ms` is how long
+/// it waits at most (default 1000). A test that needs an exact order releases the gate itself and
+/// uses the timeout only so that it cannot hang.
+pub(crate) struct TestGate {
+    wait: String,
+    reached: Option<String>,
+    timeout_ms: u64,
+}
+
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -242,10 +260,14 @@ async fn create_message(
         None
     };
     let test_gate_wait = if state.config.dev_auth_enabled {
-        headers
-            .get("X-Test-Gate-Wait")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        header("X-Test-Gate-Wait").map(|wait| TestGate {
+            wait: wait.to_string(),
+            reached: header("X-Test-Gate-Reached").map(str::to_string),
+            timeout_ms: header("X-Test-Gate-Wait-Ms")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .map_or(1000, |ms| ms.min(30_000)),
+        })
     } else {
         None
     };
@@ -431,7 +453,7 @@ pub(crate) async fn create_message_impl(
     notify: bool,
     components: Option<String>,
     test_delay_ms: Option<u64>,
-    test_gate_wait: Option<String>,
+    test_gate_wait: Option<TestGate>,
     test_gate_notify: Option<String>,
 ) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
@@ -613,10 +635,16 @@ pub(crate) async fn create_message_impl(
         }
     }
 
-    if let Some(gate_key) = test_gate_wait {
-        let gate = get_or_create_test_gate(&gate_key);
-        let _ =
-            tokio::time::timeout(tokio::time::Duration::from_millis(1000), gate.notified()).await;
+    if let Some(test_gate) = test_gate_wait {
+        if let Some(reached) = &test_gate.reached {
+            get_or_create_test_gate(reached).notify_one();
+        }
+        let gate = get_or_create_test_gate(&test_gate.wait);
+        let _ = tokio::time::timeout(
+            tokio::time::Duration::from_millis(test_gate.timeout_ms),
+            gate.notified(),
+        )
+        .await;
     }
 
     if let Some(delay_ms) = test_delay_ms {

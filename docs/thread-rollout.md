@@ -115,7 +115,7 @@ TUIを除く対応版が配布済みであることを確認してからマー�
 - `backend/tests/thread_participation_test.rs`: 参加と閲覧権限の分離、手動参加・退出、再Open、参加者一覧、退出者の返信は参加し直すまで403、Home返信は返信と同時に再参加、再送、非公開権限。
 - `backend/tests/thread_reply_gate_test.rs`: 返信ゲート。最初の返信は参加なしで通り、参加行ができる。返信がまだないメッセージにも参加でき、参加だけではスレッド一覧に出ず、参加後は親投稿者も参加が要る。一度も参加していないメンバーは `THREAD_JOIN_REQUIRED`（403）で、参加すれば通る。ロック待ちの間に保存された同じIDの再送は、保存済みの投稿を返して再参加しない。Apps APIのbotは対象外。チャンネルを退出した参加者は一覧と人数に載らない。`participants=none` は、人数と一覧を省いて `tracked` を返す。投稿権限は参加の確認より先で、管理者のみ投稿できるチャンネルの非管理者は、参加しているかによらず `POSTING_RESTRICTED` になる。参加して退出しただけでも `tracked` は true のまま。無効化したユーザーは一覧と人数に載らない。ゲストも同じにゲートを受ける。段階移行の途中（`collecting`・`normalizing`）でも同じに働く。ロック待ちの再送は、開発用のヘッダー `X-Test-Fallback` で、ゲートの再確認の分岐を通ったことを確かめる。
 - `backend/tests/e2ee_channels_test.rs`: 暗号化チャンネルの返信にもゲートが効く。
-- `backend/tests/thread_participants_scale_test.rs`: 参加者一覧SQL・返信ゲートSQL・`tracked` だけを返すSQL（`?participants=none`）を、ユーザー30万・100万、参加者50・10,000・空・全員退出で、custom/genericの計画ごとに測る（Seq Scanなし、走査行数と論理ブロックの上限）。`infra/db/compare-thread-participants-work.py`（32件）が30万→100万の増加を確かめる。CIは `ci-read-state-worker-budget.yaml` の追加ステップで実行する。
+- `backend/tests/thread_participants_scale_test.rs`: 参加者一覧SQL・返信ゲートSQL・`tracked` だけを返すSQL（`?participants=none`）を、ユーザー30万・100万、参加者50・10,000・空・全員退出・退出済みが大半（10,000件中9,500件が退出）で、custom/genericの計画ごとに測る（Seq Scanなし、走査行数と論理ブロックの上限）。`infra/db/compare-thread-participants-work.py`（40件）が30万→100万の増加を確かめる。CIは `ci-read-state-worker-budget.yaml` の追加ステップで実行する。
 - `backend/tests/thread_migration_test.rs`: 実スキーマでcollectingから段階移行、移行中投稿、元親保持、退出維持、再実行、イベント抑止、Home、履歴取り込み。
 - 既存threads/archive統合テスト、Reactの一覧・参加状態単体テスト、ツリー遷移ブラウザーテスト、ThreadPaneのStorybook操作・a11y、`make tui-check`。
 - schema.sqlから作ったDBと全マイグレーションから作ったDBを比較する。ER図はAtlas 1.3.0で生成する。

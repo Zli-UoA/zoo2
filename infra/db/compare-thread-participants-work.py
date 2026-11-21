@@ -7,7 +7,7 @@ small = json.loads((Path(sys.argv[1]) / 'work.json').read_text())
 large = json.loads((Path(sys.argv[2]) / 'work.json').read_text())
 small.pop('timing_ms', None)
 large.pop('timing_ms', None)
-assert small.keys() == large.keys() and len(small) == 32, 'missing query conditions'
+assert small.keys() == large.keys() and len(small) == 40, 'missing query conditions'
 for name, before in sorted(small.items()):
     after = large[name]
     for relation in before['relations'].keys() | after['relations'].keys():

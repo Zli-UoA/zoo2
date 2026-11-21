@@ -165,16 +165,22 @@ it("keeps the participant fields when a write answers without them", async () =>
   expect(fixture.api.get).toHaveBeenCalledTimes(1);
 });
 
-it("recognises the 403 that asks for a join, by its code, and no other error", () => {
+it("recognises the 403 that asks for a join: the code first, the old message only without a code", () => {
   const forbidden = (body: unknown) => new ApiError(403, "forbidden", body);
+  // The code wins, whatever the message says.
   expect(isThreadJoinRequired(forbidden({ error: "any text", code: "THREAD_JOIN_REQUIRED" }))).toBe(
     true,
   );
+  expect(
+    isThreadJoinRequired(forbidden({ error: "Join the thread before replying", code: "OTHER" })),
+  ).toBe(false);
+  // A server from before the code existed answers with the message only.
+  expect(isThreadJoinRequired(forbidden({ error: "Join the thread before replying" }))).toBe(true);
   // A posting restriction (or any other 403) is not cured by a join.
   expect(isThreadJoinRequired(forbidden({ error: "Only channel managers may post here" }))).toBe(
     false,
   );
-  expect(isThreadJoinRequired(forbidden({ code: "OTHER" }))).toBe(false);
+  expect(isThreadJoinRequired(forbidden({ code: "POSTING_RESTRICTED" }))).toBe(false);
   expect(isThreadJoinRequired(new ApiError(409, "x", { code: "THREAD_JOIN_REQUIRED" }))).toBe(
     false,
   );

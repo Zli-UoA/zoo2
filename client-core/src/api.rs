@@ -480,8 +480,10 @@ impl ApiClient {
     }
 
     /// スレッドへの返信を送る。参加行があるスレッドへ未参加・退出済みのまま送ると 403 になる
-    /// （[`crate::http::is_thread_join_required`]）ので、そのときだけ、アーカイブ済みなら再Openし、
-    /// 参加して、同じ ID で一度だけ送り直す。ほかの失敗はそのまま返す。
+    /// （[`crate::http::is_thread_join_required`]）ので、そのときだけ、参加して、同じ ID で一度だけ
+    /// 送り直す。アーカイブ済みのスレッドは、参加が 409 になるので、そのときだけ先に再Openして
+    /// 参加し直す（再Openは投稿権限も確かめるので、開いているスレッドでは呼ばない）。ほかの失敗は
+    /// そのまま返す。
     pub async fn send_reply_rejoining(
         &self,
         id: &str,
@@ -501,8 +503,15 @@ impl ApiClient {
             .await
         {
             Err(err) if crate::http::is_thread_join_required(&err) => {
-                self.unarchive_thread(parent_id).await?;
-                self.join_thread(parent_id).await?;
+                if let Err(join_err) = self.join_thread(parent_id).await {
+                    if crate::http::ApiError::status_of(&join_err)
+                        != Some(reqwest::StatusCode::CONFLICT)
+                    {
+                        return Err(join_err);
+                    }
+                    self.unarchive_thread(parent_id).await?;
+                    self.join_thread(parent_id).await?;
+                }
                 self.send_message_resolved(id, channel_id, content, Some(parent_id), attachment_ids)
                     .await
             }
@@ -1138,20 +1147,80 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        for action in ["unarchive", "join"] {
-            Mock::given(method("POST"))
-                .and(path(format!("/api/threads/root/{action}")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
-                .expect(1)
-                .mount(&server)
-                .await;
-        }
+        // An open thread needs the join only: no reopen (which also checks the posting permission).
+        Mock::given(method("POST"))
+            .and(path("/api/threads/root/join"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/root/unarchive"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
+            .expect(0)
+            .mount(&server)
+            .await;
         let (txid, parent) = client(&server)
             .send_reply_rejoining("m1", "c1", "hi", "root", None)
             .await
             .unwrap();
         assert_eq!(txid.as_deref(), Some("7"));
         assert_eq!(parent.as_deref(), Some("root"));
+    }
+
+    /// 参加がアーカイブ済みを理由に 409 になったときだけ、先に再Openして、参加し直す。
+    #[tokio::test]
+    async fn an_archived_thread_is_reopened_only_after_the_join_is_refused() {
+        let server = MockServer::start().await;
+        let body_with_id =
+            || wiremock::matchers::body_partial_json(json!({"id":"m1","parent_id":"root"}));
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .and(body_with_id())
+            .respond_with(ResponseTemplate::new(403).set_body_json(
+                json!({"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}),
+            ))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .and(body_with_id())
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"data":{"id":"m1","parent_id":"root"},"txid":"8"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/root/join"))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .set_body_json(json!({"error":"Reopen the thread before joining"})),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/root/unarchive"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/root/join"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (txid, _) = client(&server)
+            .send_reply_rejoining("m1", "c1", "hi", "root", None)
+            .await
+            .unwrap();
+        assert_eq!(txid.as_deref(), Some("8"));
     }
 
     #[tokio::test]
