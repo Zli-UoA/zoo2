@@ -240,6 +240,13 @@ class GlobalSearchUiTest {
             ui.onNodeWithText("ファイル").assertIsSelected()
             // The screen's own replace (URL-encoded) does not start another request.
             assertEquals(2, fixture.requests.size, fixture.requests.toString())
+            // A route without `q` is an empty query: the previous text and results go.
+            ui.runOnIdle { fixture.app.update(fixture.app.env.copy(path = "/search?type=files")) }
+            ui.waitUntil(5_000) { fixture.controller.query.isEmpty() }
+            ui.waitForIdle()
+            ui.onNode(hasSetTextAction() and hasText("資料"), useUnmergedTree = true).assertDoesNotExist()
+            ui.onAllNodesWithTag("global-search-result").assertCountEquals(0)
+            assertEquals(2, fixture.requests.size, fixture.requests.toString())
         } finally { fixture.close() }
     }
 

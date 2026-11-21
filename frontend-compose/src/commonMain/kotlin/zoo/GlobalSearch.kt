@@ -38,8 +38,12 @@ fun GlobalSearchScreen(
     // and the loaded pages stay.
     val routeQuery = app.query["q"]
     val routeType = app.query["type"]?.let(GlobalSearchType::from)
+    // Only the first visit without `q` restores the previous search (e.g. the search tab). Later, a route
+    // without `q` means an empty query (`globalSearchPath` omits `q` for it).
+    val restored = remember { BooleanArray(1) }
     LaunchedEffect(controller, routeQuery, routeType) {
-        val query = routeQuery ?: controller.query
+        val query = routeQuery ?: if (restored[0]) "" else controller.query
+        restored[0] = true
         if (query.trim() != text.trim()) text = query
         controller.search(query, routeType ?: controller.type)
     }
