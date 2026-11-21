@@ -477,7 +477,16 @@ SET session_replication_role = DEFAULT;
     // まれな語は、今月の削除されていない 1 行だけに当たる（0 件の計測にならない）。
     {
         let uri = "/api/search?q=%E3%83%AC%E3%82%A2%E8%AA%9E"; // レア語
-        let response = app.clone().oneshot(Request::builder().uri(uri).header("X-Dev-User", ACTOR).body(Body::empty()).unwrap()).await?;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("X-Dev-User", ACTOR)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await?;
         let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await?)?;
         assert_eq!(body["items"].as_array().map(Vec::len), Some(1), "{body}");
     }
@@ -485,7 +494,8 @@ SET session_replication_role = DEFAULT;
     for concurrency in [1, 8] {
         let mut tasks = Vec::new();
         for _ in 0..concurrency {
-            let (app, metrics) = (app.clone(), api_metrics.clone());
+            let (app, metrics, oldest_month) =
+                (app.clone(), api_metrics.clone(), oldest_month.clone());
             tasks.push(tokio::spawn(async move {
                 for _ in 0..30 {
                     for (name, uri) in api {
