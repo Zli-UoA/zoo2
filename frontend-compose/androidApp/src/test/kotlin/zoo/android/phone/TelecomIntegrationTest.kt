@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.pm.ServiceInfo
 import android.content.Intent
 import android.media.ToneGenerator
+import androidx.compose.runtime.snapshots.Snapshot
 import android.telecom.CallAudioState
 import android.telecom.Connection
 import io.ktor.client.HttpClient
@@ -79,10 +80,15 @@ class TelecomIntegrationTest {
 
         fun activePictureInPictureIntent(): Intent {
             val call = PhoneCall("active-call", "dm", "target-dm", "Bob", "active")
-            ReflectionHelpers.callInstanceMethod<Unit>(host.controller, "setCall",
-                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            setCall(call)
             return Intent(context, PhonePictureInPictureActivity::class.java)
                 .putExtra(PHONE_SESSION, host.token).putExtra(PHONE_CALL, call.id)
+        }
+
+        fun setCall(call: PhoneCall) {
+            ReflectionHelpers.callInstanceMethod<Unit>(host.controller, "setCall",
+                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            Snapshot.sendApplyNotifications()
         }
 
         override fun close() {
@@ -311,19 +317,71 @@ class TelecomIntegrationTest {
         override fun incomingUi(id: String) { calls.add("incoming:$id") }
         override fun audio(id: String, speaker: Boolean, muted: Boolean?) { calls.add("audio:$speaker:$muted"); if (muted != null) appMuted = muted }
     }
-    @Test fun selfManagedOutgoingCallPlaysRingbackWithoutAskingTelecom() = runTest {
+    @Implements(ToneGenerator::class)
+    class RingbackShadow : ShadowToneGenerator() {
+        @Implementation fun release() { releases++ }
+
+        companion object {
+            var releases = 0
+        }
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.startOutgoingService(f: Fixture, kind: String = "dm"): PhoneService {
+        f.host.controller.callDm("target-dm", "Bob")
+        runCurrent()
+        val native = f.host.connection(incoming = false, address = null)
+        assertEquals(Connection.STATE_DIALING, native.state)
+        assertFalse(native.isRingbackRequested)
+        runCurrent()
+        val start = assertNotNull(f.shadow.nextStartedService)
+        if (kind != "dm") f.setCall(assertNotNull(f.host.controller.call).copy(kind = kind))
+        return Robolectric.buildService(PhoneService::class.java).create().get().also {
+            it.onStartCommand(start, 0, 1)
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun outgoingDmRingbackIsReleasedWhenTheCallConnects() = runTest {
         Fixture(backgroundScope).use { f ->
-            f.host.controller.callDm("target-dm", "Bob")
-            runCurrent()
-            val native = f.host.connection(incoming = false, address = null)
-            assertEquals(Connection.STATE_DIALING, native.state)
-            assertFalse(native.isRingbackRequested)
-            runCurrent()
-            val start = assertNotNull(f.shadow.nextStartedService)
-            val service = Robolectric.buildService(PhoneService::class.java).create().get()
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
             try {
-                service.onStartCommand(start, 0, 1)
                 assertEquals(ToneGenerator.TONE_SUP_RINGTONE, ShadowToneGenerator.getPlayedTones().single().type())
+                assertEquals(0, RingbackShadow.releases)
+                f.setCall(assertNotNull(f.host.controller.call).copy(status = "active"))
+                runCurrent()
+                assertEquals(1, RingbackShadow.releases)
+            } finally {
+                f.host.controller.hangup()
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test
+    @Config(shadows = [RingbackShadow::class])
+    fun outgoingDmRingbackIsReleasedWhenDialingEnds() = runTest {
+        Fixture(backgroundScope).use { f ->
+            RingbackShadow.releases = 0
+            val service = startOutgoingService(f)
+            try {
+                assertEquals(0, RingbackShadow.releases)
+                f.host.controller.hangup()
+                assertEquals(1, RingbackShadow.releases)
+            } finally {
+                service.onDestroy()
+                runCurrent()
+            }
+        }
+    }
+
+    @Test fun outgoingSipDoesNotPlayLocalRingback() = runTest {
+        Fixture(backgroundScope).use { f ->
+            val service = startOutgoingService(f, kind = "sip")
+            try {
+                assertTrue(ShadowToneGenerator.getPlayedTones().isEmpty())
             } finally {
                 f.host.controller.hangup()
                 service.onDestroy()

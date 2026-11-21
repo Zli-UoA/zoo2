@@ -223,7 +223,7 @@ internal class AndroidPhoneHost(
     fun audioStarted(instance: PhoneService, id: String) {
         val call = audioCall(id) ?: return
         service = instance
-        if (call.status == "dialing" && ringback == null) {
+        if (call.kind == "dm" && call.status == "dialing" && ringback == null) {
             ringback = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 55) }
                 .getOrNull()?.let { tone ->
                     if (runCatching { tone.startTone(ToneGenerator.TONE_SUP_RINGTONE) }.getOrDefault(false)) tone
