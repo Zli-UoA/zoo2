@@ -12,6 +12,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -22,6 +25,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowDialog
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
@@ -135,12 +139,66 @@ class AndroidSamplesTest {
         ui.onNodeWithText("すべて既読").assertDoesNotExist()
     }
 
-    private fun capture(name: String) {
+    @Test
+    fun opensContextSheetAndSlidesToThreadWithOptionalHaptics() {
+        val root = TimelineItem("root", "はる", "スレッドを試すメッセージ", "12:08")
+        val conversation = AndroidScreen.Conversation("dev", "開発", "テスト用",
+            listOf(root), InputState())
+        val thread = AndroidScreen.Thread("開発", root, emptyList(), InputState())
+        var screen by mutableStateOf<AndroidScreen>(conversation)
+        var haptics by mutableStateOf(false)
+        var dark by mutableStateOf(false)
+        val pulses = mutableListOf<HapticFeedbackType>()
+        val feedback = object : HapticFeedback {
+            override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                pulses.add(hapticFeedbackType)
+            }
+        }
+        ui.setContent {
+            CompositionLocalProvider(LocalHapticFeedback provides feedback) {
+                AndroidScreens(screen, dark, true, dispatch = { action ->
+                    when (action) {
+                        AndroidUiAction.OpenThread(root.id) -> screen = thread
+                        AndroidUiAction.Back -> screen = conversation
+                        else -> Unit
+                    }
+                }, language = "ja", interaction = AndroidInteractionSettings(haptics = haptics)) { _, _ -> }
+            }
+        }
+        val message = ui.onNodeWithTag("timeline-entry-root")
+        message.performTouchInput { longClick() }
+        ui.onNodeWithText("本文をコピー").assertIsDisplayed()
+        capture("message-menu-light", withSheet = true)
+        ui.runOnIdle { dark = true; check(pulses.isEmpty()) }
+        ui.onNodeWithText("本文をコピー").assertIsDisplayed()
+        capture("message-menu-dark", withSheet = true)
+        ui.onNodeWithText("スレッドを開く").performClick()
+        ui.onNodeWithText("スレッド").assertIsDisplayed()
+        ui.onNodeWithContentDescription("戻る").performClick()
+        ui.onNodeWithText("開発").assertIsDisplayed()
+        ui.runOnIdle { haptics = true }
+        ui.waitForIdle()
+        message.performTouchInput { swipeLeft() }
+        ui.onNodeWithText("スレッド").assertIsDisplayed()
+        ui.runOnIdle { check(pulses.size == 1) { "Expected a single threshold pulse: $pulses" } }
+        ui.onNodeWithContentDescription("戻る").performClick()
+        ui.onNodeWithText("開発").assertIsDisplayed()
+    }
+
+    private fun capture(name: String, withSheet: Boolean = false) {
         ui.runOnIdle {
             val view = ui.activity.findViewById<View>(android.R.id.content)
             val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
             try {
-                view.draw(Canvas(bitmap))
+                val canvas = Canvas(bitmap)
+                view.draw(canvas)
+                if (withSheet) {
+                    val sheet = checkNotNull(ShadowDialog.getLatestDialog()?.window?.decorView)
+                    val location = IntArray(2)
+                    sheet.getLocationOnScreen(location)
+                    canvas.translate(location[0].toFloat(), location[1].toFloat())
+                    sheet.draw(canvas)
+                }
                 val out = File("build/reports/android-ui").apply { mkdirs() }
                 out.resolve("$name.png").outputStream().use {
                     check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
