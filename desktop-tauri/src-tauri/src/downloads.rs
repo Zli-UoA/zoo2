@@ -1009,11 +1009,23 @@ fn rename_unique(part: &Path, target: &Path) -> std::io::Result<()> {
 
 /// 「既にあれば失敗する移動」が使えないファイルシステム向けの、上書きしない移動。
 ///
-/// 同じフォルダーなので、まずハードリンクで最終名を原子的に確保する（先にあれば
-/// `AlreadyExists` で失敗する）。ハードリンクも使えないときは、`create_new` で空のファイルを
-/// 作って名前を確保してから、`rename` で中身を入れ替える。
+/// 同じフォルダーなので、ハードリンクで最終名を原子的に確保する（先にあれば
+/// `AlreadyExists` で失敗する）。ハードリンクも使えない保存先では、既存のファイルを
+/// 置き換えずに移す方法がないため、保存を失敗させる。名前を `create_new` で確保してから
+/// `rename` する方法は、確保したファイルを別のアプリが置き換えた場合にそのファイルを
+/// 上書きし、強制終了では 0 バイトのファイルを最終名に残すので使わない。
 fn move_without_replace(part: &Path, target: &Path) -> std::io::Result<()> {
-    match std::fs::hard_link(part, target) {
+    link_without_replace(part, target, |from, to| std::fs::hard_link(from, to))
+}
+
+/// [`move_without_replace`] の本体。テストでハードリンクの失敗を再現できるよう、
+/// リンクを作る関数を受け取る。
+fn link_without_replace(
+    part: &Path,
+    target: &Path,
+    hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match hard_link(part, target) {
         Ok(()) => {
             // 中身は `target` から読める。`.part` は消すだけ。消せなくても保存は成立しているので、
             // 記録に残し、`finish` の後始末と起動時の掃除に任せる。
@@ -1021,22 +1033,10 @@ fn move_without_replace(part: &Path, target: &Path) -> std::io::Result<()> {
             Ok(())
         }
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
-        Err(_) => {
-            // ハードリンクを持たないファイルシステム（FAT32 など）。
-            let reserved = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(target)?;
-            drop(reserved);
-            match std::fs::rename(part, target) {
-                Ok(()) => Ok(()),
-                Err(err) => {
-                    // 自分が確保した空のファイルだけを消す。
-                    let _ = std::fs::remove_file(target);
-                    Err(err)
-                }
-            }
-        }
+        Err(err) => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("この保存先では、既存のファイルを上書きせずに移せません: {err}"),
+        )),
     }
 }
 
@@ -1706,6 +1706,32 @@ mod tests {
         move_without_replace(&part, &target).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         assert!(!part.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn filesystems_without_hard_links_fail_instead_of_overwriting() {
+        let dir = temp_dir();
+        let part = dir.join(".zoo-0123456789abcdef.part");
+        let target = dir.join("x.txt");
+        std::fs::write(&part, b"new").unwrap();
+
+        // ハードリンクを使えない保存先（古い共有フォルダーなど）を再現する。
+        // 名前を確保してから移す方法は使わず、上書きしない保証がないので失敗させる。
+        let err = link_without_replace(&part, &target, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(!target.exists());
+        assert_eq!(std::fs::read(&part).unwrap(), b"new");
+
+        // 既にある場合の `AlreadyExists` は、番号付きの名前で再試行できるようそのまま返す。
+        let err = link_without_replace(&part, &target, |_, _| {
+            Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
