@@ -54,7 +54,7 @@ internal fun PostHeader(author: String, data: PostHeaderData, colors: AndroidCol
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(author, Modifier.weight(1f, fill = false), color = colors.foreground,
-                    fontSize = 16.sp, fontWeight = AndroidWeights.emphasis, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    fontSize = entryTextSize, fontWeight = AndroidWeights.entryAuthor, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 data.handle?.let {
                     Text(it, Modifier.widthIn(max = 72.dp), color = colors.secondary,
                         fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

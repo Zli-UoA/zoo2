@@ -107,7 +107,7 @@ internal fun NotificationPage(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             val author = item.actors.firstOrNull()?.name.orEmpty()
                             Text(if (item.actors.size > 1) "$author ほか" else author, Modifier.weight(1f),
-                                color = colors.foreground, fontWeight = AndroidWeights.userName, maxLines = 1,
+                                color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize, maxLines = 1,
                                 overflow = TextOverflow.Ellipsis)
                             Text(item.time, color = colors.secondary, fontSize = 12.sp)
                             if (item.unread) Box(
@@ -140,7 +140,7 @@ internal fun NotificationPage(
                         }
                     }
                     item.detail?.let {
-                        Text(formatEntry(it), color = colors.foreground, fontSize = 14.sp,
+                        Text(formatEntry(it), color = colors.foreground, fontSize = entryTextSize,
                             maxLines = 3, overflow = TextOverflow.Ellipsis)
                     }
                     item.destination?.let {

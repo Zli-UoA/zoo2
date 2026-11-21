@@ -59,8 +59,9 @@ internal fun TimelineQuoteCard(
         Column(Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
             .clickable(role = Role.Button, onClick = open), verticalArrangement = Arrangement.Center) {
             Text(if (quote.author.isBlank()) "引用元を開く" else "引用 · ${quote.author}",
-                color = colors.secondary, fontSize = 12.sp, fontWeight = AndroidWeights.label)
-            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, 14.sp, quote.emoji, maxLines = 4)
+                color = colors.secondary, fontSize = if (quote.author.isBlank()) 12.sp else entryTextSize,
+                fontWeight = if (quote.author.isBlank()) AndroidWeights.label else AndroidWeights.entryAuthor)
+            if (quote.body.isNotBlank()) EntryBody(quote.body, colors.foreground, entryTextSize, quote.emoji, maxLines = 4)
         }
         quote.media.forEach { media -> TimelineMediaTile(media, colors) { openMedia(media) } }
     }

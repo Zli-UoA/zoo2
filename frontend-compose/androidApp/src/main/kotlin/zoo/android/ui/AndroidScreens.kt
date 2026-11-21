@@ -448,9 +448,6 @@ private fun Timeline(
     loadOlder: (() -> Unit)? = null,
     header: (@Composable () -> Unit)? = null,
 ) {
-    val authorSize = if (posts) 16.sp else 14.sp
-    val authorWeight = if (posts) AndroidWeights.emphasis else AndroidWeights.userName
-    val bodySize = if (posts) 16.sp else 17.sp
     var menuId by remember { mutableStateOf<String?>(null) }
     val scroll = rememberLazyListState()
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
@@ -491,13 +488,13 @@ private fun Timeline(
                         if (posts && entry.postHeader != null) {
                             PostHeader(entry.author, entry.postHeader, colors)
                         } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(entry.author, color = colors.foreground, fontWeight = authorWeight, fontSize = authorSize)
+                            Text(entry.author, color = colors.foreground, fontWeight = AndroidWeights.entryAuthor, fontSize = entryTextSize)
                             Text(entry.time, color = colors.secondary, fontSize = 12.sp)
                         }
                         if (!entry.richContent.hidesBody && entry.body.isNotBlank()) {
-                            EntryBody(entry.body, colors.foreground, bodySize, entry.emoji)
+                            EntryBody(entry.body, colors.foreground, entryTextSize, entry.emoji)
                         }
-                        EntryBlocks(entry.richContent.blocks, colors, bodySize, entry.emoji)
+                        EntryBlocks(entry.richContent.blocks, colors, entryTextSize, entry.emoji)
                         entry.attachments.forEach { (id, name) ->
                             Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                                 .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)

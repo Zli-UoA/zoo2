@@ -15,7 +15,6 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -29,7 +28,7 @@ internal fun EntryActionSheet(
     val scope = rememberCoroutineScope()
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = colors.background) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 16.dp)) {
-            Text(entry.body, color = colors.secondary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(entry.body, color = colors.secondary, fontSize = entryTextSize, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.height(12.dp))
             if (open != null) {
                 SheetAction(

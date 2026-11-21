@@ -49,10 +49,13 @@ internal class AndroidColors(dark: Boolean) {
     val accent = Color(0xffffd400)
 }
 
+internal val entryTextSize = 16.sp
+
 internal object AndroidWeights {
     val body = FontWeight.Normal
     val label = FontWeight.Medium
     val userName = FontWeight.Medium
+    val entryAuthor = FontWeight.SemiBold
     val emphasis = FontWeight.SemiBold
 }
 

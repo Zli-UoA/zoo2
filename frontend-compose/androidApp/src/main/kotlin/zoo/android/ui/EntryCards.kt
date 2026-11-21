@@ -60,7 +60,7 @@ internal fun EntryBlocks(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 if (block.caption.isNotBlank()) Text(entryLabel(block.caption, block.url), color = colors.secondary, fontSize = 12.sp)
-                EntryBlocks(block.blocks, colors, 14.sp, emoji)
+                EntryBlocks(block.blocks, colors, fontSize, emoji)
             }
         }
     }
