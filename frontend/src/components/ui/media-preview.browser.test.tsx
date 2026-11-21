@@ -151,6 +151,9 @@ it("treats keyCode 229 without a recent composition as a normal Enter", async ()
   fireEvent.keyDown(pageInput, { key: "Enter", isComposing: false, keyCode: 229 });
   fireEvent.submit(pageInput.closest("form")!);
   await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+  // 入力欄の値だけではジャンプせずにも通るため、実際に5ページへ移動したことを確認する。
+  fireEvent.click(screen.getByRole("button", { name: "前のページ" }));
+  await waitFor(() => expect(pageInput.value).toBe("4"), { timeout: 10_000 });
 });
 
 it("jumps on Enter even with full-width digits and surrounding spaces", async () => {
@@ -202,6 +205,24 @@ it("discards the draft on a touch tap in the same order as pointerup, blur, clic
   fireEvent.blur(pageInput);
   fireEvent.click(prev);
   await waitFor(() => expect(pageInput.value).toBe("9"), { timeout: 10_000 });
+});
+
+it("keeps the draft when a touch scroll cancels the page-button press", async () => {
+  await page.viewport(1280, 844);
+  render(<MediaPreview src={pdfUrl} name="Report" contentType="application/pdf" initialOpen />);
+  const pageInput = (await screen.findByRole("textbox", {
+    name: "ページ番号",
+  })) as HTMLInputElement;
+  await waitFor(() => expect(pageInput).not.toBeDisabled(), { timeout: 10_000 });
+
+  await userEvent.clear(pageInput);
+  await userEvent.type(pageInput, "5");
+  const next = screen.getByRole("button", { name: "次のページ" });
+  fireEvent.pointerDown(next);
+  fireEvent.pointerCancel(next);
+  fireEvent.blur(pageInput);
+  await waitFor(() => expect(pageInput.value).toBe("5"), { timeout: 10_000 });
+  expect(screen.getByRole("button", { name: "前のページ" })).not.toBeDisabled();
 });
 
 it("resets a stale page-button press when the input regains focus", async () => {

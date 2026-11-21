@@ -19,6 +19,8 @@ type PageSize = { width: number; height: number };
 
 const RENDER_BUFFER_PAGES = 2;
 const PAGE_TIMEOUT_MS = 15_000;
+// 全ページ分の枠を並べるため、ページ数に上限を設ける。
+const MAX_PDF_PREVIEW_PAGES = 1_000;
 
 export function parsePdfPageNumber(raw: string, total: number): number | null {
   if (total < 1) return null;
@@ -131,7 +133,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
   const selectOnRenderRef = useRef(false);
   const dirtyInputRef = useRef(false);
   const composingRef = useRef(false);
-  const compositionEndedAtRef = useRef(0);
+  const compositionEndedRef = useRef(false);
   const lastEnterComposingRef = useRef(false);
   const programmaticScrollTopRef = useRef<number | null>(null);
   const lastAlignedScrollTopRef = useRef<number | null>(null);
@@ -153,6 +155,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
   pageRef.current = page;
 
   const totalPages = document?.numPages ?? 1;
+  const overLimit = totalPages > MAX_PDF_PREVIEW_PAGES;
 
   const keptPages = useMemo(() => {
     const start = Math.max(1, visibleRange.start - RENDER_BUFFER_PAGES);
@@ -432,7 +435,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
 
   // Sequential prioritized page renderer with 15s timeout per active render task.
   useEffect(() => {
-    if (!document) return;
+    if (!document || overLimit) return;
     let cancelled = false;
     let wake: (() => void) | null = null;
     let activePage: number | null = null;
@@ -573,7 +576,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       wake = null;
       resolve?.();
     };
-  }, [document, releasePageProxy]);
+  }, [document, overLimit, releasePageProxy]);
 
   // Wake renderer whenever the active window changes.
   useEffect(() => {
@@ -582,7 +585,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
 
   // Re-align scroll anchor before paint when page slot dimensions settle.
   useLayoutEffect(() => {
-    if (!document) return;
+    if (!document || overLimit) return;
     const container = scrollRef.current;
     const anchor = pendingAnchorRef.current;
     if (anchor !== null && container) {
@@ -610,18 +613,25 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
       }
     }
     measureViewport(false);
-  }, [alignScrollToPage, defaultSize, document, measureViewport, pageSizes]);
+  }, [alignScrollToPage, defaultSize, document, measureViewport, overLimit, pageSizes]);
 
   useEffect(() => {
     const container = scrollRef.current;
     if (!container || !document || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      // ジャンプ中は現在ページを上書きしない。それ以外はリサイズ後の表示へ追従させる。
-      measureViewport(pendingAnchorRef.current === null);
+      const anchor = pendingAnchorRef.current;
+      if (anchor !== null) {
+        // 幅の変化で枠の高さが変わっても、ジャンプ先を基準に整列してから測定する。
+        alignScrollToPage(anchor);
+        measureViewport(false);
+        return;
+      }
+      // ジャンプ中でなければリサイズ後の表示へ追従させる。
+      measureViewport(true);
     });
     observer.observe(container);
     return () => observer.disconnect();
-  }, [document, measureViewport]);
+  }, [alignScrollToPage, document, measureViewport]);
 
   const handleSlotMount = useCallback((pageNumber: number, element: HTMLDivElement) => {
     pageRefs.current.set(pageNumber, element);
@@ -687,6 +697,14 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
     ],
   );
 
+  if (overLimit) {
+    return (
+      <p role="alert" className="py-6 text-center text-sm">
+        {t("attachments.previewLimit")}
+      </p>
+    );
+  }
+
   const loading = !failed && (!document || !primaryReady);
 
   return (
@@ -701,6 +719,9 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           disabled={!document || page <= 1 || failed}
           onPointerDown={() => {
             pageButtonPressRef.current = true;
+          }}
+          onPointerCancel={() => {
+            pageButtonPressRef.current = false;
           }}
           onClick={() => {
             pageButtonPressRef.current = false;
@@ -718,7 +739,7 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
               commitPageInput();
             }
             lastEnterComposingRef.current = false;
-            compositionEndedAtRef.current = 0;
+            compositionEndedRef.current = false;
           }}
         >
           <Input
@@ -734,24 +755,24 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
             className="h-7 w-16 px-1.5 text-center tabular-nums"
             onCompositionStart={() => {
               composingRef.current = true;
-              compositionEndedAtRef.current = 0;
+              compositionEndedRef.current = false;
             }}
             onCompositionEnd={() => {
               composingRef.current = false;
-              compositionEndedAtRef.current = Date.now();
+              compositionEndedRef.current = true;
             }}
             onKeyDown={(event) => {
               justFocusedRef.current = false;
+              // Safari では compositionend が keydown より先に来る。確定直後の keyCode 229 だけを
+              // IME 確定とみなし、Android のソフトキーボードの常時 229 は通常の Enter として扱う。
+              // 時間ではなく次のキー入力で解除するため、端末による遅延の影響を受けない。
+              const justEndedComposition = compositionEndedRef.current;
+              compositionEndedRef.current = false;
               if (event.key === "Enter") {
-                // Safari では compositionend が keydown より先に来る。直後の keyCode 229 だけ
-                // IME 確定とみなし、Android のソフトキーボードの常時 229 は通常の Enter として扱う。
-                const justEndedComposition = Date.now() - compositionEndedAtRef.current < 250;
                 lastEnterComposingRef.current =
                   event.nativeEvent.isComposing ||
                   composingRef.current ||
                   (justEndedComposition && event.nativeEvent.keyCode === 229);
-              } else {
-                compositionEndedAtRef.current = 0;
               }
             }}
             onFocus={(event) => {
@@ -806,6 +827,9 @@ export function PdfPreview({ src, embedded = false }: { src: string; embedded?: 
           disabled={!document || page >= document.numPages || failed}
           onPointerDown={() => {
             pageButtonPressRef.current = true;
+          }}
+          onPointerCancel={() => {
+            pageButtonPressRef.current = false;
           }}
           onClick={() => {
             pageButtonPressRef.current = false;
