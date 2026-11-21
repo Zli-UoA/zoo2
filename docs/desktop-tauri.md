@@ -80,7 +80,7 @@ ShapeEvent ─▶ 1 本のループ
   - 表示中のチャンネルとフォーカスを `zoo_set_focus` で、`zoo://open` を受けたらその画面へ移る。
 - Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。Web は Tauri 版と別にデプロイされるので、一致しないことがある。一致しないときと `zoo_session` が失敗したときは、OIDC のログインへは進まず（Tauri の中では AuthZ への移動を `on_navigation` が止めて既定のブラウザーで開くため、ログインを完了できない）、アプリの更新を案内する画面と再読み込みのボタンを出す。
 - capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言すると `allow-<名前>` の許可が作られ、capabilities でウィンドウごとに許せる。app の manifest があると、Tauri（2.12）は宣言のないコマンドを ACL がないものとして、ハンドラーに渡す前に拒否する。
-  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_set_badge`、`zoo_access_token`、`zoo_notifications_observed`、`zoo_take_call_accept`、`zoo_reauthenticate` と、`zoo://session`、`zoo://open`、`zoo://call-accept` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
+  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_set_badge`、`zoo_access_token`、`zoo_notifications_observed`、`zoo_take_call_accept`、`zoo_reauthenticate`、`zoo_download_settings`、`zoo_set_download_settings`、`zoo_pick_download_directory`、`zoo_download_begin`、`zoo_download_write`、`zoo_download_finish`、`zoo_download_cancel` と、`zoo://session`、`zoo://open`、`zoo://call-accept` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
   - コマンドの中でも、呼び出し元のウィンドウの `UiMode` と URL のオリジンを確かめ、合わなければ `ErrorCode::WrongMode` を返す。
   - 許可したオリジン以外への移動は `on_navigation` で止め、既定のブラウザーで開く。
 - E2EE の再認証：Web の `startReauth` は、Tauri の中では別のウィンドウを開かず、`zoo_reauthenticate` を呼ぶ。Rust 側は `client-core` の `auth/reauth.rs` で、既定のブラウザーで `max_age=0` の認可リクエストを開き、ループバックのリダイレクト（`http://127.0.0.1:<空いているポート>/callback`）で受け取った ID トークンを返す。wry は新しいウィンドウのハンドラーがないとウィンドウを作らず、アプリの WebView ではパスキー（AuthZ が再認証として認める唯一のログイン）も使えないため（`docs/e2ee.md` のクロス署名の API の【決定】）。受け取ったらメインのウィンドウを前に出す。新しく始めたら、待っている前の再認証は取り消す（`ErrorCode::Cancelled`）。時間切れは `ErrorCode::Timeout`、AuthZ の拒否と ID トークンの不一致は `ErrorCode::Rejected` で返し、Web は `ReauthError` に変える。
@@ -99,6 +99,23 @@ ShapeEvent ─▶ 1 本のループ
 - Linux では通知に action を付け、専用のスレッドで `wait_for_action` を待つ。クリックされたら、ウィンドウを前に出して `zoo://open` を送る。
 - macOS では通知を出すだけで、クリックには対応しない（後続の項目）。
 - **未読バッジ**: React が `useUnifiedNotifications().unreadCount`（チャンネルと ActivityPub の未読から重複を引いた数）を `zoo_set_badge` で渡し、Rust 側が `set_badge_count` で Dock やランチャーのアイコンに出す。`0` 以下で消す。Rust 側のストアには ActivityPub の分がないので、数は React から受け取る。コマンドは同期にし、IPC の到着順は保証されないので、WebView 側が前の呼び出しの完了を待ってから次を送る（待つ間の値は最後の 1 つだけ送る）。ログアウトや期限切れ（`follow_session`）では Rust 側でも消す。macOS の Dock では表示される。Linux では、libunity が入っていて `com.canonical.Unity.LauncherEntry` を実装するドックが動いているときだけ出る（素の GNOME では出ない）。デスクトップファイル名が `zoo2.desktop`（`productName`）と一致することも要る。Windows は `set_badge_count` 非対応のため出ない。古い版のアプリにはこのコマンドがないので、Web 側は呼べなくても何もしない（`PROTOCOL_VERSION` は上げない）。PWA では、同じ未読数を `navigator.setAppBadge` で出す（`AppBadgeBridge`）。アプリを閉じている間の更新はしない（サーバーの push に未読数がないため）。
+
+## 添付の保存
+
+デスクトップ版では、WebView（wry / WebView2 / WKWebView / WebKitGTK）の既定のダウンロードを使わない。既定では保存先を WebView が決めてしまい、保存ダイアログが出ず、進捗と中止も取れない。さらに E2EE の添付は復号した `Blob` を保存するので、署名付き URL のダウンロードとは経路が違う。代わりに、React が本文を読みながら Rust 側のコマンドへ渡し、Rust 側が保存先の決定・書き込み・置き換え・中止を受け持つ。
+
+- `zoo_download_settings` / `zoo_set_download_settings`：保存先の設定。`{ ask_every_time, directory }` を `config_dir_for("zoo2-desktop-tauri")/downloads.json` に保存する（通知の `notifications.json` と同じく、同じディレクトリの一時ファイルから `rename` する）。既定は `ask_every_time: true`（保存のたびに OS の「名前を付けて保存」を出す）。`directory` は画面に出すための絶対パスで、保存先の決定に JS から受け取った値は使わない。`zoo_set_download_settings` は絶対パスか、フォルダーとして使えるかを確かめてから保存する。
+- `zoo_pick_download_directory`：OS のフォルダーの選択ダイアログ。キャンセルは `null`。
+- `zoo_download_begin`：`{ file_name }` を受け取り、保存ダイアログ（`ask_every_time` がオンのとき）または設定のフォルダーから保存先を決める。`{ status: "started", id, path }` か `{ status: "cancelled" }` を返す。`file_name` は Rust 側で sanitize する（パスの区切り、Windows が使えない文字、`CON` などの予約名、双方向の制御文字、長すぎる名前）。決まったフォルダーへ保存するときは、既にある名前を避けて `name (1).pdf` のようにする。
+- `zoo_download_write`：octet-stream の本文を、`x-zoo-download-id` ヘッダーの ID に追記する。React は 256 KiB ずつ送る。
+- `zoo_download_finish`：書き終えたら `.part` を本来の名前に置き換える。決まったフォルダーへの保存では上書きせず、`begin` の後に同じ名前のファイルができていれば、番号を足した名前へ移す。
+- `zoo_download_cancel`：途中までの `.part` を消す。中止と失敗のどちらでも呼ぶ。
+
+書き込みは宛先と同じディレクトリの `.<名前>.<id>.part` に対して行い、最後に `rename` する。書きかけのファイルを本来の名前で残さないため。Windows では既にあるファイルへ `rename` できないので、保存ダイアログが上書きを確かめた後に限り、一度削除してから置き換える。アプリを終了したときも `Downloads` の `Drop` で `.part` を消す。
+
+React 側（`frontend/src/lib/desktopDownloads.ts`）は、署名付き URL を `fetch` で読みながら書き込む。最初の応答までに失敗したら URL を取り直して 1 回だけやり直す（`lib/api/attachments.ts` と同じ）。進捗は添付の ID ごとのモジュールのストアに置き、仮想スクロールで行が外れても保存を続ける。円状のボタン（`DownloadProgressButton`）は、書き込み中は `strokeDasharray` / `strokeDashoffset` で進み具合を出し、100% で円を閉じる。円を押すと中止し、ホバー時とキーボードで選んだときは中心に停止の四角を出す。E2EE の添付は復号した `Blob` を同じ書き込み先へ流し、取得・復号を全体の 8 割、書き込みを残り 2 割として出す。
+
+古い版のアプリにはこれらのコマンドがない。`zoo_download_settings` が失敗したら、React は従来のブラウザーの保存（`<a download>`）に戻す（`PROTOCOL_VERSION` は上げない）。設定画面の「ダウンロード」の行も、古い版では説明だけを出す。
 
 ## 常駐、単一インスタンス
 

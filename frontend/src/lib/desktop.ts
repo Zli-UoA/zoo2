@@ -12,8 +12,10 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 1;
 
+type InvokeOptions = { headers?: Record<string, string> };
+
 type TauriInternals = {
-  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+  invoke: (cmd: string, args?: unknown, options?: InvokeOptions) => Promise<unknown>;
   transformCallback: (callback: (payload: unknown) => void, once?: boolean) => number;
 };
 
@@ -174,6 +176,71 @@ export async function desktopNotificationSettings(): Promise<DesktopNotification
 /** アプリの通知のオン・オフを変える。Rust 側が保存する。 */
 export async function desktopSetNotifications(enabled: boolean): Promise<void> {
   await invoke("zoo_set_notifications", { settings: { enabled } });
+}
+
+/** 添付を保存するときの設定。`directory` は画面に出すための絶対パスで、保存先の決定には送らない。 */
+export type DesktopDownloadSettings = {
+  ask_every_time: boolean;
+  directory: string | null;
+};
+
+/** `zoo_download_begin` の結果。`path` は保存する場所（画面に出すためだけ）。 */
+export type DesktopDownloadStart =
+  | { status: "started"; id: string; path: string }
+  | { status: "cancelled" };
+
+/**
+ * 添付の保存の設定を読む。古い版のアプリにはこのコマンドがないので、呼べなかったら null
+ * （画面はブラウザーの保存に戻す）。
+ */
+export async function desktopDownloadSettings(): Promise<DesktopDownloadSettings | null> {
+  try {
+    return await invoke<DesktopDownloadSettings>("zoo_download_settings");
+  } catch {
+    return null;
+  }
+}
+
+/** 保存先を変える。Rust 側が確かめて保存し、正規化した設定を返す。 */
+export async function desktopSetDownloadSettings(
+  settings: DesktopDownloadSettings,
+): Promise<DesktopDownloadSettings> {
+  return invoke<DesktopDownloadSettings>("zoo_set_download_settings", { settings });
+}
+
+/** OS のフォルダーの選択。閉じられたら null。 */
+export async function desktopPickDownloadDirectory(): Promise<string | null> {
+  return (await invoke<string | null>("zoo_pick_download_directory")) ?? null;
+}
+
+/** OS の保存ダイアログを出し、書き込み先を決める。 */
+export async function desktopDownloadBegin(fileName: string): Promise<DesktopDownloadStart> {
+  return invoke<DesktopDownloadStart>("zoo_download_begin", { begin: { file_name: fileName } });
+}
+
+function invokeRaw(
+  cmd: string,
+  body: Uint8Array,
+  headers: Record<string, string>,
+): Promise<unknown> {
+  const bridge = internals();
+  if (!bridge || !isDesktop) return Promise.reject(new Error("デスクトップ版の中ではありません"));
+  return bridge.invoke(cmd, body, { headers });
+}
+
+/** 本文の一部を、書き込み中のファイルに追記する（octet-stream）。 */
+export async function desktopDownloadWrite(id: string, bytes: Uint8Array): Promise<void> {
+  await invokeRaw("zoo_download_write", bytes, { "x-zoo-download-id": id });
+}
+
+/** `.part` を本来の名前に置き換える。 */
+export async function desktopDownloadFinish(id: string): Promise<void> {
+  await invoke("zoo_download_finish", { id });
+}
+
+/** 中止して、途中までのファイルを消す。 */
+export async function desktopDownloadCancel(id: string): Promise<void> {
+  await invoke("zoo_download_cancel", { id });
 }
 
 /** 着信のトーストの「応答」を押した、と Rust 側が知らせるイベント（中身なし）。印は `desktopTakeCallAccept` で取る。 */

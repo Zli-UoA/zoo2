@@ -163,6 +163,13 @@ const REMOTE_COMMANDS: &[&str] = &[
     command::NOTIFICATIONS_OBSERVED,
     command::TAKE_CALL_ACCEPT,
     command::REAUTHENTICATE,
+    command::DOWNLOAD_SETTINGS,
+    command::SET_DOWNLOAD_SETTINGS,
+    command::PICK_DOWNLOAD_DIRECTORY,
+    command::DOWNLOAD_BEGIN,
+    command::DOWNLOAD_WRITE,
+    command::DOWNLOAD_FINISH,
+    command::DOWNLOAD_CANCEL,
 ];
 
 /// (b) のときだけ、リモートのオリジンに IPC を許す capability を足す。

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-download-write"
+description = "Enables the zoo_download_write command without any pre-configured scope."
+commands.allow = ["zoo_download_write"]
+
+[[permission]]
+identifier = "deny-zoo-download-write"
+description = "Denies the zoo_download_write command without any pre-configured scope."
+commands.deny = ["zoo_download_write"]

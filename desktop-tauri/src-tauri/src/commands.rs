@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use tauri::{State, Webview};
+use tauri::{AppHandle, State, Webview};
 use zoo2_client_types::{
     ipc::{
-        AccessToken, DeviceLogin, ErrorCode, FocusState, InvokeAppAction, IpcError,
-        NotificationSettings, ObservedNotifications, OpenChannel, SendMessage, SendResult,
-        SessionInfo, UiMode,
+        AccessToken, DOWNLOAD_ID_HEADER, DeviceLogin, DownloadBegin, DownloadSettings,
+        DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError, NotificationSettings,
+        ObservedNotifications, OpenChannel, SendMessage, SendResult, SessionInfo, UiMode,
     },
     shape::ShapeId,
 };
@@ -234,4 +234,110 @@ pub async fn zoo_account_profiles(
     require(&webview, &core, BUNDLED)?;
     leptos_only(&core)?;
     core.api().await?.account_profiles().await.map_err(to_ipc)
+}
+
+/// 添付の保存先の設定。古い版のアプリにはない。
+#[tauri::command]
+pub async fn zoo_download_settings(
+    webview: Webview,
+    core: Core_<'_>,
+) -> Result<DownloadSettings, IpcError> {
+    require(&webview, &core, ANY)?;
+    Ok(core.downloads().settings())
+}
+
+#[tauri::command]
+pub async fn zoo_set_download_settings(
+    webview: Webview,
+    core: Core_<'_>,
+    settings: DownloadSettings,
+) -> Result<DownloadSettings, IpcError> {
+    require(&webview, &core, ANY)?;
+    core.downloads().set_settings(settings).map_err(to_ipc)
+}
+
+/// OS のフォルダーの選択。選ばれた絶対パス（文字列）か `null`。
+#[tauri::command]
+pub async fn zoo_pick_download_directory(
+    webview: Webview,
+    core: Core_<'_>,
+    app: AppHandle,
+) -> Result<Option<String>, IpcError> {
+    require(&webview, &core, ANY)?;
+    Ok(crate::downloads::pick_directory(&app)
+        .await
+        .map(|path| path.display().to_string()))
+}
+
+/// 保存ダイアログを出し、書き込み先を決める。利用者が閉じたら `Cancelled`。
+#[tauri::command]
+pub async fn zoo_download_begin(
+    webview: Webview,
+    core: Core_<'_>,
+    app: AppHandle,
+    begin: DownloadBegin,
+) -> Result<DownloadStart, IpcError> {
+    require(&webview, &core, ANY)?;
+    match core
+        .downloads()
+        .begin(&app, &begin.file_name)
+        .await
+        .map_err(to_ipc)?
+    {
+        Some((id, path)) => Ok(DownloadStart::Started {
+            id,
+            path: path.display().to_string(),
+        }),
+        None => Ok(DownloadStart::Cancelled),
+    }
+}
+
+/// 本文（octet-stream）を、`x-zoo-download-id` のダウンロードに追記する。
+#[tauri::command]
+pub async fn zoo_download_write(
+    webview: Webview,
+    core: Core_<'_>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), IpcError> {
+    require(&webview, &core, ANY)?;
+    let id = request
+        .headers()
+        .get(DOWNLOAD_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| IpcError::new(ErrorCode::Internal, "ダウンロードの ID がありません"))?;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes,
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err(IpcError::new(
+                ErrorCode::Internal,
+                "本文がバイト列ではありません",
+            ));
+        }
+    };
+    core.downloads().write(id, bytes).map_err(to_ipc)
+}
+
+/// 書き終えたら、`.part` を本来の名前に置き換える。
+#[tauri::command]
+pub async fn zoo_download_finish(
+    webview: Webview,
+    core: Core_<'_>,
+    id: String,
+) -> Result<(), IpcError> {
+    require(&webview, &core, ANY)?;
+    core.downloads().finish(&id).map_err(to_ipc)?;
+    Ok(())
+}
+
+/// 中止して、途中までのファイルを消す。
+#[tauri::command]
+pub async fn zoo_download_cancel(
+    webview: Webview,
+    core: Core_<'_>,
+    id: String,
+) -> Result<(), IpcError> {
+    require(&webview, &core, ANY)?;
+    core.downloads().cancel(&id);
+    Ok(())
 }

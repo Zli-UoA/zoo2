@@ -257,6 +257,9 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
+    "downloading": "내려받는 중",
+    "cancelDownload": "{{name}} 내려받기 취소",
+    "cancelDownloadShort": "취소",
     "retry": "다시 시도",
     "sensitive": "민감한 화상",
     "markSensitive": "화상을 민감한 내용으로 표시",
@@ -470,6 +473,15 @@
     "desktopTitle": "알림",
     "desktopValue": "체계 알림",
     "desktopDescription": "언급과 DM을 앱이 체계 알림으로 알려줍니다. 체계 설정에서 zoo2 알림을 꺼두었다면 그쪽도 켜주십시오."
+  },
+  "downloads": {
+    "desktopTitle": "내려받기",
+    "desktopDescription": "첨부 파일을 보관할 위치입니다. 내려받을 때마다 위치를 확인하거나, 미리 정한 폴더에 보관할 수 있습니다.",
+    "askEveryTime": "내려받을 때마다 확인",
+    "defaultDirectory": "내려받기 폴더",
+    "chooseFolder": "폴더 선택",
+    "desktopValue": "체계 보관 대화창",
+    "error": "보관 위치 설정을 바꾸지 못했습니다. 다시 시도해 주십시오."
   },
   "mfm": {
     "suggestions": "MFM 후보",

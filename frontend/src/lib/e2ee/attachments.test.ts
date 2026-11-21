@@ -189,6 +189,42 @@ describe("fetchEncryptedAttachment", () => {
     ).rejects.toBeInstanceOf(EncryptedAttachmentError);
   });
 
+  it("reports ciphertext progress and passes the abort signal", async () => {
+    const encrypted = encryptAttachment(PLAINTEXT);
+    const controller = new AbortController();
+    const requestWithTx = vi.fn();
+    const client = { requestWithTx } as unknown as ApiClient;
+    const fetchImpl = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(new Blob([encrypted.ciphertext as BlobPart]), {
+          headers: { "content-length": String(encrypted.ciphertext.byteLength) },
+        }),
+    );
+    const progress = vi.fn();
+
+    await fetchEncryptedAttachment(
+      client,
+      {
+        attachment_id: "a",
+        name: "secret.txt",
+        mimetype: "text/plain",
+        size: PLAINTEXT.byteLength,
+        file: encrypted.file,
+      },
+      wasmCrypto,
+      fetchImpl as unknown as typeof fetch,
+      async () => "https://storage.example/download",
+      { signal: controller.signal, onProgress: progress },
+    );
+
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
+    expect(progress).toHaveBeenCalledWith(0, encrypted.ciphertext.byteLength);
+    expect(progress).toHaveBeenLastCalledWith(
+      encrypted.ciphertext.byteLength,
+      encrypted.ciphertext.byteLength,
+    );
+  });
+
   it("gets the signed URL from the given resolver (the shared URL cache)", async () => {
     const encrypted = encryptAttachment(PLAINTEXT);
     const requestWithTx = vi.fn();

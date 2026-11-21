@@ -18,4 +18,11 @@ pub const COMMANDS: &[&str] = &[
     "zoo_notifications_observed",
     "zoo_take_call_accept",
     "zoo_reauthenticate",
+    "zoo_download_settings",
+    "zoo_set_download_settings",
+    "zoo_pick_download_directory",
+    "zoo_download_begin",
+    "zoo_download_write",
+    "zoo_download_finish",
+    "zoo_download_cancel",
 ];

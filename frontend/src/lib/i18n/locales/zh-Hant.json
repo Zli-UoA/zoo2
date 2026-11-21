@@ -257,6 +257,9 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
+    "downloading": "正在下載",
+    "cancelDownload": "取消下載 {{name}}",
+    "cancelDownloadShort": "取消",
     "retry": "重試",
     "sensitive": "敏感圖片",
     "markSensitive": "將圖片標記為敏感內容",
@@ -470,6 +473,15 @@
     "desktopTitle": "通知",
     "desktopValue": "系統通知",
     "desktopDescription": "應用程式會透過系統通知提醒你被提及與收到私訊。若在系統設定中關閉了 zoo2 的通知，請在那裡也將其開啟。"
+  },
+  "downloads": {
+    "desktopTitle": "下載",
+    "desktopDescription": "附件檔案的儲存位置。可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
+    "askEveryTime": "每次儲存時確認",
+    "defaultDirectory": "下載資料夾",
+    "chooseFolder": "選擇資料夾",
+    "desktopValue": "系統儲存對話框",
+    "error": "無法變更下載設定，請再試一次。"
   },
   "mfm": {
     "suggestions": "MFM 候選",

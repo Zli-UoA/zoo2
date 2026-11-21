@@ -3,8 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DESKTOP_PROTOCOL_VERSION,
   desktopAccessToken,
+  desktopDownloadBegin,
+  desktopDownloadCancel,
+  desktopDownloadFinish,
+  desktopDownloadSettings,
+  desktopDownloadWrite,
   desktopNotificationSettings,
+  desktopPickDownloadDirectory,
   desktopSetBadge,
+  desktopSetDownloadSettings,
   desktopSetNotifications,
   desktopTakeCallAccept,
   detectDesktop,
@@ -17,9 +24,11 @@ import { ReauthError, startReauth } from "./e2ee/reauth";
 
 type Internals = { invoke: ReturnType<typeof vi.fn>; transformCallback: ReturnType<typeof vi.fn> };
 
-function install(handler: (cmd: string) => unknown): Internals {
+function install(handler: (cmd: string, args?: unknown, options?: unknown) => unknown): Internals {
   const internals = {
-    invoke: vi.fn(async (cmd: string) => handler(cmd)),
+    invoke: vi.fn(async (cmd: string, args?: unknown, options?: unknown) =>
+      handler(cmd, args, options),
+    ),
     transformCallback: vi.fn(() => 1),
   };
   // unit テストは node で動くので、Tauri の WebView の window を差し込む。
@@ -83,6 +92,70 @@ describe("desktopNotificationSettings", () => {
     });
     await detectDesktop();
     await expect(desktopNotificationSettings()).resolves.toBeNull();
+  });
+});
+
+describe("download commands", () => {
+  it("reads and writes the save location used by the app", async () => {
+    const internals = install((cmd, args) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_download_settings") return { ask_every_time: true, directory: null };
+      if (cmd === "zoo_set_download_settings")
+        return (args as { settings?: unknown }).settings ?? null;
+      if (cmd === "zoo_pick_download_directory") return "C:\\Users\\zoo\\Downloads";
+      return undefined;
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadSettings()).resolves.toEqual({
+      ask_every_time: true,
+      directory: null,
+    });
+    const next = { ask_every_time: false, directory: "C:\\Users\\zoo\\Documents" };
+    await expect(desktopSetDownloadSettings(next)).resolves.toEqual(next);
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_set_download_settings", {
+      settings: next,
+    });
+    await expect(desktopPickDownloadDirectory()).resolves.toBe("C:\\Users\\zoo\\Downloads");
+  });
+
+  it("passes raw bytes and the download id in a header", async () => {
+    const internals = install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_download_begin")
+        return { status: "started", id: "d1", path: "C:\\a\\b.pdf" };
+      return null;
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadBegin("b.pdf")).resolves.toEqual({
+      status: "started",
+      id: "d1",
+      path: "C:\\a\\b.pdf",
+    });
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_begin", {
+      begin: { file_name: "b.pdf" },
+    });
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    await desktopDownloadWrite("d1", bytes);
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_write", bytes, {
+      headers: { "x-zoo-download-id": "d1" },
+    });
+
+    await desktopDownloadFinish("d1");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_finish", { id: "d1" });
+    await desktopDownloadCancel("d1");
+    expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_cancel", { id: "d1" });
+  });
+
+  it("is null when an older app does not have the download commands", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw new Error(`command ${cmd} not found`);
+    });
+    await detectDesktop();
+    await expect(desktopDownloadSettings()).resolves.toBeNull();
   });
 });
 
