@@ -176,6 +176,10 @@ class AndroidSamplesTest {
                     check(answer.left == hangUp.left && answer.right == hangUp.right &&
                         hangUp.top - answer.bottom == 12.dp) { "Incoming call actions should align: $answer / $hangUp" }
                 }
+                if (name == "call-active") {
+                    ui.onNodeWithText("ミュート").assertIsOff()
+                    ui.onNodeWithText("スピーカー").assertIsOff()
+                }
                 if (example is AndroidScreen.Call) {
                     if (example.active) ui.mainClock.advanceTimeBy(150)
                     ui.onNodeWithTag("call-avatar").assertWidthIsEqualTo(88.dp).assertHeightIsEqualTo(88.dp)
