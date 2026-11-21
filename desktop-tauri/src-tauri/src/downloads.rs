@@ -62,38 +62,20 @@ const RESERVED_NAMES: &[&str] = &[
     "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
-/// 確認なしで保存すると、そのまま実行できてしまう拡張子。名前を付けて保存のダイアログに戻す。
-const EXECUTABLE_EXTENSIONS: &[&str] = &[
-    "app",
-    "application",
-    "bat",
-    "cmd",
-    "com",
-    "command",
-    "cpl",
-    "desktop",
-    "exe",
-    "gadget",
-    "hta",
-    "jar",
-    "js",
-    "jse",
-    "lnk",
-    "msc",
-    "msh",
-    "msi",
-    "pif",
-    "ps1",
-    "psd1",
-    "psm1",
-    "reg",
-    "scpt",
-    "scr",
-    "sh",
-    "url",
-    "vbe",
-    "vbs",
-    "wsf",
+/// 確認なしで保存してよい拡張子。開いても、そのまま実行や読み込みに進まない形式だけを並べる。
+/// ここに無い拡張子（`.exe`、`.py`、`.docm`、`.dll` など）と、拡張子の無い名前は、
+/// 保存ダイアログに戻して利用者に確かめる。漏れの少ない許可リストにしておく。
+/// 古い Office 文書（`.doc`、`.xls`、`.ppt`）は VBA を持てるので入れない。マクロを含められない
+/// `.docx` などだけを許可する。
+const AUTO_SAVE_EXTENSIONS: &[&str] = &[
+    // 画像（`.svg` はスクリプトを持てるので入れない）
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "heic", "heif", "tif", "tiff",
+    // 音声・動画
+    "mp3", "m4a", "ogg", "oga", "wav", "flac", "opus", "aac", "mp4", "m4v", "webm", "mov", "mkv",
+    // 文書・テキスト（EPUB は HTML を描画するので入れない）
+    "pdf", "txt", "md", "csv", "tsv", "json", "log", "docx", "xlsx", "pptx", "odt", "ods", "odp",
+    // 圧縮（中身は開くときに利用者が選ぶ）
+    "zip", "7z", "tar", "gz", "bz2", "xz", "zst",
 ];
 
 /// 「既にあれば失敗する移動」を OS が持たないファイルシステムで、確認と移動を直列化する。
@@ -118,27 +100,122 @@ struct Pending {
     failed: Arc<AtomicBool>,
 }
 
+/// クラッシュや強制終了で残る `.part` の記録。保存先がダイアログで選ばれたフォルダーでも、
+/// 次の起動で消せるように、設定ディレクトリの `download_parts.json` に置く。
+struct Journal {
+    /// 記録のファイル。設定ディレクトリが分からないときは `None`（記録はメモリだけ）。
+    /// テストでは一時ディレクトリのパスを渡し、利用者の記録を読み書きしない。
+    file: Option<PathBuf>,
+    /// 書き込み中の `.part`。読み込みは [`Journal::load`]、以後はここが正本。
+    paths: Mutex<Vec<PathBuf>>,
+}
+
+impl Journal {
+    fn load(file: Option<PathBuf>) -> Self {
+        let paths = file
+            .as_deref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+            .map(|paths| paths.into_iter().map(PathBuf::from).collect())
+            .unwrap_or_default();
+        Self {
+            file,
+            paths: Mutex::new(paths),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<PathBuf> {
+        self.paths
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// `.part` を作る前に記録する。書けなければ記録を戻してエラーにする
+    /// （残骸を次の起動で消せないまま、書き込みを始めないため）。
+    fn record(&self, part: &Path) -> Result<()> {
+        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
+        if paths.iter().any(|path| path == part) {
+            return Ok(());
+        }
+        paths.push(part.to_path_buf());
+        if let Err(err) = self.write(&paths) {
+            paths.retain(|path| path != part);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn forget(&self, part: &Path) {
+        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
+        paths.retain(|path| path != part);
+        let _ = self.write(&paths);
+    }
+
+    /// 消せた（または既に無かった）ときだけ記録を外す。消せなかったときは残して、
+    /// 次の起動でもう一度試す（外付けドライブを外した、ウイルス対策が掴んでいるなど）。
+    fn remove_part(&self, part: &Path) {
+        match std::fs::remove_file(part) {
+            Ok(()) => self.forget(part),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => self.forget(part),
+            Err(_) => {}
+        }
+    }
+
+    fn write(&self, paths: &[PathBuf]) -> Result<()> {
+        let Some(path) = self.file.as_deref() else {
+            return Ok(());
+        };
+        if paths.is_empty() {
+            // 記録が無くなったら、ファイルも消す。
+            match std::fs::remove_file(path) {
+                Ok(()) => return Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(err) => return Err(err.into()),
+            }
+        }
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let list: Vec<String> = paths
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect();
+        let tmp = path.with_extension("json.tmp");
+        let written = std::fs::write(&tmp, serde_json::to_vec(&list)?)
+            .and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(err) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
+        Ok(())
+    }
+}
+
 /// 保存先の設定と、書き込み中のもの。
 pub struct Downloads {
     settings: Mutex<DownloadSettings>,
     pending: Mutex<HashMap<String, Pending>>,
     /// 保存の枠。保存ダイアログを待っている間も数え、確定・中止の後始末が終わるまで返さない。
-    slots: Mutex<usize>,
+    slots: Arc<Mutex<usize>>,
     /// 画面の世代。`cancel_all` で進め、保存ダイアログを待っていた `begin` を無効にする。
     generation: AtomicU64,
-    /// クラッシュで残る `.part` の記録。保存先がダイアログで選ばれたフォルダーでも、
-    /// 次の起動で消せるようにする。
-    journal: Arc<Mutex<Vec<PathBuf>>>,
+    /// クラッシュで残る `.part` の記録。
+    journal: Arc<Journal>,
 }
 
 impl Downloads {
     pub fn new() -> Self {
+        Self::with_journal(journal_path())
+    }
+
+    fn with_journal(journal_file: Option<PathBuf>) -> Self {
         Self {
             settings: Mutex::new(load_settings()),
             pending: Mutex::new(HashMap::new()),
-            slots: Mutex::new(0),
+            slots: Arc::new(Mutex::new(0)),
             generation: AtomicU64::new(0),
-            journal: Arc::new(Mutex::new(load_journal())),
+            journal: Arc::new(Journal::load(journal_file)),
         }
     }
 
@@ -146,11 +223,7 @@ impl Downloads {
     /// 記録の読み出しだけをここで行い、ファイルの削除は裏のスレッドで行う。保存先が届かない
     /// 共有フォルダーでも、起動が止まらないようにするため。
     pub fn spawn_stale_part_cleanup(&self) {
-        let stale = self
-            .journal
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
+        let stale = self.journal.snapshot();
         if stale.is_empty() {
             return;
         }
@@ -174,10 +247,9 @@ impl Downloads {
                     Err(_) => {}
                 }
             }
-            let mut journal = journal.lock().unwrap_or_else(PoisonError::into_inner);
-            // 消し終えたものだけを外す。起動の後に始まった保存の記録は残す。
-            journal.retain(|path| !done.contains(path));
-            let _ = write_journal(&journal);
+            for path in done {
+                journal.forget(&path);
+            }
         });
     }
 
@@ -201,17 +273,36 @@ impl Downloads {
         app: &AppHandle,
         update: DownloadSettingsUpdate,
     ) -> Result<DownloadSettings> {
-        let current = self.settings();
-        let mut next = current.clone();
-        next.ask_every_time = update.ask_every_time;
-        if update.reset_directory {
-            next.directory = None;
+        loop {
+            // 確認が要るかは、ダイアログを出す直前の設定で決める。
+            let ask_every_time = self.settings().ask_every_time;
+            let approved = if ask_every_time && !update.ask_every_time {
+                // 確認なしで利用者のフォルダーへ書けるようにする操作なので、OS の確認を出す。
+                confirm_automatic_save(app).await
+            } else {
+                true
+            };
+            // ダイアログを待っている間に保存先や確認の有無が変わっていることがある。
+            // 待つ前の値を書き戻さず、その時点の設定に今回の変更だけを適用する。
+            let mut stored = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
+            if stored.ask_every_time != ask_every_time {
+                // 確認の要否が変わったので、持っている承認は今の設定には使えない。
+                // ロックを持ったままダイアログは出せないので、出し直す。
+                drop(stored);
+                continue;
+            }
+            let mut next = stored.clone();
+            // 承認されなければ、オンのままにする。
+            next.ask_every_time = if approved {
+                update.ask_every_time
+            } else {
+                true
+            };
+            if update.reset_directory {
+                next.directory = None;
+            }
+            return store_settings(&mut stored, next);
         }
-        if current.ask_every_time && !next.ask_every_time && !confirm_automatic_save(app).await {
-            next.ask_every_time = true;
-        }
-        let mut stored = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
-        store_settings(&mut stored, next)
     }
 
     /// OS のフォルダーの選択で決まった保存先を、確かめて保存する。パスは JS から受け取らない。
@@ -239,34 +330,38 @@ impl Downloads {
         let generation = self.generation.load(Ordering::SeqCst);
         let name = sanitize_file_name(&request.file_name);
         let settings = self.settings();
-        let configured = settings.directory.as_deref().map(Path::new);
 
-        // 確認なしの保存でも、そのまま実行できる名前は保存ダイアログに戻す。
+        // 確認なしの保存でも、実行や読み込みに進む形式は保存ダイアログに戻す。
         let ask = settings.ask_every_time || needs_confirmation(&name);
         let (final_path, deduplicate) = if ask {
-            match ask_save_path(app, &name, configured.filter(|dir| dir.is_dir())).await {
+            // ダイアログの初期フォルダーは、無ければダイアログ側が既定に戻す。
+            match ask_save_path(app, &name, settings.directory.as_deref().map(Path::new)).await {
                 Some(path) => (path, false),
                 None => return Ok(None),
             }
         } else {
-            match configured {
-                // 設定したフォルダーが消えている（外付けドライブや同期フォルダーが外れたなど）。
-                // 作り直さず、保存ダイアログに戻して利用者に決めてもらう。
-                Some(dir) if dir.is_dir() => (unique_path(dir, &name), true),
-                Some(_) => match ask_save_path(app, &name, None).await {
+            // フォルダーの確認と空き名の探索はディスクを待つ。届かない共有フォルダーでも、
+            // 非同期ランタイムのワーカーを塞がないように、ブロッキングのタスクへ移す。
+            let configured = settings.directory.clone();
+            let download_dir = app.path().download_dir().ok();
+            let candidate = name.clone();
+            let target = tokio::task::spawn_blocking(move || {
+                auto_save_target(
+                    configured.as_deref().map(Path::new),
+                    download_dir.as_deref(),
+                    &candidate,
+                )
+            })
+            .await
+            .map_err(|err| anyhow!("保存先を決められません: {err}"))?;
+            match target {
+                Some(path) => (path, true),
+                // 設定したフォルダーが消えている（外付けドライブや同期フォルダーが外れたなど）か、
+                // 既定のダウンロードフォルダーが分からない。作り直さず、利用者に決めてもらう。
+                None => match ask_save_path(app, &name, None).await {
                     Some(path) => (path, false),
                     None => return Ok(None),
                 },
-                None => {
-                    // 既定のダウンロードフォルダーが分からない、または無い。どちらもダイアログに戻す。
-                    match app.path().download_dir() {
-                        Ok(dir) if dir.is_dir() => (unique_path(&dir, &name), true),
-                        _ => match ask_save_path(app, &name, None).await {
-                            Some(path) => (path, false),
-                            None => return Ok(None),
-                        },
-                    }
-                }
             }
         };
 
@@ -276,20 +371,46 @@ impl Downloads {
             return Ok(None);
         }
 
-        // 保存ダイアログは既にあるフォルダーを返す。決まったフォルダーの保存も、上の分岐で
-        // フォルダーの存在を確かめてある。ここで `create_dir_all` はしない。
         let id = new_download_id();
         let part = part_path(&final_path, &id);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part)
-            .with_context(|| format!("書き込み用のファイルを作れません: {}", part.display()))?;
+        let journal = Arc::clone(&self.journal);
+        let part_for_task = part.clone();
+        let target_for_task = final_path.clone();
+        let (file, overwrite) = tokio::task::spawn_blocking(move || -> Result<(File, bool)> {
+            // 記録を先に保存する。書けなければ始めない（残骸を次の起動で消せなくしないため）。
+            journal.record(&part_for_task)?;
+            // 保存ダイアログで選ばれた名前が、選んだ時点で既にあったか。あったなら、
+            // ダイアログが上書きを確認して利用者が承認している。転送中にできた同名の
+            // ファイルは、この値が false なので置き換えない（`finish` で別名にする）。
+            let overwrite = !deduplicate && target_for_task.exists();
+            // ダイアログは既にあるフォルダーを返し、決まったフォルダーは上の分岐で存在を
+            // 確かめてある。ここで `create_dir_all` はしない。
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&part_for_task)
+            {
+                Ok(file) => Ok((file, overwrite)),
+                Err(err) => {
+                    journal.forget(&part_for_task);
+                    Err(err).with_context(|| {
+                        format!(
+                            "書き込み用のファイルを作れません: {}",
+                            part_for_task.display()
+                        )
+                    })
+                }
+            }
+        })
+        .await
+        .map_err(|err| anyhow!("書き込み用のファイルを用意できません: {err}"))??;
+
         let entry = Pending {
             file: Arc::new(Mutex::new(Some(file))),
             part: part.clone(),
             final_path: final_path.clone(),
-            deduplicate,
+            // 上書きの承認が無い保存は、確定時に既存のファイルを置き換えない。
+            deduplicate: deduplicate || !overwrite,
             written: Arc::new(AtomicU64::new(0)),
             limit: download_limit(request.size),
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -300,15 +421,17 @@ impl Downloads {
         // 登録と同じロックの中で確かめ、`cancel_all` が取りこぼさないようにする。
         if self.generation.load(Ordering::SeqCst) != generation {
             drop(pending);
-            let mut slot = entry.file.lock().unwrap_or_else(PoisonError::into_inner);
-            slot.take();
-            drop(slot);
-            let _ = std::fs::remove_file(&part);
+            {
+                let mut slot = entry.file.lock().unwrap_or_else(PoisonError::into_inner);
+                slot.take();
+            }
+            let journal = Arc::clone(&self.journal);
+            let part_for_task = part.clone();
+            let _ = tokio::task::spawn_blocking(move || journal.remove_part(&part_for_task)).await;
             return Ok(None);
         }
         pending.insert(id.clone(), entry);
         drop(pending);
-        record_part(&self.journal, &part);
         // 枠は確定・中止の後始末まで、この保存が持つ。
         slot.armed = false;
         Ok(Some((id, final_path)))
@@ -384,10 +507,25 @@ impl Downloads {
             downloads: self,
             armed: true,
         };
+        let journal = Arc::clone(&self.journal);
         let part = entry.part.clone();
-        // `sync_all` と名前の移動はディスクを待つので、IPC のワーカーを塞がない。
-        let result = tokio::task::spawn_blocking(move || finish_entry(entry)).await;
-        forget_part(&self.journal, &part);
+        // `sync_all`、名前の移動、記録の後始末はディスクを待つので、IPC のワーカーを塞がない。
+        let result = tokio::task::spawn_blocking(move || {
+            let result = finish_entry(entry);
+            match result {
+                // 移したので、もう `.part` は無い。記録を外す。
+                Ok(saved) => {
+                    journal.forget(&part);
+                    Ok(saved)
+                }
+                // 消せたことを確かめてから記録を外す（`remove_part`）。
+                Err(err) => {
+                    journal.remove_part(&part);
+                    Err(err)
+                }
+            }
+        })
+        .await;
         drop(slot);
         match result {
             Ok(result) => result,
@@ -407,15 +545,15 @@ impl Downloads {
         entry.cancelled.store(true, Ordering::SeqCst);
         let file = Arc::clone(&entry.file);
         let part = entry.part.clone();
-        let remove = part.clone();
+        let journal = Arc::clone(&self.journal);
         // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは消せない）。
         let _ = tokio::task::spawn_blocking(move || {
             let taken = file.lock().unwrap_or_else(PoisonError::into_inner).take();
             drop(taken);
-            let _ = std::fs::remove_file(&remove);
+            // 消せなかった `.part` は記録に残し、次の起動で再試行する。
+            journal.remove_part(&part);
         })
         .await;
-        forget_part(&self.journal, &part);
         drop(slot);
     }
 
@@ -434,8 +572,8 @@ impl Downloads {
         for entry in pending.values() {
             entry.cancelled.store(true, Ordering::SeqCst);
         }
-        let count = pending.len();
         let journal = Arc::clone(&self.journal);
+        let slots = Arc::clone(&self.slots);
         std::thread::spawn(move || {
             for (_, entry) in pending {
                 let taken = entry
@@ -444,11 +582,13 @@ impl Downloads {
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
                 drop(taken);
-                let _ = std::fs::remove_file(&entry.part);
-                forget_part(&journal, &entry.part);
+                journal.remove_part(&entry.part);
+                // 後始末が終わるまで枠を返さない。旧画面のファイルを閉じる前に、
+                // 新画面で同じ数の保存を始められないようにする。
+                let mut slots = slots.lock().unwrap_or_else(PoisonError::into_inner);
+                *slots = slots.saturating_sub(1);
             }
         });
-        self.release_slots(count);
     }
 
     fn take_pending(&self, id: &str) -> Option<Pending> {
@@ -472,11 +612,6 @@ impl Downloads {
     fn release_slot(&self) {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         *slots = slots.saturating_sub(1);
-    }
-
-    fn release_slots(&self, count: usize) {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        *slots = slots.saturating_sub(count);
     }
 }
 
@@ -586,13 +721,13 @@ fn load_settings() -> DownloadSettings {
 }
 
 /// `downloads.json` は手で書き換えられる。保存先に使ってよいのは、OS のフォルダーの選択で
-/// 選んだ絶対パスのフォルダーだけなので、そうでない値は捨てて「保存のたびに確認する」に戻す。
+/// 選んだ絶対パスだけなので、そうでない値は捨てて「保存のたびに確認する」に戻す。
+/// フォルダーが実在するかは、起動を待たせないよう、保存のたびに確かめる（[`auto_save_target`]）。
 fn usable_settings(settings: DownloadSettings) -> DownloadSettings {
     let Some(directory) = settings.directory.as_deref() else {
         return settings;
     };
-    let path = Path::new(directory);
-    if path.is_absolute() && path.is_dir() {
+    if Path::new(directory).is_absolute() {
         settings
     } else {
         DownloadSettings::default()
@@ -618,56 +753,6 @@ fn store_settings(
     }
     *current = next.clone();
     Ok(next)
-}
-
-/// 書き込み中の `.part` の記録。前回の起動で残ったものを、次の起動で消すために使う。
-fn load_journal() -> Vec<PathBuf> {
-    journal_path()
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
-        .map(|paths| paths.into_iter().map(PathBuf::from).collect())
-        .unwrap_or_default()
-}
-
-fn write_journal(paths: &[PathBuf]) -> Result<()> {
-    let path = journal_path().ok_or_else(|| anyhow!("設定ディレクトリが見つかりません"))?;
-    if paths.is_empty() {
-        // 記録が無くなったら、ファイルも消す。
-        match std::fs::remove_file(&path) {
-            Ok(()) => return Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => return Err(err.into()),
-        }
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let list: Vec<String> = paths
-        .iter()
-        .map(|part| part.to_string_lossy().into_owned())
-        .collect();
-    let tmp = path.with_extension("json.tmp");
-    let written = std::fs::write(&tmp, serde_json::to_vec(&list)?)
-        .and_then(|()| std::fs::rename(&tmp, &path));
-    if let Err(err) = written {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(err.into());
-    }
-    Ok(())
-}
-
-fn record_part(journal: &Mutex<Vec<PathBuf>>, part: &Path) {
-    let mut journal = journal.lock().unwrap_or_else(PoisonError::into_inner);
-    if !journal.iter().any(|path| path == part) {
-        journal.push(part.to_path_buf());
-    }
-    let _ = write_journal(&journal);
-}
-
-fn forget_part(journal: &Mutex<Vec<PathBuf>>, part: &Path) {
-    let mut journal = journal.lock().unwrap_or_else(PoisonError::into_inner);
-    journal.retain(|path| path != part);
-    let _ = write_journal(&journal);
 }
 
 /// 保存先として使えるかを確かめる。無いときは作り直さず、エラーにする。
@@ -798,15 +883,14 @@ pub fn sanitize_file_name(name: &str) -> String {
     truncate_name(ensure_stem(cleaned))
 }
 
-/// 確認なしの保存で、保存ダイアログに戻すべき名前か。
+/// 確認なしの保存で、保存ダイアログに戻すべき名前か。許可リストに無い拡張子と、
+/// 拡張子の無い名前は戻す。`sanitize_file_name` が先に語幹を足すので、ここへ来る名前は
+/// ドットで始まらない。
 fn needs_confirmation(name: &str) -> bool {
-    if name.starts_with('.') {
-        return true;
-    }
     Path::new(name)
         .extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-        .is_some_and(|ext| EXECUTABLE_EXTENSIONS.contains(&ext.as_str()))
+        .is_none_or(|ext| !AUTO_SAVE_EXTENSIONS.contains(&ext.as_str()))
 }
 
 /// 名前を、拡張子を残したまま `(n)` を足せる形に分ける。
@@ -818,6 +902,22 @@ fn split_name(name: &str) -> (&str, &str) {
         .unwrap_or("");
     let stem = &name[..name.len() - extension.len()];
     (stem, extension)
+}
+
+/// 確認なしの保存の保存先。設定のフォルダーか、OS のダウンロードフォルダーを使う。
+/// どちらも使えなければ `None`（呼び出し側が保存ダイアログを出す）。
+fn auto_save_target(
+    configured: Option<&Path>,
+    download_dir: Option<&Path>,
+    name: &str,
+) -> Option<PathBuf> {
+    if let Some(dir) = configured {
+        return dir.is_dir().then(|| unique_path(dir, name));
+    }
+    match download_dir {
+        Some(dir) if dir.is_dir() => Some(unique_path(dir, name)),
+        _ => None,
+    }
 }
 
 /// 決まったフォルダーに保存するとき、既にある名前を避ける（`name (1).pdf` など）。
@@ -922,22 +1022,15 @@ fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
 
 /// 既存のファイルを置き換えずに `part` を `target` へ移す。`MOVEFILE_REPLACE_EXISTING` を
 /// 付けない `MoveFileExW` は、移す先があると `ERROR_ALREADY_EXISTS` で失敗する。
+/// 長いパスの設定が無効な環境でも 260 文字を超える保存先へ移せるよう、`\\?\` 付きの
+/// 形にして渡す（`std::fs::rename` と同じ扱い）。
 #[cfg(target_os = "windows")]
 fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW};
     use windows::core::PCWSTR;
 
-    let from: Vec<u16> = part
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let to: Vec<u16> = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let from = wide_extended_path(part);
+    let to = wide_extended_path(target);
     // SAFETY: どちらも NUL で終わるバッファーで、呼び出しの間生きている。
     unsafe {
         MoveFileExW(
@@ -947,6 +1040,23 @@ fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
         )
     }
     .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xFFFF))
+}
+
+/// `MoveFileExW` に渡す、長いパス対応（`\\?\`）の UTF-16 文字列（NUL 終端）。
+#[cfg(target_os = "windows")]
+fn wide_extended_path(path: &Path) -> Vec<u16> {
+    let text = path.as_os_str().to_string_lossy();
+    let text = if text.starts_with(r"\\?\") {
+        text.into_owned()
+    } else if let Some(rest) = text.strip_prefix(r"\\") {
+        // UNC（`\\server\share`）は `\\?\UNC\server\share` にする。
+        format!(r"\\?\UNC\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\??\") {
+        format!(r"\\?\{rest}")
+    } else {
+        format!(r"\\?\{text}")
+    };
+    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -1076,6 +1186,11 @@ mod tests {
         dir
     }
 
+    /// テスト用。利用者の `download_parts.json` を読み書きしないよう、記録も一時ディレクトリに置く。
+    fn test_downloads() -> Downloads {
+        Downloads::with_journal(Some(temp_dir().join("download_parts.json")))
+    }
+
     #[test]
     fn sanitize_keeps_a_plain_name() {
         assert_eq!(sanitize_file_name("report.pdf"), "report.pdf");
@@ -1134,19 +1249,28 @@ mod tests {
             directory: Some(dir.display().to_string()),
         };
         assert_eq!(usable_settings(picked.clone()), picked);
-        // `downloads.json` を手で書き換えた場合。保存先には使わない。
-        for directory in [
-            "Downloads".to_string(),
-            dir.join("missing").display().to_string(),
-        ] {
-            assert_eq!(
-                usable_settings(DownloadSettings {
-                    ask_every_time: false,
-                    directory: Some(directory),
-                }),
-                DownloadSettings::default()
-            );
-        }
+        // フォルダーが実在するかは、起動を待たせないよう、ここでは見ない。
+        // 保存のたびに `auto_save_target` が確かめ、無ければダイアログに戻す。
+        let missing = DownloadSettings {
+            ask_every_time: false,
+            directory: Some(dir.join("missing").display().to_string()),
+        };
+        assert_eq!(usable_settings(missing.clone()), missing);
+        assert!(
+            auto_save_target(missing.directory.as_deref().map(Path::new), None, "a.txt").is_none()
+        );
+        // `downloads.json` を手で書き換えた場合。相対パスは保存先に使わない。
+        assert_eq!(
+            usable_settings(DownloadSettings {
+                ask_every_time: false,
+                directory: Some("Downloads".into()),
+            }),
+            DownloadSettings::default()
+        );
+        assert_eq!(
+            auto_save_target(Some(&dir), None, "a.txt"),
+            Some(dir.join("a.txt"))
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1200,10 +1324,49 @@ mod tests {
         assert!(!is_part_file_name(".zoo-0123456789abcdef.txt"));
     }
 
+    #[test]
+    fn journal_keeps_a_part_it_could_not_remove() {
+        let dir = temp_dir();
+        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let part = dir.join(".zoo-0123456789abcdef.part");
+        std::fs::write(&part, b"x").unwrap();
+        journal.record(&part).unwrap();
+        assert_eq!(journal.snapshot(), vec![part.clone()]);
+        journal.remove_part(&part);
+        assert!(journal.snapshot().is_empty());
+
+        // 消せなかったものは記録に残し、次の起動で再試行する。
+        let stuck = dir.join("stuck");
+        std::fs::create_dir_all(&stuck).unwrap();
+        journal.record(&stuck).unwrap();
+        journal.remove_part(&stuck);
+        assert_eq!(journal.snapshot(), vec![stuck.clone()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_move_uses_extended_length_paths() {
+        fn text(path: &Path) -> String {
+            let wide = wide_extended_path(path);
+            assert_eq!(wide.last(), Some(&0));
+            String::from_utf16(&wide[..wide.len() - 1]).unwrap()
+        }
+        assert_eq!(
+            text(Path::new(r"C:\Users\a\a very long file name.txt")),
+            r"\\?\C:\Users\a\a very long file name.txt"
+        );
+        assert_eq!(
+            text(Path::new(r"\\server\share\a.txt")),
+            r"\\?\UNC\server\share\a.txt"
+        );
+        assert_eq!(text(Path::new(r"\\?\C:\a.txt")), r"\\?\C:\a.txt");
+    }
+
     #[tokio::test]
     async fn write_finish_and_cancel_manage_the_part_file() {
         let dir = temp_dir();
-        let downloads = Downloads::new();
+        let downloads = test_downloads();
         let final_path = dir.join("saved.txt");
 
         let id = new_download_id();
@@ -1242,7 +1405,7 @@ mod tests {
     #[tokio::test]
     async fn write_rejects_more_than_the_limit() {
         let dir = temp_dir();
-        let downloads = Downloads::new();
+        let downloads = test_downloads();
         let id = new_download_id();
         downloads
             .pending
@@ -1258,7 +1421,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_write_cannot_be_finished() {
         let dir = temp_dir();
-        let downloads = Downloads::new();
+        let downloads = test_downloads();
         let id = new_download_id();
         let entry = pending(
             &dir.join("broken.txt"),
@@ -1279,7 +1442,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn concurrent_fixed_folder_saves_do_not_overwrite_each_other() {
         let dir = temp_dir();
-        let downloads = Downloads::new();
+        let downloads = test_downloads();
         let target = dir.join("same.txt");
 
         // 同時に始めた 2 件は、どちらも同じ名前を選ぶ（まだファイルがないため）。
@@ -1326,7 +1489,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_downloads_are_not_finished() {
         let dir = temp_dir();
-        let downloads = Downloads::new();
+        let downloads = test_downloads();
         let id = new_download_id();
         let entry = pending(
             &dir.join("cancelled.txt"),
@@ -1356,14 +1519,37 @@ mod tests {
     }
 
     #[test]
-    fn executable_names_need_the_save_dialog() {
+    fn only_safe_names_are_saved_without_the_dialog() {
         assert!(!needs_confirmation("report.pdf"));
         assert!(!needs_confirmation("photo.JPG"));
-        assert!(needs_confirmation("setup.exe"));
-        assert!(needs_confirmation("setup.EXE"));
-        assert!(needs_confirmation("script.bat"));
-        assert!(needs_confirmation("autorun.desktop"));
-        assert!(needs_confirmation(".bashrc"));
+        assert!(!needs_confirmation("memo.txt"));
+        assert!(!needs_confirmation("clip.mp4"));
+        // 開くとインタープリターや読み込みに進む形式は、保存ダイアログに戻す。
+        for name in [
+            "setup.exe",
+            "setup.EXE",
+            "script.bat",
+            "autorun.desktop",
+            "image.py",
+            "macro.docm",
+            "macro.xlsm",
+            "legacy.doc",
+            "legacy.xls",
+            "legacy.ppt",
+            "lib.dll",
+            "screen.scf",
+            "app.AppImage",
+            "disk.dmg",
+            "page.html",
+            "vector.svg",
+            "book.epub",
+            "note.rtf",
+            "no-extension",
+        ] {
+            assert!(needs_confirmation(name), "{name}");
+        }
+        // `sanitize_file_name` が語幹を足すので、ここへ来る名前はドットで始まらない。
+        assert!(needs_confirmation(&sanitize_file_name(".bashrc")));
     }
 
     #[test]
