@@ -1817,5 +1817,24 @@
     "speaker": "扬声器",
     "waiting": "正在等待来电",
     "dmCall": "通话"
+  },
+  "globalSearch": {
+    "title": "搜索",
+    "placeholder": "搜索消息和文件",
+    "kinds": {
+      "messages": "消息",
+      "files": "文件"
+    },
+    "prompt": "请输入要搜索的词。用空格分隔时，将查找包含所有词的结果。",
+    "empty": "没有找到结果。",
+    "emptyOlder": "截至 {{month}} 没有找到结果。可以继续搜索更早的内容。",
+    "searchedUntil": "已搜索到 {{month}}",
+    "searchOlder": "搜索更早的结果",
+    "loading": "正在搜索…",
+    "loadError": "搜索失败。",
+    "retry": "重试",
+    "encryptedNote": "加密频道不在搜索范围内。",
+    "openNav": "搜索",
+    "inThread": "子线程回复"
   }
 }

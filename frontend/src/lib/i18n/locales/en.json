@@ -1817,5 +1817,24 @@
     "speaker": "Speaker",
     "waiting": "Waiting for incoming calls",
     "dmCall": "Call"
+  },
+  "globalSearch": {
+    "title": "Search",
+    "placeholder": "Search messages and files",
+    "kinds": {
+      "messages": "Messages",
+      "files": "Files"
+    },
+    "prompt": "Type the words to search for. Separate words with spaces to find results containing all of them.",
+    "empty": "No results.",
+    "emptyOlder": "No results through {{month}}. You can search further back.",
+    "searchedUntil": "Searched through {{month}}",
+    "searchOlder": "Search older results",
+    "loading": "Searching…",
+    "loadError": "Search failed.",
+    "retry": "Retry",
+    "encryptedNote": "Encrypted channels are not included in search.",
+    "openNav": "Search",
+    "inThread": "Thread reply"
   }
 }

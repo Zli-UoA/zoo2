@@ -1817,5 +1817,24 @@
     "speaker": "スピーカー",
     "waiting": "電話の着信を待ち受け中",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "検索",
+    "placeholder": "メッセージとファイルを検索",
+    "kinds": {
+      "messages": "メッセージ",
+      "files": "ファイル"
+    },
+    "prompt": "検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。",
+    "empty": "見つかりませんでした。",
+    "emptyOlder": "{{month}} までに見つかりませんでした。さらに古い期間を検索できます。",
+    "searchedUntil": "{{month}} まで検索しました",
+    "searchOlder": "さらに古い結果を検索",
+    "loading": "検索中…",
+    "loadError": "検索できませんでした。",
+    "retry": "再試行",
+    "encryptedNote": "暗号化されたチャンネルは検索の対象外です。",
+    "openNav": "検索",
+    "inThread": "スレッドの返信"
   }
 }
