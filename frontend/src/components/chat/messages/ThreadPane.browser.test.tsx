@@ -308,6 +308,52 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(onLeaveThread).toHaveBeenCalledOnce();
     });
 
+    it("参加・退出の失敗は、ダイアログの中に出して、再試行できる", async () => {
+      await page.viewport(1280, 900);
+      const onMembershipRetry = vi.fn();
+      render(
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({
+              membership: "joined",
+              participantCount: 3,
+              participants,
+              onLeaveThread: noop,
+              membershipError: true,
+              onMembershipRetry,
+            })}
+          />
+        </LocaleProvider>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      // 背面のペインの表示ではなく、ダイアログの中に出る（モーダルの背面は操作も読み上げもできない）。
+      const alert = within(dialog).getByRole("alert");
+      expect(alert.textContent).toMatch(/スレッドの参加状態を更新できませんでした。/);
+      await userEvent.click(within(alert).getByRole("button", { name: "再試行" }));
+      expect(onMembershipRetry).toHaveBeenCalledOnce();
+    });
+
+    it("50人を超えるスレッドの検索は、読み込んだ範囲だけだと表示する", async () => {
+      await page.viewport(1280, 900);
+      render(<MembersHarness />);
+      await userEvent.click(screen.getByRole("button", { name: "参加者 53人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+      // 検索していないあいだは、「ほか N人」。
+      expect(within(dialog).getByText("ほか 50人")).toBeTruthy();
+      expect(within(dialog).queryByText(/読み込んだ先頭/)).toBeNull();
+
+      // 一覧にいない人を検索すると、見つからない理由を出す。
+      await userEvent.type(within(dialog).getByRole("searchbox", { name: "名前で検索" }), "zzz");
+      expect(within(dialog).getByText("該当するユーザーがいません。")).toBeTruthy();
+      expect(
+        within(dialog).getByText(
+          "読み込んだ先頭3人の中から絞り込んでいます（ほか 50人は検索できません）。",
+        ),
+      ).toBeTruthy();
+      expect(within(dialog).queryByText("ほか 50人")).toBeNull();
+    });
+
     it("参加状態も人数も未確定のあいだは、メンバーのボタンを出さない", async () => {
       await page.viewport(1280, 900);
       render(

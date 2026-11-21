@@ -46,6 +46,8 @@ export function ThreadParticipantsDialog({
   currentUserId,
   status,
   action,
+  membershipError = false,
+  onMembershipRetry,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -57,6 +59,9 @@ export function ThreadParticipantsDialog({
   currentUserId: string | null | undefined;
   status: ThreadParticipantsStatus;
   action: ThreadParticipantsAction | null;
+  /** 参加・退出に失敗した。ダイアログが開いているあいだは、背面のペインの表示が見えず、読み上げられない。 */
+  membershipError?: boolean;
+  onMembershipRetry?: () => void;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -131,9 +136,25 @@ export function ThreadParticipantsDialog({
         ) : visible.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t("members.usersEmpty")}</p>
         ) : null}
-        {hidden > 0 && !query.trim() ? (
+        {hidden > 0 ? (
           <p className="text-xs text-muted-foreground">
-            {t("threads.participantsMore", { count: hidden })}
+            {query.trim()
+              ? // 絞り込みは、読み込んだ先頭の範囲だけ。ほかの人は、検索に出ない。
+                t("threads.participantsFilterPartial", {
+                  loaded: participants.length,
+                  count: hidden,
+                })
+              : t("threads.participantsMore", { count: hidden })}
+          </p>
+        ) : null}
+        {membershipError ? (
+          <p role="alert" className="text-xs text-destructive">
+            {t("threads.membershipError")}{" "}
+            {onMembershipRetry ? (
+              <Button variant="ghost" size="sm" onClick={onMembershipRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null}
           </p>
         ) : null}
 

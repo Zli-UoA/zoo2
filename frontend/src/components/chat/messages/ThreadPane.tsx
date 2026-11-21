@@ -394,6 +394,8 @@ export function ThreadPane({
           currentUserId={currentUserId}
           status={participantsStatus}
           action={participantsAction}
+          membershipError={membershipError}
+          onMembershipRetry={onMembershipRetry}
         />
       ) : null}
 

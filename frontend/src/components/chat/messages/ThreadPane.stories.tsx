@@ -326,6 +326,12 @@ export const WithParticipants: Story = {
     await userEvent.clear(search);
     await userEvent.type(search, "zzz");
     await expect(await within(dialog).findByText("該当するユーザーがいません。")).toBeVisible();
+    // 50人を超えるスレッドでは、絞り込みが読み込んだ範囲だけであることを示す。
+    await expect(
+      within(dialog).getByText(
+        "読み込んだ先頭3人の中から絞り込んでいます（ほか 50人は検索できません）。",
+      ),
+    ).toBeVisible();
     await userEvent.clear(search);
     await expect(list.getAllByRole("listitem")).toHaveLength(3);
     // 参加状態と退出の操作も、ここにある。
@@ -335,6 +341,28 @@ export const WithParticipants: Story = {
     // Escape で一覧だけを閉じ、ボタンへフォーカスが戻る。
     await closeMembers();
     await expect(toggle).toHaveFocus();
+  }),
+};
+export const ParticipantsMembershipFailed: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    membership: "joined",
+    participantCount: 3,
+    participants: memberPeople,
+    onLeaveThread: fn(),
+    membershipError: true,
+    onMembershipRetry: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "参加者 3人" }));
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    // 参加・退出の失敗は、背面のペインではなく、ダイアログの中に出る。
+    const alert = within(dialog).getByRole("alert");
+    await expect(alert).toHaveTextContent("スレッドの参加状態を更新できませんでした。");
+    await userEvent.click(within(alert).getByRole("button", { name: "再試行" }));
+    await expect(args.onMembershipRetry).toHaveBeenCalledOnce();
+    await closeMembers();
   }),
 };
 export const ParticipantsJoinFromDialog: Story = {
