@@ -888,6 +888,42 @@ async fn test_slack_reply_older_than_the_leave_does_not_rejoin() -> anyhow::Resu
     Ok(())
 }
 
+/// Slack の返信の時刻が、DB の時計より先（時計のずれ）でも、返信より後に確定した退出は取り消さない。
+/// 返信の時刻が先だと、`created_at >= トランザクションの開始時刻` が真になる。その場合も、取り込みの返信は
+/// `left_at < created_at` のときだけ再参加させる（zoo の返信は、従来どおり常に再参加する）
+#[tokio::test]
+async fn test_slack_reply_dated_ahead_of_the_db_clock_does_not_rejoin_a_later_leave()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let parent = f.ts_new.clone();
+    let parent_id = backend::slack::message_id(&f.team, "C1", &parent);
+    let first = format!("{}.000200", now_secs() - 50);
+    deliver_reply(&f, &parent, &first).await?;
+    let ua = author_of(&f, &first).await;
+
+    // 閉じて、UA が、これから取り込む返信（30 秒先の時刻）より後（2 分先）に退出した状態にする
+    sql(&f.state, close_thread_sql(), &[&parent_id]).await?;
+    sql(
+        &f.state,
+        "UPDATE thread_participants SET left_at=(now() AT TIME ZONE 'UTC')+interval '2 minutes' \
+         WHERE thread_id=$1 AND user_id=$2 RETURNING json_build_object('ok',true)::text",
+        &[&parent_id, &ua],
+    )
+    .await?;
+    deliver_reply(&f, &parent, &format!("{}.000300", now_secs() + 30)).await?;
+    assert!(
+        !archived(&f, &parent_id).await,
+        "the reply still extends the thread's activity"
+    );
+    assert_eq!(
+        left_of(&f, &parent_id, &ua).await,
+        Some(true),
+        "a reply dated before the leave does not rejoin, even ahead of the DB clock"
+    );
+    Ok(())
+}
+
 /// 期間 (24 時間) の端に近い返信は、再Openしても、活動時刻がすぐ期間を外れて閉じ直されるので、履歴として扱う
 #[tokio::test]
 async fn test_slack_reply_near_the_end_of_the_idle_window_is_history() -> anyhow::Result<()> {
