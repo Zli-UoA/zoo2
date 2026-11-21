@@ -1,4 +1,4 @@
-import { expect, waitFor, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import cjkUrl from "../../../.storybook/fixtures/cjk.pdf?url";
 import jpxUrl from "../../../.storybook/fixtures/jpx.pdf?url";
@@ -32,6 +32,33 @@ export const Image: Story = {
 };
 export const PDF: Story = {
   args: { src: pdfUrl, name: "sample.pdf", contentType: "application/pdf" },
+};
+export const MultiPagePDF: Story = {
+  args: { src: pdfUrl, name: "sample.pdf", contentType: "application/pdf", initialOpen: true },
+  play: async ({ canvasElement }) => {
+    await assertPdfPainted(canvasElement);
+    const dialog = within(canvasElement.ownerDocument.body).getByRole("dialog");
+    const user = userEvent.setup();
+    const pageInput = within(dialog).getByRole("textbox", { name: "ページ番号" });
+    const scrollRegion = within(dialog).getByRole("region", { name: "PDFページ一覧" });
+    await expect(pageInput).toHaveValue("1");
+    await user.click(within(dialog).getByRole("button", { name: "次のページ" }));
+    await waitFor(() => expect(pageInput).toHaveValue("2"), { timeout: 10_000 });
+    const page3 = dialog.querySelector('[data-pdf-page="3"]') as HTMLElement;
+    scrollRegion.scrollTop = page3.offsetTop;
+    await waitFor(() => expect(pageInput).toHaveValue("3"), { timeout: 10_000 });
+    await user.click(pageInput);
+    await user.keyboard("10{Enter}");
+    await waitFor(
+      async () => {
+        await expect(pageInput).toHaveValue("10");
+        await expect(
+          (dialog.querySelector('[data-pdf-page="10"] canvas') as HTMLCanvasElement | null)?.width,
+        ).toBeGreaterThan(0);
+      },
+      { timeout: 10_000 },
+    );
+  },
 };
 export const Video: Story = {
   args: { src: videoUrl, name: "sample.webm", contentType: "video/webm" },

@@ -269,6 +269,8 @@
     "containedFiles": "포함된 파일",
     "previousPage": "이전 페지",
     "nextPage": "다음 페지",
+    "pageNumber": "페지 번호",
+    "pdfPages": "PDF 페지 목록",
     "pdfPage": "PDF {{page}}페지",
     "mail": {
       "subject": "제목",

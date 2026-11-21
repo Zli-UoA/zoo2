@@ -269,6 +269,8 @@
     "containedFiles": "Contained files",
     "previousPage": "Previous page",
     "nextPage": "Next page",
+    "pageNumber": "Page number",
+    "pdfPages": "PDF pages",
     "pdfPage": "PDF page {{page}}",
     "mail": {
       "subject": "Subject",

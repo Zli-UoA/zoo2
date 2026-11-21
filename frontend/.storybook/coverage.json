@@ -859,6 +859,7 @@
         "Loading",
         "Image",
         "PDF",
+        "MultiPagePDF",
         "Video",
         "Audio",
         "Failed",
@@ -1620,8 +1621,9 @@
       "file": "src/components/ui/pdf-preview.tsx",
       "story": "src/components/ui/media-preview.stories.tsx",
       "composed": true,
-      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
+      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画・縦スクロール・前後ページボタン・ページ番号ジャンプを確認する。",
       "checks": [
+        "src/components/ui/pdf-preview.test.ts",
         "src/components/ui/media-preview.browser.test.tsx",
         "src/components/ui/pdf-preview-timeout.browser.test.tsx"
       ]
