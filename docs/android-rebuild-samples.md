@@ -16,7 +16,8 @@
 | メッセージの長押しメニュー | [ライト](images/android-design/rebuild/message-menu-light.png) | [ダーク](images/android-design/rebuild/message-menu-dark.png) |
 | ホーム投稿の長押しメニュー | [ライト](images/android-design/rebuild/post-menu-light.png) | [ダーク](images/android-design/rebuild/post-menu-dark.png) |
 | 投稿詳細 | [ライト](images/android-design/rebuild/post-light.png) | [ダーク](images/android-design/rebuild/post-dark.png) |
-| 新しい投稿 | [ライト](images/android-design/rebuild/post-compose-light.png) | [ダーク](images/android-design/rebuild/post-compose-dark.png) |
+| 新しい投稿・ActivityPub配信オン | [ライト](images/android-design/rebuild/post-compose-light.png) | [ダーク](images/android-design/rebuild/post-compose-dark.png) |
+| 新しい投稿・ActivityPub配信オフ | [ライト](images/android-design/rebuild/post-compose-federation-off-light.png) | [ダーク](images/android-design/rebuild/post-compose-federation-off-dark.png) |
 | プロフィール | [ライト](images/android-design/rebuild/profile-light.png) | [ダーク](images/android-design/rebuild/profile-dark.png) |
 | チャンネル検索 | [ライト](images/android-design/rebuild/directory-light.png) | [ダーク](images/android-design/rebuild/directory-dark.png) |
 | チャンネル作成 | [ライト](images/android-design/rebuild/channel-edit-light.png) | [ダーク](images/android-design/rebuild/channel-edit-dark.png) |
@@ -27,7 +28,8 @@
 | ログイン | [ライト](images/android-design/rebuild/login-light.png) | [ダーク](images/android-design/rebuild/login-dark.png) |
 | ログイン復元中 | [ライト](images/android-design/rebuild/login-restoring-light.png) | [ダーク](images/android-design/rebuild/login-restoring-dark.png) |
 | 着信（相手のアバターと一定間隔の波紋） | [ライト](images/android-design/rebuild/call-light.png) | [ダーク](images/android-design/rebuild/call-dark.png) |
-| 通話中（受信音声に合わせた波紋） | [ライト](images/android-design/rebuild/call-active-light.png) | [ダーク](images/android-design/rebuild/call-active-dark.png) |
+| 発信中・最小化操作 | [ライト](images/android-design/rebuild/call-outgoing-light.png) | [ダーク](images/android-design/rebuild/call-outgoing-dark.png) |
+| 通話中・最小化とPiPの操作 | [ライト](images/android-design/rebuild/call-active-light.png) | [ダーク](images/android-design/rebuild/call-active-dark.png) |
 | スレッド設定 | [ライト](images/android-design/rebuild/thread-settings-light.png) | [ダーク](images/android-design/rebuild/thread-settings-dark.png) |
 | スレッド参加者 | [ライト](images/android-design/rebuild/thread-members-light.png) | [ダーク](images/android-design/rebuild/thread-members-dark.png) |
 | グループ DM 作成 | [ライト](images/android-design/rebuild/group-dm-light.png) | [ダーク](images/android-design/rebuild/group-dm-dark.png) |
@@ -39,6 +41,8 @@
 cd frontend-compose
 ./gradlew -Pzoo.android=true -Pzoo.uiPreview=true :ui-preview:testDebugUnitTest
 ```
+
+着信キャプチャは、アプリ内とロック画面が共有するCompose画面のサンプル。端末が実際に表示するロック画面、PiPウィンドウ、SIP回線設定はこの一覧に含まれない。
 
 暗号化の初期設定と解錠は、接続した環境で検証する。リカバリーキーが出る画面では端末のスクリーンキャプチャを無効にする。
 
