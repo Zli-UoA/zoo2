@@ -128,6 +128,27 @@ SET session_replication_role = DEFAULT;
 "#)).await?;
     // 1 文ずつ送る（複数の文はまとめて暗黙のトランザクションになり、VACUUM が通らない）。
     db.batch_execute("VACUUM ANALYZE").await?;
+    // 書き込み直後（VACUUM 前）の行も測る。今月に 500 件を、規模によらず同じだけ公開チャンネルに足す（トリガーは動かす）。
+    // 検索用の索引は fastupdate = off なので pending list はなく、足した行は索引に直接入っている。
+    db.batch_execute(&format!(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at)
+         SELECT 'w-'||lpad(i::text,8,'0'),'{NOISE}','sc-'||(1+i%{PUBLIC}),
+           CASE WHEN i%10<3 THEN '書き込み直後です '||i ELSE 'fresh row '||i END,
+           date_trunc('month',LOCALTIMESTAMP)+interval '20 minutes'+i*interval '10 milliseconds'
+         FROM generate_series(1,500) i;"
+    ))
+    .await?;
+    let pending: String = one(
+        &db,
+        "SELECT string_agg(c.relname||'='||coalesce(array_to_string(c.reloptions,','),''),' ' ORDER BY c.relname)
+         FROM pg_class c WHERE c.relname IN ('messages_search_month','attachments_search_month','channel_notes_search_month')",
+    )
+    .await?;
+    assert_eq!(
+        pending.matches("fastupdate=off").count(),
+        3,
+        "search indexes must not keep a GIN pending list: {pending}"
+    );
 
     let scope: Value =
         serde_json::from_str(&one(&db, &bind(SCOPE_SQL, &[ACTOR.into(), String::new()])).await?)?;
