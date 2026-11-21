@@ -53,7 +53,7 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 
-internal enum class EntryOperation { Edit, Delete, React, Repost, Attachment, Link, Media }
+internal enum class EntryOperation { Edit, Delete, React, Repost, Attachment, Link, Media, Quote }
 
 internal data class TimelineItem(
     val id: String, val author: String, val body: String, val time: String,
@@ -61,7 +61,8 @@ internal data class TimelineItem(
     val reposted: Boolean = false, val reactions: List<Pair<String, Boolean>> = emptyList(),
     val attachments: List<Pair<String, String>> = emptyList(), val link: String? = null,
     val preview: String? = null, val entryKey: String = id,
-    val media: List<Pair<String, String>> = emptyList(),
+    val media: List<TimelineMedia> = emptyList(),
+    val quote: TimelineQuote? = null, val repostedBy: String? = null,
     val postHeader: PostHeaderData? = null,
 )
 internal data class ChannelItem(
@@ -483,6 +484,7 @@ private fun Timeline(
                     Text(entry.author.take(1), color = colors.secondary, fontSize = 13.sp)
                 }
                 Column(Modifier.weight(1f)) {
+                    entry.repostedBy?.let { RepostAttribution(it, colors) }
                     if (posts && entry.postHeader != null) {
                         PostHeader(entry.author, entry.postHeader, colors)
                     } else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -494,9 +496,15 @@ private fun Timeline(
                         Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Attachment, id)) }
                             .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
                     }
-                    entry.media.forEach { (url, name) ->
-                        Text(name, Modifier.clickable { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, url)) }
-                            .heightIn(min = 48.dp).padding(vertical = 12.dp), color = colors.foreground)
+                    entry.media.forEach { media ->
+                        TimelineMediaTile(media, colors) {
+                            dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, media.key))
+                        }
+                    }
+                    entry.quote?.let { quote ->
+                        TimelineQuoteCard(quote, colors,
+                            open = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Quote)) },
+                            openMedia = { dispatch(AndroidUiAction.ActOnEntry(entry, EntryOperation.Media, it.key)) })
                     }
                     entry.link?.let { url ->
                         Text(entry.preview ?: url,

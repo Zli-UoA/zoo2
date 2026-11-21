@@ -5,6 +5,8 @@
 | 画面 | ライト | ダーク |
 | --- | --- | --- |
 | ホーム | [ライト](images/android-design/rebuild/home-light.png) | [ダーク](images/android-design/rebuild/home-dark.png) |
+| APubの引用・再投稿・メディア | [ライト](images/android-design/rebuild/home-media-light.png) | [ダーク](images/android-design/rebuild/home-media-dark.png) |
+| チャンネルの画像・動画 | [ライト](images/android-design/rebuild/channel-media-light.png) | [ダーク](images/android-design/rebuild/channel-media-dark.png) |
 | チャンネル一覧 | [ライト](images/android-design/rebuild/channels-light.png) | [ダーク](images/android-design/rebuild/channels-dark.png) |
 | 通知 | [ライト](images/android-design/rebuild/notifications-light.png) | [ダーク](images/android-design/rebuild/notifications-dark.png) |
 | Bubble | [ライト](images/android-design/rebuild/bubble-light.png) | [ダーク](images/android-design/rebuild/bubble-dark.png) |

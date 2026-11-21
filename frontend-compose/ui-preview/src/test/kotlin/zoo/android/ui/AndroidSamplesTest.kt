@@ -91,8 +91,20 @@ class AndroidSamplesTest {
             }
             Canvas(this).drawText("★", 24f, 38f, paint)
         }.asImageBitmap()
+        val illustratedPost = homePosts.first().copy(
+            repostedBy = "みずき",
+            quote = TimelineQuote("https://example.test/notes/42", null, "なぎ", "引用元の投稿を共有します。", emptyList()),
+            media = listOf(TimelineMedia("post-image", "投稿画像", TimelineMediaKind.Image),
+                TimelineMedia("post-video", "投稿動画", TimelineMediaKind.Video, sensitive = true)),
+        )
+        val illustratedMessage = posts.first().copy(media = listOf(
+            TimelineMedia("channel-image", "添付画像", TimelineMediaKind.Image, attachmentId = "channel-image"),
+            TimelineMedia("channel-video", "添付動画", TimelineMediaKind.Video, attachmentId = "channel-video"),
+        ))
         val cases = listOf(
             "home" to AndroidScreen.Home(homePosts),
+            "home-media" to AndroidScreen.Home(listOf(illustratedPost)),
+            "channel-media" to conversation.copy(entries = listOf(illustratedMessage), input = InputState()),
             "channels" to channels,
             "notifications" to inbox,
             "bubble" to AndroidScreen.Bubble(posts.take(2), InputState(live = true), listOf("はる", "ゆい")),
@@ -165,14 +177,16 @@ class AndroidSamplesTest {
         var emojiPicker by mutableStateOf(false)
         val actions = mutableListOf<AndroidUiAction>()
         ui.setContent {
-            AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
-                actions.add(action)
-                if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
-                if (action == AndroidUiAction.OpenChannelSettings("dev")) {
-                    screen = AndroidScreen.ChannelSettings("開発", settings)
+            CompositionLocalProvider(LocalTimelineImage provides { avatar }) {
+                AndroidScreens(screen, dark, foreground || screen is AndroidScreen.Call, dispatch = { action ->
+                    actions.add(action)
+                    if (action == AndroidUiAction.UseInputTool(InputTool.Emoji)) emojiPicker = true
+                    if (action == AndroidUiAction.OpenChannelSettings("dev")) {
+                        screen = AndroidScreen.ChannelSettings("開発", settings)
+                    }
+                }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
+                    Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
                 }
-            }, language = "ja", remoteAudioLevel = { .4f }, loadNotificationAvatar = { if (it == "fixture-emoji") reactionEmoji else avatar }) { item, modifier ->
-                Box(modifier.background(Color.Gray), contentAlignment = Alignment.Center) { Text(item.label) }
             }
             if (emojiPicker) {
                 val choices = remember {
@@ -221,6 +235,19 @@ class AndroidSamplesTest {
                     ui.onNodeWithContentDescription("みずき", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithContentDescription("なぎ", useUnmergedTree = true).assertIsDisplayed()
                     ui.onAllNodesWithContentDescription("未読", useUnmergedTree = true).assertCountEquals(2)
+                }
+                if (name == "home-media") {
+                    ui.onNodeWithText("みずきさんが再投稿").assertIsDisplayed()
+                    ui.onNodeWithText("引用 · なぎ").assertIsDisplayed().performClick()
+                    ui.onNodeWithText("センシティブな動画を開く").assertIsDisplayed().performClick()
+                    ui.onNodeWithContentDescription("投稿画像").assertIsDisplayed()
+                }
+                if (name == "channel-media") {
+                    ui.onNodeWithContentDescription("添付画像").assertIsDisplayed()
+                    ui.onNodeWithText("動画を再生").assertIsDisplayed().performClick()
+                    ui.runOnIdle {
+                        check(actions.last() == AndroidUiAction.ActOnEntry(illustratedMessage, EntryOperation.Media, "channel-video"))
+                    }
                 }
                 if (name == "home") {
                     val nameBounds = ui.onNodeWithText("@haru", useUnmergedTree = true).getUnclippedBoundsInRoot()

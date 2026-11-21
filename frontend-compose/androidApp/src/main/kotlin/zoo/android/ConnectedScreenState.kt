@@ -68,6 +68,7 @@ internal class ConnectedScreenState(
         private set
     var editing by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
         private set
+    var mediaPreview by mutableStateOf<TimelineMedia?>(null)
     var confirmingEntry by mutableStateOf<AndroidUiAction.ActOnEntry?>(null)
     private var editingPost = false
     private var returnOverlay: String? = null
@@ -129,28 +130,48 @@ internal class ConnectedScreenState(
         val post = row.nested("post")
         val data = post.takeIf { it.isNotEmpty() } ?: row
         val display = row.nested("display")
+        val isPost = post.isNotEmpty() || data.present("visibility")
         val id = data.text("id").ifBlank { data.text("user_id") }
         val name = data.text("display_name").ifBlank {
             users[data.text("user_id")]?.let(::author) ?: data.text("user_name").ifBlank { data.text("user_id") }
         }
-        val body = data.text("content")
-        val url = link.find(body)?.value?.trimEnd('.', ',', ')')?.takeIf { publicUrl(it) != null && allowPreview && !data.present("ciphertext") }
-        val badges = if (post.isNotEmpty()) display.array("reactions").rows().map {
+        val quoteRow = data.nested("quote")
+        val original = quoteRow.nested("post")
+        val quoteUri = publicUrl(quoteRow.text("uri"))?.toString()
+        val quote = quoteUri?.let { uri ->
+            TimelineQuote(
+                uri, original.text("id").takeIf { it.isNotBlank() && !original.flag("remote") },
+                original.text("display_name").ifBlank { original.text("user_name") },
+                original.text("content"), original.array("media").rows().mapNotNull(::postMedia),
+            )
+        }
+        val body = data.text("content").let { content ->
+            if (quote != null && content.trimEnd().endsWith(quote.uri)) {
+                content.trimEnd().removeSuffix(quote.uri).trimEnd()
+            } else content
+        }
+        val url = link.find(body)?.value?.trimEnd('.', ',', ')')?.takeIf {
+            publicUrl(it) != null && it != quoteUri && allowPreview && !data.present("ciphertext")
+        }
+        val metadata = display.ifEmpty { data }
+        val badges = if (isPost) metadata.array("reactions").rows().map {
             "${it.text("reaction")} ${it.text("count")}" to it.flag("selected")
         } else reactions.groupBy { it.text("emoji") }.map { (emoji, rows) ->
             "$emoji ${rows.size}" to rows.any { it.text("user_id") == app.config.userId }
         }
-        val files = (attachments + display.array("attachments").rows()).map { it.text("id") to it.text("file_name") }
-        val media = data.array("media").rows().mapNotNull { image ->
-            val source = image.text("url")
-            val url = if (source.startsWith("/api/home/images/")) endpoint(app.config.apiBaseUrl, source) else source
-            url.takeIf { publicUrl(it) != null }?.let {
-                it to if (image.flag("is_sensitive")) "センシティブな画像を開く" else image.text("name").ifBlank { "画像を開く" }
-            }
-        }
+        val fileRows = (attachments + metadata.array("attachments").rows()).distinctBy { it.text("id") }
+        val attachmentMedia = if (allowPreview && !data.present("ciphertext")) fileRows.mapNotNull { file ->
+            val id = file.text("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val kind = timelineMediaKind(file.text("content_type")) ?: return@mapNotNull null
+            val name = file.text("file_name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
+            TimelineMedia(id, name, kind, file.flag("is_sensitive"), attachmentId = id)
+        } else emptyList()
+        val previewIds = attachmentMedia.mapNotNull { it.attachmentId }.toSet()
+        val files = fileRows.filterNot { it.text("id") in previewIds }.map { it.text("id") to it.text("file_name") }
+        val media = (data.array("media").rows().mapNotNull(::postMedia) + attachmentMedia).distinctBy { it.key }
         val createdAt = data.text("created_at")
         val time = platform.time(createdAt)
-        val postHeader = if (post.isNotEmpty() || data.present("visibility")) {
+        val postHeader = if (isPost) {
             val username = data.text("user_name").ifBlank { users[data.text("user_id")]?.text("user_name").orEmpty() }
             val handle = username.trimStart('@').substringBefore('@').takeIf { it.isNotBlank() }?.let { "@$it" }
             val channelName = data.text("channel_name").trimStart('#').ifBlank { null }
@@ -163,13 +184,29 @@ internal class ConnectedScreenState(
                 remoteServer = remote, serverRgb = if (remote && server != null) instanceColors[server] else null)
         } else null
         return TimelineItem(id, name, body, time,
-            editable = (writable || post.isNotEmpty()) && data.text("user_id") == app.config.userId && !data.flag("remote"),
-            canReact = writable || post.isNotEmpty(),
-            canRepost = post.isNotEmpty() && data.text("visibility") in setOf("public", "local", "unlisted"),
-            reposted = display.flag("reposted"), reactions = badges, attachments = files, link = url,
+            editable = (writable || isPost) && data.text("user_id") == app.config.userId && !data.flag("remote"),
+            canReact = writable || isPost,
+            canRepost = isPost && data.text("visibility") in setOf("public", "local", "unlisted"),
+            reposted = metadata.flag("reposted"), reactions = badges, attachments = files, link = url,
             preview = url?.let { app.previews.cached(previewService, it)?.title },
-            entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader,
+            entryKey = HomeTimeline.key(row).ifBlank { id }, media = media, postHeader = postHeader, quote = quote,
+            repostedBy = data.text("reposted_by").ifBlank { data.text("reposter_actor") }.ifBlank { null },
         )
+    }
+
+    private fun postMedia(row: Row): TimelineMedia? {
+        val raw = row.text("url")
+        val local = raw.matches(Regex("/api/home/images/[a-fA-F0-9-]+"))
+        val url = if (local) endpoint(app.config.apiBaseUrl, raw) else raw
+        val safe = publicUrl(url)?.takeIf { it.protocol.name == "https" } ?: return null
+        val kind = timelineMediaKind(row.text("media_type")) ?:
+            if (local) TimelineMediaKind.Image else return null
+        val imageId = row.text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
+        if (kind == TimelineMediaKind.Image && !local && imageId == null) return null
+        val previewUrl = imageId?.let { endpoint(app.config.apiBaseUrl, "/api/activitypub/media-images/$it") }
+        val name = row.text("name").ifBlank { if (kind == TimelineMediaKind.Video) "動画" else "画像" }
+        return TimelineMedia(safe.toString(), name, kind, row.flag("is_sensitive"),
+            url = safe.toString(), previewUrl = previewUrl)
     }
 
     private fun runEntryAction(action: AndroidUiAction.ActOnEntry, post: Boolean, encrypted: Boolean) {
@@ -207,8 +244,13 @@ internal class ConnectedScreenState(
                 app.attachmentLinks.download(obj("id" to it.first, "file_name" to it.second))
             }
             EntryOperation.Link -> if (!encrypted && publicUrl(action.value) != null) platform.action("open:${action.value}")
-            EntryOperation.Media -> if (post && action.item.media.any { it.first == action.value }) {
-                platform.action("open:${action.value}")
+            EntryOperation.Media -> if (!encrypted) {
+                mediaPreview = (action.item.media + action.item.quote?.media.orEmpty()).firstOrNull { it.key == action.value }
+            }
+            EntryOperation.Quote -> action.item.quote?.let { quote ->
+                val postId = quote.postId
+                if (postId != null) openPost(postId)
+                else platform.action("open:${quote.uri}")
             }
         }
     }
@@ -670,7 +712,9 @@ internal class ConnectedScreenState(
                                 val encryption = platform.messageEncryption ?: error("Encryption unavailable")
                                 encryption.edit(requireNotNull(row), editDraft)
                             } else {
-                                if (!post) app.requirePlaintextChannel(channelId)
+                                if (!post) {
+                                    app.requirePlaintextChannel(channelId)
+                                }
                                 val endpoint = if (post) "home" else "messages"
                                 app.api.request("/api/$endpoint/$id", "PATCH", obj("content" to editDraft))
                             }

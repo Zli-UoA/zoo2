@@ -161,6 +161,7 @@ internal fun ConnectedScreens(
     val sipRoute = route == "/settings" && env.path.substringAfter('?', "").split('&').contains("tab=sip")
     fun back() {
         when {
+            state.mediaPreview != null -> state.mediaPreview = null
             showFullCall -> background()
             sipRoute && state.overlay == null -> platform.navigate("/settings")
             state.overlay == "edit-entry" -> state.finishEditing()
@@ -314,36 +315,50 @@ internal fun ConnectedScreens(
             if (!showFullCall && (state.overlay == "sip" || (state.overlay == null && sipRoute))) {
                 SipRoute(session, phone, users, ::back)
             } else {
-                AndroidScreens(screen, env.dark, env.visible && env.focused,
-                    dispatch = { action ->
-                        when {
-                            action == AndroidUiAction.Back -> back()
-                            action == AndroidUiAction.MinimizeCall -> minimized = true
-                            action == AndroidUiAction.FloatCall -> call?.let { openPictureInPicture?.invoke(it.id) }
-                            action == AndroidUiAction.OpenSetting("incoming-screen") -> openIncomingSettings?.invoke()
-                            action is AndroidUiAction.SelectResult && state.overlay == "members" && channel != null &&
-                                state.canEditMembers(channel) && action.id != session.config.userId -> {
-                                usersById[action.id]?.let { state.memberToRemove = SelectionItem(action.id, author(it)) }
+                CompositionLocalProvider(LocalTimelineImage provides { media -> timelineImage(session, media) }) {
+                    AndroidScreens(screen, env.dark, env.visible && env.focused,
+                        dispatch = { action ->
+                            when {
+                                action == AndroidUiAction.Back -> back()
+                                action == AndroidUiAction.MinimizeCall -> minimized = true
+                                action == AndroidUiAction.FloatCall -> call?.let { openPictureInPicture?.invoke(it.id) }
+                                action == AndroidUiAction.OpenSetting("incoming-screen") -> openIncomingSettings?.invoke()
+                                action is AndroidUiAction.SelectResult && state.overlay == "members" && channel != null &&
+                                    state.canEditMembers(channel) && action.id != session.config.userId -> {
+                                    usersById[action.id]?.let { state.memberToRemove = SelectionItem(action.id, author(it)) }
+                                }
+                                else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
                             }
-                            else -> state.dispatch(action, screen, channel, rows, dmPeer, usersById[dmPeer]?.let(::author), enableNotifications)
+                        },
+                        language = env.locale, interaction = state.interaction.snapshot(),
+                        remoteAudioLevel = { phone.remoteAudioLevel },
+                        loadNotificationReactions = state.inbox::loadReactions,
+                        loadNotificationAvatar = { url ->
+                            try { session.imageBitmap(url) }
+                            catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) { null }
+                        }) { item, modifier ->
+                        val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
+                            value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
+                                ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }
                         }
-                    },
-                    language = env.locale, interaction = state.interaction.snapshot(),
-                    remoteAudioLevel = { phone.remoteAudioLevel },
-                    loadNotificationReactions = state.inbox::loadReactions,
-                    loadNotificationAvatar = { url ->
-                        try { session.imageBitmap(url) }
-                        catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) { null }
-                    }) { item, modifier ->
-                    val image by produceState<ImageBitmap?>(null, item.id, state.photoBytes[item.id], state.postFiles.items.size) {
-                        value = state.postFiles.items.find { it.file.text("id") == item.id }?.bitmap
-                            ?: state.photoBytes[item.id]?.let { platform.imageFrames(it).firstOrNull() }
+                        image?.let { Image(it, item.label, modifier, contentScale = ContentScale.Crop) }
+                            ?: Box(modifier.background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center) { Text(item.label, maxLines = 1) }
                     }
-                    image?.let { Image(it, item.label, modifier, contentScale = ContentScale.Crop) }
-                        ?: Box(modifier.background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center) { Text(item.label, maxLines = 1) }
                 }
+            }
+        }
+    }
+    LaunchedEffect(env.visible, showFullCall) {
+        if (!env.visible || showFullCall) state.mediaPreview = null
+    }
+    state.mediaPreview?.takeIf { env.visible && !showFullCall }?.let { media ->
+        key(media.key) {
+            TimelineMediaPreview(session, media, AndroidColors(env.dark), dismiss = { state.mediaPreview = null }) {
+                val id = media.attachmentId
+                if (id != null) session.attachmentLinks.download(obj("id" to id, "file_name" to media.name))
+                else media.url?.let { platform.action("open:$it") }
             }
         }
     }
