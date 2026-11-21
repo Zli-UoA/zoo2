@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { FeedMessage } from "../components/chat/messages/messageFormat";
-import { mergeCachedAndLive } from "./useRealtime";
+import { isCacheCoveredByLive, mergeCachedAndLive } from "./useRealtime";
 
 function row(id: string): FeedMessage {
   return {
@@ -32,5 +32,20 @@ describe("mergeCachedAndLive", () => {
     expect(mergeCachedAndLive([], [row("a")]).map((r) => r.id)).toEqual(["a"]);
     expect(mergeCachedAndLive([row("a")], []).map((r) => r.id)).toEqual(["a"]);
     expect(mergeCachedAndLive([row("a")], [row("b")]).map((r) => r.id)).toEqual(["b"]);
+  });
+});
+
+describe("isCacheCoveredByLive", () => {
+  it("reports the cache as covered once its newest row appears in live", () => {
+    const cached = [row("a"), row("b"), row("c")];
+    expect(isCacheCoveredByLive(cached, [row("c")])).toBe(true);
+    expect(isCacheCoveredByLive(cached, [row("b"), row("c")])).toBe(true);
+  });
+
+  it("keeps merging while the live window has not reached the cached newest row", () => {
+    const cached = [row("a"), row("b"), row("c")];
+    expect(isCacheCoveredByLive(cached, [row("b")])).toBe(false);
+    expect(isCacheCoveredByLive(cached, [])).toBe(false);
+    expect(isCacheCoveredByLive(null, [row("b")])).toBe(true);
   });
 });

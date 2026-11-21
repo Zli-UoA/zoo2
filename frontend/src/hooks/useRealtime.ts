@@ -56,6 +56,13 @@ export function mergeCachedAndLive(cached: FeedRow[], live: FeedRow[]): FeedRow[
   return [...cached.slice(0, firstLiveIndex), ...live];
 }
 
+/** 控えの最新行がライブに届いているか。届いていれば控えは不要。 */
+export function isCacheCoveredByLive(cached: FeedRow[] | null, live: FeedRow[]): boolean {
+  if (!cached || cached.length === 0) return true;
+  const newest = cached[cached.length - 1]!.id;
+  return live.some((row) => row.id === newest);
+}
+
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
@@ -86,11 +93,11 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const liveReady = !query.isLoading && live.length > 0;
   const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
   // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
-  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
-  const wantCache =
-    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
+  // ライブの行が届くまで (読み込み中・失敗) は、控えを読み込んで表示しておく。
+  // live.length は見ない。オフライン中の楽観送信で live が 1 行になっても控えを保持するため。
+  const shouldLoadCache = cacheable && (!isOnline || query.isLoading || query.isError);
   useEffect(() => {
-    if (!wantCache) return;
+    if (!shouldLoadCache) return;
     let cancelled = false;
     void loadFeedCache<FeedRow>(namespace, channelId).then((entry) => {
       if (!cancelled) setCached({ channelId, rows: entry?.rows ?? null });
@@ -98,8 +105,8 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => {
       cancelled = true;
     };
-  }, [wantCache, namespace, channelId]);
-  const cachedRows = wantCache && cached?.channelId === channelId ? cached.rows : null;
+  }, [shouldLoadCache, namespace, channelId]);
+  const cachedRows = cached?.channelId === channelId ? cached.rows : null;
 
   // オンラインで読み込めたら、最新ページを控える (書き込みが続くときのために、間引く)。
   const latest = useRef(live);
@@ -121,12 +128,15 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => clearTimeout(timer);
   }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
 
-  const displayedRows =
-    cachedRows && oldestFirst.length > 0
-      ? mergeCachedAndLive(cachedRows, oldestFirst)
-      : (cachedRows ?? oldestFirst);
+  // 控えの最新行がライブにまだ届いていなければ、控えの古い行を前置きして一覧を保つ。
+  const needsMerge = !!cachedRows && !isCacheCoveredByLive(cachedRows, live);
+  const displayedRows = needsMerge
+    ? mergeCachedAndLive(cachedRows!, live)
+    : live.length > 0
+      ? live
+      : (cachedRows ?? live);
   const data = useOptimisticDisplay(channelId, displayedRows);
-  const fromCache = cachedRows !== null;
+  const fromCache = needsMerge || (cachedRows !== null && live.length === 0);
   return {
     ...query,
     data,
