@@ -20,6 +20,7 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
     }
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        UNUserNotificationCenter.current().setNotificationCategories([IncomingCallNotifications.category])
         if !AppSession.isUITesting {
             ZooShortcuts.updateAppShortcutParameters()
             bind(session.notifications)
@@ -54,8 +55,14 @@ final class NotificationDelegate: NSObject, UIApplicationDelegate, UNUserNotific
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                            withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
         let target = PushNotice(payload: response.notification.request.content.userInfo)
+        let callAction = IncomingCallNotificationAction(request: response.notification.request,
+                                                        actionIdentifier: response.actionIdentifier)
         Task { @MainActor in
             defer { completionHandler() }
+            if let callAction {
+                await systemCalls.performNotificationAction(callAction)
+                return
+            }
             guard let target else { return }
             if let controller { controller.opened(target) }
             else {

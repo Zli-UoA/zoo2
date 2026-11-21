@@ -2,6 +2,7 @@ import CallKit
 import Foundation
 import Synchronization
 import Testing
+import UserNotifications
 @testable import Zoo
 
 @MainActor
@@ -305,6 +306,79 @@ struct IncomingCallTests {
         ["type": "call_invite", "invite_id": UUID().uuidString, "user_id": UUID().uuidString,
          "channel_id": UUID().uuidString, "inviter_id": UUID().uuidString,
          "caller_name": "発信者", "expires_at": Date.now.addingTimeInterval(30).ISO8601Format()]
+    }
+
+    @Test("通知の操作は現在の着信と宛先に限り、終了後や応答後には送信しない",
+          arguments: [IncomingCallNotifications.answerID, IncomingCallNotifications.declineID])
+    func notificationActions(actionIdentifier: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let call = try #require(IncomingCall(payload: payload))
+        let client = FakeCallClient()
+        client.invitationRows = [call.invitation]
+        let calls = CallStore(client: client, userID: call.userID, makeMedia: { FakeCallMedia() }, permission: { true })
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: call.userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+        let reporting = FakeCallReporting(), requesting = FakeCallRequesting()
+        let controller = SystemCallController(provider: reporting, callController: requesting)
+        controller.setForeground(false)
+        controller.connect(workspace)
+        let native = CXProvider(configuration: CXProviderConfiguration())
+        defer { controller.disconnect(); workspace.shutdown(); native.invalidate() }
+        await withCheckedContinuation { continuation in
+            controller.receive(call) { continuation.resume() }
+            #expect(controller.incomingNotification == nil)
+        }
+        #expect(controller.incomingNotification == call)
+        func response(id: UUID, user: String) throws -> IncomingCallNotificationAction {
+            let content = UNMutableNotificationContent()
+            content.categoryIdentifier = IncomingCallNotifications.categoryID
+            content.userInfo = ["invite_id": id.uuidString, "user_id": user]
+            let request = UNNotificationRequest(identifier: IncomingCallNotifications.identifierPrefix + UUID().uuidString,
+                                                content: content, trigger: nil)
+            return try #require(IncomingCallNotificationAction(request: request, actionIdentifier: actionIdentifier))
+        }
+        await controller.performNotificationAction(try response(id: UUID(), user: call.userID))
+        await controller.performNotificationAction(try response(id: call.id, user: UUID().uuidString))
+        #expect(requesting.requests.isEmpty)
+        let valid = try response(id: call.id, user: call.userID.lowercased())
+        await controller.performNotificationAction(valid)
+        let action = try #require(requesting.requests.first?.actions.first as? CXCallAction)
+        #expect(action.callUUID == call.id)
+        if actionIdentifier == IncomingCallNotifications.answerID {
+            let answer = try #require(action as? CXAnswerCallAction)
+            controller.provider(native, perform: answer)
+        } else {
+            let decline = try #require(action as? CXEndCallAction)
+            controller.provider(native, perform: decline)
+        }
+        #expect(controller.incomingNotification == nil)
+        await controller.performNotificationAction(valid)
+        #expect(requesting.requests.count == 1)
+        controller.disconnect()
+        await controller.performNotificationAction(valid)
+        #expect(requesting.requests.count == 1)
+    }
+
+    @Test("CallKitで拒否された着信と別アカウントの着信をWatchへ通知しない", arguments: [false, true])
+    func doesNotNotifyInvalidCall(reportFails: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let call = try #require(IncomingCall(payload: payload))
+        let client = FakeCallClient()
+        client.invitationRows = [call.invitation]
+        let userID = reportFails ? call.userID : UUID().uuidString
+        let calls = CallStore(client: client, userID: userID, makeMedia: { FakeCallMedia() }, permission: { true })
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+        let reporting = FakeCallReporting()
+        if reportFails { reporting.failure = ZooError.invalidResponse }
+        let controller = SystemCallController(provider: reporting)
+        controller.setForeground(false)
+        controller.connect(workspace)
+        defer { controller.disconnect(); workspace.shutdown() }
+        await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
+        #expect(controller.incomingNotification == nil && controller.watchCall == nil)
     }
 
     @Test("期限とアカウントを確認し、別の利用者の通話に参加しない")
