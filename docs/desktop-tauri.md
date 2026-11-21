@@ -7,14 +7,12 @@ Linux・macOS・Windows 向けのデスクトップ版を Tauri v2 で作る。P
 - (a) Leptos（CSR）で書いた画面を同梱する
 - (b) `https://zli.chat` の React をリモートで読み込む
 
-GPUI 版（`desktop/`）は比較の基準として残す。
-
 | 項目 | 値 |
 |---|---|
 | ディレクトリ | `desktop-tauri/`（Rust 側は `desktop-tauri/src-tauri`、Leptos は `desktop-tauri/ui`） |
 | crate 名 | `zoo2-desktop-tauri` |
 | 更新タグ | `desktop-tauri-v*` |
-| 設定ディレクトリ | `config_dir_for("zoo2-desktop-tauri")`（GPUI 版の `zoo2-desktop`、TUI の `zoo2-tui` とは別） |
+| 設定ディレクトリ | `config_dir_for("zoo2-desktop-tauri")`（TUI の `zoo2-tui` とは別） |
 | OIDC の client_id | `MwrfTPwsaaelMmxBdQGjWYuywWrsMHMe`（AuthZ の「Zoo for Desktop」。AuthZ が発行した ID。public client で、デバイスコードと refresh_token を許可し、resource `https://zli.chat/api` を紐付けてある） |
 
 ## crate の層
@@ -31,7 +29,7 @@ client-types/   zoo2-client-types   型と純粋関数。wasm32 でもビルド�
                   api     REST の応答のうち両側で使うもの（Me）
                   ipc     Tauri のコマンド・イベントの名前と型
 client-core/    zoo2-client-core    ネイティブ専用。通信（ShapeStream、ApiClient）、認証（デバイスコード、TokenManager）、設定、更新の確認
-                                    types のモジュールを同じパスで再公開しているので、TUI と GPUI 版の import は変わらない
+                                    types のモジュールを同じパスで再公開しているので、TUI の import は変わらない
 desktop-tauri/src-tauri             Tauri のコマンドとイベントの層
 desktop-tauri/ui                    (a) Leptos の画面（wasm32）。client-types だけに依存する
 ```

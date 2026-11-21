@@ -3,7 +3,6 @@
 #
 # 使い方: scripts/desktop-bench.sh [-n 回数] 名前 実行ファイル [引数...]
 # 例:
-#   scripts/desktop-bench.sh gpui desktop/target/release/zoo2-desktop run
 #   ZOO_DESKTOP_UI=leptos scripts/desktop-bench.sh tauri-leptos desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri
 #   ZOO_DESKTOP_UI=remote scripts/desktop-bench.sh tauri-remote desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri
 #
@@ -15,7 +14,7 @@
 #   pss_mib     全体の Pss の合計 (共有ページを按分する。smaps_rollup が読めるとき)
 #   cpu_idle_pct 起動 8 秒後から 10 秒間の、プロセス全体の CPU 使用率 (1 コア = 100%)
 #
-# 画面は、飾りなし・最大化 (desktop-screenshot.sh と同じ openbox の設定) で撮るので、root ウィンドウ全体が
+# 画面は、飾りなし・最大化 (openbox の設定) で撮るので、root ウィンドウ全体が
 # クライアント領域になる。WM のタイトルバーや枠は含まない。
 # 時間は、`xwd` で root を撮って比べた値。撮るのにも時間がかかるので (実際の間隔は poll_ms に出す)、
 # 差が間隔以下のものは差として扱わない。目安であり、フレーム単位の計測ではない。

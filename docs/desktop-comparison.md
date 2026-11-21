@@ -1,5 +1,7 @@
 # デスクトップクライアントの比較
 
+> **廃止の注記**: GPUI 版 (`desktop/`) は廃止して、リポジトリから消した。デスクトップ版は Tauri 版 (`desktop-tauri/`) だけになる。この文書は、廃止前の測定と実装の記録として残す。比較表の GPUI の列と、「常駐と通知の挙動 (GPUI 版)」「制約 (GPUI 版の常駐)」は、今のコードとは対応しない。GPUI 版のコードと、動作の確認に使った `scripts/desktop-resident-smoke.sh`、画面の撮影に使った `scripts/desktop-screenshot.sh` は、廃止の直前の main のコミット `4e0d5274` で見られる。`scripts/desktop-bench.sh` は、Tauri 版の測定用に残している。
+
 zoo2 のデスクトップクライアントは 3 通りある。GPUI 版 (`desktop/`)、Tauri (a) Leptos 版、Tauri (b) remote React 版 (`desktop-tauri/`。(a) と (b) は `ZOO_DESKTOP_UI=leptos|remote` で切り替える)。この文書は、残りの画面を GPUI で作り続けるかを決める材料として、同じ条件で測れたものと、測れなかったものを並べる。
 
 測っていないものは「未計測」と書き、理由を添える。推測の数字は入れていない。
@@ -93,9 +95,9 @@ tauri-remote run=5 first_paint_ms=226 poll_ms=83 rss_mib=336 rss_main_mib=153 ps
 ## 再現
 
 ```bash
-nix develop -c bash -c 'cd desktop && cargo build --release'
-nix develop -c scripts/desktop-bench.sh -n 5 gpui desktop/target/release/zoo2-desktop run
 nix develop -c bash -c 'cd desktop-tauri/ui && trunk build --release && cd ../src-tauri && cargo build --release'
 ZOO_DESKTOP_UI=leptos nix develop -c scripts/desktop-bench.sh -n 5 tauri-leptos desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri
 ZOO_DESKTOP_UI=remote nix develop -c scripts/desktop-bench.sh -n 5 tauri-remote desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri
 ```
+
+GPUI の行を測り直すには、廃止の直前のコミット `4e0d5274` を checkout して、`cd desktop && cargo build --release` のあと、`scripts/desktop-bench.sh -n 5 gpui desktop/target/release/zoo2-desktop run` を実行する。
