@@ -54,7 +54,7 @@ fun Avatar(
                 else Text(
                     fallback
                         ?: name.trim().split(Regex("\\s+")).take(2)
-                            .joinToString("") { it.take(1) }.uppercase(),
+                            .joinToString("") { takeGraphemes(it, 1) }.uppercase(),
                     small = true,
                     size = if (maxWidth > 24.dp) 14.sp else 12.sp,
                     lineHeight = if (maxWidth > 24.dp) 20.sp else 16.sp,

@@ -9,7 +9,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.icu.text.BreakIterator
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.net.Uri
@@ -52,6 +51,7 @@ import zoo.LocalTouchUi
 import zoo.LocalApp
 import zoo.Avatar
 import zoo.Text
+import zoo.takeGraphemes
 import works.zli.zoo.R
 import zoo.ZooTheme
 
@@ -95,14 +95,8 @@ internal fun incomingPresentation(
     ), true)
 }
 
-internal fun incomingCallerInitials(name: String): String {
-    val firstWord = name.trim().takeWhile { !it.isWhitespace() }
-    val characters = BreakIterator.getCharacterInstance().apply { setText(firstWord) }
-    repeat(2) {
-        if (characters.next() == BreakIterator.DONE) return firstWord.uppercase()
-    }
-    return firstWord.substring(0, characters.current()).uppercase()
-}
+internal fun incomingCallerInitials(name: String): String =
+    takeGraphemes(name.trim().takeWhile { !it.isWhitespace() }, 2).uppercase()
 
 /** A lock-screen surface contains call controls only. The main app opens after unlocking. */
 class IncomingCallActivity : ComponentActivity() {

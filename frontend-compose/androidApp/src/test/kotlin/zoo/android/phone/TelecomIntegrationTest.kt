@@ -1,6 +1,8 @@
 package zoo.android.phone
 
+import android.app.Activity
 import android.app.Notification
+import android.app.PictureInPictureParams
 import android.app.NotificationManager
 import android.app.Service
 import android.content.pm.ServiceInfo
@@ -25,7 +27,9 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowActivity
 import org.robolectric.shadows.ShadowService
+import org.robolectric.shadows.ShadowToast
 import org.robolectric.util.ReflectionHelpers
 import zoo.Environment
 import zoo.Platform
@@ -71,6 +75,14 @@ class TelecomIntegrationTest {
             return (host.connection(true, null) as ZooConnection).also { it.onShowIncomingCallUi() }
         }
 
+        fun activePictureInPictureIntent(): Intent {
+            val call = PhoneCall("active-call", "dm", "target-dm", "Bob", "active")
+            ReflectionHelpers.callInstanceMethod<Unit>(host.controller, "setCall",
+                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
+            return Intent(context, PhonePictureInPictureActivity::class.java)
+                .putExtra(PHONE_SESSION, host.token).putExtra(PHONE_CALL, call.id)
+        }
+
         override fun close() {
             host.close()
             session.close()
@@ -100,11 +112,7 @@ class TelecomIntegrationTest {
 
     @Test fun expandedPictureInPictureCanReenterWhenTheActivityIsReused() = runTest {
         Fixture(backgroundScope).use { f ->
-            val call = PhoneCall("active-call", "dm", "target-dm", "Bob", "active")
-            ReflectionHelpers.callInstanceMethod<Unit>(f.host.controller, "setCall",
-                ReflectionHelpers.ClassParameter.from(PhoneCall::class.java, call))
-            val intent = Intent(f.context, PhonePictureInPictureActivity::class.java)
-                .putExtra(PHONE_SESSION, f.host.token).putExtra(PHONE_CALL, call.id)
+            val intent = f.activePictureInPictureIntent()
             val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, intent)
                 .create().start().resume().postResume()
             try {
@@ -121,6 +129,29 @@ class TelecomIntegrationTest {
                 assertFalse(screen.isInPictureInPictureMode)
                 activity.newIntent(Intent(intent)).postResume()
                 assertTrue(screen.isInPictureInPictureMode)
+            } finally {
+                activity.pause().stop().destroy()
+            }
+        }
+    }
+
+    @Implements(Activity::class)
+    class PictureInPictureDenied : ShadowActivity() {
+        @Implementation
+        override fun enterPictureInPictureMode(params: PictureInPictureParams): Boolean = false
+    }
+
+    @Test
+    @Config(shadows = [PictureInPictureDenied::class])
+    fun pictureInPictureDenialExplainsHowToEnableItWithoutEndingTheCall() = runTest {
+        Fixture(backgroundScope).use { f ->
+            val activity = Robolectric.buildActivity(PhonePictureInPictureActivity::class.java, f.activePictureInPictureIntent())
+                .create().start().resume().postResume()
+            try {
+                assertTrue(activity.get().isFinishing)
+                assertEquals(phoneLabel(f.context, "androidPhone.pipUnavailable", "Check Picture-in-picture in Android settings."),
+                    ShadowToast.getTextOfLatestToast())
+                assertEquals("active", f.host.controller.call?.status)
             } finally {
                 activity.pause().stop().destroy()
             }

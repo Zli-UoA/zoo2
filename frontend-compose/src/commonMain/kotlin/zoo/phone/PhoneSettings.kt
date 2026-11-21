@@ -146,10 +146,14 @@ fun PhoneCallBanner(app: Session, controller: PhoneController) {
     val status = app.t("sip.status.${call.status}")
     val pip = LocalPhonePictureInPicture.current
     if (minimized && call.status != "incoming" && !controller.error) {
-        Box(
+        Row(
             Modifier.fillMaxWidth().padding(horizontal = AndroidDesign.screenInset, vertical = AndroidDesign.spaceSmall),
-            contentAlignment = Alignment.CenterEnd,
+            horizontalArrangement = Arrangement.spacedBy(AndroidDesign.spaceMedium, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (call.status != "active") {
+                Text(status, Modifier.weight(1f, fill = false).clearAndSetSemantics {}, small = true)
+            }
             val expand = app.t("androidPhone.expandCall")
             Surface(
                 onClick = { minimized = false },
@@ -204,7 +208,7 @@ fun PhonePeerAvatar(app: Session, call: PhoneCall, size: Dp) {
             ?.singleOrNull { it != app.config.userId }
         val peer = users.firstOrNull { it.text("id") == peerId }
         val initials = call.label.trim().split(Regex("\\s+")).take(2)
-            .joinToString("") { it.take(1) }.uppercase().ifBlank { "?" }
+            .joinToString("") { takeGraphemes(it, 1) }.uppercase().ifBlank { "?" }
         CompositionLocalProvider(LocalApp provides app) {
             Avatar(peer, size = size, fallback = initials)
         }
@@ -212,7 +216,7 @@ fun PhonePeerAvatar(app: Session, call: PhoneCall, size: Dp) {
         Surface(modifier = Modifier.size(size), shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceVariant) {
             Box(contentAlignment = Alignment.Center) {
-                Icon("phone", modifier = Modifier.size(size / 2))
+                Icon("phone", label = app.t("sip.title"), modifier = Modifier.size(size / 2))
             }
         }
     }
