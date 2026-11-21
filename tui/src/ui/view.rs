@@ -649,11 +649,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    app.newest_shown = built
-        .ranges
-        .iter()
-        .rfind(|(_, range)| range.start < scroll + height)
-        .map(|(id, _)| (channel_id.clone(), id.clone()));
+    // 全文検索の画面が覆っている間は、背後のタイムラインを読んだことにしない（既読を進めない）。
+    if app.mode != Mode::GlobalSearch {
+        app.newest_shown = built
+            .ranges
+            .iter()
+            .rfind(|(_, range)| range.start < scroll + height)
+            .map(|(id, _)| (channel_id.clone(), id.clone()));
+    }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
 }
@@ -672,22 +675,41 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(root) = app.store.message(&channel_id, &thread.root_id) else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                if app.store.is_synced(&ShapeId::Messages(channel_id.clone())) {
+    let replies = app.store.replies(&channel_id, &thread.root_id);
+    let mut inner = inner;
+    let mut messages = Vec::new();
+    match app.store.message(&channel_id, &thread.root_id) {
+        Some(root) => messages.push(root),
+        None => {
+            let synced = app.store.is_synced(&ShapeId::Messages(channel_id.clone()));
+            let notice = Paragraph::new(Line::styled(
+                if synced {
                     "元のメッセージは削除されました"
                 } else {
                     "読み込み中…"
                 },
                 DIM,
-            )),
-            inner,
-        );
-        return;
-    };
-    let mut messages = vec![root];
-    messages.extend(app.store.replies(&channel_id, &thread.root_id));
+            ));
+            // 親が削除されても返信は残る（全文検索から開くこともある）。返信があれば、知らせの下に描く。
+            if !synced || replies.is_empty() {
+                frame.render_widget(notice, inner);
+                return;
+            }
+            frame.render_widget(
+                notice,
+                Rect {
+                    height: 1.min(inner.height),
+                    ..inner
+                },
+            );
+            inner = Rect {
+                y: inner.y + 1.min(inner.height),
+                height: inner.height.saturating_sub(1),
+                ..inner
+            };
+        }
+    }
+    messages.extend(replies);
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
@@ -2214,6 +2236,50 @@ mod tests {
                 .collect();
             assert_eq!(ids, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn thread_with_deleted_root_still_shows_its_replies() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "r2",
+                json!({ "id": "r2", "user_id": "u1", "channel_id": "c1", "content": "親なしの返信",
+                           "created_at": "2026-11-01 03:05:00", "parent_id": "gone" }),
+            )]),
+        ));
+        app.open_channel("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "gone".into(),
+            selected: Some("r2".into()),
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("元のメッセージは削除されました"),
+            "{screen}"
+        );
+        assert!(screen.contains("親なしの返信"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn global_search_takes_pastes_and_does_not_mark_the_timeline_read() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        app.on_terminal_event(Event::Paste("会議\n資料".into()));
+        assert_eq!(app.global_search.query, "会議資料");
+        assert!(app.composer.is_empty());
+        app.newest_shown = None;
+        render(&mut app);
+        assert_eq!(app.newest_shown, None, "the popup covers the timeline");
+        press(&mut app, KeyCode::Esc);
+        render(&mut app);
+        assert!(app.newest_shown.is_some());
     }
 
     #[tokio::test]

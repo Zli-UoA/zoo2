@@ -1574,6 +1574,13 @@ impl App {
             form.input.extend(text.chars().filter(|c| !c.is_control()));
             return;
         }
+        if self.mode == Mode::GlobalSearch {
+            // 検索語に足すだけ。検索は Enter で行う。
+            self.global_search
+                .query
+                .extend(text.chars().filter(|c| !c.is_control()));
+            return;
+        }
         if self.mode != Mode::Insert {
             return;
         }
