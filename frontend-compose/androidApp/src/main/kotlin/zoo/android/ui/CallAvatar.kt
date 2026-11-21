@@ -98,7 +98,7 @@ internal fun CallToggle(label: String, icon: UiIcon, active: Boolean, colors: An
         ) {
             UiGlyph(icon, if (active) Color.Black else colors.foreground)
         }
-        Text(label, color = colors.foreground, fontSize = 12.sp, fontWeight = AndroidWeights.label)
+        Text(label, color = colors.foreground, fontSize = 12.sp, fontWeight = AndroidWeights.emphasis)
     }
 }
 
@@ -113,6 +113,6 @@ internal fun IncomingCallAction(label: String, icon: UiIcon, fill: Color, colors
             contentAlignment = Alignment.Center) {
             UiGlyph(icon, Color.White, iconSize = 36.dp)
         }
-        Text(label, color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.label)
+        Text(label, color = colors.foreground, fontSize = 13.sp, fontWeight = AndroidWeights.emphasis)
     }
 }

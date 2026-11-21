@@ -22,6 +22,7 @@ import zoo.android.ui.AndroidShell
 import zoo.android.ui.PageHeader
 import zoo.android.ui.TextAction
 import zoo.android.ui.TextActionStyle
+import zoo.android.ui.UiIcon
 
 @Composable
 internal fun UpdateSettings(context: Context, dark: Boolean, language: String, back: () -> Unit) {
@@ -75,7 +76,7 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
                 color = colors.secondary)
             if (BuildConfig.DEBUG) Text("自動更新は署名付きの配布版で利用できます。", color = colors.secondary)
             if (!ready && !BuildConfig.DEBUG) {
-                TextAction("Shizuku の使用を許可", colors, enabled = !granting) {
+                TextAction("Shizuku の使用を許可", colors, icon = UiIcon.Key, enabled = !granting) {
                     error = ""
                     try {
                         check(Shizuku.pingBinder() && !Shizuku.isPreV11())
@@ -87,7 +88,7 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
                     }
                 }
             }
-            if (!ready) TextAction("Shizuku の導入方法", colors, style = TextActionStyle.Neutral) {
+            if (!ready) TextAction("Shizuku の導入方法", colors, icon = UiIcon.External, style = TextActionStyle.Neutral) {
                 try {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/ja/")))
                 } catch (_: android.content.ActivityNotFoundException) {
@@ -106,7 +107,7 @@ internal fun UpdateSettings(context: Context, dark: Boolean, language: String, b
                     modifier = Modifier.semantics { contentDescription = "自動更新" },
                 )
             }
-            TextAction("今すぐ更新を確認", colors, enabled = ready && !BuildConfig.DEBUG) {
+            TextAction("今すぐ更新を確認", colors, icon = UiIcon.Refresh, enabled = ready && !BuildConfig.DEBUG) {
                 UpdateScheduler.checkNow(context)
             }
             if (status.isNotBlank()) Text(status, color = colors.secondary, fontSize = 13.sp)

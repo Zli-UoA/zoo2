@@ -66,6 +66,6 @@ private fun SheetAction(icon: UiIcon, title: String, colors: AndroidColors, clic
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         UiGlyph(icon, colors.foreground)
-        Text(title, color = colors.foreground, fontWeight = AndroidWeights.label)
+        Text(title, color = colors.foreground, fontWeight = AndroidWeights.emphasis)
     }
 }

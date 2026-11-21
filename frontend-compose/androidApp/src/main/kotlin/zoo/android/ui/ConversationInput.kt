@@ -118,7 +118,7 @@ internal fun ConversationInput(
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                 .horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 state.files.forEach { (id, name) ->
-                    TextAction("$name ×", colors, style = TextActionStyle.Neutral) { onRemoveFile(id) }
+                    TextAction(name, colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { onRemoveFile(id) }
                 }
             }
         }

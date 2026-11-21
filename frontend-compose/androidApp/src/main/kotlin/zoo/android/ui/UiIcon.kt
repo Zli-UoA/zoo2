@@ -34,7 +34,7 @@ internal object AndroidControlSize {
 }
 
 internal enum class UiIcon {
-    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff, Delete, Repost, Search, External, Mic, MicOff, Speaker, SpeakerOff,
+    Back, Next, Home, Channels, Bell, Bubble, Settings, Send, Attach, Format, Emoji, Create, Document, Copy, Phone, PhoneOff, Delete, Repost, Search, External, Mic, MicOff, Speaker, SpeakerOff, SignIn, Check, Close, Refresh, Photo, Save, Key, Lock, Download, Upload, UserAdd, Archive,
 }
 
 @Composable
@@ -101,6 +101,54 @@ internal fun UiGlyph(icon: UiIcon, color: Color, iconSize: Dp = AndroidControlSi
                 lines(14 to 3, 14 to 8, 19 to 8)
                 lines(9 to 12, 16 to 12)
                 lines(9 to 16, 16 to 16)
+            }
+            UiIcon.SignIn -> {
+                lines(12 to 4, 20 to 4, 20 to 20, 12 to 20)
+                lines(3 to 12, 15 to 12)
+                lines(11 to 8, 15 to 12, 11 to 16)
+            }
+            UiIcon.Check -> lines(5 to 12, 10 to 17, 20 to 7)
+            UiIcon.Close -> { lines(6 to 6, 18 to 18); lines(18 to 6, 6 to 18) }
+            UiIcon.Refresh -> {
+                lines(20 to 10, 18 to 6, 14 to 4, 9 to 4, 5 to 8, 4 to 12, 6 to 17, 10 to 20, 15 to 20, 19 to 17)
+                lines(15 to 10, 20 to 10, 20 to 5)
+            }
+            UiIcon.Photo -> {
+                lines(4 to 5, 20 to 5, 20 to 19, 4 to 19, 4 to 5)
+                lines(4 to 17, 10 to 11, 14 to 15, 17 to 12, 20 to 15)
+                drawCircle(color, size.width / 17, point(15f, 9f))
+            }
+            UiIcon.Save -> {
+                lines(4 to 4, 17 to 4, 20 to 7, 20 to 20, 4 to 20, 4 to 4)
+                lines(8 to 4, 8 to 9, 16 to 9, 16 to 4)
+                lines(8 to 20, 8 to 14, 16 to 14, 16 to 20)
+            }
+            UiIcon.Key -> {
+                drawCircle(color, size.width / 6, point(8f, 8f), style = Stroke(width))
+                lines(11 to 11, 21 to 21, 21 to 17)
+                lines(16 to 16, 19 to 13)
+            }
+            UiIcon.Lock -> {
+                lines(5 to 11, 19 to 11, 19 to 21, 5 to 21, 5 to 11)
+                lines(8 to 11, 8 to 7, 10 to 4, 14 to 4, 16 to 7, 16 to 11)
+                lines(12 to 15, 12 to 17)
+            }
+            UiIcon.Download, UiIcon.Upload -> {
+                lines(5 to 16, 5 to 20, 19 to 20, 19 to 16)
+                lines(12 to 4, 12 to 15)
+                if (icon == UiIcon.Download) lines(8 to 11, 12 to 15, 16 to 11)
+                else lines(8 to 8, 12 to 4, 16 to 8)
+            }
+            UiIcon.UserAdd -> {
+                drawCircle(color, size.width / 6, point(9f, 8f), style = Stroke(width))
+                lines(3 to 20, 3 to 17, 6 to 14, 12 to 14, 15 to 17, 15 to 20)
+                lines(19 to 7, 19 to 15)
+                lines(15 to 11, 23 to 11)
+            }
+            UiIcon.Archive -> {
+                lines(4 to 5, 20 to 5, 20 to 9, 4 to 9, 4 to 5)
+                lines(6 to 9, 6 to 20, 18 to 20, 18 to 9)
+                lines(10 to 13, 14 to 13)
             }
             UiIcon.External -> {
                 lines(11 to 5, 5 to 5, 5 to 19, 19 to 19, 19 to 13)

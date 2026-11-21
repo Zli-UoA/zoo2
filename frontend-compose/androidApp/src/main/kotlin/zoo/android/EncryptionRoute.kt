@@ -6,7 +6,6 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -107,17 +106,17 @@ internal fun EncryptionRoute(
                     Text("リカバリーキーを安全な場所に控えてください", color = colors.foreground)
                     Text(setupStart.recoveryKey, Modifier.fillMaxWidth().padding(12.dp),
                         color = colors.foreground, fontSize = 18.sp, textAlign = TextAlign.Center)
-                    TextAction(if (confirmed) "保存済み" else "キーを控えた", colors, style = TextActionStyle.Neutral) {
+                    TextAction(if (confirmed) "保存済み" else "キーを控えた", colors, icon = UiIcon.Check, style = TextActionStyle.Neutral) {
                         confirmed = !confirmed
                     }
                     if (passkey != null) TextAction(if (passkeyAdded) "パスキーを追加済み" else "パスキーを追加", colors,
-                        enabled && !passkeyAdded, style = TextActionStyle.Neutral) {
+                        enabled && !passkeyAdded, icon = UiIcon.Key, style = TextActionStyle.Neutral) {
                         perform {
                             setup.addSetupPasskey(setupStart.session, passkey.client, passkey.rpId, null)
                             passkeyAdded = true
                         }
                     }
-                    if (reauthenticate != null) TextAction("保存", colors, confirmed && enabled) {
+                    if (reauthenticate != null) TextAction("保存", colors, confirmed && enabled, icon = UiIcon.Save) {
                         perform {
                             setup.completeSetup(setupStart.session, reauthenticate())
                             setupStart.session.close()
@@ -126,7 +125,7 @@ internal fun EncryptionRoute(
                         }
                     }
                 }
-                unfinished != null && reauthenticate != null -> TextAction("初期設定を続ける", colors, enabled) {
+                unfinished != null && reauthenticate != null -> TextAction("初期設定を続ける", colors, enabled, icon = UiIcon.Next) {
                     perform {
                         setup.saveRemaining(unfinished.session, unfinished.secretsRevision, reauthenticate())
                         unfinished.session.close()
@@ -134,7 +133,7 @@ internal fun EncryptionRoute(
                         reload()
                     }
                 }
-                status is E2eeStatus.NotSetUp -> TextAction("暗号化を設定", colors, enabled) {
+                status is E2eeStatus.NotSetUp -> TextAction("暗号化を設定", colors, enabled, icon = UiIcon.Lock) {
                     perform {
                         confirmed = false
                         passkeyAdded = false
@@ -142,7 +141,7 @@ internal fun EncryptionRoute(
                     }
                 }
                 status is E2eeStatus.Locked -> {
-                    if (passkey != null) TextAction("パスキーで解錠", colors, enabled) {
+                    if (passkey != null) TextAction("パスキーで解錠", colors, enabled, icon = UiIcon.Key) {
                         unlock(UnlockMethod.Passkey(passkey.client, passkey.rpId))
                     }
                     Text("リカバリーキー", color = colors.foreground)
@@ -151,26 +150,26 @@ internal fun EncryptionRoute(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                         textStyle = TextStyle(color = colors.foreground, fontSize = 16.sp),
                         cursorBrush = SolidColor(colors.foreground))
-                    TextAction("リカバリーキーで解錠", colors, enabled && recovery.isNotBlank()) {
+                    TextAction("リカバリーキーで解錠", colors, enabled && recovery.isNotBlank(), icon = UiIcon.Key) {
                         unlock(UnlockMethod.Recovery(recovery))
                     }
                 }
                 status is E2eeStatus.Unlocked -> {
                     Text("この端末は解錠済みです", color = colors.foreground)
-                    TextAction("鍵をバックアップ", colors, enabled, style = TextActionStyle.Neutral) {
+                    TextAction("鍵をバックアップ", colors, enabled, icon = UiIcon.Upload, style = TextActionStyle.Neutral) {
                         perform {
                             if (setup.uploadKeyBackup() is zoo.crypto.BackupUploadResult.Conflict) failure = true
                         }
                     }
-                    TextAction("鍵のバックアップを復元", colors, enabled, style = TextActionStyle.Neutral) {
+                    TextAction("鍵のバックアップを復元", colors, enabled, icon = UiIcon.Download, style = TextActionStyle.Neutral) {
                         perform { setup.importKeyBackup() }
                     }
                 }
             }
-            if (job != null) TextAction("キャンセル", colors, style = TextActionStyle.Neutral) { job?.cancel() }
+            if (job != null) TextAction("キャンセル", colors, icon = UiIcon.Close, style = TextActionStyle.Neutral) { job?.cancel() }
             if (failure) {
                 Text("暗号化の操作を完了できませんでした", color = colors.foreground)
-                TextAction("状態を読み直す", colors, enabled, style = TextActionStyle.Neutral) { perform { reload() } }
+                TextAction("状態を読み直す", colors, enabled, icon = UiIcon.Refresh, style = TextActionStyle.Neutral) { perform { reload() } }
             }
             if (devices.isNotEmpty()) {
                 Text("登録済みの端末", color = colors.foreground, fontWeight = AndroidWeights.label)
@@ -178,12 +177,12 @@ internal fun EncryptionRoute(
                     val current = device.text("device_id") == manager.currentDeviceId
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         TextAction(device.text("display_name").ifBlank { device.text("device_id") }, colors, enabled,
-                            style = TextActionStyle.Plain, modifier = Modifier.weight(1f)) {
+                            style = TextActionStyle.Plain, modifier = Modifier.weight(1f), icon = UiIcon.Format) {
                             deviceName = device.text("display_name")
                             rename = device
                         }
                         if (current) Text("この端末", color = colors.secondary)
-                        else TextAction("削除", colors, enabled && manager.currentDeviceId != null,
+                        else TextAction("削除", colors, enabled && manager.currentDeviceId != null, icon = UiIcon.Delete,
                             style = TextActionStyle.Neutral) { remove = device }
                     }
                 }
@@ -196,7 +195,7 @@ internal fun EncryptionRoute(
             title = { Text("端末名を編集") },
             text = { OutlinedTextField(deviceName, { deviceName = it }, singleLine = true) },
             confirmButton = {
-                TextButton(enabled = deviceName.isNotBlank() && deviceName.codePointCount() <= 100, onClick = {
+                DialogAction("保存", UiIcon.Save, enabled = deviceName.isNotBlank() && deviceName.codePointCount() <= 100) {
                     val name = deviceName.trim()
                     rename = null
                     perform {
@@ -204,9 +203,9 @@ internal fun EncryptionRoute(
                             obj("display_name" to name))
                         reload()
                     }
-                }) { Text("保存") }
+                }
             },
-            dismissButton = { TextButton(onClick = { rename = null }) { Text("キャンセル") } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { rename = null } },
         )
     }
     remove?.let { device ->
@@ -215,16 +214,16 @@ internal fun EncryptionRoute(
             title = { Text("暗号化端末を削除しますか？") },
             text = { Text(device.text("display_name")) },
             confirmButton = {
-                TextButton(onClick = {
+                DialogAction("削除", UiIcon.Delete) {
                     remove = null
                     perform {
                         check(device.text("device_id") != manager.currentDeviceId)
                         session.api.request("/api/e2ee/devices/${device.text("device_id").encodeURLParameter()}", "DELETE")
                         reload()
                     }
-                }) { Text("削除") }
+                }
             },
-            dismissButton = { TextButton(onClick = { remove = null }) { Text("キャンセル") } },
+            dismissButton = { DialogAction("キャンセル", UiIcon.Close) { remove = null } },
         )
     }
 }
