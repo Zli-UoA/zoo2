@@ -22,6 +22,62 @@ vi.mock("../../../lib/electric/collections-context", async (importOriginal) => (
 
 afterEach(() => api.get.mockReset());
 
+it("shows a loading indicator without shifting messages while older messages are fetched", () => {
+  const noop = () => {};
+  const messages = [
+    {
+      id: "1",
+      user_id: "other",
+      display_name: "Alice",
+      parent_id: null,
+      created_at: "2026-01-02 00:00:00.000",
+      content: "Message 1",
+    },
+  ];
+  const pane = (isLoadingOlder: boolean) => (
+    <LocaleProvider>
+      <div className="flex h-[400px] w-[360px] flex-col">
+        <MessageList
+          messages={messages}
+          isLoading={false}
+          isError={false}
+          isLoadingOlder={isLoadingOlder}
+          currentUserId="me"
+          editingId={null}
+          editingText=""
+          onEditingTextChange={noop}
+          onStartEdit={noop}
+          onCancelEdit={noop}
+          onSaveEdit={noop}
+          onRequestDelete={noop}
+          reactions={new Map()}
+          kitchenCatalog={null}
+          canReact={false}
+          onReaction={noop}
+          onPickReaction={noop}
+          onOpenThread={noop}
+        />
+      </div>
+    </LocaleProvider>
+  );
+  const { rerender } = render(pane(true));
+  expect(screen.getByTestId("loading-older-status")).toHaveTextContent(
+    "古いメッセージを読み込み中…",
+  );
+  const before = screen
+    .getByText("Message 1")
+    .closest<HTMLElement>("[data-message-id]")!
+    .getBoundingClientRect().top;
+
+  // スピナーを消しても行の位置は変わらない (フローに高さを持たせない)。
+  rerender(pane(false));
+  expect(screen.getByTestId("loading-older-status")).toBeEmptyDOMElement();
+  expect(
+    screen.getByText("Message 1").closest<HTMLElement>("[data-message-id]")!.getBoundingClientRect()
+      .top,
+  ).toBe(before);
+});
+
 const nextFrame = () =>
   new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),

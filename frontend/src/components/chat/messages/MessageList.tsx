@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownIcon, LockKeyholeIcon } from "lucide-react";
+import { ArrowDownIcon, LoaderCircleIcon, LockKeyholeIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -313,6 +313,8 @@ export function MessageList({
       // Estimates for unmounted rows must not decide which message the reader sees.
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
+      // アンカーが押し出された (index < 0) 場合は、消えた行の実測高さが取れないので
+      // scrollTop を推測で動かさない。描画後の captureScrollAnchor() が次の位置を記録する。
       if (anchor && index >= 0) {
         restoringAnchorRef.current = true;
         let frame = 0;
@@ -519,6 +521,23 @@ export function MessageList({
 
   return (
     <div className="relative min-h-0 flex-1">
+      {!showSkeleton && !showOffline && !showError && !showEmpty ? (
+        <div
+          role="status"
+          data-testid="loading-older-status"
+          className="pointer-events-none absolute inset-x-0 top-0 z-10 flex h-6 items-center justify-center text-xs text-muted-foreground"
+        >
+          {isLoadingOlder ? (
+            <>
+              <LoaderCircleIcon
+                className="size-4 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+              <span className="sr-only">{t("messages.loadingOlder")}</span>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {showSkeleton ? (
         <MessageSkeleton />
       ) : showOffline ? (

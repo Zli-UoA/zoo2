@@ -22,6 +22,8 @@ import {
   LoaderCircleIcon,
   XIcon,
 } from "lucide-react";
+import { canPostInChannel } from "../../hooks/channelPermissions";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useActiveChannels, useMyChannelMemberships } from "../../hooks/useRealtime";
 import { useVisualViewport } from "../layout/useVisualViewport";
 import { useMediaQuery } from "../layout/useMediaQuery";
@@ -40,7 +42,18 @@ import {
 
 import { attachmentFilesFromClipboard, resolveAttachmentContentType } from "../../lib/attachments";
 import { useCollections } from "../../lib/electric/collections-context";
-import { createConfiguredApiClient } from "../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
+
+// バックエンドの `apps::events::posting` が、投稿権限のないチャンネルへ返す 403 の `code` と本文。
+// `code` を優先し、`code` のない応答（コードを返す前のサーバー）だけ、本文で判定する。
+const POSTING_RESTRICTED_CODE = "POSTING_RESTRICTED";
+const POSTING_FORBIDDEN_MESSAGE = "Only channel managers may post here";
+
+function isPostingForbidden(body: unknown): boolean {
+  const { code, error } = (body ?? {}) as { code?: unknown; error?: unknown };
+  if (typeof code === "string") return code === POSTING_RESTRICTED_CODE;
+  return typeof error === "string" && error.includes(POSTING_FORBIDDEN_MESSAGE);
+}
 
 export interface HomePostInput {
   image_ids?: string[];
@@ -190,6 +203,25 @@ export function HomeComposer({
     visibility !== "followers" && availableChannels.some((channel) => channel.id === channelId)
       ? channelId
       : "";
+  // 投稿権限のないチャンネル（`posting_policy=managers`）には、閲覧はできても書き込めない。
+  // 返信は返信先のチャンネル、新規投稿は選んだチャンネルが対象。
+  const { currentUserId, isAdmin, isLoading: currentUserLoading } = useCurrentUser();
+  const targetChannelId = replyTo ? (replyTo.channel_id ?? null) : selectedChannelId || null;
+  const targetChannel = targetChannelId
+    ? (channelsQuery.data ?? []).find((channel) => channel.id === targetChannelId)
+    : undefined;
+  // 現在のユーザー（管理者か）が確定するまでは止めない。チャンネルに参加していない人の返信は、
+  // サーバーが Home だけの返信として受け付ける（チャンネルの投稿権限は通らない）ので、止めない。
+  // 新規投稿の送り先は、参加中のチャンネルから選ぶ。
+  const postingForbidden =
+    !currentUserLoading &&
+    !!targetChannel &&
+    joinedChannelIds.has(targetChannel.id) &&
+    !canPostInChannel({
+      postingPolicy: targetChannel.posting_policy,
+      isAdmin,
+      isCreator: !!currentUserId && targetChannel.created_user_id === currentUserId,
+    });
   const channelSelectionPending =
     channelId !== "" &&
     visibility !== "followers" &&
@@ -204,7 +236,7 @@ export function HomeComposer({
     setChannelId("");
   }, [channelId, visibility, selectedChannelId, channelSelectionPending, settingsKey]);
   const [sending, setSending] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<false | "send" | "forbidden">(false);
   const inFlight = useRef(false);
   const composingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -223,6 +255,7 @@ export function HomeComposer({
   const submit = async () => {
     if (
       channelSelectionPending ||
+      postingForbidden ||
       inFlight.current ||
       uploadLock.current ||
       (!content.trim() && !images.length) ||
@@ -261,8 +294,14 @@ export function HomeComposer({
       imagesRef.current = [];
       setImageError(false);
       setOpen(false);
-    } catch {
-      setFailed(true);
+    } catch (error) {
+      // チャンネルの投稿権限による 403 だけ専用の文言にする（返信は参加を要求せず、返信と同時に参加する）。
+      // 認証・アカウント停止など、ほかの 403 は汎用の送信エラーにする。
+      setFailed(
+        error instanceof ApiError && error.status === 403 && isPostingForbidden(error.body)
+          ? "forbidden"
+          : "send",
+      );
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -276,6 +315,7 @@ export function HomeComposer({
         if (inFlight.current) return;
         const show = () => {
           setReplyTo(post);
+          setFailed(false);
           setChannelId("");
           setVisibility((current) => replyVisibility(current, post.visibility, !!post.channel_id));
           setOpen(true);
@@ -453,6 +493,7 @@ export function HomeComposer({
                     sending ||
                     uploading ||
                     channelSelectionPending ||
+                    postingForbidden ||
                     (!content.trim() && !images.length) ||
                     length > 1000
                   }
@@ -487,7 +528,10 @@ export function HomeComposer({
                     size="icon-sm"
                     disabled={sending}
                     aria-label={t("home.cancelReply")}
-                    onClick={() => setReplyTo(null)}
+                    onClick={() => {
+                      setReplyTo(null);
+                      setFailed(false);
+                    }}
                   >
                     <XIcon />
                   </Button>
@@ -628,9 +672,14 @@ export function HomeComposer({
                   {length} / 1000
                 </span>
               </div>
+              {postingForbidden ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  {t("channels.postingManagersOnly")}
+                </p>
+              ) : null}
               {failed ? (
                 <p role="alert" className="text-sm text-destructive">
-                  {t("home.sendError")}
+                  {failed === "forbidden" ? t("home.postForbidden") : t("home.sendError")}
                 </p>
               ) : null}
             </div>

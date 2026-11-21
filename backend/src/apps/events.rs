@@ -92,6 +92,10 @@ pub async fn active_user(state: &AppState, user: &str) -> Result<(), AppError> {
     if one(&mut tx,"SELECT json_build_object('disabled',EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_deactivated))::text",&[user]).await?["disabled"]==true{return Err(AppError::Forbidden("Account is deactivated".into()));}
     Ok(())
 }
+/// `code` of the 403 for a write to a channel whose `posting_policy` is `managers`, from someone
+/// who is neither its creator nor a workspace administrator.
+pub const POSTING_RESTRICTED_CODE: &str = "POSTING_RESTRICTED";
+
 pub async fn posting(
     tx: &mut toasty::Transaction<'_>,
     actor: &str,
@@ -103,9 +107,13 @@ pub async fn posting(
         && v["creator"] != actor
         && !crate::auth::rbac::is_workspace_admin(tx, actor, dev).await?
     {
-        return Err(AppError::Forbidden(
-            "Only channel managers may post here".into(),
-        ));
+        // Clients decide on `code`; the message stays for clients released before the code existed.
+        return Err(AppError::Coded {
+            status: axum::http::StatusCode::FORBIDDEN,
+            code: POSTING_RESTRICTED_CODE,
+            message: "Only channel managers may post here".into(),
+            extra: serde_json::Map::new(),
+        });
     }
     Ok(())
 }

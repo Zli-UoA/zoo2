@@ -5,7 +5,7 @@ import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { downloadAttachment } from "../../../lib/api/attachments";
+import { AttachmentDownloadError, downloadAttachmentWithRetry } from "../../../lib/api/attachments";
 import {
   type AttachmentMetadata,
   formatAttachmentSize,
@@ -77,7 +77,10 @@ function AttachmentPreview({ attachment }: { attachment: AttachmentMetadata }) {
         }
       }}
       onOpen={() => {
-        if (shouldRefreshAttachmentUrl(state.expiresAt)) void state.getFreshUrl();
+        if (shouldRefreshAttachmentUrl(state.expiresAt)) {
+          // 表示用の先読み。失敗してもダウンロード時に再試行する。
+          void state.getFreshUrl().catch(() => undefined);
+        }
       }}
       footer={<AttachmentDownloadButton attachment={attachment} state={state} showLabel />}
     />
@@ -154,13 +157,21 @@ function AttachmentDownloadButton({
     }
     setDownloading(true);
     try {
-      const url = await state.getFreshUrl();
-      if (!url) {
-        throw new Error("Attachment URL is unavailable");
-      }
-      await downloadAttachment(url, attachment.file_name);
-    } catch {
-      toast.error(t("attachments.downloadError"));
+      await downloadAttachmentWithRetry(state.getFreshUrl, attachment.file_name);
+    } catch (error) {
+      // 失敗の理由（URL・通信・HTTP）と状態コードを、問い合わせ時に追えるように残す。
+      console.error("添付のダウンロードに失敗しました", {
+        attachmentId: attachment.id,
+        reason: error instanceof AttachmentDownloadError ? error.reason : "unknown",
+        status: error instanceof AttachmentDownloadError ? error.status : null,
+        error,
+      });
+      toast.error(
+        t("attachments.downloadError"),
+        error instanceof AttachmentDownloadError && error.reason === "http" && error.status
+          ? { description: `HTTP ${error.status}` }
+          : undefined,
+      );
     } finally {
       setDownloading(false);
     }

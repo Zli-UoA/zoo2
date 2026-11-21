@@ -78,7 +78,7 @@ Service Worker は静的 app shell（`/index.html`、ビルド済みの `/assets
 
 全て既存の API と同じ認証が必要。
 
-- `GET /api/push/config`: `{ "publicKey": "..." }`（未設定なら `null`）。
+- `GET /api/push/config` は Web Push の `publicKey`（未設定時は `null`）、Android向けの `fcmProjectId`（未設定時は `null`）、DM着信のFCM配送の可否を示す `fcmDmCalls` を返します。Androidは `fcmDmCalls` が `true` で端末のDM着信が有効なら、FCMの購読endpointに `:dm-calls` を付けます。DM着信と取り消しはこの購読にだけ配送されます。
 - `POST /api/push/subscriptions`: `{ "endpoint": "https://...", "keys": { "p256dh": "...", "auth": "..." } }`。同じユーザー・endpoint の再登録では暗号化鍵を更新する。別ユーザーの既存登録は引き継がず、画面の初期化時に端末側の登録を解除して再度の有効化を求める。
 - `DELETE /api/push/subscriptions`: `{ "endpoint": "https://..." }`。自分の登録だけを削除する。
 

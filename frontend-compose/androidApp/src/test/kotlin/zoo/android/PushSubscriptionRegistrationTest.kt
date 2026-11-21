@@ -98,6 +98,39 @@ class PushSubscriptionRegistrationTest {
         assertEquals(listOf("other-server"), store.pendingRemovals("https://other.example", user))
     }
 
+    @Test fun restoringThePreviousSettingReregistersAfterTheReplacementFails() = runTest {
+        val store = PushBinding(context)
+        val binding = store.bind(base, user)
+        val ordinary = "fcm:token:$binding"
+        val calls = "$ordinary:dm-calls"
+        val server = mutableSetOf<String>()
+        val posts = mutableListOf<String>()
+        var failCalls = true
+        val registration = PushSubscriptionRegistration(store, base, user, binding) { method, endpoint ->
+            if (method == "DELETE") server.remove(endpoint)
+            else {
+                posts += endpoint
+                if (endpoint == calls && failCalls) throw IOException("unavailable")
+                server.add(endpoint)
+            }
+        }
+
+        store.setDmCallsEnabled(user, true)
+        registration.refresh("token", supportsDmCalls = false)
+        assertEquals(setOf(ordinary), server)
+        assertFailsWith<IOException> { registration.refresh("token", supportsDmCalls = true) }
+        assertTrue(server.isEmpty())
+        store.setDmCallsEnabled(user, false)
+        registration.refresh("token", supportsDmCalls = true)
+        assertEquals(setOf(ordinary), server)
+        assertEquals(listOf(ordinary, calls, ordinary), posts)
+
+        failCalls = false
+        store.setDmCallsEnabled(user, true)
+        registration.refresh("token", supportsDmCalls = true)
+        assertEquals(setOf(calls), server)
+    }
+
     @Test fun rotatingATokenRemovesItsOldRegistrationBeforeTheDeviceLimitCheck() = runTest {
         val store = PushBinding(context)
         val binding = store.bind(base, user)

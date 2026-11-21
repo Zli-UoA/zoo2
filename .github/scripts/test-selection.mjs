@@ -83,7 +83,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } catch {
     console.log('Test Selection: diff unavailable; running all suites');
   }
-  let selection = { ...selectSuites(process.env.GITHUB_EVENT_NAME, changes), ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, changes, { base }) };
+  let selection = { ...selectSuites(process.env.GITHUB_EVENT_NAME, changes), ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, changes) };
   if (base && changes) {
     const workflow = process.env.TEST_WORKFLOW;
     const jobs = workflowJobs(workflow, changes, { base });

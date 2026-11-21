@@ -55,7 +55,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang="ja" suppressHydrationWarning>
+    <html lang="ja" data-zoo-build-sha="" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: localeInitScript }} />
         <HeadContent />

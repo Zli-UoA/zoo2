@@ -118,7 +118,17 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
                 .any(|v| v["id"] == root)
         );
     }
-    ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
+    // A write answers with the participants read after it committed, so they include the change.
+    let joined = ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
+    assert_eq!(joined["data"]["membership"], "joined");
+    assert!(
+        joined["data"]["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == users[2].as_str())
+    );
+    assert_eq!(joined["data"]["tracked"], true);
     let repeat = ok(&app, &users[2], "POST", &format!("{path}/join"), json!({})).await?;
     assert!(repeat["txid"].is_null());
     ok(&app, &users[1], "POST", &format!("{path}/leave"), json!({})).await?;
@@ -128,6 +138,17 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
         ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["membership"],
         "left"
     );
+    // The participant list reflects only people who are currently in the thread.
+    let detail = ok(&app, &users[2], "GET", &path, Value::Null).await?;
+    let listed: Vec<&str> = detail["data"]["participants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(listed.contains(&users[2].as_str()));
+    assert!(!listed.contains(&users[1].as_str()));
+    assert_eq!(detail["data"]["participant_count"], listed.len());
     toasty::sql::statement(
         "UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1",
     )
@@ -169,6 +190,54 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
     let nested_id = uuid::Uuid::new_v4().to_string();
     let nested =
         json!({"id":nested_id,"channel_id":channel,"parent_id":reply,"content":"Back again"});
+    // Like a channel, replying needs membership: a user who left must join again first.
+    assert_eq!(
+        call(&app, &users[1], "POST", "/api/messages", nested.clone())
+            .await?
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    // A Home reply is the exception: it joins the thread as it posts, even after a leave.
+    let home_root = ok(
+        &app,
+        &users[0],
+        "POST",
+        "/api/home",
+        json!({"content":"home root","channel_id":channel,"visibility":"public"}),
+    )
+    .await?["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let home_reply = json!({"content":"via home","in_reply_to":home_root,"channel_id":channel,"visibility":"public"});
+    ok(&app, &users[1], "POST", "/api/home", home_reply.clone()).await?;
+    let home_path = format!("/api/threads/{home_root}");
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("{home_path}/leave"),
+        json!({}),
+    )
+    .await?;
+    ok(&app, &users[1], "POST", "/api/home", home_reply).await?;
+    assert_eq!(
+        ok(&app, &users[1], "GET", &home_path, Value::Null).await?["data"]["membership"],
+        "joined"
+    );
+    assert_eq!(
+        ok(&app, &users[1], "GET", &path, Value::Null).await?["data"]["tracked"],
+        true
+    );
+    ok(
+        &app,
+        &users[1],
+        "POST",
+        &format!("{path}/unarchive"),
+        json!({}),
+    )
+    .await?;
+    ok(&app, &users[1], "POST", &format!("{path}/join"), json!({})).await?;
     let created = ok(&app, &users[1], "POST", "/api/messages", nested.clone()).await?;
     assert_eq!(created["data"]["parent_id"], root);
     let state = ok(&app, &users[1], "GET", &path, Value::Null).await?;

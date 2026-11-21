@@ -110,6 +110,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     slack_imported_at: "timestamp",
     encrypted: "bool",
     membership_epoch: "int8",
+    posting_policy: "text",
   },
 };
 

@@ -2,6 +2,11 @@
   "a11y": {
     "skipToContent": "本文へスキップ"
   },
+  "aboutZoo": {
+    "title": "Zooについて",
+    "version": "バージョン: {{version}}",
+    "versionUnknown": "不明"
+  },
   "notFoundPage": {
     "title": "ページが見つかりません",
     "description": "お探しのページは移動または削除された可能性があります。"
@@ -55,6 +60,7 @@
     "notFound": "チャンネルが見つかりません。",
     "duplicateName": "同名のチャンネルが既に存在します。",
     "privateMessages": "このチャンネルは非公開です。招待されるとメッセージを表示できます。",
+    "postingManagersOnly": "このチャンネルは管理者のみ投稿できます。",
     "back": "チャンネル一覧へ戻る",
     "noDescription": "説明はまだありません",
     "visibilityHelp": "公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。",
@@ -209,6 +215,7 @@
     "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
   },
   "messages": {
+    "loadingOlder": "古いメッセージを読み込み中…",
     "typing": "{{names}}が入力中…",
     "typingSeparator": "、",
     "compose": "メッセージを送信",
@@ -269,6 +276,8 @@
     "containedFiles": "含まれるファイル",
     "previousPage": "前のページ",
     "nextPage": "次のページ",
+    "pageNumber": "ページ番号",
+    "pdfPages": "PDFページ一覧",
     "pdfPage": "PDF {{page}}ページ",
     "mail": {
       "subject": "件名",
@@ -305,8 +314,14 @@
     "join": "参加する",
     "leave": "退出する",
     "reopen": "再Open",
-    "reopenOnSend": "送信すると再Openして参加します。",
-    "membershipError": "スレッドの参加状態を更新できませんでした。"
+    "reopenOnSend": "送信すると再Openします。",
+    "membershipError": "スレッドの参加状態を更新できませんでした。",
+    "participants_one": "参加者 {{count}}人",
+    "participants_other": "参加者 {{count}}人",
+    "participantsMore": "ほか {{count}}人",
+    "participantsEmpty": "参加者はいません",
+    "joinToReply": "参加するとこのスレッドに返信できます。",
+    "reopenAndJoin": "再Openして参加する"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -803,6 +818,7 @@
     "post": "投稿",
     "sending": "投稿中…",
     "sendError": "投稿できませんでした。下書きは残っています。もう一度お試しください。",
+    "postForbidden": "このチャンネルには投稿できません。",
     "loadError": "タイムラインを取得できませんでした。",
     "loading": "読み込み中…",
     "empty": "まだ投稿がありません",
@@ -1811,7 +1827,12 @@
   "androidPhone": {
     "description": "個人用・共有回線のSIP電話とDM音声通話を、端末の通話機能と連携して利用できます。",
     "nativeCalls": "端末の通話機能との連携",
-    "nativeHelp": "待ち受けを有効にすると、通知を表示して接続を維持します。応答・切断・音声出力は端末の通話機能とも連携します。マイクの許可が必要です。",
+    "nativeHelp": "着信時に通話通知を表示します。通知を許可すると、対応端末ではDM着信をバックグラウンドでも受け取れます。SIPの着信待ちと、FCMが使えない端末でのDMの着信待ちでは、Zooを前面に開いてください。応答・切断・音声出力は端末の通話機能と連携し、マイクの許可が必要です。",
+    "minimizeCall": "最小化",
+    "expandCall": "通話を開く",
+    "floatCall": "フローティング表示",
+    "pipUnavailable": "Androidの設定でピクチャーインピクチャーを確認してください。",
+    "incomingScreenSettings": "着信時の全画面表示を設定",
     "receiveDm": "DM通話の着信を受ける",
     "callError": "通話の準備または操作に失敗しました。マイク権限、端末の通話対応、ネットワークと回線設定を確認してください。",
     "speaker": "スピーカー",

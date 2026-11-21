@@ -92,7 +92,8 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
         while (isActive) {
             try {
                 mutex.withLock {
-                    val result = app.api.request("/api/threads/$id").jsonObject["data"]!!.jsonObject
+                    // 参加者の人数と一覧は表示しないので、O(P) の読み取りを省く。
+                    val result = app.api.request("/api/threads/$id?participants=none").jsonObject["data"]!!.jsonObject
                     detail = result
                     failed = false
                     if (app.thread == id && result.text("id") != id) app.thread = result.text("id")
@@ -105,7 +106,7 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
     fun change(action: String) {
         app.run("thread:$id") {
             mutex.withLock {
-                detail = app.api.request("/api/threads/$id/$action", "POST", obj()).jsonObject["data"]!!.jsonObject
+                detail = app.api.request("/api/threads/$id/$action?participants=none", "POST", obj()).jsonObject["data"]!!.jsonObject
                 failed = false
             }
         }
@@ -119,6 +120,12 @@ private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int
             else if (!archived)
                 Button(app.t("threads.join"), detail != null && !pending && app.env.online, size = "sm") { change("join") }
         }
+        // 参加行があるスレッドは、参加してから返信する（未参加のまま送ると 403 になる）。Androidは、サーバーが
+        // 受け付ける範囲に合わせる。参加行がないスレッドの最初の返信は、参加なしで送れる（Web だけが、画面で
+        // 返信の前の参加を必須にしている）。
+        val membership = detail?.text("membership")
+        val needsJoin = membership == "left" || (membership == "none" && detail?.flag("tracked") == true)
+        if (needsJoin) Text(app.t("threads.joinToReply"), small = true, muted = true)
         if (archived) Text(app.t("threads.reopenOnSend"), small = true, muted = true)
         if (failed) Text(app.t("threads.membershipError"), small = true, color = MaterialTheme.colorScheme.error)
     }

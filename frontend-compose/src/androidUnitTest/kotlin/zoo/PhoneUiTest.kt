@@ -7,11 +7,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respondError
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.*
 import kotlin.test.*
 import org.junit.Rule
@@ -26,11 +32,22 @@ import zoo.phone.*
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PhoneUiTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
-    private class Fixture {
+    private class Fixture(private val loadProfiles: Boolean = false, prepare: suspend () -> Unit = {}) {
+        val avatar = CompletableDeferred<ByteArray>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         val platform = object : Platform {
             override suspend fun headers() = emptyMap<String, String>()
-            override suspend fun readCache(key: String): String? = null
+            override suspend fun readCache(key: String): String? = when {
+                !loadProfiles -> null
+                key.contains(":channels:") -> """[{"id":"plain","channel_name":"dm:alice:bob"},{"id":"encrypted","channel_name":"edm:alice:bob"},{"id":"group","channel_name":"dm:group:alice:bob"},{"id":"image-error","channel_name":"dm:alice:carol"}]"""
+                key.contains(":users:") -> """[{"id":"bob","display_name":"Bob","avatar_url":"https://zoo.test/bob.png"},{"id":"carol","display_name":"Carol","avatar_url":"https://zoo.test/carol.png"}]"""
+                else -> null
+            }
+            override suspend fun image(url: String): ByteArray {
+                if (url.endsWith("/carol.png")) error("Image unavailable")
+                return avatar.await()
+            }
+            override fun imageFrames(bytes: ByteArray) = kotlinx.coroutines.flow.flowOf(ImageBitmap(16, 16))
             override suspend fun writeCache(key: String, value: String) {}
             override fun uuid() = "phone-test"
             override fun now() = "2030-01-01T00:00:00Z"
@@ -40,16 +57,17 @@ class PhoneUiTest {
             override fun time(timestamp: String) = timestamp
             override fun day(timestamp: String) = timestamp
         }
-        val http = HttpClient(MockEngine { error("Unexpected network request") })
-        val app = Session(Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform, http, scope, synchronize = false), scope, Environment(touch = true))
+        val http = HttpClient(MockEngine { respondError(HttpStatusCode.ServiceUnavailable) })
+        val app = Session(Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform, http, scope, synchronize = loadProfiles), scope, Environment(touch = true))
         val controller = PhoneController(scope, request = { _, _, _ -> obj("enabled" to true, "lines" to kotlinx.serialization.json.JsonArray(emptyList())) },
             stream = { _, _, _ -> awaitCancellation() }, media = { _, _ -> error("Unexpected media capture") },
             telecom = object : PhoneTelecom {
                 override suspend fun outgoing(call: PhoneCall) {}
+                override suspend fun startAudio(id: String) = Unit
                 override fun incoming(call: PhoneCall) {}
                 override fun ended(id: String) {}
                 override fun speaker(id: String, enabled: Boolean) {}
-            }, prepare = {}, waiting = {}, uuid = { "call" })
+            }, prepare = prepare, waiting = {}, uuid = { "call" })
         fun close() { controller.close(); app.close(); http.close(); scope.cancel() }
     }
     @Test fun settingsExposeOptInWaitingAndPersonalRegistrationAtPhoneWidth() {
@@ -71,7 +89,10 @@ class PhoneUiTest {
     @Test fun failureRemainsVisibleAfterTheCallHasEndedAndCanBeDismissed() {
         val f = Fixture()
         try {
-            ui.runOnIdle { f.controller.nativeUnavailable() }
+            ui.runOnIdle {
+                f.controller.callDm("dm", "Bob")
+                f.controller.nativeFailed("call")
+            }
             ui.setContent {
                 CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
                     MaterialTheme { PhoneCallBanner(f.app, f.controller) }
@@ -82,6 +103,80 @@ class PhoneUiTest {
             ui.onNodeWithText("androidPhone.callError").assertDoesNotExist()
         } finally { f.close() }
     }
+    @Test fun waitingPermissionFailureUsesTheThemeErrorColorBesideTheWaitingControl() {
+        val f = Fixture(prepare = { error("Microphone permission denied") })
+        val colors = zooColorScheme(dark = true)
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
+                    MaterialTheme(colorScheme = colors) {
+                        Column(Modifier.width(320.dp).verticalScroll(rememberScrollState())) {
+                            PhoneSettings(f.app, f.controller, emptyList())
+                            PhoneCallBanner(f.app, f.controller)
+                        }
+                    }
+                }
+            }
+            val waiting = ui.onNodeWithText("androidPhone.receiveDm").performClick()
+            ui.onAllNodesWithText("androidPhone.callError").assertCountEquals(1)
+            val message = ui.onNodeWithText("androidPhone.callError").assertIsDisplayed()
+            assertTrue(message.fetchSemanticsNode().boundsInRoot.top >= waiting.fetchSemanticsNode().boundsInRoot.bottom)
+            val layouts = mutableListOf<TextLayoutResult>()
+            message.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals(colors.error, layouts.single().layoutInput.style.color)
+            ui.onNodeWithText("common.close").assertDoesNotExist()
+        } finally { f.close() }
+    }
+    @Test fun minimizedCallCanBeExpandedWithoutInterruptingTheCall() {
+        val f = Fixture()
+        try {
+            ui.runOnIdle { f.controller.callDm("dm", "Bob") }
+            ui.setContent {
+                CompositionLocalProvider(LocalApp provides f.app, LocalTouchUi provides true) {
+                    MaterialTheme { Box(Modifier.width(320.dp)) { PhoneCallBanner(f.app, f.controller) } }
+                }
+            }
+            ui.onNodeWithText("androidPhone.minimizeCall").performClick()
+            ui.onNodeWithContentDescription("androidPhone.expandCall").assertIsDisplayed()
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "sip.status.dialing"))
+            ui.runOnIdle { assertEquals("call", f.controller.call?.id) }
+            ui.onNodeWithContentDescription("androidPhone.expandCall").performClick()
+            ui.onNodeWithText("sip.hangup").performClick()
+            ui.runOnIdle { assertNull(f.controller.call) }
+            ui.onNodeWithContentDescription("androidPhone.expandCall").assertDoesNotExist()
+        } finally { f.close() }
+    }
+
+    @Test fun callAvatarsUseSyncedDmProfilesAndSafeFallbacks() {
+        val f = Fixture(loadProfiles = true)
+        try {
+            ui.waitUntil { f.app.repo.users.replicatedRows.value.isNotEmpty() }
+            ui.setContent {
+                MaterialTheme {
+                    Column {
+                        PhonePeerAvatar(f.app, PhoneCall("1", "dm", "plain", "Bob", "active"), 40.dp)
+                        PhonePeerAvatar(f.app, PhoneCall("2", "dm", "encrypted", "👩‍💻 Alice", "active"), 40.dp)
+                        PhonePeerAvatar(f.app, PhoneCall("3", "dm", "group", "  Weekend plans  ", "active"), 40.dp)
+                        PhonePeerAvatar(f.app, PhoneCall("4", "dm", "missing", "   ", "active"), 40.dp)
+                        PhonePeerAvatar(f.app, PhoneCall("5", "sip", "line", "Line", "active"), 40.dp)
+                        PhonePeerAvatar(f.app, PhoneCall("6", "dm", "image-error", "Carol", "active"), 40.dp)
+                    }
+                }
+            }
+            ui.onNodeWithText("B").assertIsDisplayed()
+            ui.onNodeWithText("👩‍💻A").assertIsDisplayed()
+            ui.onNodeWithText("WP").assertIsDisplayed()
+            ui.onNodeWithText("?").assertIsDisplayed()
+            ui.onNodeWithContentDescription("sip.title").assertIsDisplayed()
+            ui.runOnIdle { f.avatar.complete(byteArrayOf(1)) }
+            ui.waitUntil { ui.onAllNodesWithContentDescription("Bob").fetchSemanticsNodes().size == 2 }
+            ui.onAllNodesWithContentDescription("Bob").assertCountEquals(2)
+            ui.onNodeWithText("👩‍💻A").assertDoesNotExist()
+            ui.onNodeWithText("C").assertIsDisplayed()
+            ui.onNodeWithContentDescription("Carol").assertDoesNotExist()
+        } finally { f.close() }
+    }
+
     @Test fun incomingBannerOffersAnswerAndEndWithoutOpeningTheMicrophone() {
         val f = Fixture()
         try {

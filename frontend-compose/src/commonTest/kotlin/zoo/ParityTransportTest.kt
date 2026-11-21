@@ -153,6 +153,51 @@ class ParityTransportTest {
         http.close()
     }
 
+    /** `Session.send` の平文・暗号化の両方の `catch` が、参加が必要な 403 だけ、参加の案内を出す。 */
+    @Test
+    fun aReplyRefusedForAMissingJoinShowsTheJoinHintOnBothSendPaths() = runTest {
+        val platform = Browser().apply { channelCache = """[{"id":"secret","encrypted":"t"}]""" }
+        var refusal = """{"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}"""
+        val encryptedWrites = mutableListOf<String?>()
+        platform.messageEncryption = object : MessageEncryption {
+            override val changes = kotlinx.coroutines.flow.MutableStateFlow(0L)
+            override suspend fun send(channel: String, id: String, parent: String?, body: String) {
+                encryptedWrites += parent
+                throw ApiException(403, json.parseToJsonElement(refusal).jsonObject)
+            }
+            override suspend fun edit(message: Row, body: String) = error("Unexpected edit")
+            override suspend fun decrypt(message: Row) = error("Unexpected decrypt")
+        }
+        val http = HttpClient(MockEngine { request ->
+            if (request.method == HttpMethod.Get) awaitCancellation()
+            respond(refusal, HttpStatusCode.Forbidden)
+        })
+        val app = Session(
+            Repository(Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"), platform, http, backgroundScope),
+            backgroundScope,
+            Environment(),
+        )
+        runCurrent()
+        for (channel in listOf("plain", "secret")) {
+            app.dismissToast()
+            assertFalse(app.send(channel, "reply", "root"))
+            assertEquals("threads.joinToReply", app.toast, channel)
+            // 親のない投稿は、スレッドの参加では直らない。
+            app.dismissToast()
+            assertFalse(app.send(channel, "post", null))
+            assertEquals("common.writeError", app.toast, channel)
+            // 投稿権限の 403 は、参加を案内しない。
+            refusal = """{"error":"Only channel managers may post here","code":"POSTING_RESTRICTED"}"""
+            app.dismissToast()
+            assertFalse(app.send(channel, "reply", "root"))
+            assertEquals("common.writeError", app.toast, channel)
+            refusal = """{"error":"Join the thread before replying","code":"THREAD_JOIN_REQUIRED"}"""
+        }
+        assertEquals(listOf<String?>("root", null, "root"), encryptedWrites)
+        app.close()
+        http.close()
+    }
+
     @Test
     fun bubbleRetriesLatestContentSerializesWritesAndClearsOnExit() = runTest {
         val platform = Browser()
