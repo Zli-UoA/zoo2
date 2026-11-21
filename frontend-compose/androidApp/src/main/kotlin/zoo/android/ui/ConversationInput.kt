@@ -39,6 +39,7 @@ internal fun ConversationInput(
     onMention: (String) -> Unit = {},
     onSelection: (TextRange) -> Unit = {},
     onRemoveFile: (String) -> Unit = {},
+    hideIdleHandle: Boolean = false,
 ) {
     var fieldValue by remember { mutableStateOf(TextFieldValue(state.text, state.selection ?: TextRange(state.text.length))) }
     val value = if (fieldValue.text == state.text && (state.selection == null || fieldValue.selection == state.selection)) {
@@ -58,7 +59,7 @@ internal fun ConversationInput(
                 }
             }
         }
-        Box(
+        if (!hideIdleHandle || showTools) Box(
             Modifier.fillMaxWidth().height(24.dp)
                 .pointerInput(full) {
                     detectVerticalDragGestures(

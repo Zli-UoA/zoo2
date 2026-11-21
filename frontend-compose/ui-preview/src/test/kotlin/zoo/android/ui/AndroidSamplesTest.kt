@@ -147,6 +147,10 @@ class AndroidSamplesTest {
             for (night in listOf(false, true)) {
                 ui.runOnIdle { screen = example; dark = night }
                 ui.waitForIdle()
+                if (name in setOf("conversation-idle", "thread")) {
+                    ui.onNodeWithContentDescription("入力欄を広げる").assertDoesNotExist()
+                }
+                if (name == "conversation") ui.onNodeWithContentDescription("入力欄を広げる").assertIsDisplayed()
                 if (name == "conversation" || name == "composer") {
                     val send = ui.onNodeWithContentDescription("送信")
                     send.assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
