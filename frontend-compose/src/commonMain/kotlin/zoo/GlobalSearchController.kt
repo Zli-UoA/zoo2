@@ -16,7 +16,7 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     var query by mutableStateOf("")
         private set
 
-    var type by mutableStateOf(GlobalSearchType.Messages)
+    var type by mutableStateOf(GlobalSearchType.All)
         private set
 
     var items by mutableStateOf<List<Row>>(emptyList())
@@ -137,12 +137,14 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     }
 }
 
+/** `All` (the default) searches messages and files together. */
 enum class GlobalSearchType(val value: String, val labelKey: String) {
+    All("all", "globalSearch.kinds.all"),
     Messages("messages", "globalSearch.kinds.messages"),
     Files("files", "globalSearch.kinds.files");
 
     companion object {
-        fun from(value: String?): GlobalSearchType = entries.find { it.value == value } ?: Messages
+        fun from(value: String?): GlobalSearchType = entries.find { it.value == value } ?: All
     }
 }
 
@@ -154,8 +156,12 @@ fun globalSearchPath(query: String, type: GlobalSearchType): String =
 
 /** Where a result opens: the channel at its message (Chat opens the thread for replies). */
 fun globalSearchDestination(row: Row, type: GlobalSearchType): String {
-    val message = if (type == GlobalSearchType.Files) row.text("message_id") else row.text("id")
+    val message = if (isGlobalSearchFile(row, type)) row.text("message_id") else row.text("id")
     return "/channels/${row.text("channel_id").encodeURLParameter()}?message=${message.encodeURLParameter()}"
 }
 
 internal fun isGlobalSearchPath(path: String): Boolean = path.substringBefore('?').substringBefore('#') == "/search"
+
+/** A file result: `type=files`, or an `all` result the server marked `kind: "file"`. */
+fun isGlobalSearchFile(row: Row, type: GlobalSearchType): Boolean =
+    type == GlobalSearchType.Files || row.text("kind") == "file"

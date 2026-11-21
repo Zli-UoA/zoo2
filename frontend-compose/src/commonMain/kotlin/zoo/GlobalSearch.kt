@@ -101,6 +101,8 @@ fun GlobalSearchScreen(
                         role = androidx.compose.ui.semantics.Role.Tab,
                         variant = "tab",
                         selected = controller.type == kind,
+                        // Three segments share a 320dp phone row: keep the labels whole.
+                        contentInset = if (touch) AndroidDesign.spaceSmall else null,
                         // Same segment surface as the Settings tabs: the touch chrome paints only a
                         // 32dp pill, so the selected 48dp segment carries the background itself.
                         modifier =
@@ -225,7 +227,7 @@ internal fun GlobalSearchResult(
             ?: obj("id" to row.text("channel_id"), "channel_name" to row.text("channel_name"), "is_dm" to dm)
     val label = if (dm) dmTitle(app, channel, users, memberships) else "#${row.text("channel_name")}"
     val thread = row.present("parent_id")
-    val file = type == GlobalSearchType.Files
+    val file = isGlobalSearchFile(row, type)
     val body = if (file) row.text("file_name") else row.text("snippet")
     val summary =
         listOfNotNull(

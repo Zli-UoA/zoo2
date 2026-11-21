@@ -37,6 +37,7 @@ class GlobalSearchUiTest {
     private val ja = mapOf(
         "globalSearch.title" to "検索",
         "globalSearch.placeholder" to "メッセージとファイルを検索",
+        "globalSearch.kinds.all" to "すべて",
         "globalSearch.kinds.messages" to "メッセージ",
         "globalSearch.kinds.files" to "ファイル",
         "globalSearch.prompt" to "検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。",
@@ -93,6 +94,16 @@ class GlobalSearchUiTest {
             val q = request.url.parameters["q"]
             val body = when {
                 q == "存在しない" -> page(emptyList(), "older", "2025-12")
+                request.url.parameters["type"] == "all" -> page(listOf(
+                    obj(
+                        "id" to "f1", "kind" to "file", "message_id" to "m1", "channel_id" to "general",
+                        "channel_name" to "general", "is_dm" to false, "parent_id" to null, "user_id" to "alice",
+                        "author" to alice, "file_name" to "会議資料.pdf", "content_type" to "application/pdf",
+                        "file_size" to 120_000, "width" to null, "height" to null, "is_sensitive" to false,
+                        "snippet" to "会議資料.pdf", "created_at" to "2026-11-16T00:00:00.000",
+                    ),
+                    message("m2", bob, "general", "general", "会議の時間を15時に変更できますか？"),
+                ), null, "2026-11")
                 request.url.parameters["type"] == "files" -> page(listOf(obj(
                     "id" to "f1", "message_id" to "m1", "channel_id" to "general", "channel_name" to "general",
                     "is_dm" to false, "parent_id" to null, "user_id" to "alice", "author" to alice,
@@ -213,6 +224,34 @@ class GlobalSearchUiTest {
 
             ui.runOnIdle { fixture.controller.search("") }
             ui.onNodeWithText("検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。").assertIsDisplayed()
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun theDefaultSearchesMessagesAndFilesTogether() {
+        val fixture = Fixture("/search?q=会議")
+        try {
+            ui.setContent {
+                CompositionLocalProvider(LocalTouchUi provides true, LocalApp provides fixture.app) {
+                    ZooTheme(dark = false) {
+                        Box(Modifier.width(320.dp).height(640.dp).testTag("global-search")
+                            .background(MaterialTheme.colorScheme.background)) {
+                            NativeWindow(fixture.app) {
+                                GlobalSearchScreen(fixture.app, users, emptyList(), fixture.controller)
+                            }
+                        }
+                    }
+                }
+            }
+            ui.waitUntil(5_000) { fixture.controller.loaded }
+            ui.waitForIdle()
+            assertTrue("type=all" in fixture.requests.single(), fixture.requests.single())
+            ui.onNodeWithText("すべて").assertIsSelected()
+            ui.onAllNodesWithTag("global-search-result").assertCountEquals(2)
+            ui.onNodeWithText("117.2 KB", useUnmergedTree = true).assertExists()
+            screenshot("global-search", "global-search-all-320-light")
+            ui.onAllNodesWithTag("global-search-result")[0].performClick()
+            ui.runOnIdle { assertEquals("/channels/general?message=m1", fixture.app.env.path) }
         } finally { fixture.close() }
     }
 

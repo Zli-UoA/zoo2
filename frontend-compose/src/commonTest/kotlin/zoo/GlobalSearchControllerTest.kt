@@ -204,7 +204,16 @@ class GlobalSearchControllerTest {
         assertEquals("/search?q=a%20b&type=files", globalSearchPath("a b", GlobalSearchType.Files))
         assertTrue(isGlobalSearchPath("/search?q=a"))
         assertFalse(isGlobalSearchPath("/searching"))
-        assertEquals(GlobalSearchType.Messages, GlobalSearchType.from("notes"))
+        assertEquals(GlobalSearchType.All, GlobalSearchType.from("notes"))
+        assertEquals(GlobalSearchType.All, GlobalSearchType.from(null))
+        // In `all`, a file result opens the message it is attached to.
+        assertEquals(
+            "/channels/c1?message=m9",
+            globalSearchDestination(
+                obj("id" to "a1", "kind" to "file", "message_id" to "m9", "channel_id" to "c1"),
+                GlobalSearchType.All,
+            ),
+        )
         assertEquals(
             "/channels/c1?message=m1",
             globalSearchDestination(obj("id" to "m1", "channel_id" to "c1"), GlobalSearchType.Messages),
