@@ -104,7 +104,8 @@ class AndroidSamplesTest {
             )),
             "post" to AndroidScreen.Post(posts.first(), posts.drop(1), InputState()),
             "post-compose" to AndroidScreen.NewPost(InputState("新しい画面を共有します。"), emptyList(), true),
-            "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。", posts, "フォロー"),
+            "profile" to AndroidScreen.Profile("はる", "Android 版をテストしています。写真と通話の感想を投稿します。",
+                posts.map { it.copy(author = "はる") }, "フォロー", handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
@@ -154,6 +155,11 @@ class AndroidSamplesTest {
                     check(root.right - bounds.right == 4.dp && root.bottom - bounds.bottom == 4.dp) {
                         "Expected 4dp between send action and screen edges: $bounds / $root"
                     }
+                }
+                if (name == "profile") {
+                    ui.onNodeWithText("@haru@social.example").assertIsDisplayed()
+                    ui.onNodeWithContentDescription("公開プロフィールを開く").assertHasClickAction()
+                    ui.onNodeWithText("フォロー").assertHasClickAction()
                 }
                 if (name == "post-compose") {
                     val toolbar = ui.onNodeWithTag("post-actions").getUnclippedBoundsInRoot()

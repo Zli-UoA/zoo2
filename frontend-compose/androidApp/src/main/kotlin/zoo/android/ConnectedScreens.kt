@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import io.ktor.http.Url
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
@@ -175,6 +176,23 @@ internal fun ConnectedScreens(
         EncryptionRoute(session, platform, ::back)
         return
     }
+    val profile = state.profile
+    val remoteProfile = profile.flag("remote")
+    val profileUrl = profile.text("url").takeIf { publicUrl(it) != null }
+    val profileHost = profileUrl?.let { Url(it).host }.orEmpty()
+    val profileAvatarUrl = if (remoteProfile) {
+        profile.nested("avatar").text("image_id").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
+            ?.let { "/api/activitypub/emoji-images/$it" }
+    } else profile.text("avatar_url").takeIf { it.startsWith("https://") && publicUrl(it) != null }
+    val profileAvatar = if (state.overlay == "profile" && profileAvatarUrl != null) {
+        key(profile.text("id"), profileAvatarUrl) {
+            produceState<ImageBitmap?>(null) {
+                value = try { session.imageBitmap(profileAvatarUrl) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+            }.value
+        }
+    } else null
     val screen = when {
         call != null -> AndroidScreen.Call(
             caller?.let(::author).orEmpty().ifBlank { call.label },
@@ -183,8 +201,14 @@ internal fun ConnectedScreens(
         )
         state.overlay == "people" -> AndroidScreen.Directory("ユーザーを検索", state.query,
             state.people.map { SelectionItem(it.text("id"), author(it), it.text("user_name"), isUserName = true) })
-        state.overlay == "profile" -> AndroidScreen.Profile(author(state.profile), state.profile.text("summary"),
-            state.profilePosts.map { state.entry(it, usersById, previewService = previewService) }, state.followState)
+        state.overlay == "profile" -> AndroidScreen.Profile(
+            author(profile), profile.text("summary"),
+            state.profilePosts.map { state.entry(it, usersById, previewService = previewService) }, state.followState,
+            handle = profile.text("user_name").takeIf { it.isNotBlank() }?.let { name ->
+                if (remoteProfile && profileHost.isNotBlank()) "@$name@$profileHost" else "@$name"
+            },
+            avatar = profileAvatar, originalAvailable = profileUrl != null,
+        )
         state.overlay == "bubble-participants" -> AndroidScreen.Directory("参加者", state.query,
             bubbleParticipants.filter { it.title.contains(state.query, true) })
         state.overlay == "browse" -> AndroidScreen.Directory("チャンネルを探す", state.query,
