@@ -71,9 +71,9 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
         return if (raw.isBlank()) JsonNull else json.parseToJsonElement(raw)
     }
 
-    /** Audio-call signaling is a call-owned stream, independent of screen visibility. */
+    /** Audio-call signaling is a call-owned stream, independent of screen visibility. `sfu=1`: the engine can move to the SFU (docs/calls-sfu.md). */
     suspend fun streamCall(channelId: String, sessionId: String, event: suspend (String, Row) -> Unit) =
-        streamEvents("/api/channels/${channelId.encodeURLPathPart()}/call/stream", HttpMethod.Get, mapOf("session_id" to sessionId), event)
+        streamEvents("/api/channels/${channelId.encodeURLPathPart()}/call/stream", HttpMethod.Get, mapOf("session_id" to sessionId, "sfu" to "1"), event)
     suspend fun streamPhone(sessionId: String, event: suspend (String, Row) -> Unit) =
         streamEvents("/api/phone/sessions/${sessionId.encodeURLPathPart()}/stream", HttpMethod.Post, emptyMap(), event)
     private suspend fun streamEvents(path: String, method: HttpMethod, parameters: Map<String, String>, event: suspend (String, Row) -> Unit) {

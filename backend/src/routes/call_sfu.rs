@@ -143,6 +143,9 @@ struct JoinBody {
     /// LiveKit につながらなかったので、Cloudflare でやり直す。
     #[serde(default)]
     fallback: bool,
+    /// LiveKit を使えないクライアント（Android の WebView は外への接続を許していない）。
+    #[serde(default)]
+    cloudflare_only: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -206,7 +209,7 @@ async fn join(
         lan_client,
         sfu.livekit.is_some(),
         sfu.bridge_enabled(),
-        body.fallback,
+        body.fallback || body.cloudflare_only,
         counts.cloudflare > 0,
     );
 

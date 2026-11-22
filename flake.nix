@@ -264,6 +264,9 @@
             rust-analyzer
             atlas
             postgresql_16
+            # 通話の sfu-bridge（docs/calls-sfu.md）。server-sdk-go v2.20 が Go 1.26.8 以上を要る。
+            # Dockerfile の golang イメージも同じ版にそろえる
+            go_1_26
             # Android (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
             jdk21
             # infra/terraform（R2）。CI の TOFU_VERSION はこの版にそろえる

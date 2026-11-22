@@ -11,6 +11,8 @@ class PhoneControllerTest {
     private class Fixture(val scope: CoroutineScope) {
         val requests = mutableListOf<String>()
         val commands = mutableListOf<String>()
+        val payloads = mutableListOf<Row>()
+        val bodies = mutableMapOf<String, Row?>()
         val events = mutableMapOf<String, (String, Row) -> Unit>()
         val closed = mutableListOf<String>()
         val native = mutableListOf<String>()
@@ -32,6 +34,7 @@ class PhoneControllerTest {
         val line = obj("id" to "home", "name" to "Home", "can_connect" to true, "can_manage" to true)
         val controller = PhoneController(scope, request = { path, method, body ->
             requests.add("$method $path")
+            bodies[path] = body
             when {
                 path == "/api/sip/lines" -> { beforeRead?.await(); obj("enabled" to true, "lines" to JsonArray(listOf(line))) }
                 path.endsWith("/connect") -> obj("data" to obj("revision" to revision, "session_id" to "phone-session", "peer_id" to "gateway-peer", "ice_servers" to JsonArray(emptyList())))
@@ -52,7 +55,7 @@ class PhoneControllerTest {
             events[kind] = callback
             object : PhoneMedia {
                 override suspend fun command(method: String, payload: Row) {
-                    commands.add(method)
+                    commands.add(method); payloads.add(payload)
                     if (kind == "sip" && method == "rtc.start" && payload["room_state"]?.jsonObject?.text("offerer_session_id") == payload.text("session_id")) callback("signal", obj("signal" to obj("type" to "offer", "sdp" to "v=0")))
                     if (kind == "sip" && method == "rtc.event" && payload["data"]?.jsonObject?.get("signal")?.jsonObject?.text("type") == "offer") callback("signal", obj("signal" to obj("type" to "answer", "sdp" to "v=0")))
                 }
@@ -205,6 +208,22 @@ class PhoneControllerTest {
         assertTrue(f.controller.error)
     }
 
+    @Test fun sfuRequestsAreRelayedOnlyForAllowedOperationsWithTheCallSession() = runTest {
+        val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
+        f.streamEvent!!("room_state", obj("participants" to JsonArray(emptyList()))); runCurrent()
+        // The engine cannot pick another session or call an arbitrary API.
+        f.events["dm"]!!("sfu_request", obj("id" to 1, "op" to "join", "body" to obj("cloudflare_only" to true, "session_id" to "someone-else"))); runCurrent()
+        val joinBody = f.bodies["/api/channels/dm/call/sfu/join"]
+        // The call id takes id-1; the call session is id-2.
+        assertEquals("id-2", joinBody?.text("session_id"))
+        assertEquals(true, joinBody?.flag("cloudflare_only"))
+        assertEquals("rtc.sfu.reply", f.commands.last())
+        assertEquals(true, f.payloads.last().flag("ok"))
+        f.events["dm"]!!("sfu_request", obj("id" to 2, "op" to "../../admin", "body" to obj())); runCurrent()
+        assertFalse(f.requests.any { it.contains("admin") })
+        assertEquals(false, f.payloads.last().flag("ok"))
+        f.controller.close()
+    }
     @Test fun earlySignalsAreBufferedUntilTheInitialRoomState() = runTest {
         val f = Fixture(backgroundScope); f.controller.callDm("dm", "Bob"); runCurrent()
         f.streamEvent!!("signal", obj("from_session_id" to "remote", "signal" to obj("type" to "offer"))); runCurrent()
