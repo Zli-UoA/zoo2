@@ -32,7 +32,6 @@ describe("channel scroll measurement cache & initial plan", () => {
       itemIds,
       defaultRowHeight: 64,
       defaultViewportHeight: 600,
-      hasTargetMessageId: false,
       targetIndex: -1,
       unreadIndex: -1,
     });
@@ -47,7 +46,6 @@ describe("channel scroll measurement cache & initial plan", () => {
       itemIds,
       defaultRowHeight: 64,
       defaultViewportHeight: 600,
-      hasTargetMessageId: false,
       targetIndex: -1,
       unreadIndex: -1,
     });
@@ -55,33 +53,39 @@ describe("channel scroll measurement cache & initial plan", () => {
     expect(afterRect.initialOffset).toBe(50 * 64 - 480);
   });
 
-  it("centers targetIndex or aligns unreadIndex when specified", () => {
+  it("centers targetIndex, falls back to unread/bottom when target is absent, and aligns unreadIndex", () => {
     const itemIds = Array.from({ length: 50 }, (_, index) => `m-${index}`);
     const targetPlan = computeInitialScrollPlan({
       itemIds,
       defaultRowHeight: 64,
       defaultViewportHeight: 600,
-      hasTargetMessageId: true,
       targetIndex: 20,
       unreadIndex: 35,
     });
     expect(targetPlan.initialOffset).toBe(20 * 64 - (600 - 64) / 2);
 
-    const pendingTargetPlan = computeInitialScrollPlan({
+    const missingTargetWithUnreadPlan = computeInitialScrollPlan({
       itemIds,
       defaultRowHeight: 64,
       defaultViewportHeight: 600,
-      hasTargetMessageId: true,
       targetIndex: -1,
       unreadIndex: 35,
     });
-    expect(pendingTargetPlan.initialOffset).toBe(0);
+    expect(missingTargetWithUnreadPlan.initialOffset).toBe(35 * 64);
+
+    const missingTargetBottomPlan = computeInitialScrollPlan({
+      itemIds,
+      defaultRowHeight: 64,
+      defaultViewportHeight: 600,
+      targetIndex: -1,
+      unreadIndex: -1,
+    });
+    expect(missingTargetBottomPlan.initialOffset).toBe(50 * 64 - 600);
 
     const unreadPlan = computeInitialScrollPlan({
       itemIds,
       defaultRowHeight: 64,
       defaultViewportHeight: 600,
-      hasTargetMessageId: false,
       targetIndex: -1,
       unreadIndex: 35,
     });
@@ -107,7 +111,6 @@ describe("channel scroll measurement cache & initial plan", () => {
       cached,
       defaultRowHeight: 64,
       defaultViewportHeight: 600,
-      hasTargetMessageId: false,
       targetIndex: -1,
       unreadIndex: -1,
     });

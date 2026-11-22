@@ -861,6 +861,15 @@ export function MessagePane({
     );
   }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
 
+  const threadTargetMessageId =
+    resolvedTargetId &&
+    threadRoot &&
+    resolvedTargetId !== threadRoot.id &&
+    (threadReplies.some((reply) => reply.id === resolvedTargetId) ||
+      (target?.id === resolvedTargetId && target.parent_id === threadRoot.id))
+      ? resolvedTargetId
+      : undefined;
+
   return (
     <MessageDecryptionsProvider
       decryptions={decryptions}
@@ -992,7 +1001,7 @@ export function MessagePane({
           <ThreadPane
             commands={commandSuggestions.commands}
             onRequestCommands={commandSuggestions.load}
-            targetMessageId={resolvedTargetId}
+            targetMessageId={threadTargetMessageId}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
             key={threadRoot.id}

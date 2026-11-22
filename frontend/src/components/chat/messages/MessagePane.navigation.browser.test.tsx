@@ -173,17 +173,19 @@ vi.mock("./ThreadPane", () => ({
   ThreadPane: ({
     root,
     replies,
+    targetMessageId,
     readOnly,
     isMember,
     onSendReply,
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
+    targetMessageId?: string;
     readOnly?: boolean;
     isMember?: boolean;
     onSendReply: (content: string) => Promise<boolean>;
   }) => (
-    <div>
+    <div data-testid="thread-pane-mock" data-target-message-id={targetMessageId ?? ""}>
       {root.content}
       {replies.map((reply) => (
         <p key={reply.id}>{reply.content}</p>
@@ -276,6 +278,20 @@ describe("links and threads whose rows are older than the loaded range", () => {
     rerender(pane("old-reply"));
     await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("old-root"));
     expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("passes targetMessageId to ThreadPane only for replies in the active thread", async () => {
+    const { rerender } = render(pane("old-root"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("");
+
+    fixture.targetRows = [{ ...fixture.root, id: "unloaded-reply", parent_id: "old-root" }];
+    rerender(pane("unloaded-reply"));
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-pane-mock").getAttribute("data-target-message-id")).toBe(
+        "unloaded-reply",
+      );
+    });
   });
 
   it("does not close a thread whose root is still being fetched", async () => {

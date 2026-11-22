@@ -126,4 +126,59 @@ describe("useMessageFeed feedCache fallback", () => {
     });
     stalledHook.unmount();
   });
+
+  it("preserves already-displayed cache when recovering online or retrying until live rows arrive", async () => {
+    await saveFeedCache(state.namespace, "c-cache", [makeRow("cached-1", "Offline backup")], 50);
+
+    state.isOnline = false;
+    const { result, rerender, unmount } = renderHook(() => useMessageFeed("c-cache"));
+    await waitFor(() => {
+      expect(result.current.data?.map((row) => row.id)).toEqual(["cached-1"]);
+    });
+
+    // Going back online while live rows are still loading must keep the visible backup
+    // rather than dropping back to an empty loading skeleton for 1500ms.
+    state.isOnline = true;
+    state.query = {
+      ...state.query,
+      data: [],
+      isLoading: true,
+      isReady: false,
+      isError: false,
+    };
+    rerender();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(result.current.data?.map((row) => row.id)).toEqual(["cached-1"]);
+
+    // Transitioning through error -> retry keeps the visible backup too.
+    state.query = {
+      ...state.query,
+      data: [],
+      isLoading: false,
+      isError: true,
+    };
+    rerender();
+    expect(result.current.data?.map((row) => row.id)).toEqual(["cached-1"]);
+
+    state.query = {
+      ...state.query,
+      data: [],
+      isLoading: true,
+      isError: false,
+    };
+    rerender();
+    expect(result.current.data?.map((row) => row.id)).toEqual(["cached-1"]);
+
+    // Once live rows arrive, switches cleanly to live rows.
+    state.query = {
+      ...state.query,
+      data: [makeRow("live-recovered", "Recovered live row")],
+      isLoading: false,
+      isReady: true,
+      isError: false,
+    };
+    rerender();
+    expect(result.current.data?.map((row) => row.id)).toEqual(["live-recovered"]);
+    unmount();
+  });
 });

@@ -182,21 +182,34 @@ export function ThreadPane({
   }, [needsJoin, membershipError]);
   const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
   const scrollRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(!targetMessageId);
+  const hasTargetInReplies = Boolean(
+    targetMessageId && replies.some((reply) => reply.id === targetMessageId),
+  );
+  const atBottomRef = useRef(!hasTargetInReplies);
+  const scrolledTarget = useRef<string | undefined>(undefined);
+  const prevRootIdRef = useRef(root.id);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
   const lastReplyId = replies[replies.length - 1]?.id;
 
   useLayoutEffect(() => {
-    atBottomRef.current = !targetMessageId;
-  }, [root.id, targetMessageId]);
+    if (prevRootIdRef.current !== root.id) {
+      prevRootIdRef.current = root.id;
+      scrolledTarget.current = undefined;
+      atBottomRef.current = !hasTargetInReplies;
+    }
+  }, [root.id, hasTargetInReplies]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (!element || !atBottomRef.current) {
+    if (
+      !element ||
+      !atBottomRef.current ||
+      (hasTargetInReplies && scrolledTarget.current !== targetMessageId)
+    ) {
       return;
     }
     element.scrollTop = element.scrollHeight;
-  }, [items.length, lastReplyId, root.id]);
+  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
   const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
@@ -216,7 +229,6 @@ export function ThreadPane({
     }
   }, [replies]);
 
-  const scrolledTarget = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     if (!targetMessageId) {
       scrolledTarget.current = undefined;

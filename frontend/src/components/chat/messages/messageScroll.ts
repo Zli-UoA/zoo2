@@ -218,19 +218,11 @@ export function computeInitialScrollPlan(params: {
   cached?: ChannelMeasurementEntry;
   defaultRowHeight: number;
   defaultViewportHeight: number;
-  hasTargetMessageId: boolean;
   targetIndex: number;
   unreadIndex: number;
 }): InitialScrollPlan {
-  const {
-    itemIds,
-    cached,
-    defaultRowHeight,
-    defaultViewportHeight,
-    hasTargetMessageId,
-    targetIndex,
-    unreadIndex,
-  } = params;
+  const { itemIds, cached, defaultRowHeight, defaultViewportHeight, targetIndex, unreadIndex } =
+    params;
   const estimatedRowHeight = cached?.estimatedRowHeight ?? defaultRowHeight;
   const initialRect = cached
     ? { width: cached.containerWidth, height: cached.viewportHeight }
@@ -269,11 +261,8 @@ export function computeInitialScrollPlan(params: {
   }
 
   let initialOffset = Math.max(0, offset - viewportHeight);
-  if (hasTargetMessageId) {
-    initialOffset =
-      targetIndex >= 0
-        ? Math.max(0, targetStart - Math.max(0, (viewportHeight - targetSize) / 2))
-        : 0;
+  if (targetIndex >= 0) {
+    initialOffset = Math.max(0, targetStart - Math.max(0, (viewportHeight - targetSize) / 2));
   } else if (unreadIndex >= 0) {
     initialOffset = Math.max(0, unreadStart);
   }
