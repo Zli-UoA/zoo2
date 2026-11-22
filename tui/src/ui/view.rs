@@ -2291,6 +2291,9 @@ mod tests {
             channel_id: "c2".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         assert!(render(&mut app).contains("● #secret"));
 
@@ -2322,6 +2325,9 @@ mod tests {
             channel_id: "c1".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         press(&mut app, KeyCode::Enter);
         // まだ描画していないので、最新を見たとは言えない。
@@ -2338,6 +2344,9 @@ mod tests {
             channel_id: "c1".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         assert!(app.unread.contains("c1"));
     }

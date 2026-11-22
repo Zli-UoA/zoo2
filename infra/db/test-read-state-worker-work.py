@@ -12,7 +12,7 @@ import unittest
 class TriggerWorkBudgetTest(unittest.TestCase):
     def setUp(self):
         names = [
-            "read_list", "read_single", "slack_wake_empty", "slack_due_empty",
+            "read_list", "read_list_light", "read_single", "slack_wake_empty", "slack_due_empty",
             "display_row_empty", "display_scope_empty", "slack_wake_ready",
             "slack_due_ready", "display_row_ready", "display_scope_ready",
             "message_insert", "message_delete_latest",
