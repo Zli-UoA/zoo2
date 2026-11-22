@@ -18,23 +18,32 @@ import { Button } from "../ui/button";
  * オフにすると、選んだフォルダーへ確認なしで保存する。
  *
  * 保存先を決めるのは Rust 側だけで、ここは表示と選択だけを行う。古い版のアプリ（コマンドがない）では、
- * アプリが決めた保存先に保存されることと、更新が必要なことを出す。
+ * アプリが決めた保存先に保存されることと、更新が必要なことを出す。設定を読めなかっただけのときは、
+ * 古い版と決めつけずに再読み込みを出す。
  */
 export function DesktopDownloadSettings() {
   const { t } = useTranslation();
   // undefined: 読み込み中。null: 古い版のアプリで、設定できない。
   const [settings, setSettings] = useState<DownloadSettings | null | undefined>();
+  // 設定を読めなかっただけのとき。古い版と決めつけず、再読み込みを出す。
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reload, setReload] = useState(0);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void desktopDownloadSettings().then((next) => {
-      if (!cancelled) setSettings(next);
-    });
+    setLoadFailed(false);
+    void desktopDownloadSettings()
+      .then((next) => {
+        if (!cancelled) setSettings(next);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadFailed(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
 
   function save(update: DesktopDownloadSettingsUpdate) {
     setBusy(true);
@@ -42,6 +51,17 @@ export function DesktopDownloadSettings() {
       .then((saved) => setSettings(saved))
       .catch(() => toast.error(t("downloads.error")))
       .finally(() => setBusy(false));
+  }
+
+  if (loadFailed) {
+    return (
+      <div className="flex flex-col items-end gap-2 text-right">
+        <span className="max-w-56 text-xs text-muted-foreground">{t("downloads.loadError")}</span>
+        <Button type="button" variant="outline" size="sm" onClick={() => setReload((n) => n + 1)}>
+          {t("downloads.retry")}
+        </Button>
+      </div>
+    );
   }
 
   if (settings === null) {
@@ -75,42 +95,44 @@ export function DesktopDownloadSettings() {
         </Switch.Root>
       </div>
       {askEveryTime ? null : (
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex w-72 max-w-full flex-col items-end gap-2">
           <span
-            className="max-w-56 truncate text-xs text-muted-foreground"
+            className="w-full truncate text-right text-xs text-muted-foreground"
             title={directory ?? t("downloads.defaultDirectory")}
           >
             {directory ?? t("downloads.defaultDirectory")}
           </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy || settings === undefined}
-            onClick={() => {
-              setBusy(true);
-              void desktopPickDownloadDirectory()
-                .then((saved) => {
-                  if (saved) setSettings(saved);
-                })
-                .catch(() => toast.error(t("downloads.error")))
-                .finally(() => setBusy(false));
-            }}
-          >
-            <FolderIcon className="size-3.5" aria-hidden="true" />
-            {t("downloads.chooseFolder")}
-          </Button>
-          {directory ? (
+          <div className="flex flex-wrap justify-end gap-2">
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               size="sm"
               disabled={busy || settings === undefined}
-              onClick={() => void save({ ask_every_time: askEveryTime, reset_directory: true })}
+              onClick={() => {
+                setBusy(true);
+                void desktopPickDownloadDirectory()
+                  .then((saved) => {
+                    if (saved) setSettings(saved);
+                  })
+                  .catch(() => toast.error(t("downloads.error")))
+                  .finally(() => setBusy(false));
+              }}
             >
-              {t("downloads.resetDirectory")}
+              <FolderIcon className="size-3.5" aria-hidden="true" />
+              {t("downloads.chooseFolder")}
             </Button>
-          ) : null}
+            {directory ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={busy || settings === undefined}
+                onClick={() => void save({ ask_every_time: askEveryTime, reset_directory: true })}
+              >
+                {t("downloads.resetDirectory")}
+              </Button>
+            ) : null}
+          </div>
         </div>
       )}
     </div>

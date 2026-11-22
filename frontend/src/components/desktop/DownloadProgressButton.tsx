@@ -88,7 +88,12 @@ export function DownloadProgressButton({
       aria-label={label}
       title={label}
       disabled={finishing}
-      onClick={onCancel}
+      onClick={(event) => {
+        // 開始ボタンのダブルクリックの 2 回目は、開始直後の円に当たる。ここで中止すると、
+        // 保存ダイアログで保存先を選んだ直後に、通知なく取り消してしまう。
+        if (event.detail > 1) return;
+        onCancel();
+      }}
     >
       <span
         role="progressbar"

@@ -8,6 +8,11 @@ const desktop = vi.hoisted(() => ({
   hasBridge: vi.fn(() => true),
   settings: vi.fn(),
   probe: vi.fn(),
+  isMissing: vi.fn((error: unknown) =>
+    /not found|unknown command|not allowed|コマンドがありません/i.test(
+      String((error as { message?: unknown } | null)?.message ?? error),
+    ),
+  ),
   begin: vi.fn(),
   write: vi.fn(),
   finish: vi.fn(),
@@ -20,6 +25,7 @@ vi.mock("./desktop", () => ({
   hasDesktopBridge: desktop.hasBridge,
   desktopDownloadSettings: desktop.settings,
   probeDesktopDownloadSettings: desktop.probe,
+  isMissingCommandError: desktop.isMissing,
   desktopDownloadBegin: desktop.begin,
   desktopDownloadWrite: desktop.write,
   desktopDownloadFinish: desktop.finish,

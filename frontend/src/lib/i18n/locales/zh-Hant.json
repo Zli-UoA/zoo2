@@ -479,13 +479,15 @@
   },
   "downloads": {
     "desktopTitle": "下載",
-    "desktopDescription": "附件檔案的儲存位置。在新版應用程式中，可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
+    "desktopDescription": "附件檔案的儲存位置。可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
     "askEveryTime": "每次儲存時確認",
     "defaultDirectory": "下載資料夾",
     "chooseFolder": "選擇資料夾",
     "resetDirectory": "還原預設資料夾",
     "olderAppValue": "應用程式預設儲存位置",
     "olderAppDescription": "此版本的應用程式會將附件儲存到應用程式決定的位置。若要變更儲存位置，請更新應用程式。",
+    "loadError": "無法讀取儲存位置的設定。",
+    "retry": "重新載入",
     "error": "無法變更下載設定，請再試一次。"
   },
   "mfm": {

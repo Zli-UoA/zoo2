@@ -479,13 +479,15 @@
   },
   "downloads": {
     "desktopTitle": "내려받기",
-    "desktopDescription": "첨부 파일을 보관할 위치입니다. 새 판의 프로그램에서는 내려받을 때마다 위치를 확인하거나, 미리 정한 폴더에 보관할 수 있습니다.",
+    "desktopDescription": "첨부 파일을 보관할 위치입니다. 내려받을 때마다 위치를 확인하거나, 미리 정한 폴더에 보관할 수 있습니다.",
     "askEveryTime": "내려받을 때마다 확인",
     "defaultDirectory": "내려받기 폴더",
     "chooseFolder": "폴더 선택",
     "resetDirectory": "기본 폴더로 되돌리기",
     "olderAppValue": "프로그램의 기본 보관 위치",
     "olderAppDescription": "이 판의 프로그램에서는 프로그램이 정한 위치에 보관합니다. 보관 위치를 바꾸려면 프로그램을 갱신하십시오.",
+    "loadError": "보관 위치 설정을 읽지 못했습니다.",
+    "retry": "다시 읽기",
     "error": "보관 위치 설정을 바꾸지 못했습니다. 다시 시도해 주십시오."
   },
   "mfm": {

@@ -214,14 +214,31 @@ export type DesktopDownloadStart =
   | { status: "cancelled" };
 
 /**
- * 添付の保存の設定を読む。古い版のアプリにはこのコマンドがないので、呼べなかったら null
- * （画面はブラウザーの保存に戻す）。
+ * アプリにコマンドが無いことによる失敗か。古い版のアプリでは、この失敗だけを
+ * 「保存のコマンドが無い」として扱う。設定ファイルの読み込みの競合など、
+ * 一時的な失敗は区別する。
+ */
+export function isMissingCommandError(error: unknown): boolean {
+  const message =
+    typeof error === "string"
+      ? error
+      : typeof (error as { message?: unknown } | null)?.message === "string"
+        ? String((error as { message: string }).message)
+        : "";
+  return /not found|unknown command|not allowed|コマンドがありません/i.test(message);
+}
+
+/**
+ * 添付の保存の設定を読む。古い版のアプリにはこのコマンドがないので、そのときだけ null
+ * （画面はブラウザーの保存に戻す）。設定を読めなかっただけのときは、更新を促さずに
+ * 呼び出し側で再読み込みできるよう、失敗を返す。
  */
 export async function desktopDownloadSettings(): Promise<DesktopDownloadSettings | null> {
   try {
     return await invoke<DesktopDownloadSettings>("zoo_download_settings");
-  } catch {
-    return null;
+  } catch (error) {
+    if (isMissingCommandError(error)) return null;
+    throw error;
   }
 }
 

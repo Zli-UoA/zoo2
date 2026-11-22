@@ -19,12 +19,15 @@ function FakeDesktop({
   askEveryTime,
   directory = null,
   supported,
+  failSettings = false,
   picked = "C:\\Users\\zoo\\Downloads",
   children,
 }: {
   askEveryTime: boolean;
   directory?: string | null;
   supported: boolean;
+  // 設定の読み込みだけを、コマンド非対応ではない失敗にする。
+  failSettings?: boolean;
   picked?: string;
   children: ReactNode;
 }) {
@@ -49,7 +52,10 @@ function FakeDesktop({
               state: { state: "ready" },
             };
           if (!supported) throw new Error(`command ${cmd} not found`);
-          if (cmd === "zoo_download_settings") return current;
+          if (cmd === "zoo_download_settings") {
+            if (failSettings) throw new Error("設定を読めません");
+            return current;
+          }
           if (cmd === "zoo_set_download_settings") {
             if (args?.settings) {
               current = {
@@ -73,7 +79,7 @@ function FakeDesktop({
       delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
       resetDesktopForTest();
     };
-  }, [askEveryTime, directory, supported, picked]);
+  }, [askEveryTime, directory, supported, failSettings, picked]);
   return ready ? <>{children}</> : null;
 }
 
@@ -91,7 +97,7 @@ const meta = {
           <SettingRow
             icon={<DownloadIcon />}
             label="ダウンロード"
-            description="添付ファイルの保存先です。新しい版のアプリでは、保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。"
+            description="添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。"
           >
             <Story />
           </SettingRow>
@@ -211,5 +217,43 @@ export const OlderApp: Story = {
   play: playForImplementation(async () => {
     await expect(await screen.findByText("アプリの既定の保存先")).toBeVisible();
     await expect(screen.getByText(/アプリを更新/)).toBeVisible();
+  }),
+};
+
+/** 設定を読めなかっただけのとき。古い版と決めつけず、再読み込みを出す。 */
+export const LoadError: Story = {
+  decorators: [
+    (Story) => (
+      <FakeDesktop supported failSettings askEveryTime>
+        <Story />
+      </FakeDesktop>
+    ),
+  ],
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText("保存先の設定を読み込めませんでした。")).toBeVisible();
+    await expect(screen.getByRole("button", { name: "再読み込み" })).toBeVisible();
+    // 更新を促す文言は出さない。
+    await expect(screen.queryByText(/アプリを更新/)).toBeNull();
+  }),
+};
+
+/** 長い保存先でも、操作部分がはみ出さないよう、パスは 1 行に省略する。 */
+export const LongPath: Story = {
+  decorators: [
+    (Story) => (
+      <FakeDesktop
+        supported
+        askEveryTime={false}
+        directory={
+          "C:\\Users\\zoo\\Documents\\Projects\\2026\\a-very-long-folder-name\\another-folder"
+        }
+      >
+        <Story />
+      </FakeDesktop>
+    ),
+  ],
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("button", { name: "フォルダーを選ぶ" })).toBeVisible();
+    await expect(screen.getByRole("button", { name: "既定のフォルダーに戻す" })).toBeVisible();
   }),
 };

@@ -206,6 +206,15 @@ describe("download commands", () => {
     await detectDesktop();
     await expect(desktopDownloadSettings()).resolves.toBeNull();
   });
+
+  it("keeps a temporary settings failure instead of calling the app old", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw new Error("設定を読めません");
+    });
+    await detectDesktop();
+    await expect(desktopDownloadSettings()).rejects.toThrow("設定を読めません");
+  });
 });
 
 describe("desktopTakeCallAccept", () => {

@@ -20,6 +20,7 @@ import {
   desktopDownloadWrite,
   detectDesktop,
   hasDesktopBridge,
+  isMissingCommandError,
   probeDesktopDownloadSettings,
 } from "./desktop";
 
@@ -93,21 +94,6 @@ export function useDesktopDownloadState(id: string): DesktopDownloadState | unde
 
 let available: boolean | null = null;
 let probe: Promise<boolean> | null = null;
-
-/**
- * アプリにコマンドが無いことによる失敗か。古い版のアプリでは、この失敗だけを
- * 「保存のコマンドが無い」として覚えておく。設定ファイルの読み込みの競合など、
- * 一時的な失敗は覚えず、次回また試す。
- */
-function isMissingCommandError(error: unknown): boolean {
-  const message =
-    typeof error === "string"
-      ? error
-      : typeof (error as { message?: unknown } | null)?.message === "string"
-        ? String((error as { message: string }).message)
-        : "";
-  return /not found|unknown command|not allowed|コマンドがありません/i.test(message);
-}
 
 /**
  * この版のアプリが保存のコマンドを持つか。古い版のアプリでは false（ブラウザーの保存に戻す）。
