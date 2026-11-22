@@ -147,6 +147,8 @@ export function periodAfter(period: "last7" | "last30" | "last365", now: Date): 
  * 夏時間で 0 時がない日は、その日の最初の時刻にする。
  */
 export function localMidnight(day: string): string {
+  // 変換済みの時刻はそのまま（検索の最初に決めた境界を、続きのページでも使うため）。
+  if (day.length !== 10) return day;
   const [year, month, date] = day.split("-").map(Number);
   const at = new Date(2000, 0, 1);
   at.setFullYear(year!, month! - 1, date!);

@@ -24,6 +24,9 @@ pub struct GlobalSearch {
     pub last_append: bool,
     /// 遅れて届いた古い取得結果を捨てるための番号。
     pub generation: u64,
+    /// 1 ページ目を取ったときの端末のタイムゾーン。`after:`・`before:` の 0 時はこれで決め、続きの取得と
+    /// 再試行でも変えない（途中でタイムゾーンが変わると、同じカーソルで期間がずれて結果が抜けるため）。
+    pub time_zone: Option<jiff::tz::TimeZone>,
 }
 
 /// 検索画面のキーの結果。取得と画面の切り替えは `App` が行う。
@@ -155,6 +158,7 @@ impl GlobalSearch {
             self.next_cursor = None;
             self.searched_until = None;
             self.searched = Some((query.clone(), kind));
+            self.time_zone = Some(jiff::tz::TimeZone::system());
         }
         let cursor = if append {
             self.next_cursor.clone()
@@ -483,8 +487,12 @@ mod tests {
         );
         // 末尾で ↓ は続きを読む。
         assert_eq!(s.on_key(key(KeyCode::Down)), Action::More);
+        // 1 ページ目のタイムゾーンを、続きの取得でも使う。
+        let first_zone = jiff::tz::TimeZone::fixed(jiff::tz::offset(9));
+        s.time_zone = Some(first_zone.clone());
         let (_, _, _, cursor) = s.start(true).unwrap();
         assert_eq!(cursor.as_deref(), Some("c"));
+        assert_eq!(s.time_zone, Some(first_zone));
         assert_eq!(
             s.on_key(key(KeyCode::Down)),
             Action::None,

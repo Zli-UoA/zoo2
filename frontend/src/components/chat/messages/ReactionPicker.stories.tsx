@@ -72,6 +72,10 @@ export const Kitchen: Story = {
 };
 
 export const SearchEmpty: Story = {
+  parameters: {
+    // カスタム絵文字の取得に失敗すると「検索結果なし」ではなく再試行を出すため、空の一覧を返す。
+    msw: { handlers: [http.get("*/api/emojis", () => HttpResponse.json([]))] },
+  },
   play: playForImplementation(async () => {
     const search = await screen.findByPlaceholderText("絵文字を検索");
     await userEvent.type(search, "zzzzzzzz");
@@ -127,12 +131,15 @@ export const ManyCustomEmojis: Story = {
     );
     viewport.scrollTo({ top: viewport.scrollHeight });
     await waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0));
-    await expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
-      viewport.getBoundingClientRect().bottom,
+    // スクロールが滑らかに進む場合があるため、最後の絵文字が見えるまで待つ。
+    await waitFor(() =>
+      expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        viewport.getBoundingClientRect().bottom,
+      ),
     );
     // 開始アニメーション中は親ダイアログのopacityが0でも、入力欄はDOMから取得できる。
     await waitFor(() =>
-      expect(within(dialog).getByRole("textbox", { name: "絵文字を検索" })).toBeVisible(),
+      expect(within(dialog).getByRole("searchbox", { name: "絵文字を検索" })).toBeVisible(),
     );
     await userEvent.click(last);
     await expect(args.onSelect).toHaveBeenCalledWith(":scroll_199:");

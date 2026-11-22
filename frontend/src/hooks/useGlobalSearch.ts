@@ -2,6 +2,7 @@ import { useMemo, useSyncExternalStore } from "react";
 
 import {
   appendSearchItems,
+  localMidnight,
   searchRequestPath,
   type SearchFilters,
   type SearchItem,
@@ -51,6 +52,13 @@ function createSearchEntry(
   filters: SearchFilters,
 ) {
   const client = createConfiguredApiClient(config);
+  // 期間の境界（端末の日付の 0 時）は最初に決め、続きのページと再試行でも同じものを送る。途中で端末の
+  // タイムゾーンが変わっても、同じカーソルで期間がずれて結果が抜けないようにする。
+  const bounds: SearchFilters = {
+    ...filters,
+    after: filters.after && localMidnight(filters.after),
+    before: filters.before && localMidnight(filters.before),
+  };
   let state: GlobalSearchState = IDLE;
   let fetchedAt = 0;
   let generation = 0;
@@ -77,7 +85,7 @@ function createSearchEntry(
     controller = request;
     set({ ...state, isLoading: true, isError: false });
     void client
-      .get<SearchPage>(searchRequestPath(query, kind, cursor, filters), {
+      .get<SearchPage>(searchRequestPath(query, kind, cursor, bounds), {
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       })
       .then(
