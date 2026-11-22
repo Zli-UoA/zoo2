@@ -123,6 +123,8 @@ pub struct AppState {
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
     pub call_registry: CallRegistry,
+    /// 通話の SFU（docs/calls-sfu.md）。`CALL_SFUS_JSON` が未設定なら `None` で、通話は mesh だけ。
+    pub call_sfu: Option<crate::call_sfu::CallSfu>,
     pub shape_streams: crate::routes::shape_limit::ShapeStreamLimiter,
 }
 
@@ -134,6 +136,15 @@ impl AppState {
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
+        // 設定の誤りは起動時（main）に止めるので、ここでは読めたものだけを使う。
+        let call_sfu = crate::call_sfu::CallSfuConfig::from_env()
+            .ok()
+            .flatten()
+            .map(|cfg| crate::call_sfu::CallSfu::new(cfg, http_client.clone()));
+        if let Some(sfu) = &call_sfu {
+            call_registry.set_sfu_wakers(sfu.departures_wake.clone(), sfu.bridge_wake.clone());
+            sfu.start_departure_worker(db.clone());
+        }
         call_registry.start_listener(config.database_url.clone());
         call_registry.start_sweeper(db.clone());
 
@@ -148,6 +159,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu,
             shape_streams: Default::default(),
         }
     }
@@ -166,6 +178,7 @@ impl AppState {
             jwks_verifier: JwksVerifier::new(http_client),
             user_cache: UserResolutionCache::new(),
             call_registry: CallRegistry::new(),
+            call_sfu: None,
             shape_streams: Default::default(),
             config,
         }
@@ -217,6 +230,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu: None,
             shape_streams: Default::default(),
         }
     }
@@ -247,6 +261,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu: None,
             shape_streams: Default::default(),
         }
     }
@@ -275,6 +290,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            call_sfu: None,
             shape_streams: Default::default(),
         }
     }

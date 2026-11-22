@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::{
     auth::AuthUser,
     call_invites,
+    call_sfu::{CallSfu, RoomMode},
     error::AppError,
     models::{Channel, ChannelUser},
     push,
@@ -66,6 +67,7 @@ pub struct CallStatusResponse {
     pub participants: Vec<PublicCallParticipant>,
     pub max_participants: usize,
     pub ice_servers: serde_json::Value,
+    pub mode: RoomMode,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +103,23 @@ pub struct LeavePayload {
 #[derive(Debug, Deserialize)]
 pub struct StreamQuery {
     pub session_id: Uuid,
+    /// `1` なら、このクライアントは SFU に対応している（docs/calls-sfu.md）。古いクライアントは付けない。
+    #[serde(default)]
+    pub sfu: Option<String>,
+}
+
+impl StreamQuery {
+    pub fn sfu_capable(&self) -> bool {
+        matches!(self.sfu.as_deref(), Some("1" | "true"))
+    }
+}
+
+/// Cloudflare Realtime にある音声トラック。`id` を `sfu/cf/pull` に渡す。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SfuTrackInfo {
+    pub id: String,
+    pub session_id: Uuid,
+    pub source: String,
 }
 
 #[derive(Debug, Clone)]
@@ -109,7 +128,19 @@ pub enum CallServerEvent {
         participants: Vec<CallParticipant>,
         max_participants: usize,
         ice_servers: serde_json::Value,
+        mode: RoomMode,
+        epoch: i64,
     },
+    /// 部屋が SFU モードに切り替わった。
+    ModeChanged { mode: RoomMode, epoch: i64 },
+    /// Cloudflare Realtime のトラック一覧が変わった。`version` が手元より古いものは捨てる。
+    SfuTracks {
+        epoch: i64,
+        version: i64,
+        tracks: Vec<SfuTrackInfo>,
+    },
+    /// LiveKit にいる人は、`sfu/join` をやり直す（bridge がないときに Cloudflare の人が来た）。
+    SfuReassign { epoch: i64 },
     ParticipantJoined {
         participant: CallParticipant,
     },
@@ -134,6 +165,9 @@ impl CallServerEvent {
             Self::ParticipantLeft { .. } => "participant_left",
             Self::ParticipantUpdated { .. } => "participant_updated",
             Self::Signal { .. } => "signal",
+            Self::ModeChanged { .. } => "mode_changed",
+            Self::SfuTracks { .. } => "sfu_tracks",
+            Self::SfuReassign { .. } => "sfu_reassign",
         }
     }
 
@@ -143,11 +177,29 @@ impl CallServerEvent {
                 participants,
                 max_participants,
                 ice_servers,
+                mode,
+                epoch,
             } => serde_json::json!({
                 "participants": participants,
                 "max_participants": max_participants,
                 "ice_servers": ice_servers,
+                "mode": mode,
+                "epoch": epoch,
             }),
+            Self::ModeChanged { mode, epoch } => serde_json::json!({
+                "mode": mode,
+                "epoch": epoch,
+            }),
+            Self::SfuTracks {
+                epoch,
+                version,
+                tracks,
+            } => serde_json::json!({
+                "epoch": epoch,
+                "version": version,
+                "tracks": tracks,
+            }),
+            Self::SfuReassign { epoch } => serde_json::json!({ "epoch": epoch }),
             Self::ParticipantJoined { participant } => serde_json::json!({
                 "participant": participant,
             }),
@@ -201,6 +253,24 @@ pub enum CallDistributedEvent {
     },
     #[serde(rename = "room_closed")]
     RoomClosed { channel_id: String },
+    #[serde(rename = "mode_changed")]
+    ModeChanged {
+        channel_id: String,
+        mode: RoomMode,
+        epoch: i64,
+    },
+    /// 一覧そのものは載せない（NOTIFY の上限 8000 バイトを超えるため）。受けた各レプリカが DB から読む。
+    #[serde(rename = "sfu_tracks_changed")]
+    SfuTracksChanged {
+        channel_id: String,
+        epoch: i64,
+        version: i64,
+    },
+    #[serde(rename = "sfu_reassign")]
+    SfuReassign { channel_id: String, epoch: i64 },
+    /// SFU に割り当てた人が退出した（`call_sfu_departures` に行がある）。
+    #[serde(rename = "sfu_departed")]
+    SfuDeparted,
 }
 
 struct LocalSession {
@@ -210,8 +280,16 @@ struct LocalSession {
     sender: mpsc::Sender<CallServerEvent>,
 }
 
+/// SFU の worker を起こすための通知（SFU が有効なときだけ設定する）。
+#[derive(Clone)]
+struct SfuWakers {
+    departures: Arc<tokio::sync::Notify>,
+    bridge: Arc<tokio::sync::Notify>,
+}
+
 #[derive(Clone)]
 pub struct CallRegistry {
+    sfu_wakers: Arc<std::sync::OnceLock<SfuWakers>>,
     local_sessions: Arc<RwLock<HashMap<Uuid, LocalSession>>>,
     db: Arc<RwLock<Option<toasty::Db>>>,
     is_listening: Arc<std::sync::atomic::AtomicBool>,
@@ -222,6 +300,7 @@ pub struct CallRegistry {
 impl Default for CallRegistry {
     fn default() -> Self {
         Self {
+            sfu_wakers: Arc::new(std::sync::OnceLock::new()),
             local_sessions: Arc::new(RwLock::new(HashMap::new())),
             db: Arc::new(RwLock::new(None)),
             is_listening: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -234,6 +313,68 @@ impl Default for CallRegistry {
 impl CallRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_sfu_wakers(
+        &self,
+        departures: Arc<tokio::sync::Notify>,
+        bridge: Arc<tokio::sync::Notify>,
+    ) {
+        let _ = self.sfu_wakers.set(SfuWakers { departures, bridge });
+    }
+
+    fn wake_bridge(&self) {
+        if let Some(w) = self.sfu_wakers.get() {
+            w.bridge.notify_waiters();
+        }
+    }
+
+    /// 同じチャンネルのローカル SSE セッションへ配る。送れなかった（キューが満杯か閉じた）セッションは、
+    /// 既存のイベントと同じく切断して退出させる。
+    async fn broadcast_local(
+        &self,
+        channel_id: &str,
+        event: CallServerEvent,
+        except: Option<Uuid>,
+    ) {
+        let mut failed_sessions = Vec::new();
+        {
+            let sessions = self.local_sessions.read().await;
+            for (sid, session) in sessions.iter() {
+                if session.channel_id == channel_id
+                    && Some(*sid) != except
+                    && let Err(e) = session.sender.try_send(event.clone())
+                {
+                    tracing::warn!(
+                        session_id = %sid,
+                        "Failed to deliver {} to local session (queue full or closed): {e}",
+                        event.event_type()
+                    );
+                    failed_sessions.push((*sid, session.user_id.clone()));
+                }
+            }
+        }
+        if failed_sessions.is_empty() {
+            return;
+        }
+        let mut write_sessions = self.local_sessions.write().await;
+        for (sid, _) in &failed_sessions {
+            write_sessions.remove(sid);
+        }
+        drop(write_sessions);
+        if let Some(mut db) = self.get_db().await {
+            for (sid, uid) in failed_sessions {
+                let _ = Self::delete_session_and_notify(&mut db, channel_id, &sid, Some(&uid)).await;
+            }
+        }
+    }
+
+    async fn has_local_sessions(&self, channel_id: &str) -> bool {
+        self.local_sessions
+            .read()
+            .await
+            .values()
+            .any(|s| s.channel_id == channel_id)
     }
 
     pub fn is_listening(&self) -> bool {
@@ -441,6 +582,7 @@ impl CallRegistry {
                 channel_id,
                 participant,
             } => {
+                self.wake_bridge();
                 let mut failed_sessions = Vec::new();
                 {
                     let sessions = self.local_sessions.read().await;
@@ -485,6 +627,7 @@ impl CallRegistry {
                 session_id,
                 user_id,
             } => {
+                self.wake_bridge();
                 let sse_event = CallServerEvent::ParticipantLeft {
                     session_id,
                     user_id,
@@ -568,6 +711,53 @@ impl CallRegistry {
             CallDistributedEvent::RoomClosed { channel_id } => {
                 let mut sessions = self.local_sessions.write().await;
                 sessions.retain(|_, s| s.channel_id != channel_id);
+                drop(sessions);
+                self.wake_bridge();
+            }
+            CallDistributedEvent::ModeChanged {
+                channel_id,
+                mode,
+                epoch,
+            } => {
+                self.wake_bridge();
+                self.broadcast_local(&channel_id, CallServerEvent::ModeChanged { mode, epoch }, None)
+                    .await;
+            }
+            CallDistributedEvent::SfuReassign { channel_id, epoch } => {
+                self.broadcast_local(&channel_id, CallServerEvent::SfuReassign { epoch }, None)
+                    .await;
+            }
+            CallDistributedEvent::SfuTracksChanged {
+                channel_id,
+                epoch,
+                version,
+            } => {
+                self.wake_bridge();
+                if !self.has_local_sessions(&channel_id).await {
+                    return;
+                }
+                let Some(mut db) = self.get_db().await else {
+                    return;
+                };
+                // 通知の順番どおりに読めるとは限らない。版の古い一覧はクライアントが捨てる。
+                match load_sfu_tracks(&mut db, &channel_id).await {
+                    Ok(Some((cur_epoch, cur_version, tracks))) if cur_epoch == epoch => {
+                        let event = CallServerEvent::SfuTracks {
+                            epoch: cur_epoch,
+                            version: cur_version.max(version),
+                            tracks,
+                        };
+                        self.broadcast_local(&channel_id, event, None).await;
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Failed to load SFU tracks: {e}"),
+                }
+            }
+            CallDistributedEvent::SfuDeparted => {
+                if let Some(w) = self.sfu_wakers.get() {
+                    w.departures.notify_one();
+                }
+                self.wake_bridge();
             }
         }
     }
@@ -1023,13 +1213,19 @@ async fn get_call_status(
     let is_active = !participants.is_empty();
     let participant_count = participants.len();
 
+    let sfu = state.call_sfu.as_ref();
+    let (mode, _) = room_mode(&mut db, sfu, &channel_id).await?;
+    // 空の部屋は、次に入る人から mesh で始まる。
+    let mode = if is_active { mode } else { RoomMode::Mesh };
+
     Ok(Json(CallStatusResponse {
         is_active,
         channel_id,
         participant_count,
         participants,
-        max_participants: MAX_CALL_PARTICIPANTS,
+        max_participants: crate::call_sfu::capacity(sfu, mode),
         ice_servers,
+        mode,
     }))
 }
 
@@ -1171,15 +1367,33 @@ async fn call_stream(
         }
     }
 
-    // 4. call_presence に挿入 (定員 6 人を超えないことを条件付きでアトミックに検証・挿入)
+    // 部屋の mode（mesh / SFU）を決める。SFU の部屋に、SFU に対応していないクライアントは入れない。
+    let sfu = state.call_sfu.as_ref();
+    let sfu_capable = sfu.is_some() && query.sfu_capable();
+    let (room_mode_before, _) =
+        match prepare_room_for_join(&mut tx, sfu, &channel_id, sfu_capable).await {
+            Ok(v) => v,
+            Err(e) => {
+                state
+                    .call_registry
+                    .unregister_local_session_if_user(&query.session_id, &user.id)
+                    .await;
+                return Err(e);
+            }
+        };
+    let capacity = crate::call_sfu::capacity(sfu, room_mode_before);
+
+    // 4. call_presence に挿入 (定員を超えないことを条件付きでアトミックに検証・挿入)
     let now_str = crate::models::now_utc_millis().to_string();
     let session_str = query.session_id.to_string();
     let reserved = crate::call_invites::reserved_seat_condition();
     let insert_query = format!(
         "INSERT INTO call_presence (
-            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at,
+            sfu_capable
          )
-         SELECT $1, $2::uuid, $3, $4, $5, false, $6, statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds'
+         SELECT $1, $2::uuid, $3, $4, $5, false, $6, statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds',
+                $7::boolean
          WHERE (
              SELECT count(*) FROM call_presence
              WHERE channel_id = $1 AND expires_at > statement_timestamp()
@@ -1188,7 +1402,7 @@ async fn call_stream(
              -- 数までしか作らないので、招待されていない人が先に入って、呼ばれた人が入れなくなることを防ぐ。
              SELECT count(*) FROM call_invites i
              WHERE i.channel_id = $1 AND i.invitee_id <> $3 AND {reserved}
-         ) < {MAX_CALL_PARTICIPANTS}
+         ) < {capacity}
          RETURNING session_id::text"
     );
 
@@ -1199,6 +1413,7 @@ async fn call_stream(
         .bind(user.user_name.clone())
         .bind(user.display_name.clone())
         .bind(now_str.clone())
+        .bind(sfu_capable.to_string())
         .exec(&mut tx)
         .await;
 
@@ -1222,7 +1437,7 @@ async fn call_stream(
             .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::Conflict(format!(
-            "Call room is full (max {MAX_CALL_PARTICIPANTS} participants)"
+            "Call room is full (max {capacity} participants)"
         )));
     }
 
@@ -1262,6 +1477,19 @@ async fn call_stream(
             .await;
         return Err(AppError::from(e));
     }
+
+    // 人数が増えたので、条件を満たせば SFU に切り替える（mode_changed は同じトランザクションで通知）。
+    let (room_mode_now, room_epoch) =
+        match maybe_switch_to_sfu(&mut tx, sfu, &channel_id, room_mode_before).await {
+            Ok(v) => v,
+            Err(e) => {
+                state
+                    .call_registry
+                    .unregister_local_session_if_user(&query.session_id, &user.id)
+                    .await;
+                return Err(e);
+            }
+        };
 
     // 6. 自身を含む現在の有効参加者一覧を取得
     let rows = toasty::sql::query(
@@ -1386,7 +1614,7 @@ async fn call_stream(
         Err(e) => tracing::warn!("Failed to mark call invites accepted on join: {e}"),
     }
     if ch.is_dm && first_in_room {
-        match call_invites::create_dm_invites(&mut db, &channel_id, &user.id).await {
+        match call_invites::create_dm_invites(&mut db, sfu, &channel_id, &user.id).await {
             Ok(created) => push::dispatch_call_invites(state.db.clone(), created),
             Err(e) => tracing::warn!("Failed to create DM call invites: {e}"),
         }
@@ -1399,8 +1627,10 @@ async fn call_stream(
     // 8. 新規参加者自身への初期 RoomState イベント送信
     let room_state_event = CallServerEvent::RoomState {
         participants,
-        max_participants: MAX_CALL_PARTICIPANTS,
+        max_participants: crate::call_sfu::capacity(sfu, room_mode_now),
         ice_servers,
+        mode: room_mode_now,
+        epoch: room_epoch,
     };
     if let Err(e) = tx_chan.try_send(room_state_event) {
         guard.cleanup().await;
@@ -1775,6 +2005,173 @@ async fn list_active_calls(
 
     active.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
     Ok(Json(active))
+}
+
+/// 部屋の定員を返す SQL の式（チャンネルは `$1`）。SFU が無効なら mesh の定員の定数。
+pub fn room_capacity_sql(sfu: Option<&CallSfu>) -> String {
+    match sfu {
+        None => MAX_CALL_PARTICIPANTS.to_string(),
+        Some(sfu) => format!(
+            "COALESCE((SELECT CASE WHEN r.mode = 'sfu' THEN {} ELSE {} END
+                       FROM call_rooms r WHERE r.channel_id = $1), {})",
+            sfu.capacity(RoomMode::Sfu),
+            MAX_CALL_PARTICIPANTS,
+            MAX_CALL_PARTICIPANTS
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RoomRow {
+    mode: RoomMode,
+    epoch: i64,
+    track_version: i64,
+}
+
+/// 部屋の mode を読む。SFU が無効なら常に mesh（表は読まない）。
+pub async fn room_mode(
+    executor: &mut dyn toasty::Executor,
+    sfu: Option<&CallSfu>,
+    channel_id: &str,
+) -> Result<(RoomMode, i64), AppError> {
+    if sfu.is_none() {
+        return Ok((RoomMode::Mesh, 0));
+    }
+    let rows = toasty::sql::query(
+        "SELECT json_build_object('mode', mode, 'epoch', epoch, 'track_version', track_version)::text
+         FROM call_rooms WHERE channel_id = $1",
+    )
+    .bind(channel_id.to_string())
+    .exec(executor)
+    .await?;
+    Ok(crate::call_sfu::rows_json::<RoomRow>(rows)
+        .into_iter()
+        .next()
+        .map_or((RoomMode::Mesh, 0), |r| (r.mode, r.epoch)))
+}
+
+/// Cloudflare Realtime のトラック一覧と、その版。部屋がなければ `None`。
+///
+/// 探索：`call_rooms` を主キーで 1 行、`call_sfu_tracks` を主キーの先頭（channel_id）で、
+/// その部屋の在室者 × source（最大 2）行。在室は定員（`CALL_SFU_MAX_PARTICIPANTS`）以下。
+pub async fn load_sfu_tracks(
+    executor: &mut dyn toasty::Executor,
+    channel_id: &str,
+) -> Result<Option<(i64, i64, Vec<SfuTrackInfo>)>, AppError> {
+    let rows = toasty::sql::query(
+        "SELECT json_build_object(
+             'mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version,
+             'tracks', COALESCE((
+                 SELECT json_agg(json_build_object(
+                     'id', t.session_id::text || ':' || t.source,
+                     'session_id', t.session_id,
+                     'source', t.source) ORDER BY t.session_id, t.source)
+                 FROM call_sfu_tracks t WHERE t.channel_id = r.channel_id), '[]'::json)
+         )::text
+         FROM call_rooms r WHERE r.channel_id = $1",
+    )
+    .bind(channel_id.to_string())
+    .exec(executor)
+    .await?;
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(flatten)]
+        room: RoomRow,
+        tracks: Vec<SfuTrackInfo>,
+    }
+    Ok(crate::call_sfu::rows_json::<Row>(rows)
+        .into_iter()
+        .next()
+        .map(|r| (r.room.epoch, r.room.track_version, r.tracks)))
+}
+
+/// SFU の入室処理（チャンネル行をロックしたトランザクションの中）。部屋の mode を決め、
+/// 対応していないクライアントが SFU モードの部屋に入るのを断る。戻り値は (mode, epoch)。
+async fn prepare_room_for_join(
+    tx: &mut toasty::Transaction<'_>,
+    sfu: Option<&CallSfu>,
+    channel_id: &str,
+    sfu_capable: bool,
+) -> Result<(RoomMode, i64), AppError> {
+    if sfu.is_none() {
+        return Ok((RoomMode::Mesh, 0));
+    }
+    // 在室が 0 人なら、新しい通話として mesh から始め、epoch を進める（古い LiveKit のルームと分ける）。
+    let rows = toasty::sql::query(
+        "INSERT INTO call_rooms AS r (channel_id) VALUES ($1)
+         ON CONFLICT (channel_id) DO UPDATE
+           SET (mode, epoch) = (
+               SELECT CASE WHEN empty THEN 'mesh' ELSE r.mode END,
+                      CASE WHEN empty THEN r.epoch + 1 ELSE r.epoch END
+               FROM (SELECT NOT EXISTS (
+                         SELECT 1 FROM call_presence
+                         WHERE channel_id = $1 AND expires_at > statement_timestamp()) AS empty) e)
+         RETURNING json_build_object('mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version)::text",
+    )
+    .bind(channel_id.to_string())
+    .exec(&mut *tx)
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => return Err(AppError::from(e)),
+    };
+    let room = crate::call_sfu::rows_json::<RoomRow>(rows)
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("call_rooms upsert returned nothing")))?;
+    if room.mode == RoomMode::Sfu && !sfu_capable {
+        return Err(AppError::Coded {
+            status: axum::http::StatusCode::CONFLICT,
+            code: "CALL_SFU_UNSUPPORTED",
+            message: "This call uses an SFU. Update the app to join.".into(),
+            extra: Default::default(),
+        });
+    }
+    let _ = room.track_version;
+    Ok((room.mode, room.epoch))
+}
+
+/// 入室のあと、mesh の部屋が条件を満たしていれば SFU モードに切り替える（同じトランザクション）。
+/// 条件は、在室の人数が `threshold` を超え、全員が SFU に対応していること。
+async fn maybe_switch_to_sfu(
+    tx: &mut toasty::Transaction<'_>,
+    sfu: Option<&CallSfu>,
+    channel_id: &str,
+    mode: RoomMode,
+) -> Result<(RoomMode, i64), AppError> {
+    let Some(sfu) = sfu else {
+        return Ok((RoomMode::Mesh, 0));
+    };
+    let rows = toasty::sql::query(format!(
+        "UPDATE call_rooms r SET mode = 'sfu'
+         FROM (SELECT count(*) AS n, bool_and(sfu_capable) AS all_capable
+               FROM call_presence
+               WHERE channel_id = $1 AND expires_at > statement_timestamp()) live
+         WHERE r.channel_id = $1 AND r.mode = 'mesh'
+           AND live.n > {} AND live.all_capable
+         RETURNING json_build_object('mode', r.mode, 'epoch', r.epoch, 'track_version', r.track_version)::text",
+        sfu.config.threshold
+    ))
+    .bind(channel_id.to_string())
+    .exec(&mut *tx)
+    .await?;
+    let Some(room) = crate::call_sfu::rows_json::<RoomRow>(rows).into_iter().next() else {
+        return room_mode(&mut *tx, Some(sfu), channel_id).await.map(|(m, e)| {
+            let _ = mode;
+            (m, e)
+        });
+    };
+    let event = CallDistributedEvent::ModeChanged {
+        channel_id: channel_id.to_string(),
+        mode: RoomMode::Sfu,
+        epoch: room.epoch,
+    };
+    let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
+    toasty::sql::statement("SELECT pg_notify('zoo_call_events', $1)")
+        .bind(payload)
+        .exec(&mut *tx)
+        .await?;
+    Ok((RoomMode::Sfu, room.epoch))
 }
 
 #[cfg(test)]

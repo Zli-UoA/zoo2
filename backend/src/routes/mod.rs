@@ -1,6 +1,7 @@
 pub mod apns;
 pub mod attachments;
 pub mod bubble_chat;
+pub mod call_sfu;
 pub mod calls;
 pub mod channel_pins;
 pub mod channel_webhooks;
@@ -123,6 +124,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(calls::router())
+        .merge(call_sfu::router())
         .merge(sip::router())
         .merge(phone_sessions::router())
         .merge(pbx::router())

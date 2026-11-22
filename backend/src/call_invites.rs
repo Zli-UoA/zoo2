@@ -86,6 +86,7 @@ fn parse_rows<T: DeserializeOwned>(rows: Vec<toasty::stmt::Value>) -> Vec<T> {
 /// グループ DM でも、通話の空きの数までしか呼ばない。
 pub async fn create_dm_invites(
     db: &mut toasty::Db,
+    sfu: Option<&crate::call_sfu::CallSfu>,
     channel_id: &str,
     inviter_id: &str,
 ) -> Result<Vec<CallInvitePush>, AppError> {
@@ -109,7 +110,7 @@ pub async fn create_dm_invites(
     if members.is_empty() {
         return Ok(Vec::new());
     }
-    insert_invites(db, channel_id, inviter_id, &members).await
+    insert_invites(db, sfu, channel_id, inviter_id, &members).await
 }
 
 /// 招待を作る。空きの数（定員 - 在室 - 呼び出し中）までしか作らず、1 回の要求の中でも累積させる。
@@ -119,6 +120,7 @@ pub async fn create_dm_invites(
 /// 呼べないユーザー（bot・無効化）、すでに入室している人、すでに呼び出し中の人は、数える前に除く。
 async fn insert_invites(
     db: &mut toasty::Db,
+    sfu: Option<&crate::call_sfu::CallSfu>,
     channel_id: &str,
     inviter_id: &str,
     invitee_ids: &[String],
@@ -130,9 +132,11 @@ async fn insert_invites(
         .exec(&mut tx)
         .await?;
     let reserved = reserved_seat_condition();
+    // SFU モードの部屋は定員が大きい（docs/calls-sfu.md）。
+    let capacity = crate::routes::calls::room_capacity_sql(sfu);
     let rows = toasty::sql::query(format!(
         "WITH slots AS (
-             SELECT greatest(0, {MAX_CALL_PARTICIPANTS}
+             SELECT greatest(0, {capacity}
                - (SELECT count(*) FROM call_presence
                   WHERE channel_id = $1 AND expires_at > statement_timestamp())
                - (SELECT count(*) FROM call_invites i
@@ -446,7 +450,8 @@ pub async fn create(
         }
     }
 
-    let created = insert_invites(&mut db, &channel_id, &user.id, &ids).await?;
+    let created =
+        insert_invites(&mut db, state.call_sfu.as_ref(), &channel_id, &user.id, &ids).await?;
     push::dispatch_call_invites(state.db.clone(), created.clone());
 
     Ok(Json(serde_json::json!({
