@@ -12,7 +12,11 @@ import {
   mediaPreviewKind,
   shouldRefreshAttachmentUrl,
 } from "../../../lib/attachments";
-import { DesktopDownloadDestinationError, DesktopDownloadLimitError, desktopDownloadSettings } from "../../../lib/desktop";
+import {
+  DesktopDownloadDestinationError,
+  DesktopDownloadLimitError,
+  desktopDownloadSettings,
+} from "../../../lib/desktop";
 import {
   DesktopDownloadCancelledError,
   cancelDesktopDownload,
