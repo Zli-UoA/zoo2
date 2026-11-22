@@ -1890,5 +1890,31 @@
       "before": "終了日",
       "reset": "条件をリセット"
     }
+  },
+  "catchUp": {
+    "navUnread_one": "未読キャッチアップ {{count}} 件",
+    "navUnread_other": "未読キャッチアップ {{count}} 件",
+    "title": "未読キャッチアップ",
+    "close": "終了",
+    "count_one": "未読 {{count}} 件",
+    "count_other": "未読 {{count}} 件",
+    "overCount_one": "未読 {{count}} 件以上",
+    "overCount_other": "未読 {{count}} 件以上",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "既読にする",
+    "keepUnread": "未読のまま次へ",
+    "readError": "既読にできませんでした。もう一度お試しください",
+    "loadError": "未読の会話を読み込めませんでした",
+    "retry": "再試行",
+    "loading": "未読の会話を読み込み中",
+    "empty": "未読の会話はありません",
+    "emptyDescription": "未読が届いたら、もう一度開いてください",
+    "complete": "キャッチアップ完了",
+    "summary": "既読 {{read}} 件・未読のまま {{skipped}} 件",
+    "refresh": "更新",
+    "conversation": "会話",
+    "unreadTooOld": "古い未読がまだ範囲外です。もっと読んでから既読にしてください。",
+    "loadMore": "もっと読む",
+    "unreadChanged": "表示中に新しい未読が届きました。この会話は未読のまま次へ進んでください。"
   }
 }

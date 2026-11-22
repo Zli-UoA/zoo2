@@ -125,6 +125,32 @@ export function isPlaintextBeforeEncryption(
 }
 
 /**
+ * 暗号化チャンネルで暗号文のない行（同期元による書き換えの可能性がある行）を
+ * 本文不可として扱う。MessagePane とキャッチアップの両方で同じ判定を使う。
+ */
+export function withUnencryptedRows(
+  rows: readonly {
+    id: string;
+    ciphertext?: unknown;
+    epoch?: string | null;
+  }[],
+  decryptions: ReadonlyMap<string, MessageDecryption>,
+): ReadonlyMap<string, MessageDecryption> {
+  const unencrypted = rows.filter(
+    (row) =>
+      row.ciphertext == null &&
+      row.epoch != null &&
+      !(row as { deleted_at?: string | null }).deleted_at,
+  );
+  if (unencrypted.length === 0) return decryptions;
+  const next = new Map(decryptions);
+  for (const row of unencrypted) {
+    next.set(row.id, { status: "undecryptable", reason: "unencrypted" });
+  }
+  return next;
+}
+
+/**
  * 表示に使う復号の結果を決める。
  *
  * 平文のメッセージは `null`（今までどおり `content` を表示する）。暗号文があるのに復号の結果がまだ

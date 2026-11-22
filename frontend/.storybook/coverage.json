@@ -185,6 +185,23 @@
       "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
     },
     {
+      "file": "src/components/chat/CatchUpScreen.stories.tsx",
+      "states": [
+        "Default",
+        "LongUnread",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "Complete",
+        "Dark",
+        "Mobile"
+      ]
+    },
+    {
+      "file": "src/components/chat/CatchUpButton.stories.tsx",
+      "states": ["Unread", "AllRead"]
+    },
+    {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
       "states": ["Unread", "SingleUnread", "AllRead"]
     },
@@ -1123,6 +1140,21 @@
     {
       "file": "src/components/chat/MembersPanel.tsx",
       "story": "src/components/chat/MembersPanel.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/CatchUpButton.tsx",
+      "story": "src/components/chat/CatchUpButton.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/CatchUpMessagePage.tsx",
+      "story": "src/components/chat/CatchUpScreen.stories.tsx",
+      "composed": true,
+      "reason": "Default・LongUnread・Dark・Mobile で読み取り専用のメッセージ一覧と未読区切りを確認する。"
+    },
+    {
+      "file": "src/components/chat/CatchUpScreen.tsx",
+      "story": "src/components/chat/CatchUpScreen.stories.tsx",
+      "reason": "通常・長い未読・空・読込中・読込失敗・完了・ダーク・モバイルを確認する。既読書き込みの失敗は CatchUpScreen.test.ts で検証する。"
     },
     {
       "file": "src/components/chat/NotificationsButton.tsx",
