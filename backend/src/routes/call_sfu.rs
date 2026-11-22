@@ -260,7 +260,7 @@ async fn join(
         let mut db = state.db.clone();
         toasty::sql::statement(
             "INSERT INTO call_sfu_departures (channel_id, session_id, sfu_id, sfu_room, cf_session_id)
-             VALUES ($1, $2::uuid, $3, $4, $5)",
+             VALUES ($1, $2::uuid, $3, NULLIF($4, ''), NULLIF($5, ''))",
         )
         .bind(channel_id.clone())
         .bind(body.session_id.to_string())
@@ -269,8 +269,8 @@ async fn join(
         } else {
             SFU_CLOUDFLARE
         })
-        .bind(previous_livekit_room)
-        .bind(previous_cf)
+        .bind(previous_livekit_room.unwrap_or_default())
+        .bind(previous_cf.unwrap_or_default())
         .exec(&mut db)
         .await?;
         sfu.departures_wake.notify_one();
@@ -304,14 +304,15 @@ async fn set_assignment(
     .exec(&mut *tx)
     .await?;
     toasty::sql::statement(
-        "UPDATE call_presence SET sfu_id = $3, sfu_room = $4, cf_session_id = $5
+        "UPDATE call_presence SET sfu_id = $3, sfu_room = NULLIF($4, ''), cf_session_id = NULLIF($5, '')
          WHERE channel_id = $1 AND session_id = $2::uuid",
     )
     .bind(channel_id.to_string())
     .bind(session_id.to_string())
     .bind(sfu_id.to_string())
-    .bind(room.map(ToString::to_string))
-    .bind(cf_session.map(ToString::to_string))
+    // toasty は NULL の型を推定できないので、空文字を NULL として渡す。
+    .bind(room.unwrap_or_default().to_string())
+    .bind(cf_session.unwrap_or_default().to_string())
     .exec(&mut *tx)
     .await?;
     Ok(())
@@ -386,7 +387,7 @@ async fn register_track(
     // 話す人がもう退出していれば、外部キーで失敗する前に何もしない。
     let inserted = toasty::sql::query(
         "INSERT INTO call_sfu_tracks (channel_id, session_id, source, cf_session_id, track_name, bridge_epoch)
-         SELECT $1, $2::uuid, $3, $4, $5, $6::bigint
+         SELECT $1, $2::uuid, $3, $4, $5, NULLIF($6, '')::bigint
          WHERE EXISTS (SELECT 1 FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid)
          ON CONFLICT (channel_id, session_id, source) DO UPDATE
            SET cf_session_id = EXCLUDED.cf_session_id, track_name = EXCLUDED.track_name,
@@ -398,7 +399,7 @@ async fn register_track(
     .bind(source.to_string())
     .bind(cf_session.to_string())
     .bind(track_name.to_string())
-    .bind(bridge_epoch.map(|e| e.to_string()))
+    .bind(bridge_epoch.map(|e| e.to_string()).unwrap_or_default())
     .exec(&mut tx)
     .await?;
     if inserted.is_empty() {

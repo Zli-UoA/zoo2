@@ -139,7 +139,7 @@ impl CallSfuConfig {
             .unwrap_or_else(|| DEFAULT_CF_API_BASE.to_string())
             .trim_end_matches('/')
             .to_string();
-        require_http(&api_base, "cloudflare.api_base", true)?;
+        require_http(&api_base, "cloudflare.api_base", false)?;
 
         let livekit = match raw.livekit {
             None => {
