@@ -95,13 +95,13 @@ struct SyncCacheTests {
         for resource in resources { #expect(try await offline.load(resource, lease: restored) == Data("再取得後の通知".utf8)) }
     }
 
-    @Test("失効ファイルの更新失敗後も再保存を試せば、通知を再起動後に復元できる")
-    func retriesRevocationFileUpdate() async throws {
+    @Test("読出し許可の作成失敗後も再保存を試せば、通知を再起動後に復元できる")
+    func retriesPermissionFileCreation() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appendingPathComponent("test.store")
-        let marker = url.appendingPathExtension("revocations")
+        let marker = url.appendingPathExtension("permissions")
         let fails = Mutex(false)
         let cache = try await SyncCache.open(url: url, beforeSave: {
             if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
@@ -113,10 +113,9 @@ struct SyncCacheTests {
         await #expect(throws: CocoaError.self) { try await cache.revokeChannel(syncChannel, lease: lease) }
         fails.withLock { $0 = false }
 
-        let retained = try Data(contentsOf: marker)
-        // 保存先をディレクトリに置き換え、DB 成功後の失効ファイル更新だけを失敗させる。
+        // 保存先の親をファイルに置き換え、DB 成功後の読出し許可作成だけを失敗させる。
         try FileManager.default.removeItem(at: marker)
-        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        try Data().write(to: marker)
         for resource in resources {
             await #expect(throws: (any Error).self) {
                 try await cache.store(Data("再取得後".utf8), resource: resource, lease: lease)
@@ -124,12 +123,55 @@ struct SyncCacheTests {
             #expect(try await cache.load(resource, lease: lease) == nil)
         }
         try FileManager.default.removeItem(at: marker)
-        try retained.write(to: marker, options: .atomic)
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
         for resource in resources { try await cache.store(Data("再取得後".utf8), resource: resource, lease: lease) }
 
         let offline = try await SyncCache.open(url: url)
         let restored = try await offline.activate(connection: "connection", user: syncUser)
         for resource in resources { #expect(try await offline.load(resource, lease: restored) == Data("再取得後".utf8)) }
+    }
+
+    @Test("失効記録を書けずDB削除も失敗しても、会話と通知を再起動後に復元しない", arguments: [false, true])
+    func revocationSurvivesUnwritableMarker(failsSave: Bool) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("test.store")
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeSave: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        let notifications = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
+        for key in ["messages", "reactions"] {
+            try await cache.store(Data("失効前".utf8), resource: key, channelID: syncChannel, lease: lease)
+        }
+        for key in notifications { try await cache.store(Data("失効前".utf8), resource: key, lease: lease) }
+        try await cache.store(Data("別の会話".utf8), resource: "other", channelID: "other", lease: lease)
+        // 以前の失効記録の保存先を塞ぎ、atomic write が失敗する条件を再現する。
+        let marker = url.appendingPathExtension("revocations")
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        fails.withLock { $0 = failsSave }
+        if failsSave {
+            await #expect(throws: (any Error).self) { try await cache.revokeChannel(syncChannel, lease: lease) }
+        } else {
+            do { try await cache.revokeChannel(syncChannel, lease: lease) }
+            catch { Issue.record("失効記録の書込み失敗で削除が中断しました: \(error)") }
+        }
+        for key in ["messages", "reactions"] + notifications { #expect(try await cache.load(key, lease: lease) == nil) }
+        try FileManager.default.removeItem(at: marker)
+
+        let reopened = try await SyncCache.open(url: url)
+        let next = try await reopened.activate(connection: "connection", user: syncUser)
+        for key in ["messages", "reactions"] + notifications { #expect(try await reopened.load(key, lease: next) == nil) }
+        #expect(try await reopened.load("other", lease: next) == Data("別の会話".utf8))
+        try await reopened.store(Data("再取得後".utf8), resource: "messages", channelID: syncChannel, lease: next)
+        #expect(try await reopened.load("messages", lease: next) == Data("再取得後".utf8))
+        #expect(try await reopened.load("reactions", lease: next) == nil)
+        let offline = try await SyncCache.open(url: url)
+        let restored = try await offline.activate(connection: "connection", user: syncUser)
+        #expect(try await offline.load("messages", lease: restored) == Data("再取得後".utf8))
+        #expect(try await offline.load("reactions", lease: restored) == nil)
     }
 
     @Test("権限を失った会話と通知だけを削除する")
@@ -314,6 +356,50 @@ struct PersistentSyncIntegrationTests {
             #expect(snapshots.first?.messages?.first?.content == "投稿1")
             #expect(try await sync.load(key, as: MessageSyncState.self)?.shape.isLive == true)
         }
+    }
+
+    @Test("キャッシュ失効の保存が失敗しても403と404で表示中の会話を消す", arguments: [403, 404])
+    func clearsConversationDespiteCacheFailure(status: Int) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("test.store")
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeSave: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        let sync = SyncSession(cache: cache, lease: lease)
+        var state = MessageSyncState()
+        state.shape.handle = "h"; state.shape.offset = "100_0"; state.shape.isLive = true
+        _ = try state.addSnapshot(subsetData([1]), response: syncResponse())
+        state.windows["root"] = MessageWindow(parentID: nil, limit: 50, hasMore: false)
+        try await sync.store(state, key: "messages-v1:" + syncChannel, channelID: syncChannel)
+        try FileManager.default.createDirectory(at: url.appendingPathExtension("revocations"), withIntermediateDirectories: false)
+        fails.withLock { $0 = true }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { _ in
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return (status, [:], Data())
+        }
+        let store = ConversationStore(channel: Channel(id: syncChannel, channel_name: "失効確認", is_private: true, is_dm: false),
+                                      client: NativeChatClient(api: harness.api, sync: sync), userID: syncUser.id)
+        let running = Task { await store.run() }
+        defer { running.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(store.messages.first?.content == "投稿1")
+        release.continuation.yield(())
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !store.blocked && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        running.cancel()
+        await running.value
+        #expect(store.blocked && store.messages.isEmpty && !store.canPost)
     }
 
     @Test("再招待をサーバーで確認したら保存を再開し、失効前の応答は拒否する")

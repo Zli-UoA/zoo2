@@ -79,7 +79,12 @@ final class SyncSession {
         channelVersions[id] = version
         notificationVersion = UUID()
         onChannelRevoked?(id)
-        try await cache.revokeChannel(id, version: version, notificationVersion: notificationVersion, lease: lease)
+        do { try await cache.revokeChannel(id, version: version, notificationVersion: notificationVersion, lease: lease) }
+        catch {
+            // キャッシュの削除失敗で403/404や削除済みの会話情報を隠さず、画面でも失効を反映する。
+            try check()
+            if error is CancellationError || error is SyncInvalidation { throw error }
+        }
     }
 
     func storeRecovery<T: Encodable & Sendable>(_ value: T, key: String) async throws {

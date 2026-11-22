@@ -9,8 +9,10 @@ actor SyncCache {
     private var channelVersions: [String: UUID] = [:]
     private var blockedChannels: Set<String> = []
     private var notificationVersions: [String: UUID] = [:]
-    private var blockedResources: Set<String> = []
-    private var blockedResourcesURL: URL?
+    private var memoryPermissions: Set<String> = []
+    private var revokedPermissions: Set<String> = []
+    private var permissionsDirectory: URL?
+    private static let notificationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
     private var beforeSave: (@Sendable () throws -> Void)?
     private var attachmentFiles: AttachmentDiskCache?
 
@@ -25,7 +27,7 @@ actor SyncCache {
                                                isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
         }
         let cache = try SyncCache(modelContainer: ModelContainer(for: schema, configurations: configuration))
-        try await cache.configureRevocations(inMemory && url == nil ? nil : configuration.url.appendingPathExtension("revocations"),
+        await cache.configurePermissions(inMemory && url == nil ? nil : configuration.url.appendingPathExtension("permissions"),
                                              beforeSave: beforeSave)
         let directory = attachmentDirectory ?? url.map { $0.appendingPathExtension("attachments") }
             ?? (inMemory ? nil : URL.cachesDirectory.appendingPathComponent("ZooAttachments-v1"))
@@ -33,22 +35,48 @@ actor SyncCache {
         return cache
     }
 
-    private func configureRevocations(_ url: URL?, beforeSave: (@Sendable () throws -> Void)?) throws {
-        blockedResourcesURL = url
+    private func configurePermissions(_ directory: URL?, beforeSave: (@Sendable () throws -> Void)?) {
+        permissionsDirectory = directory
         self.beforeSave = beforeSave
-        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
-        blockedResources = try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: url))
     }
 
-    private func persistRevocations(_ resources: Set<String>) throws {
-        guard let blockedResourcesURL else { return }
-        try JSONEncoder().encode(resources).write(to: blockedResourcesURL, options: .atomic)
+    private func permissionURL(_ scope: String, account: String) -> URL? {
+        let accountHash = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
+        let scopeHash = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        return permissionsDirectory?.appendingPathComponent(accountHash).appendingPathComponent(scopeHash)
     }
 
-    private func clearRevocations(_ ids: [String]) throws {
-        let remaining = blockedResources.subtracting(ids)
-        try persistRevocations(remaining)
-        blockedResources = remaining
+    private func hasPermission(_ scope: String, account: String) -> Bool {
+        let key = account + "|" + scope
+        guard !revokedPermissions.contains(key) else { return false }
+        guard let url = permissionURL(scope, account: account) else { return memoryPermissions.contains(key) }
+        return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+
+    private func grantPermission(_ scope: String, account: String) throws {
+        guard !hasPermission(scope, account: account) else { return }
+        if let url = permissionURL(scope, account: account) {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: url, options: .atomic)
+        }
+        let key = account + "|" + scope
+        memoryPermissions.insert(key)
+        revokedPermissions.remove(key)
+    }
+
+    private func removePermission(_ scope: String, account: String) throws {
+        let key = account + "|" + scope
+        revokedPermissions.insert(key)
+        memoryPermissions.remove(key)
+        guard let url = permissionURL(scope, account: account) else { return }
+        do { try FileManager.default.removeItem(at: url) }
+        catch CocoaError.fileNoSuchFile { }
+    }
+
+    private func permissionScopes(resource: String, channelID: String?) -> [String] {
+        var scopes = channelID.map { ["channel:" + $0] } ?? []
+        if Self.notificationResources.contains(resource) { scopes.append("resource:" + resource) }
+        return scopes
     }
 
     private func configureAttachments(_ directory: URL?) {
@@ -94,8 +122,10 @@ actor SyncCache {
     func load(_ resource: String, lease: SyncLease) throws -> Data? {
         try check(lease)
         let id = lease.account + "|" + resource
-        guard !blockedResources.contains(id) else { return nil }
-        return try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first?.payload
+        guard let row = try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first else { return nil }
+        if let channelID = row.channelID, blockedChannels.contains(lease.account + ":" + channelID) { return nil }
+        guard permissionScopes(resource: resource, channelID: row.channelID).allSatisfy({ hasPermission($0, account: lease.account) }) else { return nil }
+        return row.payload
     }
 
     func store(_ payload: Data, resource: String, channelID: String? = nil, channelVersion: UUID? = nil,
@@ -113,14 +143,21 @@ actor SyncCache {
                 channelVersions[key] = channelVersion
             }
         }
-        let id = lease.account + "|" + resource
+        let account = lease.account
+        if let channelID, !hasPermission("channel:" + channelID, account: account) {
+            // 新しい本文だけで許可を戻し、失効前のリアクションや添付の保存先を復活させない。
+            try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
+        }
+        let id = account + "|" + resource
         if let row = try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first {
             row.payload = payload
         } else {
             modelContext.insert(CachedSyncRecord(account: lease.account, resource: resource, channelID: channelID, payload: payload))
         }
         try save()
-        if blockedResources.contains(id) { try clearRevocations([id]) }
+        for scope in permissionScopes(resource: resource, channelID: channelID) {
+            try grantPermission(scope, account: account)
+        }
     }
 
     func remove(_ resource: String, lease: SyncLease) throws {
@@ -178,19 +215,23 @@ actor SyncCache {
         channelVersions[key] = version
         blockedChannels.insert(key)
         notificationVersions[account] = notificationVersion
-        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
-        let ids = resources.map { account + "|" + $0 }
-        blockedResources.formUnion(ids)
-        // DB の保存が失敗しても、再起動後に削除前の通知を復元しない。
-        try persistRevocations(blockedResources)
-        try? attachmentFiles?.remove(account: account, channelID: channelID)
-        try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
-        // 通知の本文にも会話の情報が含まれるため、通知の控えも再取得する。
-        for id in ids {
-            try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.id == id })
+        let ids = Self.notificationResources.map { account + "|" + $0 }
+        var failure: (any Error)?
+        // 保存時に作った許可を先に消し、容量不足で失効記録を書けなくても再起動後の読出しを拒否する。
+        for scope in ["channel:" + channelID] + Self.notificationResources.map({ "resource:" + $0 }) {
+            do { try removePermission(scope, account: account) }
+            catch { if failure == nil { failure = error } }
         }
-        try save()
-        try clearRevocations(ids)
+        try? attachmentFiles?.remove(account: account, channelID: channelID)
+        do {
+            try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
+            for id in ids { try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.id == id }) }
+            try save()
+        } catch {
+            modelContext.rollback()
+            if failure == nil { failure = error }
+        }
+        if let failure { throw failure }
     }
 
     func authorizeChannel(_ channelID: String, version: UUID, lease: SyncLease) throws {
