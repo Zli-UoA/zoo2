@@ -2248,9 +2248,8 @@ fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> b
     // Windows のファイルシステムトンネリングにより、削除・改名直後の同名ファイルの
     // 作成日時が元のファイルから引き継がれることがある。FAT32 では更新時刻も
     // 2 秒単位に丸められるため、サイズと更新時刻だけでは不一致になることがある。
-    // ボリュームシリアル番号とファイル ID で比較する。
+    // 作成日時と更新時刻は比較せず、サイズだけで確認する。
     meta.file_size() == source.file_size()
-        && meta.volume_serial_number() == source.volume_serial_number()
 }
 
 #[cfg(not(any(unix, windows)))]
