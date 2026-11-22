@@ -621,8 +621,14 @@ impl Downloads {
 
     /// 中止する。途中までの `.part` を消す。見つからなくてもエラーにしない。
     pub async fn cancel(&self, id: &str) {
-        let Some(entry) = self.take_pending(id) else {
-            return;
+        let (entry, guard) = {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(entry) = pending.remove(id) else {
+                return;
+            };
+            // 取り出しと後始末の登録を同じロックで行う。`shutdown` がこの間に割り込んで
+            // `pending` も後始末の数も 0 に見えると、`.part` を待たずに終了してしまう。
+            (entry, self.cleanups.start())
         };
         let slot = SlotGuard {
             downloads: self,
@@ -632,8 +638,6 @@ impl Downloads {
         let file = Arc::clone(&entry.file);
         let part = entry.part.clone();
         let journal = Arc::clone(&self.journal);
-        let cleanups = self.cleanups.clone();
-        let guard = cleanups.start();
         // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは消せない）。
         let _ = tokio::task::spawn_blocking(move || {
             let _guard = guard;
@@ -654,18 +658,20 @@ impl Downloads {
     pub fn cancel_all(&self) {
         // 保存ダイアログを待っている `begin` が、後から登録しないようにする。
         self.generation.fetch_add(1, Ordering::SeqCst);
-        let pending =
-            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner));
-        if pending.is_empty() {
-            return;
-        }
+        let (pending, guard) = {
+            let mut current = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            let pending = std::mem::take(&mut *current);
+            if pending.is_empty() {
+                return;
+            }
+            // `cancel` と同じく、取り出しと後始末の登録を同じロックで行う。
+            (pending, self.cleanups.start())
+        };
         for entry in pending.values() {
             entry.cancelled.store(true, Ordering::SeqCst);
         }
         let journal = Arc::clone(&self.journal);
         let slots = Arc::clone(&self.slots);
-        let cleanups = self.cleanups.clone();
-        let guard = cleanups.start();
         std::thread::spawn(move || {
             let _guard = guard;
             for (_, entry) in pending {
@@ -692,17 +698,23 @@ impl Downloads {
     /// ため。既に `cancel` や `cancel_all` が始めた後始末も、同じ期限まで待つ。待ちきれなかった
     /// ものは記録に残し、次の起動で消す。
     pub fn shutdown(&self, timeout: Duration) {
-        let pending = {
-            self.generation.fetch_add(1, Ordering::SeqCst);
-            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let taken = {
+            let mut current = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            let pending = std::mem::take(&mut *current);
+            if pending.is_empty() {
+                None
+            } else {
+                // 取り出しと後始末の登録を同じロックで行い、`wait` が自分の分を
+                // 取りこぼさないようにする。
+                Some((pending, self.cleanups.start()))
+            }
         };
-        if !pending.is_empty() {
+        if let Some((pending, guard)) = taken {
             for entry in pending.values() {
                 entry.cancelled.store(true, Ordering::SeqCst);
             }
             let journal = Arc::clone(&self.journal);
-            let cleanups = self.cleanups.clone();
-            let guard = cleanups.start();
             // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは
             // 消せない）。記録から外れるのは、消せた（または既に無かった）ときだけ。
             std::thread::spawn(move || {
