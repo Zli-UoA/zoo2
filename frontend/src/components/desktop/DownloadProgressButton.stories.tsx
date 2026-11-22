@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fireEvent, fn, userEvent, within } from "storybook/test";
 
 import { DownloadProgressButton } from "./DownloadProgressButton";
 
@@ -34,9 +34,13 @@ type Story = StoryObj<typeof meta>;
 
 export const Idle: Story = {
   play: async ({ canvasElement, args }) => {
-    await userEvent.click(
-      await within(canvasElement).findByRole("button", { name: "report.pdfをダウンロード" }),
-    );
+    const button = await within(canvasElement).findByRole("button", {
+      name: "report.pdfをダウンロード",
+    });
+    await userEvent.click(button);
+    await expect(args.onDownload).toHaveBeenCalledTimes(1);
+    // 中止のダブルクリックの 2 回目が、開始ボタンに戻った後に届いても開始しない。
+    await fireEvent.click(button, { detail: 2 });
     await expect(args.onDownload).toHaveBeenCalledTimes(1);
   },
 };
@@ -59,6 +63,9 @@ export const Downloading: Story = {
       name: "report.pdfのダウンロードを中止 42%",
     });
     await userEvent.click(button);
+    await expect(args.onCancel).toHaveBeenCalledTimes(1);
+    // ダブルクリックの 2 回目では、もう一度中止しない。
+    await fireEvent.click(button, { detail: 2 });
     await expect(args.onCancel).toHaveBeenCalledTimes(1);
   },
 };

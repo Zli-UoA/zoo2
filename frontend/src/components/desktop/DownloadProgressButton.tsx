@@ -51,7 +51,12 @@ export function DownloadProgressButton({
         aria-label={downloadLabel}
         title={downloadLabel}
         disabled={pending}
-        onClick={onDownload}
+        onClick={(event) => {
+          // 中止のダブルクリックの 2 回目は、開始ボタンに戻った後に届く。ここで開始すると、
+          // 中止した直後に保存が再び始まってしまう。
+          if (event.detail > 1) return;
+          onDownload();
+        }}
       >
         {pending ? (
           <LoaderCircleIcon
