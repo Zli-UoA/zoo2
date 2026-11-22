@@ -103,10 +103,11 @@ export function ReactionPicker({
               </Tabs.Tab>
             </Tabs.List>
             <Tabs.Panel value="emoji" className="flex min-h-0 flex-1 flex-col">
-              {searchResults}
+              {/* A panel that is leaving must not render a second copy of the results. */}
+              {tab === "emoji" ? searchResults : null}
             </Tabs.Panel>
             <Tabs.Panel value="custom" className="min-h-0 flex-1">
-              {searching ? (
+              {tab !== "custom" ? null : searching ? (
                 <div className="flex h-full min-h-0 flex-col">{searchResults}</div>
               ) : (
                 <CustomEmojiPicker onSelect={select} search={customEmojis} />
