@@ -1232,9 +1232,9 @@ fn remove_stale_entry_with(
     // 残る（docs にも書いた）。
     match std::fs::remove_file(path) {
         Ok(()) => true,
-        // 上の照合で記録した親に届いていることが分かっているので、`NotFound` なら
-        // 本当に消えたとみなして記録から外す。
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        // 照合の後、削除の前にボリュームが外れて `NotFound` になることがある。
+        // 削除の直後にも記録した親に届いているときだけ、消えたとみなす。
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => reachable_parent(path, parent),
         Err(_) => false,
     }
 }
@@ -3082,6 +3082,19 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_parent_that_went_away_is_no_longer_reachable() {
+        let dir = temp_dir();
+        let part = part_path(&dir.join("x.txt"), "0123456789abcdef");
+        let recorded = parent_id(&part);
+        assert!(recorded.is_some());
+        assert!(reachable_parent(&part, recorded));
+
+        // 削除の直前にボリュームが外れた状態を、親ディレクトリの消失で表す。
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!reachable_parent(&part, recorded));
     }
 
     #[test]
