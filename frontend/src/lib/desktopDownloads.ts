@@ -51,12 +51,17 @@ class BodyReadError extends Error {
   }
 }
 
-function raceAbort<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
-  if (signal.aborted) return Promise.reject(new DesktopDownloadCancelledError());
+function raceAbort<T>(
+  signal: AbortSignal,
+  promise: Promise<T>,
+  options: { rejectWith?: () => unknown } = {},
+): Promise<T> {
+  const rejectWith = options.rejectWith ?? (() => new DesktopDownloadCancelledError());
+  if (signal.aborted) return Promise.reject(rejectWith());
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => {
       signal.removeEventListener("abort", onAbort);
-      reject(new DesktopDownloadCancelledError());
+      reject(rejectWith());
     };
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
@@ -201,17 +206,19 @@ async function run(
   controllers.set(id, controller);
   setState(id, { status: "preparing" });
   let downloadId: string | null = null;
-  const begin = async (): Promise<string> => {
+  const begin = async (): Promise<{ id: string; prompted: boolean }> => {
     const started =
       size == null
         ? await desktopDownloadBegin(fileName)
         : await desktopDownloadBegin(fileName, size);
     if (started.status === "cancelled") throw new DesktopDownloadCancelledError();
-    return started.id;
+    return { id: started.id, prompted: started.prompted };
   };
   const report: ProgressReporter = (fraction) => reportProgress(id, fraction);
   try {
-    downloadId = await begin();
+    let started = await begin();
+    downloadId = started.id;
+    let prompted = started.prompted;
     if (controller.signal.aborted) {
       await desktopDownloadCancel(downloadId).catch(() => {});
       throw new DesktopDownloadCancelledError();
@@ -224,27 +231,42 @@ async function run(
       } catch (error) {
         // 再試行するのは本文の読み取りが失敗したときだけ。応答を取る段階で失敗した
         // （HTTP エラーなど）なら、URL の再取得は済んでいるのでそのまま呼び出し側へ返す。
+        const bodyError = error instanceof BodyReadError ? error.original : error;
         if (
           !(error instanceof BodyReadError) ||
           retryDelayMs === undefined ||
           attempt >= BODY_RETRIES ||
-          controller.signal.aborted
+          controller.signal.aborted ||
+          prompted
         ) {
-          throw error instanceof BodyReadError ? error.original : error;
-        }
-        // 「保存のたびに確認する」がオンなら begin() が毎回保存ダイアログを出す。
-        // 選び直しを求めず、本文読取の失敗として返す。
-        const settings = await desktopDownloadSettings().catch(() => null);
-        if (settings?.ask_every_time !== false) {
-          throw error.original;
+          throw bodyError;
         }
         await desktopDownloadCancel(downloadId).catch(() => {});
         downloadId = null;
+        let settings: Awaited<ReturnType<typeof desktopDownloadSettings>> | undefined;
+        try {
+          settings = await raceAbort(controller.signal, desktopDownloadSettings(), {
+            rejectWith: () =>
+              controller.signal.aborted ? new DesktopDownloadCancelledError() : bodyError,
+          });
+        } catch (error) {
+          if (controller.signal.aborted || error instanceof DesktopDownloadCancelledError)
+            throw error;
+          settings = undefined;
+        }
+        if (settings?.ask_every_time !== false) {
+          throw bodyError;
+        }
         await delay(retryDelayMs, controller.signal);
-        downloadId = await begin();
+        started = await begin();
+        downloadId = started.id;
+        prompted = started.prompted;
         if (controller.signal.aborted) {
           await desktopDownloadCancel(downloadId).catch(() => {});
           throw new DesktopDownloadCancelledError();
+        }
+        if (prompted) {
+          throw bodyError;
         }
         setState(id, { status: "downloading", fraction: 0 });
       }
@@ -391,9 +413,7 @@ export async function downloadBlobToDesktop(
   await run(id, fileName, size, async (downloadId, signal, report) => {
     const blob = await raceAbort(
       signal,
-      load(signal, (fraction) =>
-        report(fraction === null ? null : Math.min(0.8, fraction * 0.8)),
-      ),
+      load(signal, (fraction) => report(fraction === null ? null : Math.min(0.8, fraction * 0.8))),
     );
     if (signal.aborted) throw new DesktopDownloadCancelledError();
     const stream = blob.stream?.();

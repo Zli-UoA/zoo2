@@ -50,8 +50,8 @@ import {
   subscribeDesktopDownloads,
 } from "./desktopDownloads";
 
-function started(id = "d1") {
-  return { status: "started" as const, id, path: `C:\\Downloads\\${id}` };
+function started(id = "d1", prompted = false) {
+  return { status: "started" as const, id, path: `C:\\Downloads\\${id}`, prompted };
 }
 
 function blobResponse(bytes: number[], contentType = "text/plain") {
@@ -76,7 +76,9 @@ afterEach(() => {
   desktop.detect.mockReset();
   desktop.detectionFailure.mockReset().mockReturnValue(null);
   desktop.hasBridge.mockReset().mockReturnValue(true);
-  desktop.settings.mockReset().mockResolvedValue({ ask_every_time: false, directory: "/tmp/downloads" });
+  desktop.settings
+    .mockReset()
+    .mockResolvedValue({ ask_every_time: false, directory: "/tmp/downloads" });
   desktop.probe.mockReset();
   desktop.isMissing.mockClear();
   desktop.begin.mockReset();
@@ -223,9 +225,8 @@ describe("downloadUrlToDesktop", () => {
     expect(desktopDownloadState("a2b")).toBeUndefined();
   });
 
-  it("does not retry body read when ask-every-time would show the save dialog again", async () => {
-    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
-    desktop.begin.mockResolvedValueOnce(started("d-body-ask"));
+  it("does not retry body read when the save dialog was shown", async () => {
+    desktop.begin.mockResolvedValueOnce(started("d-body-ask", true));
     desktop.write.mockResolvedValue(undefined);
     desktop.finish.mockResolvedValue(undefined);
     desktop.cancel.mockResolvedValue(undefined);

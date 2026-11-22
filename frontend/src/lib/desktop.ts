@@ -210,7 +210,7 @@ export type DesktopDownloadSettingsUpdate = {
 
 /** `zoo_download_begin` の結果。`path` は保存する場所（画面に出すためだけ）。 */
 export type DesktopDownloadStart =
-  | { status: "started"; id: string; path: string }
+  | { status: "started"; id: string; path: string; prompted: boolean }
   | { status: "cancelled" };
 
 /**

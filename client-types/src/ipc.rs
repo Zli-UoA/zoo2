@@ -85,8 +85,10 @@ pub mod command {
     /// 引数なし。OS のフォルダーの選択を出し、選ばれた保存先を Rust 側で保存して、新しい
     /// [`super::DownloadSettings`] を返す。閉じたら `null`。パスは JS に決めさせない。
     pub const PICK_DOWNLOAD_DIRECTORY: &str = "zoo_pick_download_directory";
-    /// [`super::DownloadBegin`]。保存ダイアログを出し、書き込み先の ID を返す。
-    /// 添付の大きさを受け取り、1 件の上限に使う。
+    /// [`super::DownloadBegin`]。保存先を決め、書き込み先の ID を返す。確認なし保存が
+    /// 有効で選択済みフォルダーを使え、対象形式が許可リストに含まれる場合はダイアログを
+    /// 出さない。それ以外は OS の保存ダイアログを出す。添付の大きさを受け取り、1 件の
+    /// 上限に使う。
     pub const DOWNLOAD_BEGIN: &str = "zoo_download_begin";
     /// 本文は octet-stream。`x-zoo-download-id` ヘッダーの ID に追記する。
     pub const DOWNLOAD_WRITE: &str = "zoo_download_write";
@@ -233,7 +235,12 @@ pub struct DownloadBegin {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DownloadStart {
     /// 書き込み先の ID と、保存するファイルのパス（画面に出すためだけ）。
-    Started { id: String, path: String },
+    /// `prompted` はこの保存で OS の保存ダイアログを出したか。
+    Started {
+        id: String,
+        path: String,
+        prompted: bool,
+    },
     /// 利用者が保存ダイアログをキャンセルした。
     Cancelled,
 }

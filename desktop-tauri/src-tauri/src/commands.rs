@@ -307,9 +307,10 @@ pub async fn zoo_download_begin(
         .await
         .map_err(download_ipc_error)?
     {
-        Some((id, path)) => Ok(DownloadStart::Started {
-            id,
-            path: path.display().to_string(),
+        Some(started) => Ok(DownloadStart::Started {
+            id: started.id,
+            path: started.path.display().to_string(),
+            prompted: started.prompted,
         }),
         None => Ok(DownloadStart::Cancelled),
     }

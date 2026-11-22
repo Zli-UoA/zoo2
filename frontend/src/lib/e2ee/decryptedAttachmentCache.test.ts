@@ -200,9 +200,7 @@ describe("createDecryptedAttachmentCache", () => {
     const isolated = new Promise<Blob>((_resolve, reject) => {
       rejectIsolated = reject;
     });
-    const signal = new AbortController().signal;
-
-    const isolatedLoad = cache.load(info("a"), () => isolated, { signal, isolated: true });
+    const isolatedLoad = cache.load(info("a"), () => isolated, { isolated: true });
     await expect(cache.load(info("a"), async () => blob(4))).resolves.toBeInstanceOf(Blob);
 
     rejectIsolated?.(decrypt);
