@@ -36,6 +36,15 @@ async fn request(
     )
 }
 
+/// Other tests may create channels for the same actor; always pick by id.
+fn state_for<'a>(rows: &'a Value, channel: &str) -> &'a Value {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["channel_id"].as_str() == Some(channel))
+        .expect("channel must be in the detailed list")
+}
+
 #[tokio::test]
 async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Result<()> {
     let mut config = Config::from_env();
@@ -137,11 +146,12 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
         Value::Null,
     )
     .await;
-    assert_eq!(detailed[0]["channel_id"], channel);
-    assert_eq!(detailed[0]["unread_count"], 2); // the reader's own post is excluded
-    assert_eq!(detailed[0]["unread_count_truncated"], false);
+    let detailed = state_for(&detailed, &channel);
+    assert_eq!(detailed["channel_id"], channel);
+    assert_eq!(detailed["unread_count"], 2); // the reader's own post is excluded
+    assert_eq!(detailed["unread_count_truncated"], false);
     assert!(
-        detailed[0]["first_unread_at"]
+        detailed["first_unread_at"]
             .as_str()
             .unwrap()
             .contains("00:00:01")
@@ -157,8 +167,9 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
         Value::Null,
     )
     .await;
-    assert_eq!(after_read[0]["unread_count"], 0);
-    assert!(after_read[0]["first_unread_at"].is_null());
+    let after_read = state_for(&after_read, &channel);
+    assert_eq!(after_read["unread_count"], 0);
+    assert!(after_read["first_unread_at"].is_null());
     let (_, older) = request(&app, "POST", &path, &reader, json!({"message_id":first})).await;
     assert_eq!(older["data"]["last_read_at"], saved["data"]["last_read_at"]);
     let another_app = create_router(AppState::new(init_db(&config.database_url).await?, config));
@@ -175,9 +186,10 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
         Value::Null,
     )
     .await;
-    assert_eq!(other_detailed[0]["unread_count"], 1);
+    let other_detailed = state_for(&other_detailed, &channel);
+    assert_eq!(other_detailed["unread_count"], 1);
     assert!(
-        other_detailed[0]["first_unread_at"]
+        other_detailed["first_unread_at"]
             .as_str()
             .unwrap()
             .contains("00:00:03")
