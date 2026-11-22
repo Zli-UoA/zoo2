@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { createElement, useEffect } from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { CatchUpScreen } from "./CatchUpScreen";
 
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   config: { apiBaseUrl: "" },
   revision: 1,
+  rangeReady: true,
   applyRead: vi.fn(),
   navigate: vi.fn(),
   unread: [] as Array<{
@@ -63,11 +64,11 @@ vi.mock("./CatchUpMessagePage", () => ({
     onRangeReady,
   }: {
     onBoundaryMessage: (id: string | null, at: number | null) => void;
-    onRangeReady?: (ready: boolean) => void;
+    onRangeReady?: (ready: boolean, exhausted: boolean, boundaryTooOld: boolean) => void;
   }) => {
     useEffect(() => {
       onBoundaryMessage("latest-in-page", 1);
-      onRangeReady?.(true);
+      onRangeReady?.(mocks.rangeReady, false, false);
     }, [onBoundaryMessage, onRangeReady]);
     return createElement("div", null, "message page");
   },
@@ -109,7 +110,16 @@ afterEach(() => {
   mocks.navigate.mockReset();
   mocks.unread = [];
   mocks.revision = 1;
+  mocks.rangeReady = true;
 });
+
+async function clickMarkRead() {
+  const button = await screen.findByRole("button", { name: "既読にする" });
+  await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false));
+  await act(async () => {
+    fireEvent.click(button);
+  });
+}
 
 it("does not write on open, freezes the queue and marks read only on demand", async () => {
   mocks.unread = [unreadItem("a"), unreadItem("b")];
@@ -127,9 +137,7 @@ it("does not write on open, freezes the queue and marks read only on demand", as
   });
   expect(screen.getByText("1 / 2")).toBeTruthy();
 
-  await act(async () => {
-    fireEvent.click(screen.getByText("既読にする"));
-  });
+  await clickMarkRead();
   expect(mocks.post).toHaveBeenCalledWith("/api/channels/a/read-state", {
     message_id: "latest-in-page",
   });
@@ -150,9 +158,7 @@ it("stays on the page and shows an error when the write fails", async () => {
   mocks.post.mockRejectedValue(new Error("network"));
   render(createElement(CatchUpScreen));
   await screen.findByText("1 / 1");
-  await act(async () => {
-    fireEvent.click(screen.getByText("既読にする"));
-  });
+  await clickMarkRead();
   expect(screen.getByText("既読にできませんでした")).toBeTruthy();
   expect(screen.getByText("1 / 1")).toBeTruthy();
   expect(mocks.applyRead).not.toHaveBeenCalled();
@@ -180,10 +186,18 @@ it("does not skip a conversation whose shared state was not refreshed", async ()
   mocks.post.mockResolvedValue({ data: { channel_id: "a", has_unread: false } });
   render(createElement(CatchUpScreen));
   expect(await screen.findByText("1 / 2")).toBeTruthy();
-  await act(async () => {
-    fireEvent.click(screen.getByText("既読にする"));
-  });
+  await clickMarkRead();
   expect(screen.getByText("2 / 2")).toBeTruthy();
+});
+
+it("keeps marking read disabled while the first unread is outside the loaded range", async () => {
+  mocks.unread = [unreadItem("a")];
+  mocks.get.mockResolvedValue(mocks.unread);
+  mocks.rangeReady = false;
+  render(createElement(CatchUpScreen));
+  const button = await screen.findByRole("button", { name: "既読にする" });
+  expect(button.hasAttribute("disabled")).toBe(true);
+  expect(mocks.post).not.toHaveBeenCalled();
 });
 
 it("shows the load error instead of the empty state when the detail fetch fails", async () => {
