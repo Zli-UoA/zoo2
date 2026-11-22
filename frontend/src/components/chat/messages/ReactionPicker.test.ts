@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement, type ReactNode } from "react";
+import { act, createElement, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -25,7 +25,9 @@ vi.mock("../../../lib/emoji/workspace", () => ({
 }));
 
 vi.mock("frimousse", async () => {
-  const { createElement: element } = await import("react");
+  const { createContext, createElement: element, useContext } = await import("react");
+  type Select = ((emoji: { emoji: string; label: string }) => void) | undefined;
+  const SelectContext = createContext<Select>(undefined);
   function Root({
     children,
     onEmojiSelect,
@@ -34,9 +36,17 @@ vi.mock("frimousse", async () => {
     onEmojiSelect?: (emoji: { emoji: string; label: string }) => void;
   }) {
     return element(
+      SelectContext.Provider,
+      { value: onEmojiSelect },
+      element("div", null, children),
+    );
+  }
+  // The grid only exists on the emoji panels, like the real frimousse viewport.
+  function Viewport({ children }: { children?: ReactNode }) {
+    const onEmojiSelect = useContext(SelectContext);
+    return element(
       "div",
       null,
-      children,
       element(
         "button",
         {
@@ -46,17 +56,22 @@ vi.mock("frimousse", async () => {
         },
         "😀",
       ),
+      children,
     );
-  }
-  function Passthrough({ children }: { children?: ReactNode }) {
-    return element("div", null, children);
   }
   return {
     defaultEmojiDataResolver: vi.fn(),
     EmojiPicker: {
       Root,
-      Search: () => null,
-      Viewport: Passthrough,
+      Search: ({ value, onChange, placeholder }: ComponentProps<"input">) =>
+        element("input", {
+          type: "search",
+          value,
+          onChange,
+          placeholder,
+          "aria-label": placeholder,
+        }),
+      Viewport,
       Loading: () => null,
       Empty: () => null,
       List: () => null,
@@ -161,8 +176,8 @@ describe("ReactionPicker", () => {
     const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "絵文字",
-      "Emoji Kitchen",
       "カスタム絵文字",
+      "Emoji Kitchen",
     ]);
 
     await click(document.querySelector('[data-testid="mock-emoji"]')!);
