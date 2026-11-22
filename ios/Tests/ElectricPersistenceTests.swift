@@ -95,6 +95,43 @@ struct SyncCacheTests {
         for resource in resources { #expect(try await offline.load(resource, lease: restored) == Data("再取得後の通知".utf8)) }
     }
 
+    @Test("失効ファイルの更新失敗後も再保存を試せば、通知を再起動後に復元できる")
+    func retriesRevocationFileUpdate() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("test.store")
+        let marker = url.appendingPathExtension("revocations")
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeSave: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
+        for resource in resources { try await cache.store(Data("失効前".utf8), resource: resource, lease: lease) }
+        fails.withLock { $0 = true }
+        await #expect(throws: CocoaError.self) { try await cache.revokeChannel(syncChannel, lease: lease) }
+        fails.withLock { $0 = false }
+
+        let retained = try Data(contentsOf: marker)
+        // 保存先をディレクトリに置き換え、DB 成功後の失効ファイル更新だけを失敗させる。
+        try FileManager.default.removeItem(at: marker)
+        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+        for resource in resources {
+            await #expect(throws: (any Error).self) {
+                try await cache.store(Data("再取得後".utf8), resource: resource, lease: lease)
+            }
+            #expect(try await cache.load(resource, lease: lease) == nil)
+        }
+        try FileManager.default.removeItem(at: marker)
+        try retained.write(to: marker, options: .atomic)
+        for resource in resources { try await cache.store(Data("再取得後".utf8), resource: resource, lease: lease) }
+
+        let offline = try await SyncCache.open(url: url)
+        let restored = try await offline.activate(connection: "connection", user: syncUser)
+        for resource in resources { #expect(try await offline.load(resource, lease: restored) == Data("再取得後".utf8)) }
+    }
+
     @Test("権限を失った会話と通知だけを削除する")
     func revokesChannel() async throws {
         let cache = try await SyncCache.open(inMemory: true)

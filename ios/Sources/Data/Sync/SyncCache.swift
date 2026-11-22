@@ -40,9 +40,15 @@ actor SyncCache {
         blockedResources = try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: url))
     }
 
-    private func persistRevocations() throws {
+    private func persistRevocations(_ resources: Set<String>) throws {
         guard let blockedResourcesURL else { return }
-        try JSONEncoder().encode(blockedResources).write(to: blockedResourcesURL, options: .atomic)
+        try JSONEncoder().encode(resources).write(to: blockedResourcesURL, options: .atomic)
+    }
+
+    private func clearRevocations(_ ids: [String]) throws {
+        let remaining = blockedResources.subtracting(ids)
+        try persistRevocations(remaining)
+        blockedResources = remaining
     }
 
     private func configureAttachments(_ directory: URL?) {
@@ -114,7 +120,7 @@ actor SyncCache {
             modelContext.insert(CachedSyncRecord(account: lease.account, resource: resource, channelID: channelID, payload: payload))
         }
         try save()
-        if blockedResources.remove(id) != nil { try persistRevocations() }
+        if blockedResources.contains(id) { try clearRevocations([id]) }
     }
 
     func remove(_ resource: String, lease: SyncLease) throws {
@@ -176,7 +182,7 @@ actor SyncCache {
         let ids = resources.map { account + "|" + $0 }
         blockedResources.formUnion(ids)
         // DB の保存が失敗しても、再起動後に削除前の通知を復元しない。
-        try persistRevocations()
+        try persistRevocations(blockedResources)
         try? attachmentFiles?.remove(account: account, channelID: channelID)
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
         // 通知の本文にも会話の情報が含まれるため、通知の控えも再取得する。
@@ -184,8 +190,7 @@ actor SyncCache {
             try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.id == id })
         }
         try save()
-        blockedResources.subtract(ids)
-        try persistRevocations()
+        try clearRevocations(ids)
     }
 
     func authorizeChannel(_ channelID: String, version: UUID, lease: SyncLease) throws {
