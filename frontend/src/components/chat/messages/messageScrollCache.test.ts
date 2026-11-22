@@ -6,6 +6,7 @@ import {
   clearChannelMeasurementCache,
   computeInitialScrollPlan,
   getChannelMeasurementCache,
+  getChannelMeasurementCacheGeneration,
   recordLastViewportRect,
   saveChannelMeasurementCache,
 } from "./messageScroll";
@@ -154,5 +155,37 @@ describe("channel scroll measurement cache & initial plan", () => {
     // Most recent rows retained (indices 20..219).
     expect(newest?.sizes.has("m-0")).toBe(false);
     expect(newest?.sizes.has("m-219")).toBe(true);
+  });
+
+  it("isolates measurement cache entries per user and advances generation on clear", () => {
+    const aliceKey = buildChannelScrollKey("general", "u1");
+    const bobKey = buildChannelScrollKey("general", "u2");
+    expect(aliceKey).not.toBe(bobKey);
+
+    saveChannelMeasurementCache({
+      key: aliceKey,
+      containerWidth: 700,
+      viewportHeight: 500,
+      snapshotItems: [snapshotItem("m-0", 0, 120, 0)],
+      fallbackRowHeight: 64,
+    });
+    expect(getChannelMeasurementCache(aliceKey)?.sizes.get("m-0")).toBe(120);
+    expect(getChannelMeasurementCache(bobKey)).toBeUndefined();
+
+    saveChannelMeasurementCache({
+      key: bobKey,
+      containerWidth: 700,
+      viewportHeight: 500,
+      snapshotItems: [snapshotItem("m-0", 0, 180, 0)],
+      fallbackRowHeight: 64,
+    });
+    expect(getChannelMeasurementCache(aliceKey)?.sizes.get("m-0")).toBe(120);
+    expect(getChannelMeasurementCache(bobKey)?.sizes.get("m-0")).toBe(180);
+
+    const beforeClear = getChannelMeasurementCacheGeneration();
+    clearChannelMeasurementCache();
+    expect(getChannelMeasurementCacheGeneration()).toBe(beforeClear + 1);
+    expect(getChannelMeasurementCache(aliceKey)).toBeUndefined();
+    expect(getChannelMeasurementCache(bobKey)).toBeUndefined();
   });
 });

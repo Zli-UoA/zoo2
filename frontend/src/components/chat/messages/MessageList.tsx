@@ -33,6 +33,7 @@ import {
   classifyScrollChange,
   computeInitialScrollPlan,
   getChannelMeasurementCache,
+  getChannelMeasurementCacheGeneration,
   isNearBottom,
   recordLastViewportRect,
   resolveScrollBehavior,
@@ -346,7 +347,11 @@ export function MessageList({
           items={items}
           firstUnreadId={boundaryId}
           lastRead={readBoundary}
-          readStatePending={unreadBoundaryId === undefined && readStateLoading}
+          readStatePending={
+            unreadBoundaryId === undefined &&
+            Boolean(channelId && currentUserId) &&
+            (isLoading || isError || readStateLoading || readStateError || lastRead === null)
+          }
           markRead={markRead}
           firstEncryptedIndex={firstEncryptedIndex}
           currentUserId={currentUserId}
@@ -467,9 +472,12 @@ function MessageScrollViewport({
   const measuredKeysForWidthRef = useRef<Set<string>>(
     new Set(initialPlan.cachedSizes ? initialPlan.cachedSizes.keys() : []),
   );
+  const cacheGenerationRef = useRef(getChannelMeasurementCacheGeneration());
 
-  const clearWidthCache = useCallback((nextWidth: number) => {
-    activeEstimateRef.current = { sizes: undefined, rowHeight: ESTIMATED_ROW_HEIGHT };
+  const invalidateWidthGeneration = useCallback((nextWidth: number, resetEstimates: boolean) => {
+    if (resetEstimates) {
+      activeEstimateRef.current = { sizes: undefined, rowHeight: ESTIMATED_ROW_HEIGHT };
+    }
     widthInvalidatedRef.current = true;
     measuredWidthRef.current = nextWidth;
     measuredKeysForWidthRef.current.clear();
@@ -493,23 +501,30 @@ function MessageScrollViewport({
         if (measuredWidthRef.current === null) {
           measuredWidthRef.current = containerWidth;
         } else if (Math.abs(containerWidth - measuredWidthRef.current) > 2) {
-          clearWidthCache(containerWidth);
+          invalidateWidthGeneration(containerWidth, false);
         }
-      }
-      if (typeof key === "string") {
-        measuredKeysForWidthRef.current.add(key);
       }
       const box = entry?.borderBoxSize?.[0];
       if (box) {
+        if (typeof key === "string") {
+          measuredKeysForWidthRef.current.add(key);
+        }
         return Math.round(box.blockSize);
       }
       if (!entry) {
         const cachedSize = instance.itemSizeCache.get(key);
-        if (cachedSize !== undefined) {
+        if (
+          cachedSize !== undefined &&
+          (typeof key !== "string" || measuredKeysForWidthRef.current.has(key))
+        ) {
           return cachedSize;
         }
       }
-      return (el as HTMLElement).offsetHeight;
+      const measured = (el as HTMLElement).offsetHeight;
+      if (typeof key === "string" && measured > 0) {
+        measuredKeysForWidthRef.current.add(key);
+      }
+      return measured;
     },
     overscan: 8,
     initialOffset: initialPlan.initialOffset,
@@ -648,6 +663,7 @@ function MessageScrollViewport({
 
   const latestMountDepsRef = useRef({
     items,
+    editingId,
     targetMessageId,
     firstUnreadId,
     unreadCovered,
@@ -661,6 +677,7 @@ function MessageScrollViewport({
   useLayoutEffect(() => {
     latestMountDepsRef.current = {
       items,
+      editingId,
       targetMessageId,
       firstUnreadId,
       unreadCovered,
@@ -691,23 +708,20 @@ function MessageScrollViewport({
         ) {
           return;
         }
-        const idx = deps.firstUnreadId
-          ? deps.items.findIndex((item) => item.message.id === deps.firstUnreadId)
-          : index;
+        if (!deps.firstUnreadId) return;
+        const idx = deps.items.findIndex((item) => item.message.id === deps.firstUnreadId);
         if (idx < 0) return;
         atBottomRef.current = false;
         virtualizer.scrollToIndex(idx, { align: "start" });
         alignIndexSync(idx, "start");
         const el = scrollRef.current;
-        if (
-          el &&
-          !settlingRef.current &&
-          !deps.readStatePending &&
-          !pendingUnreadJumpRef.current &&
-          isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
-        ) {
-          setHasNewBelow(false);
-          deps.markRead();
+        if (el && el.clientHeight > 0 && !settlingRef.current && !pendingUnreadJumpRef.current) {
+          const near = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+          atBottomRef.current = near && deps.editingId === null;
+          if (near && !deps.readStatePending) {
+            setHasNewBelow(false);
+            deps.markRead();
+          }
         }
       });
     },
@@ -740,12 +754,12 @@ function MessageScrollViewport({
       if (measuredWidthRef.current === null) {
         measuredWidthRef.current = width;
       } else if (Math.abs(width - measuredWidthRef.current) > 2) {
-        clearWidthCache(width);
+        invalidateWidthGeneration(width, false);
       }
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [clearWidthCache]);
+  }, [invalidateWidthGeneration]);
 
   // 初回マウント時、描画前に目的位置（末尾 / 未読境界 / 対象メッセージ）へ同期配置し、
   // 未計測行の ResizeObserver 確定が終わるまで（キャッシュ命中時は即時完了）表示を整える。
@@ -764,7 +778,7 @@ function MessageScrollViewport({
       element.clientWidth > 0 &&
       Math.abs(element.clientWidth - latestMountDepsRef.current.initialPlan.cachedWidth) > 2
     ) {
-      clearWidthCache(element.clientWidth);
+      invalidateWidthGeneration(element.clientWidth, true);
       virtualizer.measure();
       if (typeof virtualizer.measureElement === "function") {
         for (const row of element.querySelectorAll<HTMLElement>("[data-index]")) {
@@ -788,13 +802,16 @@ function MessageScrollViewport({
       }
       if (
         el &&
-        !deps.readStatePending &&
+        el.clientHeight > 0 &&
         !pendingUnreadJumpRef.current &&
-        unreadJumpFrameRef.current === null &&
-        isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
+        unreadJumpFrameRef.current === null
       ) {
-        setHasNewBelow(false);
-        deps.markRead();
+        const near = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight);
+        atBottomRef.current = near && deps.editingId === null;
+        if (near && !deps.readStatePending) {
+          setHasNewBelow(false);
+          deps.markRead();
+        }
       }
     };
 
@@ -804,7 +821,6 @@ function MessageScrollViewport({
         const idx = deps.items.findIndex((item) => item.message.id === deps.targetMessageId);
         if (idx >= 0) {
           atBottomRef.current = false;
-          scrolledTarget.current = deps.targetMessageId;
           pendingUnreadJumpRef.current = false;
           cancelUnreadJump();
           return {
@@ -931,7 +947,7 @@ function MessageScrollViewport({
       clearTimeout(fallbackTimer);
       for (const ev of cancelEvents) element.removeEventListener(ev, stop);
     };
-  }, [virtualizer, clearWidthCache, cancelUnreadJump]);
+  }, [virtualizer, invalidateWidthGeneration, cancelUnreadJump]);
 
   useLayoutEffect(() => {
     if (readStatePending || initialUnreadResolvedRef.current) return;
@@ -994,9 +1010,19 @@ function MessageScrollViewport({
     const hasTargetInItems = Boolean(
       targetMessageId && items.some((item) => item.message.id === targetMessageId),
     );
+    const preserveReadingOnReplace =
+      change === "replace" &&
+      !atBottomRef.current &&
+      initialUnreadResolvedRef.current &&
+      !hasTargetInItems &&
+      !pendingUnreadJumpRef.current &&
+      unreadJumpFrameRef.current === null;
     if (change === "initial") {
       // 初回表示の位置合わせはマウント直後の useLayoutEffect が担当する。
-    } else if (!awaitingUnread && (change === "prepend" || (slid && !atBottomRef.current))) {
+    } else if (
+      !awaitingUnread &&
+      (change === "prepend" || (slid && !atBottomRef.current) || preserveReadingOnReplace)
+    ) {
       // Estimates for unmounted rows must not decide which message the reader sees.
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
@@ -1063,9 +1089,17 @@ function MessageScrollViewport({
         setHasNewBelow(true);
         if (lastItem) onLiveAnnouncementChange(newMessageAnnouncement(lastItem.message, t));
       }
-    } else if (change === "replace" && hasTargetInItems) {
-      // 対象メッセージ指定中は末尾へ戻さない（下の targetMessageId 用 effect で配置する）。
-    } else if (change === "replace" && firstUnreadId) {
+    } else if (change === "replace" && hasTargetInItems && targetMessageId) {
+      cancelUnreadJump();
+      atBottomRef.current = false;
+      scrolledTarget.current = undefined;
+      pendingUnreadJumpRef.current = false;
+    } else if (
+      change === "replace" &&
+      (pendingUnreadJumpRef.current || unreadJumpFrameRef.current !== null)
+    ) {
+      // 保留中・予約済みの未読ジャンプが完了するまで末尾追従しない。
+    } else if (change === "replace" && !initialUnreadResolvedRef.current && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
       if (index >= 0) {
         atBottomRef.current = false;
@@ -1076,7 +1110,7 @@ function MessageScrollViewport({
       // 読み足しの途中: 位置は動かさない (終わったら、下で未読の先頭へ合わせる)。
     } else if (shouldStickToBottom(change, atBottomRef.current)) {
       if (change === "replace") {
-        scrollToBottom("auto");
+        if (atBottomRef.current) scrollToBottom("auto");
       } else {
         requestAnimationFrame(() => scrollToBottom());
       }
@@ -1116,6 +1150,7 @@ function MessageScrollViewport({
     currentUserId,
     scrollToBottom,
     alignIndexSync,
+    cancelUnreadJump,
     scheduleUnreadJump,
     t,
     firstUnreadId,
@@ -1144,7 +1179,9 @@ function MessageScrollViewport({
   // チャンネルを離れるとき（アンマウント時）に計測済みの行高を保存し、次回切替で再利用する。
   useLayoutEffect(() => {
     return () => {
-      if (!cacheKey) return;
+      if (!cacheKey || cacheGenerationRef.current !== getChannelMeasurementCacheGeneration()) {
+        return;
+      }
       const el = scrollRef.current;
       const width = el && el.clientWidth > 0 ? el.clientWidth : latestMetricsRef.current.width;
       const height = el && el.clientHeight > 0 ? el.clientHeight : latestMetricsRef.current.height;
@@ -1220,11 +1257,11 @@ function MessageScrollViewport({
     if (index < 0) return;
     cancelUnreadJump();
     atBottomRef.current = false;
-    scrolledTarget.current = targetMessageId;
     pendingUnreadJumpRef.current = false;
     alignIndexSync(index, "center");
     const frame = requestAnimationFrame(() => {
       atBottomRef.current = false;
+      scrolledTarget.current = targetMessageId;
       virtualizer.scrollToIndex(index, { align: "center" });
     });
     return () => cancelAnimationFrame(frame);

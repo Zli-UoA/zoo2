@@ -113,11 +113,22 @@ export interface InitialScrollPlan {
 }
 
 const channelMeasurementCache = new Map<string, ChannelMeasurementEntry>();
+let cacheGeneration = 0;
 let lastViewportRect: { width: number; height: number } | undefined;
 
-/** ユーザーとチャンネルからタブ内計測キャッシュのキーを組み立てる。 */
+/**
+ * ユーザーとチャンネルからタブ内計測キャッシュのキーを組み立てる。
+ *
+ * 未ログイン／読み取り専用などで `currentUserId` が `null` の場合は空文字プレフィックス
+ * (`"\0<channelId>"`) を意図的に共有し、ログアウト時は `clearChannelMeasurementCache()` で一括破棄する。
+ */
 export function buildChannelScrollKey(channelId: string, currentUserId: string | null): string {
   return `${currentUserId ?? ""}\0${channelId}`;
+}
+
+/** チャンネル別計測キャッシュの世代番号を返す（クリア後の古いアンマウント書戻し抑止用）。 */
+export function getChannelMeasurementCacheGeneration(): number {
+  return cacheGeneration;
 }
 
 /** チャンネル別の実測高さキャッシュを取得する（LRU 順を更新）。 */
@@ -131,6 +142,7 @@ export function getChannelMeasurementCache(key: string): ChannelMeasurementEntry
 
 /** テストやサインアウト向けにキャッシュを初期化する。 */
 export function clearChannelMeasurementCache(): void {
+  cacheGeneration += 1;
   channelMeasurementCache.clear();
   lastViewportRect = undefined;
 }
