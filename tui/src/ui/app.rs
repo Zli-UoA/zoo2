@@ -1149,6 +1149,11 @@ impl App {
         items
     }
 
+    /// カーソルがある行。一時のスレッドの行が増減する操作の前に控えて、あとで `restore_sidebar_selection` に渡す。
+    fn selected_sidebar_item(&self) -> Option<SidebarItem> {
+        self.sidebar_items().get(self.sidebar_index).cloned()
+    }
+
     fn restore_sidebar_selection(&mut self, selected: Option<SidebarItem>) {
         let items = self.sidebar_items();
         self.sidebar_index = selected
@@ -1931,24 +1936,24 @@ impl App {
         };
         if let Some(root_id) = root_id {
             self.typing_poll.wake();
+            // 一覧にないスレッドを開くと、その下に一時の行が増えるので、カーソルは同じ行に残す。
+            let selected = self.selected_sidebar_item();
             self.thread = Some(ThreadView {
                 root_id,
                 selected: None,
                 scroll: 0,
                 inner_scroll: 0,
             });
+            self.restore_sidebar_selection(selected);
             self.focus = Focus::Thread;
         }
     }
 
     fn activate_sidebar(&mut self) {
-        let selected = self.sidebar_items().get(self.sidebar_index).cloned();
-        match selected.clone() {
+        match self.selected_sidebar_item() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
+                // カーソルは `open_channel` が、押した行に残す。
                 self.open_channel(channel_id);
-                // 別チャンネルのスレッドを閲覧中は、一覧外のスレッドの一時行がピン留めの下に出ている。
-                // チャンネルを開くとその行が消えて添字がずれるため、開いた行にカーソルを残す。
-                self.restore_sidebar_selection(selected);
                 self.focus = Focus::Messages;
             }
             Some(SidebarItem::Thread {
@@ -1981,6 +1986,9 @@ impl App {
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
+        // 別チャンネルの、一覧にないスレッドを閲覧中は、一時の行（ピン留めの下を含む）が出ている。
+        // チャンネルを開くとスレッドが閉じてその行が消え、添字がずれるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         if self.current.as_deref() != Some(channel_id.as_str()) {
             let previous: Vec<_> = self
                 .subscriptions
@@ -2018,6 +2026,7 @@ impl App {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current = Some(channel_id);
+        self.restore_sidebar_selection(selected);
         self.poll_typing();
     }
 
@@ -2033,7 +2042,10 @@ impl App {
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
         self.typing_poll.wake();
+        // 一覧にないスレッドを閉じると、その下の一時の行が消えるので、カーソルは同じ行に残す。
+        let selected = self.selected_sidebar_item();
         self.thread = None;
+        self.restore_sidebar_selection(selected);
         self.focus = Focus::Messages;
         if matches!(self.target, Target::Reply(_)) {
             self.target = Target::Channel;

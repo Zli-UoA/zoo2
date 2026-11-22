@@ -1410,78 +1410,169 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn opening_a_channel_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
-        // 別チャンネル (c2) の、一覧にないスレッドを閲覧中は、c2 の行の下に一時の行が出る。
-        // 別のチャンネルを開くとスレッドが閉じて、その行が消える。カーソルは押した行に残る。
-        for pin_first in [true, false] {
-            let mut app = app();
-            let feed =
-                |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+    /// 別チャンネル (c2) の、一覧にないスレッド (r1) の一時の行。ピン留めの下にも、通常の一覧の下にも出る。
+    fn temporary_row(pinned: bool) -> SidebarItem {
+        SidebarItem::Thread {
+            channel_id: "c2".into(),
+            id: "r1".into(),
+            pinned,
+        }
+    }
+
+    /// c2（参加済み）に、返信のあるスレッド r1 がある。一覧 (`active_threads`) には載せない。
+    /// `viewing` なら c2 を開いて r1 を閲覧中にして、c2 の下に一時の行を出す。
+    fn app_with_unlisted_c2_thread(pin_c2: bool, viewing: bool) -> App {
+        let mut app = app();
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("c2".into()),
+            vec![
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u2", "channel_id": "c2",
+                               "content": "root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c2", "content": "reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "r1" }),
+                ),
+            ],
+        );
+        if pin_c2 {
             feed(
                 &mut app,
-                ShapeId::ChannelUsers,
-                vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))],
+                ShapeId::UserPinnedChannels,
+                vec![(
+                    "p2",
+                    json!({
+                        "user_id": "u1", "channel_id": "c2", "position": "0",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                )],
             );
-            feed(
-                &mut app,
-                ShapeId::Messages("c2".into()),
-                vec![
-                    (
-                        "r1",
-                        json!({ "id": "r1", "user_id": "u2", "channel_id": "c2",
-                                   "content": "root", "created_at": "2026-11-01 03:00:00" }),
-                    ),
-                    (
-                        "r2",
-                        json!({ "id": "r2", "user_id": "u1", "channel_id": "c2", "content": "reply",
-                                   "created_at": "2026-11-01 03:01:00", "parent_id": "r1" }),
-                    ),
-                ],
-            );
-            if pin_first {
-                feed(
-                    &mut app,
-                    ShapeId::UserPinnedChannels,
-                    vec![(
-                        "p2",
-                        json!({
-                            "user_id": "u1", "channel_id": "c2", "position": "0",
-                            "created_at": "2026-11-11 00:00:00",
-                            "updated_at": "2026-11-11 00:00:00"
-                        }),
-                    )],
-                );
-            }
-            app.current = Some("c2".into());
+        }
+        app.current = Some("c2".into());
+        if viewing {
             app.thread = Some(crate::ui::app::ThreadView {
                 root_id: "r1".into(),
                 selected: None,
                 scroll: 0,
                 inner_scroll: 0,
             });
-            let temporary = |pinned| SidebarItem::Thread {
-                channel_id: "c2".into(),
-                id: "r1".into(),
-                pinned,
-            };
+        }
+        app
+    }
+
+    fn put_cursor_on(app: &mut App, row: &SidebarItem) {
+        app.sidebar_index = app
+            .sidebar_items()
+            .iter()
+            .position(|item| item == row)
+            .unwrap();
+    }
+
+    fn cursor_row(app: &App) -> SidebarItem {
+        app.sidebar_items()[app.sidebar_index].clone()
+    }
+
+    // 一時のスレッドの行が増減しても、カーソルは同じ行に残る。
+    // ピン留めの下の行は c1 より前にあるので、増減すると、c1 の添字がずれる。
+
+    #[tokio::test]
+    async fn opening_a_channel_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
             let before = app.sidebar_items();
-            assert!(before.contains(&temporary(false)), "{pin_first}");
-            assert_eq!(before.contains(&temporary(true)), pin_first, "{pin_first}");
+            assert!(before.contains(&temporary_row(false)), "{pin_c2}");
+            assert_eq!(before.contains(&temporary_row(true)), pin_c2, "{pin_c2}");
 
             let target = SidebarItem::Channel("c1".into());
             app.focus = Focus::Sidebar;
-            app.sidebar_index = before.iter().position(|item| *item == target).unwrap();
+            put_cursor_on(&mut app, &target);
             press(&mut app, KeyCode::Enter);
 
             assert_eq!(app.current.as_deref(), Some("c1"));
             assert!(app.thread.is_none());
             assert_eq!(app.focus, Focus::Messages);
             let after = app.sidebar_items();
-            assert!(!after.contains(&temporary(false)) && !after.contains(&temporary(true)));
-            // ピン留めの下の一時の行が消えると、c1 の添字が 1 つ前にずれる。ずれたままだと、別の行が選ばれる。
-            assert_eq!(after[app.sidebar_index], target, "{pin_first}");
+            assert!(
+                !after.contains(&temporary_row(false)) && !after.contains(&temporary_row(true))
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
         }
+    }
+
+    #[tokio::test]
+    async fn closing_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // c1 の行にカーソルを置いたまま、スレッドへ戻って Esc で閉じる。
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            app.focus = Focus::Thread;
+            press(&mut app, KeyCode::Esc);
+
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn opening_a_thread_keeps_the_cursor_when_a_temporary_thread_row_appears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, false);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            // メッセージ欄で、返信のあるメッセージを選んで Enter でスレッドを開く。
+            app.focus = Focus::Messages;
+            app.selected = Some("r1".into());
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r1")
+            );
+            assert_eq!(
+                app.sidebar_items().contains(&temporary_row(true)),
+                pin_c2,
+                "{pin_c2}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_a_failed_draft_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        let mut app = app_with_unlisted_c2_thread(true, true);
+        let target = SidebarItem::Channel("c1".into());
+        put_cursor_on(&mut app, &target);
+        app.focus = Focus::Sidebar;
+        // 別のチャンネル (c1) の送れなかった本文を戻すと、c1 を開き、c2 のスレッドは閉じる。
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "戻す本文".into(),
+            edit_base: None,
+        });
+        press(&mut app, KeyCode::Char('R'));
+
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(app.composer.lines(), ["戻す本文"]);
+        assert!(!app.sidebar_items().contains(&temporary_row(true)));
+        assert_eq!(cursor_row(&app), target);
     }
 
     #[tokio::test]
