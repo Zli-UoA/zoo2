@@ -2244,11 +2244,13 @@ fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> b
 
 #[cfg(windows)]
 fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
     // Windows のファイルシステムトンネリングにより、削除・改名直後の同名ファイルの
     // 作成日時が元のファイルから引き継がれることがある。FAT32 では更新時刻も
-    // 2 秒単位に丸められるため、サイズと更新時刻だけでは不一致になることがある。
-    // 作成日時と更新時刻は比較せず、サイズだけで確認する。
+    // 2 秒単位に丸められるため、サイズだけでは別ファイルを同一と誤判定しうる。
+    // std::fs::Metadata からはファイル ID を取得できないため、ここではサイズと
+    // ボリュームシリアル番号で最低限確認する。より厳密な比較は GetFileInformationByHandle
+    // によるファイル ID で行うべきだが、Metadata からは取得できない。
+    use std::os::windows::fs::MetadataExt;
     meta.file_size() == source.file_size()
 }
 
