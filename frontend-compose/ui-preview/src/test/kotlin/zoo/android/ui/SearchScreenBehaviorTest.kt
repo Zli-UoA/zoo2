@@ -59,6 +59,16 @@ class SearchScreenBehaviorTest {
     }
 
     @Test
+    fun aSearchWithoutResultsInBetweenForgetsThePosition() {
+        val set = show(search("会議"))
+        ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("会議の結果 12"))
+        set(search("なし", emptyList()))
+        ui.onNodeWithText("見つかりませんでした。").assertIsDisplayed()
+        set(search("会議"))
+        ui.onNodeWithText("会議の結果 1").assertIsDisplayed()
+    }
+
+    @Test
     fun tappingALinkInTheSnippetOpensTheResult() {
         val actions = mutableListOf<AndroidUiAction>()
         show(search("資料", listOf(SearchResultItem("message:m1", "はる", "[資料](https://example.test/guide) を見てください",

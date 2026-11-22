@@ -120,6 +120,15 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
     var savedKey by rememberSaveable { mutableStateOf("") }
     var savedIndex by rememberSaveable { mutableIntStateOf(0) }
     var savedOffset by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(positionKey) {
+        // Another search (even one without a list, such as no results) forgets the position; returning
+        // from an opened result keeps the same key and so keeps it.
+        if (savedKey != positionKey) {
+            savedKey = ""
+            savedIndex = 0
+            savedOffset = 0
+        }
+    }
     Box(Modifier.weight(1f).fillMaxWidth()) {
         when {
             state.problem != null -> SearchMessage(problemText(state.problem), colors)
