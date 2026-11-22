@@ -1157,13 +1157,26 @@ fn truncate_name(name: String) -> String {
     if name.len() <= MAX_FILE_NAME_BYTES {
         return name;
     }
-    let suffix = Path::new(&name)
+    let extension = Path::new(&name)
         .extension()
-        .map(|ext| format!(".{}", ext.to_string_lossy()))
+        .map(|ext| ext.to_string_lossy().into_owned());
+    let suffix = extension
+        .as_deref()
+        .map(|ext| format!(".{ext}"))
         .filter(|ext| ext.len() < 16)
         .filter(|ext| name.ends_with(ext.as_str()))
         .unwrap_or_default();
-    let stem_source = &name[..name.len() - suffix.len()];
+    // 拡張子が長すぎて残せないときは、名前をそのまま切ると、切った位置で
+    // `.exe` のような別の拡張子が生まれることがある（`{234 文字}.exe{20 文字}` を
+    // `.exe` の直後で切るなど）。長い拡張子ごと落としてから語幹を切る。
+    let stem_source = if suffix.is_empty() {
+        match extension.as_deref() {
+            Some(ext) => &name[..name.len() - ext.len() - 1],
+            None => name.as_str(),
+        }
+    } else {
+        &name[..name.len() - suffix.len()]
+    };
     let budget = MAX_FILE_NAME_BYTES.saturating_sub(suffix.len());
     let mut stem = String::with_capacity(budget);
     for c in stem_source.chars() {
@@ -1205,12 +1218,14 @@ fn is_unsafe_char(c: char) -> bool {
 }
 
 /// 保存に使えるファイル名にする。パスの区切りは落とし、Windows が使えない文字を置き換える。
+/// `%` も置き換える。Windows の保存ダイアログは、`%APPDATA%` のような名前を環境変数として
+/// 展開し、別の場所へ保存しようとすることがあるため。
 pub fn sanitize_file_name(name: &str) -> String {
     let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let mut cleaned: String = base
         .chars()
         .map(|c| {
-            if is_unsafe_char(c) || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+            if is_unsafe_char(c) || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '%') {
                 '_'
             } else {
                 c
@@ -1852,6 +1867,25 @@ mod tests {
 
         // 重複したときの ` (9999)` を足しても収まる。
         assert!(format!("{cleaned} (9999)").len() <= 255);
+    }
+
+    #[test]
+    fn truncation_does_not_create_a_new_extension() {
+        // 語幹 234 文字 + `.exe` + 20 文字の拡張子。全体は上限を超え、拡張子は長すぎて残せない。
+        // 単純に切ると `.exe` の直後で切れ、許可リストの検査をすり抜ける `.exe` が生まれる。
+        let name = format!("{}.exe{}", "a".repeat(234), "x".repeat(20));
+        assert!(name.len() > MAX_FILE_NAME_BYTES);
+        let cleaned = sanitize_file_name(&name);
+        assert!(cleaned.len() <= MAX_FILE_NAME_BYTES);
+        assert!(!cleaned.to_ascii_lowercase().ends_with(".exe"), "{cleaned}");
+        assert_eq!(cleaned, "a".repeat(234));
+    }
+
+    #[test]
+    fn sanitize_replaces_percent_so_the_save_dialog_does_not_expand_it() {
+        // Windows の保存ダイアログは `%APPDATA%` を環境変数として展開することがある。
+        assert_eq!(sanitize_file_name("%APPDATA%.pdf"), "_APPDATA_.pdf");
+        assert_eq!(sanitize_file_name("report%.pdf"), "report_.pdf");
     }
 
     #[test]
