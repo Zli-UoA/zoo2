@@ -376,14 +376,28 @@ export function MessagePane({
     [messagesCollection, threadIsArchived, threadRootId, threadReplies],
   );
 
+  // 親が削除されたスレッドの返信（検索・リンクで開いたまま読むだけにするもの）。
+  const isUnderDeletedRoot = useCallback(
+    (id: string) =>
+      !!threadRootRow?.deleted_at &&
+      (messagesCollection.get(id)?.parent_id === threadRootId ||
+        threadReplies.some((reply) => reply.id === id)),
+    [threadRootRow?.deleted_at, messagesCollection, threadRootId, threadReplies],
+  );
+
   useEffect(() => {
     if (editingId && isArchivedMessage(editingId)) {
       setEditingId(null);
       setEditingText("");
     }
     if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
-    if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
-  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+    // 開いた後に親が削除されたら、その返信のリアクション選択も閉じる。
+    if (
+      reactionMessageId &&
+      (isArchivedMessage(reactionMessageId) || isUnderDeletedRoot(reactionMessageId))
+    )
+      setReactionMessageId(null);
+  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage, isUnderDeletedRoot]);
 
   // 編集中にチャンネルが暗号化に切り替わったら（#367）、切り替える前の平文のメッセージの編集をやめる。
   // サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。
@@ -402,6 +416,7 @@ export function MessagePane({
       if (
         !currentUserId ||
         isArchivedMessage(messageId) ||
+        isUnderDeletedRoot(messageId) ||
         !messagesCollection.get(messageId) ||
         messagesCollection.get(messageId)?.deleted_at
       ) {
@@ -435,7 +450,14 @@ export function MessagePane({
         pendingReactions.current.delete(pendingKey);
       }
     },
-    [currentUserId, messagesCollection, reactionsCollection, run, isArchivedMessage],
+    [
+      currentUserId,
+      messagesCollection,
+      reactionsCollection,
+      run,
+      isArchivedMessage,
+      isUnderDeletedRoot,
+    ],
   );
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。

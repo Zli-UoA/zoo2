@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { highlightSegments, searchQueryProblem, searchTerms } from "./searchHighlight";
+import {
+  focusSnippet,
+  highlightSegments,
+  searchQueryProblem,
+  searchTerms,
+} from "./searchHighlight";
 
 describe("searchTerms", () => {
   it("splits on whitespace like the server, without duplicates, up to 5 terms", () => {
@@ -61,5 +66,16 @@ describe("highlightSegments", () => {
       { text: "と", match: false },
       { text: "🐘", match: true },
     ]);
+  });
+});
+
+describe("focusSnippet", () => {
+  it("shortens what comes before the first hit", () => {
+    const before = "あ".repeat(40);
+    expect(focusSnippet(`…${before}会議の資料`, ["会議"], 4)).toBe("…ああああ会議の資料");
+    // 短ければ変えない。一致がなくても変えない。
+    expect(focusSnippet("明日の会議", ["会議"], 4)).toBe("明日の会議");
+    expect(focusSnippet(`${before}資料`, ["会議"], 4)).toBe(`${before}資料`);
+    expect(focusSnippet(`${before}資料`, [], 4)).toBe(`${before}資料`);
   });
 });

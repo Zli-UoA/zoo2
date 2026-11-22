@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Link } from "@tanstack/react-router";
 import { delay, http, HttpResponse } from "msw";
 import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
@@ -411,6 +412,90 @@ export const CustomDates: Story = {
     await expect(requests.at(-1)!.searchParams.get("after")).toBeNull();
     await expect(region.getByRole("combobox", { name: "期間" })).toHaveValue("custom");
     await expect(region.getByLabelText("開始日")).toBeVisible();
+  }),
+};
+
+/** 開始日が終了日より後なら確定せず、理由を示す。同じ日はよい。 */
+export const ReversedDates: Story = {
+  parameters: { router: { initialEntries: ["/search?q=会議&after=2026-11-01&before=2026-11-11"] } },
+  play: playForImplementation(async () => {
+    const region = await results();
+    const after = region.getByLabelText("開始日");
+    const before = requests.length;
+    await fireEvent.change(after, { target: { value: "2026-11-20" } });
+    await fireEvent.focusOut(after);
+    await expect(await region.findByRole("alert")).toHaveTextContent("開始日は終了日と同じか");
+    await expect(after).toHaveValue("2026-11-20");
+    await expect(requests).toHaveLength(before);
+    await fireEvent.change(after, { target: { value: "2026-11-10" } });
+    await fireEvent.focusOut(after);
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toBe("2026-11-10"));
+    await expect(region.queryByRole("alert")).toBeNull();
+  }),
+};
+
+/** 拒否した理由は、別の検索へ移ったら消す。 */
+export const RejectedThenNavigate: Story = {
+  decorators: [
+    (Story) => (
+      <>
+        <Link to="/search" search={{ q: "資料" }}>
+          別の検索
+        </Link>
+        <Story />
+      </>
+    ),
+  ],
+  play: playForImplementation(async () => {
+    const region = await results();
+    const box = region.getByRole("searchbox");
+    await userEvent.clear(box);
+    await userEvent.type(box, "how to set up dev server{Enter}");
+    await expect(await region.findByRole("alert")).toBeVisible();
+    await userEvent.click(screen.getByRole("link", { name: "別の検索" }));
+    await waitFor(() => expect(region.getByRole("searchbox")).toHaveValue("資料"));
+    await waitFor(() => expect(region.queryByRole("alert")).toBeNull());
+    await expect(region.getByRole("searchbox")).not.toHaveAttribute("aria-invalid");
+  }),
+};
+
+/** 狭い画面でも、一致の前が長い抜粋で、最初の一致が表示範囲に入る。 */
+export const NarrowLateHit: Story = {
+  decorators: [
+    (Story) => (
+      <div style={{ width: 320 }}>
+        <Story />
+      </div>
+    ),
+  ],
+  parameters: {
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        searchHandler(() =>
+          json({
+            items: [
+              {
+                ...messageItems[0]!,
+                snippet: `…${"今週の定例で話し合った内容を整理しました".repeat(2)}会議の資料`,
+              },
+            ],
+            next_cursor: null,
+            searched_until: "2025-12",
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    const region = await results();
+    const row = region.getByRole("list", { name: "すべて" }).children[0] as HTMLElement;
+    const body = row.querySelector(".mfm-body")!;
+    const mark = row.querySelector("mark[data-search-highlight]")!;
+    await expect(mark.textContent).toBe("会議");
+    await expect(mark.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      body.getBoundingClientRect().bottom + 1,
+    );
   }),
 };
 

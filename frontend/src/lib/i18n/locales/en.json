@@ -1890,6 +1890,7 @@
       "custom": "Custom range",
       "after": "From date",
       "before": "To date",
+      "reversed": "The start date must be on or before the end date.",
       "reset": "Reset filters"
     }
   },

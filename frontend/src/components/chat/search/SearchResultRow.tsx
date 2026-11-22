@@ -26,6 +26,7 @@ import {
 } from "../notifications/NotificationCard";
 import { isFileItem, searchResultLink, type SearchItem } from "./globalSearch";
 import { isNestedControlClick } from "../../../lib/rowClick";
+import { focusSnippet } from "../../../lib/searchHighlight";
 
 /** 検索結果の 1 件。通知カードと同じ枠・アバター・日時で、行のどこを押しても開く。 */
 export function SearchResultRow({
@@ -143,7 +144,8 @@ export function SearchResultRow({
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
                 <MfmContent
-                  content={message.snippet}
+                  // 狭い画面の 3 行でも最初の一致が見えるよう、その前を縮める。
+                  content={focusSnippet(message.snippet, terms)}
                   emojis={message.emojis ?? {}}
                   highlight={terms}
                 />

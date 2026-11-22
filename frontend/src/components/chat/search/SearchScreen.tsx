@@ -64,15 +64,16 @@ export function SearchScreen() {
     structuralSharing: true,
   });
   const [draft, setDraft] = useState(query);
+  const [rejected, setRejected] = useState<SearchQueryProblem | null>(null);
   // 戻る・進むで URL の語が変わったら入力欄も合わせる。
   const [shownQuery, setShownQuery] = useState(query);
   if (shownQuery !== query) {
     setShownQuery(query);
     setDraft(query);
+    setRejected(null);
   }
   // サーバーが 400 で拒否する語は送らない（再試行しても通らない）。理由は画面に出す。
   const queryProblem = searchQueryProblem(query);
-  const [rejected, setRejected] = useState<SearchQueryProblem | null>(null);
   const problem = rejected ?? queryProblem;
   const search = useGlobalSearch(queryProblem ? "" : query, kind, filters);
   const terms = useMemo(() => searchTerms(query), [query]);
@@ -129,8 +130,15 @@ export function SearchScreen() {
   const editingDays = "after" in dayDraft || "end" in dayDraft;
   const shownAfter = "after" in dayDraft ? dayDraft.after : filters.after;
   const shownEnd = "end" in dayDraft ? dayDraft.end : endDayFromBefore(filters.before);
+  // 開始日が終了日より後なら確定せず、下書きに残して理由を出す（同じ日はよい）。
+  const reversedDays =
+    !!shownAfter &&
+    !!shownEnd &&
+    isSearchDay(shownAfter) &&
+    isSearchDay(shownEnd) &&
+    shownAfter > shownEnd;
   const commitDay = (field: "after" | "end") => {
-    if (!(field in dayDraft)) return;
+    if (!(field in dayDraft) || reversedDays) return;
     const value = dayDraft[field] || undefined;
     setDayDraft((days) => {
       const rest = { ...days };
@@ -302,6 +310,8 @@ export function SearchScreen() {
                   if (event.key === "Enter") commitDay("after");
                 }}
                 aria-label={t("globalSearch.filters.after")}
+                aria-invalid={reversedDays || undefined}
+                aria-describedby={reversedDays ? "global-search-days-problem" : undefined}
                 className="h-8 w-40 text-sm"
               />
               <span aria-hidden="true" className="text-muted-foreground">
@@ -321,8 +331,19 @@ export function SearchScreen() {
                   if (event.key === "Enter") commitDay("end");
                 }}
                 aria-label={t("globalSearch.filters.before")}
+                aria-invalid={reversedDays || undefined}
+                aria-describedby={reversedDays ? "global-search-days-problem" : undefined}
                 className="h-8 w-40 text-sm"
               />
+              {reversedDays ? (
+                <p
+                  id="global-search-days-problem"
+                  role="alert"
+                  className="basis-full text-sm text-destructive"
+                >
+                  {t("globalSearch.filters.reversed")}
+                </p>
+              ) : null}
             </>
           ) : null}
           {hasSearchFilters(filters) || customPeriod ? (

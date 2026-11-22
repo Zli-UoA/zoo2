@@ -63,3 +63,32 @@ export function highlightSegments(text: string, terms: readonly string[]): Highl
   if (last < text.length) segments.push({ text: text.slice(last), match: false });
   return segments.length ? segments : [{ text, match: false }];
 }
+
+/** 抜粋で、最初の一致の前に残す文字数（コードポイント）。 */
+export const SNIPPET_CONTEXT_BEFORE = 16;
+
+/**
+ * 抜粋の最初の一致より前を、`keep` 文字まで縮めて `…` を付ける。サーバーの抜粋は一致の 40 文字前から
+ * 始まるので、狭い画面の 3 行では一致が表示範囲の外に出ることがある。一致がなければそのまま返す。
+ */
+export function focusSnippet(
+  text: string,
+  terms: readonly string[],
+  keep = SNIPPET_CONTEXT_BEFORE,
+): string {
+  const segments = highlightSegments(text, terms);
+  const first = segments.findIndex((segment) => segment.match);
+  if (first <= 0) return text;
+  const before = Array.from(
+    segments
+      .slice(0, first)
+      .map((segment) => segment.text)
+      .join(""),
+  );
+  if (before.length <= keep + 1) return text;
+  const rest = segments
+    .slice(first)
+    .map((segment) => segment.text)
+    .join("");
+  return `…${before.slice(-keep).join("")}${rest}`;
+}

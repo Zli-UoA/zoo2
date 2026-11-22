@@ -1692,6 +1692,8 @@ impl App {
             }
             None => {
                 self.selected = Some(target.message_id);
+                // 前に選んでいたメッセージの中のスクロールを持ち越さない（`move_selection` と同じ）。
+                self.inner_scroll = 0;
                 self.focus = Focus::Messages;
             }
         }
@@ -2000,7 +2002,13 @@ impl App {
                 else {
                     return;
                 };
-                let mut ids = vec![thread.root_id.clone()];
+                // 親が削除されて描かれないときは、候補を描いている返信だけにする（見えない親を選ばない）。
+                let mut ids: Vec<String> = self
+                    .store
+                    .message(&channel_id, &thread.root_id)
+                    .map(|root| root.id.clone())
+                    .into_iter()
+                    .collect();
                 ids.extend(
                     self.store
                         .replies(&channel_id, &thread.root_id)

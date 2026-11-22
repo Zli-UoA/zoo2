@@ -61,11 +61,15 @@ const fixture = vi.hoisted(() => {
     e2ee: {} as Record<string, unknown>,
     /** 暗号化チャンネルの送信（`sendEncryptedMessage`）。 */
     sendEncrypted: vi.fn(),
+    /** メッセージのコレクションに入っている行（`get` で返す）。 */
+    collectionRows: [] as { id: string; parent_id: string | null; deleted_at: string | null }[],
+    /** モックの ReactionPicker が受け取った最新の選択。 */
+    pickReaction: null as ((emoji: string) => void) | null,
   };
 });
 const collection = {
   insert: fixture.insert,
-  get: () => undefined,
+  get: (id: string) => fixture.collectionRows.find((row) => row.id === id),
   values: () => fixture.empty.values(),
 };
 vi.mock("../../../lib/electric/collections-context", () => ({
@@ -176,17 +180,22 @@ vi.mock("./ThreadPane", () => ({
     readOnly,
     isMember,
     onSendReply,
+    onPickReaction,
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
     readOnly?: boolean;
     isMember?: boolean;
     onSendReply: (content: string) => Promise<boolean>;
+    onPickReaction?: (id: string) => void;
   }) => (
     <div>
       {root.content}
       {replies.map((reply) => (
-        <p key={reply.id}>{reply.content}</p>
+        <p key={reply.id}>
+          {reply.content}
+          <button onClick={() => onPickReaction?.(reply.id)}>React to {reply.id}</button>
+        </p>
       ))}
       {!readOnly ? (
         <button disabled={!isMember} onClick={() => void onSendReply("Continued reply")}>
@@ -196,7 +205,12 @@ vi.mock("./ThreadPane", () => ({
     </div>
   ),
 }));
-vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
+vi.mock("./ReactionPicker", () => ({
+  ReactionPicker: ({ open, onSelect }: { open: boolean; onSelect: (emoji: string) => void }) => {
+    fixture.pickReaction = open ? onSelect : null;
+    return open ? <div>Reaction picker</div> : null;
+  },
+}));
 
 const pane = (targetMessageId?: string) => (
   <LocaleProvider>
@@ -230,6 +244,8 @@ beforeEach(() => {
   fixture.retryMembership.mockClear();
   fixture.e2ee = {};
   fixture.sendEncrypted.mockReset();
+  fixture.collectionRows = [];
+  fixture.pickReaction = null;
   vi.mocked(toast.error).mockClear();
   vi.mocked(toast.info).mockClear();
 });
@@ -307,6 +323,30 @@ describe("links and threads whose rows are older than the loaded range", () => {
     fixture.root.deleted_at = "2020-01-02 00:00:00.000";
     render(pane());
     await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
+  });
+
+  it("closes the reaction picker of a reply and does not write once its root is deleted", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "reply-1",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+    };
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    fixture.collectionRows = [fixture.root, reply];
+    const { rerender } = render(pane("reply-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "React to reply-1" }));
+    await screen.findByText("Reaction picker");
+    const pick = fixture.pickReaction!;
+    // 選んだ後に親が削除された（スレッドは返信を読むだけで残る）。
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    rerender(pane("reply-1"));
+    await waitFor(() => expect(screen.queryByText("Reaction picker")).toBeNull());
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+    pick("👍");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.insert).not.toHaveBeenCalled();
   });
 
   it("loads older pages until a linked top-level message is in the feed", async () => {
