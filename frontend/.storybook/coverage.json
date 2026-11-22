@@ -548,7 +548,6 @@
       "states": [
         "AskEveryTime",
         "SaveToFolder",
-        "DefaultFolder",
         "ToggleOff",
         "ChooseFolder",
         "ResetFolder",

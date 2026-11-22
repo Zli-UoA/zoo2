@@ -580,8 +580,8 @@ impl Downloads {
             .clone()
     }
 
-    /// 確認の有無を変えて保存する。保存先は、`reset_directory` のときだけ既定
-    /// （OS のダウンロードフォルダー）に戻す。保存できなかったら、変えない。
+    /// 確認の有無を変えて保存する。保存先は、`reset_directory` のときだけ
+    /// 消す。確認なしで保存するにはフォルダーが必須で、無い設定にはしない。保存できなかったら、変えない。
     ///
     /// 保存先のパスは受け取らない。決められるのは OS のフォルダーの選択（[`Self::set_directory`]）
     /// だけで、リモートの画面から任意の場所へ書き込めないようにするため。
@@ -612,6 +612,7 @@ impl Downloads {
                 drop(stored);
                 continue;
             };
+            automatic_save_needs_directory(&next)?;
             return store_settings(&mut stored, next);
         }
     }
@@ -656,21 +657,16 @@ impl Downloads {
             // フォルダーの確認と空き名の探索はディスクを待つ。届かない共有フォルダーでも、
             // 非同期ランタイムのワーカーを塞がないように、ブロッキングのタスクへ移す。
             let configured = settings.directory.clone();
-            let download_dir = app.path().download_dir().ok();
             let candidate = name.clone();
             let target = tokio::task::spawn_blocking(move || {
-                auto_save_target(
-                    configured.as_deref().map(Path::new),
-                    download_dir.as_deref(),
-                    &candidate,
-                )
+                auto_save_target(configured.as_deref().map(Path::new), &candidate)
             })
             .await
             .map_err(|err| anyhow!("保存先を決められません: {err}"))?;
             match target {
                 Some(path) => (path, SaveDecision::AUTO),
-                // 設定したフォルダーが消えている（外付けドライブや同期フォルダーが外れたなど）か、
-                // 既定のダウンロードフォルダーが分からない。作り直さず、利用者に決めてもらう。
+                // 設定したフォルダーが消えている（外付けドライブや同期フォルダーが外れたなど）。
+                // 作り直さず、利用者に決めてもらう。
                 None => match ask_save_decision(app, &name, None).await {
                     Some(selected) => selected,
                     None => return Ok(None),
@@ -1110,13 +1106,29 @@ fn load_settings() -> DownloadSettings {
 /// フォルダーが実在するかは、起動を待たせないよう、保存のたびに確かめる（[`auto_save_target`]）。
 fn usable_settings(settings: DownloadSettings) -> DownloadSettings {
     let Some(directory) = settings.directory.as_deref() else {
-        return settings;
+        // フォルダーが無いまま確認なしの設定だけが残っていても、自動保存はしない。
+        return if settings.ask_every_time {
+            settings
+        } else {
+            DownloadSettings::default()
+        };
     };
     if Path::new(directory).is_absolute() {
         settings
     } else {
         DownloadSettings::default()
     }
+}
+
+/// 確認なしの保存には、利用者が選んだフォルダーが必須。フォルダーが無いまま
+/// 自動保存を有効にしたり、自動保存の設定でフォルダーを消したりできないようにする。
+fn automatic_save_needs_directory(settings: &DownloadSettings) -> Result<()> {
+    if !settings.ask_every_time && settings.directory.is_none() {
+        return Err(anyhow!(
+            "確認なしで保存するには保存先のフォルダーを選んでください"
+        ));
+    }
+    Ok(())
 }
 
 /// 待っていた確認の結果を、その時点の設定へ適用する。確認の要否が待っている間に変わって
@@ -1520,20 +1532,11 @@ fn split_name(name: &str) -> (&str, &str) {
     (stem, extension)
 }
 
-/// 確認なしの保存の保存先。設定のフォルダーか、OS のダウンロードフォルダーを使う。
-/// どちらも使えなければ `None`（呼び出し側が保存ダイアログを出す）。
-fn auto_save_target(
-    configured: Option<&Path>,
-    download_dir: Option<&Path>,
-    name: &str,
-) -> Option<PathBuf> {
-    if let Some(dir) = configured {
-        return dir.is_dir().then(|| unique_path(dir, name));
-    }
-    match download_dir {
-        Some(dir) if dir.is_dir() => Some(unique_path(dir, name)),
-        _ => None,
-    }
+/// 確認なしの保存の保存先。利用者が選んだ設定フォルダーだけを使う。
+/// 無いか届かなければ `None`（呼び出し側が保存ダイアログを出す）。
+fn auto_save_target(configured: Option<&Path>, name: &str) -> Option<PathBuf> {
+    let dir = configured?;
+    dir.is_dir().then(|| unique_path(dir, name))
 }
 
 /// 決まったフォルダーに保存するとき、既にある名前を避ける（`name (1).pdf` など）。
@@ -2146,9 +2149,7 @@ mod tests {
             directory: Some(dir.join("missing").display().to_string()),
         };
         assert_eq!(usable_settings(missing.clone()), missing);
-        assert!(
-            auto_save_target(missing.directory.as_deref().map(Path::new), None, "a.txt").is_none()
-        );
+        assert!(auto_save_target(missing.directory.as_deref().map(Path::new), "a.txt").is_none());
         // `downloads.json` を手で書き換えた場合。相対パスは保存先に使わない。
         assert_eq!(
             usable_settings(DownloadSettings {
@@ -2158,9 +2159,18 @@ mod tests {
             DownloadSettings::default()
         );
         assert_eq!(
-            auto_save_target(Some(&dir), None, "a.txt"),
+            auto_save_target(Some(&dir), "a.txt"),
             Some(dir.join("a.txt"))
         );
+        // フォルダーが無い設定は、手で書き換えられていても都度確認へ戻す。
+        assert_eq!(
+            usable_settings(DownloadSettings {
+                ask_every_time: false,
+                directory: None,
+            }),
+            DownloadSettings::default()
+        );
+        assert!(auto_save_target(None, "a.txt").is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2763,7 +2773,7 @@ mod tests {
         );
         // 待っている間に確認の要否が変わった: 承認は今の設定に使えないので、出し直す。
         assert!(apply_settings_update(&current, false, true, &off).is_none());
-        // 保存先を既定へ戻す。
+        // 確認なしの設定でフォルダーを消すと、自動保存先が無くなるので拒否する。
         let saved = DownloadSettings {
             ask_every_time: false,
             directory: Some(dir.display().to_string()),
@@ -2772,11 +2782,26 @@ mod tests {
             ask_every_time: false,
             reset_directory: true,
         };
-        assert_eq!(
-            apply_settings_update(&saved, false, true, &reset)
-                .unwrap()
-                .directory,
-            None
+        let without_directory = apply_settings_update(&saved, false, true, &reset).unwrap();
+        assert!(automatic_save_needs_directory(&without_directory).is_err());
+        // 都度確認へ戻すなら、フォルダーを消してよい。
+        let reset_to_default = DownloadSettingsUpdate {
+            ask_every_time: true,
+            reset_directory: true,
+        };
+        let default = apply_settings_update(&saved, false, true, &reset_to_default).unwrap();
+        assert!(automatic_save_needs_directory(&default).is_ok());
+        assert!(default.directory.is_none());
+        // フォルダーが無いまま確認をオフにするのも拒否する。
+        let off_without_directory = DownloadSettingsUpdate {
+            ask_every_time: false,
+            reset_directory: false,
+        };
+        assert!(
+            automatic_save_needs_directory(
+                &apply_settings_update(&default, true, true, &off_without_directory).unwrap()
+            )
+            .is_err()
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

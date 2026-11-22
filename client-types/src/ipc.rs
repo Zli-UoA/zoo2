@@ -182,7 +182,7 @@ pub struct DownloadSettings {
     /// 保存のたびに OS の「名前を付けて保存」を出すか。既定は出す。
     #[serde(default = "ask_every_time_default")]
     pub ask_every_time: bool,
-    /// 「都度確認」がオフのときの保存先（絶対パス）。`None` なら OS のダウンロードフォルダー。
+    /// 「都度確認」がオフのときの保存先（絶対パス）。確認なしで保存するには必須。
     /// 画面に出すためだけに返す。JS からは変えられず、OS のフォルダーの選択でだけ決まる。
     #[serde(default)]
     pub directory: Option<String>,
@@ -197,7 +197,7 @@ pub struct DownloadSettings {
 pub struct DownloadSettingsUpdate {
     /// 保存のたびに OS の「名前を付けて保存」を出すか。
     pub ask_every_time: bool,
-    /// 保存先を OS のダウンロードフォルダーに戻すか。
+    /// 選んだ保存先を消して、保存のたびに確認する設定へ戻すか。
     #[serde(default)]
     pub reset_directory: bool,
 }

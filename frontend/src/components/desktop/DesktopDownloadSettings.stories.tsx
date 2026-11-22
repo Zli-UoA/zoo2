@@ -143,20 +143,6 @@ export const SaveToFolder: Story = {
   }),
 };
 
-/** 保存先が未設定のときは、OS のダウンロードフォルダーへ保存する。 */
-export const DefaultFolder: Story = {
-  decorators: [
-    (Story) => (
-      <FakeDesktop supported askEveryTime={false}>
-        <Story />
-      </FakeDesktop>
-    ),
-  ],
-  play: playForImplementation(async () => {
-    await expect(await screen.findByText("ダウンロードフォルダー")).toBeVisible();
-  }),
-};
-
 export const ToggleOff: Story = {
   decorators: [
     (Story) => (
@@ -171,7 +157,8 @@ export const ToggleOff: Story = {
     await expect(control).toBeEnabled();
     await userEvent.click(control);
     await expect(control).not.toBeChecked();
-    await expect(await screen.findByRole("button", { name: "フォルダーを選ぶ" })).toBeVisible();
+    // 保存先が無いので、オフにするときに OS のフォルダー選択を出す。
+    await expect(await screen.findByText("C:\\Users\\zoo\\Downloads")).toBeVisible();
   }),
 };
 
@@ -190,7 +177,7 @@ export const ChooseFolder: Story = {
   }),
 };
 
-/** 選んだフォルダーは、OS のダウンロードフォルダーに戻せる。 */
+/** 選んだフォルダーを消すと、毎回確認する設定へ戻る。 */
 export const ResetFolder: Story = {
   decorators: [
     (Story) => (
@@ -200,8 +187,9 @@ export const ResetFolder: Story = {
     ),
   ],
   play: playForImplementation(async () => {
-    await userEvent.click(await screen.findByRole("button", { name: "既定のフォルダーに戻す" }));
-    await expect(await screen.findByText("ダウンロードフォルダー")).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: "毎回確認する設定に戻す" }));
+    await expect(await screen.findByRole("switch", { name: "保存のたびに確認する" })).toBeChecked();
+    await expect(screen.queryByRole("button", { name: "フォルダーを選ぶ" })).toBeNull();
   }),
 };
 
@@ -254,6 +242,6 @@ export const LongPath: Story = {
   ],
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("button", { name: "フォルダーを選ぶ" })).toBeVisible();
-    await expect(screen.getByRole("button", { name: "既定のフォルダーに戻す" })).toBeVisible();
+    await expect(screen.getByRole("button", { name: "毎回確認する設定に戻す" })).toBeVisible();
   }),
 };

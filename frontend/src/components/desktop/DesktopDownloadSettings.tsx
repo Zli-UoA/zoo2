@@ -53,6 +53,19 @@ export function DesktopDownloadSettings() {
       .finally(() => setBusy(false));
   }
 
+  // 確認なしの保存にはフォルダーが必須。まだ無いなら、先に OS のダイアログで選ぶ。
+  async function turnOffConfirmation() {
+    setBusy(true);
+    try {
+      if (!directory && !(await desktopPickDownloadDirectory())) return;
+      setSettings(await desktopSetDownloadSettings({ ask_every_time: false }));
+    } catch {
+      toast.error(t("downloads.error"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loadFailed) {
     return (
       <div className="flex flex-col items-end gap-2 text-right">
@@ -87,7 +100,9 @@ export function DesktopDownloadSettings() {
           aria-label={t("downloads.askEveryTime")}
           disabled={busy || settings === undefined}
           onCheckedChange={(checked) => {
-            if (settings) void save({ ask_every_time: checked });
+            if (!settings) return;
+            if (checked) void save({ ask_every_time: true });
+            else void turnOffConfirmation();
           }}
           className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full bg-input outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[checked]:bg-primary"
         >
@@ -98,9 +113,9 @@ export function DesktopDownloadSettings() {
         <div className="flex w-72 max-w-full flex-col items-end gap-2">
           <span
             className="w-full truncate text-right text-xs text-muted-foreground"
-            title={directory ?? t("downloads.defaultDirectory")}
+            title={directory ?? t("downloads.noFolder")}
           >
-            {directory ?? t("downloads.defaultDirectory")}
+            {directory ?? t("downloads.noFolder")}
           </span>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
@@ -127,7 +142,7 @@ export function DesktopDownloadSettings() {
                 variant="ghost"
                 size="sm"
                 disabled={busy || settings === undefined}
-                onClick={() => void save({ ask_every_time: askEveryTime, reset_directory: true })}
+                onClick={() => void save({ ask_every_time: true, reset_directory: true })}
               >
                 {t("downloads.resetDirectory")}
               </Button>
