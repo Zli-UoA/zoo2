@@ -16,10 +16,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -206,7 +206,13 @@ impl Journal {
     fn remove_part(&self, part: &Path) {
         match std::fs::remove_file(part) {
             Ok(()) => self.forget(part),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => self.forget(part),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                // 外付けドライブが外れていると、親が無いために `NotFound` になる。
+                // 親があるときだけ、本当に消えたとみなして記録を外す。
+                if parent_exists(part) {
+                    self.forget(part);
+                }
+            }
             Err(_) => {}
         }
     }
@@ -243,6 +249,69 @@ impl Journal {
     }
 }
 
+/// 実行中の後始末（取消で始めた `.part` の削除）。終了時は、`pending` から既に
+/// 取り出された分の削除も待つ。`cancel` は書き込み中のハンドルが閉じるのを待つことが
+/// あるので、数だけを数える。
+#[derive(Clone)]
+struct Cleanups {
+    state: Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl Cleanups {
+    fn new() -> Self {
+        Self {
+            state: Arc::new((Mutex::new(0), Condvar::new())),
+        }
+    }
+
+    /// 後始末を始める。返したガードを後始末のスレッドへ移す。スレッドが動き出す前に
+    /// 終了が来ても、数に入っているので待てる。
+    fn start(&self) -> CleanupGuard {
+        let mut count = self.state.0.lock().unwrap_or_else(PoisonError::into_inner);
+        *count += 1;
+        CleanupGuard(self.clone())
+    }
+
+    #[cfg(test)]
+    fn running(&self) -> usize {
+        *self.state.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// 実行中の後始末が終わるまで、期限まで待つ。終わったら true。
+    fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut count = self.state.0.lock().unwrap_or_else(PoisonError::into_inner);
+        while *count > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, _) = self
+                .state
+                .1
+                .wait_timeout(count, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            count = next;
+        }
+        true
+    }
+}
+
+struct CleanupGuard(Cleanups);
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        let mut count = self
+            .0
+            .state
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *count = count.saturating_sub(1);
+        self.0.state.1.notify_all();
+    }
+}
+
 /// 保存先の設定と、書き込み中のもの。
 pub struct Downloads {
     settings: Mutex<DownloadSettings>,
@@ -253,6 +322,8 @@ pub struct Downloads {
     generation: AtomicU64,
     /// クラッシュで残る `.part` の記録。
     journal: Arc<Journal>,
+    /// 実行中の後始末。終了時に、取消で始まっている削除も待つ。
+    cleanups: Cleanups,
 }
 
 impl Downloads {
@@ -267,6 +338,7 @@ impl Downloads {
             slots: Arc::new(Mutex::new(0)),
             generation: AtomicU64::new(0),
             journal: Arc::new(Journal::load(journal_file)),
+            cleanups: Cleanups::new(),
         }
     }
 
@@ -279,7 +351,10 @@ impl Downloads {
             return;
         }
         let journal = Arc::clone(&self.journal);
+        let cleanups = self.cleanups.clone();
+        let guard = cleanups.start();
         std::thread::spawn(move || {
+            let _guard = guard;
             let mut done = Vec::new();
             for path in stale {
                 // 消せなかったものは、次の起動でもう一度試す。
@@ -557,8 +632,11 @@ impl Downloads {
         let file = Arc::clone(&entry.file);
         let part = entry.part.clone();
         let journal = Arc::clone(&self.journal);
+        let cleanups = self.cleanups.clone();
+        let guard = cleanups.start();
         // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは消せない）。
         let _ = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
             let taken = file.lock().unwrap_or_else(PoisonError::into_inner).take();
             drop(taken);
             // 消せなかった `.part` は記録に残し、次の起動で再試行する。
@@ -586,7 +664,10 @@ impl Downloads {
         }
         let journal = Arc::clone(&self.journal);
         let slots = Arc::clone(&self.slots);
+        let cleanups = self.cleanups.clone();
+        let guard = cleanups.start();
         std::thread::spawn(move || {
+            let _guard = guard;
             for (_, entry) in pending {
                 let taken = entry
                     .file
@@ -608,35 +689,37 @@ impl Downloads {
     /// イベント（`RunEvent::Exit`）から、上限時間まで待って呼ぶ。
     ///
     /// 削除は裏のスレッドで行う。共有フォルダーが応答しないときも、終了を待たせ続けない
-    /// ため。待ちきれなかったものは記録に残し、次の起動で消す。
+    /// ため。既に `cancel` や `cancel_all` が始めた後始末も、同じ期限まで待つ。待ちきれなかった
+    /// ものは記録に残し、次の起動で消す。
     pub fn shutdown(&self, timeout: Duration) {
         let pending = {
             self.generation.fetch_add(1, Ordering::SeqCst);
             std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
         };
-        if pending.is_empty() {
-            return;
-        }
-        for entry in pending.values() {
-            entry.cancelled.store(true, Ordering::SeqCst);
-        }
-        let journal = Arc::clone(&self.journal);
-        // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは
-        // 消せない）。記録から外れるのは、消せた（または既に無かった）ときだけ。
-        let (done, wait) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for (_, entry) in pending {
-                let taken = entry
-                    .file
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
-                drop(taken);
-                journal.remove_part(&entry.part);
+        if !pending.is_empty() {
+            for entry in pending.values() {
+                entry.cancelled.store(true, Ordering::SeqCst);
             }
-            let _ = done.send(());
-        });
-        let _ = wait.recv_timeout(timeout);
+            let journal = Arc::clone(&self.journal);
+            let cleanups = self.cleanups.clone();
+            let guard = cleanups.start();
+            // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは
+            // 消せない）。記録から外れるのは、消せた（または既に無かった）ときだけ。
+            std::thread::spawn(move || {
+                let _guard = guard;
+                for (_, entry) in pending {
+                    let taken = entry
+                        .file
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    drop(taken);
+                    journal.remove_part(&entry.part);
+                }
+            });
+        }
+        // 取消が `pending` から取り出した分も、ここで終わるのを待つ。
+        self.cleanups.wait(timeout);
     }
 
     fn take_pending(&self, id: &str) -> Option<Pending> {
@@ -936,9 +1019,17 @@ fn remove_stale_entry_with(path: &Path, probe: impl Fn(&Path) -> ProbeState) -> 
     // 残る（docs にも書いた）。
     match std::fs::remove_file(path) {
         Ok(()) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        // 外付けドライブが外れていると、親が無いために `NotFound` になる。親があるときだけ、
+        // 本当に消えたとみなして記録から外す。無いときは残し、ドライブが戻ったときに消す。
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => parent_exists(path),
         Err(_) => false,
     }
+}
+
+/// `.part` の親フォルダーがあるか。外付けドライブが外れている場合と、本当に消えた場合を
+/// `NotFound` だけで区別できないので、親の有無で判断する。
+fn parent_exists(path: &Path) -> bool {
+    path.parent().is_some_and(Path::exists)
 }
 
 /// 記録に残った検査用の名前が、このアプリが作ったものか。
@@ -1968,6 +2059,59 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn shutdown_waits_for_a_cancel_that_is_waiting_for_the_file() {
+        let dir = temp_dir();
+        let downloads = Arc::new(test_downloads());
+        let id = new_download_id();
+        let target = dir.join("cancel-wait.txt");
+        let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
+        downloads.journal.record(&entry.part).unwrap();
+        let part = entry.part.clone();
+        let file = Arc::clone(&entry.file);
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+
+        // 書き込み中のハンドルを握ったまま、取消の後始末をファイルのロックで止める。
+        let guard = file.lock().unwrap();
+        let cancel = {
+            let downloads = Arc::clone(&downloads);
+            let id = id.clone();
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(downloads.cancel(&id));
+            })
+        };
+        // 取消が `pending` から取り出し、後始末のスレッドがロック待ちに入るまで待つ。
+        let started = Instant::now();
+        while downloads.cleanups.running() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "取消の後始末が始まりません"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let shutdown = {
+            let downloads = Arc::clone(&downloads);
+            std::thread::spawn(move || downloads.shutdown(Duration::from_secs(5)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !shutdown.is_finished(),
+            "取消の後始末を待たずに終了しました"
+        );
+
+        drop(guard);
+        shutdown.join().unwrap();
+        cancel.join().unwrap();
+
+        assert!(!part.exists());
+        assert!(downloads.journal.snapshot().is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[tokio::test]
     async fn cancelled_downloads_are_not_finished() {
         let dir = temp_dir();
@@ -2448,6 +2592,23 @@ mod tests {
 
         assert!(remove_stale_entry(&probe));
         assert_eq!(std::fs::read(&probe).unwrap(), b"xxxxxxxxxxx");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_keeps_the_record_when_the_parent_folder_is_gone() {
+        let dir = temp_dir();
+        // 外付けドライブが外れていると、親が無いために `NotFound` になる。
+        let missing = part_path(&dir.join("unplugged").join("x.txt"), "0123456789abcdef");
+        assert!(
+            !remove_stale_entry(&missing),
+            "親が無いときは、戻ってきた `.part` を消せるよう記録を残す"
+        );
+
+        // 親があるときは、既に無い `.part` の記録を外す。
+        let gone = part_path(&dir.join("x.txt"), "0123456789abcdef");
+        assert!(remove_stale_entry(&gone));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
