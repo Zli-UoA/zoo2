@@ -187,7 +187,9 @@ export const ResetFolder: Story = {
     ),
   ],
   play: playForImplementation(async () => {
-    await userEvent.click(await screen.findByRole("button", { name: "保存先フォルダーを消して毎回確認する" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "保存先フォルダーを消して毎回確認する" }),
+    );
     await expect(await screen.findByRole("switch", { name: "保存のたびに確認する" })).toBeChecked();
     await expect(screen.queryByRole("button", { name: "フォルダーを選ぶ" })).toBeNull();
   }),
@@ -242,6 +244,8 @@ export const LongPath: Story = {
   ],
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("button", { name: "フォルダーを選ぶ" })).toBeVisible();
-    await expect(screen.getByRole("button", { name: "保存先フォルダーを消して毎回確認する" })).toBeVisible();
+    await expect(
+      screen.getByRole("button", { name: "保存先フォルダーを消して毎回確認する" }),
+    ).toBeVisible();
   }),
 };
