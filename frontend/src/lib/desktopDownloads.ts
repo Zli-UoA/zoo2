@@ -11,6 +11,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import { abortable } from "./abortable";
 import { AttachmentDownloadError, type AttachmentUrlResolver } from "./api/attachments";
 import {
   desktopDetectionFailure,
@@ -195,8 +196,8 @@ async function run(
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return abortable(new Promise<void>((resolve) => setTimeout(resolve, ms)), signal);
 }
 
 function contentLength(response: Response): number | null {
@@ -261,7 +262,9 @@ export async function downloadUrlToDesktop(
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
   await run(id, fileName, options.size, async (downloadId, signal, report) => {
     const open = async (refresh: boolean): Promise<Response> => {
-      const url = await resolveUrl({ refresh });
+      // URL の取得はプレビューなどと共有しているので取り消さず、この保存の待機だけを
+      // 中止する（中止後の一時ファイルと進捗を残さないため）。
+      const url = await abortable(resolveUrl({ refresh }), signal);
       let response: Response;
       try {
         response = await fetch(url, { credentials: "omit", signal });
@@ -278,7 +281,7 @@ export async function downloadUrlToDesktop(
       response = await open(false);
     } catch (error) {
       if (signal.aborted) throw error;
-      await delay(retryDelayMs);
+      await delay(retryDelayMs, signal);
       if (signal.aborted) throw error;
       response = await open(true);
     }

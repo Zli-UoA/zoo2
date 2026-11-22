@@ -211,6 +211,29 @@ describe("downloadUrlToDesktop", () => {
     expect(desktopDownloadState("a4")).toBeUndefined();
   });
 
+  it("cancels while the shared URL request is still pending", async () => {
+    desktop.begin.mockResolvedValue(started("d4u"));
+    desktop.cancel.mockResolvedValue(undefined);
+    let releaseUrl!: (url: string) => void;
+    const pendingUrl = new Promise<string>((resolveUrl) => (releaseUrl = resolveUrl));
+    const resolve = vi.fn().mockReturnValue(pendingUrl);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = downloadUrlToDesktop("a4u", "a.txt", resolve);
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalled());
+    cancelDesktopDownload("a4u");
+
+    await expect(promise).rejects.toBeInstanceOf(DesktopDownloadCancelledError);
+    expect(desktop.cancel).toHaveBeenCalledWith("d4u");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(desktopDownloadState("a4u")).toBeUndefined();
+
+    // URL の取得自体は共有の要求なので取り消さず、最後まで続けられる。
+    releaseUrl("https://files.test/a");
+    await expect(pendingUrl).resolves.toBe("https://files.test/a");
+  });
+
   it("cancels the app's file when the stream is stopped halfway", async () => {
     desktop.begin.mockResolvedValue(started("d5"));
     desktop.cancel.mockResolvedValue(undefined);

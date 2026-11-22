@@ -42,6 +42,8 @@ export const Idle: Story = {
     // 中止のダブルクリックの 2 回目が、開始ボタンに戻った後に届いても開始しない。
     await fireEvent.click(button, { detail: 2 });
     await expect(args.onDownload).toHaveBeenCalledTimes(1);
+    // ライブリージョンは最初から DOM に置き、保全中は空にしておく。
+    await expect(within(canvasElement).getByRole("status")).toHaveTextContent("");
   },
 };
 
@@ -67,6 +69,8 @@ export const Downloading: Story = {
     // ダブルクリックの 2 回目では、もう一度中止しない。
     await fireEvent.click(button, { detail: 2 });
     await expect(args.onCancel).toHaveBeenCalledTimes(1);
+    // 進捗は 10% 刻みで読み上げる。フォーカスが別の添付に移っても伝わる。
+    await expect(within(canvasElement).getByRole("status")).toHaveTextContent("ダウンロード中 40%");
   },
 };
 
@@ -81,6 +85,7 @@ export const Finishing: Story = {
   play: async ({ canvasElement }) => {
     const button = await within(canvasElement).findByRole("button", { name: "保存しています…" });
     await expect(button).toBeDisabled();
+    await expect(within(canvasElement).getByRole("status")).toHaveTextContent("保存しています…");
   },
 };
 

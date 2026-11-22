@@ -23,6 +23,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use zoo2_client_types::ipc::{DownloadBegin, DownloadSettings, DownloadSettingsUpdate};
@@ -33,11 +34,14 @@ use zoo2_client_core::config::config_dir_for;
 /// 一時ファイルに使う ID の連番。同じプロセスの中で一意にする。
 static DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// ファイルシステムが受け付ける名前の上限（バイト数）。macOS (APFS) と Linux (ext4) は
+/// 255 バイト、Windows は 255 UTF-16 単位で、UTF-8 のバイト数はそれを超えない。
+const MAX_NAME_BYTES: usize = 255;
+
 /// 名前が長すぎるとファイルシステムの上限に当たるので、ファイル名をこのバイト数までにする。
-/// macOS (APFS) と Linux (ext4) の上限は UTF-8 で 255 バイト。重複したときの
-/// `-{16 桁の ID}`（17 バイト）の分を引く。Windows の上限は 255 UTF-16 単位で、
-/// UTF-8 のバイト数はそれを超えない。`.part` は名前を含まない（[`part_path`]）。
-const MAX_FILE_NAME_BYTES: usize = 255 - 17;
+/// 衝突したときの連番（最大 ` (9999)` の 7 バイト）などの分を残す。`.part` は名前を
+/// 含まない（[`part_path`]）。
+const MAX_FILE_NAME_BYTES: usize = MAX_NAME_BYTES - 17;
 
 /// 同時に書き込める件数（保存ダイアログを待っているものも含む）。リモートの画面が `begin` を
 /// 繰り返して、ファイルハンドルを使い切らないようにする。
@@ -149,6 +153,146 @@ impl std::fmt::Display for TooManyDownloads {
 
 impl std::error::Error for TooManyDownloads {}
 
+/// 記録に残すパス。UTF-8 で表せないバイト（Unix）や、対になっていない UTF-16（Windows）も
+/// 失わずに保存する。以前の版が書いた、パスだけの文字列も読める。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredPath {
+    /// UTF-8 で表せるパス。以前の版の記録もこれとして読む。
+    Text(String),
+    /// Unix の、UTF-8 で表せないバイト列。
+    #[cfg(unix)]
+    Bytes { bytes: Vec<u8> },
+    /// Windows の、対になっていない符号単位を含むパス。
+    #[cfg(windows)]
+    Wide { wide: Vec<u16> },
+}
+
+impl StoredPath {
+    fn from_path(path: &Path) -> Self {
+        if let Some(text) = path.to_str() {
+            return Self::Text(text.to_owned());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            Self::Bytes {
+                bytes: path.as_os_str().as_bytes().to_vec(),
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            Self::Wide {
+                wide: path.as_os_str().encode_wide().collect(),
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        Self::Text(path.to_string_lossy().into_owned())
+    }
+
+    fn into_path(self) -> PathBuf {
+        match self {
+            Self::Text(text) => PathBuf::from(text),
+            #[cfg(unix)]
+            Self::Bytes { bytes } => {
+                use std::os::unix::ffi::OsStringExt;
+                PathBuf::from(std::ffi::OsString::from_vec(bytes))
+            }
+            #[cfg(windows)]
+            Self::Wide { wide } => {
+                use std::os::windows::ffi::OsStringExt;
+                PathBuf::from(std::ffi::OsString::from_wide(&wide))
+            }
+        }
+    }
+}
+
+/// 記録したときの、保存先の親フォルダーの ID。外付けドライブが外れて、同じ名前の
+/// マウントポイントだけが残った場合と、フォルダーが本当に消えた場合を区別する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct ParentId {
+    /// ボリューム（Unix は `st_dev`、Windows はボリュームのシリアル番号）。
+    volume: u64,
+    /// フォルダーの inode（Windows はファイル ID）。
+    index: u64,
+}
+
+/// `path` の親フォルダーの ID。親が無い、または読めないときは `None`。
+#[cfg(unix)]
+fn parent_id(path: &Path) -> Option<ParentId> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::metadata(path.parent()?).ok()?;
+    Some(ParentId {
+        volume: metadata.dev(),
+        index: metadata.ino(),
+    })
+}
+
+/// `path` の親フォルダーの ID。親が無い、または読めないときは `None`。
+#[cfg(windows)]
+fn parent_id(path: &Path) -> Option<ParentId> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, GetFileInformationByHandle,
+        },
+    };
+
+    let parent = path.parent()?;
+    // ディレクトリを開くには `FILE_FLAG_BACKUP_SEMANTICS` が要る。
+    let dir = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+        .open(parent)
+        .ok()?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `dir` は呼び出しの間生きていて有効なハンドルを持ち、`info` は出力先。
+    if unsafe { GetFileInformationByHandle(HANDLE(dir.as_raw_handle()), &mut info) }.is_err() {
+        return None;
+    }
+    Some(ParentId {
+        volume: u64::from(info.dwVolumeSerialNumber),
+        index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn parent_id(_path: &Path) -> Option<ParentId> {
+    None
+}
+
+/// 記録したときと同じフォルダーに、まだ届くか。ボリュームやフォルダーの ID が変わって
+/// いたら（外付けドライブが外れてマウントポイントだけが残るなど）、記録したファイルには
+/// 触れられないとみなす。
+fn same_parent(path: &Path, recorded: Option<ParentId>) -> bool {
+    match (parent_id(path), recorded) {
+        (Some(current), Some(recorded)) => current == recorded,
+        _ => false,
+    }
+}
+
+/// `download_parts.json` の 1 件。以前の版は、パスだけの文字列を書いていた。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredEntry {
+    Legacy(String),
+    Current {
+        path: StoredPath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<ParentId>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct JournalEntry {
+    path: PathBuf,
+    /// 記録したときの親フォルダー。読めなかったときは `None`。
+    parent: Option<ParentId>,
+}
+
 /// クラッシュや強制終了で残る `.part` の記録。保存先がダイアログで選ばれたフォルダーでも、
 /// 次の起動で消せるように、設定ディレクトリの `download_parts.json` に置く。
 struct Journal {
@@ -156,25 +300,45 @@ struct Journal {
     /// テストでは一時ディレクトリのパスを渡し、利用者の記録を読み書きしない。
     file: Option<PathBuf>,
     /// 書き込み中の `.part`。読み込みは [`Journal::load`]、以後はここが正本。
-    paths: Mutex<Vec<PathBuf>>,
+    entries: Mutex<Vec<JournalEntry>>,
 }
 
 impl Journal {
     fn load(file: Option<PathBuf>) -> Self {
-        let paths = file
+        let entries = file
             .as_deref()
             .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
-            .map(|paths| paths.into_iter().map(PathBuf::from).collect())
+            .and_then(|bytes| serde_json::from_slice::<Vec<StoredEntry>>(&bytes).ok())
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| match entry {
+                        StoredEntry::Legacy(text) => JournalEntry {
+                            path: PathBuf::from(text),
+                            parent: None,
+                        },
+                        StoredEntry::Current { path, parent } => JournalEntry {
+                            path: path.into_path(),
+                            parent,
+                        },
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
             file,
-            paths: Mutex::new(paths),
+            entries: Mutex::new(entries),
         }
     }
 
+    #[cfg(test)]
     fn snapshot(&self) -> Vec<PathBuf> {
-        self.paths
+        self.entries().into_iter().map(|entry| entry.path).collect()
+    }
+
+    /// 記録の内容。起動時の掃除で、保存先にまだ届くかを確かめるのに使う。
+    fn entries(&self) -> Vec<JournalEntry> {
+        self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -183,33 +347,44 @@ impl Journal {
     /// `.part` を作る前に記録する。書けなければ記録を戻してエラーにする
     /// （残骸を次の起動で消せないまま、書き込みを始めないため）。
     fn record(&self, part: &Path) -> Result<()> {
-        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        if paths.iter().any(|path| path == part) {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        if entries.iter().any(|entry| entry.path == part) {
             return Ok(());
         }
-        paths.push(part.to_path_buf());
-        if let Err(err) = self.write(&paths) {
-            paths.retain(|path| path != part);
+        entries.push(JournalEntry {
+            path: part.to_path_buf(),
+            parent: parent_id(part),
+        });
+        if let Err(err) = self.write(&entries) {
+            entries.retain(|entry| entry.path != part);
             return Err(err);
         }
         Ok(())
     }
 
     fn forget(&self, part: &Path) {
-        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        paths.retain(|path| path != part);
-        let _ = self.write(&paths);
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.retain(|entry| entry.path != part);
+        let _ = self.write(&entries);
     }
 
     /// 消せた（または既に無かった）ときだけ記録を外す。消せなかったときは残して、
     /// 次の起動でもう一度試す（外付けドライブを外した、ウイルス対策が掴んでいるなど）。
     fn remove_part(&self, part: &Path) {
+        let parent = self
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|entry| entry.path == part)
+            .and_then(|entry| entry.parent);
         match std::fs::remove_file(part) {
             Ok(()) => self.forget(part),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                // 外付けドライブが外れていると、親が無いために `NotFound` になる。
-                // 親があるときだけ、本当に消えたとみなして記録を外す。
-                if parent_exists(part) {
+                // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが
+                // 残る）ために `NotFound` になる。記録したときと同じフォルダーに届く
+                // ときだけ、本当に消えたとみなして記録を外す。
+                if same_parent(part, parent) {
                     self.forget(part);
                 }
             }
@@ -217,13 +392,13 @@ impl Journal {
         }
     }
 
-    fn write(&self, paths: &[PathBuf]) -> Result<()> {
+    fn write(&self, entries: &[JournalEntry]) -> Result<()> {
         // 記録先が無いと、強制終了で残った `.part` を次の起動で消せない。メモリだけの
         // 記録で保存を始めない（`record` がエラーを返し、`begin` が保存を拒否する）。
         let Some(path) = self.file.as_deref() else {
             return Err(anyhow!("保存の記録を置く設定ディレクトリが見つかりません"));
         };
-        if paths.is_empty() {
+        if entries.is_empty() {
             // 記録が無くなったら、ファイルも消す。
             match std::fs::remove_file(path) {
                 Ok(()) => return Ok(()),
@@ -234,9 +409,12 @@ impl Journal {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let list: Vec<String> = paths
+        let list: Vec<StoredEntry> = entries
             .iter()
-            .map(|part| part.to_string_lossy().into_owned())
+            .map(|entry| StoredEntry::Current {
+                path: StoredPath::from_path(&entry.path),
+                parent: entry.parent,
+            })
             .collect();
         let tmp = path.with_extension("json.tmp");
         let written = std::fs::write(&tmp, serde_json::to_vec(&list)?)
@@ -346,7 +524,7 @@ impl Downloads {
     /// 記録の読み出しだけをここで行い、ファイルの削除は裏のスレッドで行う。保存先が届かない
     /// 共有フォルダーでも、起動が止まらないようにするため。
     pub fn spawn_stale_part_cleanup(&self) {
-        let stale = self.journal.snapshot();
+        let stale = self.journal.entries();
         if stale.is_empty() {
             return;
         }
@@ -356,10 +534,10 @@ impl Downloads {
         std::thread::spawn(move || {
             let _guard = guard;
             let mut done = Vec::new();
-            for path in stale {
+            for entry in stale {
                 // 消せなかったものは、次の起動でもう一度試す。
-                if remove_stale_entry(&path) {
-                    done.push(path);
+                if remove_stale_entry(&entry.path, entry.parent) {
+                    done.push(entry.path);
                 }
             }
             for path in done {
@@ -1003,12 +1181,16 @@ fn is_probe_name(name: &str) -> bool {
 }
 
 /// 記録に残った名前を消す。消した、または触れる必要が無かったら `true`（記録から外す）。
-fn remove_stale_entry(path: &Path) -> bool {
-    remove_stale_entry_with(path, probe_state)
+fn remove_stale_entry(path: &Path, parent: Option<ParentId>) -> bool {
+    remove_stale_entry_with(path, parent, |path| probe_state(path, parent))
 }
 
 /// [`remove_stale_entry`] の本体。テストで判断を差し替えられるよう、分類を受け取る。
-fn remove_stale_entry_with(path: &Path, probe: impl Fn(&Path) -> ProbeState) -> bool {
+fn remove_stale_entry_with(
+    path: &Path,
+    parent: Option<ParentId>,
+    probe: impl Fn(&Path) -> ProbeState,
+) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return true;
     };
@@ -1031,17 +1213,12 @@ fn remove_stale_entry_with(path: &Path, probe: impl Fn(&Path) -> ProbeState) -> 
     // 残る（docs にも書いた）。
     match std::fs::remove_file(path) {
         Ok(()) => true,
-        // 外付けドライブが外れていると、親が無いために `NotFound` になる。親があるときだけ、
-        // 本当に消えたとみなして記録から外す。無いときは残し、ドライブが戻ったときに消す。
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => parent_exists(path),
+        // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが残る）
+        // ために `NotFound` になる。記録したときと同じフォルダーに届くときだけ、
+        // 本当に消えたとみなして記録から外す。
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => same_parent(path, parent),
         Err(_) => false,
     }
-}
-
-/// `.part` の親フォルダーがあるか。外付けドライブが外れている場合と、本当に消えた場合を
-/// `NotFound` だけで区別できないので、親の有無で判断する。
-fn parent_exists(path: &Path) -> bool {
-    path.parent().is_some_and(Path::exists)
 }
 
 /// 記録に残った検査用の名前が、このアプリが作ったものか。
@@ -1079,8 +1256,17 @@ fn open_probe(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
-fn probe_state(path: &Path) -> ProbeState {
-    classify_open_result(open_probe(path))
+fn probe_state(path: &Path, parent: Option<ParentId>) -> ProbeState {
+    match open_probe(path) {
+        Ok(file) => probe_state_from_file(file),
+        // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが残る）
+        // ために `NotFound` になる。記録したフォルダーに届かないときは、名前が無いと
+        // 断定せず、ドライブが戻ったときのために記録を残す。
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !same_parent(path, parent) => {
+            ProbeState::Unreadable
+        }
+        Err(err) => classify_open_result(Err(err)),
+    }
 }
 
 /// 開く操作の結果を、掃除の判断に変える。失敗を直接渡せるよう分けている。
@@ -1645,7 +1831,7 @@ fn move_unique(part: &Path, target: &Path) -> std::io::Result<PathBuf> {
         let candidate = if n == 0 {
             target.to_path_buf()
         } else {
-            dir.join(format!("{stem} ({n}){extension}"))
+            dir.join(numbered_name(stem, n, extension))
         };
         match rename_unique(part, &candidate) {
             Ok(()) => return Ok(candidate),
@@ -1657,6 +1843,31 @@ fn move_unique(part: &Path, target: &Path) -> std::io::Result<PathBuf> {
         std::io::ErrorKind::AlreadyExists,
         "空いているファイル名が見つかりません",
     ))
+}
+
+/// 衝突したときの ` (n)` 付きの名前。語幹が長いときは、連番と拡張子の分を残して切る。
+/// ファイルシステムの上限を超えると、確定できないまま `.part` を消すことになるため。
+fn numbered_name(stem: &str, n: u32, extension: &str) -> String {
+    let suffix = format!(" ({n})");
+    let budget = MAX_NAME_BYTES.saturating_sub(suffix.len() + extension.len());
+    let mut base = String::with_capacity(budget);
+    for c in stem.chars() {
+        if base.len() + c.len_utf8() > budget {
+            break;
+        }
+        base.push(c);
+    }
+    let mut name = format!("{}{suffix}{extension}", base.trim_end_matches(['.', ' ']));
+    if name.len() > MAX_NAME_BYTES {
+        // 拡張子だけで上限に近く、語幹を削っても収まらない名前。末尾を切ってでも収める
+        // （語幹が空なら連番は先頭に残る）。
+        let mut end = MAX_NAME_BYTES;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name.truncate(end);
+    }
+    name
 }
 
 /// Windows で、保存したファイルに Mark of the Web（Zone 3）を付ける。ほかの利用者が送った
@@ -1778,6 +1989,20 @@ mod tests {
     fn sanitize_keeps_a_plain_name() {
         assert_eq!(sanitize_file_name("report.pdf"), "report.pdf");
         assert_eq!(sanitize_file_name("議事録 2026.docx"), "議事録 2026.docx");
+    }
+
+    #[test]
+    fn numbered_names_fit_the_filesystem_limit() {
+        // 保存ダイアログで 255 バイトの名前を選んでも、連番を足した候補が上限を超えない。
+        let stem = "a".repeat(MAX_NAME_BYTES - 4);
+        let candidate = numbered_name(&stem, 1, ".pdf");
+        assert!(candidate.len() <= MAX_NAME_BYTES);
+        assert!(candidate.ends_with(" (1).pdf"));
+        assert_eq!(numbered_name("report", 2, ".pdf"), "report (2).pdf");
+
+        // 拡張子だけで余裕が無い名前でも、同じ連番なら同じ長さに収まる。
+        let long_extension = format!(".{}", "x".repeat(MAX_NAME_BYTES - 2));
+        assert!(numbered_name("a", 9999, &long_extension).len() <= MAX_NAME_BYTES);
     }
 
     #[test]
@@ -1958,6 +2183,38 @@ mod tests {
         journal.record(&stuck).unwrap();
         journal.remove_part(&stuck);
         assert_eq!(journal.snapshot(), vec![stuck.clone()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn journal_reads_the_previous_string_format() {
+        let dir = temp_dir();
+        let file = dir.join("download_parts.json");
+        let part = dir.join(".zoo-0123456789abcdef.part");
+        let old: Vec<String> = vec![part.to_string_lossy().into_owned()];
+        std::fs::write(&file, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let journal = Journal::load(Some(file));
+        assert_eq!(journal.snapshot(), vec![part]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_keeps_non_utf8_bytes_in_a_path() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let dir = temp_dir();
+        let file = dir.join("download_parts.json");
+        let folder = dir.join(OsString::from_vec(b"caf\xe9".to_vec()));
+        std::fs::create_dir(&folder).unwrap();
+        let part = folder.join(".zoo-0123456789abcdef.part");
+        let journal = Journal::load(Some(file.clone()));
+        journal.record(&part).unwrap();
+
+        // 再読み込みしても `?` に置き換わらず、元のバイト列で戻る。
+        let reloaded = Journal::load(Some(file));
+        assert_eq!(reloaded.snapshot(), vec![part]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2529,7 +2786,7 @@ mod tests {
         let probe = part.with_extension("probe");
         std::fs::write(&probe, b"keep").unwrap();
 
-        assert!(remove_stale_entry(&probe));
+        assert!(remove_stale_entry(&probe, parent_id(&probe)));
         assert_eq!(std::fs::read(&probe).unwrap(), b"keep");
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2548,7 +2805,7 @@ mod tests {
         std::fs::write(&victim, b"keep").unwrap();
         symlink(&victim, &moved).unwrap();
 
-        assert!(remove_stale_entry(&moved));
+        assert!(remove_stale_entry(&moved, parent_id(&moved)));
         assert!(moved.symlink_metadata().is_ok(), "リンクを消さない");
         assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
 
@@ -2566,7 +2823,7 @@ mod tests {
         // 掃除が FIFO を開くと、書き手が現れるまで戻らず、残りの `.part` も消せなくなる。
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
 
-        assert!(remove_stale_entry(&probe));
+        assert!(remove_stale_entry(&probe, parent_id(&probe)));
         assert!(probe.symlink_metadata().is_ok(), "FIFO を消さない");
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2591,7 +2848,10 @@ mod tests {
         // ENXIO（macOS では EOPNOTSUPP）で失敗する。中身は無いので消さない。
         let listener = std::os::unix::net::UnixListener::bind(&probe).unwrap();
 
-        assert!(remove_stale_entry(&probe), "記録からは外す");
+        assert!(
+            remove_stale_entry(&probe, parent_id(&probe)),
+            "記録からは外す"
+        );
         assert!(probe.symlink_metadata().is_ok(), "ソケットを消さない");
 
         drop(listener);
@@ -2639,7 +2899,10 @@ mod tests {
         // ので消さない。
         std::fs::write(&probe, b"").unwrap();
 
-        assert!(remove_stale_entry(&probe), "記録からは外す");
+        assert!(
+            remove_stale_entry(&probe, parent_id(&probe)),
+            "記録からは外す"
+        );
         assert!(probe.exists(), "第三者のファイルかもしれないので消さない");
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2654,7 +2917,7 @@ mod tests {
         // 目印と同じ長さでも、中身が違えば自分が書いたものではない。
         std::fs::write(&probe, b"xxxxxxxxxxx").unwrap();
 
-        assert!(remove_stale_entry(&probe));
+        assert!(remove_stale_entry(&probe, parent_id(&probe)));
         assert_eq!(std::fs::read(&probe).unwrap(), b"xxxxxxxxxxx");
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2666,13 +2929,37 @@ mod tests {
         // 外付けドライブが外れていると、親が無いために `NotFound` になる。
         let missing = part_path(&dir.join("unplugged").join("x.txt"), "0123456789abcdef");
         assert!(
-            !remove_stale_entry(&missing),
+            !remove_stale_entry(&missing, parent_id(&missing)),
             "親が無いときは、戻ってきた `.part` を消せるよう記録を残す"
         );
 
         // 親があるときは、既に無い `.part` の記録を外す。
         let gone = part_path(&dir.join("x.txt"), "0123456789abcdef");
-        assert!(remove_stale_entry(&gone));
+        assert!(remove_stale_entry(&gone, parent_id(&gone)));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_keeps_the_record_when_the_saved_volume_is_not_there() {
+        let dir = temp_dir();
+        let part = part_path(&dir.join("x.txt"), "0123456789abcdef");
+        let probe = part.with_extension("probe");
+        // 保存したボリュームが外れ、同じ場所に別の（空の）マウントポイントだけが残った
+        // 状態を、記録した ID を変えて再現する。親の有無だけを見ると消したと誤判定する。
+        let recorded = parent_id(&part).map(|id| ParentId {
+            volume: id.volume.wrapping_add(1),
+            ..id
+        });
+        assert!(recorded.is_some());
+        assert!(
+            !remove_stale_entry(&part, recorded),
+            "元のボリュームに届かないなら `.part` の記録を残す"
+        );
+        assert!(
+            !remove_stale_entry(&probe, recorded),
+            "到達できない保存先に `.probe` が無いと断定しない"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2686,7 +2973,9 @@ mod tests {
         std::fs::write(&probe, PROBE_MARKER).unwrap();
 
         // 読めないだけなら、自分のファイルかもしれない。消さず、記録も残す。
-        assert!(!remove_stale_entry_with(&probe, |_| ProbeState::Unreadable));
+        assert!(!remove_stale_entry_with(&probe, parent_id(&probe), |_| {
+            ProbeState::Unreadable
+        }));
         assert!(probe.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2700,7 +2989,7 @@ mod tests {
         let probe = part.with_extension("probe");
         std::fs::create_dir(&probe).unwrap();
 
-        assert!(remove_stale_entry(&probe));
+        assert!(remove_stale_entry(&probe, parent_id(&probe)));
         assert!(probe.is_dir());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2716,12 +3005,18 @@ mod tests {
 
         // 検査の途中で終了した場合を再現する。目印があるものは消し、記録から外す。
         create_probe(&probe).unwrap();
-        assert!(remove_stale_entry(&probe));
+        assert!(remove_stale_entry(&probe, parent_id(&probe)));
         assert!(!probe.exists());
-        assert!(remove_stale_entry(&moved), "まだ無い名前は記録から外す");
-        assert!(remove_stale_entry(&part), "無い名前は記録から外す");
         assert!(
-            remove_stale_entry(&dir.join("notes.txt")),
+            remove_stale_entry(&moved, parent_id(&moved)),
+            "まだ無い名前は記録から外す"
+        );
+        assert!(
+            remove_stale_entry(&part, parent_id(&part)),
+            "無い名前は記録から外す"
+        );
+        assert!(
+            remove_stale_entry(&dir.join("notes.txt"), parent_id(&dir)),
             "形の違う名前は触らずに記録から外す"
         );
 

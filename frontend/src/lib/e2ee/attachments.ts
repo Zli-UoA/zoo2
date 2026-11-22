@@ -1,5 +1,6 @@
 import type { AttachmentInfo, EncryptedFile } from "@zoo/crypto-wasm";
 
+import { abortable } from "../abortable";
 import { AttachmentUploadError } from "../api/attachments";
 import type { ApiClient } from "../api/client";
 import type { AttachmentUrlResponse, PresignAttachmentResponse } from "../api/types";
@@ -151,7 +152,8 @@ export async function fetchEncryptedAttachment(
 ): Promise<Blob> {
   let ciphertext: Uint8Array;
   try {
-    const downloadUrl = await resolveUrl(info.attachment_id);
+    // URL の取得は共有の要求なので取り消さず、取得を待つこの処理だけを中止する。
+    const downloadUrl = await abortable(resolveUrl(info.attachment_id), options.signal);
     const init: RequestInit = { credentials: "omit" };
     if (options.signal) init.signal = options.signal;
     const response = await fetchImpl(downloadUrl, init);

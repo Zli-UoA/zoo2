@@ -222,6 +222,8 @@ pub struct DownloadBegin {
     pub file_name: String,
     /// 添付の大きさ（平文のバイト数）。分からなければ `None`。Rust 側はこの値から
     /// 1 件の上限を決める（サーバーの添付の上限を上げても、ここが連動する）。
+    /// 上限は 512 MiB で頭打ちになる。サーバーの添付の上限をそれより大きくするときは、
+    /// `desktop-tauri/src-tauri/src/downloads.rs` の天井も上げること。
     #[serde(default)]
     pub size: Option<u64>,
 }
