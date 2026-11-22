@@ -15,6 +15,7 @@ import { Route as ShellIndexRouteImport } from './routes/_shell.index'
 import { Route as ShellSplatRouteImport } from './routes/_shell.$'
 import { Route as ShellAppsAuthorizeRouteImport } from './routes/_shell.apps-authorize'
 import { Route as ShellBubbleRouteImport } from './routes/_shell.bubble'
+import { Route as ShellCatchUpRouteImport } from './routes/_shell.catch-up'
 import { Route as ShellHomeRouteImport } from './routes/_shell.home'
 import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifications'
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
@@ -52,6 +53,11 @@ const ShellAppsAuthorizeRoute = ShellAppsAuthorizeRouteImport.update({
 const ShellBubbleRoute = ShellBubbleRouteImport.update({
   id: '/bubble',
   path: '/bubble',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellCatchUpRoute = ShellCatchUpRouteImport.update({
+  id: '/catch-up',
+  path: '/catch-up',
   getParentRoute: () => ShellRoute,
 } as any)
 const ShellHomeRoute = ShellHomeRouteImport.update({
@@ -106,6 +112,7 @@ export interface FileRoutesByFullPath {
   '/$': typeof ShellSplatRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
+  '/catch-up': typeof ShellCatchUpRoute
   '/home': typeof ShellHomeRoute
   '/notifications': typeof ShellNotificationsRoute
   '/settings': typeof ShellSettingsRoute
@@ -121,6 +128,7 @@ export interface FileRoutesByTo {
   '/$': typeof ShellSplatRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
+  '/catch-up': typeof ShellCatchUpRoute
   '/home': typeof ShellHomeRoute
   '/notifications': typeof ShellNotificationsRoute
   '/settings': typeof ShellSettingsRoute
@@ -139,6 +147,7 @@ export interface FileRoutesById {
   '/_shell/$': typeof ShellSplatRoute
   '/_shell/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/_shell/bubble': typeof ShellBubbleRoute
+  '/_shell/catch-up': typeof ShellCatchUpRoute
   '/_shell/home': typeof ShellHomeRoute
   '/_shell/notifications': typeof ShellNotificationsRoute
   '/_shell/settings': typeof ShellSettingsRoute
@@ -158,6 +167,7 @@ export interface FileRouteTypes {
     | '/$'
     | '/apps-authorize'
     | '/bubble'
+    | '/catch-up'
     | '/home'
     | '/notifications'
     | '/settings'
@@ -173,6 +183,7 @@ export interface FileRouteTypes {
     | '/$'
     | '/apps-authorize'
     | '/bubble'
+    | '/catch-up'
     | '/home'
     | '/notifications'
     | '/settings'
@@ -190,6 +201,7 @@ export interface FileRouteTypes {
     | '/_shell/$'
     | '/_shell/apps-authorize'
     | '/_shell/bubble'
+    | '/_shell/catch-up'
     | '/_shell/home'
     | '/_shell/notifications'
     | '/_shell/settings'
@@ -250,6 +262,13 @@ declare module '@tanstack/react-router' {
       path: '/bubble'
       fullPath: '/bubble'
       preLoaderRoute: typeof ShellBubbleRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/catch-up': {
+      id: '/_shell/catch-up'
+      path: '/catch-up'
+      fullPath: '/catch-up'
+      preLoaderRoute: typeof ShellCatchUpRouteImport
       parentRoute: typeof ShellRoute
     }
     '/_shell/home': {
@@ -322,6 +341,7 @@ interface ShellRouteChildren {
   ShellSplatRoute: typeof ShellSplatRoute
   ShellAppsAuthorizeRoute: typeof ShellAppsAuthorizeRoute
   ShellBubbleRoute: typeof ShellBubbleRoute
+  ShellCatchUpRoute: typeof ShellCatchUpRoute
   ShellHomeRoute: typeof ShellHomeRoute
   ShellNotificationsRoute: typeof ShellNotificationsRoute
   ShellSettingsRoute: typeof ShellSettingsRoute
@@ -337,6 +357,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellSplatRoute: ShellSplatRoute,
   ShellAppsAuthorizeRoute: ShellAppsAuthorizeRoute,
   ShellBubbleRoute: ShellBubbleRoute,
+  ShellCatchUpRoute: ShellCatchUpRoute,
   ShellHomeRoute: ShellHomeRoute,
   ShellNotificationsRoute: ShellNotificationsRoute,
   ShellSettingsRoute: ShellSettingsRoute,

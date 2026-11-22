@@ -86,7 +86,10 @@ vi.mock("../../hooks/useCurrentUser", () => ({
 vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: fixture.users, isLoading: false }),
 }));
-vi.mock("../../hooks/useUnreadChannels", () => ({ useUnreadChannels: () => new Set() }));
+vi.mock("../../hooks/useUnread", () => ({
+  READ_STATE_CHANGED: "zoo-read-state-changed",
+  useUnread: () => ({ unreadChannelIds: new Set() }),
+}));
 vi.mock("../../hooks/useChannelLeaveDates", () => ({ useChannelLeaveDates: () => new Map() }));
 vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => ({

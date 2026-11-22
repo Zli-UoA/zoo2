@@ -13,6 +13,7 @@ import { IncomingCallDialog } from "../components/call/IncomingCallDialog";
 import { CallProvider } from "../lib/call/call-context";
 import { PinnedChannelsProvider } from "../hooks/usePinnedChannels";
 import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
+import { UnreadProvider } from "../hooks/useUnread";
 import { resolveConfig } from "../lib/config";
 
 export const Route = createFileRoute("/_shell")({ component: ShellLayout });
@@ -37,13 +38,15 @@ function ShellLayout() {
           <SipProvider config={config}>
             <HomeLiveProvider>
               <NotificationsProvider>
-                <PinnedChannelsProvider>
-                  <AppShell>
-                    <Outlet />
-                  </AppShell>
-                  <SasVerificationHost />
-                  <IncomingCallDialog />
-                </PinnedChannelsProvider>
+                <UnreadProvider>
+                  <PinnedChannelsProvider>
+                    <AppShell>
+                      <Outlet />
+                    </AppShell>
+                    <SasVerificationHost />
+                    <IncomingCallDialog />
+                  </PinnedChannelsProvider>
+                </UnreadProvider>
               </NotificationsProvider>
             </HomeLiveProvider>
             <SipCallBanner />
