@@ -143,13 +143,16 @@ export function CatchUpMessagePage({
     void feed.loadOlder();
   }, [feed.hasOlder, feed.isLoading, feed.isLoadingOlder, feed.loadOlder, firstUnreadAt, messages]);
 
-  // 「既読にする」は最初の未読が読み込み範囲内にあるときだけ有効にする。
+  // 「既読にする」は最初の未読が読み込み範囲の内側にあるときだけ有効にする。
+  // 下限だけでなく上限も確認しないと、未読より古い末尾を既読にしてしまう。
+  const boundaryTime = firstUnreadAt ? parseUtcTimestamp(firstUnreadAt).getTime() : null;
+  const oldestTime = messages[0] ? parseUtcTimestamp(messages[0].created_at).getTime() : NaN;
+  const newestTime = messages.at(-1)
+    ? parseUtcTimestamp(messages[messages.length - 1].created_at).getTime()
+    : NaN;
   const rangeReady =
     messages.length > 0 &&
-    (!firstUnreadAt ||
-      (!!messages[0] &&
-        parseUtcTimestamp(messages[0].created_at).getTime() <=
-          parseUtcTimestamp(firstUnreadAt).getTime()));
+    (boundaryTime === null || (oldestTime <= boundaryTime && newestTime >= boundaryTime));
   const exhausted =
     !rangeReady &&
     messages.length > 0 &&

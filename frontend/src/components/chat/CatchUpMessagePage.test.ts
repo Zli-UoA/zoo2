@@ -174,10 +174,24 @@ it("does not allow marking read before the oldest unread is inside the range", (
   );
   expect(mocks.rangeReady.at(-1)).toBe(false);
 
+  // The first unread is newer than every loaded message: not ready either.
   mocks.rangeReady = [];
   render(
     createElement(CatchUpMessagePage, {
       channelId: "c2",
+      firstUnreadAt: "2026-01-01T11:00:00Z",
+      onBoundaryMessage: vi.fn(),
+      onRangeReady: (ready) => mocks.rangeReady.push(ready),
+    }),
+  );
+  expect(mocks.rangeReady.at(-1)).toBe(false);
+
+  // Both boundaries contain the first unread.
+  mocks.rangeReady = [];
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z"), message("m2", "2026-01-01T12:00:00Z")];
+  render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c3",
       firstUnreadAt: "2026-01-01T11:00:00Z",
       onBoundaryMessage: vi.fn(),
       onRangeReady: (ready) => mocks.rangeReady.push(ready),
