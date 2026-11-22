@@ -93,6 +93,8 @@
 
 一部だけの設定（`CALL_SFUS_JSON` がないのに Secret だけある、など）は、起動時のエラーにする。
 
+LiveKit を有効にするときは、frontend の `CSP_CONNECT_SRC` に LiveKit の `wss://` のオリジン（例：`wss://livekit.zli.chat`）を足す。Web の CSP の `connect-src` は `https:` しか許していないので、足さないと LiveKit のシグナリング（WebSocket）がはじかれ、全員が Cloudflare に移る。
+
 sfu-bridge の環境変数：`BACKEND_INTERNAL_URL`（クラスタ内の backend）、`SFU_BRIDGE_TOKEN`、`HEALTH_ADDR`（既定 `:8080`、`/healthz`）。イメージは `ghcr.io/zli-uoa/zoo2-sfu-bridge`（`infra/Dockerfile-sfu-bridge-deploy`）。
 
 ## プライバシー
