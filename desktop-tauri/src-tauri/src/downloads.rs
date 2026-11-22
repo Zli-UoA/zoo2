@@ -1169,11 +1169,9 @@ fn truncate_name(name: String) -> String {
     // 拡張子が長すぎて残せないときは、名前をそのまま切ると、切った位置で
     // `.exe` のような別の拡張子が生まれることがある（`{234 文字}.exe{20 文字}` を
     // `.exe` の直後で切るなど）。長い拡張子ごと落としてから語幹を切る。
-    let stem_source = if suffix.is_empty() {
-        match extension.as_deref() {
-            Some(ext) => &name[..name.len() - ext.len() - 1],
-            None => name.as_str(),
-        }
+    let dropped_extension = suffix.is_empty() && extension.is_some();
+    let stem_source = if let Some(ext) = extension.as_deref().filter(|_| dropped_extension) {
+        &name[..name.len() - ext.len() - 1]
     } else {
         &name[..name.len() - suffix.len()]
     };
@@ -1186,6 +1184,13 @@ fn truncate_name(name: String) -> String {
         stem.push(c);
     }
     let stem = stem.trim_end_matches(['.', ' ']);
+    // 長い拡張子を落とした後、語幹にドットが残ると `report.exe` のように別の
+    // 拡張子が露出する。語幹のドットも `_` にして、拡張子を作らない。
+    let stem = if dropped_extension {
+        stem.replace('.', "_")
+    } else {
+        stem.to_string()
+    };
     if stem.trim_matches(' ').is_empty() {
         // 語幹が無くなる切り方しかしないなら、拡張子だけの隠しファイルにしない。
         let extension = suffix.trim_start_matches('.');
@@ -1879,6 +1884,19 @@ mod tests {
         assert!(cleaned.len() <= MAX_FILE_NAME_BYTES);
         assert!(!cleaned.to_ascii_lowercase().ends_with(".exe"), "{cleaned}");
         assert_eq!(cleaned, "a".repeat(234));
+
+        // 語幹にもドットがあると、長い拡張子を落とした後に `report.exe` や
+        // `report.pdf` が露出する。`report.pdf` は自動保存の対象になってしまう。
+        assert_eq!(
+            sanitize_file_name(&format!("report.exe.{}", "x".repeat(240))),
+            "report_exe"
+        );
+        assert_eq!(
+            sanitize_file_name(&format!("report.pdf.{}", "x".repeat(240))),
+            "report_pdf"
+        );
+        // 拡張子が短ければ、これまでどおり保つ。
+        assert_eq!(sanitize_file_name("report.pdf"), "report.pdf");
     }
 
     #[test]
