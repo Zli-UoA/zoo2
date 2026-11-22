@@ -539,7 +539,7 @@ class AndroidSamplesTest {
     fun searchFiltersPickSendersInASheet() {
         val actions = mutableListOf<AndroidUiAction>()
         val setDark = showSearchFilters(actions)
-        ui.onNodeWithTag("search-filter-from").assertHeightIsAtLeast(48.dp).performClick()
+        ui.onNodeWithTag("search-filter-from").assertHeightIsAtLeast(48.dp).assertIsNotSelected().performClick()
         // The user comes first, marked as themselves.
         ui.onNodeWithText("はる（自分）").assertIsDisplayed()
         ui.onNodeWithText("ゆい").performClick()
@@ -565,8 +565,11 @@ class AndroidSamplesTest {
         ui.onNode(isToggleable() and hasText("ボットを除く")).performScrollTo().performClick().assertIsOn()
         ui.onNodeWithTag("search-filter-in").performScrollTo().performClick()
         ui.onNodeWithText("雑談").assertIsDisplayed()
+        ui.onNodeWithTag("search-filter-in").assertIsNotSelected()
         ui.onNodeWithText("運営").performClick()
         ui.onNodeWithText("チャンネル: 運営").assertExists()
+        // The chosen filter is exposed as selected, not only by its colour.
+        ui.onNodeWithTag("search-filter-in").assertIsSelected()
         ui.runOnIdle {
             check(actions == listOf(
                 AndroidUiAction.ToggleSearchFilter(SearchFilterFlag.NoBots),

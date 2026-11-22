@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -139,7 +140,9 @@ private fun ChipFace(text: String, on: Boolean, icon: UiIcon?, colors: AndroidCo
 
 @Composable
 private fun FilterChip(text: String, on: Boolean, icon: UiIcon, colors: AndroidColors, modifier: Modifier, click: () -> Unit) {
-    Box(modifier.heightIn(min = AndroidControlSize.target).clickable(role = Role.Button, onClick = click),
+    // The chip opens the sheet; whether it narrows the results is its selected state, not only its colour.
+    Box(modifier.heightIn(min = AndroidControlSize.target).clickable(role = Role.Button, onClick = click)
+        .semantics { selected = on },
         contentAlignment = Alignment.Center) {
         ChipFace(text, on, icon, colors, Modifier)
     }
