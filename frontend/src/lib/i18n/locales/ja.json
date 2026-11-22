@@ -484,7 +484,7 @@
     "askEveryTime": "保存のたびに確認する",
     "noFolder": "フォルダー未選択",
     "chooseFolder": "フォルダーを選ぶ",
-    "resetDirectory": "毎回確認する設定に戻す",
+    "resetDirectory": "保存先フォルダーを消して毎回確認する",
     "olderAppValue": "アプリの既定の保存先",
     "olderAppDescription": "この版のアプリでは、アプリが決めた保存先に保存されます。保存先を変えるには、アプリを更新してください。",
     "loadError": "保存先の設定を読み込めませんでした。",

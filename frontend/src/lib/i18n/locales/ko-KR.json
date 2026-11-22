@@ -285,7 +285,7 @@
       "cc": "참조",
       "date": "날짜"
     },
-    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"다운로드\"에서 저장 위치를 변경하거나, \"저장할 때마다 묻기\"를 켜세요."
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"다운로드\"에서 저장 위치를 변경하거나, \"저장할 때마다 확인\"를 켜세요."
   },
   "threads": {
     "title": "스레드",
@@ -484,7 +484,7 @@
     "askEveryTime": "저장할 때마다 확인",
     "noFolder": "폴더가 선택되지 않음",
     "chooseFolder": "폴더 선택",
-    "resetDirectory": "저장할 때마다 확인으로 되돌리기",
+    "resetDirectory": "저장 폴더를 지우고 저장할 때마다 확인",
     "olderAppValue": "앱 기본 저장 위치",
     "olderAppDescription": "이 버전의 앱은 앱이 정한 위치에 첨부 파일을 저장합니다. 저장 위치를 바꾸려면 앱을 업데이트하세요.",
     "loadError": "저장 위치 설정을 불러오지 못했습니다.",

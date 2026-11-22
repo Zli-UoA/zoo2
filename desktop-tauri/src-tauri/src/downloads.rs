@@ -2245,10 +2245,11 @@ fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> b
 #[cfg(windows)]
 fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    // Windows の file_index は unstable なので、サイズ、更新時刻、作成時刻で最低限確認する。
+    // Windows のファイルシステムトンネリングにより、削除・改名直後の同名ファイルの
+    // 作成日時が元のファイルから引き継がれることがある。作成日時は比較せず、
+    // サイズと更新時刻だけで確認する。
     meta.file_size() == source.file_size()
         && meta.last_write_time() == source.last_write_time()
-        && meta.creation_time() == source.creation_time()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2356,11 +2357,8 @@ fn finish_entry_with(
     })?;
     if !same_saved_file(&source_meta, &saved) {
         let _ = std::fs::remove_file(&entry.part);
-        // deduplicate で番号付きに確定した場合、`saved` は正規の出力なので消さない。
-        // replace_file で選択パスへ確定した場合は、同一性を確認できない出力を残さない。
-        if !entry.deduplicate {
-            let _ = std::fs::remove_file(&saved);
-        }
+        // ファイルシステムトンネリングなどで不一致になることがあるが、確定したファイルは
+        // 消さない（利用者が保存したファイルを削除しないため）。
         return Err(anyhow!(
             "保存先の確認に失敗しました。もう一度お試しください: {}",
             saved.display()

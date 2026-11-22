@@ -285,7 +285,7 @@
       "cc": "副本",
       "date": "日期"
     },
-    "downloadDestinationUnsupportedAskEveryTimeOff": "無法儲存到此位置。請在設定的「下載」中變更儲存位置，或開啟「每次儲存時詢問」。"
+    "downloadDestinationUnsupportedAskEveryTimeOff": "無法儲存到此位置。請在設定的「下載」中變更儲存位置，或開啟「每次儲存時確認」。"
   },
   "threads": {
     "title": "子討論",
@@ -484,7 +484,7 @@
     "askEveryTime": "每次儲存時確認",
     "noFolder": "未選擇資料夾",
     "chooseFolder": "選擇資料夾",
-    "resetDirectory": "還原為每次儲存時確認",
+    "resetDirectory": "清除資料夾並每次儲存時確認",
     "olderAppValue": "應用程式預設儲存位置",
     "olderAppDescription": "此版本的應用程式會將附件儲存到應用程式決定的位置。若要變更儲存位置，請更新應用程式。",
     "loadError": "無法讀取儲存位置的設定。",

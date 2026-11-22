@@ -285,9 +285,7 @@ async function run(
           await desktopDownloadCancel(downloadId).catch(() => {});
           throw new DesktopDownloadCancelledError();
         }
-        if (prompted) {
-          throw bodyError;
-        }
+        // ダイアログで保存先が選ばれた場合は、その保存先で転送を続ける（破棄しない）。
         setState(id, { status: "downloading", fraction: 0 });
       }
     }

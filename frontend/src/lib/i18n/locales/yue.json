@@ -285,7 +285,7 @@
       "cc": "副本",
       "date": "日期"
     },
-    "downloadDestinationUnsupportedAskEveryTimeOff": "呢個位置存唔到檔案。請喺設定嘅「下載」改儲存位置，或者開返「每次儲存都問」。"
+    "downloadDestinationUnsupportedAskEveryTimeOff": "呢個位置存唔到檔案。請喺設定嘅「下載」改儲存位置，或者開返「每次儲存都確認」。"
   },
   "threads": {
     "title": "子討論",
@@ -484,7 +484,7 @@
     "askEveryTime": "每次儲存都確認",
     "noFolder": "未揀選資料夾",
     "chooseFolder": "揀資料夾",
-    "resetDirectory": "還原做每次儲存都確認",
+    "resetDirectory": "清除資料夾並每次儲存都確認",
     "olderAppValue": "App 預設儲存位置",
     "olderAppDescription": "呢個版本嘅 app 會將附件儲存喺 app 決定嘅位置。想改儲存位置，就要更新 app。",
     "loadError": "儲存位置嘅設定載入唔到。",
