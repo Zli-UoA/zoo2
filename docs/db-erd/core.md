@@ -97,9 +97,39 @@ erDiagram
       boolean is_muted
       text joined_at
       timestamptz expires_at
+      boolean sfu_capable
+      text sfu_id
+      text sfu_room
+      text cf_session_id
     }
     call_presence }o--o| channels : call_presence_channel_id_fkey
     call_presence }o--o| users : call_presence_user_id_fkey
+    call_rooms {
+      text channel_id PK,FK
+      text mode
+      bigint epoch
+      bigint track_version
+    }
+    call_rooms |o--o| channels : call_rooms_channel_id_fkey
+    call_sfu_departures {
+      bigint id PK
+      text channel_id
+      uuid session_id
+      text sfu_id
+      text sfu_room
+      text cf_session_id
+      integer attempts
+      timestamptz created_at
+    }
+    call_sfu_tracks {
+      text channel_id PK,FK
+      uuid session_id PK,FK
+      text source PK
+      text cf_session_id
+      text track_name
+      bigint bridge_epoch
+    }
+    call_sfu_tracks }o--o| call_presence : call_sfu_tracks_presence_fkey
     channel_leave {
       text user_id PK,FK
       text channel_id PK,FK
