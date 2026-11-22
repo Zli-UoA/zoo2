@@ -301,33 +301,47 @@ struct Journal {
     file: Option<PathBuf>,
     /// 書き込み中の `.part`。読み込みは [`Journal::load`]、以後はここが正本。
     entries: Mutex<Vec<JournalEntry>>,
+    /// 既存の記録を読めなかった。空の記録で上書きすると旧 `.part` を消せなくなるため、
+    /// 読み直せるまで新しい記録を書かない。
+    load_failed: bool,
 }
 
 impl Journal {
     fn load(file: Option<PathBuf>) -> Self {
-        let entries = file
-            .as_deref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice::<Vec<StoredEntry>>(&bytes).ok())
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|entry| match entry {
-                        StoredEntry::Legacy(text) => JournalEntry {
-                            path: PathBuf::from(text),
-                            parent: None,
-                        },
-                        StoredEntry::Current { path, parent } => JournalEntry {
-                            path: path.into_path(),
-                            parent,
-                        },
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut load_failed = false;
+        let entries = match file.as_deref() {
+            None => Vec::new(),
+            Some(path) => match std::fs::read(path) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+                Err(_) => {
+                    load_failed = true;
+                    Vec::new()
+                }
+                Ok(bytes) => match serde_json::from_slice::<Vec<StoredEntry>>(&bytes) {
+                    Ok(entries) => entries
+                        .into_iter()
+                        .map(|entry| match entry {
+                            StoredEntry::Legacy(text) => JournalEntry {
+                                path: PathBuf::from(text),
+                                parent: None,
+                            },
+                            StoredEntry::Current { path, parent } => JournalEntry {
+                                path: path.into_path(),
+                                parent,
+                            },
+                        })
+                        .collect(),
+                    Err(_) => {
+                        load_failed = true;
+                        Vec::new()
+                    }
+                },
+            },
+        };
         Self {
             file,
             entries: Mutex::new(entries),
+            load_failed,
         }
     }
 
@@ -393,6 +407,14 @@ impl Journal {
     }
 
     fn write(&self, entries: &[JournalEntry]) -> Result<()> {
+        // 既存の記録を読めていないときに空の記録で上書きすると、旧 `.part` が記録から
+        // 外れて次の起動で消せなくなる（E2EE では復号済みの内容が残る）。読み直せるまで
+        // 書かない。
+        if self.load_failed {
+            return Err(anyhow!(
+                "前回の保存の記録を読めないため、保存を始められません"
+            ));
+        }
         // 記録先が無いと、強制終了で残った `.part` を次の起動で消せない。メモリだけの
         // 記録で保存を始めない（`record` がエラーを返し、`begin` が保存を拒否する）。
         let Some(path) = self.file.as_deref() else {
@@ -502,6 +524,9 @@ pub struct Downloads {
     journal: Arc<Journal>,
     /// 実行中の後始末。終了時に、取消で始まっている削除も待つ。
     cleanups: Cleanups,
+    /// テスト用の記録ディレクトリ。テスト終了時に自動で削除する。
+    #[cfg(test)]
+    test_dir: Option<PathBuf>,
 }
 
 impl Downloads {
@@ -517,6 +542,8 @@ impl Downloads {
             generation: AtomicU64::new(0),
             journal: Arc::new(Journal::load(journal_file)),
             cleanups: Cleanups::new(),
+            #[cfg(test)]
+            test_dir: None,
         }
     }
 
@@ -663,6 +690,10 @@ impl Downloads {
         let part_for_task = part.clone();
         let final_for_task = final_path.clone();
         let deduplicate = decision.deduplicate;
+        // `.part` を作ってから `pending` に登録するまでの間も終了の待機対象にする。
+        // この間に終了しても、ガードが `shutdown` を待たせ、登録後の確認で生成が
+        // 変わっていることに気づいてファイルを消す。
+        let guard = self.cleanups.start();
         let file = tokio::task::spawn_blocking(move || {
             prepare_part(&journal, &part_for_task, &final_for_task, deduplicate)
         })
@@ -696,6 +727,8 @@ impl Downloads {
         }
         pending.insert(id.clone(), entry);
         drop(pending);
+        // ここからは `pending` の分が後始末の対象なので、準備用のガードは手放す。
+        drop(guard);
         // 枠は確定・中止の後始末まで、この保存が持つ。
         slot.armed = false;
         Ok(Some((id, final_path)))
@@ -964,6 +997,10 @@ impl Drop for Downloads {
         // 呼ばれない。終了時の後始末は `shutdown` を `RunEvent::Exit` から呼ぶ。
         // テストなど、プロセスが終わらない場面での取りこぼしを防ぐ。
         self.cancel_all();
+        #[cfg(test)]
+        if let Some(dir) = self.test_dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -2020,7 +2057,10 @@ mod tests {
 
     /// テスト用。利用者の `download_parts.json` を読み書きしないよう、記録も一時ディレクトリに置く。
     fn test_downloads() -> Downloads {
-        Downloads::with_journal(Some(temp_dir().join("download_parts.json")))
+        let dir = temp_dir();
+        let mut downloads = Downloads::with_journal(Some(dir.join("download_parts.json")));
+        downloads.test_dir = Some(dir);
+        downloads
     }
 
     #[test]
@@ -2247,6 +2287,26 @@ mod tests {
 
         let journal = Journal::load(Some(file));
         assert_eq!(journal.snapshot(), vec![part]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_journal_is_not_overwritten() {
+        let dir = temp_dir();
+        let file = dir.join("download_parts.json");
+        let old = b"not json";
+        std::fs::write(&file, old).unwrap();
+
+        let journal = Journal::load(Some(file.clone()));
+        let part = dir.join(".zoo-0123456789abcdef.part");
+        assert!(journal.record(&part).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), old, "旧記録を上書きしない");
+
+        // 読み直せるようになれば、新しい記録を書ける。
+        std::fs::write(&file, b"[]").unwrap();
+        let journal = Journal::load(Some(file));
+        assert!(journal.record(&part).is_ok());
+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

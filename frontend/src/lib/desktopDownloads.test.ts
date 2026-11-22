@@ -60,6 +60,15 @@ function blobResponse(bytes: number[], contentType = "text/plain") {
   });
 }
 
+function brokenBodyResponse() {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new Error("一時的な読み取り失敗"));
+    },
+  });
+  return new Response(body, { headers: { "content-length": "1" } });
+}
+
 afterEach(() => {
   resetDesktopDownloadsForTest();
   vi.unstubAllGlobals();
@@ -180,6 +189,29 @@ describe("downloadUrlToDesktop", () => {
     expect(resolve.mock.calls).toEqual([[{ refresh: false }], [{ refresh: true }]]);
     expect(desktop.write).toHaveBeenCalledTimes(1);
     expect(desktop.finish).toHaveBeenCalledWith("d1");
+  });
+
+  it("discards the partial file and retries once when reading the body fails", async () => {
+    desktop.begin
+      .mockResolvedValueOnce(started("d-body-1"))
+      .mockResolvedValueOnce(started("d-body-2"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue(undefined);
+    desktop.cancel.mockResolvedValue(undefined);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(brokenBodyResponse())
+      .mockResolvedValueOnce(blobResponse([42]));
+    vi.stubGlobal("fetch", fetchMock);
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+
+    await downloadUrlToDesktop("a2b", "a.txt", resolve, { retryDelayMs: 0 });
+
+    expect(desktop.cancel).toHaveBeenCalledWith("d-body-1");
+    expect(desktop.begin).toHaveBeenCalledTimes(2);
+    expect(desktop.write).toHaveBeenCalledTimes(1);
+    expect(desktop.finish).toHaveBeenCalledWith("d-body-2");
+    expect(desktopDownloadState("a2b")).toBeUndefined();
   });
 
   it("does not save an empty or failed body as a file", async () => {

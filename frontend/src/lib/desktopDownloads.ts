@@ -152,11 +152,15 @@ type ProgressReporter = (fraction: number | null) => void;
 
 type Runner = (downloadId: string, signal: AbortSignal, report: ProgressReporter) => Promise<void>;
 
+/** 本文の転送が失敗したとき、途中ファイルを捨てて新しい ID でやり直す回数。 */
+const BODY_RETRIES = 1;
+
 async function run(
   id: string,
   fileName: string,
   size: number | null | undefined,
   runner: Runner,
+  retryDelayMs?: number,
 ): Promise<void> {
   // 同じ添付を二重に保存しない（円を押したときは中止になる）。
   if (states.has(id)) return;
@@ -164,19 +168,48 @@ async function run(
   controllers.set(id, controller);
   setState(id, { status: "preparing" });
   let downloadId: string | null = null;
-  try {
+  const begin = async (): Promise<string> => {
     const started =
       size == null
         ? await desktopDownloadBegin(fileName)
         : await desktopDownloadBegin(fileName, size);
     if (started.status === "cancelled") throw new DesktopDownloadCancelledError();
-    downloadId = started.id;
+    return started.id;
+  };
+  const report: ProgressReporter = (fraction) => reportProgress(id, fraction);
+  try {
+    downloadId = await begin();
     if (controller.signal.aborted) {
       await desktopDownloadCancel(downloadId).catch(() => {});
       throw new DesktopDownloadCancelledError();
     }
     setState(id, { status: "downloading", fraction: 0 });
-    await runner(downloadId, controller.signal, (fraction) => reportProgress(id, fraction));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await runner(downloadId, controller.signal, report);
+        break;
+      } catch (error) {
+        // ブラウザーの保存と同じく、本文の一時的な失敗も URL を取り直して一度だけ再試行する。
+        // 途中まで書いたファイルには追記しないので、ここで捨ててから新しい ID で始める。
+        if (
+          retryDelayMs === undefined ||
+          attempt >= BODY_RETRIES ||
+          controller.signal.aborted ||
+          error instanceof DesktopDownloadCancelledError
+        ) {
+          throw error;
+        }
+        await desktopDownloadCancel(downloadId).catch(() => {});
+        downloadId = null;
+        await delay(retryDelayMs, controller.signal);
+        downloadId = await begin();
+        if (controller.signal.aborted) {
+          await desktopDownloadCancel(downloadId).catch(() => {});
+          throw new DesktopDownloadCancelledError();
+        }
+        setState(id, { status: "downloading", fraction: 0 });
+      }
+    }
     if (controller.signal.aborted) throw new DesktopDownloadCancelledError();
     setState(id, { status: "finishing" });
     await desktopDownloadFinish(downloadId);
@@ -249,9 +282,9 @@ async function writeResponse(
 }
 
 /**
- * 署名付き URL から本文を読みながら保存する。最初の応答までに失敗したら、URL を取り直して
- * 1 回だけやり直す（開いた直後の `/url` の失敗や、署名付き URL の期限切れのため）。
- * 本文を書き始めたあとの失敗はやり直さない（途中までのファイルを最初から書き直せないため）。
+ * 署名付き URL から本文を読みながら保存する。開くのが失敗したら URL を取り直し、本文の
+ * 読み取りが失敗したら途中ファイルを捨てて新しい保存として、それぞれ 1 回だけやり直す
+ * （`lib/api/attachments.ts` のブラウザーの保存と同じ再試行）。
  */
 export async function downloadUrlToDesktop(
   id: string,
@@ -260,33 +293,39 @@ export async function downloadUrlToDesktop(
   options: { retryDelayMs?: number; size?: number | null } = {},
 ): Promise<void> {
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
-  await run(id, fileName, options.size, async (downloadId, signal, report) => {
-    const open = async (refresh: boolean): Promise<Response> => {
-      // URL の取得はプレビューなどと共有しているので取り消さず、この保存の待機だけを
-      // 中止する（中止後の一時ファイルと進捗を残さないため）。
-      const url = await abortable(resolveUrl({ refresh }), signal);
+  await run(
+    id,
+    fileName,
+    options.size,
+    async (downloadId, signal, report) => {
+      const open = async (refresh: boolean): Promise<Response> => {
+        // URL の取得はプレビューなどと共有しているので取り消さず、この保存の待機だけを
+        // 中止する（中止後の一時ファイルと進捗を残さないため）。
+        const url = await abortable(resolveUrl({ refresh }), signal);
+        let response: Response;
+        try {
+          response = await fetch(url, { credentials: "omit", signal });
+        } catch (error) {
+          throw new AttachmentDownloadError("network", { cause: error });
+        }
+        if (!response.ok) {
+          throw new AttachmentDownloadError("http", { status: response.status });
+        }
+        return response;
+      };
       let response: Response;
       try {
-        response = await fetch(url, { credentials: "omit", signal });
+        response = await open(false);
       } catch (error) {
-        throw new AttachmentDownloadError("network", { cause: error });
+        if (signal.aborted) throw error;
+        await delay(retryDelayMs, signal);
+        if (signal.aborted) throw error;
+        response = await open(true);
       }
-      if (!response.ok) {
-        throw new AttachmentDownloadError("http", { status: response.status });
-      }
-      return response;
-    };
-    let response: Response;
-    try {
-      response = await open(false);
-    } catch (error) {
-      if (signal.aborted) throw error;
-      await delay(retryDelayMs, signal);
-      if (signal.aborted) throw error;
-      response = await open(true);
-    }
-    await writeResponse(downloadId, response, signal, report);
-  });
+      await writeResponse(downloadId, response, signal, report);
+    },
+    retryDelayMs,
+  );
 }
 
 /**
