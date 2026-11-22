@@ -65,11 +65,14 @@ test('diff includes the complete PR and preserves paths without shell interpolat
 
 test('only selected runs may succeed when no related tests exist', () => {
   const selection = selectTests('pull_request', event, changes);
-  for (const project of ['unit', 'browser', 'vrt']) {
+  for (const project of ['unit', 'vrt']) {
     assert.deepEqual(testArguments(project, selection), ['exec', 'vp', 'test', 'related', 'src/lib/time.ts', '--project', project, '--run', '--passWithNoTests']);
     assert.deepEqual(testArguments(project, { mode: 'full' }), ['exec', 'vp', 'test', '--project', project, '--run']);
   }
-  assert.deepEqual(testArguments('storybook', selection), ['exec', 'vp', 'test', 'related', 'src/lib/time.ts', '--project', 'storybook', '--run', '--passWithNoTests', '--maxWorkers=1', '--fileParallelism=false']);
+  for (const project of ['browser', 'storybook']) {
+    assert.deepEqual(testArguments(project, selection), ['exec', 'vp', 'test', 'related', 'src/lib/time.ts', '--project', project, '--run', '--passWithNoTests', '--maxWorkers=1', '--fileParallelism=false']);
+    assert.deepEqual(testArguments(project, { mode: 'full' }), ['exec', 'vp', 'test', '--project', project, '--run', '--maxWorkers=1', '--fileParallelism=false']);
+  }
   assert.throws(() => testArguments('unknown', selection));
 });
 

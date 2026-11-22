@@ -40,7 +40,8 @@ export function testArguments(project, selection) {
   if (selection.mode === 'related') args.push('--passWithNoTests');
   if (selection.patterns) args.push('--testNamePattern', selection.patterns.join('|') || '(?!)');
   else if (selection.titles?.length) args.push('--testNamePattern', selection.titles.map(title => `(?:^| )${escapePattern(title)}$`).join('|'));
-  if (project === 'storybook') args.push('--maxWorkers=1', '--fileParallelism=false');
+  // Headless Chromium runs multiple test files in one browser; serializing avoids rAF starvation on background tabs.
+  if (project === 'browser' || project === 'storybook') args.push('--maxWorkers=1', '--fileParallelism=false');
   return args;
 }
 

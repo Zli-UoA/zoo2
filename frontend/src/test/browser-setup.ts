@@ -49,10 +49,10 @@ function ensureObserver(name: "ResizeObserver" | "IntersectionObserver") {
   Object.defineProperty(window, name, { value: Observer, configurable: true });
 }
 
-// ブラウザーテストはページを並列に動かすため、背景のページではアニメーションが完了しないことがある。
-// Dialog などは閉じるアニメーションの完了を待って DOM から外すので、閉じたことを確かめるテストが
-// 不安定になる。VRT（vrt-setup.ts）と同じく、アニメーションとトランジションを止める。
+// ブラウザーテストでアニメーション完了待ちによるタイムアウトを防ぐため、VRT（vrt-setup.ts）と同じ
+// CSS 停止に加え、Base UI の終了アニメーション・animationFrame 待機（BASE_UI_ANIMATIONS_DISABLED）も抑止する。
 function disableAnimations() {
+  (globalThis as { BASE_UI_ANIMATIONS_DISABLED?: boolean }).BASE_UI_ANIMATIONS_DISABLED = true;
   const style = document.createElement("style");
   style.textContent = "*,*::before,*::after{animation:none!important;transition:none!important}";
   document.head.append(style);
