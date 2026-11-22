@@ -70,7 +70,8 @@ pub enum SearchKind {
     Notes,
 }
 
-/// `GET /api/search` の絞り込み。日付は UTC の `YYYY-MM-DD`（`after` は含み、`before` は含まない）。
+/// `GET /api/search` の絞り込み。期間は `YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻
+/// （RFC 3339。端末の日付の 0 時）。`after` は含み、`before` は含まない。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilters {
     pub user_id: Option<String>,

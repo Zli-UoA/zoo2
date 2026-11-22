@@ -2336,11 +2336,18 @@ mod tests {
         let mut app = app();
         app.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c1".into()),
-            batch(vec![(
-                "r2",
-                json!({ "id": "r2", "user_id": "u1", "channel_id": "c1", "content": "親なしの返信",
-                           "created_at": "2026-11-01 03:05:00", "parent_id": "gone" }),
-            )]),
+            batch(vec![
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c1", "content": "親なしの返信",
+                               "created_at": "2026-11-01 03:05:00", "parent_id": "gone" }),
+                ),
+                (
+                    "r3",
+                    json!({ "id": "r3", "user_id": "u1", "channel_id": "c1", "content": "次の返信",
+                               "created_at": "2026-11-01 03:06:00", "parent_id": "gone" }),
+                ),
+            ]),
         ));
         app.open_channel("c1".into());
         app.focus = Focus::Thread;
@@ -2356,6 +2363,12 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("親なしの返信"), "{screen}");
+        // 描かれていない親は選べない。先頭は最初の返信。
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r2"));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r2"));
     }
 
     #[test]
@@ -3586,5 +3599,15 @@ mod tests {
             (thread.root_id.as_str(), thread.selected.as_deref()),
             ("root", Some("m2"))
         );
+        // 長いメッセージを読み進めた後でも、トップレベルの結果は先頭から表示する。
+        app.inner_scroll = 7;
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected.as_deref(), Some("m1"));
+        assert_eq!(app.inner_scroll, 0);
     }
 }

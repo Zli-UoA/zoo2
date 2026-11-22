@@ -1613,9 +1613,12 @@ impl App {
         };
         // `from:@名前`・`in:#チャンネル`・`after:`・`before:` を絞り込みにする（名前は同期済みの一覧で引く）。
         let parsed = global_search::parse_modifiers(&query);
+        // 日付は端末の暦の日として、その 0 時で区切る。
+        let tz = jiff::tz::TimeZone::system();
+        let midnight = |day: Option<String>| day.map(|d| global_search::local_midnight(&d, &tz));
         let mut filters = crate::api::SearchFilters {
-            after: parsed.after,
-            before: parsed.before,
+            after: midnight(parsed.after),
+            before: midnight(parsed.before),
             ..Default::default()
         };
         if let Some(name) = &parsed.from {
@@ -1692,6 +1695,8 @@ impl App {
             }
             None => {
                 self.selected = Some(target.message_id);
+                // 前に選んでいたメッセージの中のスクロールを持ち越さない（`move_selection` と同じ）。
+                self.inner_scroll = 0;
                 self.focus = Focus::Messages;
             }
         }
@@ -2000,7 +2005,13 @@ impl App {
                 else {
                     return;
                 };
-                let mut ids = vec![thread.root_id.clone()];
+                // 親が削除されて描かれないときは、候補を描いている返信だけにする（見えない親を選ばない）。
+                let mut ids: Vec<String> = self
+                    .store
+                    .message(&channel_id, &thread.root_id)
+                    .map(|root| root.id.clone())
+                    .into_iter()
+                    .collect();
                 ids.extend(
                     self.store
                         .replies(&channel_id, &thread.root_id)
