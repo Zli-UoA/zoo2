@@ -689,14 +689,114 @@ it("reorders pinned channels with Alt+ArrowDown and drag and drop", async () => 
     dataTransfer,
     clientY: secondRect.top + 1,
   });
-  expect(secondRow.querySelector('[data-drop-indicator="before"]')).not.toBeNull();
+  // 線は、行とスレッドの行を囲むブロック（行の親）に出る。
+  const secondBlock = secondRow.parentElement!;
+  expect(secondBlock.querySelector('[data-drop-indicator="before"]')).not.toBeNull();
   fireEvent.dragOver(secondRow, {
     dataTransfer,
     clientY: secondRect.bottom - 1,
   });
-  expect(secondRow.querySelector('[data-drop-indicator="after"]')).not.toBeNull();
+  expect(secondBlock.querySelector('[data-drop-indicator="after"]')).not.toBeNull();
   fireEvent.drop(secondRow, { dataTransfer, clientY: secondRect.bottom - 1 });
   expect(fixture.reorderPins).toHaveBeenCalledWith(["design", "general"], "general");
+});
+
+it("treats a pinned channel and its thread rows as one drop target, with the line below the threads", async () => {
+  fixture.memberships = [
+    { user_id: "me", channel_id: "general" },
+    { user_id: "me", channel_id: "design" },
+  ];
+  fixture.pins = [pinRow("design", 0), pinRow("general", 1)];
+  fixture.threads = [
+    {
+      id: "t1",
+      channel_id: "general",
+      content: "First conversation",
+      thread_archive_at: null,
+      reply_count: 1,
+    },
+    {
+      id: "t2",
+      channel_id: "general",
+      content: "Second conversation",
+      thread_archive_at: null,
+      reply_count: 2,
+    },
+  ];
+  render(
+    <LocaleProvider>
+      <ChannelSidebar channels={[generalChannel, designChannel]} loading={false} error={false} />
+    </LocaleProvider>,
+  );
+  const section = await screen.findByRole("region", { name: "ピン留め" });
+  const designRow = within(section)
+    .getByRole("link", { name: "design" })
+    .closest('[draggable="true"]')!;
+  const generalRow = within(section)
+    .getByRole("link", { name: "general" })
+    .closest('[draggable="true"]')!;
+  const block = generalRow.parentElement!;
+  const lastThread = await within(block).findByRole("link", { name: /Second conversation/ });
+  const dataTransfer = new DataTransfer();
+  fireEvent.dragStart(designRow, { dataTransfer });
+
+  // スレッドの行の上にも置ける。下半分なら、「後ろ」の線が、スレッドの行の下（ブロックの下端）に出る。
+  const threadRect = lastThread.getBoundingClientRect();
+  const accepted = !fireEvent.dragOver(lastThread, {
+    dataTransfer,
+    clientY: threadRect.bottom - 1,
+  });
+  expect(accepted).toBe(true);
+  const after = block.querySelector<HTMLElement>('[data-drop-indicator="after"]');
+  expect(after).not.toBeNull();
+  const blockRect = block.getBoundingClientRect();
+  const lineRect = after!.getBoundingClientRect();
+  expect(Math.abs(lineRect.bottom - blockRect.bottom)).toBeLessThan(3);
+  expect(lineRect.top).toBeGreaterThanOrEqual(threadRect.bottom - 3);
+  // チャンネル行の中の線ではない。
+  expect(generalRow.querySelector("[data-drop-indicator]")).toBeNull();
+
+  // 上半分なら、「前」の線が、ブロックの上端に出る。
+  fireEvent.dragOver(generalRow, { dataTransfer, clientY: blockRect.top + 1 });
+  const before = block.querySelector<HTMLElement>('[data-drop-indicator="before"]');
+  expect(before).not.toBeNull();
+  expect(Math.abs(before!.getBoundingClientRect().top - blockRect.top)).toBeLessThan(3);
+
+  // スレッドの行の下半分へ落とすと、そのチャンネルの後ろへ移る。
+  fireEvent.drop(lastThread, { dataTransfer, clientY: threadRect.bottom - 1 });
+  expect(fixture.reorderPins).toHaveBeenCalledWith(["general", "design"], "design");
+});
+
+it("ignores drags that do not come from a pinned row, such as a thread link", async () => {
+  fixture.memberships = [
+    { user_id: "me", channel_id: "general" },
+    { user_id: "me", channel_id: "design" },
+  ];
+  fixture.pins = [pinRow("design", 0), pinRow("general", 1)];
+  fixture.threads = [
+    {
+      id: "t1",
+      channel_id: "general",
+      content: "First conversation",
+      thread_archive_at: null,
+      reply_count: 1,
+    },
+  ];
+  render(
+    <LocaleProvider>
+      <ChannelSidebar channels={[generalChannel, designChannel]} loading={false} error={false} />
+    </LocaleProvider>,
+  );
+  const section = await screen.findByRole("region", { name: "ピン留め" });
+  const thread = await within(section).findByRole("link", { name: /First conversation/ });
+  // ピン留めの行のドラッグを始めていない（スレッドのリンクなどをドラッグしている）。
+  const dataTransfer = new DataTransfer();
+  const rect = thread.getBoundingClientRect();
+  const notCanceled = fireEvent.dragOver(thread, { dataTransfer, clientY: rect.bottom - 1 });
+  expect(notCanceled).toBe(true);
+  expect(section.querySelector("[data-drop-indicator]")).toBeNull();
+  fireEvent.drop(thread, { dataTransfer, clientY: rect.bottom - 1 });
+  expect(fixture.reorderPins).not.toHaveBeenCalled();
 });
 
 it("keeps an always mounted live region that announces pin operations", async () => {

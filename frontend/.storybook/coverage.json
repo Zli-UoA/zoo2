@@ -1074,7 +1074,13 @@
       "file": "src/components/chat/PinnedSection.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
+    },
+    {
+      "file": "src/components/chat/DropIndicator.tsx",
+      "story": "src/components/chat/ChannelListItem.stories.tsx",
+      "composed": true,
+      "reason": "ドラッグ中の挿入位置の線。ChannelListItem・DmListItemのStoryで、前・後ろの線が出ることを確認する。ピン留めの行とスレッドの行を囲むブロックでの置き先と、線がスレッドの行の下に出ることは、ChannelSidebar.browser.test.tsxで検証する。"
     },
     {
       "file": "src/components/chat/ChannelThreadItems.tsx",

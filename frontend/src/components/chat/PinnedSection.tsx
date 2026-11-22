@@ -13,6 +13,7 @@ import { ChannelPinMenu } from "./ChannelPinMenu";
 import { ChannelThreadItems } from "./ChannelThreadItems";
 import { buildDmLabels, parseOneToOneDmIds } from "./dm";
 import { DmListItem } from "./DmListItem";
+import { DropIndicator } from "./DropIndicator";
 
 /**
  * サイドバー先頭の「ピン留め」。通常チャンネルと DM を、ユーザーごとの順で出す。
@@ -218,7 +219,8 @@ export function PinnedSection({
         setDropTarget(null);
       },
       onDragOver: (event: DragEvent<HTMLDivElement>) => {
-        if (busy) {
+        // この一覧の行以外のドラッグ（スレッドのリンクなど）は、受け付けない。
+        if (busy || draggingIdRef.current === null) {
           return;
         }
         event.preventDefault();
@@ -357,7 +359,18 @@ export function PinnedSection({
               );
             }
             return (
-              <div key={channel.id}>
+              // 行とスレッドの行を囲むブロック全体を、挿入先にする。スレッドの行の上にも置けて、
+              // 「後ろ」の線は、スレッドの行の下（ブロックの下端）に出る。ドラッグの開始は、行だけが受け持つ。
+              <div
+                key={channel.id}
+                className="relative"
+                onDragOver={dragProps.onDragOver}
+                onDragLeave={dragProps.onDragLeave}
+                onDrop={dragProps.onDrop}
+              >
+                {dropTarget?.channelId === channel.id ? (
+                  <DropIndicator edge={dropTarget.edge} />
+                ) : null}
                 <ChannelListItem
                   channel={channel}
                   active={active}
@@ -367,12 +380,8 @@ export function PinnedSection({
                   onKeyDown={(event) => handleKeyDown(channel.id, event)}
                   draggable={dragProps.draggable}
                   dragging={draggingId === channel.id}
-                  dropIndicator={dropTarget?.channelId === channel.id ? dropTarget.edge : null}
                   onDragStart={dragProps.onDragStart}
                   onDragEnd={dragProps.onDragEnd}
-                  onDragOver={dragProps.onDragOver}
-                  onDragLeave={dragProps.onDragLeave}
-                  onDrop={dragProps.onDrop}
                 />
                 <ChannelThreadItems
                   channel={channel}
