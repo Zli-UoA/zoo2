@@ -266,11 +266,11 @@ fn parent_id(_path: &Path) -> Option<ParentId> {
 
 /// 記録したときと同じフォルダーに、まだ届くか。ボリュームやフォルダーの ID が変わって
 /// いたら（外付けドライブが外れてマウントポイントだけが残るなど）、記録したファイルには
-/// 触れられないとみなす。
-fn same_parent(path: &Path, recorded: Option<ParentId>) -> bool {
-    match (parent_id(path), recorded) {
-        (Some(current), Some(recorded)) => current == recorded,
-        _ => false,
+/// 触れられないとみなす。旧形式で親 ID が無い記録は、以前どおり親の有無だけを見る。
+fn reachable_parent(path: &Path, recorded: Option<ParentId>) -> bool {
+    match recorded {
+        Some(recorded) => parent_id(path) == Some(recorded),
+        None => parent_id(path).is_some(),
     }
 }
 
@@ -384,7 +384,7 @@ impl Journal {
                 // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが
                 // 残る）ために `NotFound` になる。記録したときと同じフォルダーに届く
                 // ときだけ、本当に消えたとみなして記録を外す。
-                if same_parent(part, parent) {
+                if reachable_parent(part, parent) {
                     self.forget(part);
                 }
             }
@@ -593,9 +593,10 @@ impl Downloads {
     /// 選ばれたフォルダーが無いときは保存しない（作り直さない）。
     pub fn set_directory(&self, directory: &Path) -> Result<DownloadSettings> {
         let directory = check_directory(directory)?;
+        let text = directory_text(&directory)?;
         let mut current = self.settings.lock().unwrap_or_else(PoisonError::into_inner);
         let mut next = current.clone();
-        next.directory = Some(directory.display().to_string());
+        next.directory = Some(text);
         store_settings(&mut current, next)
     }
 
@@ -763,7 +764,7 @@ impl Downloads {
 
     /// 書き終えたら、本来の名前に移す。保存した絶対パスを返す。
     pub async fn finish(&self, id: &str) -> Result<PathBuf> {
-        let Some(entry) = self.take_pending(id) else {
+        let Some((entry, guard)) = self.take_pending_with_guard(id) else {
             return Err(anyhow!("ダウンロードが見つかりません"));
         };
         let slot = SlotGuard {
@@ -774,6 +775,8 @@ impl Downloads {
         let part = entry.part.clone();
         // `sync_all`、名前の移動、記録の後始末はディスクを待つので、IPC のワーカーを塞がない。
         let result = tokio::task::spawn_blocking(move || {
+            // `sync_all`、移動、記録の後始末が終わるまでガードを保持する（`shutdown` が待つ）。
+            let _guard = guard;
             let result = finish_entry(entry);
             match result {
                 // 移したので、もう `.part` は無い。消せたことを確かめてから記録を外す
@@ -912,11 +915,12 @@ impl Downloads {
         self.cleanups.wait(timeout);
     }
 
-    fn take_pending(&self, id: &str) -> Option<Pending> {
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(id)
+    /// 確定のために取り出す。取り出しと後始末の登録を同じロックで行い、`shutdown` が
+    /// この間に割り込んで待ちを終らせないようにする。
+    fn take_pending_with_guard(&self, id: &str) -> Option<(Pending, CleanupGuard)> {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = pending.remove(id)?;
+        Some((entry, self.cleanups.start()))
     }
 
     fn reserve_slot(&self) -> Result<()> {
@@ -1119,6 +1123,15 @@ fn store_settings(
     Ok(next)
 }
 
+/// 設定ファイルに書ける保存先の文字列。UTF-8 で表せない名前は、別のパスへ変えてしまう
+/// （置き換え文字が同名の別フォルダーに当たることがある）ため受け付けない。
+fn directory_text(directory: &Path) -> Result<String> {
+    directory
+        .to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!("このフォルダーの名前は保存先として扱えません"))
+}
+
 /// 保存先として使えるかを確かめる。無いときは作り直さず、エラーにする。
 fn check_directory(directory: &Path) -> Result<PathBuf> {
     if !directory.is_absolute() {
@@ -1198,6 +1211,12 @@ fn remove_stale_entry_with(
         // 記録の形が違うものは、ファイルには触れずに記録から外す。
         return true;
     }
+    // 外付けドライブが外れてマウントポイントだけが残ると、同じ名前の別のファイルが
+    // そこに置かれていることがある。削除する前に、記録した親と現在の親が一致することを
+    // 確かめる。届かないなら、ファイルも記録も残す（ドライブが戻ったときに再試行する）。
+    if !reachable_parent(path, parent) {
+        return false;
+    }
     if is_probe_name(name) {
         match probe(path) {
             ProbeState::Ours => {}
@@ -1213,10 +1232,9 @@ fn remove_stale_entry_with(
     // 残る（docs にも書いた）。
     match std::fs::remove_file(path) {
         Ok(()) => true,
-        // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが残る）
-        // ために `NotFound` になる。記録したときと同じフォルダーに届くときだけ、
+        // 上の照合で記録した親に届いていることが分かっているので、`NotFound` なら
         // 本当に消えたとみなして記録から外す。
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => same_parent(path, parent),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(_) => false,
     }
 }
@@ -1262,7 +1280,9 @@ fn probe_state(path: &Path, parent: Option<ParentId>) -> ProbeState {
         // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが残る）
         // ために `NotFound` になる。記録したフォルダーに届かないときは、名前が無いと
         // 断定せず、ドライブが戻ったときのために記録を残す。
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound && !same_parent(path, parent) => {
+        Err(err)
+            if err.kind() == std::io::ErrorKind::NotFound && !reachable_parent(path, parent) =>
+        {
             ProbeState::Unreadable
         }
         Err(err) => classify_open_result(Err(err)),
@@ -1797,20 +1817,40 @@ fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
 }
 
 /// `MoveFileExW` に渡す、長いパス対応（`\\?\`）の UTF-16 文字列（NUL 終端）。
+/// `to_string_lossy()` は孤立サロゲートを U+FFFD に変えて別の名前を指してしまうので、
+/// OS の文字列をそのまま使う。
 #[cfg(target_os = "windows")]
 fn wide_extended_path(path: &Path) -> Vec<u16> {
-    let text = path.as_os_str().to_string_lossy();
-    let text = if text.starts_with(r"\\?\") {
-        text.into_owned()
-    } else if let Some(rest) = text.strip_prefix(r"\\") {
+    use std::os::windows::ffi::OsStrExt;
+
+    const PREFIX: [u16; 4] = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const UNC_PREFIX: [u16; 8] = [
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+    const DEVICE_PREFIX: [u16; 4] = [b'\\' as u16, b'?' as u16, b'?' as u16, b'\\' as u16];
+
+    let raw: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let wide: Vec<u16> = if raw.starts_with(&PREFIX) {
+        raw
+    } else if raw.starts_with(&[b'\\' as u16, b'\\' as u16]) {
         // UNC（`\\server\share`）は `\\?\UNC\server\share` にする。
-        format!(r"\\?\UNC\{rest}")
-    } else if let Some(rest) = text.strip_prefix(r"\??\") {
-        format!(r"\\?\{rest}")
+        UNC_PREFIX
+            .into_iter()
+            .chain(raw[2..].iter().copied())
+            .collect()
+    } else if raw.starts_with(&DEVICE_PREFIX) {
+        PREFIX.into_iter().chain(raw[4..].iter().copied()).collect()
     } else {
-        format!(r"\\?\{text}")
+        PREFIX.into_iter().chain(raw).collect()
     };
-    text.encode_utf16().chain(std::iter::once(0)).collect()
+    wide.into_iter().chain(std::iter::once(0)).collect()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -2186,6 +2226,19 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_directory_is_not_saved_as_a_different_path() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let path = PathBuf::from(OsString::from_vec(b"caf\xe9".to_vec()));
+        assert!(directory_text(&path).is_err());
+        assert_eq!(
+            directory_text(Path::new("/tmp/downloads")).unwrap(),
+            "/tmp/downloads"
+        );
+    }
+
     #[test]
     fn journal_reads_the_previous_string_format() {
         let dir = temp_dir();
@@ -2207,9 +2260,10 @@ mod tests {
         let dir = temp_dir();
         let file = dir.join("download_parts.json");
         let folder = dir.join(OsString::from_vec(b"caf\xe9".to_vec()));
-        std::fs::create_dir(&folder).unwrap();
         let part = folder.join(".zoo-0123456789abcdef.part");
         let journal = Journal::load(Some(file.clone()));
+        // APFS は不正な UTF-8 の名前を作れないので、ディレクトリは作らずにパスだけを記録する。
+        // このテストで確かめたいのはパスの往復で、`record` は親 ID を `None` として扱う。
         journal.record(&part).unwrap();
 
         // 再読み込みしても `?` に置き換わらず、元のバイト列で戻る。
@@ -2235,6 +2289,18 @@ mod tests {
             r"\\?\UNC\server\share\a.txt"
         );
         assert_eq!(text(Path::new(r"\\?\C:\a.txt")), r"\\?\C:\a.txt");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_move_keeps_unpaired_surrogates() {
+        use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+
+        let name = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0xD800]);
+        let wide = wide_extended_path(&PathBuf::from(name));
+        assert!(wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16]));
+        assert!(wide.contains(&0xD800));
+        assert_eq!(wide.last(), Some(&0));
     }
 
     #[tokio::test]
@@ -2427,6 +2493,60 @@ mod tests {
         shutdown.join().unwrap();
         cancel.join().unwrap();
 
+        assert!(!part.exists());
+        assert!(downloads.journal.snapshot().is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shutdown_waits_for_a_finish_that_took_the_entry() {
+        let dir = temp_dir();
+        let downloads = Arc::new(test_downloads());
+        let id = new_download_id();
+        let target = dir.join("finish-wait.txt");
+        let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
+        downloads.journal.record(&entry.part).unwrap();
+        let part = entry.part.clone();
+        let file = Arc::clone(&entry.file);
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+
+        // 確定がファイルのロック待ちに入る前に、後始末の数へ入ることを確かめる。
+        let guard = file.lock().unwrap();
+        let finish = {
+            let downloads = Arc::clone(&downloads);
+            let id = id.clone();
+            std::thread::spawn(move || {
+                tokio::runtime::Runtime::new()
+                    .unwrap()
+                    .block_on(downloads.finish(&id))
+            })
+        };
+        let started = Instant::now();
+        while downloads.cleanups.running() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "確定の後始末が始まりません"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let shutdown = {
+            let downloads = Arc::clone(&downloads);
+            std::thread::spawn(move || downloads.shutdown(Duration::from_secs(5)))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !shutdown.is_finished(),
+            "確定の後始末を待たずに終了しました"
+        );
+
+        drop(guard);
+        shutdown.join().unwrap();
+        let saved = finish.join().unwrap().unwrap();
+
+        assert_eq!(saved, target);
+        assert!(saved.exists());
         assert!(!part.exists());
         assert!(downloads.journal.snapshot().is_empty());
 
@@ -2960,6 +3080,61 @@ mod tests {
             !remove_stale_entry(&probe, recorded),
             "到達できない保存先に `.probe` が無いと断定しない"
         );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_keeps_a_file_at_the_same_name_on_a_different_volume() {
+        let dir = temp_dir();
+        let part = part_path(&dir.join("x.txt"), "0123456789abcdef");
+        std::fs::write(&part, b"someone else").unwrap();
+        let recorded = parent_id(&part).map(|id| ParentId {
+            volume: id.volume.wrapping_add(1),
+            ..id
+        });
+        assert!(recorded.is_some());
+
+        assert!(
+            !remove_stale_entry(&part, recorded),
+            "別のボリュームの同名ファイルは消さず、記録も残す"
+        );
+        assert_eq!(std::fs::read(&part).unwrap(), b"someone else");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_keeps_a_probe_at_the_same_name_on_a_different_volume() {
+        let dir = temp_dir();
+        let probe = part_path(&dir.join("x.txt"), "0123456789abcdef").with_extension("probe");
+        std::fs::write(&probe, PROBE_MARKER).unwrap();
+        let recorded = parent_id(&probe).map(|id| ParentId {
+            volume: id.volume.wrapping_add(1),
+            ..id
+        });
+        assert!(recorded.is_some());
+
+        assert!(
+            !remove_stale_entry(&probe, recorded),
+            "別のボリュームの検査用ファイルは消さず、記録も残す"
+        );
+        assert_eq!(std::fs::read(&probe).unwrap(), PROBE_MARKER);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_deletes_a_legacy_record_by_name_when_the_parent_exists() {
+        let dir = temp_dir();
+        let part = part_path(&dir.join("x.txt"), "0123456789abcdef");
+        std::fs::write(&part, b"ours").unwrap();
+
+        assert!(
+            remove_stale_entry(&part, None),
+            "親 ID の無い古い記録は、以前どおり親の有無で判断する"
+        );
+        assert!(!part.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

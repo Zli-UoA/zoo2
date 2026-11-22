@@ -224,6 +224,14 @@ describe("isMissingCommandError", () => {
     expect(
       isMissingCommandError(new Error("Command zoo_download_settings not allowed by ACL")),
     ).toBe(true);
+    // デバッグ版は `Command` を付けず、コマンド名だけを出す。
+    expect(
+      isMissingCommandError(
+        new Error(
+          "zoo_download_settings not allowed. Permissions associated with this command: ...",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("does not treat other failures that mention 'not found' as a missing command", () => {

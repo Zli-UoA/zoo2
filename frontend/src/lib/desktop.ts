@@ -219,8 +219,9 @@ export type DesktopDownloadStart =
  * 一時的な失敗は区別する。
  *
  * Tauri は、コマンドが見つからないとき `Command {name} not found`、ACL で拒否されたとき
- * `Command {name} not allowed ...` を返す。`not found` だけを見ると、`settings not found`
- * のような関係のない失敗まで古い版とみなすので、`command` を伴うものだけにする。
+ * `Command {name} not allowed ...` を返す。デバッグ版は `zoo_download_settings not allowed.`
+ * のようにコマンド名だけを出すこともある。`not found` だけを見ると、`settings not found`
+ * のような関係のない失敗まで古い版とみなすので、コマンド名を伴うものだけにする。
  */
 export function isMissingCommandError(error: unknown): boolean {
   const message =
@@ -232,7 +233,8 @@ export function isMissingCommandError(error: unknown): boolean {
   return (
     /コマンドがありません/.test(message) ||
     /\bcommand\b[^\n]*\bnot found\b/i.test(message) ||
-    /\bcommand\b[^\n]*\bnot allowed\b/i.test(message)
+    /\bcommand\b[^\n]*\bnot allowed\b/i.test(message) ||
+    /\bzoo_[a-z0-9_]+\b[^\n]*\bnot allowed\b/i.test(message)
   );
 }
 
