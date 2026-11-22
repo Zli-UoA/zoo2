@@ -999,7 +999,11 @@ impl Drop for Downloads {
         self.cancel_all();
         #[cfg(test)]
         if let Some(dir) = self.test_dir.take() {
-            let _ = std::fs::remove_dir_all(dir);
+            // `cancel_all` は裏スレッドで記録を書き換える。終わる前に消すと、そのスレッドが
+            // ディレクトリを作り直してゴミが残る。終わるまで待ってから消す。
+            if self.cleanups.wait(Duration::from_secs(5)) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
     }
 }
@@ -2555,6 +2559,50 @@ mod tests {
         assert!(downloads.journal.snapshot().is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_drop_removes_the_journal_dir_after_a_cancel_finishes() {
+        let dir = temp_dir();
+        let mut downloads = Downloads::with_journal(Some(dir.join("download_parts.json")));
+        downloads.test_dir = Some(dir.clone());
+        let id = new_download_id();
+        let entry = pending(&dir.join("drop.txt"), &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
+        downloads.journal.record(&entry.part).unwrap();
+        let file = Arc::clone(&entry.file);
+        downloads.pending.lock().unwrap().insert(id, entry);
+
+        // 後始末スレッドをファイルのロック待ちで止め、その間に `Drop` を走らせる。
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = {
+            let file = Arc::clone(&file);
+            std::thread::spawn(move || {
+                let _guard = file.lock().unwrap();
+                locked_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            })
+        };
+        locked_rx.recv().unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let dropper = std::thread::spawn(move || {
+            drop(downloads);
+            done_tx.send(()).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !dropper.is_finished(),
+            "後始末を待たずにディレクトリを消した"
+        );
+        release_tx.send(()).unwrap();
+        dropper.join().unwrap();
+        holder.join().unwrap();
+        done_rx.recv().unwrap();
+
+        assert!(
+            !dir.exists(),
+            "後始末が記録を書いた後にディレクトリが残った"
+        );
     }
 
     #[test]
