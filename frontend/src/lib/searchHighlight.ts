@@ -9,6 +9,26 @@ export function searchTerms(query: string): string[] {
   return terms.slice(0, MAX_SEARCH_TERMS);
 }
 
+/** サーバーの `MAX_TERM_CHARS`。1 語の文字数（コードポイント）の上限。 */
+export const MAX_SEARCH_TERM_CHARS = 100;
+
+export type SearchQueryProblem = "tooManyTerms" | "termTooLong";
+
+/**
+ * サーバーの `parse_terms` が 400 で拒否する語を、送信前に見つける。語の長さを先に見るのもサーバーと同じ。
+ * 拒否される語は再試行しても通らないので、理由を示して送らない。
+ */
+export function searchQueryProblem(query: string): SearchQueryProblem | null {
+  const terms: string[] = [];
+  for (const term of query.split(/\s+/u)) {
+    if (!term) continue;
+    // サーバーの `chars().count()` と同じく、書記素ではなくコードポイントで数える。
+    if (Array.from(term).length > MAX_SEARCH_TERM_CHARS) return "termTooLong";
+    if (!terms.includes(term)) terms.push(term);
+  }
+  return terms.length > MAX_SEARCH_TERMS ? "tooManyTerms" : null;
+}
+
 export interface HighlightSegment {
   text: string;
   match: boolean;

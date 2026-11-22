@@ -362,7 +362,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         head.push(Span::styled(
             format!(
                 "  {}",
-                item.created_at.get(..10).unwrap_or(&item.created_at)
+                global_search::result_day(&item.created_at, &jiff::tz::TimeZone::system())
             ),
             DIM,
         ));
@@ -379,10 +379,14 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         } else {
             Style::new()
         };
-        let body = global_search::highlight_segments(&text, &terms)
-            .into_iter()
-            .map(|(piece, hit)| Span::styled(piece, if hit { base.patch(HIGHLIGHT) } else { base }))
-            .collect();
+        // 一致箇所が後ろにあっても見えるよう、その前を省いてから末尾を切り詰める。
+        let body = global_search::focus_first_hit(
+            global_search::highlight_segments(&text, &terms),
+            inner.saturating_sub(4),
+        )
+        .into_iter()
+        .map(|(piece, hit)| Span::styled(piece, if hit { base.patch(HIGHLIGHT) } else { base }))
+        .collect();
         let mut row = vec![Span::raw("    ")];
         row.extend(truncate_spans(body, inner.saturating_sub(4)));
         lines.push(Line::from(row));
@@ -3541,7 +3545,7 @@ mod tests {
         let page: crate::api::SearchPage = serde_json::from_value(json!({
             "items": [
                 {"id":"m1","channel_id":"c1","channel_name":"general","parent_id":null,
-                 "author":{"display_name":"Bob"},"snippet":"明日の会議の資料","created_at":"2026-11-20T09:00:00.000"},
+                 "author":{"display_name":"Bob"},"snippet":"…ああああああああああああああああああああああああああああああああああああああああ明日の会議の資料","created_at":"2026-11-20T09:00:00.000"},
                 {"id":"m2","channel_id":"c2","channel_name":"random","parent_id":"root",
                  "author":{"display_name":"Carol"},"snippet":"会議は中止","created_at":"2026-11-19T09:00:00.000"}
             ],
@@ -3559,6 +3563,7 @@ mod tests {
             screen.contains("#general") && screen.contains("Bob"),
             "{screen}"
         );
+        // 一致箇所の前に全角 40 文字があっても、検索語は欄の中に見える。
         assert!(screen.contains("明日の会議の資料"), "{screen}");
         assert!(screen.contains("スレッドの返信"), "{screen}");
         // 検索語の「会議」だけを強調する。

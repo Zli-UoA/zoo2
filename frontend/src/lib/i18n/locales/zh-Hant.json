@@ -1871,6 +1871,8 @@
     "loading": "搜尋中…",
     "loadError": "無法搜尋。",
     "retry": "重試",
+    "tooManyTerms": "最多可以搜尋 {{max}} 個詞。請減少詞數。",
+    "termTooLong": "每個詞最多 {{max}} 個字元。請縮短該詞。",
     "encryptedNote": "加密頻道不在搜尋範圍內。",
     "openNav": "搜尋",
     "inThread": "子討論回覆",

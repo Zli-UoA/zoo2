@@ -19,6 +19,7 @@ import {
   beforeFromEndDay,
   endDayFromBefore,
   hasSearchFilters,
+  isSearchDay,
   normalizeSearchQuery,
   parseSearchRouteParams,
   periodAfter,
@@ -32,7 +33,13 @@ import {
   type SearchKind,
   type SearchPeriod,
 } from "./globalSearch";
-import { searchTerms } from "../../../lib/searchHighlight";
+import {
+  MAX_SEARCH_TERM_CHARS,
+  MAX_SEARCH_TERMS,
+  searchQueryProblem,
+  searchTerms,
+  type SearchQueryProblem,
+} from "../../../lib/searchHighlight";
 import { SearchResultRow } from "./SearchResultRow";
 
 /**
@@ -63,7 +70,11 @@ export function SearchScreen() {
     setShownQuery(query);
     setDraft(query);
   }
-  const search = useGlobalSearch(query, kind, filters);
+  // サーバーが 400 で拒否する語は送らない（再試行しても通らない）。理由は画面に出す。
+  const queryProblem = searchQueryProblem(query);
+  const [rejected, setRejected] = useState<SearchQueryProblem | null>(null);
+  const problem = rejected ?? queryProblem;
+  const search = useGlobalSearch(queryProblem ? "" : query, kind, filters);
   const terms = useMemo(() => searchTerms(query), [query]);
   const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
@@ -112,8 +123,33 @@ export function SearchScreen() {
   const filter = (change: SearchFilters) => go({ q: query, type: kind, ...filters, ...change });
   // 「日付を指定」を選んだだけでは URL に出ないので、選択中かどうかを手元で持つ。
   const [customPeriod, setCustomPeriod] = useState(false);
-  const period: SearchPeriod = customPeriod ? "custom" : periodOf(filters, new Date());
+  // 日付は入力中の値を下書きに持ち、Enter か入力欄を離れたときに確定する。ブラウザーは年の入力途中
+  // （`0002` など）も日付として通知するので、そのたびに検索して履歴を増やさないため。終了日はその日を含む形で持つ。
+  const [dayDraft, setDayDraft] = useState<{ after?: string; end?: string }>({});
+  const editingDays = "after" in dayDraft || "end" in dayDraft;
+  const shownAfter = "after" in dayDraft ? dayDraft.after : filters.after;
+  const shownEnd = "end" in dayDraft ? dayDraft.end : endDayFromBefore(filters.before);
+  const commitDay = (field: "after" | "end") => {
+    if (!(field in dayDraft)) return;
+    const value = dayDraft[field] || undefined;
+    setDayDraft((days) => {
+      const rest = { ...days };
+      delete rest[field];
+      return rest;
+    });
+    // 確定した後も、日付を空にしても、入力欄は出したままにする。
+    setCustomPeriod(true);
+    if (value && !isSearchDay(value)) return;
+    if (field === "after") {
+      if (value !== filters.after) filter({ after: value });
+    } else if (value !== endDayFromBefore(filters.before)) {
+      filter({ before: beforeFromEndDay(value) });
+    }
+  };
+  const period: SearchPeriod =
+    customPeriod || editingDays ? "custom" : periodOf(filters, new Date());
   const choosePeriod = (next: SearchPeriod) => {
+    setDayDraft({});
     setCustomPeriod(next === "custom");
     if (next === "custom") return;
     filter({
@@ -124,6 +160,9 @@ export function SearchScreen() {
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const next = normalizeSearchQuery(draft);
+    const nextProblem = searchQueryProblem(next);
+    setRejected(nextProblem);
+    if (nextProblem) return;
     if (next === query) search.refresh();
     else go({ q: next, type: kind, ...filters });
   };
@@ -157,16 +196,28 @@ export function SearchScreen() {
             type="search"
             enterKeyHint="search"
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setRejected(null);
+            }}
             placeholder={t("globalSearch.placeholder")}
             aria-label={t("globalSearch.placeholder")}
             maxLength={600}
+            aria-invalid={problem ? true : undefined}
+            aria-describedby={problem ? "global-search-problem" : undefined}
             className="min-w-0 flex-1"
           />
           <Button type="submit" size="icon" aria-label={t("globalSearch.title")}>
             <SearchIcon aria-hidden="true" />
           </Button>
         </form>
+        {problem ? (
+          <p id="global-search-problem" role="alert" className="text-sm text-destructive">
+            {t(`globalSearch.${problem}`, {
+              max: problem === "tooManyTerms" ? MAX_SEARCH_TERMS : MAX_SEARCH_TERM_CHARS,
+            })}
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <ButtonGroup
             value={[kind]}
@@ -240,9 +291,16 @@ export function SearchScreen() {
             <>
               <Input
                 type="date"
-                value={filters.after ?? ""}
-                max={endDayFromBefore(filters.before)}
-                onChange={(event) => filter({ after: event.target.value || undefined })}
+                value={shownAfter ?? ""}
+                max={shownEnd}
+                onChange={(event) => {
+                  const after = event.target.value;
+                  setDayDraft((days) => ({ ...days, after }));
+                }}
+                onBlur={() => commitDay("after")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitDay("after");
+                }}
                 aria-label={t("globalSearch.filters.after")}
                 className="h-8 w-40 text-sm"
               />
@@ -252,11 +310,16 @@ export function SearchScreen() {
               <Input
                 type="date"
                 // 終了日はその日を含む（API の before は翌日）。
-                value={endDayFromBefore(filters.before) ?? ""}
-                min={filters.after}
-                onChange={(event) =>
-                  filter({ before: beforeFromEndDay(event.target.value || undefined) })
-                }
+                value={shownEnd ?? ""}
+                min={shownAfter}
+                onChange={(event) => {
+                  const end = event.target.value;
+                  setDayDraft((days) => ({ ...days, end }));
+                }}
+                onBlur={() => commitDay("end")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitDay("end");
+                }}
                 aria-label={t("globalSearch.filters.before")}
                 className="h-8 w-40 text-sm"
               />
@@ -268,6 +331,7 @@ export function SearchScreen() {
               size="sm"
               onClick={() => {
                 setCustomPeriod(false);
+                setDayDraft({});
                 filter({ from: undefined, in: undefined, after: undefined, before: undefined });
               }}
             >
@@ -283,7 +347,7 @@ export function SearchScreen() {
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!query ? (
+        {!query || queryProblem ? (
           <div className="flex min-h-72 flex-col items-center justify-center gap-3 p-6 text-center">
             <SearchIcon className="size-8 text-muted-foreground" aria-hidden="true" />
             <p className="max-w-sm text-sm text-muted-foreground">{t("globalSearch.prompt")}</p>

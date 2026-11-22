@@ -1871,6 +1871,8 @@
     "loading": "正在搜索…",
     "loadError": "搜索失败。",
     "retry": "重试",
+    "tooManyTerms": "最多可以搜索 {{max}} 个词。请减少词数。",
+    "termTooLong": "每个词最多 {{max}} 个字符。请缩短该词。",
     "encryptedNote": "加密频道不在搜索范围内。",
     "openNav": "搜索",
     "inThread": "子线程回复",

@@ -1871,6 +1871,8 @@
     "loading": "Searching…",
     "loadError": "Search failed.",
     "retry": "Retry",
+    "tooManyTerms": "You can search for up to {{max}} words. Remove some words and try again.",
+    "termTooLong": "Each word can be up to {{max}} characters. Shorten the word and try again.",
     "encryptedNote": "Encrypted channels are not included in search.",
     "openNav": "Search",
     "inThread": "Thread reply",

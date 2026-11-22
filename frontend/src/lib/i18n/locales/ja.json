@@ -1871,6 +1871,8 @@
     "loading": "検索中…",
     "loadError": "検索できませんでした。",
     "retry": "再試行",
+    "tooManyTerms": "検索できる語は {{max}} 個までです。語を減らしてください。",
+    "termTooLong": "1 つの語は {{max}} 文字までです。語を短くしてください。",
     "encryptedNote": "暗号化されたチャンネルは検索の対象外です。",
     "openNav": "検索",
     "inThread": "スレッドの返信",

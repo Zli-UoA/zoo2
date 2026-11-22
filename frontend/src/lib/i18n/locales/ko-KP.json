@@ -1871,6 +1871,8 @@
     "loading": "검색중…",
     "loadError": "검색하지 못하였습니다.",
     "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할수 있습니다. 단어를 줄여주십시오.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할수 있습니다. 단어를 짧게 줄여주십시오.",
     "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
     "openNav": "검색",
     "inThread": "타래 답글",
