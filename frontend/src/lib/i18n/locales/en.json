@@ -484,7 +484,7 @@
     "askEveryTime": "Ask where to save each time",
     "noFolder": "No folder selected",
     "chooseFolder": "Choose folder",
-    "resetDirectory": "Clear saved folder and ask where to save each time",
+    "resetDirectory": "Clear folder and ask each time",
     "olderAppValue": "The app's default folder",
     "olderAppDescription": "This version of the app saves attachments to the folder chosen by the app. Update the app to change where files are saved.",
     "loadError": "Could not load the save location settings.",
