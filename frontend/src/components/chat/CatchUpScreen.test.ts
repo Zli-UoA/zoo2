@@ -58,10 +58,15 @@ vi.mock("./dm", () => ({ buildDmLabels: () => new Map() }));
 vi.mock("./CatchUpMessagePage", () => ({
   CatchUpMessagePage: ({
     onBoundaryMessage,
+    onRangeReady,
   }: {
     onBoundaryMessage: (id: string | null) => void;
+    onRangeReady?: (ready: boolean) => void;
   }) => {
-    useEffect(() => onBoundaryMessage("latest-in-page"), [onBoundaryMessage]);
+    useEffect(() => {
+      onBoundaryMessage("latest-in-page");
+      onRangeReady?.(true);
+    }, [onBoundaryMessage, onRangeReady]);
     return createElement("div", null, "message page");
   },
 }));

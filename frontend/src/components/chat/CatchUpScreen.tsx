@@ -44,6 +44,7 @@ export function CatchUpScreen() {
   const [writeError, setWriteError] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [rangeReady, setRangeReady] = useState(false);
   const [isWriting, setIsWriting] = useState(false);
   const [boundary, setBoundary] = useState<{ channelId: string; messageId: string | null } | null>(
     null,
@@ -63,6 +64,7 @@ export function CatchUpScreen() {
     setSkippedCount(0);
     setWriteError(false);
     setBoundary(null);
+    setRangeReady(false);
     statesAtStart.current = latestStates.current;
   }, []);
 
@@ -119,6 +121,7 @@ export function CatchUpScreen() {
   const goNext = useCallback(() => {
     setWriteError(false);
     setBoundary(null);
+    setRangeReady(false);
     setIndex((value) => value + 1);
   }, []);
 
@@ -258,6 +261,7 @@ export function CatchUpScreen() {
               encrypted={channelById.get(current.channel_id)?.encrypted}
               firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
+              onRangeReady={setRangeReady}
             />
           </div>
           {writeError ? (
@@ -269,7 +273,7 @@ export function CatchUpScreen() {
             <Button
               className="min-h-11 flex-1"
               onClick={() => void markRead()}
-              disabled={isWriting}
+              disabled={isWriting || !rangeReady}
             >
               {t("catchUp.markRead")}
             </Button>

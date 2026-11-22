@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   loadOlder: vi.fn(),
   hasOlder: false,
   providerProps: [] as Array<{ encrypted?: boolean }>,
+  rangeReady: [] as boolean[],
 }));
 
 const message = (id: string, created_at: string) => ({
@@ -73,6 +74,7 @@ afterEach(() => {
   mocks.messages = [];
   mocks.hasOlder = false;
   mocks.providerProps = [];
+  mocks.rangeReady = [];
   mocks.loadOlder.mockReset();
 });
 
@@ -126,6 +128,30 @@ it("keeps encrypted rendering when the channel is flagged encrypted or is an edm
     }),
   );
   expect(mocks.providerProps.at(-1)?.encrypted).toBe(true);
+});
+
+it("does not allow marking read before the oldest unread is inside the range", () => {
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z")];
+  render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: "2026-01-01T09:00:00Z",
+      onBoundaryMessage: vi.fn(),
+      onRangeReady: (ready) => mocks.rangeReady.push(ready),
+    }),
+  );
+  expect(mocks.rangeReady.at(-1)).toBe(false);
+
+  mocks.rangeReady = [];
+  render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c2",
+      firstUnreadAt: "2026-01-01T11:00:00Z",
+      onBoundaryMessage: vi.fn(),
+      onRangeReady: (ready) => mocks.rangeReady.push(ready),
+    }),
+  );
+  expect(mocks.rangeReady.at(-1)).toBe(true);
 });
 
 it("loads older pages until the oldest unread timestamp is inside the range", async () => {

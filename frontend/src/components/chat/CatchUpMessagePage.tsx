@@ -36,12 +36,14 @@ export function CatchUpMessagePage({
   encrypted = false,
   firstUnreadAt,
   onBoundaryMessage,
+  onRangeReady,
 }: {
   channelId: string;
   channelName?: string;
   encrypted?: boolean;
   firstUnreadAt: string | null;
   onBoundaryMessage: (messageId: string | null) => void;
+  onRangeReady?: (ready: boolean) => void;
 }) {
   const feed = useMessageFeed(channelId);
   const { currentUserId } = useCurrentUser();
@@ -131,6 +133,20 @@ export function CatchUpMessagePage({
     loadedPages.current += 1;
     void feed.loadOlder();
   }, [feed.hasOlder, feed.isLoading, feed.isLoadingOlder, feed.loadOlder, firstUnreadAt, messages]);
+
+  // 「既読にする」は最初の未読が読み込み範囲内にあるときだけ有効にする。
+  const rangeReady =
+    messages.length > 0 &&
+    (!firstUnreadAt ||
+      (!!messages[0] &&
+        parseUtcTimestamp(messages[0].created_at).getTime() <=
+          parseUtcTimestamp(firstUnreadAt).getTime()));
+  const rangeReadyRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (rangeReadyRef.current === rangeReady) return;
+    rangeReadyRef.current = rangeReady;
+    onRangeReady?.(rangeReady);
+  }, [onRangeReady, rangeReady]);
 
   return (
     <MessageDecryptionsProvider

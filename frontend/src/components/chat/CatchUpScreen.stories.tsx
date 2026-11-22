@@ -17,7 +17,7 @@ const message = (id: string, channelId: string, content: string, seconds: number
   user_id: "user-bob",
   channel_id: channelId,
   content,
-  created_at: `2026-01-02T09:0${seconds}:00Z`,
+  created_at: `2026-01-02T09:00:0${seconds}Z`,
   updated_at: null,
   deleted_at: null,
   parent_id: null,
