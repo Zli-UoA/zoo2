@@ -1650,6 +1650,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn redirecting_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // 返信先は、一覧にあるスレッド r0。閲覧中の r1 は一覧になく、一時の行が出ている。
+            app.active_threads.push(ThreadSummary {
+                id: "r0".into(),
+                channel_id: "c2".into(),
+                content: "listed".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            });
+            let temporary = |pinned| SidebarItem::Thread {
+                channel_id: "c2".into(),
+                id: "r1".into(),
+                pinned,
+            };
+            assert!(app.sidebar_items().contains(&temporary(false)), "{pin_c2}");
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+
+            // 返信すると、バックエンドは返信先を親 r0 に正規化する。r1 の行は消え、r0 の行が代わりになる。
+            app.on_app_event(AppEvent::ThreadRedirected {
+                from: "r1".into(),
+                to: "r0".into(),
+            });
+
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r0")
+            );
+            let after = app.sidebar_items();
+            assert!(!after.contains(&temporary(false)) && !after.contains(&temporary(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
     async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
         let mut app = app();
         pin_c1(&mut app);

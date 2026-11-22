@@ -756,6 +756,9 @@ impl App {
                 self.refresh_threads();
             }
             AppEvent::ThreadRedirected { from, to } => {
+                // 一覧にない `from` の一時の行が消える（`to` が一覧にあれば、その行が代わりになる）と、
+                // 添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
                     thread.root_id = to.clone();
                     thread.selected = None;
@@ -765,6 +768,7 @@ impl App {
                 if self.target == Target::Reply(from) {
                     self.target = Target::Reply(to);
                 }
+                self.restore_sidebar_selection(selected);
             }
             AppEvent::ThreadsChanged { reopened } => {
                 // 再Openしたスレッドの行が増えて添字がずれるので、カーソルは同じ行に残す。
