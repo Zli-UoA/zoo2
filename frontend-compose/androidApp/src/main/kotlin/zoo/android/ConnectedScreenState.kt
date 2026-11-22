@@ -447,10 +447,12 @@ internal class ConnectedScreenState(
                     inThread = row.text("parent_id").isNotEmpty(),
                     file = file,
                     fileSize = if (file) attachmentSize(row.text("file_size")) else null,
+                    emoji = if (file) emptyMap() else displayEmoji(row, row, isPost = false),
                 )
             },
             loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
             canLoadOlder = search.nextCursor != null, searchedUntil = search.searchedUntil,
+            problem = searchQueryProblem(search.query),
         ))
     }
 
@@ -622,11 +624,18 @@ internal class ConnectedScreenState(
                 platform.navigate(globalSearchPath(app.globalSearch.query, app.globalSearch.type))
             }
             is AndroidUiAction.SearchMessages -> searchText = action.text
+            AndroidUiAction.SubmitSearch -> {
+                // The IME search key: search the typed words now, or the same words again for new messages.
+                val search = app.globalSearch
+                if (searchText.trim() == search.query) search.refresh() else search.search(searchText)
+            }
             is AndroidUiAction.SelectSearchType -> app.globalSearch.search(searchText, action.type)
             is AndroidUiAction.OpenSearchResult -> {
                 val search = app.globalSearch
                 search.items.firstOrNull { globalSearchKey(it, search.type) == action.key }
-                    ?.let { platform.navigate(globalSearchDestination(it, search.type)) }
+                    // `open` makes each tap a new request: the conversation keeps the last opened target and
+                    // would otherwise stay where it was scrolled when the same result is opened again.
+                    ?.let { platform.navigate(globalSearchDestination(it, search.type) + "&open=${kotlin.time.Clock.System.now().toEpochMilliseconds()}") }
             }
             AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
             AndroidUiAction.RetrySearch -> app.globalSearch.retry()

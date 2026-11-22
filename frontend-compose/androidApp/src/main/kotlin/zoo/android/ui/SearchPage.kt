@@ -5,11 +5,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LocalTextStyle
@@ -17,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import zoo.GlobalSearchType
+import zoo.SearchQueryProblem
 import zoo.searchTerms
 
 /** One `/api/search` hit, already resolved to display text by the adapter. */
@@ -52,6 +55,8 @@ internal data class SearchResultItem(
     val inThread: Boolean = false,
     val file: Boolean = false,
     val fileSize: String? = null,
+    /** Custom emoji in the snippet, drawn as in conversations. */
+    val emoji: Map<String, TimelineMedia> = emptyMap(),
 )
 
 /**
@@ -69,6 +74,8 @@ internal data class SearchScreenState(
     val loaded: Boolean = false,
     val canLoadOlder: Boolean = false,
     val searchedUntil: String? = null,
+    /** The words break the server's limits: nothing was sent, and a retry would not pass. */
+    val problem: SearchQueryProblem? = null,
 )
 
 @Composable
@@ -80,7 +87,9 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        SearchField(state.text, colors) { dispatch(AndroidUiAction.SearchMessages(it)) }
+        SearchField(state.text, colors, submit = { dispatch(AndroidUiAction.SubmitSearch) }) {
+            dispatch(AndroidUiAction.SearchMessages(it))
+        }
         Row(Modifier.fillMaxWidth().selectableGroup()) {
             for (kind in GlobalSearchType.entries) {
                 val selected = kind == state.type
@@ -101,6 +110,7 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
     }
     Box(Modifier.weight(1f).fillMaxWidth()) {
         when {
+            state.problem != null -> SearchMessage(problemText(state.problem), colors)
             state.query.isEmpty() -> SearchMessage(
                 androidLabel("globalSearch.prompt", "検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。"), colors)
             state.loading -> SearchLoading(colors, Modifier.fillMaxSize())
@@ -111,14 +121,20 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
             }
             state.results.isEmpty() && !state.canLoadOlder && !state.error ->
                 SearchMessage(androidLabel("globalSearch.empty", "見つかりませんでした。"), colors)
+            // Kept apart from the list: results read later must start at the newest, not where the footer was.
+            state.results.isEmpty() -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                SearchFooter(state, colors, dispatch)
+            }
             else -> {
+                // Returning from an opened result keeps the position; other words or kinds start at the top.
+                val scroll = rememberSaveable(state.query, state.type, saver = LazyListState.Saver) { LazyListState() }
                 val highlight = remember(state.query, colors.searchHighlight) {
                     EntryHighlight(searchTerms(state.query),
                         SpanStyle(color = colors.searchHighlightText, background = colors.searchHighlight))
                 }
                 LazyColumn(
                     Modifier.fillMaxSize().testTag("global-search-results"),
-                    rememberLazyListState(),
+                    scroll,
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 ) {
                     items(state.results, key = { it.key }) { item ->
@@ -132,7 +148,7 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
 }
 
 @Composable
-private fun SearchField(text: String, colors: AndroidColors, change: (String) -> Unit) {
+private fun SearchField(text: String, colors: AndroidColors, submit: () -> Unit, change: (String) -> Unit) {
     val focus = remember { FocusRequester() }
     // Returning from an opened result keeps the words and should not reopen the keyboard.
     val focusOnOpen = remember { text.isEmpty() }
@@ -146,6 +162,7 @@ private fun SearchField(text: String, colors: AndroidColors, change: (String) ->
         textStyle = LocalTextStyle.current.copy(color = colors.inputText, fontSize = 16.sp),
         cursorBrush = SolidColor(colors.inputText),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { submit() }),
         decorationBox = { field ->
             Row(
                 Modifier.fillMaxWidth().heightIn(min = AndroidControlSize.target)
@@ -191,9 +208,8 @@ private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highligh
                 item.fileSize?.let { Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1) }
             } else {
                 // The snippet is MFM like Web's result row; only its text parts are marked.
-                val snippet = remember(item.body, highlight) { formatEntry(item.body, highlight = highlight) }
-                Text(snippet, color = colors.foreground, fontSize = entryTextSize, lineHeight = 23.sp,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis)
+                EntryBody(item.body, colors.foreground, entryTextSize, item.emoji, maxLines = 3, highlight = highlight,
+                    lineHeight = 23.sp)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,
@@ -264,6 +280,12 @@ private fun SearchMessage(text: String, colors: AndroidColors, action: (@Composa
         action?.invoke()
     }
 }
+
+@Composable
+private fun problemText(problem: SearchQueryProblem): String = when (problem) {
+    SearchQueryProblem.TooManyTerms -> androidLabel("globalSearch.tooManyTerms", "検索できる語は {{max}} 個までです。語を減らしてください。")
+    SearchQueryProblem.TermTooLong -> androidLabel("globalSearch.termTooLong", "1 つの語は {{max}} 文字までです。語を短くしてください。")
+}.replace("{{max}}", problem.max.toString())
 
 private val GlobalSearchType.fallback: String
     get() = when (this) {

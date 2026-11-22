@@ -223,4 +223,71 @@ class GlobalSearchControllerTest {
             globalSearchDestination(obj("id" to "f1", "message_id" to "m2", "channel_id" to "c1"), GlobalSearchType.Files),
         )
     }
+
+    @Test
+    fun returningToTheRouteKeepsTheWordsKindAndResultsWithoutRequests() = runTest {
+        val requests = mutableListOf<Parameters>()
+        val app = app { request ->
+            requests += request.url.parameters
+            respond(page(listOf("one", "two"), "next", "2025-12"))
+        }
+        val search = GlobalSearchController(app, backgroundScope)
+        // Open search from a link, then a result, then come back (the route keeps `q` and `type`).
+        assertEquals("会議", search.followRoute(globalSearchRoute("/search?q=%E4%BC%9A%E8%AD%B0&type=files")!!))
+        runCurrent()
+        assertEquals(1, requests.size)
+        assertNull(globalSearchRoute("/channels/c?message=one"))
+        val back = globalSearchRoute(globalSearchPath(search.query, search.type))!!
+        assertEquals("会議" to GlobalSearchType.Files, back)
+        assertNull(search.followRoute(back), "Returning must not reset the field")
+        // Reopened from the channel list (OpenSearch navigates to the same path).
+        assertNull(search.followRoute(globalSearchRoute(globalSearchPath(search.query, search.type))!!))
+        search.refreshIfStale()
+        runCurrent()
+        assertEquals("会議", search.query)
+        assertEquals(GlobalSearchType.Files, search.type)
+        assertEquals(listOf("one", "two"), search.items.map { it.text("id") })
+        assertEquals(1, requests.size, "Returning within the reuse time sends nothing")
+        app.close()
+    }
+
+    @Test
+    fun refreshSearchesTheSameWordsAgainAndStaleResultsAreReloadedOnReopen() = runTest {
+        var served = 0
+        val app = app { respond(page(listOf("r${++served}"), null, "2025-12")) }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("会議")
+        runCurrent()
+        assertEquals(listOf("r1"), search.items.map { it.text("id") })
+        search.search("会議")
+        runCurrent()
+        assertEquals(1, served, "The same words alone do not search again")
+        search.refresh()
+        runCurrent()
+        assertEquals(listOf("r2"), search.items.map { it.text("id") })
+
+        val fetched = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        search.refreshIfStale(fetched + GlobalSearchController.REUSE_MS - 60_000)
+        runCurrent()
+        assertEquals(2, served)
+        search.refreshIfStale(fetched + GlobalSearchController.REUSE_MS + 60_000)
+        runCurrent()
+        assertEquals(listOf("r3"), search.items.map { it.text("id") })
+        app.close()
+    }
+
+    @Test
+    fun wordsTheServerRejectsAreNotSent() = runTest {
+        var served = 0
+        val app = app { served++; respond(page(emptyList(), null, null)) }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("a b c d e f")
+        runCurrent()
+        search.search("x".repeat(MAX_SEARCH_TERM_CHARS + 1))
+        runCurrent()
+        assertEquals(0, served)
+        assertFalse(search.loading)
+        assertFalse(search.error)
+        app.close()
+    }
 }

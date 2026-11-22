@@ -1,9 +1,39 @@
 package zoo
 
-/** Like the server's `parse_terms` (`backend/src/routes/search.rs`): at most this many distinct terms. */
+/** The server's limit in `parse_terms` (`backend/src/routes/search.rs`): more distinct terms are rejected with 400. */
 const val MAX_SEARCH_TERMS = 5
 
-/** The query's whitespace-separated terms, without duplicates, at most [MAX_SEARCH_TERMS] (as the server). */
+/** The server's `MAX_TERM_CHARS`: a longer term (in code points) is rejected with 400. */
+const val MAX_SEARCH_TERM_CHARS = 100
+
+/** Why the server would reject a query; the key under `globalSearch.` (Web's `SearchQueryProblem`). */
+enum class SearchQueryProblem(val key: String, val max: Int) {
+    TooManyTerms("tooManyTerms", MAX_SEARCH_TERMS),
+    TermTooLong("termTooLong", MAX_SEARCH_TERM_CHARS),
+}
+
+/** Finds what `parse_terms` rejects before sending; like the server, the term length is checked first. */
+fun searchQueryProblem(query: String): SearchQueryProblem? {
+    val terms = mutableListOf<String>()
+    for (term in query.splitWhere { it.isWhitespace() }) {
+        if (term.isEmpty()) continue
+        if (term.searchTermLength() > MAX_SEARCH_TERM_CHARS) return SearchQueryProblem.TermTooLong
+        if (term !in terms) terms += term
+    }
+    return if (terms.size > MAX_SEARCH_TERMS) SearchQueryProblem.TooManyTerms else null
+}
+
+private fun String.searchTermLength(): Int {
+    var count = 0
+    var index = 0
+    while (index < length) {
+        index += if (this[index].isHighSurrogate() && index + 1 < length && this[index + 1].isLowSurrogate()) 2 else 1
+        count++
+    }
+    return count
+}
+
+/** The query's distinct whitespace-separated terms to mark, at most [MAX_SEARCH_TERMS] (like Web's `searchTerms`). */
 fun searchTerms(query: String): List<String> =
     query.splitWhere { it.isWhitespace() }.filter { it.isNotEmpty() }.distinct().take(MAX_SEARCH_TERMS)
 

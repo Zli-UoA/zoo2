@@ -90,7 +90,13 @@ internal fun ConnectedScreens(
     val threadReplies = rows.filter { it.text("parent_id") == currentThread }.map { it.text("id") }.toSet()
     val route = env.path.substringBefore('?')
     val focusMessage = env.path.substringAfter("?message=", "").substringBefore('&').ifBlank { null }
-    val focusParent = rows.find { it.text("id") == focusMessage }?.text("parent_id")
+    val focusRequest = focusMessage?.let { env.path.substringAfter('?') }
+    val focusRow = rows.find { it.text("id") == focusMessage }
+    val focusParent = focusRow?.text("parent_id")
+    // A reply opened from search or a link stays readable when its parent was deleted (as Web): the thread
+    // shows a notice in place of the parent and cannot be written to.
+    val deletedRoot = currentThread != null && focusParent == currentThread && focusRow?.present("deleted_at") == false &&
+        rows.find { it.text("id") == currentThread }?.present("deleted_at") == true
     LaunchedEffect(focusMessage, focusParent) {
         if (!focusParent.isNullOrBlank()) session.thread = focusParent
     }
@@ -159,15 +165,16 @@ internal fun ConnectedScreens(
         val unsubscribe = if (route == "/home" && env.visible) session.homeLive.subscribe { state.home.refresh(retain = true) } else null
         onDispose { unsubscribe?.invoke() }
     }
-    val searching = route == "/search"
     val search = session.globalSearch
-    val routeQuery = if (searching) session.query["q"].orEmpty() else null
-    val routeType = if (searching) GlobalSearchType.from(session.query["type"]) else null
-    LaunchedEffect(routeQuery, routeType) {
-        // A link or restored route sets the words; our own `replace` below already matches the controller.
-        if (routeQuery == null || routeType == null || (routeQuery == search.query && routeType == search.type)) return@LaunchedEffect
-        state.searchText = routeQuery
-        search.search(routeQuery, routeType)
+    // Read the words from the same `env.path` as `route`: `session.env` follows a frame later, and its
+    // previous route would clear the search when returning to it.
+    val searchRoute = globalSearchRoute(env.path)
+    val searching = searchRoute != null
+    LaunchedEffect(searchRoute) {
+        searchRoute?.let(search::followRoute)?.let { state.searchText = it }
+    }
+    LaunchedEffect(searching) {
+        if (searching) search.refreshIfStale()
     }
     LaunchedEffect(searching, state.searchText) {
         // Wait for typing to pause: each request may scan 12 months.
@@ -289,16 +296,19 @@ internal fun ConnectedScreens(
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })
         route == "/settings" -> AndroidScreen.Settings(state.settings(env, openIncomingSettings != null))
-        channel != null && threadRoot != null -> AndroidScreen.Thread(
-            channel.text("channel_name"), threadRoot, messages.filter { it.id in threadReplies },
-            state.input("$channelId:$currentThread", canPost && !threadDetail.present("thread_archive_at") &&
+        channel != null && (threadRoot != null || deletedRoot) -> AndroidScreen.Thread(
+            channel.text("channel_name"),
+            threadRoot ?: TimelineItem(currentThread.orEmpty(), "", session.t("threads.rootDeleted"), ""),
+            messages.filter { it.id in threadReplies },
+            state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }), focusMessage,
+            focusRequest = focusRequest,
         )
         channel != null -> AndroidScreen.Conversation(channelId.orEmpty(), channel.text("channel_name"), channel.text("description"),
             messages.filter { it.id in conversationEntries }, state.input(channelId.orEmpty(), canPost,
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }),
-            canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage)
+            canCall = channel.flag("is_dm") && member && !encrypted, focusMessage = focusMessage, focusRequest = focusRequest)
         else -> AndroidScreen.Channels(state.channelSections(channels, usersById, memberships))
     }
     val instanceHosts = when (screen) {

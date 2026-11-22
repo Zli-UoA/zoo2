@@ -49,9 +49,38 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     private var failed: Request? = null
     private var worker: Job? = null
 
+    /** When the current first page arrived (epoch ms); `null` until then. */
+    private var fetchedAt: Long? = null
+
     fun search(text: String, kind: GlobalSearchType = type) {
         val next = text.trim()
         if (next == query && kind == type) return
+        start(next, kind)
+    }
+
+    /**
+     * Follows the words and kind of a `/search` route (`globalSearchRoute`). Returns the words for the
+     * field when the route changed them (a link or a restored route); our own `replace` already matches.
+     */
+    fun followRoute(route: Pair<String, GlobalSearchType>): String? {
+        val (text, kind) = route
+        if (text.trim() == query && kind == type) return null
+        search(text, kind)
+        return text
+    }
+
+    /** Searches the same words again from the newest month (the IME search key, or a stale reopen). */
+    fun refresh() {
+        if (query.isNotEmpty()) start(query, type)
+    }
+
+    /** On reopening the screen: reuse the loaded pages for [REUSE_MS] (as Web), then search again. */
+    fun refreshIfStale(now: Long = nowMillis()) {
+        val at = fetchedAt ?: return
+        if (!loading && !loadingOlder && now - at >= REUSE_MS) refresh()
+    }
+
+    private fun start(next: String, kind: GlobalSearchType) {
         query = next
         type = kind
         generation++
@@ -62,7 +91,9 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
         failed = null
         loaded = false
         loadingOlder = false
-        if (next.isEmpty()) {
+        fetchedAt = null
+        // The server rejects these with 400 and a retry cannot pass, so the screen explains them instead.
+        if (next.isEmpty() || searchQueryProblem(next) != null) {
             pending = null
             loading = false
             return
@@ -120,6 +151,7 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
                 }
             nextCursor = response.text("next_cursor").ifEmpty { null }
             searchedUntil = response.text("searched_until").ifEmpty { null }
+            if (request.cursor == null) fetchedAt = nowMillis()
             loaded = true
         } catch (e: CancellationException) {
             throw e
@@ -137,6 +169,11 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
 
     companion object {
         const val PAGE_SIZE = 20
+
+        /** Web's `REUSE_MS`: returning within this keeps the results, later ones search again. */
+        const val REUSE_MS = 5 * 60_000L
+
+        private fun nowMillis() = kotlin.time.Clock.System.now().toEpochMilliseconds()
     }
 }
 
@@ -161,6 +198,13 @@ fun globalSearchPath(query: String, type: GlobalSearchType): String =
 fun globalSearchDestination(row: Row, type: GlobalSearchType): String {
     val message = if (isGlobalSearchFile(row, type)) row.text("message_id") else row.text("id")
     return "/channels/${row.text("channel_id").encodeURLParameter()}?message=${message.encodeURLParameter()}"
+}
+
+/** The words and kind in a `/search?q=&type=` path, or `null` for another route. */
+fun globalSearchRoute(path: String): Pair<String, GlobalSearchType>? {
+    if (!isGlobalSearchPath(path)) return null
+    val parameters = io.ktor.http.Url("https://zoo.invalid$path").parameters
+    return parameters["q"].orEmpty() to GlobalSearchType.from(parameters["type"])
 }
 
 internal fun isGlobalSearchPath(path: String): Boolean = path.substringBefore('?').substringBefore('#') == "/search"

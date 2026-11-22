@@ -50,4 +50,15 @@ class SearchHighlightTest {
     fun keepsSurrogatePairsWhole() {
         assertEquals(listOf(hit("🐘"), plain("と"), hit("🐘")), highlightSegments("🐘と🐘", listOf("🐘")))
     }
+
+    @Test
+    fun findsTheWordsTheServerRejects() {
+        assertEquals(null, searchQueryProblem("a b c d e"))
+        assertEquals(null, searchQueryProblem("a b c d e a b"), "Duplicates count once")
+        assertEquals(SearchQueryProblem.TooManyTerms, searchQueryProblem("a b c d e f"))
+        assertEquals(null, searchQueryProblem("🐘".repeat(MAX_SEARCH_TERM_CHARS)), "Counted in code points")
+        assertEquals(SearchQueryProblem.TermTooLong, searchQueryProblem("x".repeat(MAX_SEARCH_TERM_CHARS + 1)))
+        assertEquals(SearchQueryProblem.TermTooLong, searchQueryProblem("a b c d e f " + "x".repeat(101)),
+            "Like the server, the length is checked first")
+    }
 }

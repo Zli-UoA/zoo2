@@ -87,10 +87,14 @@ internal sealed interface AndroidScreen {
         val id: String, val name: String, val description: String,
         val entries: List<TimelineItem>, val input: InputState, val canCall: Boolean = false,
         val focusMessage: String? = null,
+        /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
+        val focusRequest: String? = focusMessage,
     ) : AndroidScreen
     data class Thread(
         val channelName: String, val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState,
         val focusMessage: String? = null,
+        /** Changes on each request to show [focusMessage] (a search result opened again), unlike the id. */
+        val focusRequest: String? = focusMessage,
     ) : AndroidScreen
     data class Post(val root: TimelineItem, val replies: List<TimelineItem>, val input: InputState) : AndroidScreen
     data class ChannelSettings(val channel: String, val groups: List<SettingsGroup>) : AndroidScreen
@@ -148,6 +152,7 @@ internal sealed interface AndroidUiAction {
     data class Search(val query: String) : AndroidUiAction
     data object OpenSearch : AndroidUiAction
     data class SearchMessages(val text: String) : AndroidUiAction
+    data object SubmitSearch : AndroidUiAction
     data class SelectSearchType(val type: zoo.GlobalSearchType) : AndroidUiAction
     data class OpenSearchResult(val key: String) : AndroidUiAction
     data object LoadOlderResults : AndroidUiAction
@@ -219,8 +224,14 @@ internal fun AndroidScreens(
             },
             label = "Android screen",
         ) { visibleScreen ->
-            if (visibleScreen is AndroidScreen.Conversation) {
-                conversationState.SaveableStateProvider(visibleScreen.id) {
+            // Conversations and search keep their scroll position while an opened message or result is shown.
+            val savedKey = when (visibleScreen) {
+                is AndroidScreen.Conversation -> visibleScreen.id
+                is AndroidScreen.Search -> "search"
+                else -> null
+            }
+            if (savedKey != null) {
+                conversationState.SaveableStateProvider(savedKey) {
                     RenderAndroidScreen(visibleScreen, dark, foreground && visibleScreen == screen,
                         dispatch, language, interaction, remoteAudioLevel, loadNotificationAvatar, loadNotificationReactions, photo)
                 }
@@ -293,7 +304,7 @@ private fun RenderAndroidScreen(
                             { dispatch(AndroidUiAction.StartCall) })
                     }
                 }) {
-                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, hideIdleHandle = true)
+                    TimelineWithInput(screen.entries, screen.input, colors, dispatch, swipeReply = interaction.swipeReply, allowThreads = true, focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true)
                 }
             }
             is AndroidScreen.Thread -> {
@@ -302,7 +313,7 @@ private fun RenderAndroidScreen(
                 Text("# ${screen.channelName}", Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     color = colors.secondary, fontSize = 13.sp)
                 TimelineWithInput(listOf(screen.root) + screen.replies, screen.input, colors, dispatch,
-                    focusMessage = screen.focusMessage, hideIdleHandle = true)
+                    focusMessage = screen.focusMessage, focusRequest = screen.focusRequest, hideIdleHandle = true)
             }
             is AndroidScreen.Post -> {
                 PageHeader("投稿", colors, onBack = back)
@@ -439,6 +450,7 @@ private fun ColumnScope.TimelineWithInput(
     swipeReply: Boolean = false,
     allowThreads: Boolean = false,
     focusMessage: String? = null,
+    focusRequest: String? = focusMessage,
     posts: Boolean = false,
     hideIdleHandle: Boolean = false,
 ) {
@@ -446,7 +458,7 @@ private fun ColumnScope.TimelineWithInput(
     var positioned by rememberSaveable { mutableStateOf(false) }
     var openedTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val focusedIndex = entries.indexOfFirst { it.id == focusMessage }
-    LaunchedEffect(input.expanded, focusMessage, focusedIndex, entries.size) {
+    LaunchedEffect(input.expanded, focusMessage, focusRequest, focusedIndex, entries.size) {
         if (input.expanded) return@LaunchedEffect
         if (focusMessage == null) {
             openedTarget = null
@@ -454,9 +466,9 @@ private fun ColumnScope.TimelineWithInput(
                 scroll.scrollToItem(entries.lastIndex)
                 positioned = true
             }
-        } else if (focusedIndex >= 0 && openedTarget != focusMessage) {
+        } else if (focusedIndex >= 0 && openedTarget != focusRequest) {
             scroll.scrollToItem(focusedIndex)
-            openedTarget = focusMessage
+            openedTarget = focusRequest
             positioned = true
         }
     }
