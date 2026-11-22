@@ -76,18 +76,36 @@ struct RemoteImageTests {
         let harness = try ChatHarness()
         defer { harness.close() }
         let clock = Clock()
+        var waits: [TimeInterval] = []
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                     session: harness.api.transport.session, now: { clock.value })
+                                     session: harness.api.transport.session, now: { clock.value }, sleep: { delay in
+                                         waits.append(delay)
+                                         throw CancellationError()
+                                     })
         defer { store.close() }
         harness.stub { _ in throw URLError(.notConnectedToInternet) }
         await store.load(url)
         let failed = store.state(for: url)
         #expect(failed.image == nil)
-        clock.value.addTimeInterval(35)
         let secondURL = url.appendingPathComponent("取得が遅い画像")
         let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
-        harness.stub { _ in (200, [:], bytes) }
-        await store.load(secondURL)
+        let started = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            #expect(request.url == secondURL)
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return (200, [:], bytes)
+        }
+        let watching = Task { await store.watch([url: failed, secondURL: store.state(for: secondURL)]) }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        clock.value.addTimeInterval(35)
+        release.continuation.finish()
+        await watching.value
+        #expect(waits == [0])
         let second = store.state(for: secondURL)
         #expect(second.image != nil)
         #expect(store.nextLoadDelay(for: [url: failed, secondURL: second], policy: .refreshing) == 0)
@@ -242,7 +260,8 @@ struct RemoteImageTests {
         var iterator = requested.stream.makeAsyncIterator()
         _ = await iterator.next()
         let state = store.state(for: url)
-        #expect(state.image?.size.width == state.image?.size.height)
+        let cachedImage = try #require(state.image)
+        #expect(cachedImage.size.width == cachedImage.size.height)
         release.continuation.finish()
         await loads.value
         let image = try #require(state.image)
@@ -344,7 +363,7 @@ struct RemoteImageTests {
         #expect(store.state(for: url) === displayed)
     }
 
-    @Test("不正画像・過大応答・HTTPへの転送・エラー応答を保存しない", arguments: ["invalid", "large", "redirect", "failure"])
+    @Test("不正画像・過大応答・302応答・エラー応答を保存しない", arguments: ["invalid", "large", "redirect", "failure"])
     func rejectsInvalidResponses(kind: String) async throws {
         let folder = try folder()
         defer { withExtendedLifetime(folder) {} }

@@ -28,6 +28,7 @@ final class InboxStore {
     @ObservationIgnored private var visibleRefresh: Task<Void, Never>?
     @ObservationIgnored private var gap: (anchors: Set<String>, resume: String?)?
     @ObservationIgnored private var fetching = false
+    @ObservationIgnored private var fetchWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var refreshRequested = false
     @ObservationIgnored private var moreRequested = false
     @ObservationIgnored private var readRevision = 0
@@ -93,6 +94,8 @@ final class InboxStore {
 
     func refresh(clearActionError: Bool = true) async {
         guard active, !Task.isCancelled else { return }
+        visibleRefresh?.cancel()
+        visibleRefresh = nil
         if clearActionError { actionError = nil }
         async let remote: Void = refreshFederation()
         let revision = channelRevision
@@ -126,7 +129,13 @@ final class InboxStore {
 
     private func refreshFederation() async {
         guard active, !Task.isCancelled else { return }
-        guard !fetching else { refreshRequested = true; return }
+        if fetching {
+            refreshRequested = true
+            await withCheckedContinuation { fetchWaiters.append($0) }
+            guard active, !Task.isCancelled else { return }
+            if refreshRequested { await refreshFederation() }
+            return
+        }
         fetching = true
         repeat {
             refreshRequested = false
@@ -151,11 +160,18 @@ final class InboxStore {
             }
             waitingForFederation = false
         } while refreshRequested && active && !Task.isCancelled
-        fetching = false
+        finishFetch()
         if moreRequested, active, !Task.isCancelled {
             moreRequested = false
             await loadMore()
         }
+    }
+
+    private func finishFetch() {
+        fetching = false
+        let waiters = fetchWaiters
+        fetchWaiters = []
+        waiters.forEach { $0.resume() }
     }
 
     func loadMore() async {
@@ -198,7 +214,7 @@ final class InboxStore {
             }
         }
         loadingMore = false
-        fetching = false
+        finishFetch()
         if refreshRequested { await refreshFederation() }
     }
 
@@ -220,10 +236,14 @@ final class InboxStore {
             let found = Set(try await client.federatedNotices(ids: candidates).map(\.id))
             guard active, !Task.isCancelled else { throw CancellationError() }
             if found.contains(id) { return (page, false) }
-            let deleted = Set(candidates).subtracting(found)
-            federationRows.removeAll { deleted.contains($0.id) }
-            render()
             before = candidates.first { found.contains($0) }
+            // 再試行でも代替境界から続けられるよう、削除前に保存する。
+            if let before { nextCursor = before }
+            let deleted = Set(candidates).subtracting(found)
+            if before != nil {
+                federationRows.removeAll { deleted.contains($0.id) }
+                render()
+            }
         }
         return (try await client.federatedNotices(before: nil), true)
     }
@@ -326,6 +346,23 @@ final class InboxStore {
             try await client.acknowledgeNotices(ids: nil)
             guard active else { return }
             applyRead(ids)
+            let concurrentIDs = Set(federationRows.map(\.id)).subtracting(ids)
+            if !concurrentIDs.isEmpty {
+                let selected = concurrentIDs.sorted()
+                for start in stride(from: 0, to: selected.count, by: 100) {
+                    let batch = Set(selected[start..<min(start + 100, selected.count)])
+                    while active, !Task.isCancelled {
+                        let revision = readRevision
+                        let checked = try await client.federatedNotices(ids: Array(batch))
+                        guard active, !Task.isCancelled else { return }
+                        guard revision == readRevision else { continue }
+                        let fresh = Dictionary(checked.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                        federationRows = federationRows.compactMap { row in batch.contains(row.id) ? fresh[row.id] : row }
+                        break
+                    }
+                }
+                render()
+            }
             actionError = nil
             await refreshFederation()
         } catch {
@@ -416,6 +453,7 @@ final class InboxStore {
 
     func shutdown() {
         active = false
+        finishFetch()
         runID = UUID()
         channelRows = []
         clearFederation()

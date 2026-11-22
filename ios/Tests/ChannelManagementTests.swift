@@ -63,6 +63,11 @@ struct ChannelManagementTests {
                 return (200, [:], try Self.envelope(updated))
             }
             switch request.url?.path {
+            case "/api/channels/\(initial.id)":
+                var updated = initial
+                updated.channel_name = "変更済み"; updated.description = ""
+                updated.archive_at = "2026-11-20T00:00:03Z"; updated.updated_at = updated.archive_at
+                return (200, [:], try JSONEncoder().encode(updated))
             case "/api/channels": return (200, [:], try JSONEncoder().encode([incoming.withLock { $0 }]))
             case "/api/channel-read-states": return (200, [:], Data("[]".utf8))
             case "/api/shapes/users":
@@ -82,6 +87,7 @@ struct ChannelManagementTests {
         #expect(workspace.error == nil)
         #expect(workspace.channels.first?.channel_name == "変更済み")
         try await workspace.archiveChannel(try #require(workspace.channels.first))
+        #expect(await workspace.openMessage(channelID: initial.id, messageID: nil))
         await workspace.refresh()
         #expect(!conversation.canPost)
         #expect(workspace.channels.first?.archive_at != nil)
@@ -122,14 +128,17 @@ struct ChannelManagementTests {
         harness.stub { _ in
             started.continuation.yield(())
             var iterator = release.stream.makeAsyncIterator()
-            _ = await iterator.next()
+            try #require(await iterator.next() != nil)
             return (200, [:], try Self.envelope(initial))
         }
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
         workspace.addAndOpen(initial)
-        let write = Task { try await workspace.updateChannel(initial, name: "変更", description: "") }
+        let write = Task {
+            defer { started.continuation.finish() }
+            return try await workspace.updateChannel(initial, name: "変更", description: "")
+        }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         workspace.shutdown()
         release.continuation.yield(())
         await #expect(throws: CancellationError.self) { try await write.value }
@@ -150,16 +159,17 @@ struct ChannelManagementTests {
         harness.stub { _ in
             started.continuation.yield(())
             var iterator = release.stream.makeAsyncIterator()
-            _ = await iterator.next()
+            try #require(await iterator.next() != nil)
             return (200, [:], try Self.envelope(initial))
         }
         let client = NativeChatClient(api: harness.api, sync: sync)
         let pending = Task {
+            defer { started.continuation.finish() }
             if archive { return try await client.archiveChannel(id: initial.id) }
             return try await client.updateChannel(id: initial.id, name: "変更", description: "")
         }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         try await sync.revokeChannel(initial.id)
         release.continuation.yield(())
         await #expect(throws: CancellationError.self) { _ = try await pending.value }

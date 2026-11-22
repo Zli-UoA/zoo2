@@ -42,6 +42,7 @@ final class IncomingCallNotifications {
     private let add: @MainActor (UNNotificationRequest) async throws -> Void
     private let remove: @MainActor ([String]) -> Void
     private let existing: @MainActor () async -> [String]
+    private let retryDelay: @MainActor (Duration) async throws -> Void
     private var current: (callID: UUID, identifier: String)?
     private var delivery: Task<Void, Never>?
 
@@ -56,10 +57,11 @@ final class IncomingCallNotifications {
         let pending = await center.pendingNotificationRequests()
         let delivered = await center.deliveredNotifications()
         return pending.map(\.identifier) + delivered.map { $0.request.identifier }
-    }) {
+    }, retryDelay: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.add = add
         self.remove = remove
         self.existing = existing
+        self.retryDelay = retryDelay
     }
 
     deinit { delivery?.cancel() }
@@ -70,14 +72,15 @@ final class IncomingCallNotifications {
         remove(identifiers.filter { $0.hasPrefix(Self.identifierPrefix) && $0 != current?.identifier })
     }
 
-    func update(_ call: IncomingCall?, enabled: Bool) {
+    @discardableResult
+    func update(_ call: IncomingCall?, enabled: Bool) -> Task<Void, Never>? {
         let next = enabled && (call?.expiresAt ?? .distantPast) > .now ? call : nil
-        guard next?.id != current?.callID else { return }
+        guard next?.id != current?.callID else { return delivery }
         delivery?.cancel()
         delivery = nil
         if let current { remove([current.identifier]) }
         current = nil
-        guard let next else { return }
+        guard let next else { return nil }
         // 再有効化後に古い登録処理が完了しても、新しい通知を削除しない。
         let identifier = Self.identifierPrefix + UUID().uuidString
         current = (next.id, identifier)
@@ -88,20 +91,28 @@ final class IncomingCallNotifications {
         content.categoryIdentifier = Self.categoryID
         content.userInfo = ["invite_id": next.id.uuidString, "user_id": next.userID]
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
-        let add = add, remove = remove
+        let add = add, remove = remove, retryDelay = retryDelay
         delivery = Task { [weak self] in
-            guard !Task.isCancelled, next.expiresAt > .now else { return }
-            do {
-                try await add(request)
-                guard !Task.isCancelled, self?.current?.identifier == identifier, next.expiresAt > .now else {
-                    remove([identifier])
+            for attempt in 0..<3 {
+                guard !Task.isCancelled, self?.current?.identifier == identifier, next.expiresAt > .now else { return }
+                do {
+                    try await add(request)
+                    if Task.isCancelled || self?.current?.identifier != identifier || next.expiresAt <= .now {
+                        remove([identifier])
+                    }
                     return
+                } catch {
+                    guard !Task.isCancelled, self?.current?.identifier == identifier else { return }
+                    if attempt < 2 {
+                        do { try await retryDelay(.seconds(attempt + 1)) }
+                        catch { return }
+                    }
                 }
-            } catch {
-                if self?.current?.identifier == identifier { self?.current = nil }
-                Logger(subsystem: "works.zli.zoo", category: "IncomingCallNotifications")
-                    .error("着信通知を登録できませんでした。")
             }
+            if self?.current?.identifier == identifier { self?.current = nil }
+            Logger(subsystem: "works.zli.zoo", category: "IncomingCallNotifications")
+                .error("着信通知を登録できませんでした。")
         }
+        return delivery
     }
 }

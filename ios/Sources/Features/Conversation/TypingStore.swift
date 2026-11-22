@@ -85,6 +85,7 @@ private final class TypingSession {
     private(set) var active = false
     private var ended = false
     private var publishedActive = false
+    private var activityRevision = 0
     private var lastSent: ContinuousClock.Instant?
     private var writer: Task<Void, Never>?
     private var idle: Task<Void, Never>?
@@ -102,6 +103,7 @@ private final class TypingSession {
         idle?.cancel()
         idle = nil
         active = hasText
+        activityRevision += 1
         publish()
         if hasText {
             let timeout = idleTimeout
@@ -123,6 +125,7 @@ private final class TypingSession {
             defer { writer = nil }
             while active || publishedActive {
                 let value = active
+                let revision = activityRevision
                 if value, let lastSent, lastSent.duration(to: .now) < sendInterval { return }
                 // 応答が失われても開始が届いた可能性があるため、後続の停止は必ず送る。
                 publishedActive = value
@@ -130,7 +133,7 @@ private final class TypingSession {
                 do { try await client.setTyping(channelID: channelID, parentID: parentID, sessionID: id, active: value) }
                 catch { /* 入力中通知の失敗で、本文の入力や送信を妨げない。 */ }
                 // 同時に要求せず、通信中に変わった最新の状態だけを続けて送る。
-                if active == value { return }
+                if active == value && activityRevision == revision { return }
             }
         }
     }

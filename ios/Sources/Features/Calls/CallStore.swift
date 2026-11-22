@@ -13,6 +13,7 @@ final class CallStore {
     private let recoveryWaitLimit: Duration
     private let sessionJournal: (any CallSessionJournal)?
     @ObservationIgnored private var recovery: Task<Void, Error>?
+    private(set) var recoveryWaiters = 0
     private(set) var channel: Channel?
     private(set) var participants: [CallParticipant] = []
     private(set) var activeChannelIDs: Set<String> = []
@@ -216,7 +217,11 @@ final class CallStore {
                         timeout?.cancel(); timeout = nil
                         participants = initial.participants
                         try await engine.handle(.room(initial))
-                        for pending in early { try await receive(pending, session: session) }
+                        guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
+                        for pending in early {
+                            try await receive(pending, session: session)
+                            guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
+                        }
                         early = []
                         startHeartbeat(channelID: channel.id, session: session)
                         // CallKitの応答完了で音声セッションが有効になるため、入室と音声接続を分ける。
@@ -428,6 +433,8 @@ final class CallStore {
     }
 
     private func recoverInterruptedCalls(preferredChannelID: String? = nil) async throws {
+        recoveryWaiters += 1
+        defer { recoveryWaiters -= 1 }
         guard active, !Task.isCancelled else { throw CancellationError() }
         if let recovery { try await recovery.value; return }
         guard let sessionJournal else { return }
@@ -497,7 +504,7 @@ final class CallStore {
             } catch {
                 guard active, !Task.isCancelled else { return }
                 invitations = []
-                outgoingInvitations = []
+                outgoingInvitations.removeAll { (ZooDate.parse($0.expires_at) ?? .distantPast) <= .now }
                 if case ZooError.expiredSession = error { onExpiredSession?(); return }
             }
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
@@ -505,14 +512,28 @@ final class CallStore {
     }
 
     func decline(_ invitation: CallInvitation) async {
-        do {
-            try await client.answerCallInvitation(id: invitation.id, accept: false)
-            guard active, !Task.isCancelled else { return }
-            invitations.removeAll { $0.id == invitation.id }
-        } catch {
-            guard active, !Task.isCancelled else { return }
-            self.error = "通話への応答を送れませんでした。"
-            if case ZooError.expiredSession = error { onExpiredSession?() }
+        let expires = ZooDate.parse(invitation.expires_at) ?? .distantPast
+        for attempt in 0..<3 {
+            guard active, !Task.isCancelled, expires > .now else { return }
+            do {
+                try await client.answerCallInvitation(id: invitation.id, accept: false)
+                guard active, !Task.isCancelled else { return }
+                invitations.removeAll { $0.id == invitation.id }
+                return
+            } catch {
+                guard active, !Task.isCancelled else { return }
+                if case ZooError.expiredSession = error { onExpiredSession?(); return }
+                let transient: Bool
+                if case ZooError.rejected(let status, _) = error { transient = status == 429 || status >= 500 }
+                else { transient = isOfflineFailure(error) }
+                if transient && attempt < 2 && expires > Date() {
+                    do { try await Task.sleep(for: .seconds(min(Double(attempt + 1), expires.timeIntervalSinceNow))) }
+                    catch { return }
+                    continue
+                }
+                self.error = "通話への応答を送れませんでした。"
+                return
+            }
         }
     }
 

@@ -95,6 +95,12 @@ test('React edits do not run TUI', () => {
   assert.deepEqual(selectOtherJobs('pull_request', [change('frontend/src/example.browser.test.tsx')]).clients, { tui: false });
 });
 
+test('iOS の変更だけでは Storybook を起動せず、React の変更を含む場合は起動する', () => {
+  const ios = ['ios/Sources/App/ZooApp.swift', 'ios/project.yml', 'ios/Resources/Assets.xcassets/icon.png'].map(change);
+  assert.equal(selectOtherJobs('pull_request', ios).storybookPreview, false);
+  assert.equal(selectOtherJobs('pull_request', [...ios, change('frontend/src/App.tsx')]).storybookPreview, true);
+});
+
 test('Rust clients follow package path dependencies and Bot changes do not trigger SDK crypto', () => {
   assert.deepEqual(selectOtherJobs('pull_request', [change('tui/src/main.rs')]).clients, { tui: true });
   assert.deepEqual(selectOtherJobs('pull_request', [change('client-core/src/lib.rs')]).clients, { tui: true });

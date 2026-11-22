@@ -124,9 +124,38 @@ struct AttachmentUploadTests {
         #expect(!FileManager.default.fileExists(atPath: copiedURL.path))
         #expect(store.messages.count == 1)
         #expect(store.attachments(for: try #require(store.messages.first)).first?.file_name == "確認.txt")
-        #expect(store.attachments(for: try #require(store.messages.first)).first?.is_sensitive == true)
+        let sent = try #require(store.messages.first)
+        let fallback = try #require(store.attachments(for: sent).first)
+        // 応答に属性がないため、サーバー側の NSFW 判定が同期されるまでは自動表示しない。
+        #expect(fallback.is_sensitive == true)
         #expect(paths.withLock { $0 } == ["/api/attachments/presign", "/file", "/api/messages", "/api/messages"])
         #expect(messageIDs.withLock { $0.count == 2 && $0[0] == $0[1] })
+    }
+
+    @Test("サーバーが返した添付のセンシティブ属性を保持する", arguments: [false, true])
+    func retainsServerSensitivity(sensitive: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let source = try sourceFile()
+        defer { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) }
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/attachments/presign": return (200, [:], Self.presigned())
+            case "/file": return (200, [:], Data())
+            default:
+                var message = try Self.message(request)
+                message.display_data = MessageDisplayData(attachments: [MessageAttachment(id: Self.attachmentID,
+                    file_name: "確認.txt", content_type: "text/plain", is_sensitive: sensitive)])
+                return (200, [:], try Self.envelope(message))
+            }
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        defer { store.shutdown() }
+        await store.importFiles([source], parentID: nil)
+        await store.send(parentID: nil)
+        let message = try #require(store.messages.first)
+        let attachment = try #require(store.attachments(for: message).first)
+        #expect(attachment.is_sensitive == sensitive)
     }
 
     @Test("アップロード失敗ではメッセージを投稿せず、新しい署名で再試行する", arguments: [401, 403, 500])

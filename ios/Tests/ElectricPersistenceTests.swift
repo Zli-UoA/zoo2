@@ -366,12 +366,15 @@ struct PersistentSyncIntegrationTests {
             return (200, ["Content-Type": "text/event-stream", "electric-handle": "h"], Data(data.utf8))
         }
         var batches = 0
-        try await ElectricTransport(api: harness.api).read("api/shapes/messages", query: ["live": "true"], sse: true) { data, response in
+        do {
+            _ = try await ElectricTransport(api: harness.api).read("api/shapes/messages", query: ["live": "true"], sse: true) { data, response in
             batches += 1
             #expect(response.value(forHTTPHeaderField: "electric-offset") == "123_0")
             let events = try JSONDecoder().decode([ShapeEvent].self, from: data)
             #expect(events.count == 2)
         }
+            Issue.record("同期途中の EOF が受け入れられました。")
+        } catch ZooError.invalidResponse { }
         #expect(batches == 1)
     }
 

@@ -31,7 +31,7 @@ extension NativeChatClient {
                                             query: body == nil ? parentID.map { ["parent_id": $0] } ?? [:] : [:], body: body)
         // 短い有効期限の通知で、遅い要求が停止通知や次の取得を長時間妨げないようにする。
         request.timeoutInterval = 5
-        let (data, response) = try await api.transport.send(request)
+        let (data, response) = try await api.transport.send(request, timeout: .seconds(5))
         try HTTPTransport.check(data, response)
         return data
     }

@@ -161,6 +161,7 @@ struct NativeCallMediaTests {
         var failure = false
         var offers = 0
         var signalTypes: [String] = []
+        var emittedSignals: [(Bool, CallSignal)] = []
         var offerSDPs: [String] = []
         var releaseCandidates: Bool
         let simultaneous: Bool
@@ -185,9 +186,11 @@ struct NativeCallMediaTests {
             first.onPeerState = { [weak self] _, state in self?.states[true] = state }
             second.onPeerState = { [weak self] _, state in self?.states[false] = state }
             try first.start(sessionID: firstID, room: room, signal: { [weak self] _, signal in
+                self?.emittedSignals.append((true, signal))
                 self?.signals.continuation.yield((true, signal))
             }, failed: { [weak self] in self?.failure = true })
             try second.start(sessionID: secondID, room: room, signal: { [weak self] _, signal in
+                self?.emittedSignals.append((false, signal))
                 self?.signals.continuation.yield((false, signal))
             }, failed: { [weak self] in self?.failure = true })
             delivery = Task { [weak self] in
@@ -268,6 +271,14 @@ struct NativeCallMediaTests {
         #expect(pair.offers >= 2)
         let sdps = pair.offerSDPs.compactMap { sdp in sdp.components(separatedBy: "\n").first { $0.hasPrefix("a=ice-ufrag:") } }
         #expect(Set(sdps).count >= 2)
+        let sent = pair.emittedSignals.filter { $0.0 }.map { $0.1 }
+        let offers = sent.indices.filter { sent[$0].type == "offer" }
+        try #require(offers.count >= 2)
+        let restart = offers[1]
+        let ufrag = try #require(sent[restart].sdp?.components(separatedBy: "\n")
+            .first { $0.hasPrefix("a=ice-ufrag:") }?.dropFirst("a=ice-ufrag:".count).trimmingCharacters(in: .whitespacesAndNewlines))
+        let candidate = try #require(sent.firstIndex { $0.type == "candidate" && $0.candidate?.candidate.contains("ufrag " + ufrag) == true })
+        #expect(restart < candidate)
     }
 
     @Test("両端が同時にICE再接続してもoffer衝突から復帰する")

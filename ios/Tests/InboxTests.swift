@@ -30,6 +30,71 @@ struct InboxTests {
         #expect(inbox.error == nil)
     }
 
+    @Test("全既読中に追加された過去の申請を再確認し、並行した承認を巻き戻さない")
+    func markAllRevalidatesConcurrentFollowResponse() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let acknowledged = AsyncStream<Void>.makeStream(), releaseAcknowledgement = AsyncStream<Void>.makeStream()
+        let checked = AsyncStream<Void>.makeStream(), releaseCheck = AsyncStream<Void>.makeStream()
+        defer {
+            acknowledged.continuation.finish(); releaseAcknowledgement.continuation.finish()
+            checked.continuation.finish(); releaseCheck.continuation.finish()
+        }
+        let state = Mutex((approved: false, failHead: false, checks: 0))
+        harness.stub { request in
+            func page(old: Bool, pending: Bool, read: Bool) throws -> (Int, [String: String], Data) {
+                let row: [String: Any] = ["id": old ? "old" : "new", "actor_id": "https://remote.test/user/member",
+                    "display_name": "メンバー", "kind": old ? "follow_request" : "reply", "activity_id": "activity",
+                    "created_at": old ? "2026-11-18T09:00:00Z" : "2026-11-18T10:00:00Z", "is_read": read, "pending": pending]
+                return (200, [:], try JSONSerialization.data(withJSONObject: ["items": [row], "unread_count": read ? 0 : 2,
+                    "next_cursor": old ? NSNull() as Any : "new" as Any]))
+            }
+            switch request.url?.path {
+            case "/api/shapes/notifications":
+                return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            case "/api/notifications/read-all":
+                acknowledged.continuation.yield(())
+                var iterator = releaseAcknowledgement.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                return (200, [:], Data("{}".utf8))
+            case "/api/activitypub/follows/respond":
+                state.withLock { $0.approved = true }
+                return (200, [:], Data("{}".utf8))
+            case "/api/activitypub/notifications/entries":
+                let current = state.withLock { $0.checks += 1; return $0 }
+                if current.checks == 1 {
+                    checked.continuation.yield(())
+                    var iterator = releaseCheck.stream.makeAsyncIterator()
+                    _ = await iterator.next()
+                }
+                return try page(old: true, pending: !current.approved, read: true)
+            default:
+                let old = request.url?.query?.contains("before=") == true
+                if !old, state.withLock({ $0.failHead }) { throw URLError(.notConnectedToInternet) }
+                return try page(old: old, pending: old, read: false)
+            }
+        }
+        let inbox = InboxStore(client: harness.client, userID: "u")
+        defer { inbox.shutdown() }
+        await inbox.refresh()
+        let marking = Task { await inbox.markAllRead() }
+        defer { marking.cancel() }
+        var ackIterator = acknowledged.stream.makeAsyncIterator()
+        try #require(await ackIterator.next() != nil)
+        await inbox.loadMore()
+        let request = try #require(inbox.entries.first { $0.noticeID == "old" })
+        state.withLock { $0.failHead = true }
+        releaseAcknowledgement.continuation.finish()
+        var checkIterator = checked.stream.makeAsyncIterator()
+        try #require(await checkIterator.next() != nil)
+        await inbox.respond(request, accept: true)
+        releaseCheck.continuation.finish()
+        await marking.value
+        let updated = try #require(inbox.entries.first { $0.noticeID == "old" })
+        #expect(!updated.pendingFollow && !updated.isUnread)
+        #expect(state.withLock { $0.checks } == 2)
+    }
+
     @Test("Electric の文字列化された既読値とメッセージの抜粋を読み取る")
     func shape() throws {
         let json = """

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Zoo
 
@@ -59,7 +60,13 @@ struct ReactionStoreTests {
         let release = AsyncStream<Void>.makeStream()
         let row = MessageReaction(id: "mine", message_id: messageID, user_id: userID, emoji: "👍")
         let data = try JSONEncoder().encode(["data": row])
+        let writes = Mutex(0)
+        defer { entered.continuation.finish(); release.continuation.finish() }
         harness.stub { _ in
+            guard writes.withLock({ $0 += 1; return $0 }) == 1 else {
+                Issue.record("重複したリアクション要求が送信されました。")
+                throw ZooError.invalidResponse
+            }
             entered.continuation.yield(())
             var iterator = release.stream.makeAsyncIterator()
             _ = await iterator.next()

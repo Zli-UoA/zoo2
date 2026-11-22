@@ -161,11 +161,17 @@ struct TypingStoreTests {
         }
         let store = store(client)
         let root = Task { await store.run(parentID: nil) }
+        defer {
+            root.cancel(); store.stop()
+            let pending = reply; reply = nil
+            pending?.resume(returning: [])
+        }
         try await until { reply != nil }
         let thread = Task { await store.run(parentID: "スレッド") }
         defer { root.cancel(); thread.cancel(); store.stop() }
         try await until { store.indicator(parentID: "スレッド") != nil }
-        reply?.resume(returning: [TypingUser(id: "1", display_name: "古い応答")])
+        let pending = reply; reply = nil
+        pending?.resume(returning: [TypingUser(id: "1", display_name: "古い応答")])
         await root.value
         #expect(store.indicator(parentID: "スレッド") == "あおいが入力中…")
         #expect(store.indicator(parentID: nil) == nil)
@@ -195,14 +201,19 @@ struct TypingStoreTests {
         }
         let store = store(client, interval: .zero)
         let task = Task { await store.run(parentID: "スレッド") }
-        defer { task.cancel(); store.stop() }
+        defer {
+            task.cancel(); store.stop()
+            let pending = complete; complete = nil
+            pending?.resume()
+        }
         try await until { !client.reads.isEmpty }
         store.activity(true, parentID: "スレッド")
         try await until { complete != nil }
         for _ in 0..<20 { store.activity(true, parentID: "スレッド") }
         store.activity(false, parentID: "スレッド")
         #expect(client.writes.map(\.active) == [true])
-        complete?.resume()
+        let pending = complete; complete = nil
+        pending?.resume()
         try await until { client.writes.count == 2 }
         #expect(client.writes.map(\.active) == [true, false])
         #expect(client.writes.allSatisfy { $0.parentID == "スレッド" })
@@ -222,9 +233,10 @@ struct TypingStoreTests {
         await first.value
         try await until { client.writes.count == 2 }
         #expect(client.writes.map(\.active) == [true, false])
+        let readsBeforeReturn = client.reads.count
         let second = Task { await store.run(parentID: nil) }
         defer { second.cancel(); store.stop() }
-        try await until { client.reads.count >= 2 }
+        try await until { client.reads.count > readsBeforeReturn }
         store.activity(true, parentID: nil)
         try await until { client.writes.count == 3 }
         #expect(client.writes[2].sessionID != client.writes[0].sessionID)

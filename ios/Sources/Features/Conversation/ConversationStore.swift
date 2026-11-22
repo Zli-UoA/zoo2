@@ -174,7 +174,7 @@ final class ConversationStore {
         let epoch = accessGeneration
         importingAttachments.insert(key)
         sendErrors[key] = nil
-        defer { importingAttachments.remove(key) }
+        defer { if epoch == accessGeneration { importingAttachments.remove(key) } }
         do {
             let files = try await load()
             try Task.checkCancellation()
@@ -204,6 +204,7 @@ final class ConversationStore {
     private func clearDraftAttachments() {
         attachmentImportTasks.values.forEach { $0.cancel() }
         attachmentImportTasks = [:]
+        importingAttachments = []
         draftAttachments = [:]
         uploadedAttachmentIDs = [:]
         pendingSends = [:]

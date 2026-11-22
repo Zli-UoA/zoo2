@@ -36,6 +36,22 @@ final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
     }
 }
 
+// 本文の取得に失敗しても、認証・権限の判定に使うヘッダーと元の原因を保持する。
+final class IncompleteHTTPResponse: HTTPURLResponse, @unchecked Sendable {
+    let bodyReadError: any Error
+
+    init?(response: HTTPURLResponse, error: any Error) {
+        guard let url = response.url else { return nil }
+        bodyReadError = error
+        let headers = response.allHeaderFields.reduce(into: [String: String]()) { result, item in
+            if let key = item.key as? String, let value = item.value as? String { result[key] = value }
+        }
+        super.init(url: url, statusCode: response.statusCode, httpVersion: nil, headerFields: headers)
+    }
+
+    required init?(coder: NSCoder) { return nil }
+}
+
 final class HTTPTransport: Sendable {
     let session: URLSession
 
@@ -61,9 +77,23 @@ final class HTTPTransport: Sendable {
                 return result
             }
         }
-        let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw ZooError.invalidResponse }
-        return (data, response)
+        let (bytes, rawResponse) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = rawResponse as? HTTPURLResponse else { throw ZooError.invalidResponse }
+        return try await withTaskCancellationHandler {
+            do {
+                var data = Data()
+                for try await byte in bytes { data.append(byte) }
+                try Task.checkCancellation()
+                return (data, response)
+            } catch {
+                try Task.checkCancellation()
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
+                guard !(200..<300).contains(response.statusCode),
+                      let incomplete = IncompleteHTTPResponse(response: response, error: error) else { throw error }
+                return (Data(), incomplete)
+            }
+        } onCancel: { bytes.task.cancel() }
     }
 
     static func check(_ data: Data, _ response: HTTPURLResponse) throws {

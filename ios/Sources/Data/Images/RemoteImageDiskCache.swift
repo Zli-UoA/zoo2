@@ -40,19 +40,20 @@ actor RemoteImageDiskCache {
         var attributes = URLResourceValues()
         attributes.isExcludedFromBackup = true
         try directory.setResourceValues(attributes)
-        try data.write(to: file(url, namespace: namespace), options: .atomic)
+        let destination = file(url, namespace: namespace)
         let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles])
-        let entries = try files.filter { $0.pathExtension == "image" }.compactMap { url -> (URL, Int, Date)? in
+        let entries = try files.filter { $0.pathExtension == "image" && $0 != destination }.compactMap { url -> (URL, Int, Date)? in
             let values = try url.resourceValues(forKeys: keys)
             guard values.isRegularFile == true else { return nil }
             return (url, values.fileSize ?? 0, values.contentModificationDate ?? .distantPast)
         }.sorted { $0.2 < $1.2 }
-        var bytes = entries.reduce(0) { $0 + $1.1 }, count = entries.count
+        var bytes = entries.reduce(data.count) { $0 + $1.1 }, count = entries.count + 1
         for (url, size, _) in entries where bytes > maximumBytes || count > maximumEntries {
             try FileManager.default.removeItem(at: url)
             bytes -= size; count -= 1
         }
+        try data.write(to: destination, options: .atomic)
     }
 
     private func file(_ url: URL, namespace: String) -> URL {

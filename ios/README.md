@@ -278,9 +278,6 @@ TestFlight 1.0（21）が「テスト中」になったことを確認してい�
 git merge-base --is-ancestor 67bda878fb012bdc829fa8de6d1aef4816c62773 HEAD
 ```
 
-移行PRはマージコミット方式で統合してください。Squash・Rebaseでは元のコミット履歴を保持できません。
-2026-11-22時点のmainには線形履歴必須の保護があるため、履歴を保持してマージする前に保護設定の調整が必要です。
-
 移行元のIssue・PR、未マージのブランチ、GitHub Secrets・Variables、Xcode Cloudの接続設定は
 この取り込みの対象に含めていません。移行元リポジトリはそのまま残しています。
 IssueテンプレートとPRのチェックはzoo2の共通設定を使います。

@@ -51,6 +51,9 @@ struct CallRecoveryTests {
     func recordsBeforeJoining() async throws {
         let journal = MemoryCallSessionJournal()
         let client = FakeCallClient()
+        client.beforeObserveCall = { channelID, sessionID in
+            #expect(journal.records == [CallSessionRecord(channelID: channelID, sessionID: sessionID)])
+        }
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         let calls = store(client, journal: journal)
         defer { calls.shutdown() }
@@ -367,7 +370,11 @@ struct CallRecoveryTests {
         let first = Task { await calls.refreshActiveCalls() }
         for await _ in started.stream { break }
         let second = Task { await calls.refreshActiveCalls() }
-        await Task.yield()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while calls.recoveryWaiters < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try #require(calls.recoveryWaiters == 2)
         release.continuation.yield(())
         await first.value
         await second.value

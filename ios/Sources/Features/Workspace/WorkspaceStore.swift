@@ -75,7 +75,7 @@ final class WorkspaceStore {
     private var pinsVersion: Int64?
     private(set) var channelMembers: [String: [Person]] = [:]
     private(set) var memberErrors: [String: String] = [:]
-    private var memberRequests: Set<String> = []
+    private var memberRequests: [String: Task<Void, Never>] = [:]
     private var groupMembers: [String: [String]] = [:]
     private(set) var emojis: [WorkspaceEmoji] = []
     private(set) var emojiError: String?
@@ -189,22 +189,7 @@ final class WorkspaceStore {
                 try Task.checkCancellation()
                 guard active, channelGeneration == epoch else { return }
             }
-            self.channels = channels.filter { $0.deleted_at == nil }.map { incoming in
-                guard let written = channelWrites[incoming.id] else { return incoming }
-                let caughtUp = incoming.updated_at.flatMap(ZooDate.parse).map { date in
-                    written.updated_at.flatMap(ZooDate.parse).map { date >= $0 } ?? false
-                } ?? false
-                if caughtUp || incoming == written {
-                    channelWrites[incoming.id] = nil
-                    return incoming
-                }
-                // 書き込み直後の古いshapeでは編集した項目だけを保持し、閲覧権限の属性は同期結果を使う。
-                var merged = incoming
-                merged.channel_name = written.channel_name
-                merged.description = written.description
-                merged.archive_at = written.archive_at
-                return merged
-            }.sorted {
+            self.channels = channels.filter { $0.deleted_at == nil }.map { reconcileChannel($0, confirmsWrite: true) }.sorted {
                 $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending
             }
             let previousPeople = self.people
@@ -242,7 +227,7 @@ final class WorkspaceStore {
     func run() async {
         if !hasLoaded {
             do {
-                if let cached = try await client.cachedWorkspace(), active, !Task.isCancelled {
+                if let cached = try await client.cachedWorkspace(), active, !hasLoaded, !Task.isCancelled {
                     channels = cached.channels.filter { $0.deleted_at == nil }.sorted { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
                     people = Dictionary(cached.people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
                     unread = Set(cached.readStates.filter(\.has_unread).map(\.channel_id))
@@ -352,10 +337,38 @@ final class WorkspaceStore {
         }
     }
 
+    private func reconcileChannel(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {
+        guard let written = channelWrites[incoming.id] else { return incoming }
+        let caughtUp = incoming.updated_at.flatMap(ZooDate.parse).map { date in
+            written.updated_at.flatMap(ZooDate.parse).map { date >= $0 } ?? false
+        } ?? false
+        if caughtUp || incoming == written {
+            if confirmsWrite { channelWrites[incoming.id] = nil }
+            return incoming
+        }
+        // 書き込み直後の古いshapeでは編集した項目だけを保持し、閲覧権限の属性は同期結果を使う。
+        var merged = incoming
+        merged.channel_name = written.channel_name
+        merged.description = written.description
+        merged.archive_at = written.archive_at
+        return merged
+    }
+
     func loadMembers(channelID: String) async {
-        guard active, !memberRequests.contains(channelID) else { return }
-        memberRequests.insert(channelID)
-        defer { memberRequests.remove(channelID) }
+        guard active, !Task.isCancelled else { return }
+        if let existing = memberRequests[channelID] {
+            await existing.value
+            return
+        }
+        let task = Task {
+            defer { memberRequests[channelID] = nil }
+            await fetchMembers(channelID: channelID)
+        }
+        memberRequests[channelID] = task
+        await task.value
+    }
+
+    private func fetchMembers(channelID: String) async {
         do {
             let members = try await client.members(channelID: channelID)
             var resolved: [Person] = []
@@ -560,8 +573,9 @@ final class WorkspaceStore {
         let epoch = UUID()
         destinationGeneration = epoch
         do {
-            let channel = try await client.channel(id: channelID)
+            let incoming = try await client.channel(id: channelID)
             try Task.checkCancellation()
+            let channel = reconcileChannel(incoming)
             guard active, destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit,
                   channel.deleted_at == nil else { return false }
             let store = conversation(for: channel)
@@ -587,6 +601,8 @@ final class WorkspaceStore {
         if #available(iOS 27.0, *) { ZooSentMessageStore.shared.clear(in: self) }
         destinationGeneration = UUID()
         channelGeneration = UUID()
+        memberRequests.values.forEach { $0.cancel() }
+        memberRequests = [:]
         conversations.values.forEach { $0.shutdown() }
         conversations.removeAll()
         videoPlayback.stop()

@@ -24,6 +24,7 @@ private final class NotificationTestCoder: NSCoder {
 final class StubProtocol: URLProtocol, @unchecked Sendable {
     typealias Handler = @Sendable (URLRequest) async throws -> (Int, [String: String], Data)
     private static let handlers = Mutex<[String: Handler]>([:])
+    private let callbackLock = NSRecursiveLock()
     private let loading = Mutex((task: Optional<Task<Void, Never>>.none, stopped: false))
 
     static func install(_ handler: Handler?, id: String) {
@@ -59,12 +60,12 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
                 let url = try #require(request.url)
                 let response = try #require(HTTPURLResponse(url: url, statusCode: status,
                                                            httpVersion: "HTTP/1.1", headerFields: headers))
-                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-                client?.urlProtocol(self, didLoad: data)
-                client?.urlProtocolDidFinishLoading(self)
+                deliver { client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed) }
+                deliver { client?.urlProtocol(self, didLoad: data) }
+                deliver { client?.urlProtocolDidFinishLoading(self) }
             } catch {
                 guard !Task.isCancelled else { return }
-                client?.urlProtocol(self, didFailWithError: error)
+                deliver { client?.urlProtocol(self, didFailWithError: error) }
             }
         }
         let stopped = loading.withLock { state in
@@ -73,12 +74,20 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         }
         if stopped { task.cancel() }
     }
+    private func deliver(_ callback: () -> Void) {
+        // URLProtocol の終了通知から stopLoading が再入しても、以降の通知を止める。
+        callbackLock.withLock {
+            guard !loading.withLock({ $0.stopped }) else { return }
+            callback()
+        }
+    }
+
     override func stopLoading() {
-        let task = loading.withLock { state in
+        let task = callbackLock.withLock { loading.withLock { state in
             state.stopped = true
             defer { state.task = nil }
             return state.task
-        }
+        } }
         task?.cancel()
     }
 }
@@ -503,6 +512,56 @@ struct NetworkTests {
         #expect(controller.destination == PushDestination(payload: payload))
     }
 
+    @Test("VoIP トークンの初回通知前は保存済み購読を保ち、明示失効で解除する")
+    func preservesUnknownVoIPToken() async throws {
+        let api = try client()
+        let user = UUID().uuidString
+        let account = PushReceipt.digest(api.settings.storageKey + "|" + user)
+        let preference = "zoo.push.enabled." + account
+        UserDefaults.standard.set(true, forKey: preference)
+        let voip = PreviewPushReceiptStore()
+        let receipt = PushReceipt(server: api.settings.server, account: account, token: "old-voip",
+                                  environment: "sandbox", secret: "test-secret", kind: .voip)
+        try voip.save(receipt)
+        let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
+                                               previewKeys: InMemoryNotificationPreviewKeys(), voipStore: voip)
+        defer {
+            UserDefaults.standard.removeObject(forKey: preference)
+            api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil)
+        }
+        let revocations = Mutex(0)
+        stub { request in
+            switch request.url?.path {
+            case "/api/push/apns/config": return (200, [:], Data(#"{"sandbox":true,"production":false,"voip":true}"#.utf8))
+            case "/api/push/apns/subscriptions":
+                return (200, [:], try JSONEncoder().encode(["id": PushReceipt.digest("sandbox:aa")]))
+            default:
+                #expect(request.url?.path == "/api/push/apns/revoke")
+                #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+                revocations.withLock { $0 += 1 }
+                return (200, [:], Data(#"{"ok":true}"#.utf8))
+            }
+        }
+        controller.connect(api: api, userID: user)
+        await controller.received(token: Data([0xaa]))?.value
+        #expect(try voip.load() == receipt)
+        #expect(revocations.withLock { $0 } == 0)
+        await controller.receivedVoIPToken(nil)?.value
+        #expect(try voip.load() == nil)
+        #expect(revocations.withLock { $0 } == 1)
+    }
+
+    @Test("通知の投稿 ID は省略だけを許可し、文字列以外の値は拒否する")
+    func rejectsMalformedMessageID() {
+        let base: [AnyHashable: Any] = ["user_id": UUID().uuidString, "channel_id": UUID().uuidString]
+        #expect(PushDestination(payload: base) != nil)
+        for invalid in [42, NSNull(), ["id"]] as [Any] {
+            var payload = base
+            payload["message_id"] = invalid
+            #expect(PushDestination(payload: payload) == nil)
+        }
+    }
+
     @Test func testUnauthorizedIsAnExpiredSession() async throws {
         let api = try client()
         defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
@@ -531,6 +590,74 @@ struct NetworkTests {
                 #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "rotated")
             } catch { Issue.record(error) }
         }
+    }
+
+    @Test("更新トークンがなくても実際の有効期限まではアクセストークンを使う")
+    func accessTokenWithoutRefreshUsesRemainingLifetime() async throws {
+        let api = try client()
+        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        try TokenVault.save(TokenSet(access: "remaining", refresh: nil, expires: .now.addingTimeInterval(20)), account: api.settings.storageKey)
+        #expect(try await api.auth.accessToken() == "remaining")
+    }
+
+    @Test("更新後の保存失敗は通信を繰り返さず保存だけ再試行する")
+    func retriesSavingRotatedTokens() async throws {
+        let api = try client(expired: true)
+        var saves = 0
+        let auth = Authentication(settings: api.settings, transport: api.transport, saveToken: { token, account in
+            saves += 1
+            if saves == 1 { throw ZooError.auth("保存失敗の検証") }
+            try TokenVault.save(token, account: account)
+        })
+        defer { auth.logout(); api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        try await confirmation("更新トークンを交換するのは一度だけ") { exchanged in
+            stub { request in
+                if request.url?.path == "/.well-known/openid-configuration" { return Self.discoveryResponse }
+                exchanged()
+                return Self.tokenResponse
+            }
+            await #expect(throws: ZooError.self) { try await auth.accessToken() }
+            let access = try await auth.accessToken()
+            let stored = try TokenVault.load(api.settings.storageKey)
+            #expect(access == "renewed")
+            #expect(saves == 2)
+            #expect(stored?.refresh == "rotated")
+        }
+    }
+
+    @Test("設定エラーではセッションを失効させず、invalid_grant の場合だけ失効を返す",
+          arguments: ["invalid_client", "invalid_grant", "unknown_error"])
+    func classifiesRefreshErrors(code: String) async throws {
+        let api = try client(expired: true)
+        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        stub { request in
+            if request.url?.path == "/.well-known/openid-configuration" { return Self.discoveryResponse }
+            return (400, [:], try JSONEncoder().encode(["error": code]))
+        }
+        do {
+            _ = try await api.auth.accessToken()
+            Issue.record("失敗した更新要求が受け入れられました。")
+        } catch ZooError.expiredSession {
+            #expect(code == "invalid_grant")
+        } catch ZooError.auth {
+            #expect(code != "invalid_grant")
+        }
+        #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "test-refresh")
+    }
+
+    @Test("設定取得中にログアウトした購読を新しい認証情報で登録しない")
+    func subscriptionStopsAfterSessionChange() async throws {
+        let api = try client()
+        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        let backend = LivePushBackend(api: api, transport: api.transport)
+        let receipt = PushReceipt(server: api.settings.server, account: "old", token: "test-token",
+                                  environment: "sandbox", secret: "test-secret")
+        stub { request in
+            #expect(request.url?.path == "/api/push/apns/config")
+            await api.auth.logout()
+            return (200, [:], Data(#"{"sandbox":true,"production":false}"#.utf8))
+        }
+        await #expect(throws: CancellationError.self) { try await backend.subscribe(receipt) }
     }
 
     nonisolated private static var discoveryResponse: (Int, [String: String], Data) {
@@ -597,7 +724,7 @@ struct NetworkTests {
                 do {
                     _ = try await survivor.value
                     Issue.record("拒否されたトークン更新が受け入れられました。")
-                } catch ZooError.expiredSession { }
+                } catch ZooError.auth { }
                 #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "test-refresh")
             }
         }

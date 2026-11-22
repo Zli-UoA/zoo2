@@ -6,6 +6,7 @@ struct ConversationView: View {
     let route: ChatRoute
     @FocusState private var composerFocused: Bool
     @State private var didRequestInitialFocus = false
+    @State private var threadDidAppear = false
     @State private var navigationContentWidth: CGFloat?
 
     private var parentID: String? {
@@ -23,7 +24,7 @@ struct ConversationView: View {
     private var threadUnavailable: Bool {
         guard let parentID else { return false }
         return store.blocked || store.channel.encrypted == true ||
-            (!store.loading && store.syncError == nil && store.message(id: parentID) == nil)
+            (!store.loading && !store.showingCachedMessages && store.syncError == nil && store.message(id: parentID) == nil)
     }
 
     var body: some View {
@@ -121,13 +122,13 @@ struct ConversationView: View {
         .background {
             if focusComposerOnAppear {
                 ThreadAppearanceObserver {
-                    guard isVisible, store.canPost, !didRequestInitialFocus else { return }
-                    didRequestInitialFocus = true
-                    composerFocused = true
+                    threadDidAppear = true
+                    requestInitialFocus()
                 }
                 .frame(width: 0, height: 0)
             }
         }
+        .onChange(of: isVisible && store.canPost) { _, _ in requestInitialFocus() }
         .onChange(of: isVisible && parentID == nil ? store.focusedThreadID : nil, initial: true) { _, target in
             if let target { workspace.openThread(target, in: store, focusComposer: false) }
         }
@@ -135,4 +136,10 @@ struct ConversationView: View {
             if unavailable { workspace.closeThread(route) }
         }
     }
+    private func requestInitialFocus() {
+        guard focusComposerOnAppear, threadDidAppear, isVisible, store.canPost, !didRequestInitialFocus else { return }
+        didRequestInitialFocus = true
+        composerFocused = true
+    }
+
 }

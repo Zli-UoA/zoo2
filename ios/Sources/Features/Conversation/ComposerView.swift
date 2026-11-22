@@ -9,6 +9,7 @@ struct ComposerView: View {
     @State private var submitting = false
     @State private var showingEmoji = false
     @State private var emojiInsertionRange: Range<String.Index>?
+    @State private var emojiInsertionText = ""
     @ScaledMetric(relativeTo: .body) private var candidateHeight: CGFloat = 48
 
     private var key: String { store.draftKey(parentID) }
@@ -100,7 +101,7 @@ struct ComposerView: View {
         }
         .sheet(isPresented: $showingEmoji, onDismiss: { focused = true }) {
             ReactionPicker(workspace: workspace) { value in
-                insert(value, replacing: emojiInsertionRange)
+                insert(value, replacing: draft.wrappedValue == emojiInsertionText ? emojiInsertionRange : nil)
                 showingEmoji = false
             }
         }
@@ -130,7 +131,7 @@ struct ComposerView: View {
                 focused = false
                 workspace.attachmentPickerTarget = AttachmentPickerTarget(store: store, parentID: parentID)
                 workspace.showingFiles = true
-            }.disabled(attachmentsBusy).accessibilityIdentifier("composer-attach-file")
+            }.disabled(attachmentsBusy || remainingAttachmentCount <= 0).accessibilityIdentifier("composer-attach-file")
             Button("スタンプを挿入", systemImage: "face.smiling") { openEmoji() }
             Button("メンションを挿入", systemImage: "at") { insertMention() }
         } label: {
@@ -231,6 +232,7 @@ struct ComposerView: View {
     }
 
     private func openEmoji() {
+        emojiInsertionText = draft.wrappedValue
         emojiInsertionRange = selectedRange
         focused = false
         showingEmoji = true

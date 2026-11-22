@@ -16,7 +16,7 @@ struct CallProtocolTests {
         _ = try parser.feed("event: room_state")
         _ = try parser.feed(#"data: {"participants":[],"max_participants":6,"ice_servers":[{"urls":"stun:stun.example.org"},{"urls":["turn:turn.example.org"],"username":"user","credential":"password"}]}"#)
         guard case .room(let room) = try parser.feed("") else { Issue.record("初期状態がありません"); return }
-        #expect(room.ice_servers.count == 2)
+        try #require(room.ice_servers.count == 2)
         #expect(room.ice_servers[0].urls == ["stun:stun.example.org"])
     }
 
@@ -43,6 +43,7 @@ final class FakeCallClient: CallClient {
     var accepted = false
     var failStream = false
     var delivered: (@MainActor () -> Void)?
+    var beforeObserveCall: (@MainActor (String, String) -> Void)?
     var inviteRequests: [(String, [String])] = []
     var cancelledInvitations: [String] = []
     var inviteResult: [CreatedCallInvitation] = []
@@ -59,6 +60,7 @@ final class FakeCallClient: CallClient {
         return rows
     }
     func observeCall(channelID: String, sessionID: String, receive: @MainActor (CallEvent) async throws -> Void) async throws {
+        beforeObserveCall?(channelID, sessionID)
         observed = true
         sessions.append(sessionID)
         for event in events { try await receive(event) }

@@ -107,7 +107,9 @@ struct MessageActionsView: View {
                 VStack(spacing: 0) {
                     if !message.content.isEmpty {
                         Button {
-                            UIPasteboard.general.string = message.content
+                            if let current = store.message(id: message.id), !current.content.isEmpty {
+                                UIPasteboard.general.string = current.content
+                            }
                             dismiss()
                         } label: { actionLabel("メッセージをコピー", icon: "document.on.document") }
                             .accessibilityIdentifier("message-action-copy")

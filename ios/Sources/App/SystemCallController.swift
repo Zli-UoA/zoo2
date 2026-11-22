@@ -257,8 +257,9 @@ final class SystemCallController: NSObject {
         let duplicate = current?.id == call.id
         if duplicate && !mustReport { completion(); return }
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: call.callerName)
-        update.localizedCallerName = call.callerName
+        let caller = workspace.flatMap { $0.active && call.canAnswer(userID: $0.user.id) ? call.callerName : nil } ?? "Zooの通話"
+        update.remoteHandle = CXHandle(type: .generic, value: caller)
+        update.localizedCallerName = caller
         update.supportsHolding = false; update.supportsGrouping = false
         update.supportsUngrouping = false; update.supportsDTMF = false
         if duplicate {
@@ -317,6 +318,10 @@ final class SystemCallController: NSObject {
                   phase != .ringing || call.expiresAt > .now else {
                 end(reason: .failed); return
             }
+            let update = CXCallUpdate()
+            update.remoteHandle = CXHandle(type: .generic, value: call.callerName)
+            update.localizedCallerName = call.callerName
+            provider.reportCall(with: call.id, updated: update)
             connect(workspace)
         }
     }

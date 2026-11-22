@@ -219,7 +219,7 @@ struct ShapeStream {
                 let useSSE = sync != nil && state.isLive && sseFailures < 3
                 let started = ContinuousClock.now
                 do {
-                    try await ElectricTransport(api: api).read(path, query: parameters, sse: useSSE) { data, response in
+                    let transportResult = try await ElectricTransport(api: api).read(path, query: parameters, sse: useSSE) { data, response in
                         var pendingState = state
                         if sync != nil { pendingState.isLive = false }
                         let result = try await applyShape(pendingState, data: data, response: response, as: type)
@@ -232,18 +232,20 @@ struct ShapeStream {
                         if let snapshot = result.values { receive(snapshot) }
                         else if state.offset == "-1" { receive(nil) }
                     }
+                    if case .longPolling = transportResult { sseFailures = 3 }
                 } catch where useSSE && isSSETransportFailure(error) && !Task.isCancelled {
                     sseFailures += 1
                     try await Task.sleep(for: .seconds(1))
                     continue
                 }
-                if useSSE { sseFailures = started.duration(to: .now) < .seconds(1) ? sseFailures + 1 : 0 }
+                if useSSE && sseFailures < 3 { sseFailures = started.duration(to: .now) < .seconds(1) ? sseFailures + 1 : 0 }
                 // 即時の空応答や継続的な shape 交換でも要求を連打しない。
                 if state.isLive || state.offset == "-1" { try await Task.sleep(for: .milliseconds(250)) }
             }
             throw CancellationError()
         } catch {
             try sync?.check(channelID: query["channel_id"], channelVersion: version)
+            try sync?.checkNotificationVersion(notificationVersion)
             if case ZooError.rejected(let status, _) = error, status == 403 || status == 404 {
                 if let channelID = query["channel_id"] { try await sync?.revokeChannel(channelID) }
                 else if let sync { try await sync.cache.remove(key, lease: sync.lease) }

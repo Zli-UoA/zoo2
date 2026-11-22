@@ -2,6 +2,25 @@
 import Foundation
 
 @MainActor
+enum PreviewTestControl {
+    static var typingVisible = true
+    private static var historyWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
+
+    static func waitForHistory() async {
+        let id = UUID()
+        let pending = AsyncStream<Void>.makeStream()
+        historyWaiters[id] = pending.continuation
+        defer { historyWaiters[id] = nil; pending.continuation.finish() }
+        for await _ in pending.stream { break }
+    }
+
+    static func releaseHistory() {
+        for continuation in historyWaiters.values { continuation.yield(()); continuation.finish() }
+    }
+}
+
+
+@MainActor
 final class PreviewChatClient: ChatClient {
     private var typingStartedAt: [String: ContinuousClock.Instant] = [:]
 
@@ -12,7 +31,7 @@ final class PreviewChatClient: ChatClient {
             let start = typingStartedAt[parentID] ?? .now
             typingStartedAt[parentID] = start
             let elapsed = start.duration(to: .now)
-            guard elapsed >= .seconds(2), elapsed < .seconds(7) else { return [] }
+            guard elapsed >= .seconds(2), PreviewTestControl.typingVisible else { return [] }
         } else if !ProcessInfo.processInfo.arguments.contains("--uitesting-typing") { return [] }
         let person = parentID == nil ? colleague : otherColleague
         return [TypingUser(id: person.id, display_name: person.name)]
@@ -331,7 +350,8 @@ final class PreviewChatClient: ChatClient {
         if let existing = reactions.first(where: { $0.user_id == currentUser.id && $0.emoji == emoji }) { return existing }
         let row = MessageReaction(id: UUID().uuidString.lowercased(), message_id: messageID, user_id: currentUser.id, emoji: emoji)
         reactions.append(row)
-        allMessages[index].display_data = MessageDisplayData(reactions: reactions)
+        if allMessages[index].display_data == nil { allMessages[index].display_data = MessageDisplayData() }
+        allMessages[index].display_data?.reactions = reactions
         return row
     }
 
@@ -347,7 +367,7 @@ final class PreviewChatClient: ChatClient {
             try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
             return
         }
-        if request.limit > 50 { try await Task.sleep(for: .seconds(4)) }
+        if request.limit > 50 { await PreviewTestControl.waitForHistory(); try Task.checkCancellation() }
         historyLimits[request.key] = request.limit
         try await observeMessages(channelID: channelID) { rows in
             let rows = rows ?? []

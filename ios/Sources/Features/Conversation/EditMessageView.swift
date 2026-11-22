@@ -17,6 +17,7 @@ struct EditMessageView: View {
         NavigationStack {
             AppForm {
                 TextField("メッセージ", text: $content, axis: .vertical).lineLimit(5...15)
+                    .disabled(saving)
                     .accessibilityIdentifier("edit-message-input")
                 if let error = store.actionError { Text(error).foregroundStyle(.red) }
             }

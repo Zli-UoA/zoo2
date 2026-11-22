@@ -82,6 +82,14 @@ final class SyncSession {
         try await cache.revokeChannel(id, version: version, notificationVersion: notificationVersion, lease: lease)
     }
 
+    func storeRecovery<T: Encodable & Sendable>(_ value: T, key: String) async throws {
+        do { try await store(value, key: key) }
+        catch {
+            try check()
+            if error is CancellationError || error is SyncInvalidation { throw error }
+        }
+    }
+
     func close() -> Task<Void, Error> {
         active = false
         return Task { try await cache.revoke(lease) }

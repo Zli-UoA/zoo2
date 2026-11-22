@@ -45,12 +45,47 @@ struct IncomingCallNotificationTests {
     }
 
     @Test("応答と拒否をiPhoneのバックグラウンドで処理するボタンとして登録する")
-    func backgroundActions() {
+    func backgroundActions() throws {
         let category = IncomingCallNotifications.category
         #expect(category.actions.map(\.identifier) == [IncomingCallNotifications.answerID, IncomingCallNotifications.declineID])
         #expect(category.actions.map(\.title) == ["iPhoneで応答", "拒否"])
         #expect(category.actions.allSatisfy { !$0.options.contains(.foreground) && !$0.options.contains(.authenticationRequired) })
-        #expect(category.actions[1].options.contains(.destructive))
+        let decline = try #require(category.actions.first { $0.identifier == IncomingCallNotifications.declineID })
+        #expect(decline.options.contains(.destructive))
+    }
+
+    @Test("一時的な通知登録失敗は同じ識別子で再試行する")
+    func retriesTransientFailure() async throws {
+        let call = try call()
+        var identifiers: [String] = []
+        let controller = IncomingCallNotifications(add: { request in
+            identifiers.append(request.identifier)
+            if identifiers.count == 1 { throw URLError(.networkConnectionLost) }
+        }, remove: { _ in }, existing: { [] }, retryDelay: { _ in })
+        await controller.update(call, enabled: true)?.value
+        #expect(identifiers.count == 2)
+        #expect(Set(identifiers).count == 1)
+    }
+
+    @Test("再試行の待機中に無効化した着信は再登録しない")
+    func cancelsRetryWhenDisabled() async throws {
+        let call = try call()
+        let waiting = AsyncStream<Void>.makeStream()
+        defer { waiting.continuation.finish() }
+        var attempts = 0
+        let controller = IncomingCallNotifications(add: { _ in
+            attempts += 1
+            throw URLError(.networkConnectionLost)
+        }, remove: { _ in }, existing: { [] }, retryDelay: { _ in
+            waiting.continuation.yield(())
+            try await Task.sleep(for: .seconds(60))
+        })
+        let delivery = controller.update(call, enabled: true)
+        var iterator = waiting.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        controller.update(call, enabled: false)
+        await delivery?.value
+        #expect(attempts == 1)
     }
 
     @Test("同じ着信は一度だけ通知し、応答や取消で削除する")
@@ -74,8 +109,7 @@ struct IncomingCallNotificationTests {
     @Test("通知が無効な場合や期限切れの着信では登録しない", arguments: [false, true])
     func doesNotScheduleUnavailable(expired: Bool) async throws {
         let probe = Probe(), notifications = probe.controller()
-        notifications.update(try call(expiresAt: .now.addingTimeInterval(expired ? -60 : 60)), enabled: expired)
-        await Task.yield()
+        await notifications.update(try call(expiresAt: .now.addingTimeInterval(expired ? -60 : 60)), enabled: expired)?.value
         #expect(probe.requests.isEmpty)
     }
 

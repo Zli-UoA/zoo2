@@ -148,7 +148,11 @@ struct ChannelReadTests {
         let writes = Mutex(0)
         harness.stub { request in
             if request.httpMethod == "POST" {
-                writes.withLock { $0 += 1 }
+                let attempt = writes.withLock { $0 += 1; return $0 }
+                guard attempt == 1 else {
+                    Issue.record("重複した既読要求が送信されました。")
+                    throw ZooError.invalidResponse
+                }
                 started.continuation.yield(())
                 var iterator = release.stream.makeAsyncIterator()
                 _ = await iterator.next()

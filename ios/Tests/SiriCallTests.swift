@@ -14,7 +14,8 @@ struct SiriCallTests {
         #expect(try ZooCallDestination.people([person]).resolve(in: [recipient]) == recipient)
         #expect(throws: ZooError.self) { try ZooCallDestination.people([person, person]).resolve(in: [recipient]) }
         #expect(throws: ZooError.self) { try ZooCallDestination.people([]).resolve(in: [recipient]) }
-        #expect(throws: ZooError.self) { try ZooCallDestination.person(person).resolve(in: []) }
+        let otherAccount = ShortcutRecipient(id: "server|other-account|person", personID: "person", name: recipient.name, username: recipient.username)
+        #expect(throws: ZooError.self) { try ZooCallDestination.person(person).resolve(in: [otherAccount]) }
         try ZooCallAudioVisualMode.audio.validate()
         #expect(throws: ZooError.self) { try ZooCallAudioVisualMode.video.validate() }
     }

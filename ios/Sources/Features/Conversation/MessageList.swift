@@ -84,7 +84,7 @@ struct MessageList: View {
     }
 
     private var readID: String? {
-        guard isVisible, parentID == nil, !store.showingCachedMessages, readStateLoaded, initialReadState != nil, positionedInitialMessages, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
+        guard isVisible, !userScrolling, parentID == nil, !store.showingCachedMessages, readStateLoaded, initialReadState != nil, positionedInitialMessages, store.focusedMessageID == nil, followingLatest, scenePhase == .active,
               selectedMessage == nil else { return nil }
         return messages.last(where: { $0.parent_id == nil })?.id
     }

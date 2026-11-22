@@ -32,6 +32,6 @@ struct IncomingCall: Equatable, Sendable {
 
     var invitation: CallInvitation {
         CallInvitation(id: id.uuidString.lowercased(), channel_id: channelID, inviter_id: inviterID,
-                       invitee_id: userID, status: "pending", expires_at: expiresAt.ISO8601Format())
+                       invitee_id: userID, status: "pending", expires_at: expiresAt.ISO8601Format(.iso8601(timeZone: .gmt, includingFractionalSeconds: true)))
     }
 }

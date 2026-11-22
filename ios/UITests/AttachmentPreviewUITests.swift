@@ -2,7 +2,8 @@ import XCTest
 
 final class AttachmentPreviewUITests: XCTestCase {
     @MainActor
-    func testGalleryFitsImagesAndSwipesFromTappedImage() {
+    func testGalleryFitsImagesAndSwipesFromTappedImage() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhoneの全幅レイアウトを検証する")
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace", "--uitesting-multiple-images"]
         app.launch()
@@ -81,7 +82,8 @@ final class AttachmentPreviewUITests: XCTestCase {
     }
 
     @MainActor
-    func testSingleSensitiveImageKeepsPreloadedSizeWhenRevealed() {
+    func testSingleSensitiveImageKeepsPreloadedSizeWhenRevealed() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhoneの全幅レイアウトを検証する")
         for (argument, name, ratio) in [("--uitesting-tall-image", "縦長画像.png", 240.0 / 1600),
                                         ("--uitesting-wide-image", "横長画像.png", 4.0)] {
             let app = XCUIApplication()

@@ -359,7 +359,8 @@ final class NativeCallMedia: NSObject, CallMedia {
     func diagnostics() async -> [CallPeerDiagnostics] {
         let epoch = generation
         var results: [CallPeerDiagnostics] = []
-        for (id, peer) in peers.sorted(by: { $0.key < $1.key }) {
+        let observedPeers = peers
+        for (id, peer) in observedPeers.sorted(by: { $0.key < $1.key }) {
             let state = peer.state
             let ice: String
             switch peer.connection.iceConnectionState {
@@ -401,7 +402,7 @@ final class NativeCallMedia: NSObject, CallMedia {
             guard !Task.isCancelled, generation == epoch else { return [] }
             if peers[id] === peer { results.append(snapshot) }
         }
-        return results
+        return results.filter { peers[$0.id] === observedPeers[$0.id] }
     }
 
     private func description(_ connection: RTCPeerConnection, offer: Bool) async throws -> String {

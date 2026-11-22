@@ -20,6 +20,8 @@ final class AppSession {
     private var syncCache: SyncCache?
     private var syncSession: SyncSession?
     private var cacheCleanup: Task<Void, Error>?
+    private var needsCacheCleanup = false
+    private var destinationDelivery: (id: UUID, target: PushDestination, task: Task<Bool, Never>)?
     private var validatedSession = false
 
     init(settings: ConnectionSettings = ConnectionSettings(), transport: HTTPTransport = HTTPTransport(),
@@ -103,10 +105,22 @@ final class AppSession {
             }
         }
         do {
-            try await cacheCleanup?.value
+            do { try await cacheCleanup?.value }
+            catch {
+                if generation == epoch { cacheCleanup = nil }
+                throw error
+            }
+            try Task.checkCancellation()
+            guard generation == epoch else { return }
             cacheCleanup = nil
             if syncCache == nil { syncCache = try await SyncCache.open(inMemory: Self.isUITesting) }
             guard let syncCache else { throw ZooError.invalidResponse }
+            if needsCacheCleanup {
+                try await syncCache.forget(connection: SyncCache.connectionKey(api.settings))
+                try Task.checkCancellation()
+                guard generation == epoch else { return }
+                needsCacheCleanup = false
+            }
             if interactive {
                 try await syncCache.forget(connection: SyncCache.connectionKey(api.settings))
                 try await authentication.login { prompt in deviceAuthorization = prompt }
@@ -178,6 +192,8 @@ final class AppSession {
 
     func logout() {
         cancelConnection()
+        destinationDelivery?.task.cancel()
+        destinationDelivery = nil
         systemCalls?.disconnect()
         workspace?.shutdown()
         workspace = nil
@@ -189,7 +205,10 @@ final class AppSession {
         }
         notifications.logout()
         authentication.logout()
-        if let syncSession { cacheCleanup = syncSession.close() }
+        if let syncSession {
+            needsCacheCleanup = true
+            cacheCleanup = syncSession.close()
+        }
         self.syncSession = nil
     }
 
@@ -241,7 +260,17 @@ final class AppSession {
             return
         }
         let epoch = generation
-        if await workspace.open(target), epoch == generation, notifications.destination == target {
+        let delivery: (id: UUID, target: PushDestination, task: Task<Bool, Never>)
+        if let current = destinationDelivery, current.target == target {
+            delivery = current
+        } else {
+            destinationDelivery?.task.cancel()
+            delivery = (UUID(), target, Task { await workspace.open(target) })
+            destinationDelivery = delivery
+        }
+        let opened = await delivery.task.value
+        if destinationDelivery?.id == delivery.id { destinationDelivery = nil }
+        if opened, epoch == generation, notifications.destination == target {
             notifications.destination = nil
         }
     }

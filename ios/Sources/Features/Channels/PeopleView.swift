@@ -9,6 +9,10 @@ struct PeopleView: View {
     @State private var submitting = false
     @State private var error: String?
 
+    private var eligibleIDs: Set<String> {
+        Set(workspace.people.values.filter { $0.id != workspace.user.id && !$0.is_bot && !$0.is_deactivated }.map(\.id))
+    }
+
     private var candidates: [Person] {
         workspace.people.values.filter {
             $0.id != workspace.user.id && !$0.is_bot && !$0.is_deactivated &&
@@ -41,6 +45,7 @@ struct PeopleView: View {
                 }
             }
             .disabled(submitting)
+            .onChange(of: eligibleIDs, initial: true) { _, ids in recipients.formIntersection(ids) }
             .appSearch(text: $search, prompt: "名前を検索", identifier: "people") {
                 Button("開始") { submitting = true }
                     .disabled(recipients.isEmpty || submitting)
@@ -54,7 +59,9 @@ struct PeopleView: View {
                 guard submitting else { return }
                 defer { submitting = false }
                 do {
+                    recipients.formIntersection(eligibleIDs)
                     let ids = recipients.sorted()
+                    guard !ids.isEmpty else { throw ZooError.auth("宛先を選び直してください。") }
                     if let draftContent {
                         let actions = ShortcutActions(workspace: workspace)
                         let targets = try actions.recipients(in: Array(workspace.people.values)).filter { recipients.contains($0.personID) }

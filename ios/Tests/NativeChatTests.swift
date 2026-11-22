@@ -56,8 +56,14 @@ struct ShapeTests {
     @Test("HTTP 204でも同期位置を維持する")
     func emptyLiveResponse() throws {
         var state = ShapeState()
-        #expect(try state.apply(Data(), response: response(status: 204), as: Message.self)?.isEmpty == true)
+        _ = try state.apply(Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8), response: response(offset: "9_4", handle: "known-shape"), as: Message.self)
+        let before = state.query
+        let empty = try #require(HTTPURLResponse(url: URL(string: "https://api.test.invalid/api/shapes/messages")!, statusCode: 204,
+                                                 httpVersion: "HTTP/1.1", headerFields: [:]))
+        #expect(try state.apply(Data(), response: empty, as: Message.self)?.isEmpty == true)
         #expect(state.isLive)
+        #expect(state.query["offset"] == before["offset"])
+        #expect(state.query["handle"] == before["handle"])
     }
 
     @Test("バックエンドと Electric の日時を UTC として読む", arguments: [
@@ -320,6 +326,7 @@ struct NativeChatTests {
         let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
         var acknowledgements = 0
         store.onRead = { acknowledgements += 1 }
+        await store.markRead(through: messageID)
         await store.markRead(through: messageID)
         await store.markRead(through: messageID)
         #expect(attempts.withLock { $0 } == 2)

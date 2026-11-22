@@ -16,7 +16,7 @@ export function selectOtherJobs(eventName, changes) {
       else result.bots = { bot: true, sdk: true };
     } else if (path.startsWith('frontend/')) {
       if (!/\.(test|spec)\.tsx?$/.test(path) && !path.startsWith('frontend/src/test/') && !path.startsWith('frontend/e2e/')) result.storybookPreview = true;
-    } else if (!/^(backend|infra|docs|crates)\//.test(path) && !/\.(md|txt)$/.test(path)) return full();
+    } else if (!/^(backend|infra|docs|crates|ios)\//.test(path) && !/\.(md|txt)$/.test(path)) return full();
   }
   result.bots.image = result.bots.bot && changes.some(c => !c.path.startsWith('apps/github-bot/test/') && !/\.test\.ts$/.test(c.path));
   return result;

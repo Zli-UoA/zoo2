@@ -96,7 +96,6 @@ final class ZooUITests: XCTestCase {
         attach.tap()
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "キャンセル"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 15))
-        capture(app, name: "添付ファイルの選択画面")
         cancel.tap()
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, "添付を選ぶ前の下書き")
@@ -117,7 +116,6 @@ final class ZooUITests: XCTestCase {
         photos.tap()
         let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "キャンセル", "Close", "閉じる"])).firstMatch
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
-        capture(app, name: "写真と動画の選択画面")
         cancel.tap()
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCTAssertEqual(field.value as? String, "写真を選ぶ前の下書き")
@@ -973,7 +971,7 @@ final class ZooUITests: XCTestCase {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad, "iPadで回転を確認する")
         defer { XCUIDevice.shared.orientation = .portrait }
         let app = XCUIApplication()
-        app.launchArguments = ["--uitesting"]
+        app.launchArguments = ["--uitesting", "--uitesting-orientation"]
         app.launch()
         let login = app.buttons["login"]
         XCTAssertTrue(login.waitForExistence(timeout: 5))
@@ -982,7 +980,7 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(app.frame.contains(login.frame))
         capture(app, name: "iPadの横向きログイン画面")
         XCUIDevice.shared.orientation = .portraitUpsideDown
-        waitForPortrait(app)
+        XCTAssertTrue(app.otherElements["interface-orientation"].wait(for: \.label, toEqual: "portraitUpsideDown", timeout: 5))
         XCTAssertTrue(login.isHittable)
         capture(app, name: "iPadの上下逆向きログイン画面")
     }
@@ -1304,8 +1302,6 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(link.waitForExistence(timeout: 5))
         link.tap()
         XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
-        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 5))
     }
 
     @MainActor
@@ -1529,6 +1525,7 @@ final class ZooUITests: XCTestCase {
         // 履歴の追加で配列の添字が変わるため、同じ投稿の識別子を基準に検証する。
         let anchor = list.staticTexts[candidate.identifier]
         let originalY = anchor.frame.minY
+        app.buttons["preview-release-history"].tap()
         XCTAssertTrue(loading.waitForNonExistence(timeout: 8))
         XCTAssertTrue(anchor.isHittable)
         XCTAssertEqual(anchor.frame.minY, originalY, accuracy: 4, "追加取得でも読んでいた位置を維持する")

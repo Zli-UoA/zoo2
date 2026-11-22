@@ -9,6 +9,7 @@ actor SyncCache {
     private var channelVersions: [String: UUID] = [:]
     private var blockedChannels: Set<String> = []
     private var notificationVersions: [String: UUID] = [:]
+    private var blockedResources: Set<String> = []
     private var attachmentFiles: AttachmentDiskCache?
 
     @concurrent static func open(inMemory: Bool = false, url: URL? = nil, attachmentDirectory: URL? = nil) async throws -> SyncCache {
@@ -70,6 +71,7 @@ actor SyncCache {
     func load(_ resource: String, lease: SyncLease) throws -> Data? {
         try check(lease)
         let id = lease.account + "|" + resource
+        guard !blockedResources.contains(id) else { return nil }
         return try modelContext.fetch(FetchDescriptor<CachedSyncRecord>(predicate: #Predicate { $0.id == id })).first?.payload
     }
 
@@ -95,6 +97,7 @@ actor SyncCache {
             modelContext.insert(CachedSyncRecord(account: lease.account, resource: resource, channelID: channelID, payload: payload))
         }
         try save()
+        blockedResources.remove(id)
     }
 
     func remove(_ resource: String, lease: SyncLease) throws {
@@ -152,12 +155,17 @@ actor SyncCache {
         channelVersions[key] = version
         blockedChannels.insert(key)
         notificationVersions[account] = notificationVersion
+        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
+        let ids = resources.map { account + "|" + $0 }
+        blockedResources.formUnion(ids)
         try? attachmentFiles?.remove(account: account, channelID: channelID)
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
         // 通知の本文にも会話の情報が含まれるため、通知の控えも再取得する。
-        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
-        for resource in resources { try remove(resource, lease: lease) }
+        for id in ids {
+            try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.id == id })
+        }
         try save()
+        blockedResources.subtract(ids)
     }
 
     func authorizeChannel(_ channelID: String, version: UUID, lease: SyncLease) throws {

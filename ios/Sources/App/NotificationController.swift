@@ -14,6 +14,7 @@ final class NotificationController {
     private let registration: PushRegistration
     private let voipRegistration: PushRegistration
     private var voipToken: String?
+    private var voipTokenRevoked = false
     private let receiptStore: any PushReceiptStore
     private let previewKeys: any NotificationPreviewKeyStorage
     private let transport: HTTPTransport
@@ -119,6 +120,7 @@ final class NotificationController {
     }
     @discardableResult
     func receivedVoIPToken(_ data: Data?) -> Task<Void, Never>? {
+        voipTokenRevoked = data == nil
         voipToken = data?.map { String(format: "%02x", $0) }.joined()
         guard api != nil else { return nil }
         return synchronize(allowRegistration: enabled && !authorizationDenied)
@@ -266,7 +268,7 @@ final class NotificationController {
             }
         }
         var voipError: Error?
-        let voip = voipRegistration.update(backend: backend, account: voipToken == nil ? nil : desired,
+        let voip = voipRegistration.update(backend: backend, account: voipTokenRevoked ? nil : desired,
                                            token: voipToken, environment: environment) { result in
             if case .failure(let error) = result { voipError = error }
         }

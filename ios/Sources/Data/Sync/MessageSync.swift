@@ -169,6 +169,8 @@ struct MessageSync {
         state.shape.isLive = false
         var sseFailures = 0
         var catchingUp = true
+        var lookedUpMessages: Set<String> = []
+        var lookupHandle = state.shape.handle
         do {
             while !Task.isCancelled {
                 try sync.check(channelID: channelID)
@@ -183,10 +185,17 @@ struct MessageSync {
                 }
                 do {
                     try await loadWindow(request, state: &state)
-                    if let focusID = request.focusID { try await loadMessage(focusID, state: &state) }
-                    if let parentID = request.parentID { try await loadMessage(parentID, state: &state) }
+                    if lookupHandle != state.shape.handle {
+                        lookedUpMessages.removeAll()
+                        lookupHandle = state.shape.handle
+                    }
+                    for id in [request.focusID, request.parentID].compactMap({ $0 }) where !lookedUpMessages.contains(id) {
+                        try await loadMessage(id, state: &state)
+                        lookedUpMessages.insert(id)
+                    }
                 } catch MessageSyncError.reset {
                     state = MessageSyncState()
+                    lookedUpMessages.removeAll()
                     try await sync.store(state, key: key, channelID: channelID, channelVersion: version)
                     receive(MessageFeedSnapshot(messages: nil))
                     try await Task.sleep(for: .milliseconds(500))
@@ -199,7 +208,7 @@ struct MessageSync {
                 let useSSE = !catchingUp && state.shape.isLive && sseFailures < 3
                 let started = ContinuousClock.now
                 do {
-                    try await ElectricTransport(api: api).read("api/shapes/messages", query: query, sse: useSSE) { data, response in
+                    let transportResult = try await ElectricTransport(api: api).read("api/shapes/messages", query: query, sse: useSSE) { data, response in
                         let next = try await updateMessageState(state, data: data, response: response)
                         let messages = next.shape.isLive ? try await decodeShapeRows(next.shape.rows, as: Message.self) : nil
                         if next.shape.isLive || next.shape.offset == "now" {
@@ -211,13 +220,14 @@ struct MessageSync {
                                                         loadedLimit: state.windows[request.key]?.limit ?? 0))
                         }
                     }
+                    if case .longPolling = transportResult { sseFailures = 3 }
                 } catch where useSSE && isSSETransportFailure(error) && !Task.isCancelled {
                     sseFailures += 1
                     try await Task.sleep(for: .seconds(1))
                     continue
                 }
                 catchingUp = !state.shape.isLive
-                if useSSE { sseFailures = started.duration(to: .now) < .seconds(1) ? sseFailures + 1 : 0 }
+                if useSSE && sseFailures < 3 { sseFailures = started.duration(to: .now) < .seconds(1) ? sseFailures + 1 : 0 }
                 try await Task.sleep(for: .milliseconds(250))
             }
         } catch {

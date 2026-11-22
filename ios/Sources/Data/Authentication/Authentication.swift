@@ -70,11 +70,16 @@ final class Authentication {
     private var tokens: TokenSet?
     private var loadedTokens = false
     private var refreshTask: Task<TokenSet, Error>?
+    private var pendingTokens: TokenSet?
+    private let saveToken: (TokenSet, String) throws -> Void
     private var generation = UUID()
+    var sessionID: UUID { generation }
 
-    init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport()) {
+    init(settings: ConnectionSettings, transport: HTTPTransport = HTTPTransport(),
+         saveToken: @escaping (TokenSet, String) throws -> Void = { try TokenVault.save($0, account: $1) }) {
         self.settings = settings
         self.transport = transport
+        self.saveToken = saveToken
     }
 
     private func sessionTokens() throws -> TokenSet? {
@@ -219,7 +224,13 @@ final class Authentication {
 
     private func exchangeToken(endpoint: String, fields: [String: String], previousRefresh: String?) async throws -> TokenSet {
         let (data, response) = try await postForm(endpoint: endpoint, fields: fields)
-        try HTTPTransport.check(data, response)
+        if response.statusCode == 400,
+           (try? JSONDecoder().decode(OAuthFailure.self, from: data))?.error == "invalid_grant" {
+            throw ZooError.expiredSession
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            throw deviceLoginError(data, status: response.statusCode)
+        }
         return try decodeToken(data, previousRefresh: previousRefresh)
     }
 
@@ -241,8 +252,13 @@ final class Authentication {
 
     func accessToken() async throws -> String {
         try Task.checkCancellation()
+        if let pendingTokens {
+            try saveToken(pendingTokens, settings.storageKey)
+            tokens = pendingTokens
+            self.pendingTokens = nil
+        }
         guard let tokens = try sessionTokens() else { throw ZooError.expiredSession }
-        if tokens.expires.timeIntervalSinceNow > 30 { return tokens.access }
+        if tokens.expires.timeIntervalSinceNow > 30 || (tokens.refresh == nil && tokens.expires > .now) { return tokens.access }
         let epoch = generation
         let task: Task<TokenSet, Error>
         if let refreshTask {
@@ -259,8 +275,10 @@ final class Authentication {
                 try Task.checkCancellation()
                 guard epoch == generation else { throw CancellationError() }
                 // 呼び出し元がキャンセルされても、待機者へ返す前に更新後の認証情報を保存します。
-                try TokenVault.save(fresh, account: settings.storageKey)
+                pendingTokens = fresh
+                try saveToken(fresh, settings.storageKey)
                 self.tokens = fresh
+                pendingTokens = nil
                 return fresh
             }
             refreshTask = task
@@ -273,9 +291,6 @@ final class Authentication {
         } catch {
             try Task.checkCancellation()
             guard epoch == generation else { throw CancellationError() }
-            if case ZooError.rejected(let status, _) = error, status == 400 || status == 401 {
-                throw ZooError.expiredSession
-            }
             throw error
         }
     }
@@ -284,6 +299,7 @@ final class Authentication {
         generation = UUID()
         refreshTask?.cancel()
         refreshTask = nil
+        pendingTokens = nil
         tokens = nil
         loadedTokens = true
         TokenVault.delete(settings.storageKey)

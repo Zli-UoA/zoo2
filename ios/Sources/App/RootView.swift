@@ -13,7 +13,7 @@ struct RootView: View {
             } else if session.isStarting || session.restoring {
                 LaunchScreenView()
             } else {
-                ViewThatFits(in: .vertical) {
+                ScrollView {
                     VStack(spacing: 24) {
                         welcomeHeader
                         if let prompt = session.deviceAuthorization {
@@ -21,20 +21,30 @@ struct RootView: View {
                         }
                         loginActions
                     }
-                    HStack(spacing: 24) {
-                        if let prompt = session.deviceAuthorization {
-                            authorizationDetails(prompt)
-                        } else {
-                            welcomeHeader
-                        }
-                        loginActions
-                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .multilineTextAlignment(.center)
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        #if DEBUG
+        .overlay(alignment: .topTrailing) {
+            if AppSession.isUITesting {
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-paged-history") {
+                    Button("取得を再開") { PreviewTestControl.releaseHistory() }
+                        .accessibilityIdentifier("preview-release-history")
+                }
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-typing-transition") {
+                    Button("入力中表示を終了") { PreviewTestControl.typingVisible = false }
+                        .accessibilityIdentifier("preview-end-typing")
+                }
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-orientation") {
+                    InterfaceOrientationProbe().frame(width: 1, height: 1)
+                }
+            }
+        }
+        #endif
         .background(AppDesign.background.ignoresSafeArea())
         .sheet(isPresented: $showingVerification) {
             if let prompt = session.deviceAuthorization {
@@ -116,3 +126,32 @@ private struct VerificationBrowser: UIViewControllerRepresentable {
         func safariViewControllerDidFinish(_ controller: SFSafariViewController) { finish() }
     }
 }
+
+#if DEBUG
+private struct InterfaceOrientationProbe: UIViewRepresentable {
+    func makeUIView(context: Context) -> Probe { Probe() }
+    func updateUIView(_ view: Probe, context: Context) { view.setNeedsLayout() }
+
+    final class Probe: UIView {
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isAccessibilityElement = true
+            accessibilityIdentifier = "interface-orientation"
+        }
+        required init?(coder: NSCoder) { nil }
+        override var accessibilityLabel: String? {
+            get {
+                // 同じ寸法の回転では再配置されないため、照会時の向きを返す。
+                switch window?.windowScene?.effectiveGeometry.interfaceOrientation {
+                case .portraitUpsideDown: "portraitUpsideDown"
+                case .portrait: "portrait"
+                case .landscapeLeft: "landscapeLeft"
+                case .landscapeRight: "landscapeRight"
+                default: "unknown"
+                }
+            }
+            set { super.accessibilityLabel = newValue }
+        }
+    }
+}
+#endif

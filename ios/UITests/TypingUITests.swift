@@ -22,6 +22,7 @@ final class TypingUITests: XCTestCase {
         XCTAssertTrue(latest.wait(for: \.isHittable, toEqual: true, timeout: 5))
         XCTAssertLessThanOrEqual(latest.frame.maxY, indicator.frame.minY)
         capture(app, name: "返信中に入力者が現れた状態")
+        app.buttons["preview-end-typing"].tap()
         XCTAssertTrue(indicator.waitForNonExistence(timeout: 10))
         XCTAssertTrue(latest.isHittable)
         XCTAssertLessThanOrEqual(latest.frame.maxY, app.textFields["reply-input"].frame.minY)

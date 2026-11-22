@@ -13,7 +13,7 @@ struct NativeChatClient: ChatClient {
         let previous = try await sync.load("workspace:channels", as: [Channel].self) ?? []
         let accessible = Set(channels.filter { $0.deleted_at == nil && $0.encrypted != true }.map(\.id))
         for channel in previous where !accessible.contains(channel.id) { try await sync.revokeChannel(channel.id) }
-        try await sync.store(channels, key: "workspace:channels")
+        try await sync.storeRecovery(channels, key: "workspace:channels")
         return channels
     }
     func channel(id: String) async throws -> Channel {
@@ -40,7 +40,7 @@ struct NativeChatClient: ChatClient {
     func people() async throws -> [Person] {
         // REST のユーザー応答には avatar_url がないため、Web と同じ shape を使う。
         let people = try await shapes.snapshot("api/shapes/users", as: Person.self)
-        try await sync?.store(people, key: "workspace:people")
+        try await sync?.storeRecovery(people, key: "workspace:people")
         return people
     }
     func person(id: String) async throws -> Person { try await api.get("api/users/\(try segment(id))") }
@@ -62,7 +62,7 @@ struct NativeChatClient: ChatClient {
         do {
             let data = try await api.data(path, query: query)
             guard let value = try await Optional(data).asyncDecode(T.self) else { throw ZooError.invalidResponse }
-            try await sync?.store(value, key: key)
+            try await sync?.storeRecovery(value, key: key)
             return value
         } catch {
             if isOfflineFailure(error), let value = try await sync?.load(key, as: T.self) { return value }
@@ -208,7 +208,14 @@ struct NativeChatClient: ChatClient {
             // 参加（アーカイブ済みは先に再Open）してから、同じ ID で一度だけ再送する。復旧できなければ元の 403 を返す。
             // 投稿権限がないチャンネルなど、参加不足以外の 403 は `threadJoinRequired` にならず、参加せずに失敗する
             // （判定は `code` を優先し、`code` のない応答だけ本文で見る。`HTTPTransport.check`）。
-            guard let parentID, try await rejoinThread(messageID: parentID) else {
+            do {
+                guard let parentID, try await rejoinThread(messageID: parentID) else {
+                    throw ZooError.rejected(403, message)
+                }
+            } catch {
+                try Task.checkCancellation()
+                if error is CancellationError { throw error }
+                if case ZooError.expiredSession = error { throw error }
                 throw ZooError.rejected(403, message)
             }
             do {
@@ -228,11 +235,11 @@ struct NativeChatClient: ChatClient {
         let lean = ["participants": "none"]
         // GET に本文を付けると URLSession が拒否するため、`write` ではなく本文なしの `data` で取得する。
         let status = try JSONDecoder().decode(Envelope<ThreadMembership>.self, from: await api.data(path, query: lean)).data
-        guard status.can_participate, status.membership != "joined" else { return false }
+        guard status.can_participate else { return false }
         if status.thread_archive_at != nil {
             _ = try await api.data("\(path)/unarchive", method: "POST", query: lean)
         }
-        _ = try await api.data("\(path)/join", method: "POST", query: lean)
+        if status.membership != "joined" { _ = try await api.data("\(path)/join", method: "POST", query: lean) }
         return true
     }
 

@@ -1,5 +1,7 @@
 import Foundation
 
+enum ElectricReadResult: Sendable { case complete, longPolling }
+
 func isSSETransportFailure(_ error: Error) -> Bool {
     if let error = error as? URLError { return error.code != .cancelled }
     if case ZooError.invalidResponse = error { return true }
@@ -11,6 +13,7 @@ struct ElectricSSEParser: Sendable {
     private var dataLines: [String] = []
     private var carriageReturn = false
     private var size = 0
+    var hasPendingEvent: Bool { !line.isEmpty || !dataLines.isEmpty }
 
     mutating func feed(_ byte: UInt8) throws -> Data? {
         if byte == 10 && carriageReturn { carriageReturn = false; return nil }
@@ -40,30 +43,31 @@ struct ElectricTransport {
     let api: APIClient
 
     func read(_ path: String, query: [String: String], sse: Bool,
-              receive: @MainActor (Data, HTTPURLResponse) async throws -> Void) async throws {
+              receive: @MainActor (Data, HTTPURLResponse) async throws -> Void) async throws -> ElectricReadResult {
         var query = query
         if sse { query["live_sse"] = "true" }
         var request = try await api.request(path, query: query)
         if sse {
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            try await api.transport.consumeElectricSSE(request, receive: receive)
+            return try await api.transport.consumeElectricSSE(request, receive: receive)
         } else {
             let (data, response) = try await api.transport.send(request)
             try Task.checkCancellation()
             try await receive(data, response)
+            return .complete
         }
     }
 }
 
 extension HTTPTransport {
     @concurrent func consumeElectricSSE(_ request: URLRequest,
-                                        receive: @MainActor @Sendable (Data, HTTPURLResponse) async throws -> Void) async throws {
+                                        receive: @MainActor @Sendable (Data, HTTPURLResponse) async throws -> Void) async throws -> ElectricReadResult {
         let (bytes, rawResponse) = try await session.bytes(for: request)
         defer { bytes.task.cancel() }
         guard let response = rawResponse as? HTTPURLResponse else { throw ZooError.invalidResponse }
         if response.statusCode == 409 {
             try await receive(Data(), response)
-            return
+            return .complete
         }
         try Self.check(Data(), response)
         guard response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true else {
@@ -74,12 +78,13 @@ extension HTTPTransport {
                 guard data.count <= 64 * 1024 * 1024 else { throw ZooError.invalidResponse }
             }
             try await receive(data, response)
-            return
+            return .longPolling
         }
         try await withTaskCancellationHandler {
             var parser = ElectricSSEParser()
             var events: [ShapeEvent] = []
             var pendingBytes = 0
+            var receivedBatch = false
             for try await byte in bytes {
                 try Task.checkCancellation()
                 guard let data = try parser.feed(byte) else { continue }
@@ -102,10 +107,13 @@ extension HTTPTransport {
                     throw ZooError.invalidResponse
                 }
                 try await receive(try JSONEncoder().encode(events), batchResponse)
+                receivedBatch = true
                 events.removeAll(keepingCapacity: true)
                 pendingBytes = 0
             }
             // up-to-dateに到達していない末尾は保存せず、前の同期位置から再取得する。
+            if !receivedBatch || !events.isEmpty || pendingBytes > 0 || parser.hasPendingEvent { throw ZooError.invalidResponse }
         } onCancel: { bytes.task.cancel() }
+        return .complete
     }
 }

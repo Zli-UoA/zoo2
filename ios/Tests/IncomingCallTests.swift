@@ -10,6 +10,7 @@ import UserNotifications
 @MainActor
 private final class FakeCallReporting: SystemCallReporting {
     var incoming: [UUID] = []
+    var incomingNames: [String] = []
     var ended: [UUID] = []
     var failure: Error?
     var onEnd: (() -> Void)?
@@ -21,6 +22,7 @@ private final class FakeCallReporting: SystemCallReporting {
     func reportOutgoingCall(with UUID: UUID, connectedAt dateConnected: Date?) { connected.append(UUID) }
     func reportNewIncomingCall(with UUID: UUID, update: CXCallUpdate, completion: @escaping @Sendable ((any Error)?) -> Void) {
         incoming.append(UUID)
+        incomingNames.append(update.localizedCallerName ?? "")
         completion(failure)
     }
     func reportCall(with UUID: UUID, endedAt dateEnded: Date?, reason endedReason: CXCallEndedReason) {
@@ -39,6 +41,12 @@ private final class FakeCallRequesting: SystemCallRequesting {
         completion(failure)
         if failure == nil { onRequest?(transaction) }
     }
+}
+
+@MainActor
+private final class WorkspaceReference {
+    var value: WorkspaceStore?
+    init(_ value: WorkspaceStore?) { self.value = value }
 }
 
 private final class RecordingAnswerAction: CXAnswerCallAction {
@@ -79,25 +87,37 @@ struct OutgoingCallTests {
         }
 
         func requestStart(muted: Bool = false) async throws -> CXStartCallAction {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                requesting.onRequest = { [weak self] _ in
-                    self?.requesting.onRequest = nil
-                    continuation.resume()
-                }
-                connection = calls.start(channel: channel, initialMuted: muted)
+            let requested = AsyncStream<Void>.makeStream()
+            requesting.onRequest = { _ in requested.continuation.yield(()) }
+            defer { requesting.onRequest = nil; requested.continuation.finish() }
+            connection = calls.start(channel: channel, initialMuted: muted)
+            let connection = try #require(connection)
+            let completion = Task {
+                await connection.value
+                requested.continuation.finish()
             }
+            defer { completion.cancel() }
+            var iterator = requested.stream.makeAsyncIterator()
+            try #require(await iterator.next() != nil)
+            try Task.checkCancellation()
             let transaction = try #require(requesting.requests.last)
             return try #require(transaction.actions.first as? CXStartCallAction)
         }
 
-        func performStart(_ action: CXStartCallAction) async {
-            await withCheckedContinuation { continuation in
-                client.delivered = { [weak self] in
-                    self?.client.delivered = nil
-                    continuation.resume()
-                }
-                controller.provider(native, perform: action)
+        func performStart(_ action: CXStartCallAction) async throws {
+            let delivered = AsyncStream<Void>.makeStream()
+            client.delivered = { delivered.continuation.yield(()) }
+            defer { client.delivered = nil; delivered.continuation.finish() }
+            let connection = try #require(connection)
+            let completion = Task {
+                await connection.value
+                delivered.continuation.finish()
             }
+            defer { completion.cancel() }
+            controller.provider(native, perform: action)
+            var iterator = delivered.stream.makeAsyncIterator()
+            try #require(await iterator.next() != nil)
+            try Task.checkCancellation()
         }
 
         func close() {
@@ -116,7 +136,7 @@ struct OutgoingCallTests {
         #expect(context.controller.isManagingCall && context.controller.incomingInvitationID == nil)
         #expect(!context.client.observed && !context.media.started)
         #expect(action.handle.value == "待ち合わせ")
-        await context.performStart(action)
+        try await context.performStart(action)
         #expect(context.calls.ready && context.media.started)
         #expect(context.reporting.connecting == [action.callUUID])
         #expect(context.reporting.names == ["待ち合わせ"])
@@ -136,7 +156,7 @@ struct OutgoingCallTests {
         let context = try Context()
         defer { context.close() }
         let action = try await context.requestStart()
-        await context.performStart(action)
+        try await context.performStart(action)
         let mute = CXSetMutedCallAction(call: action.callUUID, muted: true)
         context.controller.provider(context.native, perform: mute)
         #expect(context.calls.muted && context.media.muted)
@@ -151,7 +171,7 @@ struct OutgoingCallTests {
         let context = try Context()
         defer { context.close() }
         let start = try await context.requestStart()
-        await context.performStart(start)
+        try await context.performStart(start)
         let call = try #require(context.controller.watchCall)
         #expect(call.id == start.callUUID && call.phase == .connected && call.canSetMuted)
         let count = context.requesting.requests.count
@@ -175,16 +195,16 @@ struct OutgoingCallTests {
         let context = try Context()
         defer { context.close() }
         let start = try await context.requestStart()
-        await context.performStart(start)
-        var workspace: WorkspaceStore? = context.workspace
-        let service = WatchCompanionService(calls: context.controller, workspace: { workspace }, prepare: { workspace })
+        try await context.performStart(start)
+        let workspace = WorkspaceReference(context.workspace)
+        let service = WatchCompanionService(calls: context.controller, workspace: { workspace.value }, prepare: { workspace.value })
         let initial = service.snapshot()
         let count = context.requesting.requests.count
         let stale = await service.respond(to: WatchRequest(action: .end, sessionID: UUID(), callID: start.callUUID))
         #expect(stale.error != nil && context.requesting.requests.count == count)
-        workspace = nil
+        workspace.value = nil
         #expect(service.snapshot().sessionID == nil && service.snapshot().notices.isEmpty)
-        workspace = context.workspace
+        workspace.value = context.workspace
         #expect(service.snapshot().sessionID != initial.sessionID)
         let reconnected = await service.respond(to: WatchRequest(action: .end, sessionID: initial.sessionID, callID: start.callUUID))
         #expect(reconnected.error != nil && context.requesting.requests.count == count)
@@ -197,16 +217,16 @@ struct OutgoingCallTests {
         let context = try Context()
         defer { context.close() }
         let start = try await context.requestStart()
-        await context.performStart(start)
+        try await context.performStart(start)
         let started = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let release = AsyncStream<Void>.makeStream()
         let cancelled = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         defer { started.continuation.finish(); release.continuation.finish(); cancelled.continuation.finish() }
-        var workspace: WorkspaceStore? = context.workspace
+        let workspace = WorkspaceReference(context.workspace)
         var refreshes = 0
-        let service = WatchCompanionService(calls: context.controller, workspace: { workspace }, prepare: {
+        let service = WatchCompanionService(calls: context.controller, workspace: { workspace.value }, prepare: {
             Issue.record("接続済みの通話で認証復元を待っています")
-            return workspace
+            return workspace.value
         }, refresh: { _ in
             refreshes += 1
             started.continuation.yield(())
@@ -223,7 +243,7 @@ struct OutgoingCallTests {
             sessionID: reply.snapshot.sessionID, callID: start.callUUID))
         #expect(action.error == nil)
         #expect(context.requesting.requests.last?.actions.first is CXEndCallAction)
-        workspace = nil
+        workspace.value = nil
         #expect(service.snapshot().sessionID == nil)
         for await _ in cancelled.stream { break }
     }
@@ -233,7 +253,7 @@ struct OutgoingCallTests {
         let context = try Context()
         defer { context.close() }
         let start = try await context.requestStart()
-        await context.performStart(start)
+        try await context.performStart(start)
         let service = WatchCompanionService(calls: context.controller,
             workspace: { context.workspace }, prepare: { context.workspace })
         let snapshot = service.snapshot()
@@ -284,7 +304,7 @@ struct OutgoingCallTests {
         let next = try await context.requestStart()
         context.controller.provider(context.native, timedOutPerforming: first)
         #expect(context.controller.isManagingCall && context.calls.channel != nil)
-        await context.performStart(next)
+        try await context.performStart(next)
         #expect(context.calls.ready && context.reporting.connecting == [next.callUUID])
     }
 
@@ -302,7 +322,7 @@ struct OutgoingCallTests {
         let context = try Context()
         defer { context.close() }
         let action = try await context.requestStart(muted: true)
-        await context.performStart(action)
+        try await context.performStart(action)
         let mute = try #require(context.requesting.requests.last?.actions.first as? CXSetMutedCallAction)
         #expect(mute.callUUID == action.callUUID && mute.isMuted)
         #expect(context.calls.muted && context.media.muted)
@@ -552,7 +572,7 @@ struct IncomingCallTests {
         let workspace = WorkspaceStore(client: harness.client,
             user: Person(id: call.userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
         let reporting = FakeCallReporting(), requesting = FakeCallRequesting()
-        let controller = SystemCallController(provider: reporting, callController: requesting)
+        let controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {})
         controller.setForeground(false)
         controller.connect(workspace)
         let native = CXProvider(configuration: CXProviderConfiguration())
@@ -647,6 +667,7 @@ struct IncomingCallTests {
         controller.connect(workspace)
         defer { controller.disconnect(); workspace.shutdown() }
         await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
+        #expect(reporting.incomingNames == [matchesUser ? call.callerName : "Zooの通話"])
         if matchesUser {
             #expect(controller.watchCall?.phase == .incoming && controller.watchCall?.title == call.callerName)
             try await controller.performWatchAction(WatchRequest(action: .answer, callID: call.id))

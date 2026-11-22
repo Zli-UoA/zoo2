@@ -5,6 +5,7 @@ import Testing
 
 // URLProtocol の非同期コールバックを停止と競合させないため、タスク状態を Mutex で保護する。
 private final class StreamingTokenProtocol: URLProtocol, @unchecked Sendable {
+    private let callbackLock = NSRecursiveLock()
     private let loading = Mutex((task: Optional<Task<Void, Never>>.none, stopped: false))
     override class func canInit(with request: URLRequest) -> Bool { request.url?.path == "/token" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -13,12 +14,12 @@ private final class StreamingTokenProtocol: URLProtocol, @unchecked Sendable {
         let task = Task {
             guard let url = request.url,
                   let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            deliver { client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed) }
             do {
                 while true {
                     try await Task.sleep(for: .milliseconds(20))
                     // 受信は続くが、トークン応答は完了しない状況を再現する。
-                    client?.urlProtocol(self, didLoad: Data(" ".utf8))
+                    deliver { client?.urlProtocol(self, didLoad: Data(" ".utf8)) }
                 }
             } catch { }
         }
@@ -29,12 +30,20 @@ private final class StreamingTokenProtocol: URLProtocol, @unchecked Sendable {
         if stopped { task.cancel() }
     }
 
+    private func deliver(_ callback: () -> Void) {
+        // URLProtocol の終了通知から stopLoading が再入しても、以降の通知を止める。
+        callbackLock.withLock {
+            guard !loading.withLock({ $0.stopped }) else { return }
+            callback()
+        }
+    }
+
     override func stopLoading() {
-        let task = loading.withLock {
+        let task = callbackLock.withLock { loading.withLock {
             $0.stopped = true
             defer { $0.task = nil }
             return $0.task
-        }
+        } }
         task?.cancel()
     }
 }
@@ -100,8 +109,14 @@ struct DeviceAuthorizationTests {
 
     nonisolated private static func form(_ request: URLRequest) throws -> [String: String] {
         let body = String(decoding: try StubProtocol.body(request), as: UTF8.self)
-        return Dictionary(uniqueKeysWithValues: (URLComponents(string: "https://test.invalid/?" + body)?.queryItems ?? [])
-            .map { ($0.name, $0.value ?? "") })
+        var fields: [String: String] = [:]
+        for pair in body.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let name = try #require(String(parts[0]).replacingOccurrences(of: "+", with: " ").removingPercentEncoding)
+            let value = try #require((parts.count == 2 ? String(parts[1]) : "").replacingOccurrences(of: "+", with: " ").removingPercentEncoding)
+            fields[name] = value
+        }
+        return fields
     }
 
     @Test("承認待ちと低速化に従ってトークンを取得し、再起動後も復元できる")

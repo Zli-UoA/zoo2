@@ -78,8 +78,8 @@ struct ShortcutActionsTests {
         defer { harness.close() }
         var other = peer; other.user_name = "sakura2"
         let duplicate = Person(id: "55555555-5555-4555-8555-555555555555", user_name: other.user_name, display_name: other.name)
-        var bot = peer; bot.is_bot = true
-        var inactive = peer; inactive.is_deactivated = true
+        let bot = Person(id: "66666666-6666-4666-8666-666666666666", user_name: "bot", display_name: peer.name, is_bot: true)
+        let inactive = Person(id: "77777777-7777-4777-8777-777777777777", user_name: "inactive", display_name: peer.name, is_deactivated: true)
         let rows = [user, peer, duplicate, bot, inactive]
         harness.stub { _ in
             var events = try rows.enumerated().map { index, person in
@@ -92,7 +92,7 @@ struct ShortcutActionsTests {
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
         let recipients = try await ShortcutActions(workspace: workspace).recipients()
-        #expect(recipients.count == 2)
+        #expect(Set(recipients.map(\.personID)) == Set([peer.id, duplicate.id]))
         #expect(recipients.filter { $0.matches("さくら") }.count == 2)
         #expect(recipients.filter { $0.matches("SAKURA2") }.count == 1)
         #expect(recipients.allSatisfy { !$0.matches(" ") })

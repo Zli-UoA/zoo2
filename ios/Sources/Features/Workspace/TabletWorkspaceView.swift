@@ -69,6 +69,7 @@ struct TabletWorkspaceView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+        .accessibilityValue(tab == .notifications ? "未読\(workspace.inbox.unreadCount)件" : "")
         .accessibilityAddTraits(workspace.selectedTab == tab ? .isSelected : [])
         .accessibilityIdentifier("ipad-tab-\(tab)")
     }

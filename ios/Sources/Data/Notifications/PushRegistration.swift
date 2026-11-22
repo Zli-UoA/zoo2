@@ -68,19 +68,30 @@ protocol PushBackend {
 struct LivePushBackend: PushBackend {
     let api: APIClient?
     let transport: HTTPTransport
+    private let sessionID: UUID?
+    init(api: APIClient?, transport: HTTPTransport) {
+        self.api = api
+        self.transport = transport
+        sessionID = api?.auth.sessionID
+    }
     var server: String { api?.settings.server ?? "" }
     func subscribe(_ receipt: PushReceipt) async throws {
         guard let api else { throw ZooError.expiredSession }
+        guard api.auth.sessionID == sessionID else { throw CancellationError() }
         struct Configuration: Decodable, Sendable { let sandbox: Bool; let production: Bool; let voip: Bool? }
         let config: Configuration = try await api.get("api/push/apns/config")
+        guard api.auth.sessionID == sessionID else { throw CancellationError() }
         guard receipt.environment == "sandbox" ? config.sandbox : config.production else { throw ZooError.auth("サーバーのプッシュ通知設定が完了していません。") }
         guard receipt.kind != .voip || config.voip == true else {
             throw ZooError.auth("サーバーの通話通知対応を待っています。")
         }
-        let data = try await api.data("api/push/apns/subscriptions", method: "POST", body: [
+        let request = try await api.request("api/push/apns/subscriptions", method: "POST", body: [
             "device_token": .string(receipt.token), "environment": .string(receipt.environment),
             "kind": .string((receipt.kind ?? .alert).rawValue),
             "revocation_secret": .string(receipt.secret), "created_at": .number(Double(receipt.createdAt))])
+        guard api.auth.sessionID == sessionID else { throw CancellationError() }
+        let (data, response) = try await transport.send(request)
+        try HTTPTransport.check(data, response)
         struct Response: Decodable { let id: String }
         guard try JSONDecoder().decode(Response.self, from: data).id == receipt.id else { throw ZooError.invalidResponse }
     }

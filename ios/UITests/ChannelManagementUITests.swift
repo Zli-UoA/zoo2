@@ -48,6 +48,7 @@ final class ChannelManagementUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["アーカイブ済みのチャンネルです"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["start-call"].exists)
         details.tap()
+        XCTAssertTrue(app.navigationBars["チャンネル詳細"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["edit-channel"].exists)
         XCTAssertFalse(app.buttons["archive-channel"].exists)
     }
