@@ -728,6 +728,9 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     scroller.scrollTop = 0;
     fireEvent.scroll(scroller);
     await waitFor(() => expect(scroller.querySelector('[data-message-id="w-0"]')).toBeTruthy());
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))),
+    );
 
     // Archive/readOnly flips currentUserId to null while reading at scrollTop=0: must keep scrollTop!
     view.rerender(
@@ -826,6 +829,17 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     });
     const narrowHeight = narrowRow.getBoundingClientRect().height;
     expect(narrowHeight).toBeGreaterThan(80);
+
+    // Wait for ResizeObserver to commit narrowHeight into itemSizeCache (rw-1 shifts below rw-0)
+    // before scrolling rw-0 offscreen, so itemSizeCache retains stale narrowHeight across width change.
+    await waitFor(() => {
+      const row0 = scroller.querySelector<HTMLElement>('[data-message-id="rw-0"]');
+      const row1 = scroller.querySelector<HTMLElement>('[data-message-id="rw-1"]');
+      expect(row0).toBeTruthy();
+      expect(row1).toBeTruthy();
+      const gap = row1!.getBoundingClientRect().top - row0!.getBoundingClientRect().top;
+      expect(gap).toBeGreaterThanOrEqual(Math.floor(narrowHeight) - 2);
+    });
 
     // Move back to bottom so rw-0 unmounts, then resize 390px -> 800px.
     scroller.scrollTop = scroller.scrollHeight;
