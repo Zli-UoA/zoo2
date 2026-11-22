@@ -39,6 +39,17 @@ export class DesktopDownloadCancelledError extends Error {
   }
 }
 
+/** 本文の読み取りに失敗した。保存 ID を替えて再試行できることを示す内部用の印。 */
+class BodyReadError extends Error {
+  readonly original: unknown;
+
+  constructor(original: unknown) {
+    super("Body read failed");
+    this.name = "BodyReadError";
+    this.original = original;
+  }
+}
+
 /** 1 回の IPC で送る量。大きすぎると WebView の IPC が詰まる。 */
 const CHUNK_SIZE = 256 * 1024;
 /** URL を取り直してやり直すまでの待ち時間（`lib/api/attachments.ts` と同じ）。 */
@@ -189,15 +200,15 @@ async function run(
         await runner(downloadId, controller.signal, report);
         break;
       } catch (error) {
-        // ブラウザーの保存と同じく、本文の一時的な失敗も URL を取り直して一度だけ再試行する。
-        // 途中まで書いたファイルには追記しないので、ここで捨ててから新しい ID で始める。
+        // 再試行するのは本文の読み取りが失敗したときだけ。応答を取る段階で失敗した
+        // （HTTP エラーなど）なら、URL の再取得は済んでいるのでそのまま呼び出し側へ返す。
         if (
+          !(error instanceof BodyReadError) ||
           retryDelayMs === undefined ||
           attempt >= BODY_RETRIES ||
-          controller.signal.aborted ||
-          error instanceof DesktopDownloadCancelledError
+          controller.signal.aborted
         ) {
-          throw error;
+          throw error instanceof BodyReadError ? error.original : error;
         }
         await desktopDownloadCancel(downloadId).catch(() => {});
         downloadId = null;
@@ -322,7 +333,12 @@ export async function downloadUrlToDesktop(
         if (signal.aborted) throw error;
         response = await open(true);
       }
-      await writeResponse(downloadId, response, signal, report);
+      try {
+        await writeResponse(downloadId, response, signal, report);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw new BodyReadError(error);
+      }
     },
     retryDelayMs,
   );

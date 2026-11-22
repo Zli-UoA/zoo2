@@ -227,6 +227,9 @@ describe("downloadUrlToDesktop", () => {
     await expect(failure).rejects.toMatchObject({ reason: "http", status: 403 });
     expect(desktop.cancel).toHaveBeenCalledWith("d1");
     expect(desktop.finish).not.toHaveBeenCalled();
+    // 応答を取れなかっただけなので、本文転送の再試行で保存 ID を増やさない。
+    expect(desktop.begin).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(2);
     expect(desktopDownloadState("a3")).toBeUndefined();
   });
 
