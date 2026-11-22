@@ -115,38 +115,47 @@ export function ThreadParticipantsDialog({
           />
         </div>
 
-        <ul
-          aria-label={
-            count === undefined ? t("members.title") : t("threads.participants", { count })
-          }
-          className="flex max-h-[min(20rem,50dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto"
-        >
-          {visible.map((participant) => (
-            <MemberRow
-              key={participant.id}
-              label={participantLabel(participant)}
-              avatarUrl={participant.avatar_url}
-              creatorTag={participant.id === creatorId ? t("threads.threadStarter") : undefined}
-              isMe={participant.id === currentUserId}
-            />
-          ))}
-        </ul>
-        {participants.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("threads.participantsEmpty")}</p>
-        ) : visible.length === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("members.usersEmpty")}</p>
-        ) : null}
-        {hidden > 0 ? (
-          <p className="text-xs text-muted-foreground">
-            {query.trim()
-              ? // 絞り込みは、読み込んだ先頭の範囲だけ。ほかの人は、検索に出ない。
-                t("threads.participantsFilterPartial", {
-                  loaded: participants.length,
-                  count: hidden,
-                })
-              : t("threads.participantsMore", { count: hidden })}
-          </p>
-        ) : null}
+        <div>
+          <ul
+            aria-label={
+              count === undefined ? t("members.title") : t("threads.participants", { count })
+            }
+            className="flex max-h-[min(20rem,50dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto"
+          >
+            {visible.map((participant) => (
+              <MemberRow
+                key={participant.id}
+                label={participantLabel(participant)}
+                avatarUrl={participant.avatar_url}
+                creatorTag={participant.id === creatorId ? t("threads.threadStarter") : undefined}
+                isMe={participant.id === currentUserId}
+              />
+            ))}
+          </ul>
+          {/* 検索結果の変化（0 件・先頭の範囲だけの絞り込み）は、常設のライブリージョンで伝える。
+              入力欄のフォーカスは動かさない。空のあいだは余白も出さない。 */}
+          <div
+            role="status"
+            className="flex flex-col gap-1 text-xs text-muted-foreground [&:not(:empty)]:mt-4"
+          >
+            {participants.length === 0 ? (
+              <p>{t("threads.participantsEmpty")}</p>
+            ) : visible.length === 0 ? (
+              <p>{t("members.usersEmpty")}</p>
+            ) : null}
+            {hidden > 0 ? (
+              <p>
+                {query.trim()
+                  ? // 絞り込みは、読み込んだ先頭の範囲だけ。ほかの人は、検索に出ない。
+                    t("threads.participantsFilterPartial", {
+                      loaded: participants.length,
+                      count: hidden,
+                    })
+                  : t("threads.participantsMore", { count: hidden })}
+              </p>
+            ) : null}
+          </div>
+        </div>
         {membershipError ? (
           <p role="alert" className="text-xs text-destructive">
             {t("threads.membershipError")}{" "}

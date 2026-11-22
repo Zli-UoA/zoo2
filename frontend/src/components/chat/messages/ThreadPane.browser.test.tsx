@@ -266,6 +266,29 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(onClose).not.toHaveBeenCalled();
     });
 
+    it("検索結果の 0 件は、常設のライブリージョン（role=status）で伝え、入力欄のフォーカスは動かさない", async () => {
+      await page.viewport(1280, 900);
+      render(<MembersHarness />);
+      await userEvent.click(screen.getByRole("button", { name: "参加者 53人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
+      // ライブリージョンは、変化の前から DOM にある（あとから現れる要素は、読み上げられないことがある）。
+      const status = within(dialog).getByRole("status");
+      expect(status.textContent).toMatch(/ほか 50人/);
+
+      const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
+      await userEvent.type(search, "zzz");
+      // 同じ要素の中身が更新される。
+      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(status.textContent).toMatch(/該当するユーザーがいません。/);
+      expect(status.textContent).toMatch(/読み込んだ先頭3人の中から絞り込んでいます/);
+      expect(document.activeElement).toBe(search);
+
+      // 一致が戻ると、0 件のメッセージは消える（ライブリージョン自体は残る）。
+      await userEvent.clear(search);
+      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(status.textContent).not.toMatch(/該当するユーザーがいません。/);
+    });
+
     it("閉じたあとに開き直すと、検索語は空に戻る", async () => {
       await page.viewport(1280, 900);
       render(<MembersHarness />);
