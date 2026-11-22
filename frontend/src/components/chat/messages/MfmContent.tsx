@@ -238,7 +238,11 @@ function renderNode(
     case "blockCode":
       return <CodeBlock {...node.props} />;
     case "plain":
-      return node.children.map((child) => child.props.text).join("");
+      // 再解析はせず、MFM の記法を文字のまま出す（強調だけ付ける）。
+      return highlightText(
+        node.children.map((child) => child.props.text).join(""),
+        options.highlight,
+      );
     case "quote":
       return (
         <blockquote className="border-l-2 border-muted-foreground pl-3">{children()}</blockquote>

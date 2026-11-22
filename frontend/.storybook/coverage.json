@@ -353,6 +353,7 @@
         "InlineLinks",
         "LongUrl",
         "CodeAndMath",
+        "SearchHighlight",
         "EmojiAndFallback",
         "JoinedEmoji",
         "Formatting",

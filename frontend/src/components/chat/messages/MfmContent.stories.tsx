@@ -77,6 +77,22 @@ export const CodeAndMath: Story = {
       "`const zoo = true`\n```ts\nconst channel = { name: 'general' };\n```\n数式: \\(x^2 + y^2\\)",
   },
 };
+/** 検索結果の強調。文字・太字・リンク・<plain> の中は強調し、コードの中は強調しない。 */
+export const SearchHighlight: Story = {
+  args: {
+    content: "会議 **会議** [会議の資料](https://example.com) <plain>**会議**</plain> `会議`",
+    highlight: ["会議"],
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const marks = [...canvasElement.querySelectorAll("mark[data-search-highlight]")];
+    await expect(marks.map((mark) => mark.textContent)).toEqual(["会議", "会議", "会議", "会議"]);
+    await expect(marks[1]!.closest("strong")).not.toBeNull();
+    await expect(marks[2]!.closest("a")).not.toBeNull();
+    // <plain> は記法を文字のまま出し、強調だけ付ける。
+    await expect(within(canvasElement).getByText(/\*\*/).querySelector("mark")).not.toBeNull();
+    await expect(canvasElement.querySelector("code mark")).toBeNull();
+  }),
+};
 export const EmojiAndFallback: Story = {
   args: { content: "😀 🎉 :smile: :unregistered_zoo_emoji:" },
 };
