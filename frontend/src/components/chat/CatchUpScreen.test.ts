@@ -207,9 +207,9 @@ it("blocks marking read and shows guidance when the boundary is older than the f
   mocks.get.mockResolvedValue(mocks.unread);
   mocks.boundaryTooOld = true;
   render(createElement(CatchUpScreen));
+  expect(await screen.findByText("catchUp.unreadChanged")).toBeTruthy();
   const button = await screen.findByRole("button", { name: "既読にする" });
   expect(button.hasAttribute("disabled")).toBe(true);
-  expect(screen.getByText("catchUp.unreadChanged")).toBeTruthy();
   expect(mocks.post).not.toHaveBeenCalled();
 });
 
