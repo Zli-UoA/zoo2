@@ -49,6 +49,7 @@ function useUnreadFeed() {
   const [data, setData] = useState<{ userId: string; states: ChannelReadState[] } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isError, setIsError] = useState(false);
+  const [revision, setRevision] = useState(0);
   const refreshRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -76,6 +77,7 @@ function useUnreadFeed() {
         const states = await client.get<ChannelReadState[]>("/api/channel-read-states");
         if (!active) return;
         setData({ userId: currentUserId, states });
+        setRevision((value) => value + 1);
         setIsError(false);
       } catch {
         if (active) setIsError(true);
@@ -135,6 +137,7 @@ function useUnreadFeed() {
     unreadChannelIds,
     unreadConversationCount: unreadStates.length,
     isReady: data?.userId === currentUserId,
+    revision,
     isLoading,
     isError,
     refresh,

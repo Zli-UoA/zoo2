@@ -1876,6 +1876,7 @@
     "complete": "All caught up",
     "summary": "{{read}} marked read · {{skipped}} left unread",
     "refresh": "Refresh",
-    "conversation": "Conversation"
+    "conversation": "Conversation",
+    "unreadTooOld": "Some older unread messages could not be loaded. Marking as read will leave them for next time."
   }
 }

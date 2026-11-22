@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   config: { apiBaseUrl: "" },
+  revision: 1,
   applyRead: vi.fn(),
   navigate: vi.fn(),
   unread: [] as Array<{
@@ -27,6 +28,7 @@ vi.mock("../../hooks/useUnread", () => ({
     states: mocks.unread,
     unreadStates: mocks.unread.filter((s) => s.has_unread),
     isReady: true,
+    revision: mocks.revision,
     isError: false,
     refresh: vi.fn(),
     applyRead: mocks.applyRead,
@@ -60,11 +62,11 @@ vi.mock("./CatchUpMessagePage", () => ({
     onBoundaryMessage,
     onRangeReady,
   }: {
-    onBoundaryMessage: (id: string | null) => void;
+    onBoundaryMessage: (id: string | null, at: number | null) => void;
     onRangeReady?: (ready: boolean) => void;
   }) => {
     useEffect(() => {
-      onBoundaryMessage("latest-in-page");
+      onBoundaryMessage("latest-in-page", 1);
       onRangeReady?.(true);
     }, [onBoundaryMessage, onRangeReady]);
     return createElement("div", null, "message page");
@@ -106,6 +108,7 @@ afterEach(() => {
   mocks.applyRead.mockReset();
   mocks.navigate.mockReset();
   mocks.unread = [];
+  mocks.revision = 1;
 });
 
 it("does not write on open, freezes the queue and marks read only on demand", async () => {
@@ -162,10 +165,25 @@ it("skips a conversation that became read in another tab", async () => {
   await screen.findByText("1 / 2");
   await act(async () => {
     mocks.unread = [{ ...unreadItem("a"), has_unread: false }, unreadItem("b")];
+    mocks.revision = 2;
     view.rerender(createElement(CatchUpScreen));
   });
   expect(screen.getByText("2 / 2")).toBeTruthy();
   expect(mocks.post).not.toHaveBeenCalled();
+});
+
+it("does not skip a conversation whose shared state was not refreshed", async () => {
+  // A is still unread in the shared list; B is stale-marking read there, but the
+  // detailed response puts both into the queue.
+  mocks.unread = [unreadItem("a"), { ...unreadItem("b"), has_unread: false }];
+  mocks.get.mockResolvedValue([unreadItem("a"), unreadItem("b")]);
+  mocks.post.mockResolvedValue({ data: { channel_id: "a", has_unread: false } });
+  render(createElement(CatchUpScreen));
+  expect(await screen.findByText("1 / 2")).toBeTruthy();
+  await act(async () => {
+    fireEvent.click(screen.getByText("既読にする"));
+  });
+  expect(screen.getByText("2 / 2")).toBeTruthy();
 });
 
 it("shows the load error instead of the empty state when the detail fetch fails", async () => {

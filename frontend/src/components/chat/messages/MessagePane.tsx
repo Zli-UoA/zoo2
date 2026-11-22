@@ -7,7 +7,7 @@ import { isThreadJoinRequired, useThreadMembership } from "../../../hooks/useThr
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
@@ -57,13 +57,7 @@ import {
   type ChannelCryptoDeps,
 } from "../../../lib/e2ee/channelSend";
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
-import {
-  encryptionSendState,
-  encryptedChannelsVersion,
-  noteEncryptedChannel,
-  subscribeEncryptedChannels,
-  type KnownEncryptedState,
-} from "../../../lib/e2ee/encryptionGuard";
+import { useEncryptedDisplay } from "../../../hooks/useEncryptedDisplay";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import {
   isPlaintextBeforeEncryption,
@@ -161,51 +155,12 @@ export function MessagePane({
   const reactionsQuery = useMessageReactions(channelId);
   const channelUpload = useAttachmentUpload(channelId);
   const e2ee = useE2ee();
-  // 暗号化の格下げを防ぐ（docs/e2ee.md）。一度 `encrypted = true` を見たチャンネル、名前が `edm:` の
-  // チャンネル、暗号文のある行があるチャンネルに `encrypted = false` が届いたら、平文では送らず警告する。
-  // 見た時点で同期的に覚える（暗号ストアへの問い合わせを待たずに、格下げとして扱えるように）。
-  if (encrypted) noteEncryptedChannel(channelId);
-  // ほかの場所（暗号化への切り替えの確認の画面。#367）で覚えたときも描き直し、Shape の反映を待たずに送信を止める。
-  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
-  const [knownEncrypted, setKnownEncrypted] = useState<{
-    channelId: string;
-    known: KnownEncryptedState;
-  } | null>(null);
-  useEffect(() => {
-    const worker = e2ee.worker;
-    if (!worker) return;
-    let active = true;
-    if (encrypted) {
-      void worker.request({ op: "megolmRememberEncrypted", channelId }).catch(() => undefined);
-    } else {
-      setKnownEncrypted({ channelId, known: "pending" });
-      void worker
-        .request({ op: "megolmIsKnownEncrypted", channelId })
-        .then((known) => {
-          if (active) setKnownEncrypted({ channelId, known });
-        })
-        .catch(() => {
-          if (active) setKnownEncrypted({ channelId, known: "failed" });
-        });
-    }
-    return () => {
-      active = false;
-    };
-  }, [channelId, e2ee.worker, encrypted]);
-  // 別のチャンネルの結果や、問い合わせを始める前の描画では、確かめ終わっていないものとして扱う。
-  const { downgraded, checking: checkingEncryption } = encryptionSendState({
+  const { downgraded, checkingEncryption, treatAsEncrypted } = useEncryptedDisplay({
     channelId,
-    encrypted,
-    known: !e2ee.worker
-      ? "unavailable"
-      : knownEncrypted?.channelId === channelId
-        ? knownEncrypted.known
-        : "pending",
     channelName,
+    encrypted,
     hasCiphertext: feed.some((row) => row.ciphertext != null),
   });
-  /** 表示と添付の扱いを暗号化チャンネルにするか（格下げを見つけたときも暗号化として扱う）。 */
-  const treatAsEncrypted = encrypted || downgraded;
   // 暗号化チャンネルには、送る直前に Megolm で暗号化して送る（docs/e2ee.md）。このタブが暗号ストアを
   // 開いていない（別のタブが開いている、登録中、使えないブラウザー）あいだは、平文を送らないよう
   // 投稿、返信、編集を止める。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。

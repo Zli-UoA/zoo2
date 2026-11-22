@@ -30,7 +30,7 @@ export function CatchUpScreen() {
   const navigate = useNavigate();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
-  const { states, applyRead } = useUnread();
+  const { states, revision, applyRead } = useUnread();
   const channelsQuery = useActiveChannels();
   const usersQuery = useUsers();
   const { channelUsers } = useCollections();
@@ -44,28 +44,34 @@ export function CatchUpScreen() {
   const [writeError, setWriteError] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
-  const [rangeReady, setRangeReady] = useState(false);
+  const [rangeState, setRangeState] = useState({ ready: false, exhausted: false });
   const [isWriting, setIsWriting] = useState(false);
-  const [boundary, setBoundary] = useState<{ channelId: string; messageId: string | null } | null>(
-    null,
-  );
+  const [boundary, setBoundary] = useState<{
+    channelId: string;
+    messageId: string | null;
+    at: number | null;
+  } | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const requestId = useRef(0);
+  const latestRevision = useRef(revision);
+  latestRevision.current = revision;
+  const revisionAtStart = useRef(revision);
   const latestStates = useRef(states);
   latestStates.current = states;
-  const statesAtStart = useRef(states);
+  const statesAtStart = useRef(new Map<string, ChannelReadState>());
 
   // 詳細（件数・最古時刻）はキャッチアップを開いたときだけ取得する。
   // 10秒ポーリングは軽い一覧のまま共有し、ここでは再計算しない。
   const start = useCallback((source: readonly ChannelReadState[]) => {
+    statesAtStart.current = new Map(latestStates.current.map((state) => [state.channel_id, state]));
     setQueue(unreadConversations(source).map((state) => ({ ...state })));
     setIndex(0);
     setReadCount(0);
     setSkippedCount(0);
     setWriteError(false);
     setBoundary(null);
-    setRangeReady(false);
-    statesAtStart.current = latestStates.current;
+    setRangeState({ ready: false, exhausted: false });
+    revisionAtStart.current = latestRevision.current;
   }, []);
 
   const loadQueue = useCallback(async () => {
@@ -121,25 +127,32 @@ export function CatchUpScreen() {
   const goNext = useCallback(() => {
     setWriteError(false);
     setBoundary(null);
-    setRangeReady(false);
+    setRangeState({ ready: false, exhausted: false });
     setIndex((value) => value + 1);
   }, []);
 
   // 別タブ・端末で既読になった会話は、表示時に未読が無ければ飛ばす。
   useEffect(() => {
     if (!current || isWriting || writeError) return;
-    // キュー確定時より古い軽量ポーリング結果ではスキップしない。
-    if (states === statesAtStart.current) return;
+    // その会話自身の共有状態がキュー確定後に更新され、未読が消えた場合だけ
+    // スキップする。別の会話の既読更新ではスキップしない。
+    const original = statesAtStart.current.get(current.channel_id);
     const live = states.find((state) => state.channel_id === current.channel_id);
-    if (live && !live.has_unread) goNext();
-  }, [states, current, isWriting, writeError, goNext]);
+    if (!live || live.has_unread) return;
+    if (original ? live !== original : revision <= revisionAtStart.current) goNext();
+  }, [states, revision, current, isWriting, writeError, goNext]);
 
   useEffect(() => {
     headingRef.current?.focus();
   }, [index, queue]);
 
+  const onRangeReady = useCallback((ready: boolean, exhausted: boolean) => {
+    setRangeState({ ready, exhausted });
+  }, []);
+
   const onBoundaryMessage = useCallback(
-    (messageId: string | null) => setBoundary({ channelId: current?.channel_id ?? "", messageId }),
+    (messageId: string | null, at: number | null) =>
+      setBoundary({ channelId: current?.channel_id ?? "", messageId, at }),
     [current?.channel_id],
   );
 
@@ -261,9 +274,14 @@ export function CatchUpScreen() {
               encrypted={channelById.get(current.channel_id)?.encrypted}
               firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
-              onRangeReady={setRangeReady}
+              onRangeReady={onRangeReady}
             />
           </div>
+          {rangeState.exhausted && !rangeState.ready ? (
+            <p role="status" className="border-t px-4 py-2 text-xs text-muted-foreground">
+              {t("catchUp.unreadTooOld")}
+            </p>
+          ) : null}
           {writeError ? (
             <p role="alert" className="border-t px-4 py-2 text-sm text-destructive">
               {t("catchUp.readError")}
@@ -273,7 +291,12 @@ export function CatchUpScreen() {
             <Button
               className="min-h-11 flex-1"
               onClick={() => void markRead()}
-              disabled={isWriting || !rangeReady}
+              disabled={
+                isWriting ||
+                (!rangeState.ready && !rangeState.exhausted) ||
+                boundary?.channelId !== current.channel_id ||
+                !boundary.messageId
+              }
             >
               {t("catchUp.markRead")}
             </Button>

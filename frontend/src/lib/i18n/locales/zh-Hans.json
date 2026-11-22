@@ -1858,7 +1858,7 @@
   "catchUp": {
     "navUnread_one": "{{count}} 个未读会话待查看",
     "navUnread_other": "{{count}} 个未读会话待查看",
-    "title": "未读稍后看",
+    "title": "未读消息速览",
     "close": "结束",
     "count_one": "{{count}} 条未读消息",
     "count_other": "{{count}} 条未读消息",
@@ -1874,8 +1874,9 @@
     "empty": "没有未读会话",
     "emptyDescription": "有新消息时再回来查看",
     "complete": "全部看完",
-    "summary": "已读 {{read}} 条 · 保持未读 {{skipped}} 条",
+    "summary": "已读 {{read}} 个 · 保持未读 {{skipped}} 个",
     "refresh": "刷新",
-    "conversation": "会话"
+    "conversation": "会话",
+    "unreadTooOld": "由于未读消息过多，部分较早的消息未能加载。标为已读会将其留待下次。"
   }
 }

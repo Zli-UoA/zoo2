@@ -1,17 +1,12 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useMessageDecryptions } from "../../hooks/useMessageDecryptions";
-import {
-  encryptedChannelsVersion,
-  noteEncryptedChannel,
-  subscribeEncryptedChannels,
-} from "../../lib/e2ee/encryptionGuard";
+import { useEncryptedDisplay } from "../../hooks/useEncryptedDisplay";
 import {
   MessageDecryptionsProvider,
   firstEncryptedAt,
-  useEncryptedChannel,
   withUnencryptedRows,
 } from "../../lib/e2ee/messageDecryption";
 import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
@@ -42,8 +37,8 @@ export function CatchUpMessagePage({
   channelName?: string;
   encrypted?: boolean;
   firstUnreadAt: string | null;
-  onBoundaryMessage: (messageId: string | null) => void;
-  onRangeReady?: (ready: boolean) => void;
+  onBoundaryMessage: (messageId: string | null, createdAt: number | null) => void;
+  onRangeReady?: (ready: boolean, exhausted: boolean) => void;
 }) {
   const feed = useMessageFeed(channelId);
   const { currentUserId } = useCurrentUser();
@@ -63,14 +58,14 @@ export function CatchUpMessagePage({
     () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
     [attachmentsQuery.data],
   );
-  // 暗号化の判定は MessagePane と同じ基準を使う（ciphertext の有無だけでは
-  // epoch だけの行や edm: の暗号化DMを取りこぼす）。
-  const isEncryptedDm = !!channelName?.startsWith("edm:");
-  if (encrypted || isEncryptedDm) noteEncryptedChannel(channelId);
-  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
-  const notedEncrypted = useEncryptedChannel();
-  const treatAsEncrypted =
-    encrypted || isEncryptedDm || notedEncrypted || messages.some((row) => row.ciphertext != null);
+  // 暗号化の判定は MessagePane と同じ共通hookを使う（ciphertext の有無だけでは
+  // epoch だけの行、edm: の暗号化DM、格下げを取りこぼす）。
+  const { treatAsEncrypted } = useEncryptedDisplay({
+    channelId,
+    channelName,
+    encrypted,
+    hasCiphertext: messages.some((row) => row.ciphertext != null),
+  });
   const decryptionRows = useMemo(
     () => (treatAsEncrypted ? messages : []),
     [treatAsEncrypted, messages],
@@ -113,12 +108,26 @@ export function CatchUpMessagePage({
     );
   }, [messages, firstUnreadAt, currentUserId]);
 
-  const boundaryRef = useRef<string | null>(null);
+  const boundaryRef = useRef<{ id: string; at: number } | null>(null);
   useEffect(() => {
-    if (boundaryRef.current !== null || feed.isInitialSyncLoading || messages.length === 0) return;
-    const newest = messages[messages.length - 1].id;
-    boundaryRef.current = newest;
-    onBoundaryMessage(newest);
+    if (feed.isInitialSyncLoading || messages.length === 0) return;
+    if (!boundaryRef.current) {
+      const newest = messages[messages.length - 1];
+      const at = parseUtcTimestamp(newest.created_at).getTime();
+      boundaryRef.current = { id: newest.id, at };
+      onBoundaryMessage(newest.id, at);
+      return;
+    }
+    // The boundary message can be deleted while reading; fall back to the
+    // newest surviving message at or before the original boundary timestamp.
+    if (messages.some((row) => row.id === boundaryRef.current!.id)) return;
+    const fallback = [...messages]
+      .reverse()
+      .find((row) => parseUtcTimestamp(row.created_at).getTime() <= boundaryRef.current!.at);
+    if (fallback) {
+      boundaryRef.current = { id: fallback.id, at: boundaryRef.current.at };
+      onBoundaryMessage(fallback.id, boundaryRef.current.at);
+    }
   }, [feed.isInitialSyncLoading, messages, onBoundaryMessage]);
 
   // Read far enough back that the oldest unread message is inside the loaded
@@ -141,12 +150,17 @@ export function CatchUpMessagePage({
       (!!messages[0] &&
         parseUtcTimestamp(messages[0].created_at).getTime() <=
           parseUtcTimestamp(firstUnreadAt).getTime()));
-  const rangeReadyRef = useRef<boolean | null>(null);
+  const exhausted =
+    !rangeReady &&
+    messages.length > 0 &&
+    (loadedPages.current >= MAX_UNREAD_PAGES || (!feed.hasOlder && !feed.isLoadingOlder));
+  const rangeReadyRef = useRef<string | null>(null);
   useEffect(() => {
-    if (rangeReadyRef.current === rangeReady) return;
-    rangeReadyRef.current = rangeReady;
-    onRangeReady?.(rangeReady);
-  }, [onRangeReady, rangeReady]);
+    const key = `${rangeReady}:${exhausted}`;
+    if (rangeReadyRef.current === key) return;
+    rangeReadyRef.current = key;
+    onRangeReady?.(rangeReady, exhausted);
+  }, [onRangeReady, rangeReady, exhausted]);
 
   return (
     <MessageDecryptionsProvider
@@ -175,10 +189,10 @@ export function CatchUpMessagePage({
         canReact={false}
         onReaction={() => {}}
         onPickReaction={() => {}}
-        onOpenThread={() => {}}
         canCompose={false}
         isOffline={!isOnline}
         unreadBoundaryId={firstUnreadId}
+        unreadBoundaryAt={firstUnreadAt ? parseUtcTimestamp(firstUnreadAt).getTime() : null}
         hasOlder={feed.hasOlder}
         isLoadingOlder={feed.isLoadingOlder}
         onLoadOlder={() => void feed.loadOlder()}

@@ -313,6 +313,41 @@ async fn first_unread_is_not_limited_by_the_author_count() -> anyhow::Result<()>
 }
 
 #[tokio::test]
+async fn exactly_one_hundred_unread_authors_is_not_truncated() -> anyhow::Result<()> {
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let viewer = uuid::Uuid::new_v4().to_string();
+    let channel = format!("{viewer}-channel");
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+        &[&viewer],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)",
+        &[&channel, &viewer],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) SELECT $1||'-author-'||n,$1||'-author-'||n,'Author' FROM generate_series(1,100)n",
+        &[&viewer],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT $1||'-msg-'||n,$1||'-author-'||n,$2,'post','2025-01-02' FROM generate_series(1,100)n",
+        &[&viewer, &channel],
+    )
+    .await?;
+    let state = state(&tx, &viewer, &channel).await?;
+    assert_eq!(state["unread_count"], 100);
+    assert_eq!(state["unread_count_truncated"], false);
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_source_writer_waits_for_the_watermark_recount_and_then_updates_it() -> anyhow::Result<()>
 {
     let url = Config::from_env().database_url;

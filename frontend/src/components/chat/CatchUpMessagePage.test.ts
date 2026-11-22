@@ -45,10 +45,18 @@ vi.mock("../../lib/emoji/reactions", () => ({
 vi.mock("../../lib/offline/offline-context", () => ({
   useOfflineStatus: () => ({ isOnline: true }),
 }));
-vi.mock("../../lib/e2ee/encryptionGuard", () => ({
-  noteEncryptedChannel: vi.fn(),
-  subscribeEncryptedChannels: () => () => {},
-  encryptedChannelsVersion: () => 0,
+vi.mock("../../hooks/useEncryptedDisplay", () => ({
+  useEncryptedDisplay: ({
+    encrypted,
+    channelName,
+  }: {
+    encrypted?: boolean;
+    channelName?: string;
+  }) => ({
+    treatAsEncrypted: !!encrypted || !!channelName?.startsWith("edm:"),
+    downgraded: false,
+    checkingEncryption: false,
+  }),
 }));
 vi.mock("../../lib/e2ee/messageDecryption", () => ({
   firstEncryptedAt: () => null,
@@ -89,7 +97,7 @@ it("keeps the boundary at the newest message shown when the page opened", async 
     }),
   );
   expect(onBoundaryMessage).toHaveBeenCalledTimes(1);
-  expect(onBoundaryMessage).toHaveBeenCalledWith("m2");
+  expect(onBoundaryMessage).toHaveBeenCalledWith("m2", expect.any(Number));
 
   // A message arriving while reading must not move the read boundary.
   await act(async () => {
@@ -103,7 +111,31 @@ it("keeps the boundary at the newest message shown when the page opened", async 
     );
   });
   expect(onBoundaryMessage).toHaveBeenCalledTimes(1);
-  expect(onBoundaryMessage).toHaveBeenCalledWith("m2");
+  expect(onBoundaryMessage).toHaveBeenCalledWith("m2", expect.any(Number));
+});
+
+it("moves the boundary to the newest surviving message if it is deleted", async () => {
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z"), message("m2", "2026-01-01T10:05:00Z")];
+  const onBoundaryMessage = vi.fn();
+  const view = render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: null,
+      onBoundaryMessage,
+    }),
+  );
+  const firstAt = onBoundaryMessage.mock.calls[0][1] as number;
+  await act(async () => {
+    mocks.messages = [message("m1", "2026-01-01T10:00:00Z")];
+    view.rerender(
+      createElement(CatchUpMessagePage, {
+        channelId: "c1",
+        firstUnreadAt: null,
+        onBoundaryMessage,
+      }),
+    );
+  });
+  expect(onBoundaryMessage).toHaveBeenLastCalledWith("m1", firstAt);
 });
 
 it("keeps encrypted rendering when the channel is flagged encrypted or is an edm", () => {

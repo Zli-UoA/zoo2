@@ -311,7 +311,7 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
     if let Some(dir) = &output {
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
     }
-    measure_api(&user, &channels[0]).await?;
+    measure_api(&user, &channels[0], false).await?;
     measure_skewed_details(&mut client).await?;
     Ok(())
 }
@@ -410,6 +410,13 @@ async fn measure_skewed_details(client: &mut tokio_postgres::Client) -> anyhow::
             assert_eq!(messages_rows, 0., "lightweight list scanned messages");
         }
     }
+    let channel = client
+        .query_one(
+            "SELECT id FROM channels WHERE id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' LIMIT 1",
+            &[],
+        )
+        .await?;
+    measure_api(&viewer, channel.get::<_, String>(0).as_str(), true).await?;
     Ok(())
 }
 
@@ -519,7 +526,7 @@ async fn measure(
     metrics: &mut serde_json::Map<String, Value>,
 ) -> anyhow::Result<()> {
     let mut observed = None;
-    let budget = if name.starts_with("read_") {
+    let budget = if name == "read_list" {
         READ_WORK_BUDGET
     } else {
         128.
@@ -651,7 +658,7 @@ async fn measure(
     Ok(())
 }
 
-async fn measure_api(user: &str, channel: &str) -> anyhow::Result<()> {
+async fn measure_api(user: &str, channel: &str, details: bool) -> anyhow::Result<()> {
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode},
@@ -666,10 +673,12 @@ async fn measure_api(user: &str, channel: &str) -> anyhow::Result<()> {
         "API pool/router initialization={:.3}ms",
         started.elapsed().as_secs_f64() * 1000.
     );
-    for path in [
-        "/api/channel-read-states".to_owned(),
-        format!("/api/channels/{channel}/read-state"),
-    ] {
+    let list_path = if details {
+        "/api/channel-read-states?details=1".to_owned()
+    } else {
+        "/api/channel-read-states".to_owned()
+    };
+    for path in [list_path, format!("/api/channels/{channel}/read-state")] {
         for concurrency in [1, 8] {
             let mut tasks = tokio::task::JoinSet::new();
             for _ in 0..concurrency {

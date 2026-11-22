@@ -1876,6 +1876,7 @@
     "complete": "キャッチアップ完了",
     "summary": "既読 {{read}} 件・未読のまま {{skipped}} 件",
     "refresh": "更新",
-    "conversation": "会話"
+    "conversation": "会話",
+    "unreadTooOld": "未読が多いため、一部のメッセージは読み込めていません。既読にすると残りは次回に持ち越されます。"
   }
 }

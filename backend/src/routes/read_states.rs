@@ -110,15 +110,16 @@ pub fn states_sql(single: bool, details: bool) -> String {
             format!(
                 r#",'unread_count', LEAST(COALESCE(u.n, 0), {UNREAD_COUNT_MAX}),
         'unread_count_truncated', COALESCE(u.n, 0) > {UNREAD_COUNT_MAX}
-            OR COALESCE(u.authors, 0) >= {UNREAD_AUTHOR_LIMIT},
+            OR COALESCE(u.extra_authors, 0) > 0,
         'first_unread_at', f.first_at"#
             ),
             format!(
                 r#"LEFT JOIN LATERAL (
-            SELECT COALESCE(sum(per_author.n), 0)::int AS n,
-                   count(*)::int AS authors
+            SELECT COALESCE(sum(per_author.n) FILTER (WHERE per_author.rn <= {UNREAD_AUTHOR_LIMIT}), 0)::int AS n,
+                   count(*) FILTER (WHERE per_author.rn > {UNREAD_AUTHOR_LIMIT})::int AS extra_authors
             FROM (
                 SELECT a.user_id,
+                    row_number() OVER (ORDER BY a.latest_at DESC, a.user_id DESC) AS rn,
                     (SELECT count(*)::int FROM (
                         SELECT 1 FROM messages m
                         WHERE m.channel_id = a.channel_id AND m.user_id = a.user_id
@@ -129,7 +130,7 @@ pub fn states_sql(single: bool, details: bool) -> String {
                 FROM channel_message_authors a
                 WHERE a.channel_id = c.id AND a.user_id <> $1
                   AND a.latest_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
-                ORDER BY a.latest_at DESC, a.user_id DESC LIMIT {UNREAD_AUTHOR_LIMIT}
+                ORDER BY a.latest_at DESC, a.user_id DESC LIMIT {UNREAD_AUTHOR_LIMIT} + 1
             ) per_author
         ) u ON h.has_unread
         LEFT JOIN LATERAL (

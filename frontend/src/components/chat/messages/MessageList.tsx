@@ -68,13 +68,15 @@ interface MessageListProps {
   onReaction: (messageId: string, emoji: string) => void;
   onPickReaction: (messageId: string) => void;
   attachments?: Map<string, AttachmentRow[]>;
-  onOpenThread: (messageId: string) => void;
+  onOpenThread?: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
   /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
   isOffline?: boolean;
   /** 未読区切りを明示する（読み取り専用画面では既読 API を使わずに渡す）。 */
   unreadBoundaryId?: string | null;
+  /** 境界時刻。読み足した後に未読の先頭へ戻る判定に使う。 */
+  unreadBoundaryAt?: number | null;
   /** 上端付近で過去のメッセージを読み足す。 */
   onLoadOlder?: () => void;
   /** 端末より古いメッセージが、まだあるか (ページ単位で取る)。 */
@@ -169,6 +171,7 @@ export function MessageList({
   canCompose = true,
   isOffline = false,
   unreadBoundaryId,
+  unreadBoundaryAt,
   onLoadOlder,
   hasOlder = true,
   isLoadingOlder = false,
@@ -199,6 +202,7 @@ export function MessageList({
     () => buildMessageItems(messages, undefined, boundaryId),
     [messages, boundaryId],
   );
+  const readBoundary = unreadBoundaryAt ?? lastRead;
   // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージ（#367）。ここに「ここから暗号化されています」の
   // 区切りを出す。これより後ろの暗号文のない行は、正しいサーバーが作れないので警告の印を付ける。
   const firstEncryptedIndex = useMemo(
@@ -306,10 +310,10 @@ export function MessageList({
     let stopRestoring: (() => void) | undefined;
     const oldest = messages[0] ? parseUtcTimestamp(messages[0].created_at).getTime() : NaN;
     const unreadCovered =
-      lastRead === null ||
-      lastRead <= 0 ||
+      readBoundary === null ||
+      readBoundary <= 0 ||
       !Number.isFinite(oldest) ||
-      oldest <= lastRead ||
+      oldest <= readBoundary ||
       !hasOlder ||
       unreadPagesRef.current >= MAX_UNREAD_PAGES;
     const awaitingUnread = pendingUnreadJumpRef.current && change === "prepend";
@@ -413,12 +417,12 @@ export function MessageList({
   }, [
     items,
     messages,
-    lastRead,
     hasOlder,
     isLoadingOlder,
     currentUserId,
     scrollToBottom,
     t,
+    readBoundary,
     boundaryId,
     virtualizer,
     captureScrollAnchor,
@@ -451,9 +455,9 @@ export function MessageList({
   // 既読位置が、いま読み込んでいる範囲より古いときは、既読位置を含むまで読み足す (未読の区切りを置くため)。
   // 未読が多すぎるときのために、読み足す回数には上限がある。
   useEffect(() => {
-    if (lastRead === null || lastRead <= 0 || messages.length === 0) return;
+    if (readBoundary === null || readBoundary <= 0 || messages.length === 0) return;
     const oldest = parseUtcTimestamp(messages[0]!.created_at).getTime();
-    if (!Number.isFinite(oldest) || oldest <= lastRead) return;
+    if (!Number.isFinite(oldest) || oldest <= readBoundary) return;
     if (!hasOlder || isLoadingOlder || !onLoadOlder) return;
     if (unreadPagesRef.current >= MAX_UNREAD_PAGES) {
       // 上限までに、既読位置まで届かなかった。未読の先頭は、読み込んでいない範囲にある。
@@ -462,7 +466,7 @@ export function MessageList({
     }
     unreadPagesRef.current += 1;
     onLoadOlder();
-  }, [lastRead, messages, hasOlder, isLoadingOlder, onLoadOlder, t]);
+  }, [readBoundary, messages, hasOlder, isLoadingOlder, onLoadOlder, t]);
 
   useEffect(() => {
     const update = () => {
@@ -644,7 +648,7 @@ export function MessageList({
                     onSaveEdit={onSaveEdit}
                     onRequestDelete={() => onRequestDelete(item.message.id)}
                     replyCount={item.message.display_data?.reply_count ?? 0}
-                    onOpenThread={() => onOpenThread(item.message.id)}
+                    onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
                     attachments={
                       item.message.display_data?.attachments ??
                       attachments?.get(item.message.id) ??

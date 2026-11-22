@@ -1876,6 +1876,7 @@
     "complete": "모두 확인했습니다",
     "summary": "읽음 {{read}}개 · 읽지 않음 {{skipped}}개",
     "refresh": "새로 고침",
-    "conversation": "대화"
+    "conversation": "대화",
+    "unreadTooOld": "안 읽은 메시지가 많아 일부 이전 메시지를 불러오지 못했습니다. 읽음으로 표시하면 다음에 남습니다."
   }
 }

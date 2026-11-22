@@ -1858,7 +1858,7 @@
   "catchUp": {
     "navUnread_one": "{{count}} 個未讀對話待睇",
     "navUnread_other": "{{count}} 個未讀對話待睇",
-    "title": "未讀稍後睇",
+    "title": "未讀訊息速睇",
     "close": "結束",
     "count_one": "{{count}} 則未讀訊息",
     "count_other": "{{count}} 則未讀訊息",
@@ -1874,8 +1874,9 @@
     "empty": "冇未讀對話",
     "emptyDescription": "有新訊息時再返嚟睇",
     "complete": "全部睇完",
-    "summary": "已讀 {{read}} 則 · 保持未讀 {{skipped}} 則",
+    "summary": "已讀 {{read}} 個 · 保持未讀 {{skipped}} 個",
     "refresh": "更新",
-    "conversation": "對話"
+    "conversation": "對話",
+    "unreadTooOld": "未讀訊息太多，部分較舊嘅訊息未能載入。標為已讀會留返下次。"
   }
 }
