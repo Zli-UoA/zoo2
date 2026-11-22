@@ -827,11 +827,10 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     const narrowHeight = narrowRow.getBoundingClientRect().height;
     expect(narrowHeight).toBeGreaterThan(80);
 
-    // Move back to bottom so rw-0 unmounts, end scrolling state, then resize 390px -> 800px.
+    // Move back to bottom so rw-0 unmounts, then resize 390px -> 800px.
     scroller.scrollTop = scroller.scrollHeight;
     fireEvent.scroll(scroller);
     await waitFor(() => expect(scroller.querySelector('[data-message-id="rw-0"]')).toBeNull());
-    fireEvent(scroller, new Event("scrollend"));
 
     view.rerender(
       <CollectionsProvider value={testCollections}>
@@ -842,9 +841,13 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
         </LocaleProvider>
       </CollectionsProvider>,
     );
+    await waitFor(() => expect(scroller.clientWidth).toBeGreaterThan(700));
     await new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))),
     );
+    // Wait past @tanstack/virtual-core's default isScrollingResetDelay (150ms) so isScrolling is
+    // deterministically false before remounting rw-0 synchronously (before ResizeObserver delivery).
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     // Remount rw-0 synchronously during React commit (while isScrolling=false, before ResizeObserver),
     // then immediately switch channel to confirm !entry measured 800px instead of stale 390px cache.
