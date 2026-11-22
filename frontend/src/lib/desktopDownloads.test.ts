@@ -214,6 +214,28 @@ describe("downloadUrlToDesktop", () => {
     expect(desktopDownloadState("a2b")).toBeUndefined();
   });
 
+  it("does not retry a write failure with a new save", async () => {
+    desktop.begin.mockResolvedValue(started());
+    const writeFailure = new Error("IPC への書き込みに失敗しました");
+    desktop.write.mockRejectedValueOnce(writeFailure);
+    desktop.cancel.mockResolvedValue(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => blobResponse([1, 2, 3])),
+    );
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+
+    await expect(downloadUrlToDesktop("a2c", "a.txt", resolve, { retryDelayMs: 0 })).rejects.toBe(
+      writeFailure,
+    );
+
+    // 書き込みの失敗は同じ結果になりやすいので、本文の取得からやり直さない。
+    expect(desktop.begin).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(desktop.cancel).toHaveBeenCalledWith("d1");
+    expect(desktop.finish).not.toHaveBeenCalled();
+  });
+
   it("does not save an empty or failed body as a file", async () => {
     desktop.begin.mockResolvedValue(started());
     desktop.write.mockResolvedValue(undefined);

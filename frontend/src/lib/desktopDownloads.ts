@@ -259,6 +259,16 @@ async function writeChunk(downloadId: string, bytes: Uint8Array): Promise<void> 
   }
 }
 
+/** 本文の取得だけを再試行対象にする。IPC への書き込み失敗はここを通さない。 */
+async function readBody<T>(read: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new BodyReadError(error);
+  }
+}
+
 async function writeResponse(
   downloadId: string,
   response: Response,
@@ -268,7 +278,7 @@ async function writeResponse(
   const total = contentLength(response);
   const reader = response.body?.getReader();
   if (!reader) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(await readBody(() => response.arrayBuffer(), signal));
     if (signal.aborted) throw new DesktopDownloadCancelledError();
     await writeChunk(downloadId, bytes);
     report(1);
@@ -277,7 +287,7 @@ async function writeResponse(
   let received = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readBody(() => reader.read(), signal);
       if (done) break;
       if (signal.aborted) throw new DesktopDownloadCancelledError();
       await writeChunk(downloadId, value);
@@ -333,12 +343,7 @@ export async function downloadUrlToDesktop(
         if (signal.aborted) throw error;
         response = await open(true);
       }
-      try {
-        await writeResponse(downloadId, response, signal, report);
-      } catch (error) {
-        if (signal.aborted) throw error;
-        throw new BodyReadError(error);
-      }
+      await writeResponse(downloadId, response, signal, report);
     },
     retryDelayMs,
   );
