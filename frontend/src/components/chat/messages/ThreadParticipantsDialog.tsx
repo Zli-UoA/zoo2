@@ -169,7 +169,8 @@ export function ThreadParticipantsDialog({
 
         {status ? (
           <div className="flex items-center justify-between gap-2 border-t pt-3">
-            <span className="text-xs text-muted-foreground">
+            {/* 参加・退出の成功で文言が変わる。フォーカスを動かさずに、変化を通知する（検索結果の領域とは別）。 */}
+            <span role="status" className="text-xs text-muted-foreground">
               {status === "joined"
                 ? t("members.joined")
                 : status === "notJoined"

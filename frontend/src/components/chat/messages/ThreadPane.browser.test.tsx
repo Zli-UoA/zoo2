@@ -269,26 +269,30 @@ describe("ThreadPane のダイアログ挙動", () => {
       expect(onClose).not.toHaveBeenCalled();
     });
 
+    // ダイアログには、ライブリージョンが 2 つある。検索結果（一覧の下。DOM の順で先）と、参加状態（フッター）。
+    const searchStatus = (dialog: HTMLElement) => within(dialog).getAllByRole("status")[0]!;
+    const joinStatus = (dialog: HTMLElement) => within(dialog).getAllByRole("status")[1]!;
+
     it("検索結果の 0 件は、常設のライブリージョン（role=status）で伝え、入力欄のフォーカスは動かさない", async () => {
       await page.viewport(1280, 900);
       render(<MembersHarness />);
       await userEvent.click(screen.getByRole("button", { name: "参加者 53人" }));
       const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
       // ライブリージョンは、変化の前から DOM にある（あとから現れる要素は、読み上げられないことがある）。
-      const status = within(dialog).getByRole("status");
+      const status = searchStatus(dialog);
       expect(status.textContent).toMatch(/ほか 50人/);
 
       const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
       await userEvent.type(search, "zzz");
       // 同じ要素の中身が更新される。
-      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(searchStatus(dialog)).toBe(status);
       expect(status.textContent).toMatch(/該当するユーザーがいません。/);
       expect(status.textContent).toMatch(/読み込んだ先頭3人の中から絞り込んでいます/);
       expect(document.activeElement).toBe(search);
 
       // 一致が戻ると、0 件のメッセージは消える（ライブリージョン自体は残る）。
       await userEvent.clear(search);
-      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(searchStatus(dialog)).toBe(status);
       expect(status.textContent).not.toMatch(/該当するユーザーがいません。/);
     });
 
@@ -298,20 +302,50 @@ describe("ThreadPane のダイアログ挙動", () => {
       render(<MembersHarness participantCount={3} />);
       await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
       const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
-      const status = within(dialog).getByRole("status");
+      const status = searchStatus(dialog);
       expect(status.textContent).toBe("");
       expect(within(dialog).queryByText(/ほか/)).toBeNull();
 
       const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
       await userEvent.type(search, "zzz");
       // 0 件のメッセージは、同じ要素の中身として入る（あとから現れる要素ではない）。
-      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(searchStatus(dialog)).toBe(status);
       expect(status.textContent).toBe("該当するユーザーがいません。");
       expect(document.activeElement).toBe(search);
 
       await userEvent.clear(search);
-      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(searchStatus(dialog)).toBe(status);
       expect(status.textContent).toBe("");
+    });
+
+    it("参加状態の文言は、ライブリージョン（role=status）の中で、同じ要素のまま更新される", async () => {
+      await page.viewport(1280, 900);
+      const view = (membership: "joined" | "none") => (
+        <LocaleProvider>
+          <ThreadPane
+            {...paneProps({
+              membership,
+              participantCount: 3,
+              participants,
+              onLeaveThread: noop,
+              onJoinThread: noop,
+            })}
+          />
+        </LocaleProvider>
+      );
+      const { rerender } = render(view("joined"));
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
+      const status = joinStatus(dialog);
+      expect(status.textContent).toBe("参加中");
+      // 検索結果の領域とは別の要素で、その領域には手を加えない。
+      expect(searchStatus(dialog)).not.toBe(status);
+
+      // 退出が成功して、参加状態が変わる（ダイアログは開いたまま）。同じ要素の中身が更新される。
+      rerender(view("none"));
+      await waitFor(() => expect(status.textContent).toBe("未参加"), SLOW);
+      expect(joinStatus(dialog)).toBe(status);
+      expect(status.isConnected).toBe(true);
     });
 
     it("閉じたあとに開き直すと、検索語は空に戻る", async () => {
