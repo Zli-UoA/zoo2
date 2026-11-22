@@ -905,10 +905,10 @@ export function MessagePane({
 
   const threadTargetMessageId =
     resolvedTargetId &&
-    threadRoot &&
-    resolvedTargetId !== threadRoot.id &&
+    threadPaneRoot &&
+    resolvedTargetId !== threadPaneRoot.id &&
     (threadReplies.some((reply) => reply.id === resolvedTargetId) ||
-      (target?.id === resolvedTargetId && target.parent_id === threadRoot.id))
+      (target?.id === resolvedTargetId && target.parent_id === threadPaneRoot.id))
       ? resolvedTargetId
       : undefined;
 

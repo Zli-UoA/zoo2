@@ -313,6 +313,23 @@ describe("links and threads whose rows are older than the loaded range", () => {
     });
   });
 
+  it("passes targetMessageId to ThreadPane when opening a surviving reply under a deleted root", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "surviving-reply",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+      deleted_at: null,
+    };
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    render(pane("surviving-reply"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("surviving-reply");
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
   it("does not close a thread whose root is still being fetched", async () => {
     fixture.rootRows = [];
     fixture.rootLoading = true;
