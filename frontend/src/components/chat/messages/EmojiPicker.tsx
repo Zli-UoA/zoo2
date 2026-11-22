@@ -252,6 +252,8 @@ export type CustomEmojiOption = {
   category: string;
   aliases: string[];
   url: string;
+  width?: number | null;
+  height?: number | null;
 };
 
 /** Workspace custom emoji plus account avatars, filtered by `query`. */
@@ -279,11 +281,7 @@ export function useCustomEmojiSearch(query: string) {
 type CustomEmojiSearch = ReturnType<typeof useCustomEmojiSearch>;
 
 /** Reserve picker image dimensions from metadata to prevent layout shift before decode. */
-function customEmojiImageStyle(emoji: {
-  url: string;
-  width?: number | null;
-  height?: number | null;
-}) {
+function customEmojiImageStyle(emoji: CustomEmojiOption) {
   if (
     typeof emoji.width !== "number" ||
     !Number.isFinite(emoji.width) ||
