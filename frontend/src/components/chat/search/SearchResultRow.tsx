@@ -13,6 +13,7 @@ import {
 
 import type { ChannelUserRow, UserRow } from "../../../lib/electric/types";
 import { formatAttachmentSize } from "../../../lib/attachments";
+import { highlightText } from "../../ui/highlighted-text";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
 import { AppAvatar } from "../AppIdentity";
@@ -31,8 +32,11 @@ export function SearchResultRow({
   users,
   members = [],
   currentUserId,
+  terms = [],
 }: {
   item: SearchItem;
+  /** 強調する検索語（`searchTerms`）。本文の抜粋とファイル名の中で当たった部分を強調する。 */
+  terms?: readonly string[];
   /** DM の表示名と、投稿者が `display_data` にない古い行の補完に使う。 */
   users: ReadonlyMap<string, UserRow>;
   members?: readonly Pick<ChannelUserRow, "user_id">[];
@@ -128,7 +132,9 @@ export function SearchResultRow({
           {file ? (
             <p className="flex min-w-0 items-center gap-1.5 text-sm">
               <PaperclipIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 break-all font-medium">{file.file_name}</span>
+              <span className="min-w-0 break-all font-medium">
+                {highlightText(file.file_name, terms)}
+              </span>
               <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                 {formatAttachmentSize(file.file_size, locale)}
               </span>
@@ -136,7 +142,11 @@ export function SearchResultRow({
           ) : message ? (
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                <MfmContent content={message.snippet} emojis={message.emojis ?? {}} />
+                <MfmContent
+                  content={message.snippet}
+                  emojis={message.emojis ?? {}}
+                  highlight={terms}
+                />
               </div>
             </blockquote>
           ) : null}

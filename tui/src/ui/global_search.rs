@@ -246,9 +246,96 @@ pub fn parse_modifiers(query: &str) -> Modifiers {
     out
 }
 
+/// 強調する語。今の結果を取ったときの語から、絞り込み（`from:` など）を除いたもの。
+/// サーバーと同じく、重複を除いて最大 5 個。
+pub fn highlight_terms(search: &GlobalSearch) -> Vec<String> {
+    let Some((query, _)) = &search.searched else {
+        return Vec::new();
+    };
+    let mut terms: Vec<String> = Vec::new();
+    for term in parse_modifiers(query).terms.split_whitespace() {
+        if !terms.iter().any(|t| t == term) {
+            terms.push(term.to_string());
+        }
+    }
+    terms.truncate(5);
+    terms
+}
+
+/// `text` を、語に当たった部分（`true`）とそれ以外に分ける。大文字と小文字は区別しない
+/// （サーバーの `lower()` と同じ）。重なる語は長い方を優先する。
+pub fn highlight_segments(text: &str, terms: &[String]) -> Vec<(String, bool)> {
+    let mut terms: Vec<Vec<char>> = terms
+        .iter()
+        .filter(|t| !t.is_empty())
+        .map(|t| t.chars().collect())
+        .collect();
+    terms.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    let chars: Vec<char> = text.chars().collect();
+    let same = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    let mut out: Vec<(String, bool)> = Vec::new();
+    let mut push = |piece: String, hit: bool| match out.last_mut() {
+        Some((last, last_hit)) if *last_hit == hit && !hit => last.push_str(&piece),
+        _ => out.push((piece, hit)),
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let hit = terms.iter().find(|term| {
+            chars.len() - i >= term.len() && term.iter().zip(&chars[i..]).all(|(t, c)| same(*c, *t))
+        });
+        match hit {
+            Some(term) => {
+                push(chars[i..i + term.len()].iter().collect(), true);
+                i += term.len();
+            }
+            None => {
+                push(chars[i].to_string(), false);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn highlight_segments_marks_hits_case_insensitively_and_prefers_longer_terms() {
+        let terms = vec![
+            "検索".to_string(),
+            "全文検索".to_string(),
+            "rust".to_string(),
+        ];
+        assert_eq!(
+            highlight_segments("Rust の全文検索と検索", &terms),
+            vec![
+                ("Rust".to_string(), true),
+                (" の".to_string(), false),
+                ("全文検索".to_string(), true),
+                ("と".to_string(), false),
+                ("検索".to_string(), true),
+            ]
+        );
+        assert_eq!(
+            highlight_segments("本文", &[]),
+            vec![("本文".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn highlight_terms_drop_modifiers_and_duplicates() {
+        let search = GlobalSearch {
+            searched: Some((
+                "会議 from:@alice 資料 会議 in:#general after:2026-01-01".into(),
+                SearchKind::All,
+            )),
+            ..Default::default()
+        };
+        assert_eq!(highlight_terms(&search), vec!["会議", "資料"]);
+        assert!(highlight_terms(&GlobalSearch::default()).is_empty());
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

@@ -194,6 +194,7 @@
         "Prompt",
         "SubmitQuery",
         "All",
+        "Highlight",
         "Filters",
         "LoadOlder",
         "Files",
@@ -352,6 +353,7 @@
         "InlineLinks",
         "LongUrl",
         "CodeAndMath",
+        "SearchHighlight",
         "EmojiAndFallback",
         "JoinedEmoji",
         "Formatting",
@@ -1451,6 +1453,12 @@
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
       "reason": "LoadingとBodiesReadyTogetherで初回の全体Spinner、LoadingOnScrollで一覧を残した追加読込の下部Spinnerを確認する。"
+    },
+    {
+      "file": "src/components/ui/highlighted-text.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "Highlightで検索結果の本文の抜粋（MFMの太字の中を含む）とファイル名の検索語を実描画する。"
     },
     {
       "file": "src/components/ui/external-link.tsx",

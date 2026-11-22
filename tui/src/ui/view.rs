@@ -13,6 +13,7 @@ use super::{
     app::{App, Focus, Mode, SidebarItem, Target},
     e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
+    global_search,
     timeline::{self, Context},
 };
 use crate::api::SearchKind;
@@ -22,6 +23,8 @@ use crate::electric::ShapeId;
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Style = Style::new().fg(Color::DarkGray);
+/// 全文検索の結果で、検索語に当たった部分。
+const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
@@ -342,6 +345,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
     let fixed = popup_rows(&lines, width) + popup_rows(&footer, width) + 2;
     let room = (usize::from(frame.area().height).saturating_sub(fixed) / 2).max(1);
     let first = search.selected.saturating_sub(room.saturating_sub(1));
+    let terms = global_search::highlight_terms(search);
     for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
         let selected = index == search.selected;
         let place = match app.store.channel(&item.channel_id) {
@@ -369,15 +373,19 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
         lines.push(Line::from(truncate_spans(head, inner)));
         let text = item.file_name.as_deref().unwrap_or(&item.snippet);
         let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let text = truncate_width(&text, inner.saturating_sub(4));
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            if selected {
-                Span::styled(text, Style::new().add_modifier(Modifier::BOLD))
-            } else {
-                Span::raw(text)
-            },
-        ]));
+        // 検索語に当たった部分を強調する（Web の `<mark>` と同じ）。
+        let base = if selected {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        let body = global_search::highlight_segments(&text, &terms)
+            .into_iter()
+            .map(|(piece, hit)| Span::styled(piece, if hit { base.patch(HIGHLIGHT) } else { base }))
+            .collect();
+        let mut row = vec![Span::raw("    ")];
+        row.extend(truncate_spans(body, inner.saturating_sub(4)));
+        lines.push(Line::from(row));
     }
     lines.extend(footer);
     draw_popup_sized(frame, "全文検索", lines, WIDTH);
@@ -3544,6 +3552,16 @@ mod tests {
         );
         assert!(screen.contains("明日の会議の資料"), "{screen}");
         assert!(screen.contains("スレッドの返信"), "{screen}");
+        // 検索語の「会議」だけを強調する。
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let highlighted: String = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&p| buffer[p].bg == Color::Yellow)
+            .map(|p| buffer[p].symbol().to_string())
+            .collect();
+        assert_eq!(highlighted, "会議会議", "{screen}");
         assert!(screen.contains("2025-12 まで検索しました"), "{screen}");
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
