@@ -192,9 +192,12 @@ describe("ThreadPane のダイアログ挙動", () => {
     function MembersHarness({
       onClose,
       onLeaveThread,
+      participantCount = 53,
     }: {
       onClose?: () => void;
       onLeaveThread?: () => void;
+      /** 一覧に載る人数（3）より多いと、「ほか N人」の注記が出る。既定は 53。 */
+      participantCount?: number;
     }) {
       return (
         <LocaleProvider>
@@ -204,7 +207,7 @@ describe("ThreadPane のダイアログ挙動", () => {
               root: message({ user_id: "user-2", user_name: "bob", display_name: null }),
               replies: [message({ id: "reply-1", parent_id: "root-1", content: "a reply" })],
               membership: "joined",
-              participantCount: 53,
+              participantCount,
               participants,
               onLeaveThread: onLeaveThread ?? noop,
               onClose: onClose ?? noop,
@@ -287,6 +290,28 @@ describe("ThreadPane のダイアログ挙動", () => {
       await userEvent.clear(search);
       expect(within(dialog).getByRole("status")).toBe(status);
       expect(status.textContent).not.toMatch(/該当するユーザーがいません。/);
+    });
+
+    it("全員を読み込めているスレッドでも、ライブリージョンは検索の前から DOM にあり、0 件になっても同じ要素のまま", async () => {
+      await page.viewport(1280, 900);
+      // 人数（3）が一覧の人数（3）と同じなので、「ほか N人」の注記はない。リージョンの中身は、最初は空。
+      render(<MembersHarness participantCount={3} />);
+      await userEvent.click(screen.getByRole("button", { name: "参加者 3人" }));
+      const dialog = await screen.findByRole("dialog", { name: /メンバー/ }, SLOW);
+      const status = within(dialog).getByRole("status");
+      expect(status.textContent).toBe("");
+      expect(within(dialog).queryByText(/ほか/)).toBeNull();
+
+      const search = within(dialog).getByRole("searchbox", { name: "名前で検索" });
+      await userEvent.type(search, "zzz");
+      // 0 件のメッセージは、同じ要素の中身として入る（あとから現れる要素ではない）。
+      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("該当するユーザーがいません。");
+      expect(document.activeElement).toBe(search);
+
+      await userEvent.clear(search);
+      expect(within(dialog).getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("");
     });
 
     it("閉じたあとに開き直すと、検索語は空に戻る", async () => {
