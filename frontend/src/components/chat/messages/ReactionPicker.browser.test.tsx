@@ -1,3 +1,4 @@
+import "../../../styles.css";
 import { delay, http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -89,6 +90,23 @@ function renderPicker() {
     </LocaleProvider>,
   );
   return { onSelect, onOpenChange };
+}
+
+async function createSolidPng(width: number, height: number): Promise<ArrayBuffer> {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d canvas context is unavailable");
+  ctx.fillStyle = "#ff0000";
+  ctx.fillRect(0, 0, width, height);
+  const blob = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (result) => (result ? resolve(result) : reject(new Error("canvas.toBlob returned null"))),
+      "image/png",
+    );
+  });
+  return blob.arrayBuffer();
 }
 
 describe("ReactionPicker", () => {
@@ -240,15 +258,72 @@ describe("ReactionPicker", () => {
 
     const wide = (await screen.findByRole("img", { name: ":wide-emoji:" })) as HTMLImageElement;
     expect(wide.complete).toBe(false);
-    expect(wide.style.height).toBe("1.75rem");
-    expect(wide.style.maxWidth).toBe("10rem");
+    expect(wide.style.aspectRatio).toBe("auto 3 / 1");
     expect(Math.abs(wide.getBoundingClientRect().width - 84)).toBeLessThanOrEqual(1);
+    expect(Math.abs(wide.getBoundingClientRect().height - 28)).toBeLessThanOrEqual(1);
 
     const ultra = screen.getByRole("img", { name: ":ultra-wide-emoji:" }) as HTMLImageElement;
     expect(Math.abs(ultra.getBoundingClientRect().width - 160)).toBeLessThanOrEqual(1);
 
     const legacy = screen.getByRole("img", { name: ":legacy-emoji:" }) as HTMLImageElement;
-    expect(legacy.style.width).toBe("");
-    expect(legacy.style.height).toBe("");
+    expect(legacy.style.aspectRatio).toBe("");
+  });
+
+  it("uses the decoded image aspect ratio after load when stored metadata orientation differs", async () => {
+    const [landscapeBytes, portraitBytes] = await Promise.all([
+      createSolidPng(300, 100),
+      createSolidPng(100, 300),
+    ]);
+    await startMockServer();
+    mockServer.use(
+      http.get("*/api/emojis", () =>
+        HttpResponse.json([
+          {
+            name: "rotated-landscape",
+            url: "https://www.gstatic.com/rotated-landscape.png",
+            category: "Rotated",
+            aliases: [],
+            width: 100,
+            height: 300,
+          },
+          {
+            name: "rotated-portrait",
+            url: "https://www.gstatic.com/rotated-portrait.png",
+            category: "Rotated",
+            aliases: [],
+            width: 300,
+            height: 100,
+          },
+        ]),
+      ),
+      http.get("https://www.gstatic.com/rotated-landscape.png", () =>
+        HttpResponse.arrayBuffer(landscapeBytes, { headers: { "Content-Type": "image/png" } }),
+      ),
+      http.get("https://www.gstatic.com/rotated-portrait.png", () =>
+        HttpResponse.arrayBuffer(portraitBytes, { headers: { "Content-Type": "image/png" } }),
+      ),
+    );
+
+    renderPicker();
+    await userEvent.click(screen.getByRole("tab", { name: "カスタム絵文字" }));
+
+    const landscape = (await screen.findByRole("img", {
+      name: ":rotated-landscape:",
+    })) as HTMLImageElement;
+    const portrait = screen.getByRole("img", { name: ":rotated-portrait:" }) as HTMLImageElement;
+
+    await waitFor(() => {
+      expect(landscape.complete).toBe(true);
+      expect(landscape.naturalWidth).toBe(300);
+      expect(landscape.naturalHeight).toBe(100);
+      expect(portrait.complete).toBe(true);
+      expect(portrait.naturalWidth).toBe(100);
+      expect(portrait.naturalHeight).toBe(300);
+    });
+
+    expect(Math.abs(landscape.getBoundingClientRect().width - 84)).toBeLessThanOrEqual(1);
+    expect(Math.abs(landscape.getBoundingClientRect().height - 28)).toBeLessThanOrEqual(1);
+    expect(Math.abs(portrait.getBoundingClientRect().width - 28 / 3)).toBeLessThanOrEqual(1.5);
+    expect(Math.abs(portrait.getBoundingClientRect().height - 28)).toBeLessThanOrEqual(1);
   });
 });

@@ -11,6 +11,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -18,7 +19,6 @@ import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
 import { EMOJIBASE_DATA_URL, SUPPORTED_EMOJI_VERSION } from "../../../lib/emoji/data";
-import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import { resolveEmojiDataLocale } from "../../../lib/emoji/locale";
 import { resolveMultilingualEmojiData } from "../../../lib/emoji/resolver";
 import { useLocale } from "../../i18n/LocaleProvider";
@@ -280,8 +280,11 @@ export function useCustomEmojiSearch(query: string) {
 
 type CustomEmojiSearch = ReturnType<typeof useCustomEmojiSearch>;
 
-/** Reserve picker image dimensions from metadata to prevent layout shift before decode. */
-function customEmojiImageStyle(emoji: CustomEmojiOption) {
+/**
+ * Reserve picker image dimensions from metadata before decode while still letting the
+ * decoded image's natural (post-EXIF) aspect ratio take over once loaded.
+ */
+function customEmojiImageStyle(emoji: CustomEmojiOption): CSSProperties | undefined {
   if (
     typeof emoji.width !== "number" ||
     !Number.isFinite(emoji.width) ||
@@ -292,7 +295,7 @@ function customEmojiImageStyle(emoji: CustomEmojiOption) {
   ) {
     return undefined;
   }
-  return { ...emojiImageStyle(emoji, "1.75rem"), maxWidth: "10rem" };
+  return { aspectRatio: `auto ${emoji.width} / ${emoji.height}` };
 }
 
 function CustomEmojiGroups({
