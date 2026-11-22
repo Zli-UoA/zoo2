@@ -56,8 +56,8 @@ export function ReactionPicker({
     if (value.trim() !== "" && tab === "kitchen") setTab("emoji");
   };
   const searchResults = (
-    <EmojiGrid hideEmpty={customEmojis.filtered.length > 0}>
-      <CustomEmojiMatches search={customEmojis} onSelect={select} />
+    <EmojiGrid hideEmpty={searching && customEmojis.filtered.length > 0}>
+      {searching ? <CustomEmojiMatches search={customEmojis} onSelect={select} /> : null}
     </EmojiGrid>
   );
 

@@ -115,7 +115,7 @@ describe("ReactionPicker", () => {
     const { onSelect, onOpenChange } = renderPicker();
     await userEvent.click(screen.getByRole("tab", { name: "カスタム絵文字" }));
     await screen.findByRole("button", { name: ":party-parrot:" });
-    await userEvent.type(screen.getByRole("textbox", { name: "絵文字を検索" }), "挨拶");
+    await userEvent.type(screen.getByRole("searchbox", { name: "絵文字を検索" }), "挨拶");
     expect(screen.queryByRole("button", { name: ":other:" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: ":party-parrot:" }));
     expect(onSelect).toHaveBeenCalledWith(":party-parrot:");
@@ -139,13 +139,13 @@ describe("ReactionPicker", () => {
       ),
     );
     const { onSelect } = renderPicker();
-    await userEvent.type(screen.getByRole("textbox", { name: "絵文字を検索" }), "挨拶");
+    await userEvent.type(screen.getByRole("searchbox", { name: "絵文字を検索" }), "挨拶");
     await userEvent.click(await screen.findByRole("button", { name: ":party-parrot:" }));
     expect(onSelect).toHaveBeenCalledWith(":party-parrot:");
   });
   it("shows the search box above the tabs and no description on the emoji tab", () => {
     renderPicker();
-    const search = screen.getByRole("textbox", { name: "絵文字を検索" });
+    const search = screen.getByRole("searchbox", { name: "絵文字を検索" });
     const tabs = screen.getByRole("tablist");
     expect(search.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByText("すべての絵文字から選べます。")).toBeNull();

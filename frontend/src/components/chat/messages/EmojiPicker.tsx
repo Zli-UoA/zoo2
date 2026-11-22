@@ -59,6 +59,13 @@ export function EmojiPickerRoot({
   const forwardNavigationKey = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (!NAVIGATION_KEYS.has(event.key)) return;
+      // Only the shared search box and the grid navigate emoji; other inputs
+      // inside the root (e.g. Emoji Kitchen) keep their caret/selection keys.
+      if (
+        !(event.target instanceof Element) ||
+        !event.target.closest("[frimousse-search], [frimousse-viewport]")
+      )
+        return;
       const { key, code, location, ctrlKey, shiftKey, altKey, metaKey } = event;
       keyboardNavigationAt.current = performance.now();
       event.preventDefault();
