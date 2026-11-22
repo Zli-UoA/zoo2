@@ -655,7 +655,9 @@ fn revision_of(rooms: &[BridgeRoomState]) -> String {
 async fn load_bridge_rooms(state: &AppState) -> Result<Vec<BridgeRoomState>, AppError> {
     let mut db = state.db.clone();
     let rows = toasty::sql::query(
-        "WITH rooms AS (
+        // 部屋は LiveKit の在室者から決め、call_rooms は主キーで 1 行ずつ引く（call_rooms は通話したことのある
+        // チャンネルの数だけ増えるので、mode で全件を絞らない）。
+        "WITH rooms AS MATERIALIZED (
              SELECT DISTINCT p.channel_id FROM call_presence p
              WHERE p.sfu_id = 'livekit' AND p.expires_at > statement_timestamp()
          )
@@ -674,7 +676,11 @@ async fn load_bridge_rooms(state: &AppState) -> Result<Vec<BridgeRoomState>, App
                  WHERE t.channel_id = r.channel_id AND t.source = 'direct'), '[]'::json)
          )::text
          FROM rooms
-         JOIN call_rooms r ON r.channel_id = rooms.channel_id AND r.mode = 'sfu'
+         CROSS JOIN LATERAL (
+             SELECT cr.channel_id, cr.epoch FROM call_rooms cr
+             WHERE cr.channel_id = rooms.channel_id AND cr.mode = 'sfu'
+             LIMIT 1
+         ) r
          WHERE EXISTS (
              SELECT 1 FROM call_presence c
              WHERE c.channel_id = r.channel_id AND c.sfu_id = 'cloudflare'
