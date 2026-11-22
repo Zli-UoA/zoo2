@@ -964,7 +964,13 @@ impl Downloads {
         let failure = Arc::clone(&failed);
         let cancel_flag = Arc::clone(&cancelled);
         let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            let mut slot = file.lock().unwrap_or_else(PoisonError::into_inner);
+            let slot_result = file.lock();
+            let poisoned = slot_result.is_err();
+            let mut slot = slot_result.unwrap_or_else(PoisonError::into_inner);
+            if poisoned {
+                failure.store(true, Ordering::SeqCst);
+                return Err(std::io::Error::other("書き込みに失敗したダウンロードです"));
+            }
             if cancel_flag.load(Ordering::SeqCst) {
                 return Err(std::io::Error::other("ダウンロードは中止されました"));
             }
@@ -2282,7 +2288,17 @@ fn finish_entry_with(
 ) -> Result<PathBuf> {
     // 中止と確定が同時に来ても、ファイルのロックの中で決める。中止はロックの前で
     // `cancelled` を立てるので、ここで見てから確定するまでの間に取り消されることはない。
-    let mut slot = entry.file.lock().unwrap_or_else(PoisonError::into_inner);
+    // ロックが poison されている（書き込みタスクがパニックした）場合も、不完全なファイルを
+    // 確定しない。
+    let lock_result = entry.file.lock();
+    let poisoned = lock_result.is_err();
+    let mut slot = lock_result.unwrap_or_else(PoisonError::into_inner);
+    if poisoned {
+        drop(slot.take());
+        drop(slot);
+        let _ = std::fs::remove_file(&entry.part);
+        return Err(anyhow!("書き込みに失敗したダウンロードです"));
+    }
     if entry.cancelled.load(Ordering::SeqCst) {
         drop(slot.take());
         drop(slot);
