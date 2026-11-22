@@ -539,6 +539,7 @@
         "Finishing",
         "Complete",
         "WithLabel",
+        "FinishingWithLabel",
         "Pending"
       ]
     },
@@ -551,7 +552,9 @@
         "ToggleOff",
         "ChooseFolder",
         "ResetFolder",
-        "OlderApp"
+        "OlderApp",
+        "LoadError",
+        "LongPath"
       ]
     },
     {

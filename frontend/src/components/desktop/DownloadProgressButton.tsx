@@ -139,7 +139,7 @@ export function DownloadProgressButton({
           aria-hidden="true"
         />
       </span>
-      {showLabel ? cancelShortLabel : null}
+      {showLabel ? (finishing ? finishingLabel : cancelShortLabel) : null}
     </Button>
   );
 }

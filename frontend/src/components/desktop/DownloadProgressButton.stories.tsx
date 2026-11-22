@@ -77,6 +77,16 @@ export const Finishing: Story = {
   },
 };
 
+/** 名前付きのボタンでも、確認中は「中止」ではなく保存中と出す。 */
+export const FinishingWithLabel: Story = {
+  args: { state: { status: "finishing" }, showLabel: true },
+  play: async ({ canvasElement }) => {
+    const button = await within(canvasElement).findByRole("button", { name: "保存しています…" });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveTextContent("保存しています…");
+  },
+};
+
 export const Complete: Story = {
   args: { state: { status: "downloading", fraction: 1 } },
 };
