@@ -299,7 +299,10 @@ internal fun ConnectedScreens(
         channel != null && (threadRoot != null || deletedRoot) -> AndroidScreen.Thread(
             channel.text("channel_name"),
             threadRoot ?: TimelineItem(currentThread.orEmpty(), "", session.t("threads.rootDeleted"), ""),
-            messages.filter { it.id in threadReplies },
+            // Under a deleted parent the thread is read-only (as Web): no edits, deletes or reactions.
+            messages.filter { it.id in threadReplies }.map {
+                if (threadRoot == null) it.copy(editable = false, canReact = false, canRepost = false) else it
+            },
             state.input("$channelId:$currentThread", canPost && threadRoot != null && !threadDetail.present("thread_archive_at") &&
                 (!threadDetail.flag("tracked") || threadDetail.text("membership") == "joined"),
                 users.filter { user -> channelMembers.any { it.text("user_id") == user.text("id") } }), focusMessage,

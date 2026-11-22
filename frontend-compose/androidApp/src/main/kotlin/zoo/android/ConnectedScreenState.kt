@@ -440,7 +440,8 @@ internal class ConnectedScreenState(
                 SearchResultItem(
                     key = globalSearchKey(row, search.type),
                     author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
-                    body = if (file) row.text("file_name") else row.text("snippet"),
+                    // Like Web, keep the first hit within the three lines of a narrow screen.
+                    body = if (file) row.text("file_name") else focusSnippet(row.text("snippet"), searchTerms(search.query)),
                     time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
                     destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
                     dm = isDm(row, channelsById[row.text("channel_id")]),

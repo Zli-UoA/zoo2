@@ -61,4 +61,15 @@ class SearchHighlightTest {
         assertEquals(SearchQueryProblem.TermTooLong, searchQueryProblem("a b c d e f " + "x".repeat(101)),
             "Like the server, the length is checked first")
     }
+
+    @Test
+    fun shortensWhatComesBeforeTheFirstHit() {
+        val before = "あ".repeat(40)
+        assertEquals("…ああああ会議の資料", focusSnippet("…${before}会議の資料", listOf("会議"), 4))
+        assertEquals("…🐘🐘会議", focusSnippet("${"🐘".repeat(10)}会議", listOf("会議"), 2), "Keeps surrogate pairs whole")
+        // Short text, no hit, or no terms are unchanged.
+        assertEquals("明日の会議", focusSnippet("明日の会議", listOf("会議"), 4))
+        assertEquals("${before}資料", focusSnippet("${before}資料", listOf("会議"), 4))
+        assertEquals("${before}資料", focusSnippet("${before}資料", emptyList(), 4))
+    }
 }

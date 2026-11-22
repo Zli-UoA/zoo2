@@ -71,3 +71,25 @@ fun highlightSegments(text: String, terms: List<String>): List<HighlightSegment>
     if (last < text.length) segments += HighlightSegment(text.substring(last), false)
     return segments.ifEmpty { listOf(HighlightSegment(text, false)) }
 }
+
+/** Code points kept before the first hit of a snippet (Web's `SNIPPET_CONTEXT_BEFORE`). */
+const val SNIPPET_CONTEXT_BEFORE = 16
+
+/**
+ * Shortens what comes before the first hit of a snippet to [keep] code points and an `…` (Web's
+ * `focusSnippet`). The server starts a snippet 40 characters before the hit, so three lines on a
+ * narrow screen could end before it. Without a hit the text is unchanged.
+ */
+fun focusSnippet(text: String, terms: List<String>, keep: Int = SNIPPET_CONTEXT_BEFORE): String {
+    val segments = highlightSegments(text, terms)
+    val first = segments.indexOfFirst { it.match }
+    if (first <= 0) return text
+    val before = segments.subList(0, first).joinToString("") { it.text }
+    if (before.searchTermLength() <= keep + 1) return text
+    var start = before.length
+    repeat(keep) {
+        start--
+        if (start > 0 && before[start].isLowSurrogate() && before[start - 1].isHighSurrogate()) start--
+    }
+    return "…" + before.substring(start) + segments.subList(first, segments.size).joinToString("") { it.text }
+}
