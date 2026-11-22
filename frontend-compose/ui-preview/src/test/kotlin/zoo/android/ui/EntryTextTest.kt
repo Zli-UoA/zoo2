@@ -36,4 +36,12 @@ class EntryTextTest {
         val marked = text.spanStyles.filter { it.item == mark }.map { it.start until it.end }
         assertEquals(listOf(0 until 4, 14 until 18, 29 until 33, 41 until 45), marked)
     }
+
+    @Test
+    fun snippetsCanDrawLinksAsText() {
+        val text = formatEntry("[**Guide**](https://example.test/guide) と https://example.test/raw", links = false)
+        assertEquals("Guide と https://example.test/raw", text.text)
+        assertTrue(text.getLinkAnnotations(0, text.length).isEmpty())
+        assertTrue(text.spanStyles.any { it.item.fontWeight == AndroidWeights.emphasis && it.start == 0 && it.end == 5 })
+    }
 }

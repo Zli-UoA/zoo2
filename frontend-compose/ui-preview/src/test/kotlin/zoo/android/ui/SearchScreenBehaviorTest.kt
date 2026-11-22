@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import org.junit.Rule
@@ -43,6 +44,29 @@ class SearchScreenBehaviorTest {
         ui.onNodeWithText("会議の結果 1").assertIsNotDisplayed()
         set(search("資料"))
         ui.onNodeWithText("会議の結果 1").assertIsDisplayed()
+    }
+
+    @Test
+    fun otherWordsShownAfterLeavingDoNotRestoreThePosition() {
+        val set = show(search("会議"))
+        ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("会議の結果 12"))
+        set(AndroidScreen.Conversation("dev", "開発", "", emptyList(), InputState()))
+        set(search("資料"))
+        ui.onNodeWithText("会議の結果 1").assertIsDisplayed()
+        set(AndroidScreen.Conversation("dev", "開発", "", emptyList(), InputState()))
+        set(search("資料"))
+        ui.onNodeWithText("会議の結果 1").assertIsDisplayed()
+    }
+
+    @Test
+    fun tappingALinkInTheSnippetOpensTheResult() {
+        val actions = mutableListOf<AndroidUiAction>()
+        show(search("資料", listOf(SearchResultItem("message:m1", "はる", "[資料](https://example.test/guide) を見てください",
+            "11/21 12:05", "開発"))), actions)
+        // Tap on the link's label at the start of the snippet.
+        ui.onNodeWithText("資料 を見てください", substring = true, useUnmergedTree = true)
+            .performTouchInput { click(centerLeft + Offset(12f, 0f)) }
+        ui.runOnIdle { check(actions.last() == AndroidUiAction.OpenSearchResult("message:m1")) { actions.toString() } }
     }
 
     @Test

@@ -17,7 +17,12 @@ import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -109,6 +114,12 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
         Text(androidLabel("globalSearch.encryptedNote", "暗号化されたチャンネルは検索の対象外です。"),
             color = colors.secondary, fontSize = 13.sp)
     }
+    // The list position is saved with its words and kind (the screen's saved state has one key for all
+    // searches): returning to the same search restores it, other words or kinds start at the top.
+    val positionKey = "${state.type.value}\n${state.query}"
+    var savedKey by rememberSaveable { mutableStateOf("") }
+    var savedIndex by rememberSaveable { mutableIntStateOf(0) }
+    var savedOffset by rememberSaveable { mutableIntStateOf(0) }
     Box(Modifier.weight(1f).fillMaxWidth()) {
         when {
             state.problem != null -> SearchMessage(problemText(state.problem), colors)
@@ -127,8 +138,16 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                 SearchFooter(state, colors, dispatch)
             }
             else -> {
-                // Returning from an opened result keeps the position; other words or kinds start at the top.
-                val scroll = rememberSaveable(state.query, state.type, saver = LazyListState.Saver) { LazyListState() }
+                val scroll = remember(positionKey) {
+                    if (savedKey == positionKey) LazyListState(savedIndex, savedOffset) else LazyListState()
+                }
+                LaunchedEffect(scroll) {
+                    snapshotFlow { scroll.firstVisibleItemIndex to scroll.firstVisibleItemScrollOffset }.collect { (index, offset) ->
+                        savedKey = positionKey
+                        savedIndex = index
+                        savedOffset = offset
+                    }
+                }
                 val highlight = remember(state.query, colors.searchHighlight) {
                     EntryHighlight(searchTerms(state.query),
                         SpanStyle(color = colors.searchHighlightText, background = colors.searchHighlight))
@@ -209,8 +228,9 @@ private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highligh
                 item.fileSize?.let { Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1) }
             } else {
                 // The snippet is MFM like Web's result row; only its text parts are marked.
+                // Links in the snippet stay text: a tap anywhere on the row opens the result, not the link.
                 EntryBody(item.body, colors.foreground, entryTextSize, item.emoji, maxLines = 3, highlight = highlight,
-                    lineHeight = 23.sp)
+                    lineHeight = 23.sp, links = false)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,
