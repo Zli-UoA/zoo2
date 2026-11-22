@@ -438,10 +438,24 @@ describe("MessageRow", () => {
     }
   });
 
-  it("does not open the sheet when a link is tapped", async () => {
+  it("does not open the sheet when a link is tapped", () => {
     renderRow(buildItem({ content: "hello https://example.com" }));
-    await userEvent.click(screen.getByRole("link", { name: "example.com" }));
-    expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+    const link = screen.getByRole("link", { name: "example.com" });
+    let preventedByApp: boolean | null = null;
+    // 外部リンク（target="_blank"）の既定動作で新規タブが開くと、テスト用タブが背景へ回り
+    // 後続のブラウザーテストで rAF やタイマーが抑制されるため、ナビゲーションだけを止める。
+    const preventNavigation = (event: MouseEvent) => {
+      preventedByApp = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener("click", preventNavigation);
+    try {
+      tapTouch(link);
+      expect(preventedByApp).toBe(false);
+      expect(screen.queryByRole("dialog", { name: "メッセージを操作" })).toBeNull();
+    } finally {
+      document.removeEventListener("click", preventNavigation);
+    }
   });
 
   it("does not open the sheet on a mouse click", async () => {
