@@ -192,4 +192,23 @@ describe("createDecryptedAttachmentCache", () => {
     expect(decryptedAttachmentCacheFor(worker)).toBe(decryptedAttachmentCacheFor(worker));
     expect(decryptedAttachmentCacheFor({})).not.toBe(decryptedAttachmentCacheFor(worker));
   });
+
+  it("late isolated failure does not resurrect after a successful blob is evicted", async () => {
+    const cache = createDecryptedAttachmentCache({ maxBytes: 4, maxEntries: 1 });
+    const decrypt = new EncryptedAttachmentError("decrypt");
+    let rejectIsolated: ((error: unknown) => void) | undefined;
+    const isolated = new Promise<Blob>((_resolve, reject) => {
+      rejectIsolated = reject;
+    });
+    const signal = new AbortController().signal;
+
+    const isolatedLoad = cache.load(info("a"), () => isolated, { signal, isolated: true });
+    await expect(cache.load(info("a"), async () => blob(4))).resolves.toBeInstanceOf(Blob);
+
+    rejectIsolated?.(decrypt);
+    await expect(isolatedLoad).rejects.toBe(decrypt);
+
+    await expect(cache.load(info("b"), async () => blob(4))).resolves.toBeInstanceOf(Blob);
+    await expect(cache.load(info("a"), async () => blob(3))).resolves.toBeInstanceOf(Blob);
+  });
 });

@@ -304,6 +304,8 @@ struct Journal {
     /// 既存の記録を読めなかった。空の記録で上書きすると旧 `.part` を消せなくなるため、
     /// 読み直せるまで新しい記録を書かない。
     load_failed: bool,
+    /// 読めなかった記録を、退避または再読み込みで回復済みか。
+    recovered: bool,
 }
 
 impl Journal {
@@ -342,6 +344,7 @@ impl Journal {
             file,
             entries: Mutex::new(entries),
             load_failed,
+            recovered: false,
         }
     }
 
@@ -358,9 +361,73 @@ impl Journal {
             .clone()
     }
 
+    fn quarantine_path(path: &Path) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        path.with_extension(format!("json.corrupt-{stamp}"))
+    }
+
+    fn read_entries(path: &Path) -> std::io::Result<Option<Vec<JournalEntry>>> {
+        match std::fs::read(path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Some(Vec::new())),
+            Err(err) => Err(err),
+            Ok(bytes) => match serde_json::from_slice::<Vec<StoredEntry>>(&bytes) {
+                Ok(entries) => Ok(Some(
+                    entries
+                        .into_iter()
+                        .map(|entry| match entry {
+                            StoredEntry::Legacy(text) => JournalEntry {
+                                path: PathBuf::from(text),
+                                parent: None,
+                            },
+                            StoredEntry::Current { path, parent } => JournalEntry {
+                                path: path.into_path(),
+                                parent,
+                            },
+                        })
+                        .collect(),
+                )),
+                Err(_) => Ok(None),
+            },
+        }
+    }
+
+    /// 読めなかった記録を回復する。壊れた JSON は退避し、見られなかった記録は
+    /// 読み直せたら再開する。退避した記録は残す（旧 `.part` の手がかりのため）。
+    fn recover(&mut self) -> Result<()> {
+        if !self.load_failed || self.recovered {
+            return Ok(());
+        }
+        let Some(path) = self.file.as_deref() else {
+            return Err(anyhow!(
+                "前回の保存の記録を読めないため、保存を始められません"
+            ));
+        };
+        match Self::read_entries(path) {
+            Ok(Some(entries)) => {
+                *self.entries.lock().unwrap_or_else(PoisonError::into_inner) = entries;
+                self.load_failed = false;
+                self.recovered = true;
+                Ok(())
+            }
+            Ok(None) => {
+                let backup = Self::quarantine_path(path);
+                std::fs::rename(path, &backup)?;
+                *self.entries.lock().unwrap_or_else(PoisonError::into_inner) = Vec::new();
+                self.load_failed = false;
+                self.recovered = true;
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
     /// `.part` を作る前に記録する。書けなければ記録を戻してエラーにする
     /// （残骸を次の起動で消せないまま、書き込みを始めないため）。
-    fn record(&self, part: &Path) -> Result<()> {
+    fn record(&mut self, part: &Path) -> Result<()> {
+        self.recover()?;
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         if entries.iter().any(|entry| entry.path == part) {
             return Ok(());
@@ -521,7 +588,7 @@ pub struct Downloads {
     /// 画面の世代。`cancel_all` で進め、保存ダイアログを待っていた `begin` を無効にする。
     generation: AtomicU64,
     /// クラッシュで残る `.part` の記録。
-    journal: Arc<Journal>,
+    journal: Arc<Mutex<Journal>>,
     /// 実行中の後始末。終了時に、取消で始まっている削除も待つ。
     cleanups: Cleanups,
     /// テスト用の記録ディレクトリ。テスト終了時に自動で削除する。
@@ -540,7 +607,7 @@ impl Downloads {
             pending: Mutex::new(HashMap::new()),
             slots: Arc::new(Mutex::new(0)),
             generation: AtomicU64::new(0),
-            journal: Arc::new(Journal::load(journal_file)),
+            journal: Arc::new(Mutex::new(Journal::load(journal_file))),
             cleanups: Cleanups::new(),
             #[cfg(test)]
             test_dir: None,
@@ -551,7 +618,13 @@ impl Downloads {
     /// 記録の読み出しだけをここで行い、ファイルの削除は裏のスレッドで行う。保存先が届かない
     /// 共有フォルダーでも、起動が止まらないようにするため。
     pub fn spawn_stale_part_cleanup(&self) {
-        let stale = self.journal.entries();
+        let stale = {
+            let mut journal = self.journal.lock().unwrap_or_else(PoisonError::into_inner);
+            // 読めなかった記録は、ここで回復を試みる。壊れた JSON は退避し、
+            // 一時的な読み取り失敗は次の保存開始時にも再試行する。
+            let _ = journal.recover();
+            journal.entries()
+        };
         if stale.is_empty() {
             return;
         }
@@ -568,7 +641,10 @@ impl Downloads {
                 }
             }
             for path in done {
-                journal.forget(&path);
+                journal
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .forget(&path);
             }
         });
     }
@@ -593,12 +669,26 @@ impl Downloads {
         app: &AppHandle,
         update: DownloadSettingsUpdate,
     ) -> Result<DownloadSettings> {
+        let current = self.settings();
+        // 矛盾する更新は、確認ダイアログを出す前に拒否する。承認後に失敗したり、
+        // キャンセル時に `reset_directory` だけが保存されたりしないようにする。
+        let next_directory = if update.reset_directory {
+            None
+        } else {
+            current.directory.as_deref()
+        };
+        if !update.ask_every_time && next_directory.is_none() {
+            return Err(anyhow!(
+                "確認なしで保存するには保存先のフォルダーを選んでください"
+            ));
+        }
         loop {
             // 確認が要るかは、ダイアログを出す直前の設定で決める。
             let ask_every_time = self.settings().ask_every_time;
+            let directory = self.settings().directory;
             let approved = if ask_every_time && !update.ask_every_time {
                 // 確認なしで利用者のフォルダーへ書けるようにする操作なので、OS の確認を出す。
-                confirm_automatic_save(app).await
+                confirm_automatic_save(app, directory.as_deref()).await
             } else {
                 true
             };
@@ -674,6 +764,9 @@ impl Downloads {
             }
         };
 
+        // ダイアログの後、生成の確認の前に後始末の待機対象に入れる。確認から登録までの間に
+        // `shutdown` が来ても、待機対象が無いまま戻らないようにする。
+        let guard = self.cleanups.start();
         // ダイアログを待っている間に、画面の読み込み直しやログアウトがあった。その画面には
         // もう ID を返せないので、ファイルを作らずに中止にする。
         if self.generation.load(Ordering::SeqCst) != generation {
@@ -686,10 +779,6 @@ impl Downloads {
         let part_for_task = part.clone();
         let final_for_task = final_path.clone();
         let deduplicate = decision.deduplicate;
-        // `.part` を作ってから `pending` に登録するまでの間も終了の待機対象にする。
-        // この間に終了しても、ガードが `shutdown` を待たせ、登録後の確認で生成が
-        // 変わっていることに気づいてファイルを消す。
-        let guard = self.cleanups.start();
         let file = tokio::task::spawn_blocking(move || {
             prepare_part(&journal, &part_for_task, &final_for_task, deduplicate)
         })
@@ -718,7 +807,13 @@ impl Downloads {
             }
             let journal = Arc::clone(&self.journal);
             let part_for_task = part.clone();
-            let _ = tokio::task::spawn_blocking(move || journal.remove_part(&part_for_task)).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                journal
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove_part(&part_for_task)
+            })
+            .await;
             return Ok(None);
         }
         pending.insert(id.clone(), entry);
@@ -763,8 +858,12 @@ impl Downloads {
         }
         let data = bytes.to_vec();
         let failure = Arc::clone(&failed);
+        let cancel_flag = Arc::clone(&cancelled);
         let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let mut slot = file.lock().unwrap_or_else(PoisonError::into_inner);
+            if cancel_flag.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("ダウンロードは中止されました"));
+            }
             let file = slot
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("ダウンロードは中止されました"))?;
@@ -811,12 +910,18 @@ impl Downloads {
                 // 移したので、もう `.part` は無い。消せたことを確かめてから記録を外す
                 // （ハードリンクで確定したときに `.part` の削除だけ失敗した場合もここで消す）。
                 Ok(saved) => {
-                    journal.remove_part(&part);
+                    journal
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove_part(&part);
                     Ok(saved)
                 }
                 // 消せたことを確かめてから記録を外す（`remove_part`）。
                 Err(err) => {
-                    journal.remove_part(&part);
+                    journal
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove_part(&part);
                     Err(err)
                 }
             }
@@ -854,7 +959,10 @@ impl Downloads {
             let taken = file.lock().unwrap_or_else(PoisonError::into_inner).take();
             drop(taken);
             // 消せなかった `.part` は記録に残し、次の起動で再試行する。
-            journal.remove_part(&part);
+            journal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove_part(&part);
         })
         .await;
         drop(slot);
@@ -891,7 +999,10 @@ impl Downloads {
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
                 drop(taken);
-                journal.remove_part(&entry.part);
+                journal
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove_part(&entry.part);
                 // 後始末が終わるまで枠を返さない。旧画面のファイルを閉じる前に、
                 // 新画面で同じ数の保存を始められないようにする。
                 let mut slots = slots.lock().unwrap_or_else(PoisonError::into_inner);
@@ -936,7 +1047,10 @@ impl Downloads {
                         .unwrap_or_else(PoisonError::into_inner)
                         .take();
                     drop(taken);
-                    journal.remove_part(&entry.part);
+                    journal
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove_part(&entry.part);
                 }
             });
         }
@@ -1044,14 +1158,19 @@ async fn ask_save_path(
 }
 
 /// 「保存のたびに確認する」をオフにしてよいか、OS のダイアログで確かめる。
-async fn confirm_automatic_save(app: &AppHandle) -> bool {
+async fn confirm_automatic_save(app: &AppHandle, directory: Option<&str>) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let target = directory
+        .filter(|dir| !dir.is_empty())
+        .map(|dir| format!("選んだフォルダー（{dir}）へ、確認せずに保存します。"))
+        .unwrap_or_else(|| "選んだフォルダーへ、確認せずに保存します。".to_string());
+    let message = format!(
+        "{target} フォルダーに届かないときは OS の保存ダイアログを出します。\
+         実行や読み込みに進む形式のファイルは、これまでどおり保存先を尋ねます。"
+    );
     let mut dialog = app
         .dialog()
-        .message(
-            "これからは、確認せずに保存します。保存先は、設定したフォルダーか、OS のダウンロード\
-             フォルダーです。実行や読み込みに進む形式のファイルは、これまでどおり保存先を尋ねます。",
-        )
+        .message(message)
         .title("確認せずに保存しますか？")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
@@ -1613,7 +1732,7 @@ fn link_without_replace(
 
 /// `.part` を作り、確定できる保存先かを確かめる。`spawn_blocking` の中で動く。
 fn prepare_part(
-    journal: &Journal,
+    journal: &Arc<Mutex<Journal>>,
     part: &Path,
     final_path: &Path,
     deduplicate: bool,
@@ -1631,7 +1750,7 @@ fn prepare_part(
 /// [`prepare_part`] の本体。テストで保存先の非対応を再現できるよう、確かめに使う
 /// 関数を受け取る。
 fn prepare_part_with(
-    journal: &Journal,
+    journal: &Arc<Mutex<Journal>>,
     part: &Path,
     final_path: &Path,
     deduplicate: bool,
@@ -1639,13 +1758,26 @@ fn prepare_part_with(
     hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<File> {
     // 記録を先に保存する。書けなければ始めない（残骸を次の起動で消せなくしないため）。
-    journal.record(part)?;
+    journal
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .record(part)?;
     // ダイアログは既にあるフォルダーを返し、決まったフォルダーは上の分岐で存在を
     // 確かめてある。ここで `create_dir_all` はしない。
-    let file = match OpenOptions::new().write(true).create_new(true).open(part) {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = match options.open(part) {
         Ok(file) => file,
         Err(err) => {
-            journal.forget(part);
+            journal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .forget(part);
             return Err(err)
                 .with_context(|| format!("書き込み用のファイルを作れません: {}", part.display()));
         }
@@ -1654,7 +1786,10 @@ fn prepare_part_with(
     // 移動を持たない保存先なら、本文を読み始める前に断る。
     if deduplicate && let Err(err) = check_destination_with(part, journal, &rename, &hard_link) {
         drop(file);
-        journal.remove_part(part);
+        journal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove_part(part);
         return Err(err.context(format!("保存できません: {}", final_path.display())));
     }
     Ok(file)
@@ -1665,7 +1800,7 @@ fn prepare_part_with(
 /// 失敗する移動」、使えなければハードリンク）で別の名前へ移す。`.part` は動かさない。
 fn check_destination_with(
     part: &Path,
-    journal: &Journal,
+    journal: &Arc<Mutex<Journal>>,
     rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
     hard_link: impl Fn(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<()> {
@@ -1673,8 +1808,14 @@ fn check_destination_with(
     let moved = part.with_extension("probe-moved");
     // 作る前に記録する。作成の直後に終了しても、次の起動で掃除できるようにするため。
     // 記録だけが先に残っても、掃除は目印（[`PROBE_MARKER`]）のあるものしか消さない。
-    journal.record(&probe)?;
-    journal.record(&moved)?;
+    journal
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .record(&probe)?;
+    journal
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .record(&moved)?;
 
     let (created, outcome) = match create_probe(&probe) {
         Ok(()) => {
@@ -1736,18 +1877,27 @@ fn create_probe(path: &Path) -> std::io::Result<()> {
 
 /// 検査用の名前を消し、記録から外す。`ours` が偽なら、この保存が作った名前ではないので
 /// 触らずに記録だけ外す。消せなければ記録に残し、次の起動で再試行する。
-fn discard_probe(journal: &Journal, path: &Path, ours: bool) -> Result<()> {
+fn discard_probe(journal: &Arc<Mutex<Journal>>, path: &Path, ours: bool) -> Result<()> {
     if !ours {
-        journal.forget(path);
+        journal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget(path);
         return Ok(());
     }
     match std::fs::remove_file(path) {
         Ok(()) => {
-            journal.forget(path);
+            journal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .forget(path);
             Ok(())
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            journal.forget(path);
+            journal
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .forget(path);
             Ok(())
         }
         Err(err) => Err(err.into()),
@@ -2261,20 +2411,22 @@ mod tests {
     #[test]
     fn journal_keeps_a_part_it_could_not_remove() {
         let dir = temp_dir();
-        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let journal = Arc::new(Mutex::new(Journal::load(Some(
+            dir.join("download_parts.json"),
+        ))));
         let part = dir.join(".zoo-0123456789abcdef.part");
         std::fs::write(&part, b"x").unwrap();
-        journal.record(&part).unwrap();
-        assert_eq!(journal.snapshot(), vec![part.clone()]);
-        journal.remove_part(&part);
-        assert!(journal.snapshot().is_empty());
+        journal.lock().unwrap().record(&part).unwrap();
+        assert_eq!(journal.lock().unwrap().snapshot(), vec![part.clone()]);
+        journal.lock().unwrap().remove_part(&part);
+        assert!(journal.lock().unwrap().snapshot().is_empty());
 
         // 消せなかったものは記録に残し、次の起動で再試行する。
         let stuck = dir.join("stuck");
         std::fs::create_dir_all(&stuck).unwrap();
-        journal.record(&stuck).unwrap();
-        journal.remove_part(&stuck);
-        assert_eq!(journal.snapshot(), vec![stuck.clone()]);
+        journal.lock().unwrap().record(&stuck).unwrap();
+        journal.lock().unwrap().remove_part(&stuck);
+        assert_eq!(journal.lock().unwrap().snapshot(), vec![stuck.clone()]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2311,14 +2463,25 @@ mod tests {
         let old = b"not json";
         std::fs::write(&file, old).unwrap();
 
-        let journal = Journal::load(Some(file.clone()));
+        let mut journal = Journal::load(Some(file.clone()));
         let part = dir.join(".zoo-0123456789abcdef.part");
-        assert!(journal.record(&part).is_err());
-        assert_eq!(std::fs::read(&file).unwrap(), old, "旧記録を上書きしない");
+        assert!(journal.record(&part).is_ok());
+        assert!(
+            file.with_extension("json.corrupt-0").exists()
+                || file.parent().unwrap().read_dir().unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("json.corrupt-")
+                }),
+            "壊れた記録は退避する"
+        );
 
         // 読み直せるようになれば、新しい記録を書ける。
-        std::fs::write(&file, b"[]").unwrap();
-        let journal = Journal::load(Some(file));
+        let file2 = dir.join("download_parts2.json");
+        std::fs::write(&file2, b"[]").unwrap();
+        let mut journal = Journal::load(Some(file2));
         assert!(journal.record(&part).is_ok());
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -2333,10 +2496,10 @@ mod tests {
         let file = dir.join("download_parts.json");
         let folder = dir.join(OsString::from_vec(b"caf\xe9".to_vec()));
         let part = folder.join(".zoo-0123456789abcdef.part");
-        let journal = Journal::load(Some(file.clone()));
+        let journal = Arc::new(Mutex::new(Journal::load(Some(file.clone()))));
         // APFS は不正な UTF-8 の名前を作れないので、ディレクトリは作らずにパスだけを記録する。
         // このテストで確かめたいのはパスの往復で、`record` は親 ID を `None` として扱う。
-        journal.record(&part).unwrap();
+        journal.lock().unwrap().record(&part).unwrap();
 
         // 再読み込みしても `?` に置き換わらず、元のバイト列で戻る。
         let reloaded = Journal::load(Some(file));
@@ -2505,7 +2668,12 @@ mod tests {
         let id = new_download_id();
         let target = dir.join("shutdown.txt");
         let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
-        downloads.journal.record(&entry.part).unwrap();
+        downloads
+            .journal
+            .lock()
+            .unwrap()
+            .record(&entry.part)
+            .unwrap();
         let part = entry.part.clone();
         downloads.pending.lock().unwrap().insert(id.clone(), entry);
 
@@ -2513,7 +2681,7 @@ mod tests {
 
         assert!(!part.exists());
         assert!(downloads.pending.lock().unwrap().is_empty());
-        assert!(downloads.journal.snapshot().is_empty());
+        assert!(downloads.journal.lock().unwrap().snapshot().is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2525,7 +2693,12 @@ mod tests {
         let id = new_download_id();
         let target = dir.join("cancel-wait.txt");
         let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
-        downloads.journal.record(&entry.part).unwrap();
+        downloads
+            .journal
+            .lock()
+            .unwrap()
+            .record(&entry.part)
+            .unwrap();
         let part = entry.part.clone();
         let file = Arc::clone(&entry.file);
         downloads.pending.lock().unwrap().insert(id.clone(), entry);
@@ -2566,7 +2739,7 @@ mod tests {
         cancel.join().unwrap();
 
         assert!(!part.exists());
-        assert!(downloads.journal.snapshot().is_empty());
+        assert!(downloads.journal.lock().unwrap().snapshot().is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2578,7 +2751,12 @@ mod tests {
         downloads.test_dir = Some(dir.clone());
         let id = new_download_id();
         let entry = pending(&dir.join("drop.txt"), &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
-        downloads.journal.record(&entry.part).unwrap();
+        downloads
+            .journal
+            .lock()
+            .unwrap()
+            .record(&entry.part)
+            .unwrap();
         let file = Arc::clone(&entry.file);
         downloads.pending.lock().unwrap().insert(id, entry);
 
@@ -2622,7 +2800,12 @@ mod tests {
         let id = new_download_id();
         let target = dir.join("finish-wait.txt");
         let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
-        downloads.journal.record(&entry.part).unwrap();
+        downloads
+            .journal
+            .lock()
+            .unwrap()
+            .record(&entry.part)
+            .unwrap();
         let part = entry.part.clone();
         let file = Arc::clone(&entry.file);
         downloads.pending.lock().unwrap().insert(id.clone(), entry);
@@ -2664,7 +2847,7 @@ mod tests {
         assert_eq!(saved, target);
         assert!(saved.exists());
         assert!(!part.exists());
-        assert!(downloads.journal.snapshot().is_empty());
+        assert!(downloads.journal.lock().unwrap().snapshot().is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2912,7 +3095,9 @@ mod tests {
     fn begin_refuses_a_destination_that_cannot_move_without_replacing() {
         let dir = temp_dir();
         let target = dir.join("x.txt");
-        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let journal = Arc::new(Mutex::new(Journal::load(Some(
+            dir.join("download_parts.json"),
+        ))));
         let part = part_path(&target, "0123456789abcdef");
 
         // `begin` と同じ準備を通す。`renameat2` もハードリンクも使えない保存先では、
@@ -2929,7 +3114,7 @@ mod tests {
         assert!(err.downcast_ref::<UnsupportedDestination>().is_some());
         assert!(!part.exists());
         assert!(!target.exists());
-        assert!(journal.snapshot().is_empty());
+        assert!(journal.lock().unwrap().snapshot().is_empty());
         assert_eq!(
             std::fs::read_dir(&dir).unwrap().count(),
             0,
@@ -2941,7 +3126,9 @@ mod tests {
     #[test]
     fn check_destination_uses_the_same_order_as_the_finish() {
         let dir = temp_dir();
-        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let journal = Arc::new(Mutex::new(Journal::load(Some(
+            dir.join("download_parts.json"),
+        ))));
         let target = dir.join("x.txt");
         let part = part_path(&target, "0123456789abcdef");
         std::fs::write(&part, b"").unwrap();
@@ -2963,7 +3150,7 @@ mod tests {
         assert!(linked.get());
         assert!(!probe.exists());
         assert!(!moved.exists());
-        assert!(journal.snapshot().is_empty());
+        assert!(journal.lock().unwrap().snapshot().is_empty());
         assert_eq!(std::fs::read(&part).unwrap(), b"", "`.part` は動かさない");
 
         // ハードリンクも使えなければ、どちらの手段も無いので `UnsupportedDestination` にする。
@@ -3359,7 +3546,9 @@ mod tests {
     #[test]
     fn prepare_part_accepts_a_destination_that_can_move_without_replacing() {
         let dir = temp_dir();
-        let journal = Journal::load(Some(dir.join("download_parts.json")));
+        let journal = Arc::new(Mutex::new(Journal::load(Some(
+            dir.join("download_parts.json"),
+        ))));
         let target = dir.join("x.txt");
         let part = part_path(&target, "0123456789abcdef");
 
@@ -3368,7 +3557,7 @@ mod tests {
         let file = prepare_part(&journal, &part, &target, true).unwrap();
         drop(file);
         assert!(part.exists());
-        assert_eq!(journal.snapshot(), vec![part.clone()]);
+        assert_eq!(journal.lock().unwrap().snapshot(), vec![part.clone()]);
         assert_eq!(
             std::fs::read_dir(&dir).unwrap().count(),
             2,
@@ -3401,7 +3590,7 @@ mod tests {
     #[test]
     fn journal_without_a_path_refuses_to_start() {
         let dir = temp_dir();
-        let journal = Journal::load(None);
+        let mut journal = Journal::load(None);
         let part = dir.join(".zoo-0123456789abcdef.part");
         // 記録先が無いと、強制終了で残った `.part` を次の起動で消せない。開始を拒否する。
         assert!(journal.record(&part).is_err());

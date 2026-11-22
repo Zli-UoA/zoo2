@@ -83,6 +83,8 @@ export function createDecryptedAttachmentCache({
 
   function rememberFailure(key: string, error: unknown) {
     if (!(error instanceof EncryptedAttachmentError) || error.reason !== "decrypt") return;
+    // 成功済みの Blob があるときは、分離ロードの遅い失敗で復活させない。
+    if (entries.has(key)) return;
     failures.set(key, error);
     // 覚える件数も上限までにする（古いものから忘れる）。
     for (const oldKey of failures.keys()) {

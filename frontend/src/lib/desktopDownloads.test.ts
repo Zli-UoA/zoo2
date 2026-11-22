@@ -73,8 +73,16 @@ afterEach(() => {
   resetDesktopDownloadsForTest();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
-  desktop.hasBridge.mockReturnValue(true);
-  desktop.detectionFailure.mockReturnValue(null);
+  desktop.detect.mockReset();
+  desktop.detectionFailure.mockReset().mockReturnValue(null);
+  desktop.hasBridge.mockReset().mockReturnValue(true);
+  desktop.settings.mockReset().mockResolvedValue({ ask_every_time: false, directory: "/tmp/downloads" });
+  desktop.probe.mockReset();
+  desktop.isMissing.mockClear();
+  desktop.begin.mockReset();
+  desktop.write.mockReset();
+  desktop.finish.mockReset();
+  desktop.cancel.mockReset();
 });
 
 describe("desktopDownloadsAvailable", () => {
@@ -191,7 +199,8 @@ describe("downloadUrlToDesktop", () => {
     expect(desktop.finish).toHaveBeenCalledWith("d1");
   });
 
-  it("discards the partial file and retries once when reading the body fails", async () => {
+  it("discards the partial file and retries once when reading the body fails without re-prompting", async () => {
+    desktop.settings.mockResolvedValue({ ask_every_time: false, directory: "/tmp/downloads" });
     desktop.begin
       .mockResolvedValueOnce(started("d-body-1"))
       .mockResolvedValueOnce(started("d-body-2"));
@@ -212,6 +221,24 @@ describe("downloadUrlToDesktop", () => {
     expect(desktop.write).toHaveBeenCalledTimes(1);
     expect(desktop.finish).toHaveBeenCalledWith("d-body-2");
     expect(desktopDownloadState("a2b")).toBeUndefined();
+  });
+
+  it("does not retry body read when ask-every-time would show the save dialog again", async () => {
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValueOnce(started("d-body-ask"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue(undefined);
+    desktop.cancel.mockResolvedValue(undefined);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(brokenBodyResponse()));
+    const resolve = vi.fn().mockResolvedValue("https://files.test/a");
+
+    await expect(
+      downloadUrlToDesktop("a2b-ask", "a.txt", resolve, { retryDelayMs: 0 }),
+    ).rejects.toThrow("一時的な読み取り失敗");
+
+    expect(desktop.begin).toHaveBeenCalledTimes(1);
+    expect(desktop.cancel).toHaveBeenCalledWith("d-body-ask");
+    expect(desktop.finish).not.toHaveBeenCalled();
   });
 
   it("does not retry a write failure with a new save", async () => {

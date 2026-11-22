@@ -18,6 +18,7 @@ import {
   desktopDownloadBegin,
   desktopDownloadCancel,
   desktopDownloadFinish,
+  desktopDownloadSettings,
   desktopDownloadWrite,
   detectDesktop,
   hasDesktopBridge,
@@ -48,6 +49,27 @@ class BodyReadError extends Error {
     this.name = "BodyReadError";
     this.original = original;
   }
+}
+
+function raceAbort<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
+  if (signal.aborted) return Promise.reject(new DesktopDownloadCancelledError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new DesktopDownloadCancelledError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** 1 回の IPC で送る量。大きすぎると WebView の IPC が詰まる。 */
@@ -210,6 +232,12 @@ async function run(
         ) {
           throw error instanceof BodyReadError ? error.original : error;
         }
+        // 「保存のたびに確認する」がオンなら begin() が毎回保存ダイアログを出す。
+        // 選び直しを求めず、本文読取の失敗として返す。
+        const settings = await desktopDownloadSettings().catch(() => null);
+        if (settings?.ask_every_time !== false) {
+          throw error.original;
+        }
         await desktopDownloadCancel(downloadId).catch(() => {});
         downloadId = null;
         await delay(retryDelayMs, controller.signal);
@@ -352,6 +380,7 @@ export async function downloadUrlToDesktop(
 /**
  * 復号済み（または取得済み）の `Blob` を保存する。E2EE の添付は復号したものを渡す。
  * 取得と復号を全体の 8 割、書き込みを残りの 2 割として円に出す。
+ * 中止は保存側の待機だけ即座に終わらせ、復号は継続してキャッシュに入る。
  */
 export async function downloadBlobToDesktop(
   id: string,
@@ -360,8 +389,11 @@ export async function downloadBlobToDesktop(
   size?: number | null,
 ): Promise<void> {
   await run(id, fileName, size, async (downloadId, signal, report) => {
-    const blob = await load(signal, (fraction) =>
-      report(fraction === null ? null : Math.min(0.8, fraction * 0.8)),
+    const blob = await raceAbort(
+      signal,
+      load(signal, (fraction) =>
+        report(fraction === null ? null : Math.min(0.8, fraction * 0.8)),
+      ),
     );
     if (signal.aborted) throw new DesktopDownloadCancelledError();
     const stream = blob.stream?.();
