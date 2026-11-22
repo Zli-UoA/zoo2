@@ -44,10 +44,34 @@ pub fn router() -> Router<AppState> {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchKind {
+    /// メッセージと添付ファイル名をまとめて、新しい順に（ノートは含めない）。クライアントは明示して使う。
+    All,
+    /// 既定。`type` を省いた呼び出しの意味は #643 のときのまま変えない（`id` は常にメッセージの ID）。
     #[default]
     Messages,
     Files,
     Notes,
+}
+
+impl SearchKind {
+    /// 月ごとに流す SQL の種類。`All` はメッセージとファイルの 2 本を流し、時刻順に合わせる。
+    pub fn parts(self) -> &'static [SearchKind] {
+        match self {
+            SearchKind::All => &[SearchKind::Messages, SearchKind::Files],
+            SearchKind::Messages => &[SearchKind::Messages],
+            SearchKind::Files => &[SearchKind::Files],
+            SearchKind::Notes => &[SearchKind::Notes],
+        }
+    }
+
+    /// 応答の各項目の `kind`。
+    fn item_kind(self) -> &'static str {
+        match self {
+            SearchKind::Files => "file",
+            SearchKind::Notes => "note",
+            _ => "message",
+        }
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -58,9 +82,10 @@ struct SearchQuery {
     kind: SearchKind,
     channel_id: Option<String>,
     user_id: Option<String>,
-    /// この日（UTC、`YYYY-MM-DD`）以降。
+    /// この時刻以降。`YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻（RFC 3339）。
+    /// クライアントは端末の日付の 0 時を、オフセット付きで送る。
     after: Option<String>,
-    /// この日（UTC、`YYYY-MM-DD`）より前。
+    /// この時刻より前。書き方は `after` と同じ。
     before: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
@@ -110,14 +135,38 @@ fn month_label(month: i64) -> String {
     format!("{year:04}-{m:02}")
 }
 
-fn parse_day(value: Option<&str>, name: &str) -> Result<Option<jiff::civil::Date>, AppError> {
+/// 期間の境界を、UTC の naive な日時（`created_at` と同じ）にする。`YYYY-MM-DD` は UTC のその日の 0 時、
+/// オフセット付きの時刻（`2026-11-22T00:00:00+09:00` など）はその瞬間。
+fn parse_bound(value: Option<&str>, name: &str) -> Result<Option<jiff::civil::DateTime>, AppError> {
     value
         .filter(|v| !v.is_empty())
         .map(|v| {
-            v.parse::<jiff::civil::Date>()
-                .map_err(|_| AppError::BadRequest(format!("{name} must be YYYY-MM-DD")))
+            let parsed = if v.len() == 10 {
+                v.parse::<jiff::civil::Date>()
+                    .ok()
+                    .map(|d| d.to_datetime(jiff::civil::Time::midnight()))
+            } else {
+                v.parse::<jiff::Timestamp>()
+                    .ok()
+                    .map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).datetime())
+            };
+            parsed.ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{name} must be YYYY-MM-DD or an RFC 3339 timestamp with an offset"
+                ))
+            })
         })
         .transpose()
+}
+
+/// `before` より前の最後の瞬間が入る月。`before` が月初の 0 時ちょうどなら前の月。
+fn month_before(before: jiff::civil::DateTime) -> i64 {
+    let date = before.date();
+    if before.time() == jiff::civil::Time::midnight() {
+        month_of(date.yesterday().unwrap_or(date))
+    } else {
+        month_of(date)
+    }
 }
 
 fn parse_cursor(value: &str) -> Result<Cursor, AppError> {
@@ -196,7 +245,13 @@ fn cut_snippet(text: &str, cut_start: bool, cut_end: bool) -> String {
 /// （予算テストで 100 万件中 22 万行を読んだ）。条件はヒープの行の絞り込みとしてだけ使う。
 ///パラメーター: $1 月、$2 見えるチャンネル（JSON 配列）、$3 投稿者、
 /// $4/$5 keyset（作成日時・ID）、$6/$7 期間、$8 件数、$9 以降が語。
+/// `kind` は `SearchKind::parts` の 1 つ（`All` は渡さない）。
 pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
+    assert_ne!(
+        kind,
+        SearchKind::All,
+        "month_sql takes one part of SearchKind::All"
+    );
     const MONTH: &str = "(date_part('year', {t}.created_at) * 12 + date_part('month', {t}.created_at))::integer = $1::int";
     let common = |t: &str, author: &str| {
         format!(
@@ -210,6 +265,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
         )
     };
     match kind {
+        SearchKind::All => unreachable!(),
         SearchKind::Messages => format!(
             "SELECT json_build_object('id', m.id, 'channel_id', m.channel_id, 'channel_name', c.channel_name, \
                'is_dm', c.is_dm, 'parent_id', m.parent_id, 'user_id', m.user_id, \
@@ -285,8 +341,8 @@ async fn search(
 ) -> Result<Json<Value>, AppError> {
     let terms = parse_terms(&query.q)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let after = parse_day(query.after.as_deref(), "after")?;
-    let before = parse_day(query.before.as_deref(), "before")?;
+    let after = parse_bound(query.after.as_deref(), "after")?;
+    let before = parse_bound(query.before.as_deref(), "before")?;
     let cursor = query.cursor.as_deref().map(parse_cursor).transpose()?;
     let channel = query.channel_id.as_deref().unwrap_or("");
     let author = query.user_id.as_deref().unwrap_or("");
@@ -315,9 +371,9 @@ async fn search(
         return Ok(empty());
     }
 
-    // `before` の日を含まない（その日の 0 時より前）。`before` が月初なら前の月から始める。
-    let before_month = before.map(|d| month_of(d.yesterday().unwrap_or(d)));
-    let floor = after.map_or(floor, |d| floor.max(month_of(d)));
+    // `before` の瞬間を含まない。`before` が月初の 0 時ちょうどなら前の月から始める。
+    let before_month = before.map(month_before);
+    let floor = after.map_or(floor, |d| floor.max(month_of(d.date())));
     let start = cursor
         .as_ref()
         .map(|c| c.m)
@@ -325,7 +381,12 @@ async fn search(
     let after_ts = after.map(|d| d.to_string()).unwrap_or_default();
     let before_ts = before.map(|d| d.to_string()).unwrap_or_default();
     let term_refs: Vec<&str> = terms.iter().map(String::as_str).collect();
-    let sql = month_sql(query.kind, &term_refs);
+    let parts: Vec<(SearchKind, String)> = query
+        .kind
+        .parts()
+        .iter()
+        .map(|&part| (part, month_sql(part, &term_refs)))
+        .collect();
 
     let mut items: Vec<Value> = Vec::new();
     let mut month = start;
@@ -353,7 +414,26 @@ async fn search(
             &need,
         ];
         params.extend(terms.iter().map(String::as_str));
-        let rows = crate::apps::query(&mut tx, &sql, &params).await?;
+        // 種類ごとに、この月の上位 need 件。合わせて (created_at, id) の新しい順に並べれば、
+        // 種類をまたいでも同じ keyset で続きを取れる（月の中で閉じるので、月の順は崩れない）。
+        let mut rows = Vec::new();
+        for (part, sql) in &parts {
+            for mut row in crate::apps::query(&mut tx, sql, &params).await? {
+                if let Some(object) = row.as_object_mut() {
+                    object.insert("kind".into(), Value::from(part.item_kind()));
+                }
+                rows.push(row);
+            }
+        }
+        if parts.len() > 1 {
+            let key = |row: &Value| {
+                (
+                    row["created_at"].as_str().unwrap_or("").to_string(),
+                    row["id"].as_str().unwrap_or("").to_string(),
+                )
+            };
+            rows.sort_by_key(|row| std::cmp::Reverse(key(row)));
+        }
         scanned += 1;
         last_month = Some(month);
         items.extend(rows);
@@ -424,6 +504,26 @@ mod tests {
         assert_eq!(cut_snippet("会議の\n  資料", true, false), "…会議の 資料");
         assert_eq!(cut_snippet("短い本文", false, false), "短い本文");
         assert_eq!(cut_snippet("途中", true, true), "…途中…");
+    }
+
+    #[test]
+    fn bounds_accept_utc_days_and_offset_timestamps() {
+        let at = |v: &str| parse_bound(Some(v), "after").unwrap().unwrap().to_string();
+        assert_eq!(at("2026-11-22"), "2026-11-22T00:00:00");
+        // 端末の日付の 0 時（JST）は、UTC の前日 15 時。
+        assert_eq!(at("2026-11-22T00:00:00+09:00"), "2026-11-21T15:00:00");
+        assert_eq!(at("2026-11-22T00:00:00-05:00"), "2026-11-22T05:00:00");
+        assert_eq!(at("2026-11-22T00:00:00Z"), "2026-11-22T00:00:00");
+        assert!(parse_bound(Some(""), "after").unwrap().is_none());
+        for bad in ["2026-13-01", "2026-11-22T00:00:00", "nope"] {
+            assert!(parse_bound(Some(bad), "after").is_err(), "{bad}");
+        }
+        let month = |v: &str| month_before(parse_bound(Some(v), "before").unwrap().unwrap());
+        assert_eq!(month("2026-12-01"), 2026 * 12 + 11);
+        // JST の 12/1 の 0 時は UTC の 11/30 15 時なので、11 月。
+        assert_eq!(month("2026-12-01T00:00:00+09:00"), 2026 * 12 + 11);
+        // UTC の 12/1 の 9 時より前は、12 月の 0 時〜9 時も含む。
+        assert_eq!(month("2026-12-01T00:00:00-09:00"), 2026 * 12 + 12);
     }
 
     #[test]

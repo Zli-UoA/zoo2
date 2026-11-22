@@ -39,6 +39,7 @@ import {
 } from "./groupNotifications";
 import { useNotificationContext } from "./useNotificationContext";
 import { useReadVisibleNotification } from "./useReadVisibleNotification";
+import { isNestedControlClick } from "../../../lib/rowClick";
 
 export interface NotificationPreviewState {
   visible: boolean | null;
@@ -168,8 +169,7 @@ export function NotificationCard({
     if (
       !canOpen ||
       event.defaultPrevented ||
-      !(event.target instanceof Element) ||
-      event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
+      isNestedControlClick(event) ||
       (window.getSelection()?.toString().length ?? 0) > 0
     )
       return;

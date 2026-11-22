@@ -81,6 +81,11 @@ export function StoryRouter({
       getParentRoute: () => rootRoute,
       path: "notifications",
     });
+    const searchRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "search",
+      validateSearch: (search: Record<string, unknown>) => search,
+    });
     const catchUpRoute = createRoute({ getParentRoute: () => rootRoute, path: "catch-up" });
     const appRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps/$appId" });
     const consentRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps-authorize" });
@@ -92,6 +97,7 @@ export function StoryRouter({
         channelRoute,
         settingsRoute,
         notificationsRoute,
+        searchRoute,
         catchUpRoute,
         appRoute,
         consentRoute,

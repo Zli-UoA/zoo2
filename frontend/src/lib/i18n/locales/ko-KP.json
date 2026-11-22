@@ -368,7 +368,6 @@
     "noSearchResults": "일치하는 그림글자가 없습니다",
     "tabEmoji": "그림글자",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "모든 그림글자에서 선택할수 있습니다.",
     "emojiLoading": "그림글자를 불러오는 중…",
     "recent": "최근에 쓴 그림글자",
     "skinTone": "피부색"
@@ -1858,6 +1857,45 @@
     "speaker": "스피커",
     "waiting": "전화 수신 대기 중",
     "dmCall": "통화"
+  },
+  "globalSearch": {
+    "title": "검색",
+    "placeholder": "통보문과 화일 검색",
+    "kinds": {
+      "all": "전체",
+      "messages": "통보문",
+      "files": "화일"
+    },
+    "prompt": "검색할 단어를 입력하십시오. 공백으로 구분하면 모든 단어를 포함한 결과를 찾습니다.",
+    "empty": "결과가 없습니다.",
+    "emptyOlder": "{{month}}까지 결과가 없습니다. 더 이전 기간을 검색할수 있습니다.",
+    "searchedUntil": "{{month}}까지 검색하였습니다",
+    "searchOlder": "이전 결과 더 검색",
+    "loading": "검색중…",
+    "loadError": "검색하지 못하였습니다.",
+    "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할수 있습니다. 단어를 줄여주십시오.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할수 있습니다. 단어를 짧게 줄여주십시오.",
+    "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
+    "openNav": "검색",
+    "inThread": "타래 답글",
+    "filters": {
+      "label": "거르기",
+      "from": "보낸 사람",
+      "anyone": "모든 사람",
+      "in": "통로",
+      "anywhere": "모든 통로",
+      "period": "기간",
+      "anytime": "지정하지 않음",
+      "last7": "지난 7일",
+      "last30": "지난 30일",
+      "last365": "지난 1년",
+      "custom": "날자 지정",
+      "after": "시작날자",
+      "before": "마감날자",
+      "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
+      "reset": "조건 초기화"
+    }
   },
   "catchUp": {
     "navUnread_one": "안 읽은 대화 {{count}}개",

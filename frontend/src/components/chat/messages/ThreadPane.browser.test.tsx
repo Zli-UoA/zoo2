@@ -584,3 +584,25 @@ describe("ThreadPane のダイアログ挙動", () => {
     });
   });
 });
+
+describe("ThreadPane の削除された親", () => {
+  it("親の代わりに知らせを出し、返信は読めるようにする", async () => {
+    await page.viewport(1280, 800);
+    render(
+      <LocaleProvider>
+        <ThreadPane
+          {...paneProps({
+            root: message({ content: "消した親の本文" }),
+            rootDeleted: true,
+            readOnly: true,
+            currentUserId: null,
+            replies: [message({ id: "reply-1", parent_id: "root-1", content: "残った返信" })],
+          })}
+        />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByText("元のメッセージは削除されました")).toBeTruthy();
+    expect(screen.getByText("残った返信")).toBeTruthy();
+    expect(screen.queryByText("消した親の本文")).toBeNull();
+  });
+});

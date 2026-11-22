@@ -368,7 +368,6 @@
     "noSearchResults": "No matching emojis",
     "tabEmoji": "Emoji",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "Pick any emoji to react with.",
     "emojiLoading": "Loading emojis…",
     "recent": "Recent emojis",
     "skinTone": "Skin tone"
@@ -1858,6 +1857,45 @@
     "speaker": "Speaker",
     "waiting": "Waiting for incoming calls",
     "dmCall": "Call"
+  },
+  "globalSearch": {
+    "title": "Search",
+    "placeholder": "Search messages and files",
+    "kinds": {
+      "all": "All",
+      "messages": "Messages",
+      "files": "Files"
+    },
+    "prompt": "Type the words to search for. Separate words with spaces to find results containing all of them.",
+    "empty": "No results.",
+    "emptyOlder": "No results through {{month}}. You can search further back.",
+    "searchedUntil": "Searched through {{month}}",
+    "searchOlder": "Search older results",
+    "loading": "Searching…",
+    "loadError": "Search failed.",
+    "retry": "Retry",
+    "tooManyTerms": "You can search for up to {{max}} words. Remove some words and try again.",
+    "termTooLong": "Each word can be up to {{max}} characters. Shorten the word and try again.",
+    "encryptedNote": "Encrypted channels are not included in search.",
+    "openNav": "Search",
+    "inThread": "Thread reply",
+    "filters": {
+      "label": "Filters",
+      "from": "From",
+      "anyone": "Anyone",
+      "in": "In",
+      "anywhere": "All channels",
+      "period": "Date",
+      "anytime": "Any time",
+      "last7": "Last 7 days",
+      "last30": "Last 30 days",
+      "last365": "Last year",
+      "custom": "Custom range",
+      "after": "From date",
+      "before": "To date",
+      "reversed": "The start date must be on or before the end date.",
+      "reset": "Reset filters"
+    }
   },
   "catchUp": {
     "navUnread_one": "{{count}} unread conversation to catch up",
