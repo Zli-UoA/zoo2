@@ -433,12 +433,14 @@ mod tests {
             serde_json::to_value(DownloadStart::Started {
                 id: "abc".into(),
                 path: "C:\\Users\\a\\file.pdf".into(),
+                prompted: true,
             })
             .unwrap(),
             json!({
                 "status": "started",
                 "id": "abc",
-                "path": "C:\\Users\\a\\file.pdf"
+                "path": "C:\\Users\\a\\file.pdf",
+                "prompted": true
             })
         );
         assert_eq!(

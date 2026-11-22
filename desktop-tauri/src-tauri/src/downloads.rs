@@ -66,6 +66,34 @@ const RESERVED_NAMES: &[&str] = &[
     "LPT9", "LPT¹", "LPT²", "LPT³",
 ];
 
+fn normalize_reserved_stem(stem: &str) -> String {
+    let mut chars = stem.chars();
+    let (Some(a), Some(b), Some(c), Some(d)) =
+        (chars.next(), chars.next(), chars.next(), chars.next())
+    else {
+        return stem.to_string();
+    };
+    if chars.next().is_some() {
+        return stem.to_string();
+    }
+    let digit = match d {
+        '1' | '¹' => '1',
+        '2' | '²' => '2',
+        '3' | '³' => '3',
+        '4' => '4',
+        '5' => '5',
+        '6' => '6',
+        '7' => '7',
+        '8' => '8',
+        '9' => '9',
+        _ => return stem.to_string(),
+    };
+    if (a == 'C' && b == 'O' && c == 'M') || (a == 'L' && b == 'P' && c == 'T') {
+        return format!("{a}{b}{c}{digit}");
+    }
+    stem.to_string()
+}
+
 /// 確認なしで保存してよい拡張子。開いても、そのまま実行や読み込みに進まない形式だけを並べる。
 /// ここに無い拡張子（`.exe`、`.py`、`.docm`、`.dll` など）と、拡張子の無い名前は、
 /// 保存ダイアログに戻して利用者に確かめる。漏れの少ない許可リストにしておく。
@@ -311,6 +339,9 @@ struct Journal {
     entries: Mutex<Vec<JournalEntry>>,
     /// 読み込み失敗と回復の状態。
     state: Mutex<JournalState>,
+    /// `download_parts.json` への書き込みを直列化する。スナップショットを作ってから
+    /// 書くまでの間に別の更新が入ると、古い内容で上書きして記録が消えるため。
+    write_lock: Mutex<()>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -364,6 +395,7 @@ impl Journal {
                 recovered: false,
                 pending_cleanup: Vec::new(),
             }),
+            write_lock: Mutex::new(()),
         }
     }
 
@@ -415,8 +447,17 @@ impl Journal {
 
     /// 読めなかった記録を回復する。壊れた JSON は退避し、見られなかった記録は
     /// 読み直せたら再開する。退避した記録は残す（旧 `.part` の手がかりのため）。
-    /// 回復して読み込めた旧記録を返す。呼び出し側は必要なら掃除に渡す。
     fn recover(&self) -> Result<()> {
+        {
+            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if !state.load_failed || state.recovered {
+                return Ok(());
+            }
+        }
+        let _write = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         {
             let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if !state.load_failed || state.recovered {
@@ -434,7 +475,11 @@ impl Journal {
                 let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
                 state.load_failed = false;
                 state.recovered = true;
-                state.pending_cleanup = entries;
+                for entry in &entries {
+                    if !state.pending_cleanup.iter().any(|e| e.path == entry.path) {
+                        state.pending_cleanup.push(entry.clone());
+                    }
+                }
                 Ok(())
             }
             Ok(None) => {
@@ -444,7 +489,6 @@ impl Journal {
                 let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
                 state.load_failed = false;
                 state.recovered = true;
-                state.pending_cleanup.clear();
                 Ok(())
             }
             Err(err) => Err(err.into()),
@@ -460,7 +504,11 @@ impl Journal {
     /// （残骸を次の起動で消せないまま、書き込みを始めないため）。
     fn record(&self, part: &Path) -> Result<()> {
         self.recover()?;
-        let (snapshot, added) = {
+        let _write = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let snapshot = {
             let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
             if entries.iter().any(|entry| entry.path == part) {
                 return Ok(());
@@ -469,19 +517,21 @@ impl Journal {
                 path: part.to_path_buf(),
                 parent: parent_id(part),
             });
-            (entries.clone(), true)
+            entries.clone()
         };
         if let Err(err) = self.write(&snapshot) {
-            if added {
-                let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-                entries.retain(|entry| entry.path != part);
-            }
+            let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+            entries.retain(|entry| entry.path != part);
             return Err(err);
         }
         Ok(())
     }
 
     fn forget(&self, part: &Path) {
+        let _write = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let snapshot = {
             let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
             let before = entries.len();
@@ -517,6 +567,7 @@ impl Journal {
     }
 
     fn write(&self, entries: &[JournalEntry]) -> Result<()> {
+        // 呼び出し側が `write_lock` で直列化する。ロックを二重に取らない。
         // 既存の記録を読めていないときに空の記録で上書きすると、旧 `.part` が記録から
         // 外れて次の起動で消せなくなる（E2EE では復号済みの内容が残る）。読み直せるまで
         // 書かない。
@@ -586,6 +637,14 @@ impl Cleanups {
         CleanupGuard(self.clone())
     }
 
+    fn finish(&self) {
+        let mut count = self.state.0.lock().unwrap_or_else(PoisonError::into_inner);
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.state.1.notify_all();
+        }
+    }
+
     #[cfg(test)]
     fn running(&self) -> usize {
         *self.state.0.lock().unwrap_or_else(PoisonError::into_inner)
@@ -615,14 +674,7 @@ struct CleanupGuard(Cleanups);
 
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
-        let mut count = self
-            .0
-            .state
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        *count = count.saturating_sub(1);
-        self.0.state.1.notify_all();
+        self.0.finish();
     }
 }
 
@@ -685,15 +737,10 @@ impl Downloads {
         let guard = cleanups.start();
         std::thread::spawn(move || {
             let _guard = guard;
-            let mut done = Vec::new();
             for entry in stale {
-                // 消せなかったものは、次の起動でもう一度試す。
                 if remove_stale_entry(&entry.path, entry.parent) {
-                    done.push(entry.path);
+                    journal.forget(&entry.path);
                 }
-            }
-            for path in done {
-                journal.forget(&path);
             }
         });
     }
@@ -921,15 +968,18 @@ impl Downloads {
             if cancel_flag.load(Ordering::SeqCst) {
                 return Err(std::io::Error::other("ダウンロードは中止されました"));
             }
+            if failure.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("書き込みに失敗したダウンロードです"));
+            }
             let file = slot
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("ダウンロードは中止されました"))?;
-            let written = file.write_all(&data);
-            if written.is_err() {
+            let written_result = file.write_all(&data);
+            if written_result.is_err() {
                 // 一部だけ書けているかもしれない。同じ ID の確定はさせない（中止で消す）。
                 failure.store(true, Ordering::SeqCst);
             }
-            written
+            written_result
         })
         .await;
         match result {
@@ -1487,12 +1537,13 @@ fn open_probe(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
-fn probe_state(path: &Path, parent: Option<ParentId>) -> ProbeState {
-    match open_probe(path) {
+fn probe_state_from_open(
+    result: std::io::Result<File>,
+    path: &Path,
+    parent: Option<ParentId>,
+) -> ProbeState {
+    match result {
         Ok(file) => probe_state_from_file(file, true),
-        // 外付けドライブが外れていると、親が無い（またはマウントポイントだけが残る）
-        // ために `NotFound` になる。記録したフォルダーに届かないときは、名前が無いと
-        // 断定せず、ドライブが戻ったときのために記録を残す。
         Err(err)
             if err.kind() == std::io::ErrorKind::NotFound && !reachable_parent(path, parent) =>
         {
@@ -1500,6 +1551,10 @@ fn probe_state(path: &Path, parent: Option<ParentId>) -> ProbeState {
         }
         Err(err) => classify_open_result(Err(err), true),
     }
+}
+
+fn probe_state(path: &Path, parent: Option<ParentId>) -> ProbeState {
+    probe_state_from_open(open_probe(path), path, parent)
 }
 
 /// 開く操作の結果を、掃除の判断に変える。失敗を直接渡せるよう分けている。
@@ -1515,8 +1570,8 @@ fn classify_open_result(result: std::io::Result<File>, recorded_probe: bool) -> 
 
 /// 開く・読むときの失敗が、次の起動でやり直す価値のある一時的なものか。
 ///
-/// 資源の不足や割り込みだけを一時的な失敗として扱う。無い、権限が無い、種類が
-/// 違うといった失敗は、繰り返しても同じ結果になる。
+/// 資源の不足や割り込みだけを一時的な失敗として扱う。権限不足や存在しない等は、
+/// 繰り返しても同じ結果になることが多く、無関係なファイルを延々と記録に残さない。
 fn is_transient_error(err: &std::io::Error) -> bool {
     if err.kind() == std::io::ErrorKind::Interrupted {
         return true;
@@ -1524,13 +1579,13 @@ fn is_transient_error(err: &std::io::Error) -> bool {
     #[cfg(unix)]
     if matches!(
         err.raw_os_error(),
-        Some(libc::EIO | libc::EMFILE | libc::ENFILE | libc::ENOMEM | libc::EINTR)
+        Some(libc::EIO | libc::EMFILE | libc::ENFILE | libc::ENOMEM | libc::ENOBUFS)
     ) {
         return true;
     }
     #[cfg(windows)]
-    if matches!(err.raw_os_error(), Some(8 | 14)) {
-        // ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY
+    if matches!(err.raw_os_error(), Some(8 | 14 | 1450)) {
+        // ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY, ERROR_NO_SYSTEM_RESOURCES
         return true;
     }
     false
@@ -1677,6 +1732,7 @@ pub fn sanitize_file_name(name: &str) -> String {
         .unwrap_or("")
         .trim_end()
         .to_ascii_uppercase();
+    let stem = normalize_reserved_stem(&stem);
     if RESERVED_NAMES.contains(&stem.as_str()) {
         cleaned.insert(0, '_');
     }
@@ -1858,59 +1914,82 @@ fn check_destination_with(
     // 作る前に記録する。作成の直後に終了しても、次の起動で掃除できるようにするため。
     // 記録だけが先に残っても、掃除は目印（[`PROBE_MARKER`]）のあるものしか消さない。
     journal.record(&probe)?;
-    journal.record(&moved)?;
 
-    let (created, outcome) = match OpenOptions::new().write(true).create_new(true).open(&probe) {
-        Ok(mut file) => {
-            let created = true;
-            let write_result = file.write_all(PROBE_MARKER);
-            drop(file);
-            let outcome = if let Err(err) = write_result {
-                // 書きかけのファイルは自分が作ったものなので、消せれば消す。
-                // 消せなければ記録に残し、起動時の掃除で目印またはジャーナル登録を頼りに回収する。
-                if let Err(remove_err) = std::fs::remove_file(&probe)
-                    && remove_err.kind() != std::io::ErrorKind::NotFound
-                {
-                    return Err(anyhow::Error::new(err)
-                        .context(format!("検査用ファイルを片付けられません: {}", remove_err)));
-                }
-                Err(err.into())
-            } else {
-                match rename(&probe, &moved) {
-                    Ok(()) => Ok(()),
-                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err.into()),
-                    // ファイルシステムが「既にあれば失敗する移動」を持たない。確定
-                    // （[`rename_unique`]）と同じ順で、ハードリンクで名前を確保できるかを見る。
-                    Err(err) if is_unsupported(&err) => {
-                        hard_link(&probe, &moved).map_err(|link| {
-                            // 保存先の性質による失敗だけを `UnsupportedDestination` にする。
-                            // 権限や一時的な I/O の失敗は、保存先を変えても直らないことがある。
-                            if is_unsupported_destination(&link) {
-                                anyhow::Error::new(UnsupportedDestination)
-                                    .context(format!("ハードリンクも作れません: {link}"))
-                            } else {
-                                link.into()
-                            }
-                        })
+    let (created, moved_created, outcome) =
+        match OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(mut file) => {
+                let created = true;
+                let write_result = file.write_all(PROBE_MARKER);
+                drop(file);
+                let (moved_created, outcome) = if let Err(err) = write_result {
+                    // 書きかけのファイルは自分が作ったものなので、消せれば消す。
+                    // 消せなければ記録に残し、起動時の掃除で目印またはジャーナル登録を頼りに回収する。
+                    if let Err(remove_err) = std::fs::remove_file(&probe)
+                        && remove_err.kind() != std::io::ErrorKind::NotFound
+                    {
+                        return Err(anyhow::Error::new(err)
+                            .context(format!("検査用ファイルを片付けられません: {}", remove_err)));
                     }
-                    Err(err) => Err(err.into()),
-                }
-            };
-            (created, outcome)
-        }
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => (false, Err(err.into())),
-        Err(err) => (false, Err(err.into())),
-    };
+                    (false, Err(err.into()))
+                } else {
+                    match rename(&probe, &moved) {
+                        Ok(()) => {
+                            // 移動先の名前は、この保存が実際に作った後にだけ記録する。
+                            // 先に記録すると、第三者が同名を置いていた場合に起動時掃除で消しうる。
+                            match journal.record(&moved) {
+                                Ok(()) => (true, Ok(())),
+                                Err(err) => {
+                                    let _ = std::fs::remove_file(&moved);
+                                    (false, Err(err))
+                                }
+                            }
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                            (false, Err(err.into()))
+                        }
+                        // ファイルシステムが「既にあれば失敗する移動」を持たない。確定
+                        // （[`rename_unique`]）と同じ順で、ハードリンクで名前を確保できるかを見る。
+                        Err(err) if is_unsupported(&err) => match hard_link(&probe, &moved) {
+                            Ok(()) => match journal.record(&moved) {
+                                Ok(()) => (true, Ok(())),
+                                Err(err) => {
+                                    let _ = std::fs::remove_file(&moved);
+                                    (false, Err(err))
+                                }
+                            },
+                            Err(link) => {
+                                // 保存先の性質による失敗だけを `UnsupportedDestination` にする。
+                                // 権限や一時的な I/O の失敗は、保存先を変えても直らないことがある。
+                                let err = if is_unsupported_destination(&link) {
+                                    anyhow::Error::new(UnsupportedDestination)
+                                        .context(format!("ハードリンクも作れません: {link}"))
+                                } else {
+                                    link.into()
+                                };
+                                (false, Err(err))
+                            }
+                        },
+                        Err(err) => (false, Err(err.into())),
+                    }
+                };
+                (created, moved_created, outcome)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                (false, false, Err(err.into()))
+            }
+            Err(err) => (false, false, Err(err.into())),
+        };
 
     // 自分で作った検査用の名前だけを片付ける。先にあった名前は第三者のものかもしれない
     // ので消さない。片付けられないまま本文を転送すると保存先に検査用のファイルが残るため、
-    // 消せなかったときは失敗にする（記録には残るので、次の起動で消す）。
-    let cleaned = discard_probe(journal, &probe, created)
-        .and_then(|()| discard_probe(journal, &moved, outcome.is_ok()));
-    match (outcome, cleaned) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(err), _) => Err(err),
-        (Ok(()), Err(err)) => Err(err),
+    // 消せなかったときは失敗にする（記録には残るので、次の起動で消す）。両方を試す。
+    let probe_cleaned = discard_probe(journal, &probe, created);
+    let moved_cleaned = discard_probe(journal, &moved, moved_created);
+    match (outcome, probe_cleaned, moved_cleaned) {
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+        (Err(err), _, _) => Err(err),
+        (Ok(()), Err(err), _) => Err(err),
+        (Ok(()), Ok(()), Err(err)) => Err(err),
     }
 }
 
@@ -2136,35 +2215,53 @@ fn numbered_name(stem: &str, n: u32, extension: &str) -> String {
 /// `.exe` やマクロ付きの文書を開いたときに、SmartScreen と Office の保護ビューが働くようにする
 /// （WebView2 の既定のダウンロードと同じ扱い）。付けられなくても保存は成功させる。
 #[cfg(target_os = "windows")]
-fn mark_of_the_web(path: &Path) {
+fn mark_of_the_web(path: &Path) -> bool {
     let mut zone = path.as_os_str().to_os_string();
     zone.push(":Zone.Identifier");
-    let _ = std::fs::write(PathBuf::from(zone), b"[ZoneTransfer]\r\nZoneId=3\r\n");
+    std::fs::write(PathBuf::from(zone), b"[ZoneTransfer]\r\nZoneId=3\r\n").is_ok()
 }
 
 #[cfg(not(target_os = "windows"))]
-fn mark_of_the_web(_path: &Path) {}
+fn mark_of_the_web(_path: &Path) -> bool {
+    true
+}
 
 fn same_saved_file(source: &std::fs::Metadata, saved: &Path) -> bool {
     same_file_as_path(source, saved)
 }
 
 #[cfg(unix)]
-fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
+fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
+    meta.dev() == source.dev() && meta.ino() == source.ino()
+}
+
+#[cfg(windows)]
+fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // Windows の file_index は unstable なので、サイズ、更新時刻、作成時刻で最低限確認する。
+    meta.file_size() == source.file_size()
+        && meta.last_write_time() == source.last_write_time()
+        && meta.creation_time() == source.creation_time()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file_metadata(_source: &std::fs::Metadata, _meta: &std::fs::Metadata) -> bool {
+    true
+}
+
+#[cfg(unix)]
+fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
     std::fs::metadata(path)
-        .map(|meta| meta.dev() == source.dev() && meta.ino() == source.ino())
+        .map(|meta| same_file_metadata(source, &meta))
         .unwrap_or(false)
 }
 
 #[cfg(windows)]
 fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    // Windows の file_index は unstable なので、サイズと更新時刻の組み合わせで最低限確認する。
-    meta.file_size() == source.file_size() && meta.last_write_time() == source.last_write_time()
+    std::fs::metadata(path)
+        .map(|meta| same_file_metadata(source, &meta))
+        .unwrap_or(false)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2215,7 +2312,11 @@ fn finish_entry_with(
         let _ = std::fs::remove_file(&entry.part);
         return Err(err.into());
     }
-    if !same_file_as_path(&source_meta, &entry.part) {
+    let current_meta = std::fs::metadata(&entry.part).map_err(|err| {
+        let _ = std::fs::remove_file(&entry.part);
+        anyhow::Error::new(err).context("保存したファイルを確認できません")
+    })?;
+    if !same_file_metadata(&source_meta, &current_meta) {
         let _ = std::fs::remove_file(&entry.part);
         return Err(anyhow!(
             "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
@@ -2239,12 +2340,23 @@ fn finish_entry_with(
     })?;
     if !same_saved_file(&source_meta, &saved) {
         let _ = std::fs::remove_file(&entry.part);
+        // deduplicate で番号付きに確定した場合、`saved` は正規の出力なので消さない。
+        // replace_file で選択パスへ確定した場合は、同一性を確認できない出力を残さない。
+        if !entry.deduplicate {
+            let _ = std::fs::remove_file(&saved);
+        }
         return Err(anyhow!(
             "保存先の確認に失敗しました。もう一度お試しください: {}",
             saved.display()
         ));
     }
-    mark_of_the_web(&saved);
+    if !mark_of_the_web(&saved) {
+        #[cfg(target_os = "windows")]
+        eprintln!(
+            "警告: Mark of the Web を付与できませんでした: {}",
+            saved.display()
+        );
+    }
     Ok(saved)
 }
 

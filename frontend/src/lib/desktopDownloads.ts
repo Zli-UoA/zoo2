@@ -14,6 +14,7 @@ import { useSyncExternalStore } from "react";
 import { abortable } from "./abortable";
 import { AttachmentDownloadError, type AttachmentUrlResolver } from "./api/attachments";
 import {
+  DesktopDownloadDestinationError,
   desktopDetectionFailure,
   desktopDownloadBegin,
   desktopDownloadCancel,
@@ -38,6 +39,23 @@ export class DesktopDownloadCancelledError extends Error {
     super("Download cancelled");
     this.name = "DesktopDownloadCancelledError";
   }
+}
+
+function asDestinationError(error: unknown): DesktopDownloadDestinationError | null {
+  if (error instanceof DesktopDownloadDestinationError) return error;
+  if (!(error instanceof Error)) return null;
+  const code = (error as { code?: unknown }).code;
+  const message = error.message.toLowerCase();
+  if (
+    code === "unsupported_destination" ||
+    message.includes("unsupported destination") ||
+    message.includes("上書きせずに移せません") ||
+    message.includes("既存のファイルを上書きせずに移せません") ||
+    message.includes("この保存先には保存できません")
+  ) {
+    return new DesktopDownloadDestinationError(error.message || "この保存先には保存できません");
+  }
+  return null;
 }
 
 /** 本文の読み取りに失敗した。保存 ID を替えて再試行できることを示す内部用の印。 */
@@ -254,6 +272,8 @@ async function run(
             throw error;
           settings = undefined;
         }
+        const destination = asDestinationError(bodyError);
+        if (destination) throw destination;
         if (settings?.ask_every_time !== false) {
           throw bodyError;
         }

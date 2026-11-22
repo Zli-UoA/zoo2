@@ -284,7 +284,8 @@
       "to": "받는 사람",
       "cc": "참조",
       "date": "날자"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"내려받기\"에서 저장 위치를 변경하거나, \"저장할 때마다 확인\"을 켜십시오."
   },
   "threads": {
     "title": "타래",

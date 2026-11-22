@@ -16,6 +16,7 @@ import { DesktopDownloadDestinationError, DesktopDownloadLimitError } from "../.
 import {
   DesktopDownloadCancelledError,
   cancelDesktopDownload,
+  desktopDownloadSettings,
   desktopDownloadsAvailable,
   downloadUrlToDesktop,
   useDesktopDownloadState,
@@ -169,8 +170,17 @@ function AttachmentDownloadButton({
       error,
     });
     if (error instanceof DesktopDownloadDestinationError) {
-      // 保存先が上書きせずに保存する操作に対応していない。保存先を変えてもらう。
-      toast.error(t("attachments.downloadDestinationUnsupported"));
+      // 保存先が上書きしない保存に対応していない。確認なし保存では同じ保存先へ
+      // 戻るため、設定変更を案内する。
+      void desktopDownloadSettings()
+        .then((settings) => {
+          toast.error(
+            settings?.ask_every_time === false
+              ? t("attachments.downloadDestinationUnsupportedAskEveryTimeOff")
+              : t("attachments.downloadDestinationUnsupported"),
+          );
+        })
+        .catch(() => toast.error(t("attachments.downloadDestinationUnsupported")));
       return;
     }
     if (error instanceof DesktopDownloadLimitError) {

@@ -284,7 +284,8 @@
       "to": "받는 사람",
       "cc": "참조",
       "date": "날짜"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "이 저장 위치에는 저장할 수 없습니다. 설정의 \"다운로드\"에서 저장 위치를 변경하거나, \"저장할 때마다 묻기\"를 켜세요."
   },
   "threads": {
     "title": "스레드",

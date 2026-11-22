@@ -37,6 +37,9 @@ vi.mock("./desktop", () => ({
   desktopDownloadWrite: desktop.write,
   desktopDownloadFinish: desktop.finish,
   desktopDownloadCancel: desktop.cancel,
+  DesktopDownloadDestinationError: class DesktopDownloadDestinationError extends Error {
+    name = "DesktopDownloadDestinationError";
+  },
 }));
 
 import {

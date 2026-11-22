@@ -284,7 +284,8 @@
       "to": "收件人",
       "cc": "抄送",
       "date": "日期"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "无法保存到此位置。请在设置的“下载”中更改保存位置，或开启“每次保存时询问”。"
   },
   "threads": {
     "title": "子线程",

@@ -258,6 +258,7 @@
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
     "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "この保存先には保存できません。設定の「ダウンロード」で保存先を変えるか、「保存のたびに確認する」をオンにしてください。",
     "downloadTooMany": "同時に保存できる件数の上限に達しました。ほかの保存が終わってから、もう一度お試しください。",
     "downloading": "ダウンロード中",
     "saving": "保存しています…",

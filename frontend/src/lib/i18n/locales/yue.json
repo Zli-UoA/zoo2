@@ -284,7 +284,8 @@
       "to": "收件者",
       "cc": "副本",
       "date": "日期"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "呢個位置存唔到檔案。請喺設定嘅「下載」改儲存位置，或者開返「每次儲存都問」。"
   },
   "threads": {
     "title": "子討論",

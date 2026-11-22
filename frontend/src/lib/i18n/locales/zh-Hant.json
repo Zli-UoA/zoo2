@@ -284,7 +284,8 @@
       "to": "收件者",
       "cc": "副本",
       "date": "日期"
-    }
+    },
+    "downloadDestinationUnsupportedAskEveryTimeOff": "無法儲存到此位置。請在設定的「下載」中變更儲存位置，或開啟「每次儲存時詢問」。"
   },
   "threads": {
     "title": "子討論",
