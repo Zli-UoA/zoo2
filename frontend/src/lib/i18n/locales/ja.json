@@ -364,7 +364,6 @@
     "noSearchResults": "一致する絵文字がありません",
     "tabEmoji": "絵文字",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "すべての絵文字から選べます。",
     "emojiLoading": "絵文字を読み込み中…",
     "recent": "最近使った絵文字",
     "skinTone": "肌の色"
@@ -1854,6 +1853,45 @@
     "speaker": "スピーカー",
     "waiting": "電話の着信を待ち受け中",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "検索",
+    "placeholder": "メッセージとファイルを検索",
+    "kinds": {
+      "all": "すべて",
+      "messages": "メッセージ",
+      "files": "ファイル"
+    },
+    "prompt": "検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。",
+    "empty": "見つかりませんでした。",
+    "emptyOlder": "{{month}} までに見つかりませんでした。さらに古い期間を検索できます。",
+    "searchedUntil": "{{month}} まで検索しました",
+    "searchOlder": "さらに古い結果を検索",
+    "loading": "検索中…",
+    "loadError": "検索できませんでした。",
+    "retry": "再試行",
+    "tooManyTerms": "検索できる語は {{max}} 個までです。語を減らしてください。",
+    "termTooLong": "1 つの語は {{max}} 文字までです。語を短くしてください。",
+    "encryptedNote": "暗号化されたチャンネルは検索の対象外です。",
+    "openNav": "検索",
+    "inThread": "スレッドの返信",
+    "filters": {
+      "label": "絞り込み",
+      "from": "送信者",
+      "anyone": "すべての人",
+      "in": "チャンネル",
+      "anywhere": "すべてのチャンネル",
+      "period": "期間",
+      "anytime": "指定なし",
+      "last7": "過去 7 日間",
+      "last30": "過去 30 日間",
+      "last365": "過去 1 年間",
+      "custom": "日付を指定",
+      "after": "開始日",
+      "before": "終了日",
+      "reversed": "開始日は終了日と同じか、それより前にしてください。",
+      "reset": "条件をリセット"
+    }
   },
   "catchUp": {
     "navUnread_one": "未読キャッチアップ {{count}} 件",

@@ -8,6 +8,7 @@ export const storySurfaces = {
   "Components/Skeleton": "w-fit",
   "Pages/Notifications": "h-[720px] overflow-hidden bg-background",
   "Pages/BubbleChat": "h-[720px] overflow-hidden bg-background",
+  "Pages/Search": "h-[720px] overflow-hidden bg-background",
   "Components/Button": "bg-background p-6",
   "Components/Input": "w-[209px]",
   "Components/Textarea": "max-w-xl bg-background p-6",

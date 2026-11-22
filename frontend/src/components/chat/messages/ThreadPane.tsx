@@ -62,6 +62,8 @@ export interface ThreadPaneProps {
   canModerate?: boolean;
   isArchived?: boolean;
   readOnly?: boolean;
+  /** 親が削除されている（検索・リンクから返信を開いたとき）。親の代わりに知らせを出し、読むだけにする。 */
+  rootDeleted?: boolean;
   reactions: Map<string, ReactionGroup[]>;
   attachments?: Map<string, AttachmentRow[]>;
   kitchenCatalog: KitchenCatalog | null;
@@ -134,6 +136,7 @@ export function ThreadPane({
   canModerate = false,
   isArchived = false,
   readOnly = false,
+  rootDeleted = false,
   reactions,
   attachments,
   kitchenCatalog,
@@ -398,28 +401,32 @@ export function ThreadPane({
         </div>
       ) : null}
       <div className="max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2">
-        <MessageRow
-          item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
-          isOwn={!!currentUserId && root.user_id === currentUserId}
-          canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
-          isEditing={editingId === root.id}
-          editingText={editingText}
-          onEditingTextChange={onEditingTextChange}
-          onStartEdit={() => onStartEdit(root.id, root.content)}
-          onCancelEdit={onCancelEdit}
-          onSaveEdit={onSaveEdit}
-          onRequestDelete={() => onRequestDelete(root.id)}
-          reactions={
-            root.display_data
-              ? (groupReactions(root.display_data.reactions, currentUserId).get(root.id) ?? [])
-              : (reactions.get(root.id) ?? [])
-          }
-          attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
-          kitchenCatalog={kitchenCatalog}
-          canReact={canReact}
-          onReaction={(emoji) => onReaction(root.id, emoji)}
-          onPickReaction={() => onPickReaction(root.id)}
-        />
+        {rootDeleted ? (
+          <p className="px-2 py-1 text-xs text-muted-foreground">{t("threads.rootDeleted")}</p>
+        ) : (
+          <MessageRow
+            item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
+            isOwn={!!currentUserId && root.user_id === currentUserId}
+            canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
+            isEditing={editingId === root.id}
+            editingText={editingText}
+            onEditingTextChange={onEditingTextChange}
+            onStartEdit={() => onStartEdit(root.id, root.content)}
+            onCancelEdit={onCancelEdit}
+            onSaveEdit={onSaveEdit}
+            onRequestDelete={() => onRequestDelete(root.id)}
+            reactions={
+              root.display_data
+                ? (groupReactions(root.display_data.reactions, currentUserId).get(root.id) ?? [])
+                : (reactions.get(root.id) ?? [])
+            }
+            attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
+            kitchenCatalog={kitchenCatalog}
+            canReact={canReact}
+            onReaction={(emoji) => onReaction(root.id, emoji)}
+            onPickReaction={() => onPickReaction(root.id)}
+          />
+        )}
       </div>
 
       <div

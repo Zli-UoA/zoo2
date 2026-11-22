@@ -364,7 +364,6 @@
     "noSearchResults": "沒有符合的表情",
     "tabEmoji": "表情符號",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "可以從所有表情符號中選擇。",
     "emojiLoading": "正在載入表情符號…",
     "recent": "最近使用的表情符號",
     "skinTone": "膚色"
@@ -1854,6 +1853,45 @@
     "speaker": "揚聲器",
     "waiting": "正在等候來電",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "搜尋",
+    "placeholder": "搜尋訊息和檔案",
+    "kinds": {
+      "all": "全部",
+      "messages": "訊息",
+      "files": "檔案"
+    },
+    "prompt": "請輸入要搜尋的字詞。以空格分隔時，會尋找包含所有字詞的結果。",
+    "empty": "找不到結果。",
+    "emptyOlder": "截至 {{month}} 找不到結果。可以繼續搜尋更早的內容。",
+    "searchedUntil": "已搜尋至 {{month}}",
+    "searchOlder": "搜尋更早的結果",
+    "loading": "搜尋中…",
+    "loadError": "無法搜尋。",
+    "retry": "重試",
+    "tooManyTerms": "最多可以搜尋 {{max}} 個詞。請減少詞數。",
+    "termTooLong": "每個詞最多 {{max}} 個字元。請縮短該詞。",
+    "encryptedNote": "加密頻道不在搜尋範圍內。",
+    "openNav": "搜尋",
+    "inThread": "子討論回覆",
+    "filters": {
+      "label": "篩選",
+      "from": "傳送者",
+      "anyone": "所有人",
+      "in": "頻道",
+      "anywhere": "所有頻道",
+      "period": "日期",
+      "anytime": "不限",
+      "last7": "過去 7 天",
+      "last30": "過去 30 天",
+      "last365": "過去 1 年",
+      "custom": "指定日期",
+      "after": "開始日期",
+      "before": "結束日期",
+      "reversed": "開始日期不能晚於結束日期。",
+      "reset": "重設條件"
+    }
   },
   "catchUp": {
     "navUnread_one": "{{count}} 個未讀對話待查看",
