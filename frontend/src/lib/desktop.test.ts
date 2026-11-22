@@ -166,9 +166,9 @@ describe("download commands", () => {
     });
 
     const bytes = new Uint8Array([1, 2, 3]);
-    await desktopDownloadWrite("d1", bytes);
+    await desktopDownloadWrite("d1", bytes, 0);
     expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_write", bytes, {
-      headers: { "x-zoo-download-id": "d1" },
+      headers: { "x-zoo-download-id": "d1", "x-zoo-download-offset": "0" },
     });
 
     await desktopDownloadFinish("d1");

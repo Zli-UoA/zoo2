@@ -91,6 +91,7 @@ pub mod command {
     /// 上限に使う。
     pub const DOWNLOAD_BEGIN: &str = "zoo_download_begin";
     /// 本文は octet-stream。`x-zoo-download-id` ヘッダーの ID に追記する。
+    /// x-zoo-download-offset を付けると、その位置への書き込みだけを受け付ける。
     pub const DOWNLOAD_WRITE: &str = "zoo_download_write";
     /// `{ id: String }`。`.part` を本来の名前へ置き換える。
     pub const DOWNLOAD_FINISH: &str = "zoo_download_finish";
@@ -100,6 +101,9 @@ pub mod command {
 
 /// [`command::DOWNLOAD_WRITE`] の、書き込み先の ID を渡すヘッダー。
 pub const DOWNLOAD_ID_HEADER: &str = "x-zoo-download-id";
+/// DOWNLOAD_WRITE の本文が、保存先のどの位置に対応するか（10進のバイト数）。
+/// IPC 再送で同じチャンクが二重に書かれないよう、期待する位置と違うと拒否する。
+pub const DOWNLOAD_OFFSET_HEADER: &str = "x-zoo-download-offset";
 
 /// Rust 側から WebView へ送るイベントの名前。
 pub mod event {

@@ -3,7 +3,7 @@ import { memo, type ReactNode } from "react";
 import { SensitiveMedia } from "../ui/sensitive-media";
 import { MediaPreview } from "../ui/media-preview";
 import { type ImageMetadata } from "../../lib/imageMetadata";
-import { LinkPreviews } from "../chat/messages/LinkPreviews.tsx";
+import { LinkPreviews } from "../chat/messages/LinkPreviews";
 import { MessageAttachments } from "../chat/messages/MessageAttachments";
 import type { AttachmentMetadata } from "../../lib/attachments";
 import { useOptionalCollections } from "../../lib/electric/collections-context";

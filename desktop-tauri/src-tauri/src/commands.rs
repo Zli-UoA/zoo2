@@ -8,10 +8,10 @@ use std::sync::Arc;
 use tauri::{AppHandle, State, Webview};
 use zoo2_client_types::{
     ipc::{
-        AccessToken, DOWNLOAD_ID_HEADER, DeviceLogin, DownloadBegin, DownloadSettings,
-        DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState, InvokeAppAction, IpcError,
-        NotificationSettings, ObservedNotifications, OpenChannel, SendMessage, SendResult,
-        SessionInfo, UiMode,
+        AccessToken, DOWNLOAD_ID_HEADER, DOWNLOAD_OFFSET_HEADER, DeviceLogin, DownloadBegin,
+        DownloadSettings, DownloadSettingsUpdate, DownloadStart, ErrorCode, FocusState,
+        InvokeAppAction, IpcError, NotificationSettings, ObservedNotifications, OpenChannel,
+        SendMessage, SendResult, SessionInfo, UiMode,
     },
     shape::ShapeId,
 };
@@ -330,8 +330,22 @@ pub async fn zoo_download_write(
         .and_then(|value| value.to_str().ok())
         .filter(|id| !id.is_empty())
         .ok_or_else(|| IpcError::new(ErrorCode::Internal, "ダウンロードの ID がありません"))?;
+    let offset = request
+        .headers()
+        .get(DOWNLOAD_OFFSET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                IpcError::new(ErrorCode::Internal, "ダウンロードのオフセットが不正です")
+            })
+        })
+        .transpose()?;
     let bytes = download_body(request.body())?;
-    core.downloads().write(id, &bytes).await.map_err(to_ipc)
+    core.downloads()
+        .write(id, offset, &bytes)
+        .await
+        .map_err(to_ipc)
 }
 
 /// `zoo_download_write` の本文を取り出す。

@@ -342,8 +342,14 @@ function invokeRaw(
 }
 
 /** 本文の一部を、書き込み中のファイルに追記する（octet-stream）。 */
-export async function desktopDownloadWrite(id: string, bytes: Uint8Array): Promise<void> {
-  await invokeRaw("zoo_download_write", bytes, { "x-zoo-download-id": id });
+export async function desktopDownloadWrite(
+  id: string,
+  bytes: Uint8Array,
+  offset?: number,
+): Promise<void> {
+  const headers: Record<string, string> = { "x-zoo-download-id": id };
+  if (offset !== undefined) headers["x-zoo-download-offset"] = String(offset);
+  await invokeRaw("zoo_download_write", bytes, headers);
 }
 
 /** `.part` を本来の名前に置き換える。 */

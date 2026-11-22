@@ -43,17 +43,22 @@ export class DesktopDownloadCancelledError extends Error {
 
 function asDestinationError(error: unknown): DesktopDownloadDestinationError | null {
   if (error instanceof DesktopDownloadDestinationError) return error;
-  if (!(error instanceof Error)) return null;
-  const code = (error as { code?: unknown }).code;
-  const message = error.message.toLowerCase();
-  if (
-    code === "unsupported_destination" ||
-    message.includes("unsupported destination") ||
-    message.includes("上書きせずに移せません") ||
-    message.includes("既存のファイルを上書きせずに移せません") ||
-    message.includes("この保存先には保存できません")
-  ) {
-    return new DesktopDownloadDestinationError(error.message || "この保存先には保存できません");
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  const message = error instanceof Error ? error.message : typeof (error as { message?: unknown } | null)?.message === "string" ? (error as { message: string }).message : "";
+  if (code === "unsupported_destination") {
+    return new DesktopDownloadDestinationError(message || "この保存先には保存できません");
+  }
+  // 古い desktop 実装との互換: code が無い場合だけ文字列を見る。
+  if (error instanceof Error) {
+    const lower = message.toLowerCase();
+    if (
+      lower.includes("unsupported destination") ||
+      message.includes("上書きせずに移せません") ||
+      message.includes("既存のファイルを上書きせずに移せません") ||
+      message.includes("この保存先には保存できません")
+    ) {
+      return new DesktopDownloadDestinationError(message || "この保存先には保存できません");
+    }
   }
   return null;
 }
@@ -323,7 +328,7 @@ async function writeChunk(downloadId: string, bytes: Uint8Array): Promise<void> 
   for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_SIZE) {
     const end = Math.min(bytes.byteLength, offset + CHUNK_SIZE);
     // `subarray` のまま渡すと、後ろに余分なバイトが付いたバッファーを送ることがある。
-    await desktopDownloadWrite(downloadId, bytes.slice(offset, end));
+    await desktopDownloadWrite(downloadId, bytes.slice(offset, end), offset);
   }
 }
 

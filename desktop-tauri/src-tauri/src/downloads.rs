@@ -930,8 +930,11 @@ impl Downloads {
     }
 
     /// 途中まで書いたものを追記する。ディスクへの書き込みは `spawn_blocking` に移し、
-    /// `pending` のロックを持ったまま同期 I/O をしない。
-    pub async fn write(&self, id: &str, bytes: &[u8]) -> Result<()> {
+    /// 途中まで書いたものを追記する。ディスクへの書き込みは spawn_blocking に移し、
+    /// pending のロックを持ったまま同期 I/O をしない。
+    /// offset がある場合は、期待する書き込み位置と一致したときだけ書く。
+    /// 同じ位置・同じ長さの再送は no-op、それ以外の不一致はエラーにする。
+    pub async fn write(&self, id: &str, offset: Option<u64>, bytes: &[u8]) -> Result<()> {
         let (file, written, limit, cancelled, failed) = {
             let pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             let entry = pending
@@ -952,9 +955,9 @@ impl Downloads {
             return Err(anyhow!("書き込みに失敗したダウンロードです"));
         }
         let len = bytes.len() as u64;
-        let before = written.fetch_add(len, Ordering::SeqCst);
-        if before.saturating_add(len) > limit {
-            written.fetch_sub(len, Ordering::SeqCst);
+        let before = written.load(Ordering::SeqCst);
+        let maybe_resend = offset.is_some_and(|o| o.saturating_add(len) <= before);
+        if !maybe_resend && before.saturating_add(len) > limit {
             return Err(anyhow!(
                 "添付が大きすぎます（上限は {} MiB）",
                 limit / (1024 * 1024)
@@ -963,7 +966,8 @@ impl Downloads {
         let data = bytes.to_vec();
         let failure = Arc::clone(&failed);
         let cancel_flag = Arc::clone(&cancelled);
-        let result = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let written_counter = Arc::clone(&written);
+        let result = tokio::task::spawn_blocking(move || -> std::io::Result<bool> {
             let slot_result = file.lock();
             let poisoned = slot_result.is_err();
             let mut slot = slot_result.unwrap_or_else(PoisonError::into_inner);
@@ -980,24 +984,33 @@ impl Downloads {
             let file = slot
                 .as_mut()
                 .ok_or_else(|| std::io::Error::other("ダウンロードは中止されました"))?;
-            let written_result = file.write_all(&data);
-            if written_result.is_err() {
-                // 一部だけ書けているかもしれない。同じ ID の確定はさせない（中止で消す）。
+            use std::io::Seek;
+            let current = file.stream_position()?;
+            if let Some(offset) = offset
+                && offset != current
+            {
+                if offset.saturating_add(len) == current {
+                    // IPC 再送の同一チャンク。すでに書き込み済みなので no-op。
+                    return Ok(false);
+                }
                 failure.store(true, Ordering::SeqCst);
+                return Err(std::io::Error::other(format!(
+                    "ダウンロードの書き込み位置が一致しません（期待 {current}, 受信 {offset}）"
+                )));
             }
-            written_result
+            if let Err(err) = file.write_all(&data) {
+                failure.store(true, Ordering::SeqCst);
+                return Err(err);
+            }
+            written_counter.fetch_add(len, Ordering::SeqCst);
+            Ok(true)
         })
         .await;
         match result {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => {
-                written.fetch_sub(len, Ordering::SeqCst);
-                Err(err.into())
-            }
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(err)) => Err(err.into()),
             Err(err) => {
-                // ブロッキングのタスクが落ちた。書き込みの状態は分からないので、確定させない。
                 failed.store(true, Ordering::SeqCst);
-                written.fetch_sub(len, Ordering::SeqCst);
                 Err(anyhow!("書き込みを実行できません: {err}"))
             }
         }
@@ -1076,41 +1089,44 @@ impl Downloads {
     /// アプリの終了時は [`Downloads::shutdown`] を使う。
     ///
     /// 呼び出し元はセッションのロックを持っていることがあるので、ここではファイルを閉じたり
-    /// 消したりしない。記録から外し、ファイルの後始末は裏のスレッドに任せる。
+    /// 消したりしない。各エントリの後始末は独立した裏スレッドに任せ、保存枠は
+    /// ファイルを閉じた時点で返す。
     pub fn cancel_all(&self) {
-        let (pending, guard) = {
+        let pending = {
             let mut current = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             // 世代更新と取り出しを同じロックで行う。`begin` が新しい世代を読んだあとに
             // 登録するまでの間に取り消さないようにする。
             self.generation.fetch_add(1, Ordering::SeqCst);
-            let pending = std::mem::take(&mut *current);
-            if pending.is_empty() {
-                return;
-            }
-            // `cancel` と同じく、取り出しと後始末の登録を同じロックで行う。
-            (pending, self.cleanups.start())
+            std::mem::take(&mut *current)
         };
+        if pending.is_empty() {
+            return;
+        }
         for entry in pending.values() {
             entry.cancelled.store(true, Ordering::SeqCst);
         }
         let journal = Arc::clone(&self.journal);
         let slots = Arc::clone(&self.slots);
-        std::thread::spawn(move || {
-            let _guard = guard;
-            for (_, entry) in pending {
+        let cleanups = self.cleanups.clone();
+        for (_, entry) in pending {
+            let guard = cleanups.start();
+            let journal = Arc::clone(&journal);
+            let slots = Arc::clone(&slots);
+            std::thread::spawn(move || {
+                let _guard = guard;
                 let taken = entry
                     .file
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
                 drop(taken);
-                journal.remove_part(&entry.part);
-                // 後始末が終わるまで枠を返さない。旧画面のファイルを閉じる前に、
-                // 新画面で同じ数の保存を始められないようにする。
+                // ファイルを閉じた時点で枠を返す。遅い削除が次の保存を塞がないようにする。
                 let mut slots = slots.lock().unwrap_or_else(PoisonError::into_inner);
                 *slots = slots.saturating_sub(1);
-            }
-        });
+                drop(slots);
+                journal.remove_part(&entry.part);
+            });
+        }
     }
 
     /// アプリの終了時に、書きかけの `.part` を消す。`tauri::App::run` は終了時に
@@ -1122,27 +1138,21 @@ impl Downloads {
     /// ものは記録に残し、次の起動で消す。
     pub fn shutdown(&self, timeout: Duration) {
         self.generation.fetch_add(1, Ordering::SeqCst);
-        let taken = {
+        let pending = {
             let mut current = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-            let pending = std::mem::take(&mut *current);
-            if pending.is_empty() {
-                None
-            } else {
-                // 取り出しと後始末の登録を同じロックで行い、`wait` が自分の分を
-                // 取りこぼさないようにする。
-                Some((pending, self.cleanups.start()))
-            }
+            std::mem::take(&mut *current)
         };
-        if let Some((pending, guard)) = taken {
+        if !pending.is_empty() {
             for entry in pending.values() {
                 entry.cancelled.store(true, Ordering::SeqCst);
             }
             let journal = Arc::clone(&self.journal);
-            // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは
-            // 消せない）。記録から外れるのは、消せた（または既に無かった）ときだけ。
-            std::thread::spawn(move || {
-                let _guard = guard;
-                for (_, entry) in pending {
+            let cleanups = self.cleanups.clone();
+            for (_, entry) in pending {
+                let guard = cleanups.start();
+                let journal = Arc::clone(&journal);
+                std::thread::spawn(move || {
+                    let _guard = guard;
                     let taken = entry
                         .file
                         .lock()
@@ -1150,15 +1160,13 @@ impl Downloads {
                         .take();
                     drop(taken);
                     journal.remove_part(&entry.part);
-                }
-            });
+                });
+            }
         }
         // 取消が `pending` から取り出した分も、ここで終わるのを待つ。
         self.cleanups.wait(timeout);
     }
 
-    /// 確定のために取り出す。取り出しと後始末の登録を同じロックで行い、`shutdown` が
-    /// この間に割り込んで待ちを終らせないようにする。
     fn take_pending_with_guard(&self, id: &str) -> Option<(Pending, CleanupGuard)> {
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let entry = pending.remove(id)?;
@@ -1928,8 +1936,6 @@ fn check_destination_with(
                 let write_result = file.write_all(PROBE_MARKER);
                 drop(file);
                 let (moved_created, outcome) = if let Err(err) = write_result {
-                    // 書きかけのファイルは自分が作ったものなので、消せれば消す。
-                    // 消せなければ記録に残し、起動時の掃除で目印またはジャーナル登録を頼りに回収する。
                     if let Err(remove_err) = std::fs::remove_file(&probe)
                         && remove_err.kind() != std::io::ErrorKind::NotFound
                     {
@@ -1938,44 +1944,29 @@ fn check_destination_with(
                     }
                     (false, Err(err.into()))
                 } else {
-                    match rename(&probe, &moved) {
-                        Ok(()) => {
-                            // 移動先の名前は、この保存が実際に作った後にだけ記録する。
-                            // 先に記録すると、第三者が同名を置いていた場合に起動時掃除で消しうる。
-                            match journal.record(&moved) {
-                                Ok(()) => (true, Ok(())),
-                                Err(err) => {
-                                    let _ = std::fs::remove_file(&moved);
-                                    (false, Err(err))
-                                }
+                    // .probe-moved は rename 前に記録する。rename 成功直後に落ちても、
+                    // 起動時の掃除で回収できるようにする。
+                    match journal.record(&moved) {
+                        Ok(()) => match rename(&probe, &moved) {
+                            Ok(()) => (true, Ok(())),
+                            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                                (false, Err(err.into()))
                             }
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                            (false, Err(err.into()))
-                        }
-                        // ファイルシステムが「既にあれば失敗する移動」を持たない。確定
-                        // （[`rename_unique`]）と同じ順で、ハードリンクで名前を確保できるかを見る。
-                        Err(err) if is_unsupported(&err) => match hard_link(&probe, &moved) {
-                            Ok(()) => match journal.record(&moved) {
+                            Err(err) if is_unsupported(&err) => match hard_link(&probe, &moved) {
                                 Ok(()) => (true, Ok(())),
-                                Err(err) => {
-                                    let _ = std::fs::remove_file(&moved);
+                                Err(link) => {
+                                    let err = if is_unsupported_destination(&link) {
+                                        anyhow::Error::new(UnsupportedDestination)
+                                            .context(format!("ハードリンクも作れません: {link}"))
+                                    } else {
+                                        link.into()
+                                    };
                                     (false, Err(err))
                                 }
                             },
-                            Err(link) => {
-                                // 保存先の性質による失敗だけを `UnsupportedDestination` にする。
-                                // 権限や一時的な I/O の失敗は、保存先を変えても直らないことがある。
-                                let err = if is_unsupported_destination(&link) {
-                                    anyhow::Error::new(UnsupportedDestination)
-                                        .context(format!("ハードリンクも作れません: {link}"))
-                                } else {
-                                    link.into()
-                                };
-                                (false, Err(err))
-                            }
+                            Err(err) => (false, Err(err.into())),
                         },
-                        Err(err) => (false, Err(err.into())),
+                        Err(err) => (false, Err(err)),
                     }
                 };
                 (created, moved_created, outcome)
@@ -1986,9 +1977,6 @@ fn check_destination_with(
             Err(err) => (false, false, Err(err.into())),
         };
 
-    // 自分で作った検査用の名前だけを片付ける。先にあった名前は第三者のものかもしれない
-    // ので消さない。片付けられないまま本文を転送すると保存先に検査用のファイルが残るため、
-    // 消せなかったときは失敗にする（記録には残るので、次の起動で消す）。両方を試す。
     let probe_cleaned = discard_probe(journal, &probe, created);
     let moved_cleaned = discard_probe(journal, &moved, moved_created);
     match (outcome, probe_cleaned, moved_cleaned) {
@@ -2232,26 +2220,97 @@ fn mark_of_the_web(_path: &Path) -> bool {
     true
 }
 
-fn same_saved_file(source: &std::fs::Metadata, saved: &Path) -> bool {
-    same_file_as_path(source, saved)
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowsFileId {
+    volume: u32,
+    file_index_high: u32,
+    file_index_low: u32,
+}
+
+#[cfg(windows)]
+fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    let handle = HANDLE(file.as_raw_handle());
+    // SAFETY: file は呼び出し中有効なハンドルを持ち、info は出力先。
+    if unsafe { GetFileInformationByHandle(handle, &mut info) }.is_err() {
+        return None;
+    }
+    Some(WindowsFileId {
+        volume: info.dwVolumeSerialNumber,
+        file_index_high: info.nFileIndexHigh,
+        file_index_low: info.nFileIndexLow,
+    })
+}
+
+#[cfg(windows)]
+fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            GetFileInformationByHandle,
+        },
+    };
+    // 再解析ポイントを辿らず、パス自体のエントリを開く。
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    let handle = HANDLE(file.as_raw_handle());
+    // SAFETY: file は呼び出し中有効なハンドルを持ち、info は出力先。
+    if unsafe { GetFileInformationByHandle(handle, &mut info) }.is_err() {
+        return None;
+    }
+    Some(WindowsFileId {
+        volume: info.dwVolumeSerialNumber,
+        file_index_high: info.nFileIndexHigh,
+        file_index_low: info.nFileIndexLow,
+    })
+}
+
+fn same_saved_file(
+    _source: &std::fs::Metadata,
+    #[cfg(windows)] source_file_id: Option<WindowsFileId>,
+    saved: &Path,
+) -> bool {
+    #[cfg(unix)]
+    {
+        same_file_as_path(_source, saved)
+    }
+    #[cfg(windows)]
+    {
+        let Some(source_file_id) = source_file_id else {
+            return false;
+        };
+        let Some(saved_id) = windows_file_id_from_path(saved) else {
+            return false;
+        };
+        source_file_id == saved_id
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = saved;
+        true
+    }
 }
 
 #[cfg(unix)]
 fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     meta.dev() == source.dev() && meta.ino() == source.ino()
-}
-
-#[cfg(windows)]
-fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> bool {
-    // Windows のファイルシステムトンネリングにより、削除・改名直後の同名ファイルの
-    // 作成日時が元のファイルから引き継がれることがある。FAT32 では更新時刻も
-    // 2 秒単位に丸められるため、サイズだけでは別ファイルを同一と誤判定しうる。
-    // std::fs::Metadata からはファイル ID を取得できないため、ここではサイズと
-    // ボリュームシリアル番号で最低限確認する。より厳密な比較は GetFileInformationByHandle
-    // によるファイル ID で行うべきだが、Metadata からは取得できない。
-    use std::os::windows::fs::MetadataExt;
-    meta.file_size() == source.file_size()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2261,14 +2320,10 @@ fn same_file_metadata(_source: &std::fs::Metadata, _meta: &std::fs::Metadata) ->
 
 #[cfg(unix)]
 fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
-    std::fs::metadata(path)
-        .map(|meta| same_file_metadata(source, &meta))
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
-    std::fs::metadata(path)
+    std::fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.file_type().is_file())
+        .and_then(|_| std::fs::metadata(path).ok())
         .map(|meta| same_file_metadata(source, &meta))
         .unwrap_or(false)
 }
@@ -2278,7 +2333,6 @@ fn same_file_as_path(_source: &std::fs::Metadata, _path: &Path) -> bool {
     true
 }
 
-/// `finish` の実体。`spawn_blocking` の中で動く。
 fn finish_entry(entry: Pending) -> Result<PathBuf> {
     finish_entry_with(entry, move_unique)
 }
@@ -2325,22 +2379,63 @@ fn finish_entry_with(
         let _ = std::fs::remove_file(&entry.part);
         anyhow::Error::new(err).context("保存したファイルを確認できません")
     })?;
+    #[cfg(windows)]
+    let source_file_id = windows_file_id_from_handle(&file);
     let synced = file.sync_all();
     drop(file);
     if let Err(err) = synced {
         let _ = std::fs::remove_file(&entry.part);
         return Err(err.into());
     }
-    let current_meta = std::fs::metadata(&entry.part).map_err(|err| {
-        let _ = std::fs::remove_file(&entry.part);
-        anyhow::Error::new(err).context("保存したファイルを確認できません")
-    })?;
-    if !same_file_metadata(&source_meta, &current_meta) {
-        let _ = std::fs::remove_file(&entry.part);
-        return Err(anyhow!(
-            "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
-            entry.part.display()
-        ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let sym_meta = std::fs::symlink_metadata(&entry.part).map_err(|err| {
+            let _ = std::fs::remove_file(&entry.part);
+            anyhow::Error::new(err).context("保存したファイルを確認できません")
+        })?;
+        if !sym_meta.file_type().is_file() {
+            let _ = std::fs::remove_file(&entry.part);
+            return Err(anyhow!(
+                "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
+                entry.part.display()
+            ));
+        }
+        let current_meta = std::fs::metadata(&entry.part).map_err(|err| {
+            let _ = std::fs::remove_file(&entry.part);
+            anyhow::Error::new(err).context("保存したファイルを確認できません")
+        })?;
+        if current_meta.dev() != source_meta.dev() || current_meta.ino() != source_meta.ino() {
+            let _ = std::fs::remove_file(&entry.part);
+            return Err(anyhow!(
+                "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
+                entry.part.display()
+            ));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let Some(source_file_id) = source_file_id else {
+            let _ = std::fs::remove_file(&entry.part);
+            return Err(anyhow!(
+                "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
+                entry.part.display()
+            ));
+        };
+        let Some(current_id) = windows_file_id_from_path(&entry.part) else {
+            let _ = std::fs::remove_file(&entry.part);
+            return Err(anyhow!(
+                "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
+                entry.part.display()
+            ));
+        };
+        if current_id != source_file_id {
+            let _ = std::fs::remove_file(&entry.part);
+            return Err(anyhow!(
+                "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
+                entry.part.display()
+            ));
+        }
     }
     let saved = if entry.deduplicate {
         move_unique(&entry.part, &entry.final_path)
@@ -2357,10 +2452,14 @@ fn finish_entry_with(
                 .context(format!("保存できません: {}", entry.final_path.display()))
         }
     })?;
-    if !same_saved_file(&source_meta, &saved) {
+    if !same_saved_file(
+        &source_meta,
+        #[cfg(windows)]
+        source_file_id,
+        &saved,
+    ) {
         let _ = std::fs::remove_file(&entry.part);
-        // ファイルシステムトンネリングなどで不一致になることがあるが、確定したファイルは
-        // 消さない（利用者が保存したファイルを削除しないため）。
+        // 確定後の同一性確認に失敗した場合、保存先を消さず失敗を返す。
         return Err(anyhow!(
             "保存先の確認に失敗しました。もう一度お試しください: {}",
             saved.display()
@@ -2749,8 +2848,8 @@ mod tests {
         let entry = pending(&final_path, &id, false, DEFAULT_MAX_DOWNLOAD_BYTES);
         let part = entry.part.clone();
         downloads.pending.lock().unwrap().insert(id.clone(), entry);
-        downloads.write(&id, b"hello ").await.unwrap();
-        downloads.write(&id, b"world").await.unwrap();
+        downloads.write(&id, None, b"hello ").await.unwrap();
+        downloads.write(&id, Some(6), b"world").await.unwrap();
         assert!(part.exists());
         let saved = downloads.finish(&id).await.unwrap();
         assert_eq!(saved, final_path);
@@ -2770,10 +2869,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert(cancel_id.clone(), entry);
-        downloads.write(&cancel_id, b"partial").await.unwrap();
+        downloads.write(&cancel_id, None, b"partial").await.unwrap();
         downloads.cancel(&cancel_id).await;
         assert!(!cancel_part.exists());
-        assert!(downloads.write(&cancel_id, b"x").await.is_err());
+        assert!(downloads.write(&cancel_id, None, b"x").await.is_err());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -2788,9 +2887,46 @@ mod tests {
             .lock()
             .unwrap()
             .insert(id.clone(), pending(&dir.join("limit.bin"), &id, true, 4));
-        downloads.write(&id, b"1234").await.unwrap();
-        assert!(downloads.write(&id, b"5").await.is_err());
+        downloads.write(&id, None, b"1234").await.unwrap();
+        assert!(downloads.write(&id, Some(4), b"5").await.is_err());
         downloads.cancel(&id).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_same_offset_same_length_is_noop() {
+        let dir = temp_dir();
+        let downloads = test_downloads();
+        let id = new_download_id();
+        let target = dir.join("resend.bin");
+        let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
+        let part = entry.part.clone();
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+        downloads.write(&id, Some(0), b"abcd").await.unwrap();
+        downloads.write(&id, Some(0), b"abcd").await.unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), b"abcd");
+        downloads.cancel(&id).await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_mismatched_offset_beyond_written_is_rejected() {
+        let dir = temp_dir();
+        let downloads = test_downloads();
+        let id = new_download_id();
+        let entry = pending(
+            &dir.join("offset.bin"),
+            &id,
+            true,
+            DEFAULT_MAX_DOWNLOAD_BYTES,
+        );
+        let part = entry.part.clone();
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+        downloads.write(&id, Some(0), b"abcd").await.unwrap();
+        assert!(downloads.write(&id, Some(5), b"z").await.is_err());
+        assert!(downloads.finish(&id).await.is_err());
+        assert!(!dir.join("offset.bin").exists());
+        assert!(!part.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2829,7 +2965,10 @@ mod tests {
                 id.clone(),
                 pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES),
             );
-            downloads.write(&id, id.as_bytes()).await.unwrap();
+            downloads
+                .write(&id, Some(0u64), id.as_bytes())
+                .await
+                .unwrap();
             ids.push(id);
         }
 
@@ -2859,6 +2998,46 @@ mod tests {
         assert_eq!(std::fs::read(&saved).unwrap(), b"new");
         assert!(!part.exists());
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finish_rejects_symlinked_part() {
+        let dir = temp_dir();
+        let real = dir.join("real.part");
+        let link = dir.join(".zoo-0123456789abcdef.part");
+        let target = dir.join("saved.txt");
+        std::fs::write(&real, b"new").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let id = new_download_id();
+        let entry = Pending {
+            part: link.clone(),
+            target: target.clone(),
+            deduplicate: true,
+            file: Arc::new(Mutex::new(None)),
+            written: Arc::new(AtomicU64::new(3)),
+            limit: DEFAULT_MAX_DOWNLOAD_BYTES,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            failed: Arc::new(AtomicBool::new(false)),
+        };
+        let err = finish_entry(entry).unwrap_err().to_string();
+        assert!(err.contains("確認できません"));
+        assert!(!target.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_id_distinguishes_same_size_replacement() {
+        let dir = temp_dir();
+        let a = dir.join("a.bin");
+        let b = dir.join("b.bin");
+        std::fs::write(&a, b"same").unwrap();
+        std::fs::write(&b, b"same").unwrap();
+        let id_a = windows_file_id_from_path(&a).expect("id a");
+        let id_b = windows_file_id_from_path(&b).expect("id b");
+        assert_ne!(id_a, id_b);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
