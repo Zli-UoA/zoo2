@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 
-import { READ_STATE_CHANGED, type ChannelReadState } from "../../../hooks/useUnreadChannels";
+import { READ_STATE_CHANGED, type ChannelReadState } from "../../../hooks/useUnread";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { getCollections } from "../../../lib/electric/collections";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";

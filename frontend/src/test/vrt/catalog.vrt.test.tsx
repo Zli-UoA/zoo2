@@ -21,6 +21,7 @@ import { NotificationCard } from "../../components/chat/notifications/Notificati
 import { StoryShell } from "../../../.storybook/shell";
 import { StoryRouter } from "../../../.storybook/decorators";
 import { NotificationsProvider } from "../../hooks/useUnifiedNotifications";
+import { UnreadProvider } from "../../hooks/useUnread";
 import { CollectionsProvider } from "../../lib/electric/collections-context";
 import {
   createStoryCollections,
@@ -158,9 +159,11 @@ function WithCollections({
       <CollectionsProvider value={bundle}>
         <HomeLiveProvider>
           <NotificationsProvider>
-            <StoryRouter>
-              <StoryShell>{children}</StoryShell>
-            </StoryRouter>
+            <UnreadProvider>
+              <StoryRouter>
+                <StoryShell>{children}</StoryShell>
+              </StoryRouter>
+            </UnreadProvider>
           </NotificationsProvider>
         </HomeLiveProvider>
       </CollectionsProvider>

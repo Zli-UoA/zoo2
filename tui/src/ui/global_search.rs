@@ -297,9 +297,84 @@ pub fn highlight_segments(text: &str, terms: &[String]) -> Vec<(String, bool)> {
     out
 }
 
+/// 最初に強調する区間が幅 `width` に収まるよう、その前を `…` で省く（全角は 2）。
+/// サーバーの抜粋は一致箇所の 40 文字前から始まるため、日本語では先頭から詰めると一致箇所が欄の外に出る。
+/// 一致箇所の前には欄の 3 分の 1 までを残し、末尾の切り詰めは呼び出し側に任せる。
+pub fn focus_first_hit(segments: Vec<(String, bool)>, width: usize) -> Vec<(String, bool)> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let Some(hit) = segments.iter().position(|(_, hit)| *hit) else {
+        return segments;
+    };
+    let before: usize = segments[..hit].iter().map(|(text, _)| text.width()).sum();
+    let hit_width = segments[hit].0.width();
+    if before + hit_width <= width {
+        return segments;
+    }
+    let keep = width.saturating_sub(hit_width + 1).min(width / 3);
+    let prefix: String = segments[..hit]
+        .iter()
+        .map(|(text, _)| text.as_str())
+        .collect();
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for ch in prefix.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > keep {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    let mut out = vec![(
+        std::iter::once('…').chain(kept.into_iter().rev()).collect(),
+        false,
+    )];
+    out.extend(segments.into_iter().skip(hit));
+    out
+}
+
+/// 結果の日付。`created_at` は UTC の naive 値なので、タイムラインと同じく `tz`（端末のタイムゾーン）に直す。
+pub fn result_day(created_at: &str, tz: &jiff::tz::TimeZone) -> String {
+    created_at
+        .parse::<jiff::civil::DateTime>()
+        .ok()
+        .and_then(|at| at.to_zoned(jiff::tz::TimeZone::UTC).ok())
+        .map(|at| at.with_time_zone(tz.clone()).date().to_string())
+        .unwrap_or_else(|| created_at.get(..10).unwrap_or(created_at).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_first_hit_keeps_a_late_hit_in_view() {
+        let text = format!("…{}会議の資料", "あ".repeat(40));
+        let segments = focus_first_hit(highlight_segments(&text, &["会議".to_string()]), 74);
+        let shown: usize = segments
+            .iter()
+            .take_while(|(_, hit)| !hit)
+            .map(|(text, _)| unicode_width::UnicodeWidthStr::width(text.as_str()))
+            .sum();
+        assert!(shown + 4 <= 74, "{segments:?}");
+        assert!(segments[0].0.starts_with('…'), "{segments:?}");
+        assert_eq!(segments[1], ("会議".to_string(), true));
+        // 収まるなら変えない。
+        let short = highlight_segments("明日の会議", &["会議".to_string()]);
+        assert_eq!(focus_first_hit(short.clone(), 74), short);
+    }
+
+    #[test]
+    fn result_day_uses_the_terminal_time_zone() {
+        let jst = jiff::tz::TimeZone::fixed(jiff::tz::offset(9));
+        assert_eq!(result_day("2026-11-21T23:30:00.000", &jst), "2026-11-22");
+        assert_eq!(result_day("2026-11-21T08:00:00", &jst), "2026-11-21");
+        assert_eq!(
+            result_day("2026-11-21T23:30:00.000", &jiff::tz::TimeZone::UTC),
+            "2026-11-21"
+        );
+        assert_eq!(result_day("壊れた値", &jst), "壊れた値");
+    }
 
     #[test]
     fn highlight_segments_marks_hits_case_insensitively_and_prefers_longer_terms() {

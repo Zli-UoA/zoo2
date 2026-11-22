@@ -1,12 +1,25 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { highlightSegments, searchTerms } from "./searchHighlight";
+import { highlightSegments, searchQueryProblem, searchTerms } from "./searchHighlight";
 
 describe("searchTerms", () => {
   it("splits on whitespace like the server, without duplicates, up to 5 terms", () => {
     expect(searchTerms("  検索　テスト 検索\tfoo ")).toEqual(["検索", "テスト", "foo"]);
     expect(searchTerms("a b c d e f g")).toEqual(["a", "b", "c", "d", "e"]);
     expect(searchTerms("   ")).toEqual([]);
+  });
+});
+
+describe("searchQueryProblem", () => {
+  it("rejects what the server's parse_terms rejects", () => {
+    expect(searchQueryProblem("a b c d e")).toBeNull();
+    expect(searchQueryProblem("a b c d e a")).toBeNull();
+    expect(searchQueryProblem("how to set up dev server")).toBe("tooManyTerms");
+    expect(searchQueryProblem("x".repeat(100))).toBeNull();
+    expect(searchQueryProblem(`https://example.com/${"x".repeat(81)}`)).toBe("termTooLong");
+    // 文字数はコードポイントで数える（サーバーの chars().count() と同じ）。
+    expect(searchQueryProblem("🐘".repeat(100))).toBeNull();
+    expect(searchQueryProblem("")).toBeNull();
   });
 });
 

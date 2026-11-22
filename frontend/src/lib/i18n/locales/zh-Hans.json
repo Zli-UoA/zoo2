@@ -1871,6 +1871,8 @@
     "loading": "正在搜索…",
     "loadError": "搜索失败。",
     "retry": "重试",
+    "tooManyTerms": "最多可以搜索 {{max}} 个词。请减少词数。",
+    "termTooLong": "每个词最多 {{max}} 个字符。请缩短该词。",
     "encryptedNote": "加密频道不在搜索范围内。",
     "openNav": "搜索",
     "inThread": "子线程回复",
@@ -1890,5 +1892,31 @@
       "before": "结束日期",
       "reset": "重置条件"
     }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 个未读会话待查看",
+    "navUnread_other": "{{count}} 个未读会话待查看",
+    "title": "未读消息速览",
+    "close": "结束",
+    "count_one": "{{count}} 条未读消息",
+    "count_other": "{{count}} 条未读消息",
+    "overCount_one": "{{count}}+ 条未读消息",
+    "overCount_other": "{{count}}+ 条未读消息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "标为已读",
+    "keepUnread": "保持未读并前往下一条",
+    "readError": "无法标为已读，请重试",
+    "loadError": "无法加载未读会话",
+    "retry": "重试",
+    "loading": "正在加载未读会话",
+    "empty": "没有未读会话",
+    "emptyDescription": "有新消息时再回来查看",
+    "complete": "全部看完",
+    "summary": "已读 {{read}} 个 · 保持未读 {{skipped}} 个",
+    "refresh": "刷新",
+    "conversation": "会话",
+    "unreadTooOld": "部分较早的未读消息仍在加载范围外。请先加载更多再标为已读。",
+    "loadMore": "加载更多",
+    "unreadChanged": "阅读期间有新的未读消息。请保持此会话未读并继续。"
   }
 }

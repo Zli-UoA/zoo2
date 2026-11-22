@@ -1871,6 +1871,8 @@
     "loading": "검색중…",
     "loadError": "검색하지 못하였습니다.",
     "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할수 있습니다. 단어를 줄여주십시오.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할수 있습니다. 단어를 짧게 줄여주십시오.",
     "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
     "openNav": "검색",
     "inThread": "타래 답글",
@@ -1890,5 +1892,31 @@
       "before": "마감날자",
       "reset": "조건 초기화"
     }
+  },
+  "catchUp": {
+    "navUnread_one": "안 읽은 대화 {{count}}개",
+    "navUnread_other": "안 읽은 대화 {{count}}개",
+    "title": "안 읽은 메시지 확인",
+    "close": "닫기",
+    "count_one": "읽지 않은 메시지 {{count}}개",
+    "count_other": "읽지 않은 메시지 {{count}}개",
+    "overCount_one": "읽지 않은 메시지 {{count}}개 이상",
+    "overCount_other": "읽지 않은 메시지 {{count}}개 이상",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "읽음으로 표시",
+    "keepUnread": "읽지 않고 다음으로",
+    "readError": "읽음으로 표시할 수 없습니다. 다시 시도해 주세요.",
+    "loadError": "안 읽은 대화를 불러올 수 없습니다",
+    "retry": "다시 시도",
+    "loading": "안 읽은 대화를 불러오는 중",
+    "empty": "안 읽은 대화가 없습니다",
+    "emptyDescription": "새 메시지가 오면 다시 확인해 주세요",
+    "complete": "모두 확인했습니다",
+    "summary": "읽음 {{read}}개 · 읽지 않음 {{skipped}}개",
+    "refresh": "새로 고침",
+    "conversation": "대화",
+    "unreadTooOld": "이전 안 읽은 메시지가 아직 범위 밖에 있습니다. 더 불러온 뒤 읽음으로 표시하세요.",
+    "loadMore": "더 불러오기",
+    "unreadChanged": "읽는 동안 새로운 안 읽은 메시지가 도착했습니다. 이 대화는 읽지 않은 상태로 다음으로 넘어가세요."
   }
 }

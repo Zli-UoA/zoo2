@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
-import { expect, screen, userEvent, waitFor, within } from "storybook/test";
+import { expect, fireEvent, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { userAvatarHandler } from "../../../../.storybook/avatar-fixtures";
 import {
@@ -268,6 +268,30 @@ export const Highlight: Story = {
   }),
 };
 
+/** 本文を押しても開く。`AppShell` と同じく、画面全体が `<main tabIndex={-1}>` の中にあっても。 */
+export const OpenFromRow: Story = {
+  decorators: [
+    (Story) => (
+      <main tabIndex={-1}>
+        <Story />
+      </main>
+    ),
+  ],
+  play: playForImplementation(async () => {
+    const region = await results();
+    const row = region.getByRole("list", { name: "すべて" }).children[0] as HTMLElement;
+    const destination = within(row).getByRole("link");
+    const navigate = fn((event: Event) => event.preventDefault());
+    destination.addEventListener("click", navigate);
+    try {
+      await userEvent.click(within(row).getByText(/明日の/));
+      await expect(navigate).toHaveBeenCalledTimes(1);
+    } finally {
+      destination.removeEventListener("click", navigate);
+    }
+  }),
+};
+
 /** 続きは利用者の操作でだけ読み、前の応答のカーソルを送る。 */
 export const LoadOlder: Story = {
   play: playForImplementation(async () => {
@@ -325,6 +349,68 @@ export const Filters: Story = {
     await expect(region.getByRole("combobox", { name: "期間" })).toHaveValue("anytime");
     await expect(region.queryByRole("button", { name: "条件をリセット" })).toBeNull();
     await expect(requests).toHaveLength(before);
+  }),
+};
+
+/** サーバーが拒否する語数・文字数は送らず、理由を示す。再試行は出さない。 */
+export const TooManyTerms: Story = {
+  parameters: { router: { initialEntries: ["/search"] } },
+  play: playForImplementation(async () => {
+    const region = within(await screen.findByRole("region", { name: regionName }));
+    await userEvent.type(region.getByRole("searchbox"), "how to set up dev server{Enter}");
+    await expect(await region.findByRole("alert")).toHaveTextContent(
+      "検索できる語は 5 個までです。",
+    );
+    await expect(region.queryByRole("button", { name: "再試行" })).toBeNull();
+    await expect(requests).toHaveLength(0);
+    // 入力を直すと理由は消える。
+    await userEvent.type(region.getByRole("searchbox"), "{Backspace}");
+    await expect(region.queryByRole("alert")).toBeNull();
+  }),
+};
+
+/** URL で届いた長すぎる語も送らない。 */
+export const TermTooLong: Story = {
+  parameters: { router: { initialEntries: [`/search?q=${"x".repeat(101)}`] } },
+  play: playForImplementation(async () => {
+    const region = within(await screen.findByRole("region", { name: regionName }));
+    await expect(await region.findByRole("alert")).toHaveTextContent(
+      "1 つの語は 100 文字までです。",
+    );
+    await expect(region.queryByRole("button", { name: "再試行" })).toBeNull();
+    await expect(requests).toHaveLength(0);
+  }),
+};
+
+/** 日付は入力中には検索せず、Enter か入力欄を離れたときに 1 回だけ検索する。空にしても入力欄は残る。 */
+export const CustomDates: Story = {
+  parameters: { router: { initialEntries: ["/search?q=会議&after=2026-11-01"] } },
+  play: playForImplementation(async () => {
+    const region = await results();
+    const after = region.getByLabelText("開始日");
+    const end = region.getByLabelText("終了日");
+    const before = requests.length;
+    // 年の入力途中の値（ブラウザーは有効な日付として通知する）では検索しない。
+    await fireEvent.change(after, { target: { value: "0002-11-01" } });
+    await fireEvent.change(after, { target: { value: "2025-11-01" } });
+    await expect(requests).toHaveLength(before);
+    await fireEvent.keyDown(after, { key: "Enter" });
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toBe("2025-11-01"));
+    await expect(requests).toHaveLength(before + 1);
+    await fireEvent.change(end, { target: { value: "2026-11-21" } });
+    await expect(requests).toHaveLength(before + 1);
+    await fireEvent.focusOut(end);
+    // 終了日はその日を含む（API の before は翌日）。
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("before")).toBe("2026-11-22"));
+    // 日付を空にしても、日付の指定は表示したまま。
+    await fireEvent.change(after, { target: { value: "" } });
+    await fireEvent.focusOut(after);
+    await fireEvent.change(end, { target: { value: "" } });
+    await fireEvent.focusOut(end);
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("before")).toBeNull());
+    await expect(requests.at(-1)!.searchParams.get("after")).toBeNull();
+    await expect(region.getByRole("combobox", { name: "期間" })).toHaveValue("custom");
+    await expect(region.getByLabelText("開始日")).toBeVisible();
   }),
 };
 

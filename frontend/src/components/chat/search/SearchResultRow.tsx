@@ -25,6 +25,7 @@ import {
   NotificationTimestamp,
 } from "../notifications/NotificationCard";
 import { isFileItem, searchResultLink, type SearchItem } from "./globalSearch";
+import { isNestedControlClick } from "../../../lib/rowClick";
 
 /** 検索結果の 1 件。通知カードと同じ枠・アバター・日時で、行のどこを押しても開く。 */
 export function SearchResultRow({
@@ -78,8 +79,7 @@ export function SearchResultRow({
     // 通知カードと同じく、本物のリンクをキーボードの対象に残し、選択中の文字やリンクは邪魔しない。
     if (
       event.defaultPrevented ||
-      !(event.target instanceof Element) ||
-      event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
+      isNestedControlClick(event) ||
       (window.getSelection()?.toString().length ?? 0) > 0
     )
       return;

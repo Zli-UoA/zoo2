@@ -1871,6 +1871,8 @@
     "loading": "搜尋中…",
     "loadError": "無法搜尋。",
     "retry": "重試",
+    "tooManyTerms": "最多可以搜尋 {{max}} 個詞。請減少詞數。",
+    "termTooLong": "每個詞最多 {{max}} 個字元。請縮短該詞。",
     "encryptedNote": "加密頻道不在搜尋範圍內。",
     "openNav": "搜尋",
     "inThread": "子討論回覆",
@@ -1890,5 +1892,31 @@
       "before": "結束日期",
       "reset": "重設條件"
     }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 個未讀對話待查看",
+    "navUnread_other": "{{count}} 個未讀對話待查看",
+    "title": "未讀訊息速覽",
+    "close": "結束",
+    "count_one": "{{count}} 則未讀訊息",
+    "count_other": "{{count}} 則未讀訊息",
+    "overCount_one": "{{count}}+ 則未讀訊息",
+    "overCount_other": "{{count}}+ 則未讀訊息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "標為已讀",
+    "keepUnread": "保持未讀並前往下一則",
+    "readError": "無法標為已讀，請再試一次",
+    "loadError": "無法載入未讀對話",
+    "retry": "重試",
+    "loading": "正在載入未讀對話",
+    "empty": "沒有未讀對話",
+    "emptyDescription": "有新訊息時再回來查看",
+    "complete": "全部看完",
+    "summary": "已讀 {{read}} 個 · 保持未讀 {{skipped}} 個",
+    "refresh": "重新整理",
+    "conversation": "對話",
+    "unreadTooOld": "部分較舊的未讀訊息仍在讀取範圍外。請先載入更多再標為已讀。",
+    "loadMore": "載入更多",
+    "unreadChanged": "閱讀期間有新的未讀訊息。請保持此對話未讀並繼續。"
   }
 }

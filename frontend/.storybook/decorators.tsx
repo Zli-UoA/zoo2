@@ -15,6 +15,7 @@ import { LocaleProvider } from "../src/components/i18n/LocaleProvider";
 import { ThemeProvider } from "../src/components/theme/ThemeProvider";
 import { THEME_STORAGE_KEY, type Theme } from "../src/components/theme/theme";
 import { NotificationsProvider } from "../src/hooks/useUnifiedNotifications";
+import { UnreadProvider } from "../src/hooks/useUnread";
 import { CollectionsProvider } from "../src/lib/electric/collections-context";
 import { LOCALE_STORAGE_KEY, type Locale } from "../src/lib/i18n/locale";
 import { createStoryCollections, storyCollections, type StoryCollectionsInput } from "./fixtures";
@@ -33,7 +34,9 @@ function Collections({
   return (
     <CollectionsProvider value={bundle}>
       <HomeLiveProvider>
-        <NotificationsProvider>{children}</NotificationsProvider>
+        <NotificationsProvider>
+          <UnreadProvider>{children}</UnreadProvider>
+        </NotificationsProvider>
       </HomeLiveProvider>
     </CollectionsProvider>
   );
@@ -83,6 +86,7 @@ export function StoryRouter({
       path: "search",
       validateSearch: (search: Record<string, unknown>) => search,
     });
+    const catchUpRoute = createRoute({ getParentRoute: () => rootRoute, path: "catch-up" });
     const appRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps/$appId" });
     const consentRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps-authorize" });
     return createRouter({
@@ -94,6 +98,7 @@ export function StoryRouter({
         settingsRoute,
         notificationsRoute,
         searchRoute,
+        catchUpRoute,
         appRoute,
         consentRoute,
       ]),
