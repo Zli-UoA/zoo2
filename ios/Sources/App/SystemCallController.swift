@@ -26,9 +26,15 @@ extension CXCallController: SystemCallRequesting {}
 @MainActor
 final class SystemCallController: NSObject {
     private enum Phase { case ringing, answering, connected }
+    enum AudioChange {
+        case prepare(active: Bool)
+        case activate(AVAudioSession)
+        case deactivate(AVAudioSession?, release: Bool)
+    }
     private let provider: any SystemCallReporting
     private let callController: any SystemCallRequesting
     private let configureAudio: @MainActor () throws -> Void
+    private let updateAudio: @MainActor (AudioChange) -> Void
     private let loadChannel: @MainActor (any ChatClient, String) async throws -> Channel
     private let beginBackgroundTask: (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier
     private let endBackgroundTask: (UIBackgroundTaskIdentifier) -> Void
@@ -129,6 +135,21 @@ final class SystemCallController: NSObject {
 
     init(provider: any SystemCallReporting, callController: any SystemCallRequesting = CXCallController(),
          configureAudio: @escaping @MainActor () throws -> Void = NativeCallMedia.prepareSystemAudio,
+         updateAudio: @escaping @MainActor (AudioChange) -> Void = { change in
+             let audio = RTCAudioSession.sharedInstance()
+             switch change {
+             case .prepare(let active):
+                 audio.useManualAudio = true
+                 audio.isAudioEnabled = active
+             case .activate(let session):
+                 audio.audioSessionDidActivate(session)
+                 audio.isAudioEnabled = true
+             case .deactivate(let session, let release):
+                 audio.isAudioEnabled = false
+                 if let session { audio.audioSessionDidDeactivate(session) }
+                 if release { audio.useManualAudio = false }
+             }
+         },
          loadChannel: @escaping @MainActor (any ChatClient, String) async throws -> Channel = { try await $0.channel(id: $1) },
          beginBackgroundTask: @escaping (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier = {
              UIApplication.shared.beginBackgroundTask(withName: "着信への応答準備", expirationHandler: $0)
@@ -137,6 +158,7 @@ final class SystemCallController: NSObject {
         self.provider = provider
         self.callController = callController
         self.configureAudio = configureAudio
+        self.updateAudio = updateAudio
         self.loadChannel = loadChannel
         self.beginBackgroundTask = beginBackgroundTask
         self.endBackgroundTask = endBackgroundTask
@@ -486,11 +508,8 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
         if hadCall { workspace?.calls.finish() }
         workspace?.calls.setSystemAudioActive(false)
         guard hadCall || audioActivated else { return }
-        let audio = RTCAudioSession.sharedInstance()
-        audio.isAudioEnabled = false
-        if audioActivated { audio.audioSessionDidDeactivate(AVAudioSession.sharedInstance()) }
+        updateAudio(.deactivate(audioActivated ? AVAudioSession.sharedInstance() : nil, release: true))
         audioActivated = false
-        audio.useManualAudio = false
     }
 
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
@@ -548,9 +567,7 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
                 guard self.workspace === workspace, workspace.active, workspace.calls.channel == nil else {
                     end(reason: .failed); return
                 }
-                let audio = RTCAudioSession.sharedInstance()
-                audio.useManualAudio = true
-                audio.isAudioEnabled = audioActivated
+                updateAudio(.prepare(active: audioActivated))
                 guard workspace.calls.start(channel: channel, invitationID: call.invitation.id, systemAudio: true) != nil else {
                     end(reason: .failed); return
                 }
@@ -597,9 +614,7 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         guard isManagingCall else { return }
         audioActivated = true
-        let audio = RTCAudioSession.sharedInstance()
-        audio.audioSessionDidActivate(audioSession)
-        audio.isAudioEnabled = true
+        updateAudio(.activate(audioSession))
         workspace?.calls.setSystemAudioActive(true)
         if phase == .connected { finishAnswerBackgroundTask() }
     }
@@ -607,9 +622,6 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         audioActivated = false
         workspace?.calls.setSystemAudioActive(false)
-        let audio = RTCAudioSession.sharedInstance()
-        audio.isAudioEnabled = false
-        audio.audioSessionDidDeactivate(audioSession)
-        if !isManagingCall { audio.useManualAudio = false }
+        updateAudio(.deactivate(audioSession, release: !isManagingCall))
     }
 }

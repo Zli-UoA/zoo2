@@ -81,7 +81,7 @@ struct OutgoingCallTests {
                 user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
             controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {
                 if audioFailure { throw ZooError.invalidResponse }
-            })
+            }, updateAudio: { _ in })
             controller.setForeground(false)
             controller.connect(workspace)
         }
@@ -333,6 +333,9 @@ struct OutgoingCallTests {
 struct IncomingCallTests {
     @MainActor private final class AnswerPreparation {
         var configured = false
+        var audioPreparations: [Bool] = []
+        var audioActivations = 0
+        var audioDeactivations = 0
         var backgroundStarts = 0
         var backgroundEnds = 0
         var expiration: (@MainActor @Sendable () -> Void)?
@@ -373,6 +376,12 @@ struct IncomingCallTests {
             controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {
                 preparation.configured = true
                 if audioFailure { throw ZooError.invalidResponse }
+            }, updateAudio: { change in
+                switch change {
+                case .prepare(let active): preparation.audioPreparations.append(active)
+                case .activate: preparation.audioActivations += 1
+                case .deactivate: preparation.audioDeactivations += 1
+                }
             }, loadChannel: loadChannel, beginBackgroundTask: { expired in
                 preparation.backgroundStarts += 1
                 preparation.expiration = expired
@@ -429,6 +438,7 @@ struct IncomingCallTests {
         let context = try AnswerContext(payload: payload)
         defer {
             context.controller.provider(context.native, didDeactivate: AVAudioSession.sharedInstance())
+            #expect(context.preparation.audioDeactivations == 1)
             context.close()
         }
         await context.receive()
@@ -451,9 +461,29 @@ struct IncomingCallTests {
             context.controller.provider(context.native, didActivate: AVAudioSession.sharedInstance())
         }
         #expect(context.preparation.backgroundEnds == 1)
+        #expect(context.preparation.audioActivations == 1)
+        #expect(context.preparation.audioPreparations == [audioActivatesFirst])
         context.controller.provider(context.native, perform: CXEndCallAction(call: context.call.id))
         #expect(context.preparation.backgroundEnds == 1 && context.media.closed)
         #expect(!context.controller.isManagingCall && context.calls.channel == nil)
+    }
+
+    @Test("CallKitのリセットは音声の有効化前後どちらでも入室と音声管理を終了する", arguments: [false, true])
+    func resetsAnswerAudio(activated: Bool) async throws {
+        let context = try AnswerContext(payload: payload)
+        defer { context.close() }
+        await context.receive()
+        let action = try await context.requestAnswer()
+        context.controller.provider(context.native, perform: action)
+        var progress = context.progress.stream.makeAsyncIterator()
+        try #require(await progress.next() == "入室")
+        if activated { context.controller.provider(context.native, didActivate: AVAudioSession.sharedInstance()) }
+        context.controller.providerDidReset(context.native)
+        #expect(context.preparation.audioPreparations == [false])
+        #expect(context.preparation.audioActivations == (activated ? 1 : 0))
+        #expect(context.preparation.audioDeactivations == 1)
+        #expect(!context.controller.isManagingCall && context.calls.channel == nil && context.media.closed)
+        #expect(context.preparation.backgroundEnds == 1)
     }
 
     @Test("応答の音声設定・マイク許可が失敗したら着信と実行時間を解放する", arguments: [true, false])
@@ -572,7 +602,7 @@ struct IncomingCallTests {
         let workspace = WorkspaceStore(client: harness.client,
             user: Person(id: call.userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
         let reporting = FakeCallReporting(), requesting = FakeCallRequesting()
-        let controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {})
+        let controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {}, updateAudio: { _ in })
         controller.setForeground(false)
         controller.connect(workspace)
         let native = CXProvider(configuration: CXProviderConfiguration())
@@ -625,7 +655,7 @@ struct IncomingCallTests {
             user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
         let reporting = FakeCallReporting()
         if reportFails { reporting.failure = ZooError.invalidResponse }
-        let controller = SystemCallController(provider: reporting)
+        let controller = SystemCallController(provider: reporting, configureAudio: {}, updateAudio: { _ in })
         controller.setForeground(false)
         controller.connect(workspace)
         defer { controller.disconnect(); workspace.shutdown() }
@@ -662,7 +692,7 @@ struct IncomingCallTests {
             user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
         let reporting = FakeCallReporting()
         let requesting = FakeCallRequesting()
-        let controller = SystemCallController(provider: reporting, callController: requesting)
+        let controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {}, updateAudio: { _ in })
         controller.setForeground(false)
         controller.connect(workspace)
         defer { controller.disconnect(); workspace.shutdown() }
@@ -686,7 +716,7 @@ struct IncomingCallTests {
     @Test("ShapeとVoIPが同じ着信を届けても二重に鳴らさない")
     func deduplicates() async throws {
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         let call = try #require(IncomingCall(payload: payload))
         await withCheckedContinuation { continuation in
             controller.receive(call) { continuation.resume() }
@@ -701,7 +731,7 @@ struct IncomingCallTests {
     @Test("報告必須の重複VoIPを報告しても元の着信を終了しない")
     func reportsRequiredDuplicate() async throws {
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         let call = try #require(IncomingCall(payload: payload))
         await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
         provider.failure = NSError(domain: CXErrorDomainIncomingCall, code: CXErrorCodeIncomingCallError.callUUIDAlreadyExists.rawValue)
@@ -716,7 +746,7 @@ struct IncomingCallTests {
     @Test("前の通話の遅いタイムアウトで現在の着信を終了しない")
     func ignoresOldTimeout() async throws {
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         let call = try #require(IncomingCall(payload: payload))
         await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
         let native = CXProvider(configuration: CXProviderConfiguration())
@@ -732,7 +762,7 @@ struct IncomingCallTests {
         value["expires_at"] = Date.now.addingTimeInterval(-1).ISO8601Format()
         let call = try #require(IncomingCall(payload: value))
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         var completed = false
         await withCheckedContinuation { continuation in
             provider.onEnd = { provider.onEnd = nil; continuation.resume() }
@@ -749,7 +779,7 @@ struct IncomingCallTests {
         let first = try #require(IncomingCall(payload: payload))
         let second = try #require(IncomingCall(payload: payload))
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         await withCheckedContinuation { continuation in controller.receive(first) { continuation.resume() } }
         await withCheckedContinuation { continuation in
             provider.onEnd = { provider.onEnd = nil; continuation.resume() }
@@ -763,7 +793,7 @@ struct IncomingCallTests {
     func reportFailureAllowsInAppActions() async throws {
         let provider = FakeCallReporting()
         provider.failure = URLError(.notConnectedToInternet)
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         let call = try #require(IncomingCall(payload: payload))
         await withCheckedContinuation { continuation in controller.receive(call) { continuation.resume() } }
         #expect(!controller.isManagingCall)
@@ -786,7 +816,7 @@ struct IncomingCallTests {
         let workspace = WorkspaceStore(client: harness.client,
             user: Person(id: call.userID, user_name: "user", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         controller.setForeground(false)
         controller.connect(workspace)
         defer { controller.disconnect(); workspace.shutdown() }
@@ -817,7 +847,7 @@ struct IncomingCallTests {
         let workspace = WorkspaceStore(client: harness.client,
             user: Person(id: call.userID, user_name: "user", display_name: "利用者"), recentEmojiDefaults: nil)
         let provider = FakeCallReporting()
-        let controller = SystemCallController(provider: provider)
+        let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         controller.setForeground(false)
         controller.connect(workspace)
         #expect(counts.withLock { $0["shape"] } == 0)

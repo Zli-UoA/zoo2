@@ -66,6 +66,35 @@ struct SyncCacheTests {
         await #expect(throws: CancellationError.self) { try await cache.load("messages", lease: other) }
     }
 
+    @Test("通知削除の保存が失敗しても再起動後に隠し、新しい通知を保存した後はオフラインで復元する")
+    func revocationSurvivesFailedSaveAndRestart() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("test.store")
+        let fails = Mutex(false)
+        let cache = try await SyncCache.open(url: url, beforeSave: {
+            if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
+        for resource in resources { try await cache.store(Data("失効前の通知".utf8), resource: resource, lease: lease) }
+        try await cache.store(Data("別の情報".utf8), resource: "other", lease: lease)
+        fails.withLock { $0 = true }
+        await #expect(throws: CocoaError.self) { try await cache.revokeChannel(syncChannel, lease: lease) }
+        for resource in resources { #expect(try await cache.load(resource, lease: lease) == nil) }
+
+        let reopened = try await SyncCache.open(url: url)
+        let next = try await reopened.activate(connection: "connection", user: syncUser)
+        for resource in resources { #expect(try await reopened.load(resource, lease: next) == nil) }
+        #expect(try await reopened.load("other", lease: next) == Data("別の情報".utf8))
+        for resource in resources { try await reopened.store(Data("再取得後の通知".utf8), resource: resource, lease: next) }
+
+        let offline = try await SyncCache.open(url: url)
+        let restored = try await offline.activate(connection: "connection", user: syncUser)
+        for resource in resources { #expect(try await offline.load(resource, lease: restored) == Data("再取得後の通知".utf8)) }
+    }
+
     @Test("権限を失った会話と通知だけを削除する")
     func revokesChannel() async throws {
         let cache = try await SyncCache.open(inMemory: true)

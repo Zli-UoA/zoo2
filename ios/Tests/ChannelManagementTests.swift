@@ -98,6 +98,66 @@ struct ChannelManagementTests {
         #expect(writes.withLock { $0 } == ["edit", "archive"])
     }
 
+    @Test("一覧がアーカイブを確認した後に届く単件応答は、更新時刻が新しい場合だけ反映する",
+          arguments: [false, true], [false, true])
+    func delayedOpenAfterConfirmedArchive(newerResponse: Bool, initiallyUpdated: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        var original = channel
+        if !initiallyUpdated { original.updated_at = nil }
+        let initial = original
+        var archived = initial
+        archived.archive_at = "2026-11-20T00:00:03Z"
+        archived.updated_at = archived.archive_at
+        let confirmed = archived
+        var response = initial
+        if newerResponse {
+            response.channel_name = "別の端末で再開"
+            response.updated_at = "2026-11-20T00:00:04Z"
+        }
+        let fetched = response
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            switch request.url?.path {
+            case "/api/channels/\(initial.id)":
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                return (200, [:], try JSONEncoder().encode(fetched))
+            case "/api/channels/\(initial.id)/archive":
+                return (200, [:], try Self.envelope(confirmed))
+            case "/api/channels": return (200, [:], try JSONEncoder().encode([confirmed]))
+            case "/api/channel-read-states": return (200, [:], Data("[]".utf8))
+            case "/api/shapes/users":
+                return (200, ["electric-handle": "users", "electric-offset": "0_1"], Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
+            default: Issue.record("想定外の通信です"); return (500, [:], Data())
+            }
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        workspace.addAndOpen(initial)
+        let conversation = workspace.conversation(for: initial)
+        conversation.drafts["root"] = "下書き"
+        let opening = Task {
+            defer { started.continuation.finish() }
+            return await workspace.openMessage(channelID: initial.id, messageID: nil)
+        }
+        defer { opening.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        try await workspace.archiveChannel(initial)
+        await workspace.refresh()
+        try #require(workspace.error == nil && workspace.channels.first == confirmed)
+        release.continuation.finish()
+        #expect(await opening.value)
+        let expected = newerResponse ? fetched : confirmed
+        #expect(workspace.channels.first == expected)
+        #expect(conversation.channel == expected)
+        #expect(conversation.canPost == newerResponse)
+        #expect(conversation.drafts["root"] == "下書き")
+    }
+
     @Test("名前を変えない説明編集では予約名も送信し直さず、失敗後は元の表示を保つ")
     func descriptionOnlyFailure() async throws {
         let harness = try ChatHarness()

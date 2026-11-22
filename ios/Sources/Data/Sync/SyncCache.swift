@@ -10,9 +10,12 @@ actor SyncCache {
     private var blockedChannels: Set<String> = []
     private var notificationVersions: [String: UUID] = [:]
     private var blockedResources: Set<String> = []
+    private var blockedResourcesURL: URL?
+    private var beforeSave: (@Sendable () throws -> Void)?
     private var attachmentFiles: AttachmentDiskCache?
 
-    @concurrent static func open(inMemory: Bool = false, url: URL? = nil, attachmentDirectory: URL? = nil) async throws -> SyncCache {
+    @concurrent static func open(inMemory: Bool = false, url: URL? = nil, attachmentDirectory: URL? = nil,
+                                beforeSave: (@Sendable () throws -> Void)? = nil) async throws -> SyncCache {
         let schema = Schema([CachedSyncRecord.self, CachedSyncAccount.self])
         let configuration: ModelConfiguration
         if let url {
@@ -22,10 +25,24 @@ actor SyncCache {
                                                isStoredInMemoryOnly: inMemory, cloudKitDatabase: .none)
         }
         let cache = try SyncCache(modelContainer: ModelContainer(for: schema, configurations: configuration))
+        try await cache.configureRevocations(inMemory && url == nil ? nil : configuration.url.appendingPathExtension("revocations"),
+                                             beforeSave: beforeSave)
         let directory = attachmentDirectory ?? url.map { $0.appendingPathExtension("attachments") }
             ?? (inMemory ? nil : URL.cachesDirectory.appendingPathComponent("ZooAttachments-v1"))
         await cache.configureAttachments(directory)
         return cache
+    }
+
+    private func configureRevocations(_ url: URL?, beforeSave: (@Sendable () throws -> Void)?) throws {
+        blockedResourcesURL = url
+        self.beforeSave = beforeSave
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+        blockedResources = try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: url))
+    }
+
+    private func persistRevocations() throws {
+        guard let blockedResourcesURL else { return }
+        try JSONEncoder().encode(blockedResources).write(to: blockedResourcesURL, options: .atomic)
     }
 
     private func configureAttachments(_ directory: URL?) {
@@ -97,7 +114,7 @@ actor SyncCache {
             modelContext.insert(CachedSyncRecord(account: lease.account, resource: resource, channelID: channelID, payload: payload))
         }
         try save()
-        blockedResources.remove(id)
+        if blockedResources.remove(id) != nil { try persistRevocations() }
     }
 
     func remove(_ resource: String, lease: SyncLease) throws {
@@ -158,6 +175,8 @@ actor SyncCache {
         let resources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
         let ids = resources.map { account + "|" + $0 }
         blockedResources.formUnion(ids)
+        // DB の保存が失敗しても、再起動後に削除前の通知を復元しない。
+        try persistRevocations()
         try? attachmentFiles?.remove(account: account, channelID: channelID)
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
         // 通知の本文にも会話の情報が含まれるため、通知の控えも再取得する。
@@ -166,6 +185,7 @@ actor SyncCache {
         }
         try save()
         blockedResources.subtract(ids)
+        try persistRevocations()
     }
 
     func authorizeChannel(_ channelID: String, version: UUID, lease: SyncLease) throws {
@@ -208,7 +228,7 @@ actor SyncCache {
     }
 
     private func save() throws {
-        do { try modelContext.save() }
+        do { try beforeSave?(); try modelContext.save() }
         catch { modelContext.rollback(); throw error }
     }
 }

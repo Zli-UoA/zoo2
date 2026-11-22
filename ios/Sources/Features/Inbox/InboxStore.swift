@@ -29,6 +29,7 @@ final class InboxStore {
     @ObservationIgnored private var gap: (anchors: Set<String>, resume: String?)?
     @ObservationIgnored private var fetching = false
     @ObservationIgnored private var fetchWaiters: [CheckedContinuation<Void, Never>] = []
+    var pendingRefreshCount: Int { fetchWaiters.count }
     @ObservationIgnored private var refreshRequested = false
     @ObservationIgnored private var moreRequested = false
     @ObservationIgnored private var readRevision = 0

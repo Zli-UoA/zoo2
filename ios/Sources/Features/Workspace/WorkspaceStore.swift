@@ -338,6 +338,12 @@ final class WorkspaceStore {
     }
 
     private func reconcileChannel(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {
+        // 書き込みの同期確認後も、先に始まった単件取得で表示を巻き戻さない。
+        if !confirmsWrite, let current = channels.first(where: { $0.id == incoming.id }),
+           let currentDate = current.updated_at.flatMap(ZooDate.parse),
+           currentDate > (incoming.updated_at.flatMap(ZooDate.parse) ?? .distantPast) {
+            return current
+        }
         guard let written = channelWrites[incoming.id] else { return incoming }
         let caughtUp = incoming.updated_at.flatMap(ZooDate.parse).map { date in
             written.updated_at.flatMap(ZooDate.parse).map { date >= $0 } ?? false

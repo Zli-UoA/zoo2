@@ -1,10 +1,58 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Zoo
 
 @MainActor
 @Suite("一覧から前の会話へ戻る")
 struct WorkspaceNavigationTests {
+    @Test("メンバー取得中に会話を離れて戻っても要求を共有し、ログアウト後は反映しない", arguments: [false, true])
+    func sharesMembersAcrossVisits(logout: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let channelID = "11111111-1111-4111-8111-111111111111"
+        let member = Person(id: "33333333-3333-4333-8333-333333333333", user_name: "member", display_name: "メンバー")
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let revisited = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish(); revisited.continuation.finish() }
+        let requests = Mutex(0)
+        harness.stub { request in
+            if request.url?.path == "/api/users/\(member.id)" { return (200, [:], try JSONEncoder().encode(member)) }
+            #expect(request.url?.path == "/api/shapes/channel_users")
+            #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "channel_id", value: channelID)) == true)
+            requests.withLock { $0 += 1 }
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            let events: [[String: Any]] = [
+                ["key": "member", "value": ["channel_id": channelID, "user_id": member.id], "headers": ["operation": "insert"]],
+                ["headers": ["control": "up-to-date"]]
+            ]
+            return (200, ["electric-handle": "members", "electric-offset": "1_0"], try JSONSerialization.data(withJSONObject: events))
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: member, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let first = Task { await workspace.loadMembers(channelID: channelID) }
+        defer { first.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        first.cancel()
+        let second = Task {
+            revisited.continuation.yield(())
+            await workspace.loadMembers(channelID: channelID)
+        }
+        defer { second.cancel() }
+        var revisit = revisited.stream.makeAsyncIterator()
+        try #require(await revisit.next() != nil)
+        if logout { workspace.shutdown() }
+        release.continuation.finish()
+        await first.value
+        await second.value
+        #expect(requests.withLock { $0 } == 1)
+        #expect(workspace.channelMembers[channelID] == (logout ? nil : [member]))
+        #expect(workspace.memberErrors[channelID] == nil)
+    }
+
     @Test("一覧へ戻った後は最後のチャンネルを開き、下書きとStoreを維持する")
     func reopensMostRecentChannel() async throws {
         let client = PreviewChatClient()

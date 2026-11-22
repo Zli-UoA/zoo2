@@ -6,6 +6,47 @@ import Testing
 @MainActor
 @Suite("アプリ内通知", .timeLimit(.minutes(1)))
 struct InboxTests {
+    @Test("旧取得のキャンセル後も待機中の更新が連合通知を取得する")
+    func pendingRefreshSurvivesCancellation() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let requests = Mutex(0)
+        harness.stub { request in
+            if request.url?.path == "/api/shapes/notifications" {
+                return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            }
+            #expect(request.url?.path == "/api/activitypub/notifications")
+            let attempt = requests.withLock { $0 += 1; return $0 }
+            if attempt == 1 {
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                throw CancellationError()
+            }
+            return (200, [:], Data(#"{"items":[],"unread_count":7,"next_cursor":null}"#.utf8))
+        }
+        let inbox = InboxStore(client: harness.client, userID: "u")
+        defer { inbox.shutdown() }
+        let first = Task { await inbox.refresh() }
+        defer { first.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        let second = Task { await inbox.refresh() }
+        defer { second.cancel() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while inbox.pendingRefreshCount == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(inbox.pendingRefreshCount == 1)
+        first.cancel()
+        release.continuation.finish()
+        await first.value
+        await second.value
+        #expect(requests.withLock { $0 } == 2)
+        #expect(inbox.pendingRefreshCount == 0)
+        #expect(inbox.unreadCount == 7 && inbox.error == nil)
+    }
+
     @Test("Watchの自動更新はiPhone側の操作エラーを消さず、手動更新で解除する")
     func automaticRefreshKeepsActionError() async throws {
         let harness = try ChatHarness()
