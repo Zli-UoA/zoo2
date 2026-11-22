@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { noteEncryptedChannel } from "../lib/e2ee/encryptionGuard";
 import { useEncryptedDisplay } from "./useEncryptedDisplay";
@@ -18,13 +18,17 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-it("treats a previously recorded channel as encrypted even when the server says false", async () => {
+it("treats a previously recorded channel as encrypted even after the worker answers false", async () => {
   noteEncryptedChannel("c1");
-  mocks.request.mockResolvedValue(false);
+  let resolveWorker!: (value: boolean) => void;
+  mocks.request.mockImplementation(() => new Promise((resolve) => (resolveWorker = resolve)));
   const { result } = renderHook(() =>
     useEncryptedDisplay({ channelId: "c1", encrypted: false, hasCiphertext: false }),
   );
-  await waitFor(() => expect(result.current.treatAsEncrypted).toBe(true));
+  await act(async () => {
+    resolveWorker(false);
+  });
+  expect(result.current.treatAsEncrypted).toBe(true);
   expect(result.current.downgraded).toBe(true);
 });
 
