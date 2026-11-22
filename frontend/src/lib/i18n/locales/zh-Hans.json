@@ -1878,6 +1878,7 @@
     "refresh": "刷新",
     "conversation": "会话",
     "unreadTooOld": "部分较早的未读消息仍在加载范围外。请先加载更多再标为已读。",
-    "loadMore": "加载更多"
+    "loadMore": "加载更多",
+    "unreadChanged": "阅读期间有新的未读消息。请保持此会话未读并继续。"
   }
 }

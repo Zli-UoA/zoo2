@@ -44,7 +44,11 @@ export function CatchUpScreen() {
   const [writeError, setWriteError] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
-  const [rangeState, setRangeState] = useState({ ready: false, exhausted: false });
+  const [rangeState, setRangeState] = useState({
+    ready: false,
+    exhausted: false,
+    boundaryTooOld: false,
+  });
   const [isWriting, setIsWriting] = useState(false);
   const [boundary, setBoundary] = useState<{
     channelId: string;
@@ -71,7 +75,7 @@ export function CatchUpScreen() {
     setSkippedCount(0);
     setWriteError(false);
     setBoundary(null);
-    setRangeState({ ready: false, exhausted: false });
+    setRangeState({ ready: false, exhausted: false, boundaryTooOld: false });
     revisionAtStart.current = latestRevision.current;
   }, []);
 
@@ -128,7 +132,7 @@ export function CatchUpScreen() {
   const goNext = useCallback(() => {
     setWriteError(false);
     setBoundary(null);
-    setRangeState({ ready: false, exhausted: false });
+    setRangeState({ ready: false, exhausted: false, boundaryTooOld: false });
     setIndex((value) => value + 1);
   }, []);
 
@@ -147,9 +151,12 @@ export function CatchUpScreen() {
     headingRef.current?.focus();
   }, [index, queue]);
 
-  const onRangeReady = useCallback((ready: boolean, exhausted: boolean) => {
-    setRangeState({ ready, exhausted });
-  }, []);
+  const onRangeReady = useCallback(
+    (ready: boolean, exhausted: boolean, boundaryTooOld: boolean) => {
+      setRangeState({ ready, exhausted, boundaryTooOld });
+    },
+    [],
+  );
 
   const onBoundaryMessage = useCallback(
     (messageId: string | null, at: number | null) =>
@@ -279,7 +286,12 @@ export function CatchUpScreen() {
               loadOlderRef={loadOlderRef}
             />
           </div>
-          {rangeState.exhausted && !rangeState.ready ? (
+          {rangeState.boundaryTooOld ? (
+            <p role="status" className="border-t px-4 py-2 text-xs text-muted-foreground">
+              {t("catchUp.unreadChanged")}
+            </p>
+          ) : null}
+          {rangeState.exhausted && !rangeState.ready && !rangeState.boundaryTooOld ? (
             <div className="flex items-center justify-between gap-2 border-t px-4 py-2">
               <p role="status" className="text-xs text-muted-foreground">
                 {t("catchUp.unreadTooOld")}
@@ -301,6 +313,7 @@ export function CatchUpScreen() {
               disabled={
                 isWriting ||
                 !rangeState.ready ||
+                rangeState.boundaryTooOld ||
                 boundary?.channelId !== current.channel_id ||
                 !boundary.messageId
               }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -39,7 +39,7 @@ export function CatchUpMessagePage({
   encrypted?: boolean;
   firstUnreadAt: string | null;
   onBoundaryMessage: (messageId: string | null, createdAt: number | null) => void;
-  onRangeReady?: (ready: boolean, exhausted: boolean) => void;
+  onRangeReady?: (ready: boolean, exhausted: boolean, boundaryTooOld: boolean) => void;
   loadOlderRef?: MutableRefObject<(() => void) | null>;
 }) {
   const feed = useMessageFeed(channelId);
@@ -111,12 +111,14 @@ export function CatchUpMessagePage({
   }, [messages, firstUnreadAt, currentUserId]);
 
   const boundaryRef = useRef<{ id: string; at: number } | null>(null);
+  const [boundaryState, setBoundaryState] = useState<{ id: string; at: number } | null>(null);
   useEffect(() => {
     if (feed.isInitialSyncLoading || messages.length === 0) return;
     if (!boundaryRef.current) {
       const newest = messages[messages.length - 1];
       const at = parseUtcTimestamp(newest.created_at).getTime();
       boundaryRef.current = { id: newest.id, at };
+      setBoundaryState(boundaryRef.current);
       onBoundaryMessage(newest.id, at);
       return;
     }
@@ -128,6 +130,7 @@ export function CatchUpMessagePage({
       .find((row) => parseUtcTimestamp(row.created_at).getTime() <= boundaryRef.current!.at);
     if (fallback) {
       boundaryRef.current = { id: fallback.id, at: boundaryRef.current.at };
+      setBoundaryState(boundaryRef.current);
       onBoundaryMessage(fallback.id, boundaryRef.current.at);
     }
   }, [feed.isInitialSyncLoading, messages, onBoundaryMessage]);
@@ -171,13 +174,17 @@ export function CatchUpMessagePage({
     boundaryTime !== null &&
     oldestTime > boundaryTime &&
     (loadedPages.current >= MAX_UNREAD_PAGES || (!feed.hasOlder && !feed.isLoadingOlder));
+  // ページを開いた後に最初の未読が進んだ場合、古い境界をPOSTすると新しい未読を
+  // 飛ばしてしまう。この会話では既読操作を許可しない（未読のまま次へは使える）。
+  const boundaryTooOld =
+    boundaryTime !== null && boundaryState !== null && boundaryTime > boundaryState.at;
   const rangeReadyRef = useRef<string | null>(null);
   useEffect(() => {
-    const key = `${rangeReady}:${exhausted}`;
+    const key = `${rangeReady}:${exhausted}:${boundaryTooOld}`;
     if (rangeReadyRef.current === key) return;
     rangeReadyRef.current = key;
-    onRangeReady?.(rangeReady, exhausted);
-  }, [onRangeReady, rangeReady, exhausted]);
+    onRangeReady?.(rangeReady, exhausted, boundaryTooOld);
+  }, [onRangeReady, rangeReady, exhausted, boundaryTooOld]);
 
   return (
     <MessageDecryptionsProvider

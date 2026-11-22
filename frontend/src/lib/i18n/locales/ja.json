@@ -1878,6 +1878,7 @@
     "refresh": "更新",
     "conversation": "会話",
     "unreadTooOld": "古い未読がまだ範囲外です。もっと読んでから既読にしてください。",
-    "loadMore": "もっと読む"
+    "loadMore": "もっと読む",
+    "unreadChanged": "表示中に新しい未読が届きました。この会話は未読のまま次へ進んでください。"
   }
 }

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   providerProps: [] as Array<{ encrypted?: boolean }>,
   rangeReady: [] as boolean[],
   exhausted: [] as boolean[],
+  boundaryTooOld: [] as boolean[],
 }));
 
 const message = (id: string, created_at: string) => ({
@@ -85,6 +86,7 @@ afterEach(() => {
   mocks.providerProps = [];
   mocks.rangeReady = [];
   mocks.exhausted = [];
+  mocks.boundaryTooOld = [];
   mocks.loadOlder.mockReset();
 });
 
@@ -171,9 +173,10 @@ it("does not allow marking read before the oldest unread is inside the range", (
       channelId: "c1",
       firstUnreadAt: "2026-01-01T09:00:00Z",
       onBoundaryMessage: vi.fn(),
-      onRangeReady: (ready, exhausted) => {
+      onRangeReady: (ready, exhausted, boundaryTooOld) => {
         mocks.rangeReady.push(ready);
         mocks.exhausted.push(exhausted);
+        mocks.boundaryTooOld.push(boundaryTooOld);
       },
     }),
   );
@@ -187,14 +190,16 @@ it("does not allow marking read before the oldest unread is inside the range", (
       channelId: "c2",
       firstUnreadAt: "2026-01-01T11:00:00Z",
       onBoundaryMessage: vi.fn(),
-      onRangeReady: (ready, exhausted) => {
+      onRangeReady: (ready, exhausted, boundaryTooOld) => {
         mocks.rangeReady.push(ready);
         mocks.exhausted.push(exhausted);
+        mocks.boundaryTooOld.push(boundaryTooOld);
       },
     }),
   );
   expect(mocks.rangeReady.at(-1)).toBe(false);
   expect(mocks.exhausted.at(-1)).toBe(false);
+  expect(mocks.boundaryTooOld.at(-1)).toBe(true);
 
   // Both boundaries contain the first unread.
   mocks.rangeReady = [];
@@ -204,13 +209,15 @@ it("does not allow marking read before the oldest unread is inside the range", (
       channelId: "c3",
       firstUnreadAt: "2026-01-01T11:00:00Z",
       onBoundaryMessage: vi.fn(),
-      onRangeReady: (ready, exhausted) => {
+      onRangeReady: (ready, exhausted, boundaryTooOld) => {
         mocks.rangeReady.push(ready);
         mocks.exhausted.push(exhausted);
+        mocks.boundaryTooOld.push(boundaryTooOld);
       },
     }),
   );
   expect(mocks.rangeReady.at(-1)).toBe(true);
+  expect(mocks.boundaryTooOld.at(-1)).toBe(false);
 });
 
 it("loads older pages until the oldest unread timestamp is inside the range", async () => {

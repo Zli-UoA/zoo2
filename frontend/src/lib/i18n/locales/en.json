@@ -1878,6 +1878,7 @@
     "refresh": "Refresh",
     "conversation": "Conversation",
     "unreadTooOld": "Some older unread messages are still outside the loaded range. Load more before marking as read.",
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "unreadChanged": "New unread messages arrived while reading. Keep this conversation unread and continue."
   }
 }
