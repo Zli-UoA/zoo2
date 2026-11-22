@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
@@ -40,7 +40,8 @@ vi.mock("frimousse", async () => {
     defaultEmojiDataResolver: vi.fn(),
     EmojiPicker: {
       Root,
-      Search: () => null,
+      Search: ({ value, onChange, placeholder }: ComponentProps<"input">) =>
+        element("input", { type: "search", value, onChange, placeholder, "aria-label": placeholder }),
       Viewport: Passthrough,
       Loading: () => null,
       Empty: () => null,
@@ -109,13 +110,39 @@ describe("ReactionPicker", () => {
       ":party-parrot:",
     ]);
   });
+  it("searches custom emoji from the emoji tab with the shared search box", async () => {
+    await startMockServer();
+    mockServer.use(
+      http.get("*/api/emojis", () =>
+        HttpResponse.json([
+          {
+            name: "party-parrot",
+            url: "https://www.gstatic.com/party-parrot.png",
+            category: "Greetings",
+            aliases: ["挨拶"],
+          },
+        ]),
+      ),
+    );
+    const { onSelect } = renderPicker();
+    await userEvent.type(screen.getByRole("textbox", { name: "絵文字を検索" }), "挨拶");
+    await userEvent.click(await screen.findByRole("button", { name: ":party-parrot:" }));
+    expect(onSelect).toHaveBeenCalledWith(":party-parrot:");
+  });
+  it("shows the search box above the tabs and no description on the emoji tab", () => {
+    renderPicker();
+    const search = screen.getByRole("textbox", { name: "絵文字を検索" });
+    const tabs = screen.getByRole("tablist");
+    expect(search.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText("すべての絵文字から選べます。")).toBeNull();
+  });
   it("shows all tabs and selects an emoji while recording it as recent", async () => {
     const { onSelect, onOpenChange } = renderPicker();
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "絵文字",
-      "Emoji Kitchen",
       "カスタム絵文字",
+      "Emoji Kitchen",
     ]);
 
     await userEvent.click(screen.getByTestId("mock-emoji"));
