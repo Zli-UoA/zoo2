@@ -7,11 +7,10 @@ import { toast } from "sonner";
 import { forgetAttachmentUrl, resolveAttachmentUrl } from "../../../lib/api/attachmentUrls";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { formatAttachmentSize, mediaPreviewKind } from "../../../lib/attachments";
-import { DesktopDownloadDestinationError, DesktopDownloadLimitError } from "../../../lib/desktop";
+import { DesktopDownloadDestinationError, DesktopDownloadLimitError, desktopDownloadSettings } from "../../../lib/desktop";
 import {
   DesktopDownloadCancelledError,
   cancelDesktopDownload,
-  desktopDownloadSettings,
   desktopDownloadsAvailable,
   downloadBlobToDesktop,
   useDesktopDownloadState,
