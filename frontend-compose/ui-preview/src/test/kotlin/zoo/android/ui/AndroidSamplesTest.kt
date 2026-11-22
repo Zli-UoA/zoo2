@@ -268,7 +268,9 @@ class AndroidSamplesTest {
                     ui.onNodeWithContentDescription(":party:", useUnmergedTree = true).assertIsDisplayed()
                 }
                 if (name == "channels") {
-                    for (label in listOf("チャンネルを作成", "DMを作成")) {
+                    // The list has no search field; finding and creating channels start from the header's ＋.
+                    ui.onNodeWithText("チャンネルを探す").assertDoesNotExist()
+                    for (label in listOf("チャンネルを探す・作成", "チャンネルを作成", "DMを作成")) {
                         ui.onNodeWithContentDescription(label).assertHasClickAction()
                             .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
                     }
@@ -452,6 +454,14 @@ class AndroidSamplesTest {
             ))
         }
         ui.runOnIdle { screen = channels }
+        for (item in listOf("チャンネルを探す", "チャンネルを作成")) {
+            ui.onNodeWithContentDescription("チャンネルを探す・作成").performClick()
+            ui.onNodeWithText(item).performClick()
+            ui.onNodeWithText(item).assertDoesNotExist()
+        }
+        ui.runOnIdle {
+            check(actions.takeLast(2) == listOf(AndroidUiAction.Browse, AndroidUiAction.CreateChannel)) { actions.takeLast(2).toString() }
+        }
         ui.onNode(isSelectable() and hasText("検索")).performClick()
         ui.runOnIdle { screen = searchResults }
         ui.onNodeWithTag("global-search-field").performTextReplacement("会議")

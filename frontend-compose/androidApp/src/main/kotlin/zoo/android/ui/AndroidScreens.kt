@@ -26,6 +26,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -387,17 +389,31 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
     }
 }
 
+/** The header's ＋: find a channel to join, or create one. */
+@Composable
+private fun ChannelMenuButton(colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        UiIconButton(UiIcon.Add, "チャンネルを探す・作成", colors.foreground, { expanded = true })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = colors.background) {
+            listOf(
+                Triple("チャンネルを探す", UiIcon.Search, AndroidUiAction.Browse),
+                Triple("チャンネルを作成", UiIcon.Add, AndroidUiAction.CreateChannel),
+            ).forEach { (label, icon, action) ->
+                DropdownMenuItem(
+                    text = { Text(label, color = colors.foreground) },
+                    leadingIcon = { UiGlyph(icon, colors.secondary, AndroidControlSize.inlineIcon) },
+                    onClick = { expanded = false; dispatch(action) },
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    PageHeader(androidLabel("channels.title", "チャンネル"), colors)
+    PageHeader(androidLabel("channels.title", "チャンネル"), colors) { ChannelMenuButton(colors, dispatch) }
     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
-        item {
-            Text("チャンネルを探す",
-                Modifier.fillMaxWidth().background(colors.quietSurface, CircleShape)
-                    .heightIn(min = AndroidControlSize.target)
-                    .clickable(role = Role.Button) { dispatch(AndroidUiAction.Browse) }.padding(14.dp),
-                color = colors.foreground, fontSize = 15.sp)
-        }
         screen.sections.forEach { section ->
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
