@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 struct ConnectionSettings: Codable, Equatable, Sendable {
     var server = "https://zli.chat"
@@ -77,23 +78,46 @@ final class HTTPTransport: Sendable {
                 return result
             }
         }
-        let (bytes, rawResponse) = try await session.bytes(for: request)
-        defer { bytes.task.cancel() }
-        guard let response = rawResponse as? HTTPURLResponse else { throw ZooError.invalidResponse }
+        let state = Mutex((task: Optional<URLSessionDataTask>.none, cancelled: false))
         return try await withTaskCancellationHandler {
-            do {
-                var data = Data()
-                for try await byte in bytes { data.append(byte) }
-                try Task.checkCancellation()
-                return (data, response)
-            } catch {
-                try Task.checkCancellation()
-                if error is CancellationError || (error as? URLError)?.code == .cancelled { throw error }
-                guard !(200..<300).contains(response.statusCode),
-                      let incomplete = IncompleteHTTPResponse(response: response, error: error) else { throw error }
-                return (Data(), incomplete)
+            try Task.checkCancellation()
+            // 完了コールバックなら一括取得の速度を保ち、本文失敗時も受信済みの応答を参照できる。
+            let result: (Data, HTTPURLResponse) = try await withCheckedThrowingContinuation { continuation in
+                let task = session.dataTask(with: request) { data, rawResponse, error in
+                    let response = state.withLock {
+                        defer { $0.task = nil }
+                        return (rawResponse ?? $0.task?.response) as? HTTPURLResponse
+                    }
+                    if let error {
+                        if !(error is CancellationError), (error as? URLError)?.code != .cancelled,
+                           let response, !(200..<300).contains(response.statusCode),
+                           let incomplete = IncompleteHTTPResponse(response: response, error: error) {
+                            continuation.resume(returning: (Data(), incomplete))
+                        } else {
+                            continuation.resume(throwing: error)
+                        }
+                    } else if let response {
+                        continuation.resume(returning: (data ?? Data(), response))
+                    } else {
+                        continuation.resume(throwing: ZooError.invalidResponse)
+                    }
+                }
+                let cancelled = state.withLock {
+                    $0.task = task
+                    return $0.cancelled
+                }
+                if cancelled { task.cancel() }
+                task.resume()
             }
-        } onCancel: { bytes.task.cancel() }
+            try Task.checkCancellation()
+            return result
+        } onCancel: {
+            let task = state.withLock {
+                $0.cancelled = true
+                return $0.task
+            }
+            task?.cancel()
+        }
     }
 
     static func check(_ data: Data, _ response: HTTPURLResponse) throws {

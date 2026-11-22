@@ -755,3 +755,131 @@ struct NetworkTests {
         #expect(try TokenVault.load(api.settings.storageKey) == nil)
     }
 }
+
+private final class FailedBodyProtocol: URLProtocol, @unchecked Sendable {
+    private static let active = Mutex<[URL: FailedBodyProtocol]>([:])
+    private let callbackLock = NSRecursiveLock()
+    private let stopped = Mutex(false)
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, let status = Int(url.lastPathComponent),
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1",
+                                             headerFields: ["Retry-After": "12"]) else { return }
+        callbackLock.withLock {
+            guard !stopped.withLock({ $0 }) else { return }
+            Self.register(self, url: url)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(repeating: 0xA5, count: 16 * 1024))
+        }
+    }
+    override func stopLoading() {
+        callbackLock.withLock {
+            stopped.withLock { $0 = true }
+            if let url = request.url { _ = Self.active.withLock { $0.removeValue(forKey: url) } }
+        }
+    }
+    private static func register(_ instance: FailedBodyProtocol, url: URL) {
+        active.withLock { (entries: inout [URL: FailedBodyProtocol]) in
+            entries[url] = instance
+        }
+    }
+    static func fail(_ url: URL) {
+        guard let instance = active.withLock({ $0[url] }) else { return }
+        instance.callbackLock.withLock {
+            guard !instance.stopped.withLock({ $0 }) else { return }
+            instance.client?.urlProtocol(instance, didFailWithError: URLError(.networkConnectionLost))
+        }
+    }
+}
+
+@MainActor
+@Suite("HTTP応答の一括取得", .timeLimit(.minutes(1)))
+struct HTTPResponseTests {
+    @Test("50MiBの応答を再要求せず、そのまま取得する")
+    func largeResponse() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let payload = Data(repeating: 0xA5, count: 50 * 1024 * 1024)
+        let requests = Mutex(0)
+        harness.stub { _ in
+            requests.withLock { $0 += 1 }
+            return (200, [:], payload)
+        }
+        let request = URLRequest(url: URL(string: "https://api.test.invalid/large")!)
+        let start = ContinuousClock.now
+        let (data, response) = try await harness.api.transport.send(request)
+        print("50MiB応答の取得時間: \(start.duration(to: .now))")
+        #expect(response.statusCode == 200 && data == payload)
+        #expect(requests.withLock { $0 } == 1)
+    }
+
+    @Test("本文が途中で失敗してもエラー応答のヘッダーを保ち、成功応答は失敗として返す",
+          arguments: [200, 401, 403, 429, 503])
+    func preservesFailedResponse(status: Int) async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailedBodyProtocol.self]
+        let transport = HTTPTransport(session: URLSession(configuration: config))
+        defer { transport.session.invalidateAndCancel() }
+        let url = URL(string: "https://api.test.invalid/\(UUID().uuidString)/\(status)")!
+        let sending = Task { try await transport.send(URLRequest(url: url)) }
+        defer { sending.cancel() }
+        // 即時失敗では Foundation がヘッダーも破棄するため、受信を確認してから本文を失敗させる。
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var received = false
+        while !received && ContinuousClock.now < deadline {
+            received = await transport.session.allTasks.contains { $0.response != nil }
+            if !received { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        try #require(received)
+        FailedBodyProtocol.fail(url)
+        if status == 200 {
+            do {
+                _ = try await sending.value
+                Issue.record("途中で失敗した成功応答を受け入れました")
+            } catch { #expect((error as? URLError)?.code == .networkConnectionLost) }
+        } else {
+            let (data, response) = try await sending.value
+            #expect(data.isEmpty && response.statusCode == status)
+            #expect(response.value(forHTTPHeaderField: "Retry-After") == "12")
+            let incomplete = try #require(response as? IncompleteHTTPResponse)
+            #expect((incomplete.bodyReadError as? URLError)?.code == .networkConnectionLost)
+        }
+    }
+
+    @Test("送信前と受信中のキャンセルで通信を終了する", arguments: [false, true])
+    func cancelsTransfer(beforeStart: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), stopped = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); stopped.continuation.finish() }
+        let requests = Mutex(0)
+        harness.stub { _ in
+            requests.withLock { $0 += 1 }
+            started.continuation.yield(())
+            defer { stopped.continuation.yield(()) }
+            try await Task.sleep(for: .seconds(60))
+            return (200, [:], Data())
+        }
+        let request = URLRequest(url: URL(string: "https://api.test.invalid/cancel")!)
+        let sending = Task { try await harness.api.transport.send(request) }
+        defer { sending.cancel() }
+        if !beforeStart {
+            var iterator = started.stream.makeAsyncIterator()
+            try #require(await iterator.next() != nil)
+        }
+        sending.cancel()
+        do {
+            _ = try await sending.value
+            Issue.record("取り消した通信が成功しました")
+        } catch { #expect(error is CancellationError || (error as? URLError)?.code == .cancelled) }
+        if beforeStart {
+            #expect(requests.withLock { $0 } == 0)
+        } else {
+            var iterator = stopped.stream.makeAsyncIterator()
+            #expect(await iterator.next() != nil)
+        }
+    }
+
+}
