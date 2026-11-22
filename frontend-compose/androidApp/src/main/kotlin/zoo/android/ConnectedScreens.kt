@@ -182,9 +182,9 @@ internal fun ConnectedScreens(
         delay(350)
         search.search(state.searchText)
     }
-    LaunchedEffect(searching, search.query, search.type) {
+    LaunchedEffect(searching, search.query, search.type, search.filters) {
         // Keep the route restorable (back from an opened result) without adding history steps.
-        val path = globalSearchPath(search.query, search.type)
+        val path = globalSearchPath(search.query, search.type, search.filters)
         if (searching && env.path != path) platform.replace(path)
     }
     val sipRoute = route == "/settings" && env.path.substringAfter('?', "").split('&').contains("tab=sip")

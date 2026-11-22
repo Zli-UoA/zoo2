@@ -81,6 +81,7 @@ internal data class SearchScreenState(
     val searchedUntil: String? = null,
     /** The words break the server's limits: nothing was sent, and a retry would not pass. */
     val problem: SearchQueryProblem? = null,
+    val filters: SearchFilterState = SearchFilterState(),
 )
 
 @Composable
@@ -111,12 +112,16 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
                 }
             }
         }
+        SearchFilterRow(state.filters, colors, dispatch)
         Text(androidLabel("globalSearch.encryptedNote", "暗号化されたチャンネルは検索の対象外です。"),
             color = colors.secondary, fontSize = 13.sp)
     }
-    // The list position is saved with its words and kind (the screen's saved state has one key for all
-    // searches): returning to the same search restores it, other words or kinds start at the top.
-    val positionKey = "${state.type.value}\n${state.query}"
+    // The list position is saved with its words, kind and filters (the screen's saved state has one key for
+    // all searches): returning to the same search restores it, another search starts at the top.
+    val positionKey = with(state.filters) {
+        listOf(state.type.value, state.query, from.joinToString(","), inChannels.joinToString(","), "$mine", "$noBots")
+            .joinToString("\n")
+    }
     var savedKey by rememberSaveable { mutableStateOf("") }
     var savedIndex by rememberSaveable { mutableIntStateOf(0) }
     var savedOffset by rememberSaveable { mutableIntStateOf(0) }

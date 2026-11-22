@@ -238,7 +238,7 @@ class GlobalSearchControllerTest {
         assertEquals(1, requests.size)
         assertNull(globalSearchRoute("/channels/c?message=one"))
         val back = globalSearchRoute(globalSearchPath(search.query, search.type))!!
-        assertEquals("会議" to GlobalSearchType.Files, back)
+        assertEquals(GlobalSearchRoute("会議", GlobalSearchType.Files), back)
         assertNull(search.followRoute(back), "Returning must not reset the field")
         // Reopened from the channel list (OpenSearch navigates to the same path).
         assertNull(search.followRoute(globalSearchRoute(globalSearchPath(search.query, search.type))!!))
@@ -289,5 +289,64 @@ class GlobalSearchControllerTest {
         assertFalse(search.loading)
         assertFalse(search.error)
         app.close()
+    }
+
+    @Test
+    fun filtersAreSentAsCommaSeparatedIdsAndFlagsAndKeptForOlderPages() = runTest {
+        val requests = mutableListOf<Parameters>()
+        val app = app { request ->
+            requests += request.url.parameters
+            respond(page(listOf("one"), if (request.url.parameters["cursor"] == null) "next" else null, "2025-12"))
+        }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("会議", GlobalSearchType.Messages,
+            GlobalSearchFilters(from = listOf("u1", " u2 ", "u1", ""), channels = listOf("c1"), mine = true, noBots = true))
+        runCurrent()
+        search.loadOlder()
+        runCurrent()
+        assertEquals(2, requests.size)
+        for (request in requests) {
+            assertEquals("u1,u2", request["user_id"])
+            assertEquals("c1", request["channel_id"])
+            assertEquals("true", request["involving_me"])
+            assertEquals("true", request["exclude_bots"])
+        }
+        assertEquals("next", requests[1]["cursor"])
+    }
+
+    @Test
+    fun noFiltersSendNoFilterParametersAndChangingThemSearchesAgain() = runTest {
+        val requests = mutableListOf<Parameters>()
+        val app = app { request ->
+            requests += request.url.parameters
+            respond(page(listOf("one"), null, "2025-12"))
+        }
+        val search = GlobalSearchController(app, backgroundScope)
+        search.search("会議")
+        runCurrent()
+        assertEquals(setOf("type", "limit", "q"), requests.single().names())
+        search.search("会議", filter = GlobalSearchFilters(noBots = true))
+        runCurrent()
+        assertEquals(2, requests.size)
+        assertEquals("true", requests[1]["exclude_bots"])
+        // The same filters again (even with repeats) send nothing.
+        search.search("会議", filter = GlobalSearchFilters(noBots = true))
+        runCurrent()
+        assertEquals(2, requests.size)
+        // The field's words keep the chosen filters.
+        search.search("資料")
+        runCurrent()
+        assertEquals("true", requests[2]["exclude_bots"])
+    }
+
+    @Test
+    fun theRouteKeepsTheFiltersLikeWeb() {
+        val filters = GlobalSearchFilters(from = listOf("u1", "u2"), channels = listOf("c1"), mine = true, noBots = true)
+        val path = globalSearchPath("会議", GlobalSearchType.All, filters)
+        assertEquals("/search?q=%E4%BC%9A%E8%AD%B0&type=all&from=u1%2Cu2&in=c1&mine=1&nobots=1", path)
+        assertEquals(GlobalSearchRoute("会議", GlobalSearchType.All, filters), globalSearchRoute(path))
+        assertEquals(GlobalSearchFilters(), globalSearchRoute("/search?q=a&from=&in=,&mine=0")!!.filters)
+        val many = (0..MAX_SEARCH_FILTER_IDS).joinToString(",") { "u$it" }
+        assertEquals(MAX_SEARCH_FILTER_IDS, globalSearchRoute("/search?q=a&from=$many")!!.filters.from.size)
     }
 }

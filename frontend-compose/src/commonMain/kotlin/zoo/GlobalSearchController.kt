@@ -19,6 +19,9 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     var type by mutableStateOf(GlobalSearchType.All)
         private set
 
+    var filters by mutableStateOf(GlobalSearchFilters())
+        private set
+
     var items by mutableStateOf<List<Row>>(emptyList())
         private set
 
@@ -42,7 +45,13 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     var loaded by mutableStateOf(false)
         private set
 
-    private data class Request(val generation: Int, val query: String, val type: GlobalSearchType, val cursor: String?)
+    private data class Request(
+        val generation: Int,
+        val query: String,
+        val type: GlobalSearchType,
+        val filters: GlobalSearchFilters,
+        val cursor: String?,
+    )
 
     private var generation = 0
     private var pending: Request? = null
@@ -52,26 +61,26 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
     /** When the current first page arrived (epoch ms); `null` until then. */
     private var fetchedAt: Long? = null
 
-    fun search(text: String, kind: GlobalSearchType = type) {
+    fun search(text: String, kind: GlobalSearchType = type, filter: GlobalSearchFilters = filters) {
         val next = text.trim()
-        if (next == query && kind == type) return
-        start(next, kind)
+        val normalized = filter.normalized()
+        if (next == query && kind == type && normalized == filters) return
+        start(next, kind, normalized)
     }
 
     /**
-     * Follows the words and kind of a `/search` route (`globalSearchRoute`). Returns the words for the
-     * field when the route changed them (a link or a restored route); our own `replace` already matches.
+     * Follows the words, kind and filters of a `/search` route (`globalSearchRoute`). Returns the words for
+     * the field when the route changed them (a link or a restored route); our own `replace` already matches.
      */
-    fun followRoute(route: Pair<String, GlobalSearchType>): String? {
-        val (text, kind) = route
-        if (text.trim() == query && kind == type) return null
-        search(text, kind)
-        return text
+    fun followRoute(route: GlobalSearchRoute): String? {
+        if (route.query.trim() == query && route.type == type && route.filters.normalized() == filters) return null
+        search(route.query, route.type, route.filters)
+        return route.query
     }
 
     /** Searches the same words again from the newest month (the IME search key, or a stale reopen). */
     fun refresh() {
-        if (query.isNotEmpty()) start(query, type)
+        if (query.isNotEmpty()) start(query, type, filters)
     }
 
     /** On reopening the screen: reuse the loaded pages for [REUSE_MS] (as Web), then search again. */
@@ -80,9 +89,10 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
         if (!loading && !loadingOlder && now - at >= REUSE_MS) refresh()
     }
 
-    private fun start(next: String, kind: GlobalSearchType) {
+    private fun start(next: String, kind: GlobalSearchType, filter: GlobalSearchFilters) {
         query = next
         type = kind
+        filters = filter
         generation++
         items = emptyList()
         nextCursor = null
@@ -99,14 +109,14 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
             return
         }
         loading = true
-        enqueue(Request(generation, next, kind, null))
+        enqueue(Request(generation, next, kind, filter, null))
     }
 
     fun loadOlder() {
         val cursor = nextCursor ?: return
         if (loading || loadingOlder || error || pending != null) return
         loadingOlder = true
-        enqueue(Request(generation, query, type, cursor))
+        enqueue(Request(generation, query, type, filters, cursor))
     }
 
     fun retry() {
@@ -133,13 +143,8 @@ class GlobalSearchController(private val app: Session, private val scope: Corout
 
     private suspend fun fetch(request: Request) {
         try {
-            val cursor = request.cursor?.let { "&cursor=${it.encodeURLParameter()}" }.orEmpty()
             val response =
-                app.api
-                    .request(
-                        "/api/search?type=${request.type.value}&limit=$PAGE_SIZE" +
-                            "&q=${request.query.encodeURLParameter()}$cursor"
-                    )
+                app.api.request(globalSearchRequestPath(request.query, request.type, request.filters, request.cursor))
                     .objectOrEmpty()
             if (request.generation != generation) return
             val incoming = response["items"]?.rows().orEmpty()
@@ -188,11 +193,56 @@ enum class GlobalSearchType(val value: String, val labelKey: String) {
     }
 }
 
-/** `/search?q=&type=` for the current query; the screen replaces the history entry. */
-fun globalSearchPath(query: String, type: GlobalSearchType): String =
-    "/search?" +
-        (if (query.isEmpty()) "" else "q=${query.encodeURLParameter()}&") +
-        "type=${type.value}"
+/** Senders and channels in one filter, like the server's `MAX_FILTER_IDS` (more is a 400). */
+const val MAX_SEARCH_FILTER_IDS = 20
+
+/**
+ * Web's `SearchFilters` without the period: results from any of [from] (user ids) and any of [channels],
+ * [noBots] leaves out bot (app) posts, [mine] keeps the conversations the user takes part in (their
+ * channels and DMs, the threads they joined or were mentioned in).
+ */
+data class GlobalSearchFilters(
+    val from: List<String> = emptyList(),
+    val channels: List<String> = emptyList(),
+    val mine: Boolean = false,
+    val noBots: Boolean = false,
+) {
+    val active: Boolean get() = from.isNotEmpty() || channels.isNotEmpty() || mine || noBots
+
+    /** Without blanks and repeats, at most [MAX_SEARCH_FILTER_IDS] each (Web's `splitIds`). */
+    fun normalized(): GlobalSearchFilters = copy(from = from.cleanIds(), channels = channels.cleanIds())
+}
+
+private fun List<String>.cleanIds(): List<String> =
+    map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(MAX_SEARCH_FILTER_IDS)
+
+/** `GET /api/search` for one page; the ids are comma-separated and match any (Web's `searchRequestPath`). */
+fun globalSearchRequestPath(query: String, type: GlobalSearchType, filters: GlobalSearchFilters, cursor: String?): String =
+    buildString {
+        append("/api/search?type=${type.value}&limit=${GlobalSearchController.PAGE_SIZE}&q=${query.encodeURLParameter()}")
+        if (filters.from.isNotEmpty()) append("&user_id=${filters.from.joinToString(",").encodeURLParameter()}")
+        if (filters.channels.isNotEmpty()) append("&channel_id=${filters.channels.joinToString(",").encodeURLParameter()}")
+        if (filters.noBots) append("&exclude_bots=true")
+        if (filters.mine) append("&involving_me=true")
+        if (cursor != null) append("&cursor=${cursor.encodeURLParameter()}")
+    }
+
+/**
+ * `/search?q=&type=&from=&in=&mine=&nobots=` for the current query (the same names as Web's route); the
+ * screen replaces the history entry. Filters that are not set are left out.
+ */
+fun globalSearchPath(query: String, type: GlobalSearchType, filters: GlobalSearchFilters = GlobalSearchFilters()): String =
+    buildString {
+        append("/search?")
+        if (query.isNotEmpty()) append("q=${query.encodeURLParameter()}&")
+        append("type=${type.value}")
+        if (filters.from.isNotEmpty()) append("&from=${filters.from.joinToString(",").encodeURLParameter()}")
+        if (filters.channels.isNotEmpty()) append("&in=${filters.channels.joinToString(",").encodeURLParameter()}")
+        if (filters.mine) append("&mine=1")
+        if (filters.noBots) append("&nobots=1")
+    }
+
+data class GlobalSearchRoute(val query: String, val type: GlobalSearchType, val filters: GlobalSearchFilters = GlobalSearchFilters())
 
 /** Where a result opens: the channel at its message (Chat opens the thread for replies). */
 fun globalSearchDestination(row: Row, type: GlobalSearchType): String {
@@ -200,11 +250,17 @@ fun globalSearchDestination(row: Row, type: GlobalSearchType): String {
     return "/channels/${row.text("channel_id").encodeURLParameter()}?message=${message.encodeURLParameter()}"
 }
 
-/** The words and kind in a `/search?q=&type=` path, or `null` for another route. */
-fun globalSearchRoute(path: String): Pair<String, GlobalSearchType>? {
+/** The words, kind and filters in a `/search` path ([globalSearchPath]), or `null` for another route. */
+fun globalSearchRoute(path: String): GlobalSearchRoute? {
     if (!isGlobalSearchPath(path)) return null
     val parameters = io.ktor.http.Url("https://zoo.invalid$path").parameters
-    return parameters["q"].orEmpty() to GlobalSearchType.from(parameters["type"])
+    fun ids(name: String) = parameters[name].orEmpty().split(',')
+    fun flag(name: String) = parameters[name] == "1"
+    return GlobalSearchRoute(
+        parameters["q"].orEmpty(),
+        GlobalSearchType.from(parameters["type"]),
+        GlobalSearchFilters(ids("from"), ids("in"), flag("mine"), flag("nobots")).normalized(),
+    )
 }
 
 internal fun isGlobalSearchPath(path: String): Boolean = path.substringBefore('?').substringBefore('#') == "/search"

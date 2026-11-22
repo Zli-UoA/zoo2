@@ -155,6 +155,8 @@ internal sealed interface AndroidUiAction {
     data class SearchMessages(val text: String) : AndroidUiAction
     data object SubmitSearch : AndroidUiAction
     data class SelectSearchType(val type: zoo.GlobalSearchType) : AndroidUiAction
+    data class SelectSearchFilter(val field: SearchFilterField, val ids: List<String>) : AndroidUiAction
+    data class ToggleSearchFilter(val flag: SearchFilterFlag) : AndroidUiAction
     data class OpenSearchResult(val key: String) : AndroidUiAction
     data object LoadOlderResults : AndroidUiAction
     data object RetrySearch : AndroidUiAction

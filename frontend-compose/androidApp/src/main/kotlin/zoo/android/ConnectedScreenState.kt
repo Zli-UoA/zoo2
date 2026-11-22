@@ -454,7 +454,31 @@ internal class ConnectedScreenState(
             loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
             canLoadOlder = search.nextCursor != null, searchedUntil = search.searchedUntil,
             problem = searchQueryProblem(search.query),
+            filters = searchFilters(users, channels),
         ))
+    }
+
+    /** Web's picker choices: the user first, then names in order; channels that search can reach (no DMs or encrypted ones). */
+    private fun searchFilters(users: Map<String, Row>, channels: List<Row>): SearchFilterState {
+        val filters = app.globalSearch.filters
+        val me = app.config.userId
+        val people = users.values
+            .sortedWith(compareBy<Row>({ it.text("id") != me }, { author(it).lowercase() }))
+            .map { user ->
+                val name = author(user)
+                SearchFilterOption(
+                    user.text("id"),
+                    if (user.text("id") == me) app.t("globalSearch.filters.me", "name" to name) else name,
+                    user.text("user_name").ifBlank { null }?.let { "@$it" },
+                )
+            }
+        val reachable = visibleChannels(channels)
+            .filter { !it.flag("is_dm") && !it.flag("encrypted") }
+            .map {
+                SearchFilterOption(it.text("id"), it.text("channel_name"),
+                    mark = if (it.flag("is_private")) SearchFilterMark.PrivateChannel else SearchFilterMark.Channel)
+            }
+        return SearchFilterState(people, reachable, filters.from, filters.channels, filters.mine, filters.noBots)
     }
 
     private fun isDm(row: Row, channel: Row?) = row.flag("is_dm") || channel?.flag("is_dm") == true
@@ -565,7 +589,7 @@ internal class ConnectedScreenState(
                     TopPage.Home -> "/home"
                     TopPage.Channels -> "/"
                     // The tab reopens the last words and kind; returning keeps the loaded results.
-                    TopPage.Search -> globalSearchPath(app.globalSearch.query, app.globalSearch.type)
+                    TopPage.Search -> globalSearchPath(app.globalSearch.query, app.globalSearch.type, app.globalSearch.filters)
                     TopPage.Notifications -> "/notifications"
                     TopPage.Bubble -> "/bubble"
                     TopPage.Settings -> "/settings"
@@ -629,6 +653,20 @@ internal class ConnectedScreenState(
                 if (searchText.trim() == search.query) search.refresh() else search.search(searchText)
             }
             is AndroidUiAction.SelectSearchType -> app.globalSearch.search(searchText, action.type)
+            is AndroidUiAction.SelectSearchFilter -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = when (action.field) {
+                    SearchFilterField.From -> search.filters.copy(from = action.ids)
+                    SearchFilterField.In -> search.filters.copy(channels = action.ids)
+                })
+            }
+            is AndroidUiAction.ToggleSearchFilter -> {
+                val search = app.globalSearch
+                search.search(searchText, filter = when (action.flag) {
+                    SearchFilterFlag.Mine -> search.filters.copy(mine = !search.filters.mine)
+                    SearchFilterFlag.NoBots -> search.filters.copy(noBots = !search.filters.noBots)
+                })
+            }
             is AndroidUiAction.OpenSearchResult -> {
                 val search = app.globalSearch
                 search.items.firstOrNull { globalSearchKey(it, search.type) == action.key }
