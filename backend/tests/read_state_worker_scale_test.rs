@@ -2,7 +2,7 @@
 use backend::{
     config::Config,
     display_refresh::reservation_sql,
-    routes::read_states::{UNREAD_SCAN_LIMIT, states_sql},
+    routes::read_states::{UNREAD_AUTHOR_LIMIT, UNREAD_PER_AUTHOR_SCAN, states_sql},
     slack::sync::claim_sql,
 };
 use serde_json::{Value, json};
@@ -29,10 +29,9 @@ fn walk(node: &Value, f: &mut impl FnMut(&Value)) {
         }
     }
 }
-/// `read_*` queries intentionally inspect a bounded window of root messages to
-/// report unread counts; the fixture joins three channels, so allow one extra
-/// channel's worth of headroom for the outer loops.
-const READ_WORK_BUDGET: f64 = (UNREAD_SCAN_LIMIT * 4) as f64;
+/// `read_*` queries inspect at most a bounded number of unread authors and a
+/// bounded number of root messages per author; three channels share this budget.
+const READ_WORK_BUDGET: f64 = (UNREAD_AUTHOR_LIMIT * UNREAD_PER_AUTHOR_SCAN) as f64;
 
 fn work(name: &str, plan: &Value, budget: f64) -> Value {
     let mut relations = std::collections::BTreeMap::<String, f64>::new();
@@ -90,12 +89,22 @@ fn work(name: &str, plan: &Value, budget: f64) -> Value {
             0,
             "{name}: disk spill"
         );
+        if name == "read_list_light" {
+            assert_eq!(
+                *relations.get("messages").unwrap_or(&0.),
+                0.,
+                "the sidebar poll must not scan message history"
+            );
+        }
         if name.starts_with("read_") {
             assert!(
                 *relations.get("messages").unwrap_or(&0.) <= READ_WORK_BUDGET,
                 "unread scan must be bounded per channel, not proportional to history"
             );
-            assert!(*relations.get("channel_message_authors").unwrap_or(&0.) <= 6.);
+            assert!(
+                *relations.get("channel_message_authors").unwrap_or(&0.)
+                    <= (UNREAD_AUTHOR_LIMIT * 3) as f64
+            );
         }
     }
     json!({"relations":relations,"sort_input":max_sort,"intermediate":max_intermediate,"logical_blocks":plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)+plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0)})
@@ -221,7 +230,7 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         )?;
     }
     client.batch_execute("ROLLBACK").await?;
-    let sql = states_sql(false).replace("$1", &quoted(&user));
+    let sql = states_sql(false, true).replace("$1", &quoted(&user));
     let current = client.simple_query(&sql).await?;
     let values: Vec<Value> = rows(&current)
         .iter()
@@ -235,10 +244,21 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         assert_eq!(row["first_unread_at"].is_null(), i != 2);
     }
     let queries = vec![
-        ("read_list", states_sql(false), vec![user.clone()], false),
+        (
+            "read_list",
+            states_sql(false, true),
+            vec![user.clone()],
+            false,
+        ),
+        (
+            "read_list_light",
+            states_sql(false, false),
+            vec![user.clone()],
+            false,
+        ),
         (
             "read_single",
-            states_sql(true),
+            states_sql(true, false),
             vec![user.clone(), channels[0].clone()],
             false,
         ),

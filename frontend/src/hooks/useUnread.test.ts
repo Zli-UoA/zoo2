@@ -64,7 +64,7 @@ it("shares one fetch, orders by oldest unread and reflects local reads", async (
     expect(api.get).toHaveBeenCalledTimes(4);
 
     await act(async () => {
-      value.applyRead("fourth");
+      value.applyRead({ ...state("fourth", "2026-01-04"), has_unread: false });
     });
     expect(value.unreadConversationCount).toBe(0);
 

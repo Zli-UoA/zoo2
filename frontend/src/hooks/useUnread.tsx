@@ -20,19 +20,26 @@ export interface ChannelReadState {
   channel_id: string;
   last_read_at: string | null;
   has_unread: boolean;
-  /** Capped at 1000; `unread_count_truncated` tells the UI to show "1000+". */
-  unread_count: number;
-  unread_count_truncated: boolean;
+  /** Only present when the client asks `GET /api/channel-read-states?details=1`. */
+  unread_count?: number;
+  unread_count_truncated?: boolean;
   /** Oldest unread root message from somebody else, or null when fully read. */
-  first_unread_at: string | null;
+  first_unread_at?: string | null;
 }
 
 /** Older first; channels without a known boundary go last. */
 function compareByFirstUnread(a: ChannelReadState, b: ChannelReadState): number {
-  if (a.first_unread_at === b.first_unread_at) return a.channel_id.localeCompare(b.channel_id);
-  if (a.first_unread_at === null) return 1;
-  if (b.first_unread_at === null) return -1;
-  return a.first_unread_at < b.first_unread_at ? -1 : 1;
+  const left = a.first_unread_at ?? null;
+  const right = b.first_unread_at ?? null;
+  if (left === right) return a.channel_id.localeCompare(b.channel_id);
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return left < right ? -1 : 1;
+}
+
+/** Sort the detailed response into the fixed catch-up queue. */
+export function unreadConversations(states: readonly ChannelReadState[]): ChannelReadState[] {
+  return states.filter((state) => state.has_unread).sort(compareByFirstUnread);
 }
 
 function useUnreadFeed() {
@@ -100,21 +107,15 @@ function useUnreadFeed() {
   }, [client, currentUserId]);
 
   const refresh = useCallback(() => refreshRef.current(), []);
-  const applyRead = useCallback((channelId: string) => {
+  // Use the server's response: a message that arrived after the read boundary
+  // must remain unread instead of being cleared with a hard-coded value.
+  const applyRead = useCallback((updated: ChannelReadState) => {
     setData((current) =>
       current
         ? {
             ...current,
             states: current.states.map((state) =>
-              state.channel_id === channelId
-                ? {
-                    ...state,
-                    has_unread: false,
-                    unread_count: 0,
-                    unread_count_truncated: false,
-                    first_unread_at: null,
-                  }
-                : state,
+              state.channel_id === updated.channel_id ? { ...state, ...updated } : state,
             ),
           }
         : current,
@@ -122,10 +123,7 @@ function useUnreadFeed() {
   }, []);
 
   const states = data?.userId === currentUserId ? data.states : [];
-  const unreadStates = useMemo(
-    () => states.filter((state) => state.has_unread).sort(compareByFirstUnread),
-    [states],
-  );
+  const unreadStates = useMemo(() => unreadConversations(states), [states]);
   const unreadChannelIds = useMemo(
     () => new Set(unreadStates.map((state) => state.channel_id)),
     [unreadStates],

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { useMessageDecryptions } from "../../hooks/useMessageDecryptions";
+import { MessageDecryptionsProvider, firstEncryptedAt } from "../../lib/e2ee/messageDecryption";
 import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
 import { useMessageAttachments } from "../../hooks/useAttachments";
 import { useMessageFeed, useMessageReactions, useUsers } from "../../hooks/useRealtime";
@@ -45,6 +47,15 @@ export function CatchUpMessagePage({
     () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
     [attachmentsQuery.data],
   );
+  // 暗号化された会話も通常の MessageRow と同じ復号経路を使う。
+  const encrypted = messages.some((row) => row.ciphertext != null);
+  const decryptionRows = useMemo(() => (encrypted ? messages : []), [encrypted, messages]);
+  const decryptions = useMessageDecryptions(channelId, decryptionRows);
+  const encryptedSince = useMemo(() => firstEncryptedAt(messages), [messages]);
+  const mentionUserNames = useMemo(
+    () => new Map((usersQuery.data ?? []).map((user) => [user.id, user.user_name])),
+    [usersQuery.data],
+  );
   const reactionGroups = useMemo(() => {
     const names = Object.fromEntries(
       (usersQuery.data ?? []).map((user) => [user.id, reactionUserLabel(user)]),
@@ -81,45 +92,55 @@ export function CatchUpMessagePage({
     onBoundaryMessage(newest);
   }, [feed.isInitialSyncLoading, messages, onBoundaryMessage]);
 
-  // Read far enough back to show the unread divider when it is close by.
+  // Read far enough back that the oldest unread message is inside the loaded
+  // range; `firstUnreadId` alone cannot tell us whether older rows are missing.
   const loadedPages = useRef(0);
   useEffect(() => {
-    const hasBoundary = !firstUnreadId || messages.some((m) => m.id === firstUnreadId);
-    if (hasBoundary || loadedPages.current >= MAX_UNREAD_PAGES) return;
+    const oldest = messages[0]?.created_at;
+    if (!firstUnreadAt || !oldest) return;
+    if (parseUtcTimestamp(oldest).getTime() <= parseUtcTimestamp(firstUnreadAt).getTime()) return;
+    if (loadedPages.current >= MAX_UNREAD_PAGES) return;
     if (!feed.hasOlder || feed.isLoadingOlder || feed.isLoading) return;
     loadedPages.current += 1;
     void feed.loadOlder();
-  }, [feed.hasOlder, feed.isLoading, feed.isLoadingOlder, feed.loadOlder, firstUnreadId, messages]);
+  }, [feed.hasOlder, feed.isLoading, feed.isLoadingOlder, feed.loadOlder, firstUnreadAt, messages]);
 
   return (
-    <MessageList
-      key={channelId}
-      channelId={undefined}
-      messages={messages}
-      isLoading={feed.isLoading}
-      isError={feed.isError}
-      currentUserId={null}
-      editingId={null}
-      editingText=""
-      onEditingTextChange={() => {}}
-      onStartEdit={() => {}}
-      onCancelEdit={() => {}}
-      onSaveEdit={() => {}}
-      onRequestDelete={() => {}}
-      reactions={reactionGroups}
-      attachments={attachments}
-      kitchenCatalog={catalog}
-      canReact={false}
-      onReaction={() => {}}
-      onPickReaction={() => {}}
-      onOpenThread={() => {}}
-      canCompose={false}
-      isOffline={!isOnline}
-      unreadBoundaryId={firstUnreadId}
-      hasOlder={feed.hasOlder}
-      isLoadingOlder={feed.isLoadingOlder}
-      onLoadOlder={() => void feed.loadOlder()}
-      onRetry={() => window.location.reload()}
-    />
+    <MessageDecryptionsProvider
+      decryptions={decryptions}
+      mentionUserNames={mentionUserNames}
+      encrypted={encrypted}
+      encryptedSince={encryptedSince}
+    >
+      <MessageList
+        key={channelId}
+        channelId={undefined}
+        messages={messages}
+        isLoading={feed.isLoading}
+        isError={feed.isError}
+        currentUserId={null}
+        editingId={null}
+        editingText=""
+        onEditingTextChange={() => {}}
+        onStartEdit={() => {}}
+        onCancelEdit={() => {}}
+        onSaveEdit={() => {}}
+        onRequestDelete={() => {}}
+        reactions={reactionGroups}
+        attachments={attachments}
+        kitchenCatalog={catalog}
+        canReact={false}
+        onReaction={() => {}}
+        onPickReaction={() => {}}
+        onOpenThread={() => {}}
+        canCompose={false}
+        isOffline={!isOnline}
+        unreadBoundaryId={firstUnreadId}
+        hasOlder={feed.hasOlder}
+        isLoadingOlder={feed.isLoadingOlder}
+        onLoadOlder={() => void feed.loadOlder()}
+        onRetry={() => window.location.reload()}
+      />
+    </MessageDecryptionsProvider>
   );
 }

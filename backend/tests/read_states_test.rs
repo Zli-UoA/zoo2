@@ -115,14 +115,6 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
     let (_, initial) = request(&app, "GET", &path, &reader, Value::Null).await;
     assert_eq!(initial["has_unread"], true);
     assert!(initial["last_read_at"].is_null());
-    assert_eq!(initial["unread_count"], 2); // the reader's own post is excluded
-    assert_eq!(initial["unread_count_truncated"], false);
-    assert!(
-        initial["first_unread_at"]
-            .as_str()
-            .unwrap()
-            .contains("00:00:01")
-    );
     let (_, listed) = request(
         &app,
         "GET",
@@ -134,13 +126,39 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["channel_id"], channel);
     assert_eq!(listed[0]["has_unread"], true);
-    assert_eq!(listed[0]["unread_count"], 2);
-    assert_eq!(listed[0]["first_unread_at"], initial["first_unread_at"]);
+    // The sidebar poll omits the expensive unread breakdown.
+    assert!(listed[0]["unread_count"].is_null());
+    assert!(listed[0]["first_unread_at"].is_null());
+    let (_, detailed) = request(
+        &app,
+        "GET",
+        "/api/channel-read-states?details=1",
+        &reader,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(detailed[0]["channel_id"], channel);
+    assert_eq!(detailed[0]["unread_count"], 2); // the reader's own post is excluded
+    assert_eq!(detailed[0]["unread_count_truncated"], false);
+    assert!(
+        detailed[0]["first_unread_at"]
+            .as_str()
+            .unwrap()
+            .contains("00:00:01")
+    );
     let (status, saved) = request(&app, "POST", &path, &reader, json!({"message_id":second})).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["data"]["has_unread"], false); // own later message is not unread
-    assert_eq!(saved["data"]["unread_count"], 0);
-    assert!(saved["data"]["first_unread_at"].is_null());
+    let (_, after_read) = request(
+        &app,
+        "GET",
+        "/api/channel-read-states?details=1",
+        &reader,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(after_read[0]["unread_count"], 0);
+    assert!(after_read[0]["first_unread_at"].is_null());
     let (_, older) = request(&app, "POST", &path, &reader, json!({"message_id":first})).await;
     assert_eq!(older["data"]["last_read_at"], saved["data"]["last_read_at"]);
     let another_app = create_router(AppState::new(init_db(&config.database_url).await?, config));
@@ -149,9 +167,17 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
     let (_, other_user) = request(&app, "GET", &path, &owner, Value::Null).await;
     assert!(other_user["last_read_at"].is_null());
     assert_eq!(other_user["has_unread"], true);
-    assert_eq!(other_user["unread_count"], 1);
+    let (_, other_detailed) = request(
+        &app,
+        "GET",
+        "/api/channel-read-states?details=1",
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(other_detailed[0]["unread_count"], 1);
     assert!(
-        other_user["first_unread_at"]
+        other_detailed[0]["first_unread_at"]
             .as_str()
             .unwrap()
             .contains("00:00:03")

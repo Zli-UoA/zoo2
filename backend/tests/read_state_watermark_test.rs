@@ -4,7 +4,7 @@ use tokio_postgres::{NoTls, Transaction};
 
 async fn state(tx: &Transaction<'_>, viewer: &str, channel: &str) -> anyhow::Result<Value> {
     let row = tx
-        .query_one(&states_sql(true), &[&viewer, &channel])
+        .query_one(&states_sql(true, true), &[&viewer, &channel])
         .await?;
     Ok(serde_json::from_str(&row.get::<_, String>(0))?)
 }
@@ -92,7 +92,7 @@ async fn unread_count_and_first_unread_are_bounded_by_the_read_boundary() -> any
             .contains("00:00:01")
     );
     assert_eq!(state(&tx, &viewer, &dm).await?["unread_count"], 1);
-    let listed = tx.query(&states_sql(false), &[&viewer]).await?;
+    let listed = tx.query(&states_sql(false, true), &[&viewer]).await?;
     assert_eq!(listed.len(), 2, "non-member channels stay hidden");
     tx.execute(
         "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) VALUES($1,$2,'2025-01-01 00:00:01')",
@@ -212,6 +212,54 @@ async fn watermarks_preserve_unread_through_root_changes_and_ties() -> anyhow::R
     assert!(
         !unread(&tx, &viewer, &channel).await?,
         "strict timestamp read boundary is unchanged"
+    );
+    tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unread_details_skip_own_posts_and_tied_timestamps() -> anyhow::Result<()> {
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let viewer = uuid::Uuid::new_v4().to_string();
+    let author = format!("{viewer}-author");
+    let channel = format!("{viewer}-channel");
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text),($2::text,$2::text,$2::text)",
+        &[&viewer, &author],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)",
+        &[&channel, &viewer],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) VALUES($1,$2,'2025-01-01')",
+        &[&viewer, &channel],
+    )
+    .await?;
+    // Own posts and tied timestamps must not hide or misplace the other author's messages.
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT $1||'-own-'||n,$1,$2,'own','2025-01-02' FROM generate_series(1,1200)n",
+        &[&viewer, &channel],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1||'-a',$2,$3,'first','2025-01-03'),($1||'-b',$2,$3,'tied','2025-01-03')",
+        &[&viewer, &author, &channel],
+    )
+    .await?;
+    let state = state(&tx, &viewer, &channel).await?;
+    assert_eq!(state["unread_count"], 2);
+    assert_eq!(state["unread_count_truncated"], false);
+    assert!(
+        state["first_unread_at"]
+            .as_str()
+            .unwrap()
+            .contains("2025-01-03")
     );
     tx.rollback().await?;
     Ok(())

@@ -1,0 +1,100 @@
+// @vitest-environment happy-dom
+import { createElement, type ReactNode } from "react";
+import { act, cleanup, render } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vite-plus/test";
+import { CatchUpMessagePage } from "./CatchUpMessagePage";
+
+const mocks = vi.hoisted(() => ({
+  messages: [] as Array<{ id: string; user_id: string; created_at: string }>,
+  loadOlder: vi.fn(),
+  hasOlder: false,
+}));
+
+const message = (id: string, created_at: string) => ({
+  id,
+  user_id: "other",
+  created_at,
+});
+
+vi.mock("../../hooks/useRealtime", () => ({
+  useMessageFeed: () => ({
+    data: mocks.messages,
+    isLoading: false,
+    isError: false,
+    isInitialSyncLoading: false,
+    hasOlder: mocks.hasOlder,
+    isLoadingOlder: false,
+    loadOlder: mocks.loadOlder,
+  }),
+  useUsers: () => ({ data: [] }),
+  useMessageReactions: () => ({ data: [] }),
+}));
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({ currentUserId: "me" }),
+}));
+vi.mock("../../hooks/useMessageDecryptions", () => ({ useMessageDecryptions: () => new Map() }));
+vi.mock("../../hooks/useKitchenCatalog", () => ({ useKitchenCatalog: () => ({ catalog: null }) }));
+vi.mock("../../hooks/useAttachments", () => ({ useMessageAttachments: () => ({ data: [] }) }));
+vi.mock("../../lib/attachments", () => ({ groupAttachmentsByMessage: () => new Map() }));
+vi.mock("../../lib/emoji/reactions", () => ({
+  groupReactions: () => new Map(),
+  reactionUserLabel: (user: { user_name: string }) => user.user_name,
+}));
+vi.mock("../../lib/offline/offline-context", () => ({
+  useOfflineStatus: () => ({ isOnline: true }),
+}));
+vi.mock("../../lib/e2ee/messageDecryption", () => ({
+  firstEncryptedAt: () => null,
+  MessageDecryptionsProvider: ({ children }: { children: ReactNode }) => children,
+}));
+vi.mock("./messages/MessageList", () => ({
+  MessageList: () => createElement("div", null, "messages"),
+}));
+
+afterEach(() => {
+  cleanup();
+  mocks.messages = [];
+  mocks.hasOlder = false;
+  mocks.loadOlder.mockReset();
+});
+
+it("keeps the boundary at the newest message shown when the page opened", async () => {
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z"), message("m2", "2026-01-01T10:05:00Z")];
+  const onBoundaryMessage = vi.fn();
+  const view = render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: null,
+      onBoundaryMessage,
+    }),
+  );
+  expect(onBoundaryMessage).toHaveBeenCalledTimes(1);
+  expect(onBoundaryMessage).toHaveBeenCalledWith("m2");
+
+  // A message arriving while reading must not move the read boundary.
+  await act(async () => {
+    mocks.messages = [...mocks.messages, message("m3", "2026-01-01T10:10:00Z")];
+    view.rerender(
+      createElement(CatchUpMessagePage, {
+        channelId: "c1",
+        firstUnreadAt: null,
+        onBoundaryMessage,
+      }),
+    );
+  });
+  expect(onBoundaryMessage).toHaveBeenCalledTimes(1);
+  expect(onBoundaryMessage).toHaveBeenCalledWith("m2");
+});
+
+it("loads older pages until the oldest unread timestamp is inside the range", async () => {
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z")];
+  mocks.hasOlder = true;
+  render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: "2026-01-01T09:00:00Z",
+      onBoundaryMessage: vi.fn(),
+    }),
+  );
+  expect(mocks.loadOlder).toHaveBeenCalledTimes(1);
+});

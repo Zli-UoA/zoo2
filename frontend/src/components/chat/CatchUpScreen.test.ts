@@ -5,7 +5,9 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { CatchUpScreen } from "./CatchUpScreen";
 
 const mocks = vi.hoisted(() => ({
+  get: vi.fn(),
   post: vi.fn(),
+  config: { apiBaseUrl: "" },
   applyRead: vi.fn(),
   navigate: vi.fn(),
   unread: [] as Array<{
@@ -19,6 +21,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../hooks/useUnread", () => ({
   READ_STATE_CHANGED: "zoo-read-state-changed",
+  unreadConversations: (states: Array<{ has_unread: boolean }>) =>
+    states.filter((state) => state.has_unread),
   useUnread: () => ({
     states: mocks.unread,
     unreadStates: mocks.unread.filter((s) => s.has_unread),
@@ -42,10 +46,10 @@ vi.mock("../../hooks/useRealtime", () => ({
   useMessageReactions: () => ({ data: [] }),
 }));
 vi.mock("../../lib/electric/collections-context", () => ({
-  useCollections: () => ({ config: { apiBaseUrl: "" }, channelUsers: {} }),
+  useCollections: () => ({ config: mocks.config, channelUsers: {} }),
 }));
 vi.mock("../../lib/api/client", () => ({
-  createConfiguredApiClient: () => ({ post: mocks.post }),
+  createConfiguredApiClient: () => ({ post: mocks.post, get: mocks.get }),
 }));
 vi.mock("@tanstack/react-db", () => ({ useLiveQuery: () => ({ data: [] }) }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
@@ -92,6 +96,7 @@ const unreadItem = (channelId: string) => ({
 
 afterEach(() => {
   cleanup();
+  mocks.get.mockReset();
   mocks.post.mockReset();
   mocks.applyRead.mockReset();
   mocks.navigate.mockReset();
@@ -100,9 +105,11 @@ afterEach(() => {
 
 it("does not write on open, freezes the queue and marks read only on demand", async () => {
   mocks.unread = [unreadItem("a"), unreadItem("b")];
-  mocks.post.mockResolvedValue({});
+  mocks.get.mockResolvedValue(mocks.unread);
+  mocks.post.mockResolvedValue({ data: { channel_id: "a", has_unread: false } });
   const view = render(createElement(CatchUpScreen));
-  expect(screen.getByText("1 / 2")).toBeTruthy();
+  expect(await screen.findByText("1 / 2")).toBeTruthy();
+  expect(mocks.get).toHaveBeenCalledWith("/api/channel-read-states?details=1");
   expect(mocks.post).not.toHaveBeenCalled();
 
   // A third conversation arriving mid-flight must not shift the page numbers.
@@ -118,7 +125,7 @@ it("does not write on open, freezes the queue and marks read only on demand", as
   expect(mocks.post).toHaveBeenCalledWith("/api/channels/a/read-state", {
     message_id: "latest-in-page",
   });
-  expect(mocks.applyRead).toHaveBeenCalledWith("a");
+  expect(mocks.applyRead).toHaveBeenCalledWith({ channel_id: "a", has_unread: false });
   expect(screen.getByText("2 / 2")).toBeTruthy();
 
   await act(async () => {
@@ -131,8 +138,10 @@ it("does not write on open, freezes the queue and marks read only on demand", as
 
 it("stays on the page and shows an error when the write fails", async () => {
   mocks.unread = [unreadItem("a")];
+  mocks.get.mockResolvedValue(mocks.unread);
   mocks.post.mockRejectedValue(new Error("network"));
   render(createElement(CatchUpScreen));
+  await screen.findByText("1 / 1");
   await act(async () => {
     fireEvent.click(screen.getByText("既読にする"));
   });
@@ -143,11 +152,19 @@ it("stays on the page and shows an error when the write fails", async () => {
 
 it("skips a conversation that became read in another tab", async () => {
   mocks.unread = [unreadItem("a"), unreadItem("b")];
+  mocks.get.mockResolvedValue(mocks.unread);
   const view = render(createElement(CatchUpScreen));
+  await screen.findByText("1 / 2");
   await act(async () => {
     mocks.unread = [{ ...unreadItem("a"), has_unread: false }, unreadItem("b")];
     view.rerender(createElement(CatchUpScreen));
   });
   expect(screen.getByText("2 / 2")).toBeTruthy();
   expect(mocks.post).not.toHaveBeenCalled();
+});
+
+it("shows the empty state when the detailed response has no unread conversations", async () => {
+  mocks.get.mockResolvedValue([]);
+  render(createElement(CatchUpScreen));
+  expect(await screen.findByText("未読の会話はありません")).toBeTruthy();
 });

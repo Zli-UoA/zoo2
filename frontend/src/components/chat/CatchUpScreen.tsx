@@ -4,7 +4,12 @@ import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { READ_STATE_CHANGED, useUnread, type ChannelReadState } from "../../hooks/useUnread";
+import {
+  READ_STATE_CHANGED,
+  unreadConversations,
+  useUnread,
+  type ChannelReadState,
+} from "../../hooks/useUnread";
 import { useActiveChannels, useUsers } from "../../hooks/useRealtime";
 import { apiPath } from "../../lib/api/path";
 import { createConfiguredApiClient } from "../../lib/api/client";
@@ -25,7 +30,7 @@ export function CatchUpScreen() {
   const navigate = useNavigate();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
-  const { states, unreadStates, isReady, isError, refresh, applyRead } = useUnread();
+  const { states, applyRead } = useUnread();
   const channelsQuery = useActiveChannels();
   const usersQuery = useUsers();
   const { channelUsers } = useCollections();
@@ -37,24 +42,38 @@ export function CatchUpScreen() {
   const [readCount, setReadCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
   const [writeError, setWriteError] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [isWriting, setIsWriting] = useState(false);
   const [boundary, setBoundary] = useState<{ channelId: string; messageId: string | null } | null>(
     null,
   );
   const headingRef = useRef<HTMLHeadingElement>(null);
 
-  const start = useCallback(() => {
-    setQueue(unreadStates.map((state) => ({ ...state })));
+  // 詳細（件数・最古時刻）はキャッチアップを開いたときだけ取得する。
+  // 10秒ポーリングは軽い一覧のまま共有し、ここでは再計算しない。
+  const start = useCallback((source: readonly ChannelReadState[]) => {
+    setQueue(unreadConversations(source).map((state) => ({ ...state })));
     setIndex(0);
     setReadCount(0);
     setSkippedCount(0);
     setWriteError(false);
     setBoundary(null);
-  }, [unreadStates]);
+  }, []);
+
+  const loadQueue = useCallback(async () => {
+    try {
+      const detailed = await client.get<ChannelReadState[]>("/api/channel-read-states?details=1");
+      start(detailed);
+      setLoadError(false);
+    } catch {
+      setQueue([]);
+      setLoadError(true);
+    }
+  }, [client, start]);
 
   useEffect(() => {
-    if (queue === null && isReady && unreadStates.length > 0) start();
-  }, [queue, isReady, unreadStates.length, start]);
+    void loadQueue();
+  }, [loadQueue]);
 
   const channelById = useMemo(
     () => new Map((channelsQuery.data ?? []).map((channel) => [channel.id, channel])),
@@ -116,10 +135,11 @@ export function CatchUpScreen() {
     setIsWriting(true);
     setWriteError(false);
     try {
-      await client.post<unknown>(apiPath`/api/channels/${current.channel_id}/read-state`, {
-        message_id: messageId,
-      });
-      applyRead(current.channel_id);
+      const saved = await client.post<ChannelReadState>(
+        apiPath`/api/channels/${current.channel_id}/read-state`,
+        { message_id: messageId },
+      );
+      applyRead(saved.data);
       window.dispatchEvent(new Event(READ_STATE_CHANGED));
       setReadCount((value) => value + 1);
       goNext();
@@ -136,8 +156,8 @@ export function CatchUpScreen() {
   };
 
   const restart = () => {
-    refresh();
     setQueue(null);
+    void loadQueue();
   };
 
   return (
@@ -161,7 +181,7 @@ export function CatchUpScreen() {
       </header>
 
       {queue === null ? (
-        isError ? (
+        loadError ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
             <p role="alert" className="text-sm text-destructive">
               {t("catchUp.loadError")}
@@ -207,11 +227,11 @@ export function CatchUpScreen() {
               {t("catchUp.progress", { current: index + 1, total })}
             </p>
           </div>
-          <div className="min-h-0 flex-1">
+          <div className="flex min-h-0 flex-1 flex-col">
             <CatchUpMessagePage
               key={current.channel_id}
               channelId={current.channel_id}
-              firstUnreadAt={current.first_unread_at}
+              firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
             />
           </div>
