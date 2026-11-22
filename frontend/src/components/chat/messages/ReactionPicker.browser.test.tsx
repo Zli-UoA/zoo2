@@ -1,4 +1,4 @@
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -196,5 +196,59 @@ describe("ReactionPicker", () => {
 
     expect(screen.getByTestId("mock-emoji")).not.toBeNull();
     await waitFor(() => expect(screen.queryByText("1つ目の絵文字")).toBeNull());
+  });
+
+  it("reserves custom emoji image dimensions from metadata before the image loads", async () => {
+    await startMockServer();
+    mockServer.use(
+      http.get("*/api/emojis", () =>
+        HttpResponse.json([
+          {
+            name: "wide-emoji",
+            url: "https://www.gstatic.com/pending-wide.png",
+            category: "Wide",
+            aliases: [],
+            width: 3,
+            height: 1,
+          },
+          {
+            name: "ultra-wide-emoji",
+            url: "https://www.gstatic.com/pending-ultra.png",
+            category: "Wide",
+            aliases: [],
+            width: 1000,
+            height: 10,
+          },
+          {
+            name: "legacy-emoji",
+            url: "https://www.gstatic.com/pending-legacy.png",
+            category: "Legacy",
+            aliases: [],
+            width: null,
+            height: null,
+          },
+        ]),
+      ),
+      http.get("https://www.gstatic.com/pending-*.png", async () => {
+        await delay("infinite");
+        return new HttpResponse(null);
+      }),
+    );
+
+    renderPicker();
+    await userEvent.click(screen.getByRole("tab", { name: "カスタム絵文字" }));
+
+    const wide = (await screen.findByRole("img", { name: ":wide-emoji:" })) as HTMLImageElement;
+    expect(wide.complete).toBe(false);
+    expect(wide.style.height).toBe("1.75rem");
+    expect(wide.style.maxWidth).toBe("10rem");
+    expect(Math.abs(wide.getBoundingClientRect().width - 84)).toBeLessThanOrEqual(1);
+
+    const ultra = screen.getByRole("img", { name: ":ultra-wide-emoji:" }) as HTMLImageElement;
+    expect(Math.abs(ultra.getBoundingClientRect().width - 160)).toBeLessThanOrEqual(1);
+
+    const legacy = screen.getByRole("img", { name: ":legacy-emoji:" }) as HTMLImageElement;
+    expect(legacy.style.width).toBe("");
+    expect(legacy.style.height).toBe("");
   });
 });

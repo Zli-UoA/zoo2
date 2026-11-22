@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
 import { EMOJIBASE_DATA_URL, SUPPORTED_EMOJI_VERSION } from "../../../lib/emoji/data";
+import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import { resolveEmojiDataLocale } from "../../../lib/emoji/locale";
 import { resolveMultilingualEmojiData } from "../../../lib/emoji/resolver";
 import { useLocale } from "../../i18n/LocaleProvider";
@@ -277,6 +278,25 @@ export function useCustomEmojiSearch(query: string) {
 
 type CustomEmojiSearch = ReturnType<typeof useCustomEmojiSearch>;
 
+/** Reserve picker image dimensions from metadata to prevent layout shift before decode. */
+function customEmojiImageStyle(emoji: {
+  url: string;
+  width?: number | null;
+  height?: number | null;
+}) {
+  if (
+    typeof emoji.width !== "number" ||
+    !Number.isFinite(emoji.width) ||
+    emoji.width <= 0 ||
+    typeof emoji.height !== "number" ||
+    !Number.isFinite(emoji.height) ||
+    emoji.height <= 0
+  ) {
+    return undefined;
+  }
+  return { ...emojiImageStyle(emoji, "1.75rem"), maxWidth: "10rem" };
+}
+
 function CustomEmojiGroups({
   search,
   onSelect,
@@ -311,6 +331,7 @@ function CustomEmojiGroups({
                       src={imageUrl(e.url)}
                       alt={`:${e.name}:`}
                       className="h-7 w-auto max-w-40 object-contain"
+                      style={customEmojiImageStyle(e)}
                     />
                   )}
                 </Button>
