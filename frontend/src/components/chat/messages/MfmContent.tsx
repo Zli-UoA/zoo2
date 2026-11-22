@@ -18,6 +18,7 @@ import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import { kitchenFromShortcode, kitchenImageUrl, kitchenLabel } from "../../../lib/emoji/kitchen";
 import { useShortcodes } from "../../../lib/emoji/shortcodes";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
+import { highlightText } from "../../ui/highlighted-text";
 import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { AccountGlyph } from "./MfmAccounts";
@@ -41,6 +42,11 @@ export interface MfmContentProps {
    * 省くと（平文のメッセージ）、今までどおり本文の `@name` をすべてメンションとして表示する。
    */
   mentions?: MentionAllowlist;
+  /**
+   * 検索結果で強調する語。本文の文字（リンクの文字を含む）の中で当たった部分を `<mark>` にする。
+   * コード・数式・絵文字・メンションの中は強調しない。
+   */
+  highlight?: readonly string[];
 }
 const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
@@ -51,17 +57,24 @@ function externalLink(url: string, children: ReactNode): ReactNode {
     </ExternalLink>
   );
 }
-function text(content: string, mentions?: MentionAllowlist): ReactNode {
+function text(
+  content: string,
+  mentions?: MentionAllowlist,
+  highlight?: readonly string[],
+): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
-        externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
+        externalLink(
+          segment.value,
+          highlightText(segment.value.replace(/^https?:\/\//i, ""), highlight),
+        )
       ) : segment.kind === "mention" && (!mentions || isAllowedMention(segment.value, mentions)) ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
           <AccountGlyph name={segment.value.slice(1)} mention />
         </span>
       ) : (
-        segment.value
+        highlightText(segment.value, highlight)
       )}
     </Fragment>
   ));
@@ -200,7 +213,9 @@ function renderNode(
   const children = () => render(node.children ?? []);
   switch (node.type) {
     case "text":
-      return inLink ? node.props.text : text(node.props.text, options.mentions);
+      return inLink
+        ? highlightText(node.props.text, options.highlight)
+        : text(node.props.text, options.mentions, options.highlight);
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
@@ -234,7 +249,7 @@ function renderNode(
     case "mathBlock":
       return <MathFormula formula={node.props.formula} block={node.type === "mathBlock"} />;
     case "url":
-      return inLink ? node.props.url : text(node.props.url, options.mentions);
+      return inLink ? node.props.url : text(node.props.url, options.mentions, options.highlight);
     case "link": {
       if (inLink) return children();
       const label = node.children.map((child, index) => (

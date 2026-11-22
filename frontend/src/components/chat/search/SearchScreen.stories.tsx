@@ -156,6 +156,10 @@ const resetRequests = () => {
 };
 
 const regionName = "検索";
+/** 検索語の `<mark>` で文字が分かれていても、要素の文字全体で探す（いちばん内側の要素だけ）。 */
+const fullText = (text: string) => (_: string, element: Element | null) =>
+  element?.textContent === text &&
+  ![...element.children].some((child) => child.textContent === text);
 async function results() {
   const region = await screen.findByRole("region", { name: regionName });
   await waitFor(() => expect(within(region).queryByRole("status")).not.toBeInTheDocument());
@@ -235,7 +239,7 @@ export const All: Story = {
     const region = await results();
     const list = region.getByRole("list", { name: "すべて" });
     await expect(within(list).getAllByRole("listitem")).toHaveLength(messageItems.length + 1);
-    await expect(region.getByText("会議資料_2026年11月.pdf")).toBeVisible();
+    await expect(region.getByText(fullText("会議資料_2026年11月.pdf"))).toBeVisible();
     await expect(requests[0]!.searchParams.get("type")).toBe("all");
     await expect(region.getByText("スレッドの返信")).toBeVisible();
     await expect(region.getByText("2025-12 まで検索しました")).toBeVisible();
@@ -247,13 +251,30 @@ export const All: Story = {
   }),
 };
 
+/** 本文の抜粋とファイル名の中で、検索語に当たった部分だけを強調する。 */
+export const Highlight: Story = {
+  play: playForImplementation(async () => {
+    const region = await results();
+    const list = region.getByRole("list", { name: "すべて" });
+    const marks = list.querySelectorAll("mark[data-search-highlight]");
+    await expect(marks.length).toBeGreaterThan(0);
+    for (const mark of marks) await expect(mark.textContent).toBe("会議");
+    // MFM の太字の中でも強調し、太字は保つ。
+    const first = within(list.children[0] as HTMLElement);
+    await expect(first.getByText("会議").closest("strong")).not.toBeNull();
+    // ファイル名の中でも強調する。
+    const file = list.children[1] as HTMLElement;
+    await expect(file.querySelector("mark")?.textContent).toBe("会議");
+  }),
+};
+
 /** 続きは利用者の操作でだけ読み、前の応答のカーソルを送る。 */
 export const LoadOlder: Story = {
   play: playForImplementation(async () => {
     const region = await results();
     await expect(requests).toHaveLength(1);
     await userEvent.click(region.getByRole("button", { name: "さらに古い結果を検索" }));
-    await expect(await region.findByText("昨年の会議メモ")).toBeVisible();
+    await expect(await region.findByText(fullText("昨年の会議メモ"))).toBeVisible();
     await expect(requests).toHaveLength(2);
     await expect(requests[1]!.searchParams.get("cursor")).toBe("cursor-1");
     await expect(region.queryByRole("button", { name: "さらに古い結果を検索" })).toBeNull();
@@ -276,7 +297,7 @@ export const Files: Story = {
   },
   play: playForImplementation(async () => {
     const region = await results();
-    await expect(region.getByText("会議資料_2026年11月.pdf")).toBeVisible();
+    await expect(region.getByText(fullText("会議資料_2026年11月.pdf"))).toBeVisible();
     const fileLink = within(region.getByRole("list", { name: "ファイル" })).getAllByRole(
       "link",
     )[0]!;
@@ -312,7 +333,7 @@ export const SwitchKind: Story = {
   parameters: Files.parameters,
   play: playForImplementation(async () => {
     const region = await results();
-    await expect(region.getByText("会議資料_2026年11月.pdf")).toBeVisible();
+    await expect(region.getByText(fullText("会議資料_2026年11月.pdf"))).toBeVisible();
     await userEvent.click(region.getByRole("button", { name: "メッセージ" }));
     await expect(await region.findByText(/明日の/)).toBeVisible();
     await expect(requests.map((url) => url.searchParams.get("type"))).toEqual([

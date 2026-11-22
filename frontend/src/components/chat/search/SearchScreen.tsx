@@ -32,6 +32,7 @@ import {
   type SearchKind,
   type SearchPeriod,
 } from "./globalSearch";
+import { searchTerms } from "../../../lib/searchHighlight";
 import { SearchResultRow } from "./SearchResultRow";
 
 /**
@@ -63,6 +64,7 @@ export function SearchScreen() {
     setDraft(query);
   }
   const search = useGlobalSearch(query, kind, filters);
+  const terms = useMemo(() => searchTerms(query), [query]);
   const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
   const users = useMemo(
@@ -309,6 +311,7 @@ export function SearchScreen() {
                     users={users}
                     members={item.is_dm ? membersByChannel.get(item.channel_id) : undefined}
                     currentUserId={currentUserId}
+                    terms={terms}
                   />
                 ))}
               </ul>
