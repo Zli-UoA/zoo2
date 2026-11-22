@@ -52,6 +52,14 @@ import {
 } from "./call-diagnostics";
 import { reportWebrtcEvent } from "../telemetry/capture";
 import { apiPath } from "../api/path";
+import { CfRealtimeAdapter, type CfTracksResponse } from "./sfu/cf-realtime-adapter";
+import {
+  isSfuJoinResponse,
+  isSfuTrackInfo,
+  type RoomMode,
+  type SfuAdapter,
+  type SfuAdapterCallbacks,
+} from "./sfu/types";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -203,10 +211,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       setCallSoundSink(target);
       let ok = true;
       let applied = 0;
-      for (const entry of peersRef.current.values()) {
-        if (!entry.audio) continue;
+      for (const audio of remoteAudioElements()) {
         applied++;
-        if (!(await applySink(entry.audio, target))) ok = false;
+        if (!(await applySink(audio, target))) ok = false;
       }
       if (ok) {
         // 実際に適用できた要素があるときだけ、出力先として記録する
@@ -215,8 +222,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       }
       if (speakerIdRef.current !== target) return;
       fallbackSpeaker(target);
-      for (const entry of peersRef.current.values()) {
-        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
+      for (const audio of remoteAudioElements()) {
+        await applySink(audio, speakerIdRef.current);
       }
     });
     speakerApplyQueueRef.current = run.catch(() => {});
@@ -246,6 +253,20 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     pendingCandidates: RTCIceCandidateInit[];
   }
   const peersRef = useRef<Map<string, PeerEntry>>(new Map());
+  // SFU モード（docs/calls-sfu.md）。mesh の peersRef とは別に、SFU のアダプタと話者ごとの音声を持つ。
+  const roomModeRef = useRef<RoomMode>("mesh");
+  const sfuAdapterRef = useRef<SfuAdapter | null>(null);
+  const sfuAudioRef = useRef<Map<string, { audio: HTMLAudioElement; cleanup: () => void }>>(
+    new Map(),
+  );
+  const sfuStartSeqRef = useRef(0);
+  const latestSfuTracksRef = useRef<{ tracks: unknown[]; version: number } | null>(null);
+  const remoteAudioElements = () => {
+    const list: HTMLAudioElement[] = [];
+    for (const entry of peersRef.current.values()) if (entry.audio) list.push(entry.audio);
+    for (const entry of sfuAudioRef.current.values()) list.push(entry.audio);
+    return list;
+  };
   const pendingEarlyCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const iceServersRef = useRef<RTCIceServer[]>([{ urls: "stun:stun.l.google.com:19302" }]);
   const callGenerationRef = useRef(0);
@@ -330,7 +351,19 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     return () => polling.dispose();
   }, [pollActiveCalls]);
 
+  const closeSfu = useCallback(() => {
+    sfuStartSeqRef.current++;
+    const adapter = sfuAdapterRef.current;
+    sfuAdapterRef.current = null;
+    adapter?.close();
+    for (const entry of sfuAudioRef.current.values()) entry.cleanup();
+    sfuAudioRef.current.clear();
+  }, []);
+
   const cleanupPeers = useCallback(() => {
+    closeSfu();
+    roomModeRef.current = "mesh";
+    latestSfuTracksRef.current = null;
     for (const entry of peersRef.current.values()) {
       entry.cleanupAudio?.();
       entry.pc.close();
@@ -345,7 +378,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     heartbeatOkAtRef.current = null;
     heartbeatFailuresRef.current = 0;
     muteSerialQueueRef.current = Promise.resolve();
-  }, []);
+  }, [closeSfu]);
 
   const closeMedia = useCallback(() => {
     localVolumeCleanupRef.current?.();
@@ -491,6 +524,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       track.enabled = !nextMuted;
     }
     if (pendingMicTrackRef.current) pendingMicTrackRef.current.enabled = !nextMuted;
+    void sfuAdapterRef.current?.setMuted(nextMuted).catch(() => {});
     setIsMuted(nextMuted);
     playCallSound(nextMuted ? "mute" : "unmute");
 
@@ -707,16 +741,29 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         }
         return null;
       };
+      // SFU のアダプタも、送信側の 1 つとして差し替える。
+      const sfuAdapter = sfuAdapterRef.current;
+      let sfuReplaced = false;
+      const revertSfu = async () => {
+        if (sfuReplaced && sfuAdapter && oldTrack) {
+          await sfuAdapter.replaceMicTrack(oldTrack).catch(() => {});
+        }
+      };
       try {
         for (let sender = nextSender(); sender && !isStale(); sender = nextSender()) {
           done.add(sender);
           await sender.replaceTrack(newTrack);
           replaced.push(sender);
         }
+        if (sfuAdapter && !isStale() && sfuAdapterRef.current === sfuAdapter) {
+          await sfuAdapter.replaceMicTrack(newTrack);
+          sfuReplaced = true;
+        }
       } catch (err) {
         console.error("Failed to replace mic track", err);
         // 置換済みの送信側を旧トラックへ戻し、旧マイクを維持する
         await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        await revertSfu();
         clearPending();
         stopNewStream();
         if (isStale()) return true;
@@ -727,6 +774,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
       if (isStale()) {
         await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        await revertSfu();
         stopNewStream();
         return true;
       }
@@ -809,8 +857,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const getCallDiagnostics = useCallback(async (): Promise<CallDiagnostics> => {
     const now = Date.now();
     const track = localStreamRef.current?.getAudioTracks()[0] ?? null;
+    const sfuPeers: [string, { pc: RTCPeerConnection; userId: string }][] = (
+      sfuAdapterRef.current?.peerConnections() ?? []
+    ).map((pc, i) => [`sfu-${sfuAdapterRef.current?.kind}-${i}`, { pc, userId: "sfu" }]);
     const peers = await Promise.all(
-      [...peersRef.current.entries()].map(async ([sessionId, entry]) => {
+      [...peersRef.current.entries(), ...sfuPeers].map(async ([sessionId, entry]) => {
         let summary: ReturnType<typeof summarizeStats> | null = null;
         try {
           const report = await entry.pc.getStats();
@@ -847,6 +898,164 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       peers,
     };
   }, [connectionState, isMuted]);
+
+  // ---- SFU（docs/calls-sfu.md） ----
+
+  const detachSfuAudio = useCallback((speakerSessionId: string) => {
+    const entry = sfuAudioRef.current.get(speakerSessionId);
+    if (!entry) return;
+    sfuAudioRef.current.delete(speakerSessionId);
+    entry.cleanup();
+  }, []);
+
+  const attachSfuAudio = useCallback(
+    (speakerSessionId: string, stream: MediaStream) => {
+      detachSfuAudio(speakerSessionId);
+      const userId = sessionUserMapRef.current.get(speakerSessionId) ?? speakerSessionId;
+      const audio = new Audio();
+      audio.srcObject = stream;
+      const startPlayback = () => {
+        if (sfuAudioRef.current.get(speakerSessionId)?.audio !== audio) return;
+        audio.autoplay = true;
+        void audio.play().catch(() => {});
+      };
+      const stopMeter = createVolumeMeter(stream, (speaking) => {
+        updateSpeakingUser(userId, speaking);
+      });
+      sfuAudioRef.current.set(speakerSessionId, {
+        audio,
+        cleanup: () => {
+          stopMeter();
+          updateSpeakingUser(userId, false);
+          audio.pause();
+          audio.srcObject = null;
+        },
+      });
+      if (speakerIdRef.current) void applySpeakerToAll().then(startPlayback);
+      else startPlayback();
+    },
+    [applySpeakerToAll, detachSfuAudio, updateSpeakingUser],
+  );
+
+  /** mesh の接続をすべて閉じる（SFU に移ったあと）。 */
+  const closeMeshPeers = useCallback(() => {
+    for (const entry of peersRef.current.values()) {
+      entry.cleanupAudio?.();
+      entry.pc.close();
+    }
+    peersRef.current.clear();
+    pendingEarlyCandidatesRef.current.clear();
+    lastHandledOffersRef.current.clear();
+  }, []);
+
+  const startSfuRef = useRef<
+    (channelId: string, mySessionId: string, gen: number, fallback: boolean) => Promise<void>
+  >(async () => {});
+
+  /** SFU に割り当ててもらい、つなぐ。LiveKit につながらなければ Cloudflare でやり直す。 */
+  const startSfu = useCallback(
+    async (channelId: string, mySessionId: string, gen: number, fallback: boolean) => {
+      // 前のアダプタを閉じる（話者の音声も止まる）。
+      closeSfu();
+      const seq = sfuStartSeqRef.current;
+      const isStale = () =>
+        callGenerationRef.current !== gen ||
+        sfuStartSeqRef.current !== seq ||
+        sessionIdRef.current !== mySessionId;
+      const mic = localStreamRef.current?.getAudioTracks()[0];
+      if (!mic) return;
+
+      let joined: unknown;
+      try {
+        joined = await apiClient.request(apiPath`/api/channels/${channelId}/call/sfu/join`, {
+          method: "POST",
+          body: { session_id: mySessionId, fallback },
+        });
+      } catch (err) {
+        if (isStale()) return;
+        console.error("Failed to join the call SFU", err);
+        reportWebrtcEvent({ state: "sfu_join_failed" });
+        toast.error(t("call.connectError"));
+        return;
+      }
+      if (isStale() || !isSfuJoinResponse(joined)) return;
+
+      const callbacks: SfuAdapterCallbacks = {
+        onRemoteAudio: (sid, stream) => {
+          if (!isStale()) attachSfuAudio(sid, stream);
+        },
+        onRemoteGone: (sid) => detachSfuAudio(sid),
+        onFailed: (reason) => {
+          if (isStale()) return;
+          console.warn("Call SFU connection failed", reason);
+          if (sfuAdapterRef.current?.kind === "livekit") {
+            reportWebrtcEvent({ state: "sfu_fallback" });
+            void startSfuRef.current(channelId, mySessionId, gen, true);
+          } else {
+            reportWebrtcEvent({ state: "sfu_failed" });
+            toast.error(t("call.disconnected"));
+          }
+        },
+      };
+      const cfApi = {
+        publish: (offer: { type: string; sdp: string }) =>
+          apiClient.request<CfTracksResponse>(
+            apiPath`/api/channels/${channelId}/call/sfu/cf/publish`,
+            { method: "POST", body: { session_id: mySessionId, offer } },
+          ),
+        pull: (trackIds: string[]) =>
+          apiClient.request<CfTracksResponse>(
+            apiPath`/api/channels/${channelId}/call/sfu/cf/pull`,
+            {
+              method: "POST",
+              body: { session_id: mySessionId, track_ids: trackIds },
+            },
+          ),
+        answer: async (answer: { type: string; sdp: string }) => {
+          await apiClient.request(apiPath`/api/channels/${channelId}/call/sfu/cf/answer`, {
+            method: "POST",
+            body: { session_id: mySessionId, answer },
+          });
+        },
+      };
+      // join の応答と、そのあとに SSE で届いた一覧のうち、新しい方を使う。
+      const latest = latestSfuTracksRef.current;
+      const initial =
+        latest && latest.version > joined.version
+          ? { tracks: latest.tracks.filter(isSfuTrackInfo), version: latest.version }
+          : { tracks: joined.tracks, version: joined.version };
+      let adapter: SfuAdapter;
+      if (joined.sfu === "livekit") {
+        // livekit-client は大きいので、LiveKit に割り当てられたときだけ読み込む。
+        const { LiveKitAdapter } = await import("./sfu/livekit-adapter");
+        if (isStale()) return;
+        adapter = new LiveKitAdapter(joined.url, joined.token, mic, callbacks);
+      } else {
+        adapter = new CfRealtimeAdapter(mySessionId, mic, cfApi, callbacks, initial);
+      }
+      sfuAdapterRef.current = adapter;
+      try {
+        await adapter.start();
+      } catch (err) {
+        if (isStale()) return;
+        console.error("Failed to connect to the call SFU", err);
+        if (adapter.kind === "livekit") {
+          reportWebrtcEvent({ state: "sfu_fallback" });
+          void startSfuRef.current(channelId, mySessionId, gen, true);
+        } else {
+          reportWebrtcEvent({ state: "sfu_failed" });
+          toast.error(t("call.connectError"));
+        }
+        return;
+      }
+      if (isStale()) return;
+      if (isMutedRef.current) await adapter.setMuted(true).catch(() => {});
+      // SFU で送れるようになったので、mesh を閉じる。
+      closeMeshPeers();
+    },
+    [apiClient, attachSfuAudio, closeMeshPeers, closeSfu, detachSfuAudio, t],
+  );
+  startSfuRef.current = startSfu;
 
   const joinCall = useCallback(
     async (channelId: string) => {
@@ -960,7 +1169,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       try {
         const response = await openCallStream(
           config,
-          apiPath`/api/channels/${channelId}/call/stream?session_id=${mySessionId}`,
+          `${apiPath`/api/channels/${channelId}/call/stream?session_id=${mySessionId}`}&sfu=1`,
           {
             signal: abortController.signal,
             onAuth: (headers) => {
@@ -975,7 +1184,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (!response.ok) {
           const body = await response.text();
           let errorText = t("call.connectError");
-          if (response.status === 409) {
+          if (response.status === 409 && body.includes("CALL_SFU_UNSUPPORTED")) {
+            errorText = t("call.connectError");
+          } else if (response.status === 409) {
             errorText = t("call.full");
           } else if (response.status === 403) {
             errorText = t("call.archived");
@@ -1009,6 +1220,31 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         ) => {
           if (callGenerationRef.current !== currentGen) return;
 
+          if (eventType === "mode_changed") {
+            if (data.mode === "sfu" && roomModeRef.current !== "sfu") {
+              roomModeRef.current = "sfu";
+              void startSfu(channelId, mySessionId, currentGen, false);
+            }
+            return;
+          }
+          if (eventType === "sfu_tracks") {
+            const version = typeof data.version === "number" ? data.version : -1;
+            const tracks = Array.isArray(data.tracks) ? data.tracks.filter(isSfuTrackInfo) : [];
+            const latest = latestSfuTracksRef.current;
+            if (!latest || version > latest.version) {
+              latestSfuTracksRef.current = { tracks, version };
+            }
+            sfuAdapterRef.current?.updateTracks(tracks, version);
+            return;
+          }
+          if (eventType === "sfu_reassign") {
+            // bridge がないので、LiveKit から Cloudflare に移る。
+            if (sfuAdapterRef.current?.kind === "livekit") {
+              void startSfu(channelId, mySessionId, currentGen, false);
+            }
+            return;
+          }
+
           if (eventType === "participant_joined") {
             const newP = isCallParticipant(data.participant) ? data.participant : null;
             if (newP && newP.session_id !== mySessionId) {
@@ -1034,6 +1270,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               });
               void pollActiveCalls();
 
+              // SFU モードでは mesh の接続を作らない。
+              if (roomModeRef.current === "sfu") return;
               // 既にピアが存在する場合は重複作成・送信を防止 ([P2])
               if (peersRef.current.has(newP.session_id)) return;
 
@@ -1093,6 +1331,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             };
 
             if (!fromSid || !signal) return;
+            // SFU モードでは mesh のシグナルを受けない。
+            if (roomModeRef.current === "sfu") return;
 
             if (signal.type === "offer" && signal.sdp) {
               const lastHandled = lastHandledOffersRef.current.get(fromSid);
@@ -1192,6 +1432,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               { urls: "stun:stun.l.google.com:19302" },
             ];
             iceServersRef.current = ice;
+            const roomMode: RoomMode = data.mode === "sfu" ? "sfu" : "mesh";
 
             // 先行して受信した participant_left / participant_joined とマージ整合性を担保 ([P2])
             const leftSessionIds = leftSessionIdsRef.current;
@@ -1226,10 +1467,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               void syncMuteStateToServer(channelId, mySessionId);
             }
 
+            // SFU モードの部屋なら、mesh を張らずに SFU につなぐ。
+            if (roomMode === "sfu" && roomModeRef.current !== "sfu") {
+              roomModeRef.current = "sfu";
+              void startSfu(channelId, mySessionId, currentGen, false);
+            }
+
             // 同時参加時の Offer 衝突 (Glare) 回避 & 冪等性ガード ([P2]):
             // 既に PeerConnection が存在する場合は重複作成しない。
             // セッション ID の辞書順比較で小さい側のみが Offer を送信する。
-            for (const p of validRoomParticipants) {
+            for (const p of roomModeRef.current === "sfu" ? [] : validRoomParticipants) {
               if (callGenerationRef.current !== currentGen) return;
               if (p.session_id === mySessionId) continue;
               if (peersRef.current.has(p.session_id)) continue;
@@ -1339,6 +1586,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       pollActiveCalls,
       sendSignalWithRetry,
       enqueueMicSwitch,
+      startSfu,
       syncMuteStateToServer,
       t,
       updateSpeakingUser,
