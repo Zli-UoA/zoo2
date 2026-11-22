@@ -49,7 +49,17 @@ function ensureObserver(name: "ResizeObserver" | "IntersectionObserver") {
   Object.defineProperty(window, name, { value: Observer, configurable: true });
 }
 
+// ブラウザーテストはページを並列に動かすため、背景のページではアニメーションが完了しないことがある。
+// Dialog などは閉じるアニメーションの完了を待って DOM から外すので、閉じたことを確かめるテストが
+// 不安定になる。VRT（vrt-setup.ts）と同じく、アニメーションとトランジションを止める。
+function disableAnimations() {
+  const style = document.createElement("style");
+  style.textContent = "*,*::before,*::after{animation:none!important;transition:none!important}";
+  document.head.append(style);
+}
+
 beforeAll(async () => {
+  disableAnimations();
   ensureMatchMedia();
   ensureObserver("ResizeObserver");
   ensureObserver("IntersectionObserver");
