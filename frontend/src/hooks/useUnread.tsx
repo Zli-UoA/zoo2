@@ -61,6 +61,8 @@ function useUnreadFeed() {
     let active = true;
     let inFlight = false;
     let pending = false;
+    let issued = 0;
+    let applied = 0;
     const load = async () => {
       if (document.visibilityState === "hidden") {
         pending = true;
@@ -72,12 +74,14 @@ function useUnreadFeed() {
       }
       inFlight = true;
       pending = false;
+      const request = ++issued;
       setIsLoading(true);
       try {
         const states = await client.get<ChannelReadState[]>("/api/channel-read-states");
-        if (!active) return;
+        if (!active || request < applied) return;
+        applied = request;
         setData({ userId: currentUserId, states });
-        setRevision((value) => value + 1);
+        setRevision(request);
         setIsError(false);
       } catch {
         if (active) setIsError(true);

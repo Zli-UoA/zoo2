@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -32,6 +32,7 @@ export function CatchUpMessagePage({
   firstUnreadAt,
   onBoundaryMessage,
   onRangeReady,
+  loadOlderRef,
 }: {
   channelId: string;
   channelName?: string;
@@ -39,6 +40,7 @@ export function CatchUpMessagePage({
   firstUnreadAt: string | null;
   onBoundaryMessage: (messageId: string | null, createdAt: number | null) => void;
   onRangeReady?: (ready: boolean, exhausted: boolean) => void;
+  loadOlderRef?: MutableRefObject<(() => void) | null>;
 }) {
   const feed = useMessageFeed(channelId);
   const { currentUserId } = useCurrentUser();
@@ -142,6 +144,14 @@ export function CatchUpMessagePage({
     loadedPages.current += 1;
     void feed.loadOlder();
   }, [feed.hasOlder, feed.isLoading, feed.isLoadingOlder, feed.loadOlder, firstUnreadAt, messages]);
+
+  useEffect(() => {
+    if (!loadOlderRef) return;
+    loadOlderRef.current = () => void feed.loadOlder();
+    return () => {
+      loadOlderRef.current = null;
+    };
+  }, [feed.loadOlder, loadOlderRef]);
 
   // 「既読にする」は最初の未読が読み込み範囲の内側にあるときだけ有効にする。
   // 下限だけでなく上限も確認しないと、未読より古い末尾を既読にしてしまう。

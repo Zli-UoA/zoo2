@@ -1877,6 +1877,7 @@
     "summary": "已讀 {{read}} 個 · 保持未讀 {{skipped}} 個",
     "refresh": "更新",
     "conversation": "對話",
-    "unreadTooOld": "未讀訊息太多，部分較舊嘅訊息未能載入。標為已讀會留返下次。"
+    "unreadTooOld": "部分較舊嘅未讀訊息仲喺讀取範圍外。請先載入更多再標為已讀。",
+    "loadMore": "載入更多"
   }
 }

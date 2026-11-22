@@ -53,6 +53,7 @@ export function CatchUpScreen() {
   } | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const requestId = useRef(0);
+  const loadOlderRef = useRef<(() => void) | null>(null);
   const latestRevision = useRef(revision);
   latestRevision.current = revision;
   const revisionAtStart = useRef(revision);
@@ -275,12 +276,18 @@ export function CatchUpScreen() {
               firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
               onRangeReady={onRangeReady}
+              loadOlderRef={loadOlderRef}
             />
           </div>
           {rangeState.exhausted && !rangeState.ready ? (
-            <p role="status" className="border-t px-4 py-2 text-xs text-muted-foreground">
-              {t("catchUp.unreadTooOld")}
-            </p>
+            <div className="flex items-center justify-between gap-2 border-t px-4 py-2">
+              <p role="status" className="text-xs text-muted-foreground">
+                {t("catchUp.unreadTooOld")}
+              </p>
+              <Button variant="ghost" size="sm" onClick={() => loadOlderRef.current?.()}>
+                {t("catchUp.loadMore")}
+              </Button>
+            </div>
           ) : null}
           {writeError ? (
             <p role="alert" className="border-t px-4 py-2 text-sm text-destructive">
@@ -293,7 +300,7 @@ export function CatchUpScreen() {
               onClick={() => void markRead()}
               disabled={
                 isWriting ||
-                (!rangeState.ready && !rangeState.exhausted) ||
+                !rangeState.ready ||
                 boundary?.channelId !== current.channel_id ||
                 !boundary.messageId
               }

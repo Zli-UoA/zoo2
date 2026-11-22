@@ -1877,6 +1877,7 @@
     "summary": "{{read}} marked read · {{skipped}} left unread",
     "refresh": "Refresh",
     "conversation": "Conversation",
-    "unreadTooOld": "Some older unread messages could not be loaded. Marking as read will leave them for next time."
+    "unreadTooOld": "Some older unread messages are still outside the loaded range. Load more before marking as read.",
+    "loadMore": "Load more"
   }
 }
