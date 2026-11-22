@@ -105,7 +105,8 @@ function inTimeZone(zone: string, run: () => void) {
 }
 
 describe("periods", () => {
-  const now = new Date("2026-11-21T12:00:00Z");
+  // 端末の暦の 11/21 正午（UTC+12 以降の端末でも日付がずれない）。
+  const now = new Date(2026, 10, 21, 12);
   it("uses the terminal's calendar day", () => {
     // JST では 11/22 の 8 時なので、今日は 11/22。
     inTimeZone("Asia/Tokyo", () =>
@@ -118,6 +119,10 @@ describe("periods", () => {
   it("sends the terminal's midnight with its offset", () => {
     inTimeZone("Asia/Tokyo", () =>
       expect(localMidnight("2026-11-22")).toBe("2026-11-22T00:00:00+09:00"),
+    );
+    // 変換済みの時刻は、タイムゾーンが変わってもそのまま。
+    inTimeZone("UTC", () =>
+      expect(localMidnight("2026-11-22T00:00:00+09:00")).toBe("2026-11-22T00:00:00+09:00"),
     );
     inTimeZone("America/New_York", () => {
       expect(localMidnight("2026-11-22")).toBe("2026-11-22T00:00:00-05:00");
