@@ -1211,12 +1211,10 @@ fn remove_stale_entry_with(
         // 記録の形が違うものは、ファイルには触れずに記録から外す。
         return true;
     }
-    // 外付けドライブが外れてマウントポイントだけが残ると、同じ名前の別のファイルが
-    // そこに置かれていることがある。削除する前に、記録した親と現在の親が一致することを
-    // 確かめる。届かないなら、ファイルも記録も残す（ドライブが戻ったときに再試行する）。
-    if !reachable_parent(path, parent) {
-        return false;
-    }
+    // 事前照合はしない。`st_dev` は再マウントや再起動で変わり、実在する `.part` を
+    // 回収できなくなるため。`.part` の名前に 16 桁の ID が入るので同名の衝突はほぼ無く、
+    // `.probe` は削除前に目印を確認している。親の照合は `NotFound` のときだけ行う
+    // （`Journal::remove_part` と同じ判定）。
     if is_probe_name(name) {
         match probe(path) {
             ProbeState::Ours => {}
@@ -3098,8 +3096,8 @@ mod tests {
 
         let removed = Cell::new(false);
         let result = remove_stale_entry_with(&probe, recorded, |_| {
-            // 最初の照合が終わった後、削除の直前にボリュームが外れた状況を作る。
-            // `remove_file` が `NotFound` を返すので、再照合の分岐を通る。
+            // 削除の直前にボリュームが外れた状況を作る。`remove_file` が `NotFound` を
+            // 返すので、そのときの親照合で記録を残す分岐を通る。
             if !removed.get() {
                 std::fs::remove_dir_all(&folder).unwrap();
                 removed.set(true);
@@ -3112,10 +3110,10 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_keeps_a_file_at_the_same_name_on_a_different_volume() {
+    fn cleanup_removes_a_part_even_when_the_volume_id_changed() {
         let dir = temp_dir();
         let part = part_path(&dir.join("x.txt"), "0123456789abcdef");
-        std::fs::write(&part, b"someone else").unwrap();
+        std::fs::write(&part, b"ours").unwrap();
         let recorded = parent_id(&part).map(|id| ParentId {
             volume: id.volume.wrapping_add(1),
             ..id
@@ -3123,16 +3121,16 @@ mod tests {
         assert!(recorded.is_some());
 
         assert!(
-            !remove_stale_entry(&part, recorded),
-            "別のボリュームの同名ファイルは消さず、記録も残す"
+            remove_stale_entry(&part, recorded),
+            "ファイルが実在するなら再マウントで ID が変わっても回収する"
         );
-        assert_eq!(std::fs::read(&part).unwrap(), b"someone else");
+        assert!(!part.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn cleanup_keeps_a_probe_at_the_same_name_on_a_different_volume() {
+    fn cleanup_removes_a_probe_even_when_the_volume_id_changed() {
         let dir = temp_dir();
         let probe = part_path(&dir.join("x.txt"), "0123456789abcdef").with_extension("probe");
         std::fs::write(&probe, PROBE_MARKER).unwrap();
@@ -3143,10 +3141,10 @@ mod tests {
         assert!(recorded.is_some());
 
         assert!(
-            !remove_stale_entry(&probe, recorded),
-            "別のボリュームの検査用ファイルは消さず、記録も残す"
+            remove_stale_entry(&probe, recorded),
+            "目印を確認できた検査用ファイルは ID が変わっても回収する"
         );
-        assert_eq!(std::fs::read(&probe).unwrap(), PROBE_MARKER);
+        assert!(!probe.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
