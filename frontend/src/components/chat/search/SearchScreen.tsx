@@ -137,22 +137,18 @@ export function SearchScreen() {
     isSearchDay(shownAfter) &&
     isSearchDay(shownEnd) &&
     shownAfter > shownEnd;
-  const commitDay = (field: "after" | "end") => {
-    if (!(field in dayDraft) || reversedDays) return;
-    const value = dayDraft[field] || undefined;
-    setDayDraft((days) => {
-      const rest = { ...days };
-      delete rest[field];
-      return rest;
-    });
+  // 確定は開始日と終了日をまとめて行う。片方が逆転のため下書きに残っていても、もう片方の確定で解消したら
+  // 両方を同じ検索に反映する（表示と検索の期間をずらさない）。
+  const commitDays = () => {
+    if (!editingDays || reversedDays) return;
+    const valid = (day: string | undefined) => (day && isSearchDay(day) ? day : undefined);
+    // 入力途中などで日付にならない値は捨てて、確定済みの値に戻す。
+    const after = shownAfter ? (valid(shownAfter) ?? filters.after) : undefined;
+    const before = shownEnd ? (beforeFromEndDay(valid(shownEnd)) ?? filters.before) : undefined;
+    setDayDraft({});
     // 確定した後も、日付を空にしても、入力欄は出したままにする。
     setCustomPeriod(true);
-    if (value && !isSearchDay(value)) return;
-    if (field === "after") {
-      if (value !== filters.after) filter({ after: value });
-    } else if (value !== endDayFromBefore(filters.before)) {
-      filter({ before: beforeFromEndDay(value) });
-    }
+    if (after !== filters.after || before !== filters.before) filter({ after, before });
   };
   const period: SearchPeriod =
     customPeriod || editingDays ? "custom" : periodOf(filters, new Date());
@@ -305,9 +301,9 @@ export function SearchScreen() {
                   const after = event.target.value;
                   setDayDraft((days) => ({ ...days, after }));
                 }}
-                onBlur={() => commitDay("after")}
+                onBlur={commitDays}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") commitDay("after");
+                  if (event.key === "Enter") commitDays();
                 }}
                 aria-label={t("globalSearch.filters.after")}
                 aria-invalid={reversedDays || undefined}
@@ -326,9 +322,9 @@ export function SearchScreen() {
                   const end = event.target.value;
                   setDayDraft((days) => ({ ...days, end }));
                 }}
-                onBlur={() => commitDay("end")}
+                onBlur={commitDays}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") commitDay("end");
+                  if (event.key === "Enter") commitDays();
                 }}
                 aria-label={t("globalSearch.filters.before")}
                 aria-invalid={reversedDays || undefined}

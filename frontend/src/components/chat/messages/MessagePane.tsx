@@ -386,12 +386,16 @@ export function MessagePane({
   );
 
   useEffect(() => {
-    if (editingId && isArchivedMessage(editingId)) {
+    // 開いた後に親が削除されたら、その返信の編集・削除確認・リアクション選択も閉じる。
+    if (editingId && (isArchivedMessage(editingId) || isUnderDeletedRoot(editingId))) {
       setEditingId(null);
       setEditingText("");
     }
-    if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
-    // 開いた後に親が削除されたら、その返信のリアクション選択も閉じる。
+    if (
+      pendingDeleteId &&
+      (isArchivedMessage(pendingDeleteId) || isUnderDeletedRoot(pendingDeleteId))
+    )
+      setPendingDeleteId(null);
     if (
       reactionMessageId &&
       (isArchivedMessage(reactionMessageId) || isUnderDeletedRoot(reactionMessageId))
@@ -785,7 +789,7 @@ export function MessagePane({
   const handleStartEdit = useCallback(
     (id: string, content: string) => {
       // 暗号化チャンネルの編集も、暗号化して送れないあいだは始めない。
-      if (sendBlocked) return;
+      if (sendBlocked || isUnderDeletedRoot(id)) return;
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
@@ -801,7 +805,7 @@ export function MessagePane({
       setEditingId(id);
       setEditingText(content);
     },
-    [sendBlocked, encrypted, decryptions, messagesCollection],
+    [sendBlocked, encrypted, decryptions, messagesCollection, isUnderDeletedRoot],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -812,7 +816,7 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content || isArchivedMessage(id) || sendBlocked) {
+    if (!id || !content || isArchivedMessage(id) || isUnderDeletedRoot(id) || sendBlocked) {
       return;
     }
     if (cryptoDeps) {
@@ -874,6 +878,7 @@ export function MessagePane({
     run,
     messagesCollection,
     isArchivedMessage,
+    isUnderDeletedRoot,
     sendBlocked,
     cryptoDeps,
     decryptions,
@@ -886,7 +891,7 @@ export function MessagePane({
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    if (!id || isArchivedMessage(id)) {
+    if (!id || isArchivedMessage(id) || isUnderDeletedRoot(id)) {
       return;
     }
     // 論理削除は `deleted_at` の update。Electric が流す operation と揃えて
@@ -896,7 +901,7 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
+  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage, isUnderDeletedRoot]);
 
   return (
     <MessageDecryptionsProvider

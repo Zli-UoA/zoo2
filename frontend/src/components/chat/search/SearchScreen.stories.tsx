@@ -427,9 +427,18 @@ export const ReversedDates: Story = {
     await expect(await region.findByRole("alert")).toHaveTextContent("開始日は終了日と同じか");
     await expect(after).toHaveValue("2026-11-20");
     await expect(requests).toHaveLength(before);
-    await fireEvent.change(after, { target: { value: "2026-11-10" } });
+    // 終了日を後ろへずらして逆転を解消すると、残っていた開始日も同じ検索で確定する。
+    const end = region.getByLabelText("終了日");
+    await fireEvent.change(end, { target: { value: "2026-11-25" } });
+    await fireEvent.focusOut(end);
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("before")).toBe("2026-11-26"));
+    await expect(requests.at(-1)!.searchParams.get("after")).toBe("2026-11-20");
+    await expect(requests).toHaveLength(before + 1);
+    await expect(region.queryByRole("alert")).toBeNull();
+    // 同じ日はよい。
+    await fireEvent.change(after, { target: { value: "2026-11-25" } });
     await fireEvent.focusOut(after);
-    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toBe("2026-11-10"));
+    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toBe("2026-11-25"));
     await expect(region.queryByRole("alert")).toBeNull();
   }),
 };

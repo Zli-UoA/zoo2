@@ -181,6 +181,7 @@ vi.mock("./ThreadPane", () => ({
     isMember,
     onSendReply,
     onPickReaction,
+    onRequestDelete,
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
@@ -188,6 +189,7 @@ vi.mock("./ThreadPane", () => ({
     isMember?: boolean;
     onSendReply: (content: string) => Promise<boolean>;
     onPickReaction?: (id: string) => void;
+    onRequestDelete?: (id: string) => void;
   }) => (
     <div>
       {root.content}
@@ -195,6 +197,7 @@ vi.mock("./ThreadPane", () => ({
         <p key={reply.id}>
           {reply.content}
           <button onClick={() => onPickReaction?.(reply.id)}>React to {reply.id}</button>
+          <button onClick={() => onRequestDelete?.(reply.id)}>Delete {reply.id}</button>
         </p>
       ))}
       {!readOnly ? (
@@ -347,6 +350,25 @@ describe("links and threads whose rows are older than the loaded range", () => {
     pick("👍");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fixture.insert).not.toHaveBeenCalled();
+  });
+
+  it("closes the delete confirmation of a reply once its root is deleted", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "reply-1",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+    };
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    fixture.collectionRows = [fixture.root, reply];
+    const { rerender } = render(pane("reply-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete reply-1" }));
+    await screen.findByRole("alertdialog");
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    rerender(pane("reply-1"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(fixture.closeThread).not.toHaveBeenCalled();
   });
 
   it("loads older pages until a linked top-level message is in the feed", async () => {
