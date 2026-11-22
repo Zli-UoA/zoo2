@@ -131,14 +131,15 @@ struct SyncCacheTests {
         for resource in resources { #expect(try await offline.load(resource, lease: restored) == Data("再取得後".utf8)) }
     }
 
-    @Test("失効記録を書けずDB削除も失敗しても、会話と通知を再起動後に復元しない", arguments: [false, true])
-    func revocationSurvivesUnwritableMarker(failsSave: Bool) async throws {
+    @Test("許可ファイルとDBの削除失敗の組合せに応じて、再起動後の復元と再試行を確認する",
+          arguments: [false, true], [false, true])
+    func revocationAcrossDeletionFailures(failsDeletion: Bool, failsPermissionRemoval: Bool) async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appendingPathComponent("test.store")
         let fails = Mutex(false)
-        let cache = try await SyncCache.open(url: url, beforeSave: {
+        let cache = try await SyncCache.open(url: url, beforeDelete: {
             if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
         })
         let lease = try await cache.activate(connection: "connection", user: syncUser)
@@ -148,21 +149,32 @@ struct SyncCacheTests {
         }
         for key in notifications { try await cache.store(Data("失効前".utf8), resource: key, lease: lease) }
         try await cache.store(Data("別の会話".utf8), resource: "other", channelID: "other", lease: lease)
-        // 以前の失効記録の保存先を塞ぎ、atomic write が失敗する条件を再現する。
-        let marker = url.appendingPathExtension("revocations")
-        try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
-        fails.withLock { $0 = failsSave }
-        if failsSave {
-            await #expect(throws: (any Error).self) { try await cache.revokeChannel(syncChannel, lease: lease) }
-        } else {
-            do { try await cache.revokeChannel(syncChannel, lease: lease) }
-            catch { Issue.record("失効記録の書込み失敗で削除が中断しました: \(error)") }
+        let directory = try #require(FileManager.default.contentsOfDirectory(
+            at: url.appendingPathExtension("permissions"), includingPropertiesForKeys: nil).first)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        if failsPermissionRemoval {
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
         }
+        fails.withLock { $0 = failsDeletion }
+        if failsDeletion || failsPermissionRemoval {
+            await #expect(throws: (any Error).self) { try await cache.revokeChannel(syncChannel, lease: lease) }
+        } else { try await cache.revokeChannel(syncChannel, lease: lease) }
         for key in ["messages", "reactions"] + notifications { #expect(try await cache.load(key, lease: lease) == nil) }
-        try FileManager.default.removeItem(at: marker)
+        #expect(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).count
+                == (failsPermissionRemoval ? 4 : 1))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
 
         let reopened = try await SyncCache.open(url: url)
         let next = try await reopened.activate(connection: "connection", user: syncUser)
+        if failsDeletion && failsPermissionRemoval {
+            // 両方の永続操作が拒否された場合、再起動へ失効を伝えられない制約を隠さない。
+            for key in ["messages", "reactions"] + notifications {
+                #expect(try await reopened.load(key, lease: next) == Data("失効前".utf8))
+            }
+            let version = UUID()
+            try await reopened.revokeChannel(syncChannel, version: version, lease: next)
+            try await reopened.authorizeChannel(syncChannel, version: version, lease: next)
+        }
         for key in ["messages", "reactions"] + notifications { #expect(try await reopened.load(key, lease: next) == nil) }
         #expect(try await reopened.load("other", lease: next) == Data("別の会話".utf8))
         try await reopened.store(Data("再取得後".utf8), resource: "messages", channelID: syncChannel, lease: next)
@@ -172,6 +184,35 @@ struct SyncCacheTests {
         let restored = try await offline.activate(connection: "connection", user: syncUser)
         #expect(try await offline.load("messages", lease: restored) == Data("再取得後".utf8))
         #expect(try await offline.load("reactions", lease: restored) == nil)
+    }
+
+    @Test("ログアウト・アカウント切替・接続削除で該当する許可ファイルだけを消す",
+          arguments: ["logout", "switch", "forget"])
+    func removesAccountPermissions(action: String) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("test.store")
+        let cache = try await SyncCache.open(url: url)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data(), resource: "messages", channelID: syncChannel, lease: lease)
+        try await cache.store(Data(), resource: "remaining", channelID: "remaining", lease: lease)
+        try await cache.revokeChannel(syncChannel, lease: lease)
+        let permissions = url.appendingPathExtension("permissions")
+        let directory = try #require(FileManager.default.contentsOfDirectory(at: permissions, includingPropertiesForKeys: nil).first)
+        let other = try await cache.activate(connection: "other-connection", user: syncUser)
+        try await cache.store(Data("別の接続".utf8), resource: "messages", channelID: syncChannel, lease: other)
+        switch action {
+        case "logout": try await cache.revoke(lease)
+        case "switch": _ = try await cache.activate(connection: "connection", user: Person(id: "other", user_name: "other", display_name: "別の利用者"))
+        default: try await cache.forget(connection: "connection")
+        }
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+        #expect(try FileManager.default.contentsOfDirectory(at: permissions, includingPropertiesForKeys: nil).count == 1)
+        #expect(try await cache.load("messages", lease: other) == Data("別の接続".utf8))
+        let restored = try await cache.activate(connection: "connection", user: syncUser)
+        try await cache.store(Data("再ログイン後".utf8), resource: "messages", channelID: syncChannel, lease: restored)
+        #expect(try await cache.load("messages", lease: restored) == Data("再ログイン後".utf8))
     }
 
     @Test("権限を失った会話と通知だけを削除する")
@@ -358,7 +399,7 @@ struct PersistentSyncIntegrationTests {
         }
     }
 
-    @Test("キャッシュ失効の保存が失敗しても403と404で表示中の会話を消す", arguments: [403, 404])
+    @Test("キャッシュ失効の削除が失敗しても403と404で表示中の会話を消す", arguments: [403, 404])
     func clearsConversationDespiteCacheFailure(status: Int) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
@@ -367,7 +408,7 @@ struct PersistentSyncIntegrationTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appendingPathComponent("test.store")
         let fails = Mutex(false)
-        let cache = try await SyncCache.open(url: url, beforeSave: {
+        let cache = try await SyncCache.open(url: url, beforeDelete: {
             if fails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
         })
         let lease = try await cache.activate(connection: "connection", user: syncUser)
@@ -377,7 +418,10 @@ struct PersistentSyncIntegrationTests {
         _ = try state.addSnapshot(subsetData([1]), response: syncResponse())
         state.windows["root"] = MessageWindow(parentID: nil, limit: 50, hasMore: false)
         try await sync.store(state, key: "messages-v1:" + syncChannel, channelID: syncChannel)
-        try FileManager.default.createDirectory(at: url.appendingPathExtension("revocations"), withIntermediateDirectories: false)
+        let directory = try #require(FileManager.default.contentsOfDirectory(
+            at: url.appendingPathExtension("permissions"), includingPropertiesForKeys: nil).first)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
         fails.withLock { $0 = true }
         let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
         defer { started.continuation.finish(); release.continuation.finish() }

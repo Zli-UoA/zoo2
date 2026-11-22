@@ -14,10 +14,12 @@ actor SyncCache {
     private var permissionsDirectory: URL?
     private static let notificationResources = ["shape:api/shapes/notifications", "snapshot:api/shapes/notifications"]
     private var beforeSave: (@Sendable () throws -> Void)?
+    private var beforeDelete: (@Sendable () throws -> Void)?
     private var attachmentFiles: AttachmentDiskCache?
 
     @concurrent static func open(inMemory: Bool = false, url: URL? = nil, attachmentDirectory: URL? = nil,
-                                beforeSave: (@Sendable () throws -> Void)? = nil) async throws -> SyncCache {
+                                beforeSave: (@Sendable () throws -> Void)? = nil,
+                                beforeDelete: (@Sendable () throws -> Void)? = nil) async throws -> SyncCache {
         let schema = Schema([CachedSyncRecord.self, CachedSyncAccount.self])
         let configuration: ModelConfiguration
         if let url {
@@ -28,22 +30,28 @@ actor SyncCache {
         }
         let cache = try SyncCache(modelContainer: ModelContainer(for: schema, configurations: configuration))
         await cache.configurePermissions(inMemory && url == nil ? nil : configuration.url.appendingPathExtension("permissions"),
-                                             beforeSave: beforeSave)
+                                         beforeSave: beforeSave, beforeDelete: beforeDelete)
         let directory = attachmentDirectory ?? url.map { $0.appendingPathExtension("attachments") }
             ?? (inMemory ? nil : URL.cachesDirectory.appendingPathComponent("ZooAttachments-v1"))
         await cache.configureAttachments(directory)
         return cache
     }
 
-    private func configurePermissions(_ directory: URL?, beforeSave: (@Sendable () throws -> Void)?) {
+    private func configurePermissions(_ directory: URL?, beforeSave: (@Sendable () throws -> Void)?,
+                                      beforeDelete: (@Sendable () throws -> Void)?) {
         permissionsDirectory = directory
         self.beforeSave = beforeSave
+        self.beforeDelete = beforeDelete
+    }
+
+    private func permissionDirectory(account: String) -> URL? {
+        let accountHash = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
+        return permissionsDirectory?.appendingPathComponent(accountHash)
     }
 
     private func permissionURL(_ scope: String, account: String) -> URL? {
-        let accountHash = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
         let scopeHash = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
-        return permissionsDirectory?.appendingPathComponent(accountHash).appendingPathComponent(scopeHash)
+        return permissionDirectory(account: account)?.appendingPathComponent(scopeHash)
     }
 
     private func hasPermission(_ scope: String, account: String) -> Bool {
@@ -224,6 +232,7 @@ actor SyncCache {
         }
         try? attachmentFiles?.remove(account: account, channelID: channelID)
         do {
+            try beforeDelete?()
             try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account && $0.channelID == channelID })
             for id in ids { try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.id == id }) }
             try save()
@@ -262,6 +271,9 @@ actor SyncCache {
 
     private func deleteRecords(account: String) throws {
         try? attachmentFiles?.remove(account: account)
+        if let directory = permissionDirectory(account: account) { try? FileManager.default.removeItem(at: directory) }
+        memoryPermissions = memoryPermissions.filter { !$0.hasPrefix(account + "|") }
+        revokedPermissions = revokedPermissions.filter { !$0.hasPrefix(account + "|") }
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account })
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
         blockedChannels = blockedChannels.filter { !$0.hasPrefix(account + ":") }
