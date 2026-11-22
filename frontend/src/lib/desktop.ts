@@ -214,9 +214,13 @@ export type DesktopDownloadStart =
   | { status: "cancelled" };
 
 /**
- * アプリにコマンドが無いことによる失敗か。古い版のアプリでは、この失敗だけを
- * 「保存のコマンドが無い」として扱う。設定ファイルの読み込みの競合など、
+ * アプリにコマンドが無い（または実行を許可されていない）ことによる失敗か。古い版のアプリでは、
+ * この失敗だけを「保存のコマンドが無い」として扱う。設定ファイルの読み込みの競合など、
  * 一時的な失敗は区別する。
+ *
+ * Tauri は、コマンドが見つからないとき `Command {name} not found`、ACL で拒否されたとき
+ * `Command {name} not allowed ...` を返す。`not found` だけを見ると、`settings not found`
+ * のような関係のない失敗まで古い版とみなすので、`command` を伴うものだけにする。
  */
 export function isMissingCommandError(error: unknown): boolean {
   const message =
@@ -225,7 +229,11 @@ export function isMissingCommandError(error: unknown): boolean {
       : typeof (error as { message?: unknown } | null)?.message === "string"
         ? String((error as { message: string }).message)
         : "";
-  return /not found|unknown command|not allowed|コマンドがありません/i.test(message);
+  return (
+    /コマンドがありません/.test(message) ||
+    /\bcommand\b[^\n]*\bnot found\b/i.test(message) ||
+    /\bcommand\b[^\n]*\bnot allowed\b/i.test(message)
+  );
 }
 
 /**

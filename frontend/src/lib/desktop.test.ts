@@ -20,6 +20,7 @@ import {
   detectDesktop,
   hasDesktopBridge,
   isDesktopSession,
+  isMissingCommandError,
   resetDesktopForTest,
 } from "./desktop";
 import type { AppConfig } from "./config";
@@ -214,6 +215,20 @@ describe("download commands", () => {
     });
     await detectDesktop();
     await expect(desktopDownloadSettings()).rejects.toThrow("設定を読めません");
+  });
+});
+
+describe("isMissingCommandError", () => {
+  it("recognizes the IPC messages for a missing or denied command", () => {
+    expect(isMissingCommandError("Command zoo_download_settings not found")).toBe(true);
+    expect(
+      isMissingCommandError(new Error("Command zoo_download_settings not allowed by ACL")),
+    ).toBe(true);
+  });
+
+  it("does not treat other failures that mention 'not found' as a missing command", () => {
+    expect(isMissingCommandError(new Error("settings not found"))).toBe(false);
+    expect(isMissingCommandError(new Error("No such file or directory (os error 2)"))).toBe(false);
   });
 });
 

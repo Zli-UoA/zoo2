@@ -8,10 +8,17 @@ const desktop = vi.hoisted(() => ({
   hasBridge: vi.fn(() => true),
   settings: vi.fn(),
   probe: vi.fn(),
-  isMissing: vi.fn((error: unknown) =>
-    /not found|unknown command|not allowed|コマンドがありません/i.test(
-      String((error as { message?: unknown } | null)?.message ?? error),
-    ),
+  isMissing: vi.fn(
+    (error: unknown) =>
+      /コマンドがありません/.test(
+        String((error as { message?: unknown } | null)?.message ?? error),
+      ) ||
+      /\bcommand\b[^\n]*\bnot found\b/i.test(
+        String((error as { message?: unknown } | null)?.message ?? error),
+      ) ||
+      /\bcommand\b[^\n]*\bnot allowed\b/i.test(
+        String((error as { message?: unknown } | null)?.message ?? error),
+      ),
   ),
   begin: vi.fn(),
   write: vi.fn(),
