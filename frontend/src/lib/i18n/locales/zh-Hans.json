@@ -1854,6 +1854,45 @@
     "waiting": "正在等待来电",
     "dmCall": "通话"
   },
+  "globalSearch": {
+    "title": "搜索",
+    "placeholder": "搜索消息和文件",
+    "kinds": {
+      "all": "全部",
+      "messages": "消息",
+      "files": "文件"
+    },
+    "prompt": "请输入要搜索的词。用空格分隔时，将查找包含所有词的结果。",
+    "empty": "没有找到结果。",
+    "emptyOlder": "截至 {{month}} 没有找到结果。可以继续搜索更早的内容。",
+    "searchedUntil": "已搜索到 {{month}}",
+    "searchOlder": "搜索更早的结果",
+    "loading": "正在搜索…",
+    "loadError": "搜索失败。",
+    "retry": "重试",
+    "tooManyTerms": "最多可以搜索 {{max}} 个词。请减少词数。",
+    "termTooLong": "每个词最多 {{max}} 个字符。请缩短该词。",
+    "encryptedNote": "加密频道不在搜索范围内。",
+    "openNav": "搜索",
+    "inThread": "子线程回复",
+    "filters": {
+      "label": "筛选",
+      "from": "发送者",
+      "anyone": "所有人",
+      "in": "频道",
+      "anywhere": "所有频道",
+      "period": "日期",
+      "anytime": "不限",
+      "last7": "过去 7 天",
+      "last30": "过去 30 天",
+      "last365": "过去 1 年",
+      "custom": "指定日期",
+      "after": "开始日期",
+      "before": "结束日期",
+      "reversed": "开始日期不能晚于结束日期。",
+      "reset": "重置条件"
+    }
+  },
   "catchUp": {
     "navUnread_one": "{{count}} 个未读会话待查看",
     "navUnread_other": "{{count}} 个未读会话待查看",

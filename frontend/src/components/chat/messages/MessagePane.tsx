@@ -376,14 +376,32 @@ export function MessagePane({
     [messagesCollection, threadIsArchived, threadRootId, threadReplies],
   );
 
+  // 親が削除されたスレッドの返信（検索・リンクで開いたまま読むだけにするもの）。
+  const isUnderDeletedRoot = useCallback(
+    (id: string) =>
+      !!threadRootRow?.deleted_at &&
+      (messagesCollection.get(id)?.parent_id === threadRootId ||
+        threadReplies.some((reply) => reply.id === id)),
+    [threadRootRow?.deleted_at, messagesCollection, threadRootId, threadReplies],
+  );
+
   useEffect(() => {
-    if (editingId && isArchivedMessage(editingId)) {
+    // 開いた後に親が削除されたら、その返信の編集・削除確認・リアクション選択も閉じる。
+    if (editingId && (isArchivedMessage(editingId) || isUnderDeletedRoot(editingId))) {
       setEditingId(null);
       setEditingText("");
     }
-    if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
-    if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
-  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+    if (
+      pendingDeleteId &&
+      (isArchivedMessage(pendingDeleteId) || isUnderDeletedRoot(pendingDeleteId))
+    )
+      setPendingDeleteId(null);
+    if (
+      reactionMessageId &&
+      (isArchivedMessage(reactionMessageId) || isUnderDeletedRoot(reactionMessageId))
+    )
+      setReactionMessageId(null);
+  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage, isUnderDeletedRoot]);
 
   // 編集中にチャンネルが暗号化に切り替わったら（#367）、切り替える前の平文のメッセージの編集をやめる。
   // サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。
@@ -402,6 +420,7 @@ export function MessagePane({
       if (
         !currentUserId ||
         isArchivedMessage(messageId) ||
+        isUnderDeletedRoot(messageId) ||
         !messagesCollection.get(messageId) ||
         messagesCollection.get(messageId)?.deleted_at
       ) {
@@ -435,7 +454,14 @@ export function MessagePane({
         pendingReactions.current.delete(pendingKey);
       }
     },
-    [currentUserId, messagesCollection, reactionsCollection, run, isArchivedMessage],
+    [
+      currentUserId,
+      messagesCollection,
+      reactionsCollection,
+      run,
+      isArchivedMessage,
+      isUnderDeletedRoot,
+    ],
   );
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
@@ -496,6 +522,15 @@ export function MessagePane({
     t,
   ]);
 
+  // 検索・リンクで開いた返信の親が削除されていても、返信は残っている。そのスレッドは閉じずに、親の代わりに
+  // 知らせを出して読むだけにする。
+  const deletedRootForTarget =
+    !!threadRootRow?.deleted_at &&
+    !!target &&
+    !target.deleted_at &&
+    target.parent_id === threadRootId;
+  const threadPaneRoot = threadRoot ?? (deletedRootForTarget ? threadRootRow : null);
+
   // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
   // ID で取る。取得が終わるまでは判断しない。
@@ -504,6 +539,9 @@ export function MessagePane({
       return;
     }
     if (threadRootRow && !threadRootRow.deleted_at) return;
+    if (deletedRootForTarget) return;
+    // 検索・リンクの対象（返信）を取り終えるまでは決めない。先に閉じると対象の指定も消え、開き直せない。
+    if (resolvedTargetId && targetQuery.isLoading) return;
     closeThread();
     if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
@@ -513,6 +551,9 @@ export function MessagePane({
     threadRootRow,
     threadRootQuery.isLoading,
     threadRootQuery.isError,
+    deletedRootForTarget,
+    resolvedTargetId,
+    targetQuery.isLoading,
     closeThread,
     t,
   ]);
@@ -748,7 +789,7 @@ export function MessagePane({
   const handleStartEdit = useCallback(
     (id: string, content: string) => {
       // 暗号化チャンネルの編集も、暗号化して送れないあいだは始めない。
-      if (sendBlocked) return;
+      if (sendBlocked || isUnderDeletedRoot(id)) return;
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
@@ -764,7 +805,7 @@ export function MessagePane({
       setEditingId(id);
       setEditingText(content);
     },
-    [sendBlocked, encrypted, decryptions, messagesCollection],
+    [sendBlocked, encrypted, decryptions, messagesCollection, isUnderDeletedRoot],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -775,7 +816,7 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content || isArchivedMessage(id) || sendBlocked) {
+    if (!id || !content || isArchivedMessage(id) || isUnderDeletedRoot(id) || sendBlocked) {
       return;
     }
     if (cryptoDeps) {
@@ -837,6 +878,7 @@ export function MessagePane({
     run,
     messagesCollection,
     isArchivedMessage,
+    isUnderDeletedRoot,
     sendBlocked,
     cryptoDeps,
     decryptions,
@@ -849,7 +891,7 @@ export function MessagePane({
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    if (!id || isArchivedMessage(id)) {
+    if (!id || isArchivedMessage(id) || isUnderDeletedRoot(id)) {
       return;
     }
     // 論理削除は `deleted_at` の update。Electric が流す operation と揃えて
@@ -859,7 +901,7 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
+  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage, isUnderDeletedRoot]);
 
   return (
     <MessageDecryptionsProvider
@@ -988,21 +1030,22 @@ export function MessagePane({
           )}
         </div>
 
-        {threadRoot ? (
+        {threadPaneRoot ? (
           <ThreadPane
             commands={commandSuggestions.commands}
             onRequestCommands={commandSuggestions.load}
             targetMessageId={resolvedTargetId}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
-            key={threadRoot.id}
-            readOnly={readOnly}
+            key={threadPaneRoot.id}
+            readOnly={readOnly || !threadRoot}
+            rootDeleted={!threadRoot}
             isArchived={threadIsArchived}
             isMember={!readOnly && isMember}
             isOffline={!isOnline}
             typingUsers={threadTyping.users}
             onTyping={threadTyping.onTyping}
-            root={threadRoot}
+            root={threadPaneRoot}
             replies={threadReplies}
             membership={threadMembership.data?.membership}
             membershipPending={threadMembership.pending}
@@ -1024,8 +1067,8 @@ export function MessagePane({
             }
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
-            currentUserId={readOnly || threadIsArchived ? null : currentUserId}
-            canModerate={canModerate && !threadIsArchived}
+            currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+            canModerate={canModerate && !threadIsArchived && !!threadRoot}
             reactions={reactionGroups}
             attachments={attachmentsByMessage}
             onUploadAttachment={uploadAttachment}
@@ -1033,6 +1076,7 @@ export function MessagePane({
             canReact={
               !readOnly &&
               !threadIsArchived &&
+              !!threadRoot &&
               !!currentUserId &&
               !reactionsQuery.isLoading &&
               !reactionsQuery.isError

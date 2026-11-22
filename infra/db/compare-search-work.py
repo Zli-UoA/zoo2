@@ -8,7 +8,7 @@ from pathlib import Path
 import statistics
 import sys
 
-API = ('api-messages', 'api-messages-12-months', 'api-files', 'api-notes')
+API = ('api-messages', 'api-messages-12-months', 'api-all', 'api-all-12-months', 'api-files', 'api-notes')
 
 
 def groups(path):
@@ -17,6 +17,8 @@ def groups(path):
     for sample in data['samples']:
         grouped.setdefault((sample['name'], sample['concurrency']), []).append(sample)
     assert len(grouped) == data['queries'] * 2
+    names = {name for name, _ in grouped}
+    assert set(grouped) == {(name, n) for name in names for n in (1, 8)}, sorted(grouped)
     for (name, concurrency), samples in grouped.items():
         assert len(samples) == 30 * concurrency, (name, concurrency, len(samples))
     return data, grouped
@@ -54,6 +56,26 @@ def compare(first, second):
         p50, p95, top = percentile(s['roundtrip_ms'] for s in y)
         print(f'{key}: blocks {max(s["blocks"] for s in x)} → {max(s["blocks"] for s in y)}, '
               f'SQL roundtrip ms p50={p50:.3f} p95={p95:.3f} max={top:.3f}')
+    # API 1 リクエストあたりの SQL の回数と合計バッファも、履歴に比例しない。
+    sql = []
+    for data in (small, large):
+        per = {}
+        for sample in data['api_sql']:
+            per.setdefault(sample['name'], []).append(sample)
+        assert set(per) == set(API), sorted(per)
+        sql.append(per)
+    for name in API:
+        x, y = sql[0][name], sql[1][name]
+        assert {s['month_sql'] for s in x} == {s['month_sql'] for s in y}, (name, 'month_sql')
+        initial = max(s['blocks'] for s in x)
+        later = max(s['blocks'] for s in y)
+        assert later <= 1.5 * initial + 64, (name, 'api blocks', initial, later)
+        # 文の数（BEGIN・SET・見える範囲・月ごと）は履歴によらない。トランザクションの揺れのぶんだけ許す。
+        first = max(s['statements'] for s in x)
+        last = max(s['statements'] for s in y)
+        assert last <= first + 2, (name, 'api statements', first, last)
+        print(f'API SQL {name}: month SQL {y[0]["month_sql"]:.0f}, statements {max(s["statements"] for s in y):.0f}, '
+              f'blocks {initial} → {later}, DB ms max={max(s["db_ms"] for s in y):.3f}')
     for key, values in sorted(api_groups[1].items()):
         p50, p95, top = percentile(values)
         print(f'API {key}: p50={p50:.3f} p95={p95:.3f} max={top:.3f} ms')

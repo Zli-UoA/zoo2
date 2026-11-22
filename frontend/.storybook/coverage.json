@@ -206,6 +206,32 @@
       "states": ["Unread", "SingleUnread", "AllRead"]
     },
     {
+      "file": "src/components/chat/search/SearchScreen.stories.tsx",
+      "states": [
+        "Prompt",
+        "SubmitQuery",
+        "All",
+        "Highlight",
+        "OpenFromRow",
+        "TooManyTerms",
+        "TermTooLong",
+        "CustomDates",
+        "ReversedDates",
+        "RejectedThenNavigate",
+        "NarrowLateHit",
+        "Filters",
+        "LoadOlder",
+        "Files",
+        "SwitchKind",
+        "Loading",
+        "Empty",
+        "EmptyWithOlder",
+        "LoadError",
+        "LongJapanese",
+        "Mobile"
+      ]
+    },
+    {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
       "states": [
         "UnifiedTimeline",
@@ -351,6 +377,7 @@
         "InlineLinks",
         "LongUrl",
         "CodeAndMath",
+        "SearchHighlight",
         "EmojiAndFallback",
         "JoinedEmoji",
         "Formatting",
@@ -1141,6 +1168,16 @@
       "story": "src/components/chat/NotificationsButton.stories.tsx"
     },
     {
+      "file": "src/components/chat/search/SearchScreen.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/search/SearchResultRow.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "AllとFilesでメッセージ・スレッドの返信・DM・Appの投稿者・ファイルの各行、LongJapaneseで長い名前と本文の折り返しを実描画する。"
+    },
+    {
       "file": "src/components/chat/NotificationsScreen.tsx",
       "story": "src/components/chat/NotificationsScreen.stories.tsx"
     },
@@ -1455,6 +1492,12 @@
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
       "reason": "LoadingとBodiesReadyTogetherで初回の全体Spinner、LoadingOnScrollで一覧を残した追加読込の下部Spinnerを確認する。"
+    },
+    {
+      "file": "src/components/ui/highlighted-text.tsx",
+      "story": "src/components/chat/search/SearchScreen.stories.tsx",
+      "composed": true,
+      "reason": "Highlightで検索結果の本文の抜粋（MFMの太字の中を含む）とファイル名の検索語を実描画する。"
     },
     {
       "file": "src/components/ui/external-link.tsx",
