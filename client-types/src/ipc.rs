@@ -331,6 +331,8 @@ pub enum ErrorCode {
     Cancelled,
     /// 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
     UnsupportedDestination,
+    /// 同時に保存できる件数の上限に達した。ほかの保存が終われば保存できる。
+    TooManyDownloads,
     Internal,
 }
 
@@ -409,6 +411,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(IpcError::new(ErrorCode::NotLoggedIn, "x")).unwrap(),
             json!({ "code": "not_logged_in", "message": "x" })
+        );
+        assert_eq!(
+            serde_json::to_value(IpcError::new(ErrorCode::TooManyDownloads, "x")).unwrap(),
+            json!({ "code": "too_many_downloads", "message": "x" })
         );
     }
 

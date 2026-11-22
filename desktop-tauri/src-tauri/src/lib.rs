@@ -120,13 +120,19 @@ pub fn run() {
         .on_window_event(window::on_window_event)
         .build(tauri::generate_context!())
         .expect("Tauri の初期化に失敗しました")
-        .run(|app, event| {
+        .run(|app, event| match event {
             #[cfg(target_os = "windows")]
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
                 update::on_exit_requested(app, code, &api);
             }
-            #[cfg(not(target_os = "windows"))]
-            let _ = (app, event);
+            // `App::run` はまだ書き込み中のダウンロードの `Drop` を呼ばずにプロセスを
+            // 終えるので、ここで `.part` を消す。待ちきれなかったものは次の起動で消す。
+            tauri::RunEvent::Exit => {
+                if let Some(core) = app.try_state::<Arc<core::Core>>() {
+                    core.downloads().shutdown(std::time::Duration::from_secs(1));
+                }
+            }
+            _ => {}
         });
 }
 

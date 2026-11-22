@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DESKTOP_PROTOCOL_VERSION,
   DesktopDownloadDestinationError,
+  DesktopDownloadLimitError,
   desktopAccessToken,
   desktopDownloadBegin,
   desktopDownloadCancel,
@@ -185,6 +186,16 @@ describe("download commands", () => {
     await expect(desktopDownloadBegin("a.exe")).rejects.toBeInstanceOf(
       DesktopDownloadDestinationError,
     );
+  });
+
+  it("marks a download limit so the UI can ask the user to wait", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw { code: "too_many_downloads", message: "同時に保存できるのは 3 件までです" };
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadBegin("a.exe")).rejects.toBeInstanceOf(DesktopDownloadLimitError);
   });
 
   it("is null when an older app does not have the download commands", async () => {

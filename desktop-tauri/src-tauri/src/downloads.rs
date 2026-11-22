@@ -19,7 +19,7 @@ use std::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -132,6 +132,22 @@ impl std::fmt::Display for UnsupportedDestination {
 }
 
 impl std::error::Error for UnsupportedDestination {}
+
+/// 同時に保存できる件数の上限に達している。待てば保存できるので、通信の失敗とは
+/// 区別して画面に伝える。
+#[derive(Debug)]
+pub struct TooManyDownloads;
+
+impl std::fmt::Display for TooManyDownloads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "同時に保存できるのは {MAX_PENDING_DOWNLOADS} 件までです。ほかの保存が終わってから、もう一度お試しください"
+        )
+    }
+}
+
+impl std::error::Error for TooManyDownloads {}
 
 /// クラッシュや強制終了で残る `.part` の記録。保存先がダイアログで選ばれたフォルダーでも、
 /// 次の起動で消せるように、設定ディレクトリの `download_parts.json` に置く。
@@ -552,7 +568,8 @@ impl Downloads {
         drop(slot);
     }
 
-    /// 書き込み中のものをすべて中止する。画面の読み込み直し、ログアウト、アプリの終了で呼ぶ。
+    /// 書き込み中のものをすべて中止する。画面の読み込み直しとログアウトで呼ぶ。
+    /// アプリの終了時は [`Downloads::shutdown`] を使う。
     ///
     /// 呼び出し元はセッションのロックを持っていることがあるので、ここではファイルを閉じたり
     /// 消したりしない。記録から外し、ファイルの後始末は裏のスレッドに任せる。
@@ -586,6 +603,42 @@ impl Downloads {
         });
     }
 
+    /// アプリの終了時に、書きかけの `.part` を消す。`tauri::App::run` は終了時に
+    /// `std::process::exit` するので、managed state の `Drop` は呼ばれない。終了の
+    /// イベント（`RunEvent::Exit`）から、上限時間まで待って呼ぶ。
+    ///
+    /// 削除は裏のスレッドで行う。共有フォルダーが応答しないときも、終了を待たせ続けない
+    /// ため。待ちきれなかったものは記録に残し、次の起動で消す。
+    pub fn shutdown(&self, timeout: Duration) {
+        let pending = {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+            std::mem::take(&mut *self.pending.lock().unwrap_or_else(PoisonError::into_inner))
+        };
+        if pending.is_empty() {
+            return;
+        }
+        for entry in pending.values() {
+            entry.cancelled.store(true, Ordering::SeqCst);
+        }
+        let journal = Arc::clone(&self.journal);
+        // 書き込み中のハンドルが閉じるのを待ってから消す（Windows で開いたままのファイルは
+        // 消せない）。記録から外れるのは、消せた（または既に無かった）ときだけ。
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (_, entry) in pending {
+                let taken = entry
+                    .file
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                drop(taken);
+                journal.remove_part(&entry.part);
+            }
+            let _ = done.send(());
+        });
+        let _ = wait.recv_timeout(timeout);
+    }
+
     fn take_pending(&self, id: &str) -> Option<Pending> {
         self.pending
             .lock()
@@ -596,9 +649,7 @@ impl Downloads {
     fn reserve_slot(&self) -> Result<()> {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         if *slots >= MAX_PENDING_DOWNLOADS {
-            return Err(anyhow!(
-                "同時に保存できるのは {MAX_PENDING_DOWNLOADS} 件までです"
-            ));
+            return Err(anyhow::Error::new(TooManyDownloads));
         }
         *slots += 1;
         Ok(())
@@ -632,6 +683,9 @@ impl Default for Downloads {
 
 impl Drop for Downloads {
     fn drop(&mut self) {
+        // 通常の終了では `tauri::App::run` が `std::process::exit` するので、この `Drop` は
+        // 呼ばれない。終了時の後始末は `shutdown` を `RunEvent::Exit` から呼ぶ。
+        // テストなど、プロセスが終わらない場面での取りこぼしを防ぐ。
         self.cancel_all();
     }
 }
@@ -1890,6 +1944,26 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"old");
         assert_eq!(std::fs::read(&saved).unwrap(), b"new");
         assert!(!part.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shutdown_removes_pending_parts() {
+        let dir = temp_dir();
+        let downloads = test_downloads();
+        let id = new_download_id();
+        let target = dir.join("shutdown.txt");
+        let entry = pending(&target, &id, true, DEFAULT_MAX_DOWNLOAD_BYTES);
+        downloads.journal.record(&entry.part).unwrap();
+        let part = entry.part.clone();
+        downloads.pending.lock().unwrap().insert(id.clone(), entry);
+
+        downloads.shutdown(Duration::from_secs(1));
+
+        assert!(!part.exists());
+        assert!(downloads.pending.lock().unwrap().is_empty());
+        assert!(downloads.journal.snapshot().is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

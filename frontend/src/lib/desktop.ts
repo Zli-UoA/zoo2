@@ -259,12 +259,31 @@ export class DesktopDownloadDestinationError extends Error {
   }
 }
 
+/**
+ * 同時に保存できる件数の上限に達した。ほかの保存が終われば保存できる。
+ * Rust 側の `ErrorCode::TooManyDownloads` を、画面が文言を変えられる形にしたもの。
+ */
+export class DesktopDownloadLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopDownloadLimitError";
+  }
+}
+
 function downloadError(error: unknown): unknown {
-  if ((error as { code?: unknown } | null)?.code !== "unsupported_destination") return error;
+  const code = (error as { code?: unknown } | null)?.code;
   const message = (error as { message?: unknown } | null)?.message;
-  return new DesktopDownloadDestinationError(
-    typeof message === "string" ? message : "この保存先には保存できません",
-  );
+  if (code === "unsupported_destination") {
+    return new DesktopDownloadDestinationError(
+      typeof message === "string" ? message : "この保存先には保存できません",
+    );
+  }
+  if (code === "too_many_downloads") {
+    return new DesktopDownloadLimitError(
+      typeof message === "string" ? message : "同時に保存できる件数の上限に達しました",
+    );
+  }
+  return error;
 }
 
 /** OS の保存ダイアログを出し、書き込み先を決める。`size` は添付の大きさ（分かれば）。 */
@@ -290,6 +309,8 @@ function invokeRaw(
 ): Promise<unknown> {
   const bridge = internals();
   if (!bridge || !isDesktop) return Promise.reject(new Error("デスクトップ版の中ではありません"));
+  // CSP が IPC のオリジンを許可していない画面では、Tauri が postMessage に切り替え、
+  // 本文を 0〜255 の JSON 配列にして送る。Rust 側はどちらの形も受ける。
   return bridge.invoke(cmd, body, { headers });
 }
 
