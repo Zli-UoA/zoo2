@@ -107,12 +107,11 @@ CREATE INDEX messages_search_month ON messages USING gin (
   4. 消した索引と、1 で出なかった索引を、`20261130000001_search_index_recheck.sql` の `CREATE INDEX CONCURRENTLY IF NOT EXISTS …` の文をそのまま流して作り直す（定義を変えない）。
   5. 1 の SQL で、4 つがすべて `indisvalid = true` になったことを確かめる。
   6. マイグレーションを適用し直す（本番と preview は、マイグレーションの Job が作り直されたときに `atlas migrate apply` が流れる）。作成の文から再開した場合も、最後の確認から再開した場合も、索引が有効なので通る。
-- `20261201000000_notification_events_user_mention.sql`（`notification_events_user_mention`）で失敗した場合は、上の手順とは別に扱う。この文には `IF NOT EXISTS` がないので、INVALID の索引が残ったまま適用し直すと「既に存在する」で止まる。手で作り直すと同じく止まるので、作り直さずに、次のとおり消してから適用し直す。
+- `20261201000000_notification_events_user_mention.sql`（`notification_events_user_mention`）で失敗した場合は、上の手順とは別に扱う。この文には `IF NOT EXISTS` がないので、索引が残ったまま適用し直すと「既に存在する」で止まる。txmode none なので索引の作成と Atlas の記録は別のトランザクションで、作成の途中で失敗すると INVALID の索引が残り、作成の直後・記録の前に切れると有効な索引が残る。作成の前に失敗すると索引は残らない。どの場合も、手で作り直さず、残った索引を消してから適用し直す（作り直しは Atlas に任せる）。
   1. 失敗の原因を取り除く。
   2. 同じ索引を作っている処理がないことを確かめる（上の手順 2 と同じ）。
-  3. 索引が INVALID であることを確かめる（`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'notification_events_user_mention'`。`false` のときだけ次へ）。
-  4. `DROP INDEX CONCURRENTLY notification_events_user_mention;` で消す。
-  5. マイグレーションを適用し直す。Atlas は失敗した `CREATE INDEX CONCURRENTLY` から再開し、索引を作り直す。
+  3. `DROP INDEX CONCURRENTLY IF EXISTS notification_events_user_mention;` で消す（INVALID でも有効でも消す。ないときは何もしない）。
+  4. マイグレーションを適用し直す。Atlas はこの `CREATE INDEX CONCURRENTLY` から再開し、索引を作る。
 - 失敗の原因（ロック待ちの打ち切り、ディスク不足など）を先に取り除く。原因が残っていると、同じ所でまた失敗する。
 
 ## 手元と CI の DB
