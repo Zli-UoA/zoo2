@@ -1,6 +1,8 @@
 //! SCALE_POSTS=300000/1000000; use an empty migrated disposable database.
 use backend::{
-    config::Config, display_refresh::reservation_sql, routes::read_states::states_sql,
+    config::Config,
+    display_refresh::reservation_sql,
+    routes::read_states::{UNREAD_SCAN_LIMIT, states_sql},
     slack::sync::claim_sql,
 };
 use serde_json::{Value, json};
@@ -27,7 +29,12 @@ fn walk(node: &Value, f: &mut impl FnMut(&Value)) {
         }
     }
 }
-fn work(name: &str, plan: &Value) -> Value {
+/// `read_*` queries intentionally inspect a bounded window of root messages to
+/// report unread counts; the fixture joins three channels, so allow one extra
+/// channel's worth of headroom for the outer loops.
+const READ_WORK_BUDGET: f64 = (UNREAD_SCAN_LIMIT * 4) as f64;
+
+fn work(name: &str, plan: &Value, budget: f64) -> Value {
     let mut relations = std::collections::BTreeMap::<String, f64>::new();
     let mut max_sort = 0_f64;
     let mut max_intermediate = 0_f64;
@@ -66,25 +73,27 @@ fn work(name: &str, plan: &Value) -> Value {
     if name != "legacy_read_states" {
         for (table, n) in &relations {
             assert!(
-                *n <= 128.,
+                *n <= budget,
                 "{name}: {table} scanned {n} rows: {relations:?}"
             );
         }
         assert!(
-            max_intermediate <= 128.,
+            max_intermediate <= budget,
             "{name}: unbounded intermediate work {max_intermediate}"
         );
-        assert!(max_sort <= 128., "{name}: unbounded sort input {max_sort}");
+        assert!(
+            max_sort <= budget,
+            "{name}: unbounded sort input {max_sort}"
+        );
         assert_eq!(
             plan["Plan"]["Temp Written Blocks"].as_u64().unwrap_or(0),
             0,
             "{name}: disk spill"
         );
         if name.starts_with("read_") {
-            assert_eq!(
-                *relations.get("messages").unwrap_or(&0.),
-                0.,
-                "unread must not enumerate message history"
+            assert!(
+                *relations.get("messages").unwrap_or(&0.) <= READ_WORK_BUDGET,
+                "unread scan must be bounded per channel, not proportional to history"
             );
             assert!(*relations.get("channel_message_authors").unwrap_or(&0.) <= 6.);
         }
@@ -182,7 +191,7 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
     let plan: Value = serde_json::from_str(rows(&raw)[0])?;
     eprintln!(
         "{count} legacy work={} planning={} execution={}",
-        work("legacy_read_states", &plan[0]),
+        work("legacy_read_states", &plan[0], f64::INFINITY),
         plan[0]["Planning Time"],
         plan[0]["Execution Time"]
     );
@@ -219,10 +228,11 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         .map(|r| serde_json::from_str(r).unwrap())
         .collect();
     for (i, channel) in channels.iter().enumerate() {
-        assert_eq!(
-            values.iter().find(|r| r["channel_id"] == *channel).unwrap()["has_unread"],
-            i == 2
-        );
+        let row = values.iter().find(|r| r["channel_id"] == *channel).unwrap();
+        assert_eq!(row["has_unread"], i == 2);
+        assert_eq!(row["unread_count"], if i == 2 { 1 } else { 0 });
+        assert_eq!(row["unread_count_truncated"], false);
+        assert_eq!(row["first_unread_at"].is_null(), i != 2);
     }
     let queries = vec![
         ("read_list", states_sql(false), vec![user.clone()], false),
@@ -327,7 +337,7 @@ fn nested_work(name: &str, plans: &[Value]) -> Value {
     for plan in plans {
         // Each auto_explain notice is a real executed plan, including AFTER
         // trigger SQL missing from the parent EXPLAIN's node instrumentation.
-        let metrics = work(&format!("{name}_nested"), plan);
+        let metrics = work(&format!("{name}_nested"), plan, 128.);
         for (relation, rows) in metrics["relations"].as_object().unwrap() {
             total["relations"][relation] =
                 json!(total["relations"][relation].as_f64().unwrap_or(0.) + rows.as_f64().unwrap());
@@ -357,7 +367,10 @@ fn nested_work(name: &str, plans: &[Value]) -> Value {
 #[should_panic(expected = "messages scanned 300000 rows")]
 fn nested_history_scan_is_rejected_when_parent_returns_one_row() {
     let parent = json!({"Plan":{"Node Type":"Insert","Relation Name":"messages","Actual Rows":1,"Actual Loops":1}});
-    assert_eq!(work("message_insert", &parent)["relations"]["messages"], 1.);
+    assert_eq!(
+        work("message_insert", &parent, 128.)["relations"]["messages"],
+        1.
+    );
     let source = json!({
         "Query Text":"SELECT created_at FROM messages WHERE channel_id=item.channel_id AND user_id=item.user_id",
         "Plan":{"Node Type":"Index Scan","Relation Name":"messages","Actual Rows":1,"Actual Loops":1}
@@ -381,6 +394,11 @@ async fn measure(
     metrics: &mut serde_json::Map<String, Value>,
 ) -> anyhow::Result<()> {
     let mut observed = None;
+    let budget = if name.starts_with("read_") {
+        READ_WORK_BUDGET
+    } else {
+        128.
+    };
     for concurrency in [1, 8] {
         let mut tasks = tokio::task::JoinSet::new();
         for worker in 0..concurrency {
@@ -454,7 +472,7 @@ async fn measure(
                         client.batch_execute("ROLLBACK").await?;
                     }
                     let plan: Value = serde_json::from_str(rows(&raw)[0])?;
-                    let mut measured = work(&name, &plan[0]);
+                    let mut measured = work(&name, &plan[0], budget);
                     let nested_plans = std::mem::take(&mut *nested.lock().unwrap());
                     if capture_nested {
                         measured["nested"] = nested_work(&name, &nested_plans);

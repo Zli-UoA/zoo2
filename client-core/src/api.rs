@@ -32,6 +32,15 @@ pub struct ReadState {
     /// 最後に読んだ位置の時刻 (UTC)。一度も読んでいなければ `None`。未読の線を置くのに使う。
     #[serde(default)]
     pub last_read_at: Option<String>,
+    /// 自分以外の未読ルート投稿数 (最大1000)。
+    #[serde(default)]
+    pub unread_count: u32,
+    /// 上限に達して件数が切り詰められているか。
+    #[serde(default)]
+    pub unread_count_truncated: bool,
+    /// 最古の未読投稿時刻 (UTC)。未読がなければ `None`。
+    #[serde(default)]
+    pub first_unread_at: Option<String>,
 }
 
 /// 閲覧権限で絞り込まれた `GET /api/threads` の1件。
@@ -1132,7 +1141,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/channel-read-states"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                { "channel_id": "c1", "last_read_at": null, "has_unread": true }
+                {
+                    "channel_id": "c1", "last_read_at": null, "has_unread": true,
+                    "unread_count": 2, "unread_count_truncated": false,
+                    "first_unread_at": "2026-01-01T00:00:00Z"
+                }
             ])))
             .mount(&server)
             .await;
@@ -1145,6 +1158,9 @@ mod tests {
                 channel_id: "c1".into(),
                 has_unread: true,
                 last_read_at: None,
+                unread_count: 2,
+                unread_count_truncated: false,
+                first_unread_at: Some("2026-01-01T00:00:00Z".into()),
             }]
         );
     }

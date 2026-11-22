@@ -1854,5 +1854,28 @@
     "speaker": "Speaker",
     "waiting": "Waiting for incoming calls",
     "dmCall": "Call"
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} unread conversation to catch up",
+    "navUnread_other": "{{count}} unread conversations to catch up",
+    "title": "Catch up",
+    "close": "Done",
+    "count_one": "{{count}} unread message",
+    "count_other": "{{count}} unread messages",
+    "overCount_one": "{{count}}+ unread messages",
+    "overCount_other": "{{count}}+ unread messages",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "Mark as read",
+    "keepUnread": "Keep unread",
+    "readError": "Could not mark this conversation as read. Please try again.",
+    "loadError": "Could not load unread conversations",
+    "retry": "Retry",
+    "loading": "Loading unread conversations",
+    "empty": "No unread conversations",
+    "emptyDescription": "Check back when new messages arrive",
+    "complete": "All caught up",
+    "summary": "{{read}} marked read · {{skipped}} left unread",
+    "refresh": "Refresh",
+    "conversation": "Conversation"
   }
 }

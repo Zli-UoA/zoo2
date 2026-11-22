@@ -70,6 +70,12 @@ async fn authorize(
     Ok(())
 }
 
+/// Number of root messages inspected per channel to report unread count and the
+/// first unread timestamp. The extra row distinguishes "1000+" from exactly 1000.
+pub const UNREAD_SCAN_LIMIT: i64 = 1_001;
+/// Largest exact unread count reported by the API.
+pub const UNREAD_COUNT_MAX: i64 = UNREAD_SCAN_LIMIT - 1;
+
 /// The production SQL is shared with bounded-work regression tests.
 #[doc(hidden)]
 pub fn states_sql(single: bool) -> String {
@@ -81,16 +87,36 @@ pub fn states_sql(single: bool) -> String {
         }
     };
     format!(
-        "SELECT json_build_object(
+        r#"SELECT json_build_object(
         'channel_id', c.id, 'last_read_at', r.last_read_at,
-        'has_unread', EXISTS (SELECT 1 FROM (
-            SELECT a.user_id FROM channel_message_authors a WHERE a.channel_id=c.id
-              AND a.latest_at>COALESCE(r.last_read_at,'-infinity'::timestamp)
-            ORDER BY a.latest_at DESC,a.user_id DESC LIMIT 2
-        ) latest WHERE latest.user_id<>$1)
+        'has_unread', h.has_unread,
+        'unread_count', GREATEST(LEAST(COALESCE(u.n, 0), {UNREAD_COUNT_MAX}),
+            CASE WHEN h.has_unread THEN 1 ELSE 0 END),
+        'unread_count_truncated', COALESCE(u.n, 0) > {UNREAD_COUNT_MAX},
+        'first_unread_at', COALESCE(u.first_at, (
+            SELECT min(a.latest_at) FROM channel_message_authors a
+            WHERE a.channel_id = c.id AND a.user_id <> $1
+              AND a.latest_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+        ))
         )::text FROM channels c LEFT JOIN channel_read_states r
         ON r.channel_id = c.id AND r.user_id = $1
-        WHERE c.deleted_at IS NULL AND {scope}"
+        LEFT JOIN LATERAL (
+            SELECT EXISTS (SELECT 1 FROM (
+                SELECT a.user_id FROM channel_message_authors a WHERE a.channel_id=c.id
+                  AND a.latest_at>COALESCE(r.last_read_at,'-infinity'::timestamp)
+                ORDER BY a.latest_at DESC,a.user_id DESC LIMIT 2
+            ) latest WHERE latest.user_id<>$1) AS has_unread
+        ) h ON true
+        LEFT JOIN LATERAL (
+            SELECT count(*)::int AS n, min(scanned.created_at) AS first_at
+            FROM (
+                SELECT m.user_id, m.created_at FROM messages m
+                WHERE m.channel_id = c.id AND m.parent_id IS NULL AND m.deleted_at IS NULL
+                  AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                ORDER BY m.created_at, m.id LIMIT {UNREAD_SCAN_LIMIT}
+            ) scanned WHERE scanned.user_id <> $1
+        ) u ON true
+        WHERE c.deleted_at IS NULL AND {scope}"#
     )
 }
 

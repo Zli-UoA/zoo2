@@ -73,6 +73,8 @@ interface MessageListProps {
   canCompose?: boolean;
   /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
   isOffline?: boolean;
+  /** 未読区切りを明示する（読み取り専用画面では既読 API を使わずに渡す）。 */
+  unreadBoundaryId?: string | null;
   /** 上端付近で過去のメッセージを読み足す。 */
   onLoadOlder?: () => void;
   /** 端末より古いメッセージが、まだあるか (ページ単位で取る)。 */
@@ -166,6 +168,7 @@ export function MessageList({
   onOpenThread,
   canCompose = true,
   isOffline = false,
+  unreadBoundaryId,
   onLoadOlder,
   hasOlder = true,
   isLoadingOlder = false,
@@ -184,16 +187,17 @@ export function MessageList({
   const loadOlder = useCallback(() => {
     if (hasOlder && !isLoadingOlder) onLoadOlder?.();
   }, [hasOlder, isLoadingOlder, onLoadOlder]);
-  // 既読位置の取得に失敗しても、保存済みのメッセージは隠さない。
-  // 未読区切りだけを出さずに描画する（オフライン時に空になるのを防ぐ）。
+  // 読み取り専用画面では既読 API の代わりに渡された境界を使う。
+  // 既読位置の取得に失敗しても保存済みのメッセージは隠し、区切りだけを出さない。
+  const boundaryId =
+    unreadBoundaryId !== undefined
+      ? unreadBoundaryId
+      : readStateLoading || readStateError
+        ? null
+        : firstUnreadId;
   const items = useMemo(
-    () =>
-      buildMessageItems(
-        messages,
-        undefined,
-        readStateLoading || readStateError ? null : firstUnreadId,
-      ),
-    [messages, firstUnreadId, readStateLoading, readStateError],
+    () => buildMessageItems(messages, undefined, boundaryId),
+    [messages, boundaryId],
   );
   // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージ（#367）。ここに「ここから暗号化されています」の
   // 区切りを出す。これより後ろの暗号文のない行は、正しいサーバーが作れないので警告の印を付ける。
@@ -373,8 +377,8 @@ export function MessageList({
         setHasNewBelow(true);
         if (lastItem) setLiveAnnouncement(newMessageAnnouncement(lastItem.message, t));
       }
-    } else if (change === "initial" && firstUnreadId) {
-      const index = items.findIndex((item) => item.message.id === firstUnreadId);
+    } else if (change === "initial" && boundaryId) {
+      const index = items.findIndex((item) => item.message.id === boundaryId);
       atBottomRef.current = false;
       pendingUnreadJumpRef.current = !unreadCovered && !targetMessageId;
       requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
@@ -397,9 +401,7 @@ export function MessageList({
 
     if (pendingUnreadJumpRef.current && change !== "initial" && unreadCovered && !isLoadingOlder) {
       pendingUnreadJumpRef.current = false;
-      const index = firstUnreadId
-        ? items.findIndex((item) => item.message.id === firstUnreadId)
-        : -1;
+      const index = boundaryId ? items.findIndex((item) => item.message.id === boundaryId) : -1;
       if (index >= 0) {
         atBottomRef.current = false;
         requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
@@ -417,7 +419,7 @@ export function MessageList({
     currentUserId,
     scrollToBottom,
     t,
-    firstUnreadId,
+    boundaryId,
     virtualizer,
     captureScrollAnchor,
   ]);
@@ -606,7 +608,7 @@ export function MessageList({
                       <span className="h-px w-6 bg-border" />
                     </div>
                   ) : null}
-                  {item.message.id === firstUnreadId ? (
+                  {item.message.id === boundaryId ? (
                     <div
                       role="separator"
                       aria-label={t("messages.new")}

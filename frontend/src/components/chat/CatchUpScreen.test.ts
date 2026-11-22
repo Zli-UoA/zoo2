@@ -1,0 +1,153 @@
+// @vitest-environment happy-dom
+import { createElement, useEffect } from "react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vite-plus/test";
+import { CatchUpScreen } from "./CatchUpScreen";
+
+const mocks = vi.hoisted(() => ({
+  post: vi.fn(),
+  applyRead: vi.fn(),
+  navigate: vi.fn(),
+  unread: [] as Array<{
+    channel_id: string;
+    has_unread: boolean;
+    unread_count: number;
+    unread_count_truncated: boolean;
+    first_unread_at: string | null;
+  }>,
+}));
+
+vi.mock("../../hooks/useUnread", () => ({
+  READ_STATE_CHANGED: "zoo-read-state-changed",
+  useUnread: () => ({
+    states: mocks.unread,
+    unreadStates: mocks.unread.filter((s) => s.has_unread),
+    isReady: true,
+    isError: false,
+    refresh: vi.fn(),
+    applyRead: mocks.applyRead,
+  }),
+}));
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({ currentUserId: "me" }),
+}));
+vi.mock("../../hooks/useRealtime", () => ({
+  useActiveChannels: () => ({
+    data: [
+      { id: "a", channel_name: "general", is_dm: false },
+      { id: "b", channel_name: "random", is_dm: false },
+    ],
+  }),
+  useUsers: () => ({ data: [] }),
+  useMessageReactions: () => ({ data: [] }),
+}));
+vi.mock("../../lib/electric/collections-context", () => ({
+  useCollections: () => ({ config: { apiBaseUrl: "" }, channelUsers: {} }),
+}));
+vi.mock("../../lib/api/client", () => ({
+  createConfiguredApiClient: () => ({ post: mocks.post }),
+}));
+vi.mock("@tanstack/react-db", () => ({ useLiveQuery: () => ({ data: [] }) }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
+vi.mock("../i18n/LocaleProvider", () => ({ useLocale: () => ({ locale: "ja" }) }));
+vi.mock("./dm", () => ({ buildDmLabels: () => new Map() }));
+vi.mock("./CatchUpMessagePage", () => ({
+  CatchUpMessagePage: ({
+    onBoundaryMessage,
+  }: {
+    onBoundaryMessage: (id: string | null) => void;
+  }) => {
+    useEffect(() => onBoundaryMessage("latest-in-page"), [onBoundaryMessage]);
+    return createElement("div", null, "message page");
+  },
+}));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, string | number>) => {
+      const labels: Record<string, string> = {
+        "catchUp.title": "未読キャッチアップ",
+        "catchUp.close": "終了",
+        "catchUp.count_one": `未読 ${options?.count} 件`,
+        "catchUp.count_other": `未読 ${options?.count} 件`,
+        "catchUp.progress": `${options?.current} / ${options?.total}`,
+        "catchUp.markRead": "既読にする",
+        "catchUp.keepUnread": "未読のまま次へ",
+        "catchUp.readError": "既読にできませんでした",
+        "catchUp.complete": "キャッチアップ完了",
+        "catchUp.summary": `既読 ${options?.read} 件・未読のまま ${options?.skipped} 件`,
+        "catchUp.empty": "未読の会話はありません",
+      };
+      return labels[key] ?? key;
+    },
+  }),
+}));
+
+const unreadItem = (channelId: string) => ({
+  channel_id: channelId,
+  has_unread: true,
+  unread_count: 2,
+  unread_count_truncated: false,
+  first_unread_at: "2026-01-01T00:00:00Z",
+});
+
+afterEach(() => {
+  cleanup();
+  mocks.post.mockReset();
+  mocks.applyRead.mockReset();
+  mocks.navigate.mockReset();
+  mocks.unread = [];
+});
+
+it("does not write on open, freezes the queue and marks read only on demand", async () => {
+  mocks.unread = [unreadItem("a"), unreadItem("b")];
+  mocks.post.mockResolvedValue({});
+  const view = render(createElement(CatchUpScreen));
+  expect(screen.getByText("1 / 2")).toBeTruthy();
+  expect(mocks.post).not.toHaveBeenCalled();
+
+  // A third conversation arriving mid-flight must not shift the page numbers.
+  await act(async () => {
+    mocks.unread = [unreadItem("a"), unreadItem("b"), unreadItem("c")];
+    view.rerender(createElement(CatchUpScreen));
+  });
+  expect(screen.getByText("1 / 2")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.click(screen.getByText("既読にする"));
+  });
+  expect(mocks.post).toHaveBeenCalledWith("/api/channels/a/read-state", {
+    message_id: "latest-in-page",
+  });
+  expect(mocks.applyRead).toHaveBeenCalledWith("a");
+  expect(screen.getByText("2 / 2")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.click(screen.getByText("未読のまま次へ"));
+  });
+  expect(screen.getByText("キャッチアップ完了")).toBeTruthy();
+  expect(screen.getByText("既読 1 件・未読のまま 1 件")).toBeTruthy();
+  expect(mocks.post).toHaveBeenCalledTimes(1);
+});
+
+it("stays on the page and shows an error when the write fails", async () => {
+  mocks.unread = [unreadItem("a")];
+  mocks.post.mockRejectedValue(new Error("network"));
+  render(createElement(CatchUpScreen));
+  await act(async () => {
+    fireEvent.click(screen.getByText("既読にする"));
+  });
+  expect(screen.getByText("既読にできませんでした")).toBeTruthy();
+  expect(screen.getByText("1 / 1")).toBeTruthy();
+  expect(mocks.applyRead).not.toHaveBeenCalled();
+});
+
+it("skips a conversation that became read in another tab", async () => {
+  mocks.unread = [unreadItem("a"), unreadItem("b")];
+  const view = render(createElement(CatchUpScreen));
+  await act(async () => {
+    mocks.unread = [{ ...unreadItem("a"), has_unread: false }, unreadItem("b")];
+    view.rerender(createElement(CatchUpScreen));
+  });
+  expect(screen.getByText("2 / 2")).toBeTruthy();
+  expect(mocks.post).not.toHaveBeenCalled();
+});

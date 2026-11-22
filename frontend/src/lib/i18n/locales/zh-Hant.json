@@ -1854,5 +1854,28 @@
     "speaker": "揚聲器",
     "waiting": "正在等候來電",
     "dmCall": "通話"
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 個未讀對話待查看",
+    "navUnread_other": "{{count}} 個未讀對話待查看",
+    "title": "未讀稍後看",
+    "close": "結束",
+    "count_one": "{{count}} 則未讀訊息",
+    "count_other": "{{count}} 則未讀訊息",
+    "overCount_one": "{{count}}+ 則未讀訊息",
+    "overCount_other": "{{count}}+ 則未讀訊息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "標為已讀",
+    "keepUnread": "保持未讀並前往下一則",
+    "readError": "無法標為已讀，請再試一次",
+    "loadError": "無法載入未讀對話",
+    "retry": "重試",
+    "loading": "正在載入未讀對話",
+    "empty": "沒有未讀對話",
+    "emptyDescription": "有新訊息時再回來查看",
+    "complete": "全部看完",
+    "summary": "已讀 {{read}} 則 · 保持未讀 {{skipped}} 則",
+    "refresh": "重新整理",
+    "conversation": "對話"
   }
 }

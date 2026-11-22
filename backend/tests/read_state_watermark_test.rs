@@ -2,12 +2,122 @@ use backend::{config::Config, routes::read_states::states_sql};
 use serde_json::Value;
 use tokio_postgres::{NoTls, Transaction};
 
-async fn unread(tx: &Transaction<'_>, viewer: &str, channel: &str) -> anyhow::Result<bool> {
+async fn state(tx: &Transaction<'_>, viewer: &str, channel: &str) -> anyhow::Result<Value> {
     let row = tx
         .query_one(&states_sql(true), &[&viewer, &channel])
         .await?;
-    let value: Value = serde_json::from_str(&row.get::<_, String>(0))?;
-    Ok(value["has_unread"].as_bool().unwrap())
+    Ok(serde_json::from_str(&row.get::<_, String>(0))?)
+}
+
+async fn unread(tx: &Transaction<'_>, viewer: &str, channel: &str) -> anyhow::Result<bool> {
+    Ok(state(tx, viewer, channel).await?["has_unread"]
+        .as_bool()
+        .unwrap())
+}
+
+#[tokio::test]
+async fn unread_count_and_first_unread_are_bounded_by_the_read_boundary() -> anyhow::Result<()> {
+    let (mut client, connection) =
+        tokio_postgres::connect(&Config::from_env().database_url, NoTls).await?;
+    tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let viewer = uuid::Uuid::new_v4().to_string();
+    let author = format!("{viewer}-author");
+    let channel = format!("{viewer}-channel");
+    let dm = format!("{viewer}-dm");
+    let hidden = format!("{viewer}-hidden");
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text),($2::text,$2::text,$2::text)",
+        &[&viewer, &author],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1::text,$1::text,$3,false,false),($2::text,$2::text,$3,false,true),($4::text,$4::text,$3,false,false)",
+        &[&channel, &dm, &viewer, &hidden],
+    )
+    .await?;
+    for id in [&channel, &dm] {
+        for user in [&viewer, &author] {
+            tx.execute(
+                "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+                &[user, id],
+            )
+            .await?;
+        }
+    }
+    // No read state yet: every other author's root message is unread.
+    for (n, when) in [(1, "2025-01-01 00:00:01"), (2, "2025-01-01 00:00:02")] {
+        tx.execute(
+            "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'post',$4::text::timestamp)",
+            &[&format!("{viewer}-m{n}"), &author, &channel, &when],
+        )
+        .await?;
+    }
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'reply','2025-01-01 00:00:03')",
+        &[&format!("{viewer}-reply"), &author, &channel],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE messages SET parent_id=$1 WHERE id=$2",
+        &[&format!("{viewer}-m1"), &format!("{viewer}-reply")],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'own','2025-01-01 00:00:04')",
+        &[&format!("{viewer}-own"), &viewer, &channel],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,deleted_at) VALUES($1,$2,$3,'deleted','2025-01-01 00:00:05',now())",
+        &[&format!("{viewer}-deleted"), &author, &channel],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'dm','2025-01-01 00:00:06')",
+        &[&format!("{viewer}-dm-message"), &author, &dm],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'hidden','2025-01-01 00:00:07')",
+        &[&format!("{viewer}-hidden-message"), &author, &hidden],
+    )
+    .await?;
+    let before = state(&tx, &viewer, &channel).await?;
+    assert_eq!(before["unread_count"], 2);
+    assert!(
+        before["first_unread_at"]
+            .as_str()
+            .unwrap()
+            .contains("00:00:01")
+    );
+    assert_eq!(state(&tx, &viewer, &dm).await?["unread_count"], 1);
+    let listed = tx.query(&states_sql(false), &[&viewer]).await?;
+    assert_eq!(listed.len(), 2, "non-member channels stay hidden");
+    tx.execute(
+        "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) VALUES($1,$2,'2025-01-01 00:00:01')",
+        &[&viewer, &channel],
+    )
+    .await?;
+    let after = state(&tx, &viewer, &channel).await?;
+    assert_eq!(after["unread_count"], 1);
+    assert!(
+        after["first_unread_at"]
+            .as_str()
+            .unwrap()
+            .contains("00:00:02")
+    );
+    tx.execute(
+        "UPDATE channel_read_states SET last_read_at='2025-01-01 00:00:02' WHERE user_id=$1 AND channel_id=$2",
+        &[&viewer, &channel],
+    )
+    .await?;
+    let done = state(&tx, &viewer, &channel).await?;
+    assert_eq!(done["has_unread"], false);
+    assert_eq!(done["unread_count"], 0);
+    assert!(done["first_unread_at"].is_null());
+    tx.rollback().await?;
+    Ok(())
 }
 
 #[tokio::test]
