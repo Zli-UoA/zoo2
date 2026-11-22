@@ -23,6 +23,10 @@ use crate::{auth::AuthUser, error::AppError, state::AppState};
 pub const MONTHS_PER_REQUEST: i64 = 12;
 const MAX_TERMS: usize = 5;
 const MAX_TERM_CHARS: usize = 100;
+/// 送信者・チャンネルの絞り込みで一度に指定できる数。
+const MAX_FILTER_IDS: usize = 20;
+/// 語の最初のパラメーター番号（それより前は [`month_sql`] の説明を参照）。
+const FIRST_TERM: usize = 12;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 const SNIPPET_BEFORE: usize = 40;
@@ -80,8 +84,16 @@ struct SearchQuery {
     q: String,
     #[serde(default, rename = "type")]
     kind: SearchKind,
+    /// チャンネルの ID。カンマ区切りで複数（どれか）。
     channel_id: Option<String>,
+    /// 送信者の ID。カンマ区切りで複数（どれか）。
     user_id: Option<String>,
+    /// `true` ならボット（アプリ）の投稿を除く。
+    #[serde(default)]
+    exclude_bots: bool,
+    /// `true` なら、自分が参加中の会話（所属するチャンネルと、参加しているスレッド）に絞る。
+    #[serde(default)]
+    involving_me: bool,
     /// この時刻以降。`YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻（RFC 3339）。
     /// クライアントは端末の日付の 0 時を、オフセット付きで送る。
     after: Option<String>,
@@ -169,6 +181,22 @@ fn month_before(before: jiff::civil::DateTime) -> i64 {
     }
 }
 
+/// カンマ区切りの ID を、重複を除いた JSON 配列の文字列にする（空なら `[]`）。
+fn parse_ids(value: Option<&str>, name: &str) -> Result<String, AppError> {
+    let mut ids: Vec<&str> = Vec::new();
+    for id in value.unwrap_or("").split(',').map(str::trim) {
+        if !id.is_empty() && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.len() > MAX_FILTER_IDS {
+        return Err(AppError::BadRequest(format!(
+            "At most {MAX_FILTER_IDS} values are allowed in {name}"
+        )));
+    }
+    Ok(Value::from(ids).to_string())
+}
+
 fn parse_cursor(value: &str) -> Result<Cursor, AppError> {
     let invalid = || AppError::BadRequest("Invalid search cursor".into());
     let cursor: Cursor = serde_json::from_str(value).map_err(|_| invalid())?;
@@ -211,10 +239,15 @@ fn like_clauses(column: &str, terms: &[&str], first: usize) -> String {
 /// どれかの語が最初に当たった位置の [`SNIPPET_BEFORE`] 文字前から [`SNIPPET_CHARS`] 文字。当たった位置は
 /// 検索条件と同じ `lower()` で求め、Rust では探し直さない（`lower()` はロケールによって ASCII 以外も
 /// 小文字にするので、Rust の判定とずれることがある）。語の順番にも、長い本文の後ろで当たったかにもよらない。
-/// 語は `$9` から `terms` 個。
+/// 語は `$12`（[`FIRST_TERM`]）から `terms` 個。
 fn snippet_source(column: &str, terms: usize) -> String {
     let positions: Vec<String> = (0..terms)
-        .map(|i| format!("NULLIF(strpos(lower({column}), lower(${})), 0)", 9 + i))
+        .map(|i| {
+            format!(
+                "NULLIF(strpos(lower({column}), lower(${})), 0)",
+                FIRST_TERM + i
+            )
+        })
         .collect();
     let start = format!(
         "greatest(1, COALESCE(LEAST({}), 1) - {SNIPPET_BEFORE})",
@@ -243,9 +276,20 @@ fn cut_snippet(text: &str, cut_start: bool, cut_end: bool) -> String {
 /// `idx_messages_channel_id` などの B-tree と BitmapAnd されないようにする。そうしないと、
 /// GIN の件数の見積もりが小さいとき、見えるチャンネルの全履歴をインデックスで読む計画になる
 /// （予算テストで 100 万件中 22 万行を読んだ）。条件はヒープの行の絞り込みとしてだけ使う。
-///パラメーター: $1 月、$2 見えるチャンネル（JSON 配列）、$3 投稿者、
-/// $4/$5 keyset（作成日時・ID）、$6/$7 期間、$8 件数、$9 以降が語。
+///パラメーター: $1 月、$2 見えるチャンネル（JSON 配列）、$3 投稿者（JSON 配列。`[]` は全員）、
+/// $4/$5 keyset（作成日時・ID）、$6/$7 期間、$8 件数、$9 ボットを除くなら `1`、
+/// $10 自分が参加中の会話に絞るときの所属チャンネル（JSON 配列。絞らないなら空文字）、
+/// $11 参加しているスレッドの親の ID（JSON 配列）、$12 以降が語。
+///
+/// ボットかどうかは、行の投稿者の表示データ（`display_data->'author'->>'is_bot'`）で見る。ユーザーの表を
+/// 行ごとに引かない。ノートはアプリが書けないので、ボットの条件を付けない。
+/// 所属・スレッド・投稿者の条件は、GIN で見つけた行に対する絞り込みで、行ごとに配列 1 つずつと比べる
+/// （所属チャンネル数 M・参加スレッド数 T・投稿者数 A に比例。A は [`MAX_FILTER_IDS`] まで）。
 /// `kind` は `SearchKind::parts` の 1 つ（`All` は渡さない）。
+/// 参加しているスレッド（$11）の親か返信か。
+const MESSAGE_THREAD: &str =
+    " OR COALESCE(m.parent_id, m.id) = ANY(ARRAY(SELECT json_array_elements_text($11::json)))";
+
 pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
     assert_ne!(
         kind,
@@ -253,10 +297,11 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
         "month_sql takes one part of SearchKind::All"
     );
     const MONTH: &str = "(date_part('year', {t}.created_at) * 12 + date_part('month', {t}.created_at))::integer = $1::int";
-    let common = |t: &str, author: &str| {
+    let common = |t: &str, author: &str, involving: &str| {
         format!(
             "{month} AND ({t}.channel_id || '') = ANY(ARRAY(SELECT json_array_elements_text($2::json))) \
-             AND ($3 = '' OR ({t}.{author} || '') = $3) \
+             AND ($3 = '[]' OR ({t}.{author} || '') = ANY(ARRAY(SELECT json_array_elements_text($3::json)))) \
+             AND ($10 = '' OR ({t}.channel_id || '') = ANY(ARRAY(SELECT json_array_elements_text(NULLIF($10, '')::json))){involving}) \
              AND ($4 = '' OR ({t}.created_at, {t}.id) < (NULLIF($4, '')::timestamp, $5)) \
              AND ($6 = '' OR {t}.created_at >= NULLIF($6, '')::timestamp) \
              AND ($7 = '' OR {t}.created_at < NULLIF($7, '')::timestamp) \
@@ -271,11 +316,12 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
                'is_dm', c.is_dm, 'parent_id', m.parent_id, 'user_id', m.user_id, \
                'author', m.display_data->'author', 'emojis', COALESCE(m.display_data->'emojis', '{{}}'::jsonb), \
                {text}, 'created_at', m.created_at)::text \
-             FROM (SELECT m.* FROM messages m WHERE m.deleted_at IS NULL AND m.content <> ''{likes} AND {common}) m \
+             FROM (SELECT m.* FROM messages m WHERE m.deleted_at IS NULL AND m.content <> ''{likes} \
+               AND ($9 = '' OR NOT COALESCE((m.display_data->'author'->>'is_bot')::boolean, false)) AND {common}) m \
              JOIN channels c ON c.id = m.channel_id ORDER BY m.created_at DESC, m.id DESC",
-            likes = like_clauses("m.content", terms, 9),
+            likes = like_clauses("m.content", terms, FIRST_TERM),
             text = snippet_source("m.content", terms.len()),
-            common = common("m", "user_id"),
+            common = common("m", "user_id", MESSAGE_THREAD),
         ),
         SearchKind::Files => format!(
             "SELECT json_build_object('id', a.id, 'message_id', a.message_id, 'channel_id', a.channel_id, \
@@ -285,13 +331,17 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
                'width', a.width, 'height', a.height, 'is_sensitive', a.is_sensitive, \
                {text}, 'created_at', a.created_at)::text \
              FROM (SELECT a.* FROM attachments a WHERE a.message_id IS NOT NULL{likes} \
-               AND EXISTS (SELECT 1 FROM messages live WHERE live.id = a.message_id AND live.deleted_at IS NULL) \
+               AND EXISTS (SELECT 1 FROM messages live WHERE live.id = a.message_id AND live.deleted_at IS NULL \
+                 AND ($9 = '' OR NOT COALESCE((live.display_data->'author'->>'is_bot')::boolean, false)) \
+                 AND ($10 = '' OR (a.channel_id || '') = ANY(ARRAY(SELECT json_array_elements_text(NULLIF($10, '')::json))){file_thread})) \
                AND {common}) a \
              JOIN messages m ON m.id = a.message_id JOIN channels c ON c.id = a.channel_id \
              ORDER BY a.created_at DESC, a.id DESC",
-            likes = like_clauses("a.file_name", terms, 9),
+            likes = like_clauses("a.file_name", terms, FIRST_TERM),
             text = snippet_source("a.file_name", terms.len()),
-            common = common("a", "uploader_id"),
+            // 所属とスレッドの条件は、添付の親のメッセージ（`live`）で見る。
+            common = common("a", "uploader_id", " OR true"),
+            file_thread = MESSAGE_THREAD.replace("m.", "live."),
         ),
         SearchKind::Notes => format!(
             "SELECT json_build_object('id', n.id, 'channel_id', n.channel_id, 'channel_name', c.channel_name, \
@@ -299,33 +349,62 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
                {text}, 'created_at', n.created_at, 'updated_at', n.updated_at)::text \
              FROM (SELECT n.* FROM channel_notes n WHERE n.deleted_at IS NULL{likes} AND {common}) n \
              JOIN channels c ON c.id = n.channel_id ORDER BY n.created_at DESC, n.id DESC",
-            likes = like_clauses("(n.title || E'\\n' || n.content)", terms, 9),
+            likes = like_clauses("(n.title || E'\\n' || n.content)", terms, FIRST_TERM),
             text = snippet_source("(n.title || E'\\n' || n.content)", terms.len()),
-            common = common("n", "created_user_id"),
+            common = common("n", "created_user_id", ""),
         ),
     }
 }
 
 /// 見えるチャンネルと、探す月の範囲。
 ///
+/// パラメーター: $1 閲覧者、$2 チャンネルの絞り込み（JSON 配列。`[]` は全部）、$3 自分が参加中の会話に
+/// 絞るなら `1`。
+///
 /// 見える: 削除されていない、暗号化されていない、そして（ゲストでない人の公開チャンネル、または所属）。
+/// 参加中の会話に絞るときは、見えるチャンネルのうち、所属するもの（DM を含む）と、参加しているスレッドか
+/// メンションされたスレッド（親の ID。メンションは通知 `mention` で引く）があるものに絞る。`members` と
+/// `threads` を [`month_sql`] の行の条件に渡す。
 /// `floor` は見えるチャンネルのうち、最も古い生きているメッセージ（トップレベルと返信）かチャンネル作成の月の
 /// 1 つ前。親が削除されても返信は残り、取り込みではチャンネルの作成日時より古いこともあるので、返信も入れる。
 /// 添付はメッセージより少し前にアップロードされうるので 1 か月の余裕を持たせる。
 /// 計算量は見えるチャンネル数 V に対し O(V log N)（idx_messages_channel_unread と
-/// messages_search_reply_floor を、チャンネルごとに 1 行ずつ引く）。
+/// messages_search_reply_floor を、チャンネルごとに 1 行ずつ引く）。参加中に絞るときは、閲覧者の参加
+/// スレッド数 T とメンションの通知数 N_m を加えて O(V log N + T + N_m)（thread_participants_joined と
+/// idx_notifications_user_id、親は主キーで引く）。
 pub const SCOPE_SQL: &str = "WITH me AS (SELECT COALESCE((SELECT is_guest FROM users WHERE id = $1), true) AS guest), \
   visible AS MATERIALIZED ( \
     SELECT c.id, c.created_at FROM channels c, me \
-    WHERE c.deleted_at IS NULL AND NOT c.encrypted AND ($2 = '' OR c.id = $2) \
+    WHERE c.deleted_at IS NULL AND NOT c.encrypted \
+      AND ($2 = '[]' OR c.id = ANY(ARRAY(SELECT json_array_elements_text($2::json)))) \
       AND ((NOT c.is_private AND NOT me.guest) \
         OR EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id = $1)) \
+  ), \
+  members AS MATERIALIZED ( \
+    SELECT v.id FROM visible v WHERE $3 <> '' \
+      AND EXISTS (SELECT 1 FROM channel_user cu WHERE cu.channel_id = v.id AND cu.user_id = $1) \
+  ), \
+  threads AS MATERIALIZED ( \
+    SELECT DISTINCT root.id, root.channel_id FROM ( \
+      SELECT tp.thread_id AS id FROM thread_participants tp \
+        WHERE $3 <> '' AND tp.user_id = $1 AND tp.left_at IS NULL \
+      UNION \
+      SELECT COALESCE(m.parent_id, m.id) FROM notifications n JOIN messages m ON m.id = n.message_id \
+        WHERE $3 <> '' AND n.user_id = $1 AND n.notification_type = 'mention' \
+    ) t JOIN messages root ON root.id = t.id \
+    WHERE root.channel_id IN (SELECT id FROM visible) \
+  ), \
+  scoped AS MATERIALIZED ( \
+    SELECT v.id, v.created_at FROM visible v \
+    WHERE $3 = '' OR v.id IN (SELECT id FROM members) OR v.id IN (SELECT channel_id FROM threads) \
   ) \
   SELECT json_build_object( \
-    'ids', COALESCE((SELECT json_agg(id) FROM visible), '[]'::json), \
+    'ids', COALESCE((SELECT json_agg(id) FROM scoped), '[]'::json), \
+    'members', COALESCE((SELECT json_agg(id) FROM members), '[]'::json), \
+    'threads', COALESCE((SELECT json_agg(id) FROM threads), '[]'::json), \
     'now', (date_part('year', LOCALTIMESTAMP) * 12 + date_part('month', LOCALTIMESTAMP))::bigint, \
     'floor', (SELECT (date_part('year', t) * 12 + date_part('month', t))::bigint - 1 FROM ( \
-      SELECT least(min(v.created_at), min(first.created_at), min(reply.created_at)) AS t FROM visible v \
+      SELECT least(min(v.created_at), min(first.created_at), min(reply.created_at)) AS t FROM scoped v \
       LEFT JOIN LATERAL (SELECT m.created_at FROM messages m \
         WHERE m.channel_id = v.id AND m.parent_id IS NULL AND m.deleted_at IS NULL \
         ORDER BY m.created_at LIMIT 1) first ON true \
@@ -344,8 +423,10 @@ async fn search(
     let after = parse_bound(query.after.as_deref(), "after")?;
     let before = parse_bound(query.before.as_deref(), "before")?;
     let cursor = query.cursor.as_deref().map(parse_cursor).transpose()?;
-    let channel = query.channel_id.as_deref().unwrap_or("");
-    let author = query.user_id.as_deref().unwrap_or("");
+    let channels = parse_ids(query.channel_id.as_deref(), "channel_id")?;
+    let authors = parse_ids(query.user_id.as_deref(), "user_id")?;
+    let involving = if query.involving_me { "1" } else { "" };
+    let no_bots = if query.exclude_bots { "1" } else { "" };
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -359,8 +440,20 @@ async fn search(
         .exec(&mut tx)
         .await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
-    let scope = crate::apps::one(&mut tx, SCOPE_SQL, &[auth_user.id.as_str(), channel]).await?;
+    let scope = crate::apps::one(
+        &mut tx,
+        SCOPE_SQL,
+        &[auth_user.id.as_str(), channels.as_str(), involving],
+    )
+    .await?;
     let ids = scope["ids"].to_string();
+    // 参加中に絞らないときは空文字（行の条件を外す）。
+    let members = if query.involving_me {
+        scope["members"].to_string()
+    } else {
+        String::new()
+    };
+    let threads = scope["threads"].to_string();
     let empty = || Json(json!({"items": [], "next_cursor": null, "searched_until": null}));
     let (Some(now), Some(floor)) = (scope["now"].as_i64(), scope["floor"].as_i64()) else {
         tx.commit().await?;
@@ -406,12 +499,15 @@ async fn search(
         let mut params: Vec<&str> = vec![
             &month_text,
             &ids,
-            author,
+            &authors,
             at,
             id,
             &after_ts,
             &before_ts,
             &need,
+            no_bots,
+            &members,
+            &threads,
         ];
         params.extend(terms.iter().map(String::as_str));
         // 種類ごとに、この月の上位 need 件。合わせて (created_at, id) の新しい順に並べれば、
@@ -507,6 +603,17 @@ mod tests {
     }
 
     #[test]
+    fn filter_ids_are_split_deduplicated_and_bounded() {
+        assert_eq!(parse_ids(None, "user_id").unwrap(), "[]");
+        assert_eq!(
+            parse_ids(Some(" a, b,,a "), "user_id").unwrap(),
+            r#"["a","b"]"#
+        );
+        let many: Vec<String> = (0..=MAX_FILTER_IDS).map(|i| i.to_string()).collect();
+        assert!(parse_ids(Some(&many.join(",")), "user_id").is_err());
+    }
+
+    #[test]
     fn bounds_accept_utc_days_and_offset_timestamps() {
         let at = |v: &str| parse_bound(Some(v), "after").unwrap().unwrap().to_string();
         assert_eq!(at("2026-11-22"), "2026-11-22T00:00:00");
@@ -539,11 +646,11 @@ mod tests {
     #[test]
     fn month_sql_binds_every_term() {
         let sql = month_sql(SearchKind::Messages, &["会議", "資料", "x"]);
-        assert!(sql.contains("lower($9)") && sql.contains("lower($11)"));
-        assert!(!sql.contains("$12"));
+        assert!(sql.contains("lower($12)") && sql.contains("lower($14)"));
+        assert!(!sql.contains("$15"));
         // 1 文字の語だけ索引の条件から外す。
-        assert!(sql.contains("(lower(m.content) || '') LIKE public.likequery(lower($11))"));
-        assert!(sql.contains("lower(m.content) LIKE public.likequery(lower($9))"));
+        assert!(sql.contains("(lower(m.content) || '') LIKE public.likequery(lower($14))"));
+        assert!(sql.contains("lower(m.content) LIKE public.likequery(lower($12))"));
     }
 
     #[test]
