@@ -169,7 +169,10 @@ export function EmojiGrid({
   }, [keyboardNavigationAt]);
 
   return (
-    <Frimousse.Viewport ref={viewportRef} className="min-h-0 flex-1 rounded-lg border border-border">
+    <Frimousse.Viewport
+      ref={viewportRef}
+      className="min-h-0 flex-1 rounded-lg border border-border"
+    >
       <Frimousse.Loading className="block p-3 text-center text-xs text-muted-foreground">
         {t("reactions.emojiLoading")}
       </Frimousse.Loading>
