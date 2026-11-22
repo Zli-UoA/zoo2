@@ -185,23 +185,34 @@ export function ThreadPane({
   }, [needsJoin, membershipError]);
   const joinThread = isArchived ? (onReopenAndJoinThread ?? onJoinThread) : onJoinThread;
   const scrollRef = useRef<HTMLDivElement>(null);
-  const atBottomRef = useRef(true);
+  const hasTargetInReplies = Boolean(
+    targetMessageId && replies.some((reply) => reply.id === targetMessageId),
+  );
+  const atBottomRef = useRef(!hasTargetInReplies);
+  const scrolledTarget = useRef<string | undefined>(undefined);
+  const prevRootIdRef = useRef(root.id);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
   const lastReplyId = replies[replies.length - 1]?.id;
 
-  useEffect(() => {
-    atBottomRef.current = true;
-  }, [root.id]);
+  useLayoutEffect(() => {
+    if (prevRootIdRef.current !== root.id) {
+      prevRootIdRef.current = root.id;
+      scrolledTarget.current = undefined;
+      atBottomRef.current = !hasTargetInReplies;
+    }
+  }, [root.id, hasTargetInReplies]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (!element || !atBottomRef.current) {
+    if (
+      !element ||
+      !atBottomRef.current ||
+      (hasTargetInReplies && scrolledTarget.current !== targetMessageId)
+    ) {
       return;
     }
-    requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-    });
-  }, [items.length, lastReplyId, root.id]);
+    element.scrollTop = element.scrollHeight;
+  }, [items.length, lastReplyId, root.id, hasTargetInReplies, targetMessageId]);
 
   // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
   const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
@@ -221,15 +232,14 @@ export function ThreadPane({
     }
   }, [replies]);
 
-  const scrolledTarget = useRef<string | undefined>(undefined);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!targetMessageId) {
       scrolledTarget.current = undefined;
       return;
     }
     if (scrolledTarget.current === targetMessageId) return;
     if (!replies.some((reply) => reply.id === targetMessageId)) return;
-    const frame = requestAnimationFrame(() => {
+    const align = () => {
       const target = Array.from(
         scrollRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [],
       ).find((element) => element.dataset.messageId === targetMessageId);
@@ -238,7 +248,9 @@ export function ThreadPane({
         scrolledTarget.current = targetMessageId;
         scrollRef.current.scrollTop = target.offsetTop - scrollRef.current.offsetTop;
       }
-    });
+    };
+    align();
+    const frame = requestAnimationFrame(align);
     return () => cancelAnimationFrame(frame);
   }, [targetMessageId, replies]);
 
@@ -419,6 +431,7 @@ export function ThreadPane({
 
       <div
         ref={scrollRef}
+        data-scroll-restoration-id={`thread-scroll:${root.id}`}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;

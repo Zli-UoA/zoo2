@@ -177,6 +177,7 @@ vi.mock("./ThreadPane", () => ({
   ThreadPane: ({
     root,
     replies,
+    targetMessageId,
     readOnly,
     isMember,
     onSendReply,
@@ -185,13 +186,14 @@ vi.mock("./ThreadPane", () => ({
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
+    targetMessageId?: string;
     readOnly?: boolean;
     isMember?: boolean;
     onSendReply: (content: string) => Promise<boolean>;
     onPickReaction?: (id: string) => void;
     onRequestDelete?: (id: string) => void;
   }) => (
-    <div>
+    <div data-testid="thread-pane-mock" data-target-message-id={targetMessageId ?? ""}>
       {root.content}
       {replies.map((reply) => (
         <p key={reply.id}>
@@ -294,6 +296,37 @@ describe("links and threads whose rows are older than the loaded range", () => {
     fixture.targetRows = [reply];
     rerender(pane("old-reply"));
     await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("old-root"));
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("passes targetMessageId to ThreadPane only for replies in the active thread", async () => {
+    const { rerender } = render(pane("old-root"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("");
+
+    fixture.targetRows = [{ ...fixture.root, id: "unloaded-reply", parent_id: "old-root" }];
+    rerender(pane("unloaded-reply"));
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-pane-mock").getAttribute("data-target-message-id")).toBe(
+        "unloaded-reply",
+      );
+    });
+  });
+
+  it("passes targetMessageId to ThreadPane when opening a surviving reply under a deleted root", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "surviving-reply",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+      deleted_at: null,
+    };
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    render(pane("surviving-reply"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("surviving-reply");
     expect(fixture.closeThread).not.toHaveBeenCalled();
   });
 
