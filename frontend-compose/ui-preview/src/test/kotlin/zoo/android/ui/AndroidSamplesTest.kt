@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -120,9 +121,9 @@ class AndroidSamplesTest {
             ),
         )
         val searchResults = AndroidScreen.Search(SearchScreenState(
-            "資料", "資料", GlobalSearchType.All,
+            "会議 資料", "会議 資料", GlobalSearchType.All,
             listOf(
-                SearchResultItem("message:m1", "はる", "…次の会議の資料を共有します。確認をお願いします。", "11/21 12:05", "開発"),
+                SearchResultItem("message:m1", "はる", "…次の**会議**の資料を共有します。`資料.md` を確認してください。", "11/21 12:05", "開発"),
                 SearchResultItem("file:f1", "みずき", "会議資料_2026-11.pdf", "11/20 18:30", "開発", file = true, fileSize = "1.2 MB"),
                 SearchResultItem("message:m2", "ゆい", "資料の 3 ページ目に通話テストの結果を足しました。", "11/18 09:12", "運営", inThread = true),
                 SearchResultItem("message:m3", "なぎ", "資料ありがとう。明日読みます。", "2025/12/03 21:40", "はる", dm = true),
@@ -328,6 +329,14 @@ class AndroidSamplesTest {
                 }
                 if (name == "search") {
                     ui.onNodeWithText("暗号化されたチャンネルは検索の対象外です。").assertIsDisplayed()
+                    // Terms are marked in the snippet's text and in file names, but not inside code.
+                    fun marked(prefix: String) = ui.onNode(hasText(prefix, substring = true), useUnmergedTree = true)
+                        .fetchSemanticsNode().config[SemanticsProperties.Text].single().let { text ->
+                            text.spanStyles.filter { it.item.background != Color.Unspecified }
+                                .map { text.text.substring(it.start, it.end) }
+                        }
+                    check(marked("…次の会議") == listOf("会議", "資料")) { marked("…次の会議").toString() }
+                    check(marked("会議資料_2026") == listOf("会議", "資料")) { marked("会議資料_2026").toString() }
                     ui.onNodeWithText("すべて").assertIsSelected()
                     ui.onNodeWithText("運営 · スレッドの返信", useUnmergedTree = true).assertIsDisplayed()
                     ui.onNodeWithText("1.2 MB", useUnmergedTree = true).assertIsDisplayed()

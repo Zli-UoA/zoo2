@@ -30,12 +30,15 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import zoo.GlobalSearchType
+import zoo.searchTerms
 
 /** One `/api/search` hit, already resolved to display text by the adapter. */
 internal data class SearchResultItem(
@@ -108,15 +111,21 @@ internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: Androi
             }
             state.results.isEmpty() && !state.canLoadOlder && !state.error ->
                 SearchMessage(androidLabel("globalSearch.empty", "見つかりませんでした。"), colors)
-            else -> LazyColumn(
-                Modifier.fillMaxSize().testTag("global-search-results"),
-                rememberLazyListState(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                items(state.results, key = { it.key }) { item ->
-                    SearchResult(item, colors) { dispatch(AndroidUiAction.OpenSearchResult(item.key)) }
+            else -> {
+                val highlight = remember(state.query, colors.searchHighlight) {
+                    EntryHighlight(searchTerms(state.query),
+                        SpanStyle(color = colors.searchHighlightText, background = colors.searchHighlight))
                 }
-                item("search-footer") { SearchFooter(state, colors, dispatch) }
+                LazyColumn(
+                    Modifier.fillMaxSize().testTag("global-search-results"),
+                    rememberLazyListState(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    items(state.results, key = { it.key }) { item ->
+                        SearchResult(item, colors, highlight) { dispatch(AndroidUiAction.OpenSearchResult(item.key)) }
+                    }
+                    item("search-footer") { SearchFooter(state, colors, dispatch) }
+                }
             }
         }
     }
@@ -155,7 +164,7 @@ private fun SearchField(text: String, colors: AndroidColors, change: (String) ->
 }
 
 @Composable
-private fun SearchResult(item: SearchResultItem, colors: AndroidColors, open: () -> Unit) {
+private fun SearchResult(item: SearchResultItem, colors: AndroidColors, highlight: EntryHighlight, open: () -> Unit) {
     val thread = androidLabel("globalSearch.inThread", "スレッドの返信")
     val destination = listOfNotNull(item.destination, thread.takeIf { item.inThread }).joinToString(" · ")
     Row(
@@ -176,11 +185,16 @@ private fun SearchResult(item: SearchResultItem, colors: AndroidColors, open: ()
             }
             if (item.file) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(UiIcon.Attach, colors.secondary, iconSize = AndroidControlSize.inlineIcon)
-                Text(item.body, Modifier.weight(1f, fill = false), color = colors.foreground, fontSize = entryTextSize,
+                val name = remember(item.body, highlight) { buildAnnotatedString { appendHighlighted(item.body, highlight) } }
+                Text(name, Modifier.weight(1f, fill = false), color = colors.foreground, fontSize = entryTextSize,
                     fontWeight = AndroidWeights.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 item.fileSize?.let { Text(it, color = colors.secondary, fontSize = 12.sp, maxLines = 1) }
-            } else Text(item.body, color = colors.foreground, fontSize = entryTextSize, lineHeight = 23.sp,
-                maxLines = 3, overflow = TextOverflow.Ellipsis)
+            } else {
+                // The snippet is MFM like Web's result row; only its text parts are marked.
+                val snippet = remember(item.body, highlight) { formatEntry(item.body, highlight = highlight) }
+                Text(snippet, color = colors.foreground, fontSize = entryTextSize, lineHeight = 23.sp,
+                    maxLines = 3, overflow = TextOverflow.Ellipsis)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                 UiGlyph(if (item.dm) UiIcon.Person else UiIcon.Channels, colors.secondary,
                     iconSize = AndroidControlSize.metadataIcon)

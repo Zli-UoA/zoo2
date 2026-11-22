@@ -54,6 +54,9 @@ internal class AndroidColors(dark: Boolean) {
     val inputHint = if (dark) Color(0xffa6a6a6) else Color(0xff616161)
     val inputBoundary = if (dark) Color(0xff363636) else Color(0xffdedede)
     val accent = Color(0xffffd400)
+    /** Search terms in results (Web's `--highlight`): a paler yellow than [accent], readable on both themes. */
+    val searchHighlight = if (dark) Color(0xff5c4a00) else Color(0xffffe680)
+    val searchHighlightText = if (dark) Color.White else Color.Black
 }
 
 internal val entryTextSize = 16.sp

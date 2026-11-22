@@ -39,6 +39,7 @@ import zoo.mfmFunction
 import zoo.mfmRuby
 import zoo.mfmUnixSeconds
 import zoo.parseInline
+import zoo.highlightSegments
 import zoo.publicUrlString
 import zoo.richSegments
 
@@ -46,17 +47,32 @@ private const val emojiTag = "zoo-entry-emoji"
 private val linked = SpanStyle(textDecoration = TextDecoration.Underline)
 private val monospace = SpanStyle(fontFamily = FontFamily.Monospace)
 
-internal fun formatEntry(body: String, emoji: Set<String> = emptySet()) = buildAnnotatedString {
+/** Search terms to mark in the text parts of an entry; code, math, emoji and mentions are left as they are. */
+internal class EntryHighlight(val terms: List<String>, val style: SpanStyle)
+
+internal fun formatEntry(body: String, emoji: Set<String> = emptySet(), highlight: EntryHighlight? = null) = buildAnnotatedString {
+    val mark = highlight?.takeIf { it.terms.isNotEmpty() }
     messageHeadingBlocks(body).forEachIndexed { index, block ->
         if (index > 0) append('\n')
         val level = block.level
-        if (level == null) appendBlocks(block.content, emoji)
+        if (level == null) appendBlocks(block.content, emoji, mark)
         else withStyle(SpanStyle(fontSize = (1.55f - (level - 1) * .09f).em,
-            fontWeight = AndroidWeights.emphasis)) { appendMfm(block.content, emoji) }
+            fontWeight = AndroidWeights.emphasis)) { appendMfm(block.content, emoji, mark) }
     }
 }
 
-private fun AnnotatedString.Builder.appendBlocks(body: String, emoji: Set<String>, depth: Int = 0) {
+/** [text] with the parts that hit [highlight]'s terms in its style. */
+internal fun AnnotatedString.Builder.appendHighlighted(text: String, highlight: EntryHighlight?) {
+    if (highlight == null) {
+        append(text)
+        return
+    }
+    highlightSegments(text, highlight.terms).forEach { segment ->
+        if (segment.match) withStyle(highlight.style) { append(segment.text) } else append(segment.text)
+    }
+}
+
+private fun AnnotatedString.Builder.appendBlocks(body: String, emoji: Set<String>, mark: EntryHighlight?, depth: Int = 0) {
     if (depth >= 16) {
         append(body)
         return
@@ -67,7 +83,7 @@ private fun AnnotatedString.Builder.appendBlocks(body: String, emoji: Set<String
             block && (source.startsWith("```") || source.startsWith("<center>") || source.startsWith("> "))
         }
     ) {
-        appendMfm(body, emoji, depth)
+        appendMfm(body, emoji, mark, depth)
         return
     }
     segments.forEach { (source, block) ->
@@ -76,23 +92,23 @@ private fun AnnotatedString.Builder.appendBlocks(body: String, emoji: Set<String
                 withStyle(monospace) { append(mfmCodeBlock(source).body) }
             block && source.startsWith("<center>") ->
                 withStyle(ParagraphStyle(textAlign = TextAlign.Center)) {
-                    appendBlocks(source.removePrefix("<center>").removeSuffix("</center>").trim(), emoji, depth + 1)
+                    appendBlocks(source.removePrefix("<center>").removeSuffix("</center>").trim(), emoji, mark, depth + 1)
                 }
             block && source.startsWith("> ") -> {
                 withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
                     source.lines().forEachIndexed { index, line ->
                         if (index > 0) append('\n')
                         append("│ ")
-                        appendMfm(line.removePrefix(">").trimStart(), emoji, depth + 1)
+                        appendMfm(line.removePrefix(">").trimStart(), emoji, mark, depth + 1)
                     }
                 }
             }
-            else -> appendMfm(source, emoji, depth)
+            else -> appendMfm(source, emoji, mark, depth)
         }
     }
 }
 
-private fun AnnotatedString.Builder.appendMfm(body: String, emoji: Set<String>, depth: Int = 0) {
+private fun AnnotatedString.Builder.appendMfm(body: String, emoji: Set<String>, mark: EntryHighlight?, depth: Int = 0) {
     if (depth >= 16) {
         append(body)
         return
@@ -100,19 +116,19 @@ private fun AnnotatedString.Builder.appendMfm(body: String, emoji: Set<String>, 
     parseInline(body).forEach { token ->
         val value = token.value
         when (token.kind) {
-            "bold" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { appendMfm(value, emoji, depth + 1) }
-            "italic" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendMfm(value, emoji, depth + 1) }
-            "strike" -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { appendMfm(value, emoji, depth + 1) }
-            "small" -> withStyle(SpanStyle(fontSize = .8.em)) { appendMfm(value, emoji, depth + 1) }
+            "bold" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { appendMfm(value, emoji, mark, depth + 1) }
+            "italic" -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { appendMfm(value, emoji, mark, depth + 1) }
+            "strike" -> withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) { appendMfm(value, emoji, mark, depth + 1) }
+            "small" -> withStyle(SpanStyle(fontSize = .8.em)) { appendMfm(value, emoji, mark, depth + 1) }
             "code", "math" -> withStyle(monospace) { append(value) }
-            "effect" -> appendEffect(value, emoji, depth)
+            "effect" -> appendEffect(value, emoji, mark, depth)
             "link" -> {
                 val url = token.url?.let(::publicUrlString)
                 if (url == null) append(value)
                 else withLink(LinkAnnotation.Url(url, TextLinkStyles(style = linked))) {
                     // A label may contain formatting. Strip its link annotations to avoid nested links.
                     val label = buildAnnotatedString {
-                        if (value == token.url) append(value) else appendMfm(value, emoji, depth + 1)
+                        if (value == token.url) appendHighlighted(value, mark) else appendMfm(value, emoji, mark, depth + 1)
                     }
                     append(AnnotatedString(label.text, label.spanStyles))
                 }
@@ -125,12 +141,12 @@ private fun AnnotatedString.Builder.appendMfm(body: String, emoji: Set<String>, 
                 } else append(value)
             }
             "mention", "hashtag" -> withStyle(SpanStyle(fontWeight = AndroidWeights.emphasis)) { append(value) }
-            else -> append(value)
+            else -> appendHighlighted(value, mark)
         }
     }
 }
 
-private fun AnnotatedString.Builder.appendEffect(source: String, emoji: Set<String>, depth: Int) {
+private fun AnnotatedString.Builder.appendEffect(source: String, emoji: Set<String>, mark: EntryHighlight?, depth: Int) {
     val effect = mfmFunction(source.substring(2, source.length - 1))
     val style = when (effect.name) {
         "fg" -> SpanStyle(color = effect.argb("color")?.let(::Color) ?: Color.Unspecified)
@@ -144,7 +160,7 @@ private fun AnnotatedString.Builder.appendEffect(source: String, emoji: Set<Stri
         })
         "ruby" -> {
             val ruby = mfmRuby(effect.body)
-            appendMfm(ruby.base, emoji, depth + 1)
+            appendMfm(ruby.base, emoji, mark, depth + 1)
             if (ruby.reading.isNotBlank()) withStyle(SpanStyle(fontSize = .7.em)) { append("（${ruby.reading}）") }
             return
         }
@@ -157,7 +173,7 @@ private fun AnnotatedString.Builder.appendEffect(source: String, emoji: Set<Stri
         }
         else -> SpanStyle()
     }
-    withStyle(style) { appendMfm(effect.body, emoji, depth + 1) }
+    withStyle(style) { appendMfm(effect.body, emoji, mark, depth + 1) }
 }
 
 internal fun entryCode(value: String) = buildAnnotatedString { withStyle(monospace) { append(value) } }
