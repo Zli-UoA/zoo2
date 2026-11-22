@@ -111,6 +111,7 @@ async fn search_queries_have_bounded_work() -> anyhow::Result<()> {
     // 7 行に 1 行は削除済み。チャンネルは公開・非公開（actor は 1/5 だけ所属）・暗号化を巡回する。
     let content = "CASE WHEN i%10<3 THEN 'よろしくお願いします、です '||i WHEN i%50 IN (3,4) THEN '明日の会議の資料 '||i ELSE 'hello world message '||i END";
     let channels = PUBLIC + PRIVATE + ENCRYPTED;
+    let noise = n / 10;
     db.batch_execute(&format!(r#"
 SET session_replication_role = replica;
 INSERT INTO users(id,user_name,display_name) VALUES('{ACTOR}','search-actor','A'),('{NOISE}','search-noise','N');
@@ -145,11 +146,16 @@ INSERT INTO channel_notes(id,channel_id,title,content,created_user_id,created_at
 SELECT 'n'||m.id,m.channel_id,'メモ '||m.i,CASE WHEN m.i%3=0 THEN '障害対応の手順 '||m.i ELSE '議事メモ '||m.i END,m.user_id,m.created_at
 FROM (SELECT row_number() OVER () i,* FROM messages WHERE id LIKE 'r-%' OR id LIKE 'h-%') m WHERE m.i%40=0;
 -- 自分が参加中の会話: actor は所属しない公開チャンネルの今月の親 200 件のスレッドに参加し、
--- 別の 200 件でメンションの通知を受けている（どちらも規模によらず同じ）。
+-- 別の 200 件でメンションの通知を受けている（どちらも規模によらず同じ）。通知は正本の notification_events。
 INSERT INTO thread_participants(thread_id,user_id)
 SELECT id,'{ACTOR}' FROM messages WHERE id LIKE 'r-%' AND deleted_at IS NULL AND channel_id IN (SELECT 'sc-'||i FROM generate_series(31,{PUBLIC}) i) ORDER BY id LIMIT 200;
-INSERT INTO notifications(id,user_id,actor_id,channel_id,message_id,notification_type)
+INSERT INTO notification_events(id,user_id,actor_id,channel_id,message_id,notification_type)
 SELECT 'nt-'||id,'{ACTOR}','{NOISE}',channel_id,id,'mention' FROM messages WHERE id LIKE 'r-%' AND deleted_at IS NULL AND channel_id IN (SELECT 'sc-'||i FROM generate_series(31,{PUBLIC}) i) ORDER BY id DESC LIMIT 200;
+-- メンション以外の通知（DM・リアクション・返信）は規模の 1/10 件（30 万件で 3 万、100 万件で 10 万）。
+-- メンションの部分インデックスで引くので、増えても scope-involving の走査は変わらない。
+INSERT INTO notification_events(id,user_id,actor_id,channel_id,message_id,notification_type)
+SELECT 'nn-'||m.id,'{ACTOR}','{NOISE}',m.channel_id,m.id,(ARRAY['dm','reaction','reply'])[1+m.i%3]
+FROM (SELECT row_number() OVER () i,id,channel_id FROM messages WHERE id LIKE 'h-%' LIMIT {noise}) m;
 SET session_replication_role = DEFAULT;
 "#)).await?;
     // 1 文ずつ送る（複数の文はまとめて暗黙のトランザクションになり、VACUUM が通らない）。
@@ -245,6 +251,17 @@ SET session_replication_role = DEFAULT;
     assert_eq!(
         involving["members"].as_array().unwrap().len(),
         30 + PRIVATE / 5
+    );
+    let actor_notifications: usize = one(
+        &db,
+        &format!("SELECT count(*)::text FROM notification_events WHERE user_id = '{ACTOR}'"),
+    )
+    .await?
+    .parse()?;
+    assert_eq!(
+        actor_notifications,
+        200 + n / 10,
+        "mentions and other notifications"
     );
     queries.push((
         "scope-involving".into(),
@@ -376,14 +393,37 @@ SET session_replication_role = DEFAULT;
         };
         // そのまま、と、ボットを除いて自分が参加中の会話に絞ったもの（行の絞り込みが増えるだけで、
         // 探す行は同じ GIN で決まる）。
-        for (suffix, no_bots, members, threads, ids) in [
-            ("", "", String::new(), "[]".to_string(), ids.clone()),
+        // 参加スレッドが多い利用者（T = 1 万）も測る。スレッドはハッシュで照合するので、走査も時間もほぼ変わらない。
+        let many_threads = {
+            let mut list: Vec<Value> = involving["threads"].as_array().unwrap().clone();
+            list.extend((0..10_000).map(|i| Value::from(format!("t-{i}"))));
+            Value::from(list).to_string()
+        };
+        let me = involving["user_name"].as_str().unwrap().to_string();
+        for (suffix, no_bots, members, threads, ids, me) in [
+            (
+                "",
+                "",
+                String::new(),
+                "[]".to_string(),
+                ids.clone(),
+                String::new(),
+            ),
             (
                 "-involving-no-bots",
                 "1",
                 involving["members"].to_string(),
                 involving["threads"].to_string(),
                 involving["ids"].to_string(),
+                me.clone(),
+            ),
+            (
+                "-involving-10k-threads",
+                "",
+                involving["members"].to_string(),
+                many_threads,
+                involving["ids"].to_string(),
+                me.clone(),
             ),
         ] {
             let mut params = vec![
@@ -398,6 +438,7 @@ SET session_replication_role = DEFAULT;
                 no_bots.into(),
                 members,
                 threads,
+                me,
             ];
             params.extend(terms.iter().map(|t| t.to_string()));
             // 対象の表は「今月のヒット」の定数倍、それ以外（JOIN 先）はページの件数に比例。
@@ -421,6 +462,7 @@ SET session_replication_role = DEFAULT;
         String::new(),
         String::new(),
         "[]".into(),
+        String::new(),
         "です".into(),
     ];
     queries.push((
@@ -463,6 +505,7 @@ SET session_replication_role = DEFAULT;
             String::new(),
             String::new(),
             "[]".into(),
+            String::new(),
             term.into(),
         ];
         queries.push((
@@ -558,6 +601,11 @@ SET session_replication_role = DEFAULT;
         ),
         ("api-files", "/api/search?type=files&q=pdf"),
         ("api-notes", "/api/search?type=notes&q=%E9%9A%9C%E5%AE%B3"),
+        // 自分が参加中・ボットを除く（クライアントの既定の all）。
+        (
+            "api-all-involving-no-bots",
+            "/api/search?type=all&q=%E3%81%A7%E3%81%99&involving_me=true&exclude_bots=true",
+        ),
     ];
     let oldest_month = {
         let m = now - 11;
