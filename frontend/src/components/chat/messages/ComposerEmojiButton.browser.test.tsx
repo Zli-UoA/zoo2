@@ -13,7 +13,7 @@ vi.mock("../../../lib/electric/collections-context", () => ({
 }));
 vi.mock("../../../lib/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/api/client")>()),
-  createConfiguredApiClient: () => ({ get: async () => ({ emojis: [] }) }),
+  createConfiguredApiClient: () => ({ get: async () => [] }),
 }));
 
 vi.mock("../../../hooks/useKitchenCatalog", () => ({
