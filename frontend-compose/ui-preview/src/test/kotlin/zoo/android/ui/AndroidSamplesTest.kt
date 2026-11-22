@@ -324,10 +324,12 @@ class AndroidSamplesTest {
                         useUnmergedTree = true).assertIsNotEnabled()
                 }
                 if (name == "channels") {
-                    ui.onNodeWithContentDescription("検索").assertHasClickAction()
-                        .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
+                    // Full-text search is a tab of its own; the channel list keeps only its channel finder.
+                    ui.onAllNodesWithContentDescription("検索").assertCountEquals(0)
+                    ui.onNode(isSelectable() and hasText("検索")).assertIsNotSelected().assertHasClickAction()
                 }
                 if (name == "search") {
+                    ui.onNode(isSelectable() and hasText("検索")).assertIsSelected()
                     ui.onNodeWithText("暗号化されたチャンネルは検索の対象外です。").assertIsDisplayed()
                     // Terms are marked in the snippet's text and in file names, but not inside code.
                     fun marked(prefix: String) = ui.onNode(hasText(prefix, substring = true), useUnmergedTree = true)
@@ -450,7 +452,7 @@ class AndroidSamplesTest {
             ))
         }
         ui.runOnIdle { screen = channels }
-        ui.onNodeWithContentDescription("検索").performClick()
+        ui.onNode(isSelectable() and hasText("検索")).performClick()
         ui.runOnIdle { screen = searchResults }
         ui.onNodeWithTag("global-search-field").performTextReplacement("会議")
         ui.onNodeWithText("メッセージ").performClick()
@@ -459,7 +461,7 @@ class AndroidSamplesTest {
         ui.onNodeWithText("さらに古い結果を検索").performClick()
         ui.runOnIdle {
             check(actions.takeLast(5) == listOf(
-                AndroidUiAction.OpenSearch,
+                AndroidUiAction.Navigate(TopPage.Search),
                 AndroidUiAction.SearchMessages("会議"),
                 AndroidUiAction.SelectSearchType(GlobalSearchType.Messages),
                 AndroidUiAction.OpenSearchResult("file:f1"),

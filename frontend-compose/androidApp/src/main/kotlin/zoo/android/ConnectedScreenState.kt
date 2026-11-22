@@ -559,9 +559,12 @@ internal class ConnectedScreenState(
                 channelId.isNotBlank() && app.isEncryptedChannel(channelId))
             is AndroidUiAction.Navigate -> {
                 overlay = null
+                if (action.page == TopPage.Search) searchText = app.globalSearch.query
                 platform.navigate(when (action.page) {
                     TopPage.Home -> "/home"
                     TopPage.Channels -> "/"
+                    // The tab reopens the last words and kind; returning keeps the loaded results.
+                    TopPage.Search -> globalSearchPath(app.globalSearch.query, app.globalSearch.type)
                     TopPage.Notifications -> "/notifications"
                     TopPage.Bubble -> "/bubble"
                     TopPage.Settings -> "/settings"
@@ -618,11 +621,6 @@ internal class ConnectedScreenState(
                 replyFocusRequest++
             } else openPost(action.id, focusReply = true)
             is AndroidUiAction.Search -> query = action.query
-            AndroidUiAction.OpenSearch -> {
-                overlay = null
-                searchText = app.globalSearch.query
-                platform.navigate(globalSearchPath(app.globalSearch.query, app.globalSearch.type))
-            }
             is AndroidUiAction.SearchMessages -> searchText = action.text
             AndroidUiAction.SubmitSearch -> {
                 // The IME search key: search the typed words now, or the same words again for new messages.

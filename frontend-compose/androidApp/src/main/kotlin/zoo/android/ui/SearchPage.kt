@@ -82,7 +82,8 @@ internal data class SearchScreenState(
 internal fun ColumnScope.SearchPage(screen: AndroidScreen.Search, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
     val state = screen.state
     val title = androidLabel("globalSearch.title", "検索")
-    PageHeader(title, colors, onBack = { dispatch(AndroidUiAction.Back) })
+    // A top tab like Channels: no back arrow, the navigation below switches pages.
+    PageHeader(title, colors)
     Column(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),

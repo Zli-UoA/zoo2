@@ -150,7 +150,6 @@ internal sealed interface AndroidUiAction {
     data class TextChanged(val text: String) : AndroidUiAction
     data class UseInputTool(val tool: InputTool) : AndroidUiAction
     data class Search(val query: String) : AndroidUiAction
-    data object OpenSearch : AndroidUiAction
     data class SearchMessages(val text: String) : AndroidUiAction
     data object SubmitSearch : AndroidUiAction
     data class SelectSearchType(val type: zoo.GlobalSearchType) : AndroidUiAction
@@ -266,6 +265,7 @@ private fun RenderAndroidScreen(
     val top = when (screen) {
         is AndroidScreen.Home -> TopPage.Home
         is AndroidScreen.Channels -> TopPage.Channels
+        is AndroidScreen.Search -> TopPage.Search
         is AndroidScreen.Notifications -> TopPage.Notifications
         is AndroidScreen.Bubble -> TopPage.Bubble
         is AndroidScreen.Settings -> TopPage.Settings
@@ -389,10 +389,7 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
 
 @Composable
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    PageHeader(androidLabel("channels.title", "チャンネル"), colors) {
-        UiIconButton(UiIcon.Search, androidLabel("globalSearch.openNav", "検索"), colors.foreground,
-            { dispatch(AndroidUiAction.OpenSearch) })
-    }
+    PageHeader(androidLabel("channels.title", "チャンネル"), colors)
     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         item {
             Text("チャンネルを探す",

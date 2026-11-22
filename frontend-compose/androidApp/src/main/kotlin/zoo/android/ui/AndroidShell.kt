@@ -38,6 +38,7 @@ internal fun androidLabel(key: String, fallback: String): String =
 internal enum class TopPage(val title: String, val icon: UiIcon, val translationKey: String) {
     Home("ホーム", UiIcon.Home, "home.title"),
     Channels("チャンネル", UiIcon.Channels, "channels.title"),
+    Search("検索", UiIcon.TextSearch, "globalSearch.openNav"),
     Notifications("通知", UiIcon.Bell, "notifications.title"),
     Bubble("Bubble", UiIcon.Bubble, "bubbleChat.title"),
     Settings("設定", UiIcon.Settings, "settings.navTitle"),
