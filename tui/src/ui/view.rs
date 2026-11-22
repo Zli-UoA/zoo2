@@ -1411,6 +1411,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opening_a_channel_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        // 別チャンネル (c2) の、一覧にないスレッドを閲覧中は、c2 の行の下に一時の行が出る。
+        // 別のチャンネルを開くとスレッドが閉じて、その行が消える。カーソルは押した行に残る。
+        for pin_first in [true, false] {
+            let mut app = app();
+            let feed =
+                |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+            feed(
+                &mut app,
+                ShapeId::ChannelUsers,
+                vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))],
+            );
+            feed(
+                &mut app,
+                ShapeId::Messages("c2".into()),
+                vec![
+                    (
+                        "r1",
+                        json!({ "id": "r1", "user_id": "u2", "channel_id": "c2",
+                                   "content": "root", "created_at": "2026-11-01 03:00:00" }),
+                    ),
+                    (
+                        "r2",
+                        json!({ "id": "r2", "user_id": "u1", "channel_id": "c2", "content": "reply",
+                                   "created_at": "2026-11-01 03:01:00", "parent_id": "r1" }),
+                    ),
+                ],
+            );
+            if pin_first {
+                feed(
+                    &mut app,
+                    ShapeId::UserPinnedChannels,
+                    vec![(
+                        "p2",
+                        json!({
+                            "user_id": "u1", "channel_id": "c2", "position": "0",
+                            "created_at": "2026-11-11 00:00:00",
+                            "updated_at": "2026-11-11 00:00:00"
+                        }),
+                    )],
+                );
+            }
+            app.current = Some("c2".into());
+            app.thread = Some(crate::ui::app::ThreadView {
+                root_id: "r1".into(),
+                selected: None,
+                scroll: 0,
+                inner_scroll: 0,
+            });
+            let temporary = |pinned| SidebarItem::Thread {
+                channel_id: "c2".into(),
+                id: "r1".into(),
+                pinned,
+            };
+            let before = app.sidebar_items();
+            assert!(before.contains(&temporary(false)), "{pin_first}");
+            assert_eq!(before.contains(&temporary(true)), pin_first, "{pin_first}");
+
+            let target = SidebarItem::Channel("c1".into());
+            app.focus = Focus::Sidebar;
+            app.sidebar_index = before.iter().position(|item| *item == target).unwrap();
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.current.as_deref(), Some("c1"));
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            let after = app.sidebar_items();
+            assert!(!after.contains(&temporary(false)) && !after.contains(&temporary(true)));
+            // ピン留めの下の一時の行が消えると、c1 の添字が 1 つ前にずれる。ずれたままだと、別の行が選ばれる。
+            assert_eq!(after[app.sidebar_index], target, "{pin_first}");
+        }
+    }
+
+    #[tokio::test]
     async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
         let mut app = app();
         pin_c1(&mut app);

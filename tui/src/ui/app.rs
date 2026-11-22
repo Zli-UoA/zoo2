@@ -1942,9 +1942,13 @@ impl App {
     }
 
     fn activate_sidebar(&mut self) {
-        match self.sidebar_items().get(self.sidebar_index).cloned() {
+        let selected = self.sidebar_items().get(self.sidebar_index).cloned();
+        match selected.clone() {
             Some(SidebarItem::Channel(channel_id) | SidebarItem::Pinned(channel_id)) => {
                 self.open_channel(channel_id);
+                // 別チャンネルのスレッドを閲覧中は、一覧外のスレッドの一時行がピン留めの下に出ている。
+                // チャンネルを開くとその行が消えて添字がずれるため、開いた行にカーソルを残す。
+                self.restore_sidebar_selection(selected);
                 self.focus = Focus::Messages;
             }
             Some(SidebarItem::Thread {
