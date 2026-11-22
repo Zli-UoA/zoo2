@@ -110,7 +110,7 @@ CREATE INDEX messages_search_month ON messages USING gin (
 - `20261201000000_notification_events_user_mention.sql`（`notification_events_user_mention`）で失敗した場合は、上の手順とは別に扱う。この文には `IF NOT EXISTS` がないので、INVALID の索引が残ったまま適用し直すと「既に存在する」で止まる。手で作り直すと同じく止まるので、作り直さずに、次のとおり消してから適用し直す。
   1. 失敗の原因を取り除く。
   2. 同じ索引を作っている処理がないことを確かめる（上の手順 2 と同じ）。
-  3. 索引が INVALID であることを確かめる（`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'notification_events_user_mention'`。`false` のときだけ次へ）。
+  3. 索引が INVALID であることを確かめる（`SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'notification_events_user_mention'`。`false` なら 4 へ。行が返らない（索引が作られる前に失敗した）なら、4 を飛ばして 5 へ。`true` なら作成は済んでいるので、そのまま 5 へ）。
   4. `DROP INDEX CONCURRENTLY notification_events_user_mention;` で消す。
   5. マイグレーションを適用し直す。Atlas は失敗した `CREATE INDEX CONCURRENTLY` から再開し、索引を作り直す。
 - 失敗の原因（ロック待ちの打ち切り、ディスク不足など）を先に取り除く。原因が残っていると、同じ所でまた失敗する。
