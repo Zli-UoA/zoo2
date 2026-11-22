@@ -159,6 +159,27 @@ internal fun ConnectedScreens(
         val unsubscribe = if (route == "/home" && env.visible) session.homeLive.subscribe { state.home.refresh(retain = true) } else null
         onDispose { unsubscribe?.invoke() }
     }
+    val searching = route == "/search"
+    val search = session.globalSearch
+    val routeQuery = if (searching) session.query["q"].orEmpty() else null
+    val routeType = if (searching) GlobalSearchType.from(session.query["type"]) else null
+    LaunchedEffect(routeQuery, routeType) {
+        // A link or restored route sets the words; our own `replace` below already matches the controller.
+        if (routeQuery == null || routeType == null || (routeQuery == search.query && routeType == search.type)) return@LaunchedEffect
+        state.searchText = routeQuery
+        search.search(routeQuery, routeType)
+    }
+    LaunchedEffect(searching, state.searchText) {
+        // Wait for typing to pause: each request may scan 12 months.
+        if (!searching || state.searchText.trim() == search.query) return@LaunchedEffect
+        delay(350)
+        search.search(state.searchText)
+    }
+    LaunchedEffect(searching, search.query, search.type) {
+        // Keep the route restorable (back from an opened result) without adding history steps.
+        val path = globalSearchPath(search.query, search.type)
+        if (searching && env.path != path) platform.replace(path)
+    }
     val sipRoute = route == "/settings" && env.path.substringAfter('?', "").split('&').contains("tab=sip")
     fun back() {
         state.invalidatePostRequest()
@@ -263,6 +284,7 @@ internal fun ConnectedScreens(
             AndroidScreen.Post(root, entries.filter { it.id != root.id }, InputState(state.replyDraft, canSend = env.online && !state.saving, selection = state.replySelection, focusRequest = state.replyFocusRequest))
         }
         state.overlay in setOf("theme", "language", "notifications", "search-engine") -> state.settingsDetail(env)
+        searching -> state.searchScreen(usersById, channels, memberships)
         route == "/home" -> AndroidScreen.Home(posts, state.home.timeline, state.home.canLoadOlder)
         route == "/notifications" -> state.inbox.screen()
         route == "/bubble" -> AndroidScreen.Bubble(bubbles.map { state.entry(it, usersById) }, InputState(bubbleDraft, live = true), bubbleParticipants.map { it.title })

@@ -104,6 +104,8 @@ internal class ConnectedScreenState(
     var federationAvailable by mutableStateOf(false)
         private set
     var query by mutableStateOf("")
+    /** The `/search` field; the controller searches it after typing pauses. */
+    var searchText by mutableStateOf(app.globalSearch.query)
     var postSelection by mutableStateOf<TextRange?>(null)
     var postDraft by mutableStateOf("")
     var replyDraft by mutableStateOf("")
@@ -424,6 +426,45 @@ internal class ConnectedScreenState(
         )
     }
 
+    fun searchScreen(users: Map<String, Row>, channels: List<Row>, members: List<Row>): AndroidScreen.Search {
+        val search = app.globalSearch
+        val channelsById = channels.associateBy { it.text("id") }
+        val year = platform.day(platform.now()).substringBefore('/')
+        return AndroidScreen.Search(SearchScreenState(
+            searchText, search.query, search.type,
+            search.items.map { row ->
+                val file = isGlobalSearchFile(row, search.type)
+                val user = users[row.text("user_id")] ?: row.nested("author").takeIf { it.isNotEmpty() }
+                val createdAt = row.text("created_at")
+                val day = platform.day(createdAt).let { if (it.substringBefore('/') == year) it.substringAfter('/') else it }
+                SearchResultItem(
+                    key = globalSearchKey(row, search.type),
+                    author = user?.let(::author)?.ifBlank { null } ?: row.text("user_id"),
+                    body = if (file) row.text("file_name") else row.text("snippet"),
+                    time = listOf(day, platform.time(createdAt)).filter { it.isNotBlank() }.joinToString(" "),
+                    destination = searchDestination(row, channelsById[row.text("channel_id")], users, members),
+                    dm = isDm(row, channelsById[row.text("channel_id")]),
+                    inThread = row.text("parent_id").isNotEmpty(),
+                    file = file,
+                    fileSize = if (file) attachmentSize(row.text("file_size")) else null,
+                )
+            },
+            loading = search.loading, loadingOlder = search.loadingOlder, error = search.error, loaded = search.loaded,
+            canLoadOlder = search.nextCursor != null, searchedUntil = search.searchedUntil,
+        ))
+    }
+
+    private fun isDm(row: Row, channel: Row?) = row.flag("is_dm") || channel?.flag("is_dm") == true
+
+    /** The channel name (the row shows `#` as an icon); for DMs the other members, as in the channel list. */
+    private fun searchDestination(row: Row, channel: Row?, users: Map<String, Row>, members: List<Row>): String {
+        if (!isDm(row, channel)) return row.text("channel_name")
+        val id = row.text("channel_id")
+        val peers = members.filter { it.text("channel_id") == id && it.text("user_id") != app.config.userId }
+            .mapNotNull { users[it.text("user_id")]?.let(::author)?.ifBlank { null } }
+        return peers.joinToString(", ").ifBlank { channel?.text("channel_name") ?: row.text("channel_name") }
+    }
+
     fun canEditMembers(channel: Row): Boolean = !channel.flag("is_dm") &&
         !channel.present("archive_at") && canManage(channel, app.config.userId, app.config.isAdmin)
 
@@ -575,6 +616,20 @@ internal class ConnectedScreenState(
                 replyFocusRequest++
             } else openPost(action.id, focusReply = true)
             is AndroidUiAction.Search -> query = action.query
+            AndroidUiAction.OpenSearch -> {
+                overlay = null
+                searchText = app.globalSearch.query
+                platform.navigate(globalSearchPath(app.globalSearch.query, app.globalSearch.type))
+            }
+            is AndroidUiAction.SearchMessages -> searchText = action.text
+            is AndroidUiAction.SelectSearchType -> app.globalSearch.search(searchText, action.type)
+            is AndroidUiAction.OpenSearchResult -> {
+                val search = app.globalSearch
+                search.items.firstOrNull { globalSearchKey(it, search.type) == action.key }
+                    ?.let { platform.navigate(globalSearchDestination(it, search.type)) }
+            }
+            AndroidUiAction.LoadOlderResults -> app.globalSearch.loadOlder()
+            AndroidUiAction.RetrySearch -> app.globalSearch.retry()
             is AndroidUiAction.SelectResult -> when (overlay) {
                 "people" -> people.firstOrNull { it.text("id") == action.id }?.let { person -> request { openProfile(person) } }
                 "add-member" -> if (channel != null) addMember(channel, action.id)

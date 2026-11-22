@@ -110,6 +110,7 @@ internal sealed interface AndroidScreen {
         val submit: String? = null, val canSubmit: Boolean = false, val encryption: Boolean? = null,
     ) : AndroidScreen
     data class EditEntry(val input: InputState) : AndroidScreen
+    data class Search(val state: SearchScreenState) : AndroidScreen
     data class Profile(
         val name: String, val bio: String, val posts: List<TimelineItem>, val follow: String? = null,
         val handle: String? = null, val avatar: ImageBitmap? = null,
@@ -145,6 +146,12 @@ internal sealed interface AndroidUiAction {
     data class TextChanged(val text: String) : AndroidUiAction
     data class UseInputTool(val tool: InputTool) : AndroidUiAction
     data class Search(val query: String) : AndroidUiAction
+    data object OpenSearch : AndroidUiAction
+    data class SearchMessages(val text: String) : AndroidUiAction
+    data class SelectSearchType(val type: zoo.GlobalSearchType) : AndroidUiAction
+    data class OpenSearchResult(val key: String) : AndroidUiAction
+    data object LoadOlderResults : AndroidUiAction
+    data object RetrySearch : AndroidUiAction
     data class ChannelNameChanged(val name: String) : AndroidUiAction
     data class ChannelDescriptionChanged(val description: String) : AndroidUiAction
     data object SubmitChannel : AndroidUiAction
@@ -327,6 +334,7 @@ private fun RenderAndroidScreen(
                 })
             }
             is AndroidScreen.NewPost -> NewPostPage(screen, colors, dispatch, photo)
+            is AndroidScreen.Search -> SearchPage(screen, colors, dispatch)
             is AndroidScreen.SignIn -> BrandPage(
                 "Zoo", if (screen.restoring) "" else "ブラウザーで認証を完了すると、Zooに戻ります。",
                 colors, loading = screen.restoring,
@@ -370,7 +378,10 @@ private fun HomePage(screen: AndroidScreen.Home, colors: AndroidColors, dispatch
 
 @Composable
 private fun ChannelPage(screen: AndroidScreen.Channels, colors: AndroidColors, dispatch: (AndroidUiAction) -> Unit) {
-    PageHeader(androidLabel("channels.title", "チャンネル"), colors)
+    PageHeader(androidLabel("channels.title", "チャンネル"), colors) {
+        UiIconButton(UiIcon.Search, androidLabel("globalSearch.openNav", "検索"), colors.foreground,
+            { dispatch(AndroidUiAction.OpenSearch) })
+    }
     LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {
         item {
             Text("チャンネルを探す",

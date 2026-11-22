@@ -28,6 +28,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
+import zoo.GlobalSearchType
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "ja-rJP-w360dp-h760dp-xhdpi")
@@ -65,9 +66,9 @@ class AndroidSamplesTest {
         ))
         val inbox = AndroidScreen.Notifications(listOf(
             InboxItem("reply", listOf(InboxActor("haru", "はる", "fixture-avatar")),
-                "投稿に返信しました", "次のテストでも確認します。", "12:03", true, kind = "reply", destination = "#開発"),
+                "投稿に返信しました", "次のテストでも確認します。", "12:03", true, kind = "reply", destination = "開発"),
             InboxItem("mention", listOf(InboxActor("yui", "ゆい")),
-                "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kind = "mention", destination = "#開発"),
+                "開発であなたをメンションしました", "ライト版も読みやすいね。", "11:48", true, kind = "mention", destination = "開発"),
             InboxItem("reaction", listOf(InboxActor("mizuki", "みずき", "fixture-avatar"), InboxActor("nagi", "なぎ")),
                 "リアクション · 2件", null, "11:22", false, kind = "like", destination = "misskey.io",
                 reactions = listOf(InboxReactionEmoji("🎉"), InboxReactionEmoji(":star:", "fixture-emoji"))),
@@ -118,6 +119,16 @@ class AndroidSamplesTest {
                 hidesBody = true,
             ),
         )
+        val searchResults = AndroidScreen.Search(SearchScreenState(
+            "資料", "資料", GlobalSearchType.All,
+            listOf(
+                SearchResultItem("message:m1", "はる", "…次の会議の資料を共有します。確認をお願いします。", "11/21 12:05", "開発"),
+                SearchResultItem("file:f1", "みずき", "会議資料_2026-11.pdf", "11/20 18:30", "開発", file = true, fileSize = "1.2 MB"),
+                SearchResultItem("message:m2", "ゆい", "資料の 3 ページ目に通話テストの結果を足しました。", "11/18 09:12", "運営", inThread = true),
+                SearchResultItem("message:m3", "なぎ", "資料ありがとう。明日読みます。", "2025/12/03 21:40", "はる", dm = true),
+            ),
+            loaded = true, canLoadOlder = true, searchedUntil = "2025-12",
+        ))
         val cases = listOf(
             "home-rich" to AndroidScreen.Home(listOf(richPost)),
             "channel-rich" to conversation.copy(entries = listOf(richMessage), input = InputState()),
@@ -165,6 +176,13 @@ class AndroidSamplesTest {
                     it.copy(author = "はる", postHeader = it.postHeader?.copy(handle = "@haru", channel = null, server = "social.example"))
                 }, "フォロー", handle = "@haru@social.example", avatar = avatar, originalAvailable = true),
             "directory" to AndroidScreen.Directory("チャンネルを探す", "", listOf(SelectionItem("dev", "開発"))),
+            "search-prompt" to AndroidScreen.Search(SearchScreenState("", "", GlobalSearchType.All)),
+            "search" to searchResults,
+            "search-files" to AndroidScreen.Search(SearchScreenState("資料", "資料", GlobalSearchType.Files,
+                searchResults.state.results.filter { it.file }, loaded = true, searchedUntil = "2025-12")),
+            "search-older" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.Messages,
+                loaded = true, canLoadOlder = true, searchedUntil = "2025-12")),
+            "search-error" to AndroidScreen.Search(SearchScreenState("議事録", "議事録", GlobalSearchType.All, error = true)),
             "channel-edit" to AndroidScreen.EditChannel("チャンネルを作成", "開発", "", "作成", true,
                 privateChannel = true, sensitive = false, encrypted = true),
             "channel-settings" to AndroidScreen.ChannelSettings("開発", listOf(SettingsGroup("チャンネル", listOf(
@@ -304,6 +322,34 @@ class AndroidSamplesTest {
                     ui.onNode(hasAnyAncestor(hasTestTag("timeline-entry-2")) and hasContentDescription("再投稿"),
                         useUnmergedTree = true).assertIsNotEnabled()
                 }
+                if (name == "channels") {
+                    ui.onNodeWithContentDescription("検索").assertHasClickAction()
+                        .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
+                }
+                if (name == "search") {
+                    ui.onNodeWithText("暗号化されたチャンネルは検索の対象外です。").assertIsDisplayed()
+                    ui.onNodeWithText("すべて").assertIsSelected()
+                    ui.onNodeWithText("運営 · スレッドの返信", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithText("1.2 MB", useUnmergedTree = true).assertIsDisplayed()
+                    ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("さらに古い結果を検索"))
+                    ui.onNodeWithText("2025-12 まで検索しました").assertIsDisplayed()
+                    ui.onNodeWithText("さらに古い結果を検索").assertHeightIsEqualTo(48.dp)
+                    ui.onNodeWithTag("global-search-results").performScrollToIndex(0)
+                }
+                if (name == "search-files") {
+                    ui.onNodeWithText("ファイル").assertIsSelected()
+                    ui.onNodeWithText("2025-12 まで検索しました").assertIsDisplayed()
+                    ui.onNodeWithText("さらに古い結果を検索").assertDoesNotExist()
+                }
+                if (name == "search-older") {
+                    ui.onNodeWithText("2025-12 までに見つかりませんでした。さらに古い期間を検索できます。").assertIsDisplayed()
+                    ui.onNodeWithText("さらに古い結果を検索").assertIsDisplayed()
+                }
+                if (name == "search-error") ui.onNodeWithText("再試行").assertHasClickAction()
+                if (name == "search-prompt") {
+                    ui.onNodeWithText("メッセージとファイルを検索").assertIsDisplayed()
+                    ui.onAllNodesWithText("さらに古い結果を検索").assertCountEquals(0)
+                }
                 if (name == "profile") {
                     ui.onNodeWithText("@haru@social.example").assertIsDisplayed()
                     ui.onNodeWithContentDescription("公開プロフィールを開く").assertHasClickAction()
@@ -393,6 +439,23 @@ class AndroidSamplesTest {
                 AndroidUiAction.ActOnEntry(entry, EntryOperation.Repost),
                 AndroidUiAction.ActOnEntry(entry, EntryOperation.React),
             ))
+        }
+        ui.runOnIdle { screen = channels }
+        ui.onNodeWithContentDescription("検索").performClick()
+        ui.runOnIdle { screen = searchResults }
+        ui.onNodeWithTag("global-search-field").performTextReplacement("会議")
+        ui.onNodeWithText("メッセージ").performClick()
+        ui.onNodeWithText("みずき", useUnmergedTree = true).performClick()
+        ui.onNodeWithTag("global-search-results").performScrollToNode(hasText("さらに古い結果を検索"))
+        ui.onNodeWithText("さらに古い結果を検索").performClick()
+        ui.runOnIdle {
+            check(actions.takeLast(5) == listOf(
+                AndroidUiAction.OpenSearch,
+                AndroidUiAction.SearchMessages("会議"),
+                AndroidUiAction.SelectSearchType(GlobalSearchType.Messages),
+                AndroidUiAction.OpenSearchResult("file:f1"),
+                AndroidUiAction.LoadOlderResults,
+            )) { "Search actions: ${actions.takeLast(5)}" }
         }
         ui.runOnIdle { screen = cases.first { it.first == "group-dm" }.second }
         ui.onNodeWithText("はる").performClick()
