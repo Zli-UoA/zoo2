@@ -3085,16 +3085,30 @@ mod tests {
     }
 
     #[test]
-    fn a_parent_that_went_away_is_no_longer_reachable() {
-        let dir = temp_dir();
-        let part = part_path(&dir.join("x.txt"), "0123456789abcdef");
-        let recorded = parent_id(&part);
-        assert!(recorded.is_some());
-        assert!(reachable_parent(&part, recorded));
+    fn cleanup_keeps_the_record_when_the_parent_goes_away_before_remove() {
+        use std::cell::Cell;
 
-        // 削除の直前にボリュームが外れた状態を、親ディレクトリの消失で表す。
+        let dir = temp_dir();
+        let folder = dir.join("drive");
+        std::fs::create_dir(&folder).unwrap();
+        let probe = part_path(&folder.join("x.txt"), "0123456789abcdef").with_extension("probe");
+        std::fs::write(&probe, PROBE_MARKER).unwrap();
+        let recorded = parent_id(&probe);
+        assert!(recorded.is_some());
+
+        let removed = Cell::new(false);
+        let result = remove_stale_entry_with(&probe, recorded, |_| {
+            // 最初の照合が終わった後、削除の直前にボリュームが外れた状況を作る。
+            // `remove_file` が `NotFound` を返すので、再照合の分岐を通る。
+            if !removed.get() {
+                std::fs::remove_dir_all(&folder).unwrap();
+                removed.set(true);
+            }
+            ProbeState::Ours
+        });
+        assert!(!result, "削除直前に親が消えたら記録を残す");
+
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(!reachable_parent(&part, recorded));
     }
 
     #[test]
