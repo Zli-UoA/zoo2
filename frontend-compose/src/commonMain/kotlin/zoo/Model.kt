@@ -149,6 +149,8 @@ data class Environment(
     val historyState: Row = JsonObject(emptyMap()),
     val visualViewportHeight: Float? = null,
     val visualViewportTop: Float = 0f,
+    val swipeReply: Boolean = true,
+    val operationHaptics: Boolean = true,
 )
 
 fun endpoint(base: String, path: String): String = base.trimEnd('/') + "/" + path.trimStart('/')
@@ -189,3 +191,12 @@ internal fun isHomePath(path: String): Boolean {
     val route = path.substringBefore('?')
     return route == "/home" || route.startsWith("/home/posts/") || route.startsWith("/home/users/")
 }
+
+/**
+ * 暗号化チャンネルか（Channels の Shape の行の `encrypted`）。平文の送信経路との分岐に使う。
+ */
+fun isEncryptedChannel(channels: List<Row>, channel: String): Boolean =
+    channels.any { it.text("id") == channel && it.flag("encrypted") }
+
+internal fun isPublicProfilePath(path: String): Boolean =
+    Regex("^/public/users/[^/]+/?$").matches(path.substringBefore('?').substringBefore('#'))

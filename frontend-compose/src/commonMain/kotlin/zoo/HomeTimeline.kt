@@ -183,7 +183,7 @@ class HomeTimeline(
 
     fun remove(postId: String) {
         app.homeTimelines.remove(postId)
-        posts = posts.filterNot { it.text("id") == postId }
+        posts = posts.filterNot { it.nested("post").text("id").ifBlank { it.text("id") } == postId }
     }
 
     suspend fun awaitUpdate() { refreshJob?.join() }
@@ -231,7 +231,9 @@ class HomeTimeline(
     private fun path(size: Int, before: String) = homeTimelinePath(timeline, actorId, size, before)
 
     companion object {
-        fun key(row: Row): String = row.text("entry_id").ifEmpty { row.text("id") }
+        fun key(row: Row): String = row.nested("display").text("entry_id").ifBlank {
+            row.text("entry_id").ifBlank { row.nested("post").text("id").ifBlank { row.text("id") } }
+        }
 
         internal fun numericCompare(a: String, b: String): Int {
             fun clean(s: String) = s.trimStart('0').ifEmpty { "0" }

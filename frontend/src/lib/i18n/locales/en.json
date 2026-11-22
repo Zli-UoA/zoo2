@@ -176,6 +176,11 @@
     "invalidState": "This action cannot be performed in the current state."
   },
   "settings": {
+    "appearance": "Appearance",
+    "interaction": "Gestures",
+    "swipeReply": "Swipe to reply",
+    "operationHaptics": "Haptic feedback",
+    "navTitle": "Settings",
     "admin": "Administrator",
     "member": "Member",
     "makeAdmin": "Make administrator",
@@ -246,6 +251,10 @@
     "edited": "Edited"
   },
   "attachments": {
+    "recentPhotos": "Recent photos",
+    "systemPhotos": "Open photo picker",
+    "allowRecentPhotos": "Allow photo access",
+    "noRecentPhotos": "No photos available",
     "play": "Play",
     "pause": "Pause",
     "add": "Attach files",
@@ -397,6 +406,8 @@
     "channels": "Channel suggestions"
   },
   "notifications": {
+    "filterAll": "All",
+    "filterMentions": "Mentions",
     "label": "Notifications",
     "close": "Dismiss notification",
     "title": "Notifications",
@@ -594,6 +605,7 @@
     "micNotFound": "No microphone found."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "A room where text appears in real time as you type",
     "emptyTitle": "No one is typing right now",
@@ -807,6 +819,7 @@
     "showLess": "Show less"
   },
   "home": {
+    "navTitle": "Home",
     "back": "Back",
     "deleted": "Post deleted",
     "newPosts": "View new posts ({{count}})",
@@ -1723,6 +1736,9 @@
     "empty": "No public channels are available.",
     "saved": "Saved."
   },
+  "androidUpdate": {
+    "title": "App updates"
+  },
   "androidNotifications": {
     "enable": "Enable notifications",
     "scope": "Receive new notifications while your signed-in session is syncing.",
@@ -1842,5 +1858,31 @@
     "speaker": "Speaker",
     "waiting": "Waiting for incoming calls",
     "dmCall": "Call"
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} unread conversation to catch up",
+    "navUnread_other": "{{count}} unread conversations to catch up",
+    "title": "Catch up",
+    "close": "Done",
+    "count_one": "{{count}} unread message",
+    "count_other": "{{count}} unread messages",
+    "overCount_one": "{{count}}+ unread messages",
+    "overCount_other": "{{count}}+ unread messages",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "Mark as read",
+    "keepUnread": "Keep unread",
+    "readError": "Could not mark this conversation as read. Please try again.",
+    "loadError": "Could not load unread conversations",
+    "retry": "Retry",
+    "loading": "Loading unread conversations",
+    "empty": "No unread conversations",
+    "emptyDescription": "Check back when new messages arrive",
+    "complete": "All caught up",
+    "summary": "{{read}} marked read · {{skipped}} left unread",
+    "refresh": "Refresh",
+    "conversation": "Conversation",
+    "unreadTooOld": "Some older unread messages are still outside the loaded range. Load more before marking as read.",
+    "loadMore": "Load more",
+    "unreadChanged": "New unread messages arrived while reading. Keep this conversation unread and continue."
   }
 }

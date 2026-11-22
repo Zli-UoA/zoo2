@@ -11,10 +11,10 @@ import android.util.Rational
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -22,14 +22,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import works.zli.zoo.R
-import zoo.phone.PhonePeerAvatar
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
-import zoo.Button
-import zoo.LocalTouchUi
-import zoo.Text
-import zoo.ZooTheme
+import zoo.text
+import zoo.android.ui.*
 
 /** A separate activity keeps the caller display and controls independent of the chat UI. */
 class PhonePictureInPictureActivity : ComponentActivity() {
@@ -63,26 +60,30 @@ class PhonePictureInPictureActivity : ComponentActivity() {
             }
         }
         setContent {
-            CompositionLocalProvider(LocalTouchUi provides true) {
-                ZooTheme(dark = true, locale = host.app.env.locale) {
-                    Surface(color = MaterialTheme.colorScheme.surface) {
-                        if (inPictureInPicture) {
-                            BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                PhonePeerAvatar(host.app, call, minOf(maxWidth, maxHeight) * 0.64f)
-                            }
-                        } else Column(
-                            Modifier.fillMaxSize().padding(12.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            Text(host.app.t("sip.status.active"), small = true)
-
-                            Button(host.app.t("androidPhone.expandCall"), primary = true) {
-                                runCatching { open.send() }
-                                finish()
-                            }
-                            Button(hangup, destructive = true) { runCatching { end.send() } }
-                        }
+            val users by host.app.repo.users.replicatedRows.collectAsState()
+            val members by host.app.repo.members.rows.collectAsState()
+            val peerId = call.peerUserId ?: members.filter {
+                it.text("channel_id") == call.target && it.text("user_id") != host.app.config.userId
+            }.map { it.text("user_id") }.distinct().singleOrNull()
+            val peer = users.firstOrNull { it.text("id") == peerId }
+            val avatar = rememberCallImage(host.app, peer?.text("avatar_url"))
+            val colors = AndroidColors(dark = true)
+            BoxWithConstraints(Modifier.fillMaxSize().background(colors.background), contentAlignment = Alignment.Center) {
+                if (inPictureInPicture) {
+                    CallPortrait(AndroidScreen.Call(call.label, incoming = false, active = true, avatar = avatar,
+                        hasUser = call.kind == "dm"), colors, minOf(maxWidth, maxHeight) * .64f)
+                } else Column(
+                    Modifier.safeDrawingPadding().padding(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(host.app.t("sip.status.active"), color = colors.foreground)
+                    TextAction(host.app.t("androidPhone.expandCall"), colors, icon = UiIcon.Phone) {
+                        runCatching { open.send() }
+                        finish()
+                    }
+                    TextAction(hangup, colors, style = TextActionStyle.Neutral, icon = UiIcon.PhoneOff) {
+                        runCatching { end.send() }
                     }
                 }
             }

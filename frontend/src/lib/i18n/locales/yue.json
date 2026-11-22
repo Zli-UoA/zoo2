@@ -176,6 +176,11 @@
     "invalidState": "而家嘅狀態做唔到呢個操作。"
   },
   "settings": {
+    "appearance": "外觀",
+    "interaction": "手勢操作",
+    "swipeReply": "撥動回覆",
+    "operationHaptics": "觸感回饋",
+    "navTitle": "設定",
     "admin": "管理員",
     "member": "成員",
     "makeAdmin": "設為管理員",
@@ -246,6 +251,10 @@
     "edited": "已編輯"
   },
   "attachments": {
+    "recentPhotos": "最近相片",
+    "systemPhotos": "開啟相片選擇器",
+    "allowRecentPhotos": "允許存取相片",
+    "noRecentPhotos": "冇相片可以顯示",
     "play": "播放",
     "pause": "暫停",
     "add": "附加檔案",
@@ -397,6 +406,8 @@
     "channels": "頻道建議"
   },
   "notifications": {
+    "filterAll": "全部通知",
+    "filterMentions": "提到你",
     "label": "通知",
     "close": "關閉通知",
     "title": "通知",
@@ -594,6 +605,7 @@
     "micNotFound": "搵唔到麥克風。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "打緊嘅字會即時顯示喺呢個房入面",
     "emptyTitle": "而家冇人打緊字",
@@ -807,6 +819,7 @@
     "showLess": "收起"
   },
   "home": {
+    "navTitle": "主頁",
     "back": "返回",
     "deleted": "已刪除帖文",
     "newPosts": "睇新帖文（{{count}}）",
@@ -1723,6 +1736,9 @@
     "empty": "冇可用嘅公開頻道。",
     "saved": "已儲存。"
   },
+  "androidUpdate": {
+    "title": "應用程式更新"
+  },
   "androidNotifications": {
     "enable": "啟用通知",
     "scope": "登入階段同步期間接收新通知。",
@@ -1842,5 +1858,31 @@
     "speaker": "揚聲器",
     "waiting": "正在等候來電",
     "dmCall": "通話"
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 個未讀對話待睇",
+    "navUnread_other": "{{count}} 個未讀對話待睇",
+    "title": "未讀訊息速睇",
+    "close": "結束",
+    "count_one": "{{count}} 則未讀訊息",
+    "count_other": "{{count}} 則未讀訊息",
+    "overCount_one": "{{count}}+ 則未讀訊息",
+    "overCount_other": "{{count}}+ 則未讀訊息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "標為已讀",
+    "keepUnread": "保持未讀去下一個",
+    "readError": "標唔到已讀，請再試一次",
+    "loadError": "載入唔到未讀對話",
+    "retry": "重試",
+    "loading": "載入緊未讀對話",
+    "empty": "冇未讀對話",
+    "emptyDescription": "有新訊息時再返嚟睇",
+    "complete": "全部睇完",
+    "summary": "已讀 {{read}} 個 · 保持未讀 {{skipped}} 個",
+    "refresh": "更新",
+    "conversation": "對話",
+    "unreadTooOld": "部分較舊嘅未讀訊息仲喺讀取範圍外。請先載入更多再標為已讀。",
+    "loadMore": "載入更多",
+    "unreadChanged": "閱讀期間有新的未讀訊息。請保持呢個對話未讀並繼續。"
   }
 }

@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } 
 import { Separator } from "../ui/separator";
 import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
+import { CatchUpButton } from "../chat/CatchUpButton";
 import { PaneHeader } from "./PaneHeader";
 
 function RailLink({
@@ -95,6 +96,7 @@ export function LeftRail() {
       <RailLink to="/home" icon={HomeIcon} label={t("home.title")} exact />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
+      <CatchUpButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
       <AppDialogs />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}

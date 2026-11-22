@@ -201,7 +201,7 @@
         # CI Android（.github/workflows/ci-android.yaml）の setup-android と同じ版にそろえる。
         androidNdkVersion = "29.0.14206865";
         androidComposition = androidPkgs.androidenv.composeAndroidPackages {
-          platformVersions = [ "35" ];
+          platformVersions = [ "35" "36" ];
           buildToolsVersions = [ "35.0.0" ];
           includeNDK = true;
           ndkVersions = [ androidNdkVersion ];

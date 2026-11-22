@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "works.zli.zoo"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "works.zli.zoo"
         minSdk = 26
@@ -87,7 +87,7 @@ dependencies {
     // E2EE の初回設定と解錠（#360）。パスキーの PRF は Credential Manager、再認証は Custom Tabs。
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
-    implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.browser:browser:1.9.0")
 }
 
 val translations by
@@ -96,9 +96,16 @@ val translations by
         into(layout.buildDirectory.dir("generated/assets/locales"))
     }
 
+val emojiCatalogs by tasks.registering(Sync::class) {
+    from("../src/commonMain/composeResources/files") {
+        include("shortcodes.json", "emoji-kitchen.json")
+    }
+    into(layout.buildDirectory.dir("generated/assets/emoji"))
+}
+
 android.sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/assets"))
 
-tasks.named("preBuild") { dependsOn(translations) }
+tasks.named("preBuild") { dependsOn(translations, emojiCatalogs) }
 
 dependencies {
     testImplementation(kotlin("test-junit"))

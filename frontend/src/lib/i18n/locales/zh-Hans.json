@@ -176,6 +176,11 @@
     "invalidState": "当前状态无法执行此操作。"
   },
   "settings": {
+    "appearance": "外观",
+    "interaction": "操作方式",
+    "swipeReply": "滑动回复",
+    "operationHaptics": "触感反馈",
+    "navTitle": "设置",
     "admin": "管理员",
     "member": "成员",
     "makeAdmin": "设为管理员",
@@ -246,6 +251,10 @@
     "edited": "已编辑"
   },
   "attachments": {
+    "recentPhotos": "最近的照片",
+    "systemPhotos": "打开照片选择器",
+    "allowRecentPhotos": "允许访问照片",
+    "noRecentPhotos": "没有可显示的照片",
     "play": "播放",
     "pause": "暂停",
     "add": "添加文件",
@@ -397,6 +406,8 @@
     "channels": "频道建议"
   },
   "notifications": {
+    "filterAll": "全部",
+    "filterMentions": "提及",
     "label": "通知",
     "close": "关闭通知",
     "title": "通知",
@@ -594,6 +605,7 @@
     "micNotFound": "未找到麦克风设备。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "输入的文字会实时显示在此房间中",
     "emptyTitle": "当前没有人在输入",
@@ -807,6 +819,7 @@
     "showLess": "收起"
   },
   "home": {
+    "navTitle": "首页",
     "back": "返回",
     "deleted": "帖子已删除",
     "newPosts": "查看新帖子（{{count}}）",
@@ -1723,6 +1736,9 @@
     "empty": "没有可用的公开频道。",
     "saved": "已保存。"
   },
+  "androidUpdate": {
+    "title": "应用更新"
+  },
   "androidNotifications": {
     "enable": "启用通知",
     "scope": "登录会话同步期间接收新通知。",
@@ -1842,5 +1858,31 @@
     "speaker": "扬声器",
     "waiting": "正在等待来电",
     "dmCall": "通话"
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 个未读会话待查看",
+    "navUnread_other": "{{count}} 个未读会话待查看",
+    "title": "未读消息速览",
+    "close": "结束",
+    "count_one": "{{count}} 条未读消息",
+    "count_other": "{{count}} 条未读消息",
+    "overCount_one": "{{count}}+ 条未读消息",
+    "overCount_other": "{{count}}+ 条未读消息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "标为已读",
+    "keepUnread": "保持未读并前往下一条",
+    "readError": "无法标为已读，请重试",
+    "loadError": "无法加载未读会话",
+    "retry": "重试",
+    "loading": "正在加载未读会话",
+    "empty": "没有未读会话",
+    "emptyDescription": "有新消息时再回来查看",
+    "complete": "全部看完",
+    "summary": "已读 {{read}} 个 · 保持未读 {{skipped}} 个",
+    "refresh": "刷新",
+    "conversation": "会话",
+    "unreadTooOld": "部分较早的未读消息仍在加载范围外。请先加载更多再标为已读。",
+    "loadMore": "加载更多",
+    "unreadChanged": "阅读期间有新的未读消息。请保持此会话未读并继续。"
   }
 }

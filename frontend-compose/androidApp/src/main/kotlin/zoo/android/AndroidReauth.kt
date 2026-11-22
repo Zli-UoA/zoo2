@@ -5,6 +5,8 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import androidx.browser.auth.AuthTabIntent
+import androidx.browser.customtabs.CustomTabsClient
 import androidx.browser.customtabs.CustomTabsIntent
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
@@ -28,24 +30,16 @@ import zoo.crypto.ReauthRequest
 import zoo.crypto.validateIdToken
 import zoo.json
 
-/**
- * E2EE の直前の再認証を Custom Tabs で行う（docs/e2ee.md の「クロス署名」の再認証の確かめ方。#360）。
- *
- * - 認可リクエスト（PKCE、`max_age=0`、`state`、`nonce`）を Custom Tabs で開く。今の画面（とメモリーの鍵、
- *   リカバリーキー）はそのまま残る。
- * - AuthZ のリダイレクト先 `https://<ビルド時のホスト>/android/reauth-callback`（既定は `zli.chat`。接続先が
- *   違っても同じ）は App Links でこのアプリに届く
- *   （[ReauthCallbackActivity] から [MainActivity] へ渡し、[deliver] で受け取る）。`state` が違う URI は無視する。
- * - 認可コードはトークンエンドポイントで ID トークンに換え、iss、aud、exp、nonce を確かめる。今のセッションの
- *   トークンは変えない。
- *
- * 【未検証】AuthZ からの 302 のリダイレクトで、Custom Tabs がアプリに処理を渡すか（docs/e2ee.md の「未決と
- * 未検証の一覧」）。渡さなかったときは、ブラウザーに zoo2 の案内のページが出るので、「ログインをやめる」で戻る。
- */
+internal class BrowserAuthorization(val tokenEndpoint: String, val tokens: JsonObject) {
+    override fun toString(): String = "BrowserAuthorization"
+}
+
+/** OIDC authorization code flow shared by sign-in and E2EE reauthentication. */
 internal class AndroidReauth(
     private val activity: Activity,
     private val http: HttpClient,
     private val connection: LoginConnection,
+    private val launchAuthTab: (AuthTabIntent, Uri, Uri, (AuthTabIntent.AuthResult) -> Unit) -> Boolean,
 ) {
     private class Pending(val request: ReauthRequest, val result: CompletableDeferred<ReauthCallback>)
 
@@ -58,7 +52,12 @@ internal class AndroidReauth(
         return current.result.complete(callback)
     }
 
-    suspend fun reauthenticate(): String {
+    suspend fun reauthenticate(): String =
+        requireNotNull(authorize(forceReauth = true).tokens.text("id_token"))
+
+    suspend fun signIn(): BrowserAuthorization = authorize(forceReauth = false)
+
+    private suspend fun authorize(forceReauth: Boolean): BrowserAuthorization {
         val discovery = discover()
         val request =
             ReauthRequest.create(
@@ -68,14 +67,18 @@ internal class AndroidReauth(
                 // 接続先ではなく、manifest の App Links と同じビルド時のホストにする（独自の接続先でもアプリに戻る）。
                 redirectUri = ReauthRequest.redirectUri("https://${works.zli.zoo.BuildConfig.REAUTH_HOST}"),
                 resource = connection.resource,
+                forceReauth = forceReauth,
             )
         val waiting = Pending(request, CompletableDeferred())
-        pending.set(waiting)
+        check(pending.compareAndSet(null, waiting)) { "認証はすでに進行中です" }
         try {
             withContext(Dispatchers.Main) {
                 try {
-                    CustomTabsIntent.Builder().setShareState(CustomTabsIntent.SHARE_STATE_OFF).build()
-                        .launchUrl(activity, Uri.parse(request.url))
+                    val url = Uri.parse(request.url)
+                    if (!openAuthTab(url, waiting)) {
+                        CustomTabsIntent.Builder().setShareState(CustomTabsIntent.SHARE_STATE_OFF).build()
+                            .launchUrl(activity, url)
+                    }
                 } catch (failure: ActivityNotFoundException) {
                     throw ReauthException(ReauthException.Reason.BROWSER_UNAVAILABLE, "ブラウザーを開けません")
                 }
@@ -83,13 +86,32 @@ internal class AndroidReauth(
             val code =
                 when (val callback =
                     withTimeoutOrNull(ReauthRequest.TIMEOUT_MILLIS) { waiting.result.await() }
-                        ?: throw ReauthException(ReauthException.Reason.TIMEOUT, "再認証が時間内に終わりませんでした")) {
+                        ?: throw ReauthException(ReauthException.Reason.TIMEOUT, "認証が時間内に終わりませんでした")) {
                     is ReauthCallback.Code -> callback.code
-                    is ReauthCallback.Error -> throw ReauthException(ReauthException.Reason.DENIED, "再認証が拒否されました")
+                    is ReauthCallback.Error -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
                 }
             return exchange(discovery, request, code)
         } finally {
             pending.compareAndSet(waiting, null)
+        }
+    }
+
+    private fun openAuthTab(url: Uri, waiting: Pending): Boolean {
+        val browser = CustomTabsClient.getPackageName(activity, null) ?: return false
+        if (!CustomTabsClient.isAuthTabSupported(activity, browser)) return false
+        val tab = AuthTabIntent.Builder().build().apply { intent.setPackage(browser) }
+        return try {
+            launchAuthTab(tab, url, Uri.parse(waiting.request.redirectUri)) { result ->
+                if (pending.get() === waiting) {
+                    try {
+                        waiting.result.complete(authTabCallback(result.resultCode, result.resultUri?.toString(), waiting.request))
+                    } catch (failure: ReauthException) {
+                        waiting.result.completeExceptionally(failure)
+                    }
+                }
+            }
+        } catch (_: ActivityNotFoundException) {
+            false
         }
     }
 
@@ -107,7 +129,7 @@ internal class AndroidReauth(
         return discovery
     }
 
-    private suspend fun exchange(discovery: JsonObject, request: ReauthRequest, code: String): String {
+    private suspend fun exchange(discovery: JsonObject, request: ReauthRequest, code: String): BrowserAuthorization {
         val endpoint = discovery.text("token_endpoint")
         if (endpoint == null || Url(endpoint).protocol != URLProtocol.HTTPS) {
             throw ReauthException(ReauthException.Reason.DENIED, "トークンエンドポイントがありません")
@@ -130,14 +152,23 @@ internal class AndroidReauth(
             } catch (_: Exception) {
                 JsonObject(emptyMap())
             }
-        // 成功応答の access_token は使わない（今のセッションのトークンは変えない）。エラーの本文は出さない。
+        // エラー応答の本文や成功時のトークンはログに出さない。
         val idToken =
             result.text("id_token")?.takeIf { response.status.value in 200..299 }
                 ?: throw ReauthException(ReauthException.Reason.DENIED, "ID トークンを受け取れませんでした (HTTP ${response.status.value})")
         validateIdToken(idToken, connection.issuer, connection.client, request.nonce, System.currentTimeMillis() / 1000)
-        return idToken
+        return BrowserAuthorization(endpoint, result)
     }
 }
+
+internal fun authTabCallback(code: Int, uri: String?, request: ReauthRequest): ReauthCallback =
+    when (code) {
+        AuthTabIntent.RESULT_OK -> uri?.let { ReauthCallbacks.parse(it, request) }
+            ?: throw ReauthException(ReauthException.Reason.DENIED, "認証の戻り先を確認できませんでした")
+        AuthTabIntent.RESULT_VERIFICATION_FAILED, AuthTabIntent.RESULT_VERIFICATION_TIMED_OUT ->
+            throw ReauthException(ReauthException.Reason.DENIED, "認証の戻り先をブラウザーで検証できませんでした")
+        else -> throw ReauthException(ReauthException.Reason.DENIED, "認証が取り消されました")
+    }
 
 private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
