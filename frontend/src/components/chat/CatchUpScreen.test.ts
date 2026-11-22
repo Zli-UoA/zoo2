@@ -163,6 +163,13 @@ it("skips a conversation that became read in another tab", async () => {
   expect(mocks.post).not.toHaveBeenCalled();
 });
 
+it("shows the load error instead of the empty state when the detail fetch fails", async () => {
+  mocks.get.mockRejectedValue(new Error("network"));
+  render(createElement(CatchUpScreen));
+  expect(await screen.findByText("catchUp.loadError")).toBeTruthy();
+  expect(screen.queryByText("未読の会話はありません")).toBeNull();
+});
+
 it("shows the empty state when the detailed response has no unread conversations", async () => {
   mocks.get.mockResolvedValue([]);
   render(createElement(CatchUpScreen));

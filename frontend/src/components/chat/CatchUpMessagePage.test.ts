@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   messages: [] as Array<{ id: string; user_id: string; created_at: string }>,
   loadOlder: vi.fn(),
   hasOlder: false,
+  providerProps: [] as Array<{ encrypted?: boolean }>,
 }));
 
 const message = (id: string, created_at: string) => ({
@@ -43,9 +44,25 @@ vi.mock("../../lib/emoji/reactions", () => ({
 vi.mock("../../lib/offline/offline-context", () => ({
   useOfflineStatus: () => ({ isOnline: true }),
 }));
+vi.mock("../../lib/e2ee/encryptionGuard", () => ({
+  noteEncryptedChannel: vi.fn(),
+  subscribeEncryptedChannels: () => () => {},
+  encryptedChannelsVersion: () => 0,
+}));
 vi.mock("../../lib/e2ee/messageDecryption", () => ({
   firstEncryptedAt: () => null,
-  MessageDecryptionsProvider: ({ children }: { children: ReactNode }) => children,
+  useEncryptedChannel: () => false,
+  withUnencryptedRows: (_rows: unknown, decryptions: unknown) => decryptions,
+  MessageDecryptionsProvider: ({
+    children,
+    encrypted,
+  }: {
+    children: ReactNode;
+    encrypted?: boolean;
+  }) => {
+    mocks.providerProps.push({ encrypted });
+    return children;
+  },
 }));
 vi.mock("./messages/MessageList", () => ({
   MessageList: () => createElement("div", null, "messages"),
@@ -55,6 +72,7 @@ afterEach(() => {
   cleanup();
   mocks.messages = [];
   mocks.hasOlder = false;
+  mocks.providerProps = [];
   mocks.loadOlder.mockReset();
 });
 
@@ -84,6 +102,30 @@ it("keeps the boundary at the newest message shown when the page opened", async 
   });
   expect(onBoundaryMessage).toHaveBeenCalledTimes(1);
   expect(onBoundaryMessage).toHaveBeenCalledWith("m2");
+});
+
+it("keeps encrypted rendering when the channel is flagged encrypted or is an edm", () => {
+  mocks.messages = [message("m1", "2026-01-01T10:00:00Z")];
+  const view = render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      encrypted: true,
+      firstUnreadAt: null,
+      onBoundaryMessage: vi.fn(),
+    }),
+  );
+  expect(mocks.providerProps[0].encrypted).toBe(true);
+  view.unmount();
+
+  render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c2",
+      channelName: "edm:alice:bob",
+      firstUnreadAt: null,
+      onBoundaryMessage: vi.fn(),
+    }),
+  );
+  expect(mocks.providerProps.at(-1)?.encrypted).toBe(true);
 });
 
 it("loads older pages until the oldest unread timestamp is inside the range", async () => {

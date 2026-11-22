@@ -43,11 +43,16 @@ export function CatchUpScreen() {
   const [skippedCount, setSkippedCount] = useState(0);
   const [writeError, setWriteError] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [isWriting, setIsWriting] = useState(false);
   const [boundary, setBoundary] = useState<{ channelId: string; messageId: string | null } | null>(
     null,
   );
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const requestId = useRef(0);
+  const latestStates = useRef(states);
+  latestStates.current = states;
+  const statesAtStart = useRef(states);
 
   // 詳細（件数・最古時刻）はキャッチアップを開いたときだけ取得する。
   // 10秒ポーリングは軽い一覧のまま共有し、ここでは再計算しない。
@@ -58,16 +63,24 @@ export function CatchUpScreen() {
     setSkippedCount(0);
     setWriteError(false);
     setBoundary(null);
+    statesAtStart.current = latestStates.current;
   }, []);
 
   const loadQueue = useCallback(async () => {
+    const request = ++requestId.current;
+    setIsLoadingDetails(true);
+    setLoadError(false);
     try {
       const detailed = await client.get<ChannelReadState[]>("/api/channel-read-states?details=1");
+      if (request !== requestId.current) return;
       start(detailed);
-      setLoadError(false);
     } catch {
-      setQueue([]);
+      if (request !== requestId.current) return;
+      // Keep the queue null so the error view (not the empty view) is shown.
+      setQueue(null);
       setLoadError(true);
+    } finally {
+      if (request === requestId.current) setIsLoadingDetails(false);
     }
   }, [client, start]);
 
@@ -112,6 +125,8 @@ export function CatchUpScreen() {
   // 別タブ・端末で既読になった会話は、表示時に未読が無ければ飛ばす。
   useEffect(() => {
     if (!current || isWriting || writeError) return;
+    // キュー確定時より古い軽量ポーリング結果ではスキップしない。
+    if (states === statesAtStart.current) return;
     const live = states.find((state) => state.channel_id === current.channel_id);
     if (live && !live.has_unread) goNext();
   }, [states, current, isWriting, writeError, goNext]);
@@ -161,10 +176,18 @@ export function CatchUpScreen() {
   };
 
   return (
-    <main className="flex h-full min-h-0 flex-col bg-background">
+    <section
+      className="flex h-full min-h-0 flex-col bg-background"
+      aria-labelledby="catch-up-title"
+    >
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
-          <h1 className="truncate text-lg font-semibold" tabIndex={-1} ref={headingRef}>
+          <h1
+            id="catch-up-title"
+            className="truncate text-lg font-semibold"
+            tabIndex={-1}
+            ref={headingRef}
+          >
             {t("catchUp.title")}
           </h1>
           {current ? (
@@ -186,7 +209,7 @@ export function CatchUpScreen() {
             <p role="alert" className="text-sm text-destructive">
               {t("catchUp.loadError")}
             </p>
-            <Button variant="outline" onClick={restart}>
+            <Button variant="outline" onClick={restart} disabled={isLoadingDetails}>
               {t("catchUp.retry")}
             </Button>
           </div>
@@ -231,6 +254,8 @@ export function CatchUpScreen() {
             <CatchUpMessagePage
               key={current.channel_id}
               channelId={current.channel_id}
+              channelName={channelById.get(current.channel_id)?.channel_name}
+              encrypted={channelById.get(current.channel_id)?.encrypted}
               firstUnreadAt={current.first_unread_at ?? null}
               onBoundaryMessage={onBoundaryMessage}
             />
@@ -259,6 +284,6 @@ export function CatchUpScreen() {
           </footer>
         </>
       )}
-    </main>
+    </section>
   );
 }

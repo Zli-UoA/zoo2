@@ -85,6 +85,9 @@ async fn authorize(
 pub const UNREAD_AUTHOR_LIMIT: i64 = 100;
 /// Root messages counted per unread author. One extra row signals "1000+".
 pub const UNREAD_PER_AUTHOR_SCAN: i64 = 1_001;
+/// Authors probed for the conversation's oldest unread message. Each probe is
+/// one bounded index lookup, independent of the author limit used for counts.
+pub const FIRST_UNREAD_AUTHOR_LIMIT: i64 = 1_000;
 /// Largest exact unread count reported by the API.
 pub const UNREAD_COUNT_MAX: i64 = 1_000;
 
@@ -108,12 +111,11 @@ pub fn states_sql(single: bool, details: bool) -> String {
                 r#",'unread_count', LEAST(COALESCE(u.n, 0), {UNREAD_COUNT_MAX}),
         'unread_count_truncated', COALESCE(u.n, 0) > {UNREAD_COUNT_MAX}
             OR COALESCE(u.authors, 0) >= {UNREAD_AUTHOR_LIMIT},
-        'first_unread_at', u.first_at"#
+        'first_unread_at', f.first_at"#
             ),
             format!(
                 r#"LEFT JOIN LATERAL (
             SELECT COALESCE(sum(per_author.n), 0)::int AS n,
-                   min(per_author.first_at) AS first_at,
                    count(*)::int AS authors
             FROM (
                 SELECT a.user_id,
@@ -123,18 +125,29 @@ pub fn states_sql(single: bool, details: bool) -> String {
                           AND m.parent_id IS NULL AND m.deleted_at IS NULL
                           AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
                         LIMIT {UNREAD_PER_AUTHOR_SCAN}
-                    ) counted) AS n,
-                    (SELECT m.created_at FROM messages m
-                     WHERE m.channel_id = a.channel_id AND m.user_id = a.user_id
-                       AND m.parent_id IS NULL AND m.deleted_at IS NULL
-                       AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
-                     ORDER BY m.created_at LIMIT 1) AS first_at
+                    ) counted) AS n
                 FROM channel_message_authors a
                 WHERE a.channel_id = c.id AND a.user_id <> $1
                   AND a.latest_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
                 ORDER BY a.latest_at DESC, a.user_id DESC LIMIT {UNREAD_AUTHOR_LIMIT}
             ) per_author
-        ) u ON h.has_unread"#
+        ) u ON h.has_unread
+        LEFT JOIN LATERAL (
+            SELECT min(firsts.at) AS first_at
+            FROM (
+                SELECT (
+                    SELECT m.created_at FROM messages m
+                    WHERE m.channel_id = a.channel_id AND m.user_id = a.user_id
+                      AND m.parent_id IS NULL AND m.deleted_at IS NULL
+                      AND m.created_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                    ORDER BY m.created_at LIMIT 1
+                ) AS at
+                FROM channel_message_authors a
+                WHERE a.channel_id = c.id AND a.user_id <> $1
+                  AND a.latest_at > COALESCE(r.last_read_at, '-infinity'::timestamp)
+                ORDER BY a.latest_at DESC, a.user_id DESC LIMIT {FIRST_UNREAD_AUTHOR_LIMIT}
+            ) firsts
+        ) f ON h.has_unread"#
             ),
         )
     } else {

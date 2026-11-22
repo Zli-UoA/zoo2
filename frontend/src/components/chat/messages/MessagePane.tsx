@@ -69,7 +69,7 @@ import {
   isPlaintextBeforeEncryption,
   MessageDecryptionsProvider,
   firstEncryptedAt,
-  type MessageDecryption,
+  withUnencryptedRows,
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
 import { localizeApiError } from "../../../lib/i18n/apiError";
@@ -363,21 +363,10 @@ export function MessagePane({
   // `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367）なので、本文を出す（MessageRow）。
   // 区切りより上の行には印を付けず、暗号化したメッセージより後ろにある行だけ警告を付ける（チャンネルの一覧は
   // MessageList が並びから、スレッドのペインは `encryptedSince` の日時から決める）。
-  const decryptions = useMemo(() => {
-    // フィードは削除済みの行を除くが、念のため `deleted_at` のある行（暗号文は DB が消す）は除く。
-    const unencrypted = decryptionRows.filter(
-      (row) =>
-        !row.ciphertext &&
-        !isPlaintextBeforeEncryption(row) &&
-        !(row as { deleted_at?: string | null }).deleted_at,
-    );
-    if (unencrypted.length === 0) return workerDecryptions;
-    const next = new Map(workerDecryptions);
-    for (const row of unencrypted) {
-      next.set(row.id, { status: "undecryptable", reason: "unencrypted" });
-    }
-    return next as ReadonlyMap<string, MessageDecryption>;
-  }, [decryptionRows, workerDecryptions]);
+  const decryptions = useMemo(
+    () => withUnencryptedRows(decryptionRows, workerDecryptions),
+    [decryptionRows, workerDecryptions],
+  );
 
   /** 暗号化した送信の失敗を利用者に知らせる。 */
   const reportEncryptedFailure = useCallback(

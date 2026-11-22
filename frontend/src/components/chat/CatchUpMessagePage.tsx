@@ -1,9 +1,19 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useMessageDecryptions } from "../../hooks/useMessageDecryptions";
-import { MessageDecryptionsProvider, firstEncryptedAt } from "../../lib/e2ee/messageDecryption";
+import {
+  encryptedChannelsVersion,
+  noteEncryptedChannel,
+  subscribeEncryptedChannels,
+} from "../../lib/e2ee/encryptionGuard";
+import {
+  MessageDecryptionsProvider,
+  firstEncryptedAt,
+  useEncryptedChannel,
+  withUnencryptedRows,
+} from "../../lib/e2ee/messageDecryption";
 import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
 import { useMessageAttachments } from "../../hooks/useAttachments";
 import { useMessageFeed, useMessageReactions, useUsers } from "../../hooks/useRealtime";
@@ -22,10 +32,14 @@ const MAX_UNREAD_PAGES = 5;
  */
 export function CatchUpMessagePage({
   channelId,
+  channelName,
+  encrypted = false,
   firstUnreadAt,
   onBoundaryMessage,
 }: {
   channelId: string;
+  channelName?: string;
+  encrypted?: boolean;
   firstUnreadAt: string | null;
   onBoundaryMessage: (messageId: string | null) => void;
 }) {
@@ -47,10 +61,23 @@ export function CatchUpMessagePage({
     () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
     [attachmentsQuery.data],
   );
-  // 暗号化された会話も通常の MessageRow と同じ復号経路を使う。
-  const encrypted = messages.some((row) => row.ciphertext != null);
-  const decryptionRows = useMemo(() => (encrypted ? messages : []), [encrypted, messages]);
-  const decryptions = useMessageDecryptions(channelId, decryptionRows);
+  // 暗号化の判定は MessagePane と同じ基準を使う（ciphertext の有無だけでは
+  // epoch だけの行や edm: の暗号化DMを取りこぼす）。
+  const isEncryptedDm = !!channelName?.startsWith("edm:");
+  if (encrypted || isEncryptedDm) noteEncryptedChannel(channelId);
+  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
+  const notedEncrypted = useEncryptedChannel();
+  const treatAsEncrypted =
+    encrypted || isEncryptedDm || notedEncrypted || messages.some((row) => row.ciphertext != null);
+  const decryptionRows = useMemo(
+    () => (treatAsEncrypted ? messages : []),
+    [treatAsEncrypted, messages],
+  );
+  const workerDecryptions = useMessageDecryptions(channelId, decryptionRows);
+  const decryptions = useMemo(
+    () => withUnencryptedRows(decryptionRows, workerDecryptions),
+    [decryptionRows, workerDecryptions],
+  );
   const encryptedSince = useMemo(() => firstEncryptedAt(messages), [messages]);
   const mentionUserNames = useMemo(
     () => new Map((usersQuery.data ?? []).map((user) => [user.id, user.user_name])),
@@ -109,7 +136,7 @@ export function CatchUpMessagePage({
     <MessageDecryptionsProvider
       decryptions={decryptions}
       mentionUserNames={mentionUserNames}
-      encrypted={encrypted}
+      encrypted={treatAsEncrypted}
       encryptedSince={encryptedSince}
     >
       <MessageList

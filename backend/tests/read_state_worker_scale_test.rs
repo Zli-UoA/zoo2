@@ -2,7 +2,9 @@
 use backend::{
     config::Config,
     display_refresh::reservation_sql,
-    routes::read_states::{UNREAD_AUTHOR_LIMIT, UNREAD_PER_AUTHOR_SCAN, states_sql},
+    routes::read_states::{
+        FIRST_UNREAD_AUTHOR_LIMIT, UNREAD_AUTHOR_LIMIT, UNREAD_PER_AUTHOR_SCAN, states_sql,
+    },
     slack::sync::claim_sql,
 };
 use serde_json::{Value, json};
@@ -31,7 +33,8 @@ fn walk(node: &Value, f: &mut impl FnMut(&Value)) {
 }
 /// `read_*` queries inspect at most a bounded number of unread authors and a
 /// bounded number of root messages per author; three channels share this budget.
-const READ_WORK_BUDGET: f64 = (UNREAD_AUTHOR_LIMIT * UNREAD_PER_AUTHOR_SCAN) as f64;
+const READ_WORK_BUDGET: f64 =
+    ((UNREAD_AUTHOR_LIMIT * UNREAD_PER_AUTHOR_SCAN) + FIRST_UNREAD_AUTHOR_LIMIT) as f64 * 3.;
 
 fn work(name: &str, plan: &Value, budget: f64) -> Value {
     let mut relations = std::collections::BTreeMap::<String, f64>::new();
@@ -89,11 +92,15 @@ fn work(name: &str, plan: &Value, budget: f64) -> Value {
             0,
             "{name}: disk spill"
         );
-        if name == "read_list_light" {
+        if name == "read_list_light" || name == "read_single" {
             assert_eq!(
                 *relations.get("messages").unwrap_or(&0.),
                 0.,
-                "the sidebar poll must not scan message history"
+                "lightweight read states must not scan message history"
+            );
+            assert!(
+                *relations.get("channel_message_authors").unwrap_or(&0.) <= 6.,
+                "lightweight read states must not enumerate authors"
             );
         }
         if name.starts_with("read_") {
@@ -103,7 +110,7 @@ fn work(name: &str, plan: &Value, budget: f64) -> Value {
             );
             assert!(
                 *relations.get("channel_message_authors").unwrap_or(&0.)
-                    <= (UNREAD_AUTHOR_LIMIT * 3) as f64
+                    <= ((UNREAD_AUTHOR_LIMIT + FIRST_UNREAD_AUTHOR_LIMIT) * 3) as f64
             );
         }
     }
@@ -305,6 +312,104 @@ async fn read_states_and_worker_claims_do_not_scan_history() -> anyhow::Result<(
         std::fs::write(dir.join("work.json"), serde_json::to_vec_pretty(&metrics)?)?;
     }
     measure_api(&user, &channels[0]).await?;
+    measure_skewed_details(&mut client).await?;
+    Ok(())
+}
+
+/// Worst case for `details=1`: many channels, each with many unread authors
+/// and more than one counted page per author. This runs inside the existing
+/// ignored test so the query-budget CI step covers a skewed distribution too.
+async fn measure_skewed_details(client: &mut tokio_postgres::Client) -> anyhow::Result<()> {
+    const CHANNELS: i32 = 12;
+    const AUTHORS: i32 = 100;
+    const POSTS: i32 = 1_001;
+    let viewer = uuid::Uuid::new_v4().to_string();
+    let tx = client.transaction().await?;
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,$1::text)",
+        &[&viewer],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) SELECT $1||'-skew-channel-'||c,$1||'-skew-channel-'||c,$1,false FROM generate_series(1,$2)c",
+        &[&viewer, &CHANNELS],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $1,$1||'-skew-channel-'||c,now() FROM generate_series(1,$2)c",
+        &[&viewer, &CHANNELS],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) SELECT $1||'-skew-author-'||a,$1||'-skew-author-'||a,'Author' FROM generate_series(1,$2)a",
+        &[&viewer, &AUTHORS],
+    )
+    .await?;
+    tx.batch_execute("SET LOCAL session_replication_role=replica")
+        .await?;
+    tx.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at)
+         SELECT $1||'-'||c||'-'||a||'-'||p, $1||'-skew-author-'||a, $1||'-skew-channel-'||c, 'post',
+                timestamp '2025-01-01' + ((c*$3 + a*$4 + p)::text||' seconds')::interval
+         FROM generate_series(1,$2)c, generate_series(1,$4)a, generate_series(1,$5)p",
+        &[&viewer, &CHANNELS, &AUTHORS, &AUTHORS, &POSTS],
+    )
+    .await?;
+    tx.batch_execute("SET LOCAL session_replication_role=origin")
+        .await?;
+    tx.execute(
+        "INSERT INTO channel_message_authors(channel_id,user_id,latest_at)
+         SELECT channel_id,user_id,max(created_at) FROM messages
+         WHERE parent_id IS NULL AND deleted_at IS NULL GROUP BY channel_id,user_id
+         ON CONFLICT(channel_id,user_id) DO UPDATE SET latest_at=EXCLUDED.latest_at",
+        &[],
+    )
+    .await?;
+    tx.commit().await?;
+    client.batch_execute("ANALYZE").await?;
+
+    for (name, details) in [("details", true), ("light", false)] {
+        let sql = states_sql(false, details).replace("$1", &format!("'{viewer}'"));
+        let started = std::time::Instant::now();
+        let result = client.query(&sql, &[]).await?;
+        eprintln!(
+            "skew {name}: rows={} elapsed={:?}",
+            result.len(),
+            started.elapsed()
+        );
+        assert_eq!(result.len(), CHANNELS as usize);
+        if details {
+            let value: Value = serde_json::from_str(result[0].get::<_, String>(0).as_str())?;
+            assert_eq!(value["unread_count"], 1_000);
+            assert_eq!(value["unread_count_truncated"], true);
+        }
+        let raw = client
+            .simple_query(&format!(
+                "EXPLAIN(ANALYZE,BUFFERS,TIMING OFF,FORMAT JSON) {sql}"
+            ))
+            .await?;
+        let plan: Value = serde_json::from_str(rows(&raw)[0])?;
+        let mut messages_rows = 0_f64;
+        walk(&plan[0]["Plan"], &mut |node| {
+            if node["Relation Name"].as_str() == Some("messages") {
+                messages_rows += (node["Actual Rows"].as_f64().unwrap_or(0.)
+                    + node["Rows Removed by Filter"].as_f64().unwrap_or(0.))
+                    * node["Actual Loops"].as_f64().unwrap_or(0.);
+            }
+        });
+        let blocks = plan[0]["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)
+            + plan[0]["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0);
+        eprintln!("skew {name}: messages scanned={messages_rows:.0} blocks={blocks}");
+        if details {
+            let bound = (CHANNELS * AUTHORS * POSTS + CHANNELS * AUTHORS) as f64;
+            assert!(
+                messages_rows <= bound,
+                "skewed scan exceeded bound: {messages_rows} > {bound}"
+            );
+        } else {
+            assert_eq!(messages_rows, 0., "lightweight list scanned messages");
+        }
+    }
     Ok(())
 }
 
