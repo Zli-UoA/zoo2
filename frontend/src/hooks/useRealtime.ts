@@ -53,6 +53,8 @@ export interface MessageFeedOptions {
  * 端末に同期するのは、画面に出す範囲 (新しい方から `MESSAGE_PAGE_SIZE` 件ずつ) だけ。`loadOlder()` で、
  * 1 ページ分、古い方へ範囲を広げる (Electric の subset snapshot で、そのページだけを取る)。`data` は古い順。
  */
+const ONLINE_CACHE_FALLBACK_MS = 1_500;
+
 export function useMessageFeed(channelId: string, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
   const { isOnline, namespace } = useOfflineStatus();
@@ -65,15 +67,29 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
 
   // オフラインで再読み込みすると、on-demand のコレクションは保存済みの行を使えない。
-  // 最新ページの控え (IndexedDB) を、読み込めた間だけ、代わりに表示する。
+  // 最新ページの控え (IndexedDB) を、オフライン・失敗時、またはオンライン接続が長引いたときだけ代わりに表示する。
+  // オンラインの通常切替で即座に控えを出すと、古い履歴から最新への跳ね返りが見えるため少し待つ。
   const cacheable = parentId === null;
   const live = oldestFirst as FeedRow[];
   const liveReady = !query.isLoading && live.length > 0;
   const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
-  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
-  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
+  const [fallbackChannelId, setFallbackChannelId] = useState<string | null>(null);
+  const waitingOnline =
+    cacheable && isOnline && live.length === 0 && query.isLoading && !query.isError;
+  useEffect(() => {
+    if (!waitingOnline) {
+      setFallbackChannelId(null);
+      return;
+    }
+    const timer = setTimeout(() => setFallbackChannelId(channelId), ONLINE_CACHE_FALLBACK_MS);
+    return () => clearTimeout(timer);
+  }, [waitingOnline, channelId]);
+  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフライン・失敗時だけでなく、
+  // オンラインでも応答が返らないまま待機が続いたときは控えを表示する。
   const wantCache =
-    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
+    cacheable &&
+    live.length === 0 &&
+    (!isOnline || query.isError || (query.isLoading && fallbackChannelId === channelId));
   useEffect(() => {
     if (!wantCache) return;
     let cancelled = false;

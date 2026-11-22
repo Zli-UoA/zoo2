@@ -24,6 +24,11 @@ function installPreloadErrorReload() {
 
 let preloadErrorReloadInstalled = false;
 
+/** チャンネル画面は自前で末尾・未読位置を管理するため、ルーター側のスクロール復元から除外する。 */
+export function shouldRestoreScroll({ location }: { location: { pathname: string } }): boolean {
+  return !location.pathname.startsWith("/channels/");
+}
+
 export function getRouter() {
   if (typeof window !== "undefined" && !preloadErrorReloadInstalled) {
     preloadErrorReloadInstalled = true;
@@ -33,7 +38,7 @@ export function getRouter() {
   const router = createTanStackRouter({
     routeTree,
     history: typeof window !== "undefined" ? createAppHistory() : undefined,
-    scrollRestoration: true,
+    scrollRestoration: shouldRestoreScroll,
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
     // 未知のパスは _shell/$ の catch-all がシェル内で描画する。loader などで
