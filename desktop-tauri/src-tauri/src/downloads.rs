@@ -2248,8 +2248,7 @@ fn same_file_metadata(source: &std::fs::Metadata, meta: &std::fs::Metadata) -> b
     // Windows のファイルシステムトンネリングにより、削除・改名直後の同名ファイルの
     // 作成日時が元のファイルから引き継がれることがある。作成日時は比較せず、
     // サイズと更新時刻だけで確認する。
-    meta.file_size() == source.file_size()
-        && meta.last_write_time() == source.last_write_time()
+    meta.file_size() == source.file_size() && meta.last_write_time() == source.last_write_time()
 }
 
 #[cfg(not(any(unix, windows)))]
