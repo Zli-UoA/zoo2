@@ -56,7 +56,7 @@ export function ReactionPicker({
     if (value.trim() !== "" && tab === "kitchen") setTab("emoji");
   };
   const searchResults = (
-    <EmojiGrid hideEmpty={searching && customEmojis.filtered.length > 0}>
+    <EmojiGrid hideEmpty={searching && (customEmojis.filtered.length > 0 || customEmojis.failed)}>
       {searching ? <CustomEmojiMatches search={customEmojis} onSelect={select} /> : null}
     </EmojiGrid>
   );
@@ -75,7 +75,11 @@ export function ReactionPicker({
             <DialogDescription>{t("reactions.kitchenDescription")}</DialogDescription>
           ) : null}
         </DialogHeader>
-        <EmojiPickerRoot onSelect={select} className="flex-1 gap-3">
+        <EmojiPickerRoot
+          onSelect={select}
+          className="flex-1 gap-3"
+          gridVisible={tab === "emoji" || (tab === "custom" && searching)}
+        >
           <EmojiSearchBar query={query} onQueryChange={changeQuery} />
           <Tabs.Root
             value={tab}

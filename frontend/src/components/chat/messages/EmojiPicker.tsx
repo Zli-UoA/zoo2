@@ -44,10 +44,13 @@ const KeyboardNavigationContext = createContext<{ current: number }>({ current: 
 export function EmojiPickerRoot({
   onSelect,
   className,
+  gridVisible = true,
   children,
 }: {
   onSelect: (emoji: string) => void;
   className?: string;
+  /** False while another tab is showing: keys must not pick a hidden emoji. */
+  gridVisible?: boolean;
   children: ReactNode;
 }) {
   const { locale } = useLocale();
@@ -58,7 +61,8 @@ export function EmojiPickerRoot({
   // so arrow keys still move through the emoji grid.
   const forwardNavigationKey = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (!NAVIGATION_KEYS.has(event.key)) return;
+      const navigation = NAVIGATION_KEYS.has(event.key);
+      if (!navigation && event.key !== "Enter") return;
       // Only the shared search box and the grid navigate emoji; other inputs
       // inside the root (e.g. Emoji Kitchen) keep their caret/selection keys.
       if (
@@ -66,6 +70,13 @@ export function EmojiPickerRoot({
         !event.target.closest("[frimousse-search], [frimousse-viewport]")
       )
         return;
+      if (!gridVisible) {
+        // frimousse listens on document; keep Enter/arrows from reaching it
+        // so they cannot select an emoji that is not on screen.
+        event.stopPropagation();
+        return;
+      }
+      if (!navigation) return;
       const { key, code, location, ctrlKey, shiftKey, altKey, metaKey } = event;
       keyboardNavigationAt.current = performance.now();
       event.preventDefault();
@@ -85,7 +96,7 @@ export function EmojiPickerRoot({
         );
       });
     },
-    [keyboardNavigationAt],
+    [keyboardNavigationAt, gridVisible],
   );
 
   return (
@@ -320,13 +331,18 @@ export function CustomEmojiMatches({
   onSelect: (value: string) => void;
 }) {
   const { t } = useTranslation();
-  if (!search.filtered.length) return null;
+  if (!search.filtered.length && !search.failed) return null;
   return (
     <div
       role="region"
       aria-label={t("home.customEmojis")}
       className="space-y-3 border-t border-border px-2 py-2"
     >
+      {search.failed ? (
+        <p role="alert">
+          {t("home.controlsError")} <Button onClick={search.retry}>{t("home.refresh")}</Button>
+        </p>
+      ) : null}
       <CustomEmojiGroups search={search} onSelect={onSelect} />
     </div>
   );
