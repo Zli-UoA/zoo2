@@ -163,9 +163,13 @@ export function CatchUpMessagePage({
   const rangeReady =
     messages.length > 0 &&
     (boundaryTime === null || (oldestTime <= boundaryTime && newestTime >= boundaryTime));
+  // 救済が必要なのは「古い履歴を読み切っても最初の未読に届かない」場合だけ。
+  // 最初の未読が表示末尾より新しい場合は、読み足しても境界は動かない。
   const exhausted =
     !rangeReady &&
     messages.length > 0 &&
+    boundaryTime !== null &&
+    oldestTime > boundaryTime &&
     (loadedPages.current >= MAX_UNREAD_PAGES || (!feed.hasOlder && !feed.isLoadingOlder));
   const rangeReadyRef = useRef<string | null>(null);
   useEffect(() => {

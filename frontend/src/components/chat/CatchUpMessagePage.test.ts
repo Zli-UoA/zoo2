@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   hasOlder: false,
   providerProps: [] as Array<{ encrypted?: boolean }>,
   rangeReady: [] as boolean[],
+  exhausted: [] as boolean[],
 }));
 
 const message = (id: string, created_at: string) => ({
@@ -83,6 +84,7 @@ afterEach(() => {
   mocks.hasOlder = false;
   mocks.providerProps = [];
   mocks.rangeReady = [];
+  mocks.exhausted = [];
   mocks.loadOlder.mockReset();
 });
 
@@ -169,10 +171,14 @@ it("does not allow marking read before the oldest unread is inside the range", (
       channelId: "c1",
       firstUnreadAt: "2026-01-01T09:00:00Z",
       onBoundaryMessage: vi.fn(),
-      onRangeReady: (ready) => mocks.rangeReady.push(ready),
+      onRangeReady: (ready, exhausted) => {
+        mocks.rangeReady.push(ready);
+        mocks.exhausted.push(exhausted);
+      },
     }),
   );
   expect(mocks.rangeReady.at(-1)).toBe(false);
+  expect(mocks.exhausted.at(-1)).toBe(true);
 
   // The first unread is newer than every loaded message: not ready either.
   mocks.rangeReady = [];
@@ -181,10 +187,14 @@ it("does not allow marking read before the oldest unread is inside the range", (
       channelId: "c2",
       firstUnreadAt: "2026-01-01T11:00:00Z",
       onBoundaryMessage: vi.fn(),
-      onRangeReady: (ready) => mocks.rangeReady.push(ready),
+      onRangeReady: (ready, exhausted) => {
+        mocks.rangeReady.push(ready);
+        mocks.exhausted.push(exhausted);
+      },
     }),
   );
   expect(mocks.rangeReady.at(-1)).toBe(false);
+  expect(mocks.exhausted.at(-1)).toBe(false);
 
   // Both boundaries contain the first unread.
   mocks.rangeReady = [];
@@ -194,7 +204,10 @@ it("does not allow marking read before the oldest unread is inside the range", (
       channelId: "c3",
       firstUnreadAt: "2026-01-01T11:00:00Z",
       onBoundaryMessage: vi.fn(),
-      onRangeReady: (ready) => mocks.rangeReady.push(ready),
+      onRangeReady: (ready, exhausted) => {
+        mocks.rangeReady.push(ready);
+        mocks.exhausted.push(exhausted);
+      },
     }),
   );
   expect(mocks.rangeReady.at(-1)).toBe(true);
