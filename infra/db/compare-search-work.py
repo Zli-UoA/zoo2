@@ -8,7 +8,8 @@ from pathlib import Path
 import statistics
 import sys
 
-API = ('api-messages', 'api-messages-12-months', 'api-all', 'api-all-12-months', 'api-files', 'api-notes')
+API = ('api-messages', 'api-messages-12-months', 'api-all', 'api-all-12-months', 'api-files', 'api-notes',
+       'api-all-involving-no-bots')
 
 
 def groups(path):

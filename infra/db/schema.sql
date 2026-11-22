@@ -2129,6 +2129,8 @@ CREATE TABLE notification_events (
 CREATE INDEX notification_events_owner ON notification_events(user_id, created_at DESC, id DESC);
 CREATE INDEX notification_events_unread ON notification_events(user_id) WHERE NOT is_read;
 CREATE INDEX notification_events_message ON notification_events(message_id) WHERE message_id IS NOT NULL;
+-- 全文検索の「自分が参加中」: 閲覧者へのメンションだけを、ほかの通知（DM・リアクションなど）を読まずに引く。
+CREATE INDEX notification_events_user_mention ON notification_events(user_id, message_id) WHERE notification_type = 'mention';
 ALTER TABLE notification_events REPLICA IDENTITY FULL;
 -- Match the existing ElectricSQL identities established by earlier migrations.
 ALTER TABLE attachments REPLICA IDENTITY FULL;

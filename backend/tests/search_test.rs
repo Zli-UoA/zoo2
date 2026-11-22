@@ -652,9 +652,16 @@ async fn search_filters_by_many_people_and_channels_bots_and_my_conversations() 
             insert(&m(7), &bob, &other, None, 7),
             // メンションされたスレッドの返信も入る。
             insert(&m(8), &carol, &other, Some(&m(6)), 8),
+            // 所属しないチャンネルで、本文で alice にメンションした投稿（通知はメンバーにしか作られない）。
+            insert(&m(9), &carol, &other, None, 9),
         ]
         .concat(),
     )
+    .await?;
+    sql.batch_execute(&format!(
+        "UPDATE messages SET content = content || ' @' || (SELECT user_name FROM users WHERE id = '{alice}') WHERE id = '{}';",
+        m(9)
+    ))
     .await?;
     sql.batch_execute(&format!(
         "INSERT INTO thread_participants (thread_id, user_id) VALUES ('{t}', '{alice}') ON CONFLICT DO NOTHING;
@@ -683,11 +690,14 @@ async fn search_filters_by_many_people_and_channels_bots_and_my_conversations() 
         v.sort();
         v
     };
-    assert_eq!(find(String::new()).await, sorted(&[1, 2, 3, 4, 5, 6, 7, 8]));
+    assert_eq!(
+        find(String::new()).await,
+        sorted(&[1, 2, 3, 4, 5, 6, 7, 8, 9])
+    );
     // 送信者とチャンネルは、複数のどれか。
     assert_eq!(
         find(format!("&user_id={alice},{carol}")).await,
-        sorted(&[1, 2, 8])
+        sorted(&[1, 2, 8, 9])
     );
     assert_eq!(
         find(format!("&channel_id={mine},{other}&user_id={bot}")).await,
@@ -696,19 +706,20 @@ async fn search_filters_by_many_people_and_channels_bots_and_my_conversations() 
     // ボットを除く。
     assert_eq!(
         find("&exclude_bots=true".into()).await,
-        sorted(&[1, 2, 4, 5, 6, 7, 8])
+        sorted(&[1, 2, 4, 5, 6, 7, 8, 9])
     );
-    // 自分が参加中の会話: 所属チャンネル、参加しているスレッド、メンションされたスレッド。
+    // 自分が参加中の会話: 所属チャンネル、参加しているスレッド、メンションされたスレッド（通知）、
+    // 所属しないチャンネルの本文のメンション。
     assert_eq!(
         find("&involving_me=true".into()).await,
-        sorted(&[1, 2, 3, 4, 5, 6, 8])
+        sorted(&[1, 2, 3, 4, 5, 6, 8, 9])
     );
     assert_eq!(
         find(format!(
             "&involving_me=true&exclude_bots=true&channel_id={other}"
         ))
         .await,
-        sorted(&[4, 5, 6, 8])
+        sorted(&[4, 5, 6, 8, 9])
     );
     // 指定できる数には上限がある。
     let many: Vec<String> = (0..21).map(|i| format!("u{i}")).collect();

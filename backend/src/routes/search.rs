@@ -26,7 +26,7 @@ const MAX_TERM_CHARS: usize = 100;
 /// 送信者・チャンネルの絞り込みで一度に指定できる数。
 const MAX_FILTER_IDS: usize = 20;
 /// 語の最初のパラメーター番号（それより前は [`month_sql`] の説明を参照）。
-const FIRST_TERM: usize = 12;
+const FIRST_TERM: usize = 13;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 const SNIPPET_BEFORE: usize = 40;
@@ -239,7 +239,7 @@ fn like_clauses(column: &str, terms: &[&str], first: usize) -> String {
 /// どれかの語が最初に当たった位置の [`SNIPPET_BEFORE`] 文字前から [`SNIPPET_CHARS`] 文字。当たった位置は
 /// 検索条件と同じ `lower()` で求め、Rust では探し直さない（`lower()` はロケールによって ASCII 以外も
 /// 小文字にするので、Rust の判定とずれることがある）。語の順番にも、長い本文の後ろで当たったかにもよらない。
-/// 語は `$12`（[`FIRST_TERM`]）から `terms` 個。
+/// 語は `$13`（[`FIRST_TERM`]）から `terms` 個。
 fn snippet_source(column: &str, terms: usize) -> String {
     let positions: Vec<String> = (0..terms)
         .map(|i| {
@@ -270,6 +270,12 @@ fn cut_snippet(text: &str, cut_start: bool, cut_end: bool) -> String {
     )
 }
 
+/// 自分が参加中の会話の、所属チャンネル以外の条件（[`month_sql`] の $11・$12）。参加しているスレッド・
+/// メンションされたスレッドの親か返信か、本文で自分へのメンション（`is_mention`）があるか。
+/// スレッドは `IN (SELECT …)` にして、ハッシュの SubPlan で 1 行あたり O(1) で照合する。
+const INVOLVING_MESSAGE: &str = " OR COALESCE(m.parent_id, m.id) IN (SELECT json_array_elements_text($11::json)) \
+     OR ($12 <> '' AND is_mention(m.content, $12))";
+
 /// 1 か月分を引く SQL。
 ///
 /// 探す行は（月、本文）の GIN だけで決める。チャンネル・投稿者の条件は `|| ''` を付けて、
@@ -279,17 +285,15 @@ fn cut_snippet(text: &str, cut_start: bool, cut_end: bool) -> String {
 ///パラメーター: $1 月、$2 見えるチャンネル（JSON 配列）、$3 投稿者（JSON 配列。`[]` は全員）、
 /// $4/$5 keyset（作成日時・ID）、$6/$7 期間、$8 件数、$9 ボットを除くなら `1`、
 /// $10 自分が参加中の会話に絞るときの所属チャンネル（JSON 配列。絞らないなら空文字）、
-/// $11 参加しているスレッドの親の ID（JSON 配列）、$12 以降が語。
+/// $11 参加しているスレッド・メンションされたスレッドのうち、所属しないチャンネルの親の ID（JSON 配列）、
+/// $12 本文のメンションを探す自分の `user_name`（絞らないなら空文字）、$13 以降が語。
 ///
 /// ボットかどうかは、行の投稿者の表示データ（`display_data->'author'->>'is_bot'`）で見る。ユーザーの表を
 /// 行ごとに引かない。ノートはアプリが書けないので、ボットの条件を付けない。
-/// 所属・スレッド・投稿者の条件は、GIN で見つけた行に対する絞り込みで、行ごとに配列 1 つずつと比べる
-/// （所属チャンネル数 M・参加スレッド数 T・投稿者数 A に比例。A は [`MAX_FILTER_IDS`] まで）。
+/// 所属・スレッド・投稿者の条件は、GIN で見つけた行に対する絞り込み。所属とスレッドは `IN (SELECT …)` の
+/// ハッシュの SubPlan で、1 回作れば行ごとに O(1)（所属チャンネル数 M・スレッド数 T は作るときに 1 回だけ）。
+/// 投稿者は配列と比べる（[`MAX_FILTER_IDS`] まで）。本文のメンションは候補の行ごとに正規表現で見る。
 /// `kind` は `SearchKind::parts` の 1 つ（`All` は渡さない）。
-/// 参加しているスレッド（$11）の親か返信か。
-const MESSAGE_THREAD: &str =
-    " OR COALESCE(m.parent_id, m.id) = ANY(ARRAY(SELECT json_array_elements_text($11::json)))";
-
 pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
     assert_ne!(
         kind,
@@ -301,7 +305,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
         format!(
             "{month} AND ({t}.channel_id || '') = ANY(ARRAY(SELECT json_array_elements_text($2::json))) \
              AND ($3 = '[]' OR ({t}.{author} || '') = ANY(ARRAY(SELECT json_array_elements_text($3::json)))) \
-             AND ($10 = '' OR ({t}.channel_id || '') = ANY(ARRAY(SELECT json_array_elements_text(NULLIF($10, '')::json))){involving}) \
+             AND ($10 = '' OR ({t}.channel_id || '') IN (SELECT json_array_elements_text(NULLIF($10, '')::json)){involving}) \
              AND ($4 = '' OR ({t}.created_at, {t}.id) < (NULLIF($4, '')::timestamp, $5)) \
              AND ($6 = '' OR {t}.created_at >= NULLIF($6, '')::timestamp) \
              AND ($7 = '' OR {t}.created_at < NULLIF($7, '')::timestamp) \
@@ -321,7 +325,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
              JOIN channels c ON c.id = m.channel_id ORDER BY m.created_at DESC, m.id DESC",
             likes = like_clauses("m.content", terms, FIRST_TERM),
             text = snippet_source("m.content", terms.len()),
-            common = common("m", "user_id", MESSAGE_THREAD),
+            common = common("m", "user_id", INVOLVING_MESSAGE),
         ),
         SearchKind::Files => format!(
             "SELECT json_build_object('id', a.id, 'message_id', a.message_id, 'channel_id', a.channel_id, \
@@ -333,7 +337,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
              FROM (SELECT a.* FROM attachments a WHERE a.message_id IS NOT NULL{likes} \
                AND EXISTS (SELECT 1 FROM messages live WHERE live.id = a.message_id AND live.deleted_at IS NULL \
                  AND ($9 = '' OR NOT COALESCE((live.display_data->'author'->>'is_bot')::boolean, false)) \
-                 AND ($10 = '' OR (a.channel_id || '') = ANY(ARRAY(SELECT json_array_elements_text(NULLIF($10, '')::json))){file_thread})) \
+                 AND ($10 = '' OR (a.channel_id || '') IN (SELECT json_array_elements_text(NULLIF($10, '')::json)){file_thread})) \
                AND {common}) a \
              JOIN messages m ON m.id = a.message_id JOIN channels c ON c.id = a.channel_id \
              ORDER BY a.created_at DESC, a.id DESC",
@@ -341,7 +345,7 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
             text = snippet_source("a.file_name", terms.len()),
             // 所属とスレッドの条件は、添付の親のメッセージ（`live`）で見る。
             common = common("a", "uploader_id", " OR true"),
-            file_thread = MESSAGE_THREAD.replace("m.", "live."),
+            file_thread = INVOLVING_MESSAGE.replace("m.", "live."),
         ),
         SearchKind::Notes => format!(
             "SELECT json_build_object('id', n.id, 'channel_id', n.channel_id, 'channel_name', c.channel_name, \
@@ -362,16 +366,19 @@ pub fn month_sql(kind: SearchKind, terms: &[&str]) -> String {
 /// 絞るなら `1`。
 ///
 /// 見える: 削除されていない、暗号化されていない、そして（ゲストでない人の公開チャンネル、または所属）。
-/// 参加中の会話に絞るときは、見えるチャンネルのうち、所属するもの（DM を含む）と、参加しているスレッドか
-/// メンションされたスレッド（親の ID。メンションは通知 `mention` で引く）があるものに絞る。`members` と
-/// `threads` を [`month_sql`] の行の条件に渡す。
+/// 参加中の会話に絞るときは、見えるチャンネルのうち所属するもの（DM を含む）を `members` に、参加している
+/// スレッドかメンションされたスレッド（メンションは正本の通知 `notification_events` の `mention` で引く）の
+/// うち、所属しないチャンネルの親を `threads` に、自分の `user_name` を `user_name` に入れ、[`month_sql`] の
+/// 行の条件に渡す。メンションの通知はチャンネルのメンバーにしか作られないので、所属しないチャンネルの
+/// 本文のメンションは `is_mention` で見る。そのため探すチャンネル（`ids`）は見えるチャンネル全部のまま。
 /// `floor` は見えるチャンネルのうち、最も古い生きているメッセージ（トップレベルと返信）かチャンネル作成の月の
 /// 1 つ前。親が削除されても返信は残り、取り込みではチャンネルの作成日時より古いこともあるので、返信も入れる。
 /// 添付はメッセージより少し前にアップロードされうるので 1 か月の余裕を持たせる。
 /// 計算量は見えるチャンネル数 V に対し O(V log N)（idx_messages_channel_unread と
 /// messages_search_reply_floor を、チャンネルごとに 1 行ずつ引く）。参加中に絞るときは、閲覧者の参加
 /// スレッド数 T とメンションの通知数 N_m を加えて O(V log N + T + N_m)（thread_participants_joined と
-/// idx_notifications_user_id、親は主キーで引く）。
+/// notification_events_user_mention、親は主キーで引く）。メンションは部分インデックスで引くので、閲覧者の
+/// ほかの通知（DM・リアクションなど）の数には比例しない。
 pub const SCOPE_SQL: &str = "WITH me AS (SELECT COALESCE((SELECT is_guest FROM users WHERE id = $1), true) AS guest), \
   visible AS MATERIALIZED ( \
     SELECT c.id, c.created_at FROM channels c, me \
@@ -389,22 +396,19 @@ pub const SCOPE_SQL: &str = "WITH me AS (SELECT COALESCE((SELECT is_guest FROM u
       SELECT tp.thread_id AS id FROM thread_participants tp \
         WHERE $3 <> '' AND tp.user_id = $1 AND tp.left_at IS NULL \
       UNION \
-      SELECT COALESCE(m.parent_id, m.id) FROM notifications n JOIN messages m ON m.id = n.message_id \
+      SELECT COALESCE(m.parent_id, m.id) FROM notification_events n JOIN messages m ON m.id = n.message_id \
         WHERE $3 <> '' AND n.user_id = $1 AND n.notification_type = 'mention' \
     ) t JOIN messages root ON root.id = t.id \
-    WHERE root.channel_id IN (SELECT id FROM visible) \
-  ), \
-  scoped AS MATERIALIZED ( \
-    SELECT v.id, v.created_at FROM visible v \
-    WHERE $3 = '' OR v.id IN (SELECT id FROM members) OR v.id IN (SELECT channel_id FROM threads) \
+    WHERE root.channel_id IN (SELECT id FROM visible) AND root.channel_id NOT IN (SELECT id FROM members) \
   ) \
   SELECT json_build_object( \
-    'ids', COALESCE((SELECT json_agg(id) FROM scoped), '[]'::json), \
+    'ids', COALESCE((SELECT json_agg(id) FROM visible), '[]'::json), \
     'members', COALESCE((SELECT json_agg(id) FROM members), '[]'::json), \
     'threads', COALESCE((SELECT json_agg(id) FROM threads), '[]'::json), \
+    'user_name', CASE WHEN $3 <> '' THEN (SELECT user_name FROM users WHERE id = $1) END, \
     'now', (date_part('year', LOCALTIMESTAMP) * 12 + date_part('month', LOCALTIMESTAMP))::bigint, \
     'floor', (SELECT (date_part('year', t) * 12 + date_part('month', t))::bigint - 1 FROM ( \
-      SELECT least(min(v.created_at), min(first.created_at), min(reply.created_at)) AS t FROM scoped v \
+      SELECT least(min(v.created_at), min(first.created_at), min(reply.created_at)) AS t FROM visible v \
       LEFT JOIN LATERAL (SELECT m.created_at FROM messages m \
         WHERE m.channel_id = v.id AND m.parent_id IS NULL AND m.deleted_at IS NULL \
         ORDER BY m.created_at LIMIT 1) first ON true \
@@ -454,6 +458,7 @@ async fn search(
         String::new()
     };
     let threads = scope["threads"].to_string();
+    let my_name = scope["user_name"].as_str().unwrap_or("").to_string();
     let empty = || Json(json!({"items": [], "next_cursor": null, "searched_until": null}));
     let (Some(now), Some(floor)) = (scope["now"].as_i64(), scope["floor"].as_i64()) else {
         tx.commit().await?;
@@ -508,6 +513,7 @@ async fn search(
             no_bots,
             &members,
             &threads,
+            &my_name,
         ];
         params.extend(terms.iter().map(String::as_str));
         // 種類ごとに、この月の上位 need 件。合わせて (created_at, id) の新しい順に並べれば、
@@ -646,11 +652,11 @@ mod tests {
     #[test]
     fn month_sql_binds_every_term() {
         let sql = month_sql(SearchKind::Messages, &["会議", "資料", "x"]);
-        assert!(sql.contains("lower($12)") && sql.contains("lower($14)"));
-        assert!(!sql.contains("$15"));
+        assert!(sql.contains("lower($13)") && sql.contains("lower($15)"));
+        assert!(!sql.contains("$16"));
         // 1 文字の語だけ索引の条件から外す。
-        assert!(sql.contains("(lower(m.content) || '') LIKE public.likequery(lower($14))"));
-        assert!(sql.contains("lower(m.content) LIKE public.likequery(lower($12))"));
+        assert!(sql.contains("(lower(m.content) || '') LIKE public.likequery(lower($15))"));
+        assert!(sql.contains("lower(m.content) LIKE public.likequery(lower($13))"));
     }
 
     #[test]
