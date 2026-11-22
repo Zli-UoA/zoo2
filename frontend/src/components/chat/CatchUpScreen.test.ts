@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   config: { apiBaseUrl: "" },
   revision: 1,
   rangeReady: true,
+  boundaryTooOld: false,
   applyRead: vi.fn(),
   navigate: vi.fn(),
   unread: [] as Array<{
@@ -68,7 +69,7 @@ vi.mock("./CatchUpMessagePage", () => ({
   }) => {
     useEffect(() => {
       onBoundaryMessage("latest-in-page", 1);
-      onRangeReady?.(mocks.rangeReady, false, false);
+      onRangeReady?.(mocks.rangeReady, false, mocks.boundaryTooOld);
     }, [onBoundaryMessage, onRangeReady]);
     return createElement("div", null, "message page");
   },
@@ -111,6 +112,7 @@ afterEach(() => {
   mocks.unread = [];
   mocks.revision = 1;
   mocks.rangeReady = true;
+  mocks.boundaryTooOld = false;
 });
 
 async function clickMarkRead() {
@@ -197,6 +199,17 @@ it("keeps marking read disabled while the first unread is outside the loaded ran
   render(createElement(CatchUpScreen));
   const button = await screen.findByRole("button", { name: "既読にする" });
   expect(button.hasAttribute("disabled")).toBe(true);
+  expect(mocks.post).not.toHaveBeenCalled();
+});
+
+it("blocks marking read and shows guidance when the boundary is older than the first unread", async () => {
+  mocks.unread = [unreadItem("a")];
+  mocks.get.mockResolvedValue(mocks.unread);
+  mocks.boundaryTooOld = true;
+  render(createElement(CatchUpScreen));
+  const button = await screen.findByRole("button", { name: "既読にする" });
+  expect(button.hasAttribute("disabled")).toBe(true);
+  expect(screen.getByText("catchUp.unreadChanged")).toBeTruthy();
   expect(mocks.post).not.toHaveBeenCalled();
 });
 
