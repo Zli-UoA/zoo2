@@ -450,8 +450,14 @@ pub async fn create(
         }
     }
 
-    let created =
-        insert_invites(&mut db, state.call_sfu.as_ref(), &channel_id, &user.id, &ids).await?;
+    let created = insert_invites(
+        &mut db,
+        state.call_sfu.as_ref(),
+        &channel_id,
+        &user.id,
+        &ids,
+    )
+    .await?;
     push::dispatch_call_invites(state.db.clone(), created.clone());
 
     Ok(Json(serde_json::json!({

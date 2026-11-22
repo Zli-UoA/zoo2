@@ -51,7 +51,8 @@ pub struct CallSfu {
 
 impl CallSfu {
     pub fn new(config: CallSfuConfig, http: reqwest::Client) -> Self {
-        let cloudflare = cloudflare::CloudflareRealtime::new(http.clone(), config.cloudflare.clone());
+        let cloudflare =
+            cloudflare::CloudflareRealtime::new(http.clone(), config.cloudflare.clone());
         let livekit = config
             .livekit
             .clone()

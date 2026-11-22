@@ -1501,7 +1501,8 @@ async fn test_explicit_dm_accept_returns_channel_and_join_is_recorded() -> anyho
     let channel = w.dm_ch.clone();
     let (alice, bob) = (w.alice.clone(), w.bob.clone());
     put_presence(&mut w.db, &channel, &alice).await?;
-    let created = backend::call_invites::create_dm_invites(&mut w.db, None, &channel, &alice).await?;
+    let created =
+        backend::call_invites::create_dm_invites(&mut w.db, None, &channel, &alice).await?;
     assert_eq!(created.len(), 1);
     let id = &created[0].id;
     let path = format!("/api/call-invites/{id}/accept");

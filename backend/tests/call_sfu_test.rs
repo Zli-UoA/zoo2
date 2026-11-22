@@ -45,7 +45,10 @@ async fn request(
     let res = app.clone().oneshot(req).await?;
     let status = res.status();
     let bytes = to_bytes(res.into_body(), usize::MAX).await?;
-    Ok((status, serde_json::from_slice(&bytes).unwrap_or(Value::Null)))
+    Ok((
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    ))
 }
 
 /// SSE で入室し、最初の `room_state` を返す。ストリームは返り値で持ち続ける（落とすと退出する）。
@@ -55,7 +58,11 @@ async fn open_stream(
     channel: &str,
     session: uuid::Uuid,
     capable: bool,
-) -> anyhow::Result<(StatusCode, Option<Value>, Option<axum::body::BodyDataStream>)> {
+) -> anyhow::Result<(
+    StatusCode,
+    Option<Value>,
+    Option<axum::body::BodyDataStream>,
+)> {
     let sfu = if capable { "&sfu=1" } else { "" };
     let req = Request::builder()
         .method("GET")
@@ -186,11 +193,13 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     let users: Vec<String> = (0..7).map(|_| uuid::Uuid::new_v4().to_string()).collect();
     let channel = uuid::Uuid::new_v4().to_string();
     for (i, id) in users.iter().enumerate() {
-        toasty::sql::statement("INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)")
-            .bind(id.as_str())
-            .bind(format!("User{i}"))
-            .exec(&mut db)
-            .await?;
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(id.as_str())
+        .bind(format!("User{i}"))
+        .exec(&mut db)
+        .await?;
     }
     toasty::sql::statement(
         "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
@@ -271,7 +280,11 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "livekit");
     assert_eq!(joined["url"], "wss://livekit.example");
-    assert!(joined["token"].as_str().is_some_and(|t| t.split('.').count() == 3));
+    assert!(
+        joined["token"]
+            .as_str()
+            .is_some_and(|t| t.split('.').count() == 3)
+    );
 
     // fallback なら Cloudflare。
     let (status, joined) = request(
@@ -312,8 +325,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // 音声 1 本の offer だけ push できる。
-    let offer = json!({"type": "offer", "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n"});
-    let video = json!({"type": "offer", "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:0\r\n"});
+    let offer =
+        json!({"type": "offer", "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n"});
+    let video =
+        json!({"type": "offer", "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:0\r\n"});
     let (status, _) = request(
         &app,
         &users[1],
@@ -381,8 +396,15 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // bridge：トークンがなければ 401。LiveKit と Cloudflare の両方に人がいる部屋が返る。
-    let (status, _) = request(&app, &users[0], "POST", "/internal/sfu-bridge/register", None, None)
-        .await?;
+    let (status, _) = request(
+        &app,
+        &users[0],
+        "POST",
+        "/internal/sfu-bridge/register",
+        None,
+        None,
+    )
+    .await?;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let bridge = |method: &str, uri: &str, body: Option<Value>| {
         let mut req = Request::builder()
@@ -402,7 +424,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
             let res = app.oneshot(req).await.unwrap();
             let status = res.status();
             let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
         }
     };
     let (status, reg) = bridge("POST", "/internal/sfu-bridge/register", None).await;
@@ -515,7 +540,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert!(closed, "departure worker did not close the Cloudflare session");
+    assert!(
+        closed,
+        "departure worker did not close the Cloudflare session"
+    );
     let closes = cf
         .received_requests()
         .await

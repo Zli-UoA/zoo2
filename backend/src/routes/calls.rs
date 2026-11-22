@@ -132,7 +132,10 @@ pub enum CallServerEvent {
         epoch: i64,
     },
     /// 部屋が SFU モードに切り替わった。
-    ModeChanged { mode: RoomMode, epoch: i64 },
+    ModeChanged {
+        mode: RoomMode,
+        epoch: i64,
+    },
     /// Cloudflare Realtime のトラック一覧が変わった。`version` が手元より古いものは捨てる。
     SfuTracks {
         epoch: i64,
@@ -140,7 +143,9 @@ pub enum CallServerEvent {
         tracks: Vec<SfuTrackInfo>,
     },
     /// LiveKit にいる人は、`sfu/join` をやり直す（bridge がないときに Cloudflare の人が来た）。
-    SfuReassign { epoch: i64 },
+    SfuReassign {
+        epoch: i64,
+    },
     ParticipantJoined {
         participant: CallParticipant,
     },
@@ -364,7 +369,8 @@ impl CallRegistry {
         drop(write_sessions);
         if let Some(mut db) = self.get_db().await {
             for (sid, uid) in failed_sessions {
-                let _ = Self::delete_session_and_notify(&mut db, channel_id, &sid, Some(&uid)).await;
+                let _ =
+                    Self::delete_session_and_notify(&mut db, channel_id, &sid, Some(&uid)).await;
             }
         }
     }
@@ -720,8 +726,12 @@ impl CallRegistry {
                 epoch,
             } => {
                 self.wake_bridge();
-                self.broadcast_local(&channel_id, CallServerEvent::ModeChanged { mode, epoch }, None)
-                    .await;
+                self.broadcast_local(
+                    &channel_id,
+                    CallServerEvent::ModeChanged { mode, epoch },
+                    None,
+                )
+                .await;
             }
             CallDistributedEvent::SfuReassign { channel_id, epoch } => {
                 self.broadcast_local(&channel_id, CallServerEvent::SfuReassign { epoch }, None)
@@ -2155,11 +2165,16 @@ async fn maybe_switch_to_sfu(
     .bind(channel_id.to_string())
     .exec(&mut *tx)
     .await?;
-    let Some(room) = crate::call_sfu::rows_json::<RoomRow>(rows).into_iter().next() else {
-        return room_mode(&mut *tx, Some(sfu), channel_id).await.map(|(m, e)| {
-            let _ = mode;
-            (m, e)
-        });
+    let Some(room) = crate::call_sfu::rows_json::<RoomRow>(rows)
+        .into_iter()
+        .next()
+    else {
+        return room_mode(&mut *tx, Some(sfu), channel_id)
+            .await
+            .map(|(m, e)| {
+                let _ = mode;
+                (m, e)
+            });
     };
     let event = CallDistributedEvent::ModeChanged {
         channel_id: channel_id.to_string(),

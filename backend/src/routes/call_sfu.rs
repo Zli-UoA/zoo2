@@ -27,9 +27,7 @@ use crate::{
         livekit, rows_json,
     },
     error::AppError,
-    routes::calls::{
-        CallDistributedEvent, SfuTrackInfo, authorize_call_access, load_sfu_tracks,
-    },
+    routes::calls::{CallDistributedEvent, SfuTrackInfo, authorize_call_access, load_sfu_tracks},
     state::AppState,
 };
 
@@ -104,7 +102,10 @@ async fn own_presence(
 }
 
 /// トラック一覧の版を進め、全レプリカに知らせる（bridge も起きる）。
-async fn bump_tracks(executor: &mut dyn toasty::Executor, channel_id: &str) -> Result<(), AppError> {
+async fn bump_tracks(
+    executor: &mut dyn toasty::Executor,
+    channel_id: &str,
+) -> Result<(), AppError> {
     toasty::sql::query(
         "WITH bumped AS (
              UPDATE call_rooms SET track_version = track_version + 1
@@ -204,7 +205,10 @@ async fn join(
         cloudflare: i64,
         livekit: i64,
     }
-    let counts = rows_json::<Counts>(others).into_iter().next().unwrap_or_default();
+    let counts = rows_json::<Counts>(others)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     let choice = crate::call_sfu::choose_sfu(
         lan_client,
         sfu.livekit.is_some(),
@@ -220,10 +224,21 @@ async fn join(
         .flatten();
 
     let target = if choice == SFU_LIVEKIT {
-        let lk = sfu.livekit.as_ref().expect("choose_sfu returns livekit only when enabled");
+        let lk = sfu
+            .livekit
+            .as_ref()
+            .expect("choose_sfu returns livekit only when enabled");
         let room = livekit::room_name(&channel_id, epoch);
         let token = lk.participant_token(&room, &body.session_id.to_string(), &me.display_name)?;
-        set_assignment(&mut tx, &channel_id, body.session_id, SFU_LIVEKIT, Some(&room), None).await?;
+        set_assignment(
+            &mut tx,
+            &channel_id,
+            body.session_id,
+            SFU_LIVEKIT,
+            Some(&room),
+            None,
+        )
+        .await?;
         bump_tracks(&mut tx, &channel_id).await?;
         tx.commit().await?;
         JoinTarget::Livekit {
@@ -279,9 +294,10 @@ async fn join(
         sfu.departures_wake.notify_one();
     }
 
-    let (epoch, version, tracks) = load_sfu_tracks(&mut db, &channel_id)
-        .await?
-        .unwrap_or((epoch, 0, Vec::new()));
+    let (epoch, version, tracks) =
+        load_sfu_tracks(&mut db, &channel_id)
+            .await?
+            .unwrap_or((epoch, 0, Vec::new()));
     Ok(Json(JoinResponse {
         target,
         epoch,
@@ -372,7 +388,16 @@ async fn cf_publish(
         .cloudflare
         .push_track(&cf, &body.offer, &mid, &track_name)
         .await?;
-    register_track(&state, &channel_id, body.session_id, "direct", &cf, &track_name, None).await?;
+    register_track(
+        &state,
+        &channel_id,
+        body.session_id,
+        "direct",
+        &cf,
+        &track_name,
+        None,
+    )
+    .await?;
     Ok(Json(res))
 }
 
@@ -485,7 +510,8 @@ async fn cf_pull(
 ) -> Result<Json<TracksResponse>, AppError> {
     let sfu = sfu(&state)?;
     let cf = own_cf_session(&state, &user, &channel_id, body.session_id).await?;
-    let remotes = resolve_tracks(&state, &channel_id, &body.track_ids, Some(body.session_id)).await?;
+    let remotes =
+        resolve_tracks(&state, &channel_id, &body.track_ids, Some(body.session_id)).await?;
     if remotes.is_empty() {
         return Err(AppError::NotFound("No tracks to pull".into()));
     }
@@ -506,7 +532,9 @@ async fn cf_answer(
 ) -> Result<Json<Value>, AppError> {
     let sfu = sfu(&state)?;
     if body.answer.kind != "answer" {
-        return Err(AppError::BadRequest("sessionDescription must be an answer".into()));
+        return Err(AppError::BadRequest(
+            "sessionDescription must be an answer".into(),
+        ));
     }
     let cf = own_cf_session(&state, &user, &channel_id, body.session_id).await?;
     sfu.cloudflare.renegotiate(&cf, &body.answer).await?;
@@ -774,7 +802,9 @@ async fn bridge_cf_pull(
 ) -> Result<Json<TracksResponse>, AppError> {
     let sfu = bridge_auth(&state, &headers)?;
     if body.track_ids.iter().any(|id| !id.ends_with(":direct")) {
-        return Err(AppError::BadRequest("bridge pulls direct tracks only".into()));
+        return Err(AppError::BadRequest(
+            "bridge pulls direct tracks only".into(),
+        ));
     }
     let remotes = resolve_tracks(&state, &body.channel_id, &body.track_ids, None).await?;
     if remotes.is_empty() {
@@ -800,7 +830,9 @@ async fn bridge_cf_answer(
 ) -> Result<Json<Value>, AppError> {
     let sfu = bridge_auth(&state, &headers)?;
     if body.answer.kind != "answer" {
-        return Err(AppError::BadRequest("sessionDescription must be an answer".into()));
+        return Err(AppError::BadRequest(
+            "sessionDescription must be an answer".into(),
+        ));
     }
     sfu.cloudflare
         .renegotiate(&body.cf_session_id, &body.answer)
@@ -828,4 +860,3 @@ async fn bridge_cf_close(
         .await?;
     Ok(Json(json!({ "ok": true })))
 }
-

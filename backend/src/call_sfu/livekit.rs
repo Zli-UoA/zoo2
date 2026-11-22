@@ -183,8 +183,8 @@ impl LiveKit {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::Cidr;
+    use super::*;
 
     fn lk() -> LiveKit {
         LiveKit::new(
@@ -213,7 +213,11 @@ mod tests {
 
     #[test]
     fn participant_token_is_limited_to_microphone_in_one_room() {
-        let claims = decode(&lk().participant_token("call-c1-3", "sess", "Alice").unwrap());
+        let claims = decode(
+            &lk()
+                .participant_token("call-c1-3", "sess", "Alice")
+                .unwrap(),
+        );
         assert_eq!(claims["iss"], "key");
         assert_eq!(claims["sub"], "sess");
         assert_eq!(claims["name"], "Alice");

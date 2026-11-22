@@ -206,10 +206,7 @@ impl CloudflareRealtime {
     /// セッションの track をすべて強制的に閉じる（退出・キックの後始末）。
     pub async fn close_session(&self, session_id: &str) -> Result<(), AppError> {
         let state: SessionState = self
-            .send(
-                self.http
-                    .get(self.url(&format!("sessions/{session_id}"))),
-            )
+            .send(self.http.get(self.url(&format!("sessions/{session_id}"))))
             .await?;
         let mids: Vec<String> = state
             .tracks
@@ -225,7 +222,9 @@ impl CloudflareRealtime {
 /// 戻り値はその m-line の mid。
 pub fn validate_audio_only_offer(desc: &SessionDescription) -> Result<String, AppError> {
     if desc.kind != "offer" {
-        return Err(AppError::BadRequest("sessionDescription must be an offer".into()));
+        return Err(AppError::BadRequest(
+            "sessionDescription must be an offer".into(),
+        ));
     }
     if desc.sdp.len() > 16 * 1024 {
         return Err(AppError::BadRequest("SDP is too large".into()));
@@ -234,7 +233,10 @@ pub fn validate_audio_only_offer(desc: &SessionDescription) -> Result<String, Ap
     for line in desc.sdp.lines() {
         let line = line.trim_end_matches('\r');
         if let Some(rest) = line.strip_prefix("m=") {
-            media.push((rest.split(' ').next().unwrap_or("").to_string(), None::<String>));
+            media.push((
+                rest.split(' ').next().unwrap_or("").to_string(),
+                None::<String>,
+            ));
         } else if let Some(mid) = line.strip_prefix("a=mid:")
             && let Some(last) = media.last_mut()
         {
@@ -252,7 +254,9 @@ pub fn validate_audio_only_offer(desc: &SessionDescription) -> Result<String, Ap
 /// bridge の SDP の検査。音声以外の m-line がなく、`mid` の m-line があること。
 pub fn validate_audio_offer_mid(desc: &SessionDescription, mid: &str) -> Result<(), AppError> {
     if desc.kind != "offer" {
-        return Err(AppError::BadRequest("sessionDescription must be an offer".into()));
+        return Err(AppError::BadRequest(
+            "sessionDescription must be an offer".into(),
+        ));
     }
     if desc.sdp.len() > 64 * 1024 {
         return Err(AppError::BadRequest("SDP is too large".into()));
@@ -273,7 +277,9 @@ pub fn validate_audio_offer_mid(desc: &SessionDescription, mid: &str) -> Result<
     if found {
         Ok(())
     } else {
-        Err(AppError::BadRequest("Offer has no audio m-line with that mid".into()))
+        Err(AppError::BadRequest(
+            "Offer has no audio m-line with that mid".into(),
+        ))
     }
 }
 
