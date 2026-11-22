@@ -1611,7 +1611,8 @@ impl App {
         let Some((generation, query, kind, cursor)) = self.global_search.start(append) else {
             return;
         };
-        // `from:@名前`・`in:#チャンネル`・`after:`・`before:` を絞り込みにする（名前は同期済みの一覧で引く）。
+        // `from:@名前`・`in:#チャンネル`（複数可）・`after:`・`before:`・`with:me`・`-is:bot` を絞り込みにする
+        // （名前は同期済みの一覧で引く）。
         let parsed = global_search::parse_modifiers(&query);
         // 日付は端末の暦の日として、その 0 時で区切る。
         let tz = self
@@ -1623,15 +1624,17 @@ impl App {
         let mut filters = crate::api::SearchFilters {
             after: midnight(parsed.after),
             before: midnight(parsed.before),
+            exclude_bots: parsed.no_bots,
+            involving_me: parsed.with_me,
             ..Default::default()
         };
-        if let Some(name) = &parsed.from {
+        for name in &parsed.from {
             match self
                 .store
                 .users()
                 .find(|user| user.user_name.eq_ignore_ascii_case(name))
             {
-                Some(user) => filters.user_id = Some(user.id.clone()),
+                Some(user) => filters.user_ids.push(user.id.clone()),
                 None => {
                     self.global_search
                         .fail(generation, format!("@{name} という人は見つかりません"));
@@ -1639,14 +1642,14 @@ impl App {
                 }
             }
         }
-        if let Some(name) = &parsed.channel {
+        for name in &parsed.channels {
             match self
                 .store
                 .channels()
                 .into_iter()
                 .find(|channel| !channel.is_dm && channel.channel_name.eq_ignore_ascii_case(name))
             {
-                Some(channel) => filters.channel_id = Some(channel.id.clone()),
+                Some(channel) => filters.channel_ids.push(channel.id.clone()),
                 None => {
                     self.global_search.fail(
                         generation,
@@ -1655,6 +1658,13 @@ impl App {
                     return;
                 }
             }
+        }
+        if filters.user_ids.len() > 20 || filters.channel_ids.len() > 20 {
+            self.global_search.fail(
+                generation,
+                "from: と in: は、それぞれ 20 個まで書けます".into(),
+            );
+            return;
         }
         if parsed.terms.is_empty() {
             self.global_search.fail(

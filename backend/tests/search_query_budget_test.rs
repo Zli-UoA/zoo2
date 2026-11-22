@@ -144,6 +144,12 @@ FROM (SELECT row_number() OVER () i,* FROM messages WHERE id LIKE 'r-%' OR id LI
 INSERT INTO channel_notes(id,channel_id,title,content,created_user_id,created_at)
 SELECT 'n'||m.id,m.channel_id,'メモ '||m.i,CASE WHEN m.i%3=0 THEN '障害対応の手順 '||m.i ELSE '議事メモ '||m.i END,m.user_id,m.created_at
 FROM (SELECT row_number() OVER () i,* FROM messages WHERE id LIKE 'r-%' OR id LIKE 'h-%') m WHERE m.i%40=0;
+-- 自分が参加中の会話: actor は所属しない公開チャンネルの今月の親 200 件のスレッドに参加し、
+-- 別の 200 件でメンションの通知を受けている（どちらも規模によらず同じ）。
+INSERT INTO thread_participants(thread_id,user_id)
+SELECT id,'{ACTOR}' FROM messages WHERE id LIKE 'r-%' AND deleted_at IS NULL AND channel_id IN (SELECT 'sc-'||i FROM generate_series(31,{PUBLIC}) i) ORDER BY id LIMIT 200;
+INSERT INTO notifications(id,user_id,actor_id,channel_id,message_id,notification_type)
+SELECT 'nt-'||id,'{ACTOR}','{NOISE}',channel_id,id,'mention' FROM messages WHERE id LIKE 'r-%' AND deleted_at IS NULL AND channel_id IN (SELECT 'sc-'||i FROM generate_series(31,{PUBLIC}) i) ORDER BY id DESC LIMIT 200;
 SET session_replication_role = DEFAULT;
 "#)).await?;
     // 1 文ずつ送る（複数の文はまとめて暗黙のトランザクションになり、VACUUM が通らない）。
@@ -170,8 +176,13 @@ SET session_replication_role = DEFAULT;
         "search indexes must not keep a GIN pending list: {pending}"
     );
 
-    let scope: Value =
-        serde_json::from_str(&one(&db, &bind(SCOPE_SQL, &[ACTOR.into(), String::new()])).await?)?;
+    let scope: Value = serde_json::from_str(
+        &one(
+            &db,
+            &bind(SCOPE_SQL, &[ACTOR.into(), "[]".into(), String::new()]),
+        )
+        .await?,
+    )?;
     let ids = scope["ids"].to_string();
     let visible = scope["ids"].as_array().unwrap().len();
     assert_eq!(
@@ -210,18 +221,35 @@ SET session_replication_role = DEFAULT;
     let scope_bound = (3 * channels + 3 * visible + 64) as f64;
     queries.push((
         "scope".into(),
-        bind(SCOPE_SQL, &[ACTOR.into(), String::new()]),
+        bind(SCOPE_SQL, &[ACTOR.into(), "[]".into(), String::new()]),
         scope_bound,
     ));
     queries.push((
         "scope-guest-without-channels".into(),
-        bind(SCOPE_SQL, &[LONELY.into(), String::new()]),
+        bind(SCOPE_SQL, &[LONELY.into(), "[]".into(), String::new()]),
         (3 * channels + 64) as f64,
     ));
     queries.push((
         "scope-channel".into(),
-        bind(SCOPE_SQL, &[ACTOR.into(), "sc-1".into()]),
+        bind(
+            SCOPE_SQL,
+            &[ACTOR.into(), r#"["sc-1","sc-2"]"#.into(), String::new()],
+        ),
         64.,
+    ));
+    // 自分が参加中の会話: 所属（30 + 20）と、参加・メンションのスレッド（各 200）。
+    let involving_sql = bind(SCOPE_SQL, &[ACTOR.into(), "[]".into(), "1".into()]);
+    let involving: Value = serde_json::from_str(&one(&db, &involving_sql).await?)?;
+    let threads = involving["threads"].as_array().unwrap().len();
+    assert_eq!(threads, 400, "joined and mentioned threads");
+    assert_eq!(
+        involving["members"].as_array().unwrap().len(),
+        30 + PRIVATE / 5
+    );
+    queries.push((
+        "scope-involving".into(),
+        involving_sql,
+        scope_bound + (3 * threads) as f64,
     ));
     // 名前、種類、表、列、語、投稿者、keyset（作成日時・ID）。
     type Case<'a> = (
@@ -341,34 +369,58 @@ SET session_replication_role = DEFAULT;
         } else {
             one(&db, &hits(table, column, terms)).await?.parse()?
         };
-        let mut params = vec![
-            now.to_string(),
-            ids.clone(),
-            author.to_string(),
-            at.to_string(),
-            id.to_string(),
-            String::new(),
-            String::new(),
-            "21".into(),
-        ];
-        params.extend(terms.iter().map(|t| t.to_string()));
-        // 対象の表は「今月のヒット」の定数倍、それ以外（JOIN 先）はページの件数に比例。
-        queries.push((
-            name.to_string(),
-            bind(&month_sql(*kind, terms), &params),
-            3. * h + 64.,
-        ));
+        let authors = if author.is_empty() {
+            "[]".to_string()
+        } else {
+            json!([author]).to_string()
+        };
+        // そのまま、と、ボットを除いて自分が参加中の会話に絞ったもの（行の絞り込みが増えるだけで、
+        // 探す行は同じ GIN で決まる）。
+        for (suffix, no_bots, members, threads, ids) in [
+            ("", "", String::new(), "[]".to_string(), ids.clone()),
+            (
+                "-involving-no-bots",
+                "1",
+                involving["members"].to_string(),
+                involving["threads"].to_string(),
+                involving["ids"].to_string(),
+            ),
+        ] {
+            let mut params = vec![
+                now.to_string(),
+                ids,
+                authors.clone(),
+                at.to_string(),
+                id.to_string(),
+                String::new(),
+                String::new(),
+                "21".into(),
+                no_bots.into(),
+                members,
+                threads,
+            ];
+            params.extend(terms.iter().map(|t| t.to_string()));
+            // 対象の表は「今月のヒット」の定数倍、それ以外（JOIN 先）はページの件数に比例。
+            queries.push((
+                format!("{name}{suffix}"),
+                bind(&month_sql(*kind, terms), &params),
+                3. * h + 64.,
+            ));
+        }
     }
     // 履歴より前の空の月: インデックスを引くだけ。
     let mut empty = vec![
         (now - 59).to_string(),
         ids.clone(),
-        String::new(),
+        "[]".into(),
         String::new(),
         String::new(),
         String::new(),
         String::new(),
         "21".into(),
+        String::new(),
+        String::new(),
+        "[]".into(),
         "です".into(),
     ];
     queries.push((
@@ -402,12 +454,15 @@ SET session_replication_role = DEFAULT;
         let params = vec![
             now.to_string(),
             ids,
-            String::new(),
+            "[]".into(),
             String::new(),
             String::new(),
             String::new(),
             String::new(),
             "21".into(),
+            String::new(),
+            String::new(),
+            "[]".into(),
             term.into(),
         ];
         queries.push((
@@ -416,8 +471,13 @@ SET session_replication_role = DEFAULT;
             3. * h + 64.,
         ));
     }
-    let lonely: Value =
-        serde_json::from_str(&one(&db, &bind(SCOPE_SQL, &[LONELY.into(), String::new()])).await?)?;
+    let lonely: Value = serde_json::from_str(
+        &one(
+            &db,
+            &bind(SCOPE_SQL, &[LONELY.into(), "[]".into(), String::new()]),
+        )
+        .await?,
+    )?;
     assert_eq!(
         lonely["ids"],
         json!([]),

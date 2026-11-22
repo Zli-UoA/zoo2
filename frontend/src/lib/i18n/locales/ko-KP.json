@@ -1878,9 +1878,7 @@
     "filters": {
       "label": "거르기",
       "from": "보낸 사람",
-      "anyone": "모든 사람",
       "in": "통로",
-      "anywhere": "모든 통로",
       "period": "기간",
       "anytime": "지정하지 않음",
       "last7": "지난 7일",
@@ -1890,7 +1888,16 @@
       "after": "시작날자",
       "before": "마감날자",
       "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
-      "reset": "조건 초기화"
+      "reset": "조건 초기화",
+      "me": "{{name}} (나)",
+      "searchPeople": "이름으로 찾기",
+      "searchChannels": "통로 이름으로 찾기",
+      "noMatches": "찾을수 없습니다",
+      "clearSelection": "선택 해제",
+      "selectedCount": "{{label}}: {{count}}개",
+      "max": "최대 {{count}}개까지 선택할수 있습니다",
+      "mine": "내가 참가중",
+      "noBots": "보트 제외"
     }
   },
   "catchUp": {

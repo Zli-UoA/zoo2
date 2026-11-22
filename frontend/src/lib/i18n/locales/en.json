@@ -1878,9 +1878,7 @@
     "filters": {
       "label": "Filters",
       "from": "From",
-      "anyone": "Anyone",
       "in": "In",
-      "anywhere": "All channels",
       "period": "Date",
       "anytime": "Any time",
       "last7": "Last 7 days",
@@ -1890,7 +1888,16 @@
       "after": "From date",
       "before": "To date",
       "reversed": "The start date must be on or before the end date.",
-      "reset": "Reset filters"
+      "reset": "Reset filters",
+      "me": "{{name}} (you)",
+      "searchPeople": "Search by name",
+      "searchChannels": "Search channels",
+      "noMatches": "No matches",
+      "clearSelection": "Clear selection",
+      "selectedCount": "{{label}}: {{count}}",
+      "max": "You can choose up to {{count}}",
+      "mine": "Involving me",
+      "noBots": "Exclude bots"
     }
   },
   "catchUp": {

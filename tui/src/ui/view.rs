@@ -286,7 +286,7 @@ fn draw_global_search(frame: &mut Frame, app: &App) {
             Span::raw(" "),
             kind(SearchKind::Files, "ファイル"),
             Span::styled(
-                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD",
+                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD with:me -is:bot",
                 DIM,
             ),
         ]),

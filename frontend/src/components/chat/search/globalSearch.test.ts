@@ -9,10 +9,12 @@ import {
   localMidnight,
   periodAfter,
   periodOf,
+  searchFiltersOf,
   searchItemKey,
   searchKindOf,
   searchRequestPath,
   searchResultLink,
+  searchRouteFilters,
   type SearchFileItem,
   type SearchMessageItem,
 } from "./globalSearch";
@@ -67,6 +69,36 @@ describe("parseSearchRouteParams", () => {
         before: "11/30",
       }),
     ).toEqual({ q: "x", from: "u1", in: "c1", after: "2026-11-01" });
+  });
+  it("reads many people and channels, and the flags the router parsed as numbers", () => {
+    const params = parseSearchRouteParams({
+      q: "x",
+      from: "u1, u2,,u1",
+      in: "c1",
+      nobots: 1,
+      mine: "1",
+    });
+    expect(params).toEqual({ q: "x", from: "u1,u2", in: "c1", nobots: "1", mine: "1" });
+    expect(searchFiltersOf(params)).toEqual({
+      from: ["u1", "u2"],
+      in: ["c1"],
+      after: undefined,
+      before: undefined,
+      noBots: true,
+      mine: true,
+    });
+    expect(searchRouteFilters(searchFiltersOf(params))).toEqual({
+      from: "u1,u2",
+      in: "c1",
+      after: undefined,
+      before: undefined,
+      nobots: "1",
+      mine: "1",
+    });
+    expect(parseSearchRouteParams({ q: "x", nobots: "0", mine: false })).toEqual({ q: "x" });
+    // 21 個目からは捨てる（サーバーの上限）。
+    const many = Array.from({ length: 25 }, (_, i) => `u${i}`).join(",");
+    expect(parseSearchRouteParams({ from: many }).from?.split(",")).toHaveLength(20);
   });
   it("restores numeric queries the router parsed as JSON", () => {
     expect(parseSearchRouteParams({ q: 2026 }).q).toBe("2026");
@@ -147,13 +179,15 @@ describe("searchRequestPath", () => {
     inTimeZone("Asia/Tokyo", () =>
       expect(
         searchRequestPath("会議", "all", null, {
-          from: "u1",
-          in: "c1",
+          from: ["u1", "u2"],
+          in: ["c1"],
           after: "2026-11-01",
           before: "2026-11-22",
+          noBots: true,
+          mine: true,
         }),
       ).toBe(
-        "/api/search?q=%E4%BC%9A%E8%AD%B0&type=all&user_id=u1&channel_id=c1&after=2026-11-01T00%3A00%3A00%2B09%3A00&before=2026-11-22T00%3A00%3A00%2B09%3A00",
+        "/api/search?q=%E4%BC%9A%E8%AD%B0&type=all&user_id=u1%2Cu2&channel_id=c1&exclude_bots=true&involving_me=true&after=2026-11-01T00%3A00%3A00%2B09%3A00&before=2026-11-22T00%3A00%3A00%2B09%3A00",
       ),
     );
   });
