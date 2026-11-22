@@ -258,6 +258,7 @@
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
     "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+    "downloadTooMany": "同時に保存できる件数の上限に達しました。ほかの保存が終わってから、もう一度お試しください。",
     "downloading": "ダウンロード中",
     "saving": "保存しています…",
     "cancelDownload": "{{name}}のダウンロードを中止",
@@ -478,12 +479,13 @@
   },
   "downloads": {
     "desktopTitle": "ダウンロード",
-    "desktopDescription": "添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。",
+    "desktopDescription": "添付ファイルの保存先です。新しい版のアプリでは、保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。",
     "askEveryTime": "保存のたびに確認する",
     "defaultDirectory": "ダウンロードフォルダー",
     "chooseFolder": "フォルダーを選ぶ",
     "resetDirectory": "既定のフォルダーに戻す",
-    "desktopValue": "OS の保存ダイアログ",
+    "olderAppValue": "アプリの既定の保存先",
+    "olderAppDescription": "この版のアプリでは、アプリが決めた保存先に保存されます。保存先を変えるには、アプリを更新してください。",
     "error": "保存先の設定を変更できませんでした。もう一度お試しください。"
   },
   "mfm": {

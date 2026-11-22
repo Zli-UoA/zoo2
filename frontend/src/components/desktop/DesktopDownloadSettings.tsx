@@ -18,7 +18,7 @@ import { Button } from "../ui/button";
  * オフにすると、選んだフォルダーへ確認なしで保存する。
  *
  * 保存先を決めるのは Rust 側だけで、ここは表示と選択だけを行う。古い版のアプリ（コマンドがない）では、
- * 説明だけを出す。
+ * アプリが決めた保存先に保存されることと、更新が必要なことを出す。
  */
 export function DesktopDownloadSettings() {
   const { t } = useTranslation();
@@ -45,7 +45,14 @@ export function DesktopDownloadSettings() {
   }
 
   if (settings === null) {
-    return <span className="text-sm text-muted-foreground">{t("downloads.desktopValue")}</span>;
+    return (
+      <div className="flex flex-col items-end gap-1 text-right">
+        <span className="text-sm text-muted-foreground">{t("downloads.olderAppValue")}</span>
+        <span className="max-w-56 text-xs text-muted-foreground">
+          {t("downloads.olderAppDescription")}
+        </span>
+      </div>
+    );
   }
 
   const askEveryTime = settings?.ask_every_time ?? true;

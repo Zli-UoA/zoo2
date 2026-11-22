@@ -12,7 +12,7 @@ import {
   mediaPreviewKind,
   shouldRefreshAttachmentUrl,
 } from "../../../lib/attachments";
-import { DesktopDownloadDestinationError } from "../../../lib/desktop";
+import { DesktopDownloadDestinationError, DesktopDownloadLimitError } from "../../../lib/desktop";
 import {
   DesktopDownloadCancelledError,
   cancelDesktopDownload,
@@ -171,6 +171,11 @@ function AttachmentDownloadButton({
     if (error instanceof DesktopDownloadDestinationError) {
       // 保存先が上書きせずに保存する操作に対応していない。保存先を変えてもらう。
       toast.error(t("attachments.downloadDestinationUnsupported"));
+      return;
+    }
+    if (error instanceof DesktopDownloadLimitError) {
+      // 同時保存の上限。ほかの保存が終われば再試行できる。
+      toast.error(t("attachments.downloadTooMany"));
       return;
     }
     toast.error(

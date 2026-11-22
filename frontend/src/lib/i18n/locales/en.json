@@ -258,6 +258,7 @@
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
     "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
+    "downloadTooMany": "Too many downloads are running at once. Wait for the other downloads to finish, then try again.",
     "downloading": "Downloading",
     "saving": "Saving…",
     "cancelDownload": "Cancel downloading {{name}}",
@@ -478,12 +479,13 @@
   },
   "downloads": {
     "desktopTitle": "Downloads",
-    "desktopDescription": "Where the app saves attachments. Choose whether to confirm the location each time, or save to a folder you set in advance.",
+    "desktopDescription": "Where the app saves attachments. In a newer version of the app, you can choose whether to confirm the location each time or save to a folder you set in advance.",
     "askEveryTime": "Ask where to save each time",
     "defaultDirectory": "Downloads folder",
     "chooseFolder": "Choose folder",
     "resetDirectory": "Use the default folder",
-    "desktopValue": "OS save dialog",
+    "olderAppValue": "The app's default folder",
+    "olderAppDescription": "This version of the app saves attachments to the folder chosen by the app. Update the app to change where files are saved.",
     "error": "Could not change the download settings. Please try again."
   },
   "mfm": {

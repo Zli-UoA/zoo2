@@ -258,6 +258,7 @@
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
     "downloadDestinationUnsupported": "無法儲存到此位置。請選擇其他資料夾，或在設定的「下載」中變更儲存位置。",
+    "downloadTooMany": "同時儲存的數量已達上限。請等待其他下載完成後再試。",
     "downloading": "正在下載",
     "saving": "正在儲存…",
     "cancelDownload": "取消下載 {{name}}",
@@ -478,12 +479,13 @@
   },
   "downloads": {
     "desktopTitle": "下載",
-    "desktopDescription": "附件檔案的儲存位置。可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
+    "desktopDescription": "附件檔案的儲存位置。在新版應用程式中，可以選擇每次儲存時確認位置，或儲存到預先設定的資料夾。",
     "askEveryTime": "每次儲存時確認",
     "defaultDirectory": "下載資料夾",
     "chooseFolder": "選擇資料夾",
     "resetDirectory": "還原預設資料夾",
-    "desktopValue": "系統儲存對話框",
+    "olderAppValue": "應用程式預設儲存位置",
+    "olderAppDescription": "此版本的應用程式會將附件儲存到應用程式決定的位置。若要變更儲存位置，請更新應用程式。",
     "error": "無法變更下載設定，請再試一次。"
   },
   "mfm": {

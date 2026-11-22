@@ -91,7 +91,7 @@ const meta = {
           <SettingRow
             icon={<DownloadIcon />}
             label="ダウンロード"
-            description="添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。"
+            description="添付ファイルの保存先です。新しい版のアプリでは、保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。"
           >
             <Story />
           </SettingRow>
@@ -199,7 +199,7 @@ export const ResetFolder: Story = {
   }),
 };
 
-/** 古い版のアプリ。保存先のコマンドがないので、説明だけを出す。 */
+/** 古い版のアプリ。保存先のコマンドがないので、実際の保存先を示す。 */
 export const OlderApp: Story = {
   decorators: [
     (Story) => (
@@ -209,6 +209,7 @@ export const OlderApp: Story = {
     ),
   ],
   play: playForImplementation(async () => {
-    await expect(await screen.findByText("OS の保存ダイアログ")).toBeVisible();
+    await expect(await screen.findByText("アプリの既定の保存先")).toBeVisible();
+    await expect(screen.getByText(/アプリを更新/)).toBeVisible();
   }),
 };

@@ -258,6 +258,7 @@
     "downloadShort": "다운로드",
     "downloadError": "다운로드하지 못했습니다.",
     "downloadDestinationUnsupported": "이 저장 위치에는 저장할 수 없습니다. 다른 폴더를 선택하거나 설정의 \"다운로드\"에서 저장 위치를 변경하세요.",
+    "downloadTooMany": "동시에 저장할 수 있는 개수를 초과했습니다. 다른 다운로드가 끝난 후 다시 시도하세요.",
     "downloading": "다운로드 중",
     "saving": "저장 중…",
     "cancelDownload": "{{name}} 다운로드 취소",
@@ -478,12 +479,13 @@
   },
   "downloads": {
     "desktopTitle": "다운로드",
-    "desktopDescription": "첨부 파일을 저장할 위치입니다. 저장할 때마다 위치를 확인하거나, 미리 정한 폴더에 저장할 수 있습니다.",
+    "desktopDescription": "첨부 파일의 저장 위치입니다. 새 버전 앱에서는 저장할 때마다 위치를 확인하거나 미리 지정한 폴더에 저장할 수 있습니다.",
     "askEveryTime": "저장할 때마다 확인",
     "defaultDirectory": "다운로드 폴더",
     "chooseFolder": "폴더 선택",
     "resetDirectory": "기본 폴더로 되돌리기",
-    "desktopValue": "OS 저장 대화 상자",
+    "olderAppValue": "앱 기본 저장 위치",
+    "olderAppDescription": "이 버전의 앱은 앱이 정한 위치에 첨부 파일을 저장합니다. 저장 위치를 바꾸려면 앱을 업데이트하세요.",
     "error": "다운로드 설정을 변경하지 못했습니다. 다시 시도해 주세요."
   },
   "mfm": {

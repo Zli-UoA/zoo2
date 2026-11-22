@@ -258,6 +258,7 @@
     "downloadShort": "下載",
     "downloadError": "下載唔到檔案。",
     "downloadDestinationUnsupported": "呢個位置存唔到檔案。請揀第二個資料夾，或者喺設定嘅「下載」改儲存位置。",
+    "downloadTooMany": "同時下載嘅數量已經到上限。等其他人嘅下載完成之後再試。",
     "downloading": "下載緊",
     "saving": "儲存緊…",
     "cancelDownload": "取消下載 {{name}}",
@@ -478,12 +479,13 @@
   },
   "downloads": {
     "desktopTitle": "下載",
-    "desktopDescription": "附件檔案嘅儲存位置。你可以揀每次儲存都確認位置，或者預先設定資料夾。",
+    "desktopDescription": "附件檔案嘅儲存位置。喺新版 app 就可以揀每次儲存都確認位置，或者預先設定嘅資料夾。",
     "askEveryTime": "每次儲存都確認",
     "defaultDirectory": "下載資料夾",
     "chooseFolder": "揀資料夾",
     "resetDirectory": "還原預設資料夾",
-    "desktopValue": "系統儲存對話框",
+    "olderAppValue": "App 預設儲存位置",
+    "olderAppDescription": "呢個版本嘅 app 會將附件儲存喺 app 決定嘅位置。想改儲存位置，就要更新 app。",
     "error": "未能更改下載設定，請再試一次。"
   },
   "mfm": {
