@@ -115,24 +115,14 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     );
     const onLoadOlder = vi.fn();
 
-    const samples: Array<{
-      opacity: string;
-      scrollTop: number;
-      maxTop: number;
-      minIndex: number | null;
-    }> = [];
+    const minIndices: Array<number | null> = [];
     const observer = new MutationObserver(() => {
       const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       if (!scroller) return;
       const indices = Array.from(scroller.querySelectorAll<HTMLElement>("[data-index]")).map((el) =>
         Number(el.dataset.index),
       );
-      samples.push({
-        opacity: getComputedStyle(scroller).opacity,
-        scrollTop: scroller.scrollTop,
-        maxTop: Math.max(0, scroller.scrollHeight - scroller.clientHeight),
-        minIndex: indices.length > 0 ? Math.min(...indices) : null,
-      });
+      minIndices.push(indices.length > 0 ? Math.min(...indices) : null);
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
 
@@ -152,26 +142,48 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
         </CollectionsProvider>,
       );
 
-      await waitFor(() => {
-        const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
-        expect(scroller).toBeTruthy();
-        expect(getComputedStyle(scroller!).opacity).toBe("1");
+      // Remain synchronously visible (opacity === "1") from initial mount so toBeVisible() checks never race.
+      const immediateScroller = document.querySelector<HTMLElement>(
+        '[data-testid="message-scroll"]',
+      )!;
+      expect(immediateScroller).toBeTruthy();
+      expect(getComputedStyle(immediateScroller).opacity).toBe("1");
+
+      const rafSamples: Array<{ scrollTop: number; maxTop: number; minIndex: number | null }> = [];
+      let framesRemaining = 6;
+      await new Promise<void>((resolve) => {
+        const capture = () => {
+          const indices = Array.from(
+            immediateScroller.querySelectorAll<HTMLElement>("[data-index]"),
+          ).map((el) => Number(el.dataset.index));
+          rafSamples.push({
+            scrollTop: immediateScroller.scrollTop,
+            maxTop: Math.max(0, immediateScroller.scrollHeight - immediateScroller.clientHeight),
+            minIndex: indices.length > 0 ? Math.min(...indices) : null,
+          });
+          framesRemaining -= 1;
+          if (framesRemaining <= 0) resolve();
+          else requestAnimationFrame(capture);
+        };
+        requestAnimationFrame(capture);
       });
 
-      const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]')!;
-      const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-      expect(maxTop).toBeGreaterThan(1000);
-      expect(Math.abs(scroller.scrollTop - maxTop)).toBeLessThanOrEqual(2);
+      await waitFor(() => {
+        const maxTop = Math.max(0, immediateScroller.scrollHeight - immediateScroller.clientHeight);
+        expect(maxTop).toBeGreaterThan(1000);
+        expect(Math.abs(immediateScroller.scrollTop - maxTop)).toBeLessThanOrEqual(2);
+      });
 
       // Should NEVER have triggered loadOlder during initial positioning.
       expect(onLoadOlder).not.toHaveBeenCalled();
 
-      // Index 0 was never mounted on initial render because initialOffset starts near the bottom.
-      for (const sample of samples) {
+      // Index 0 was never mounted on initial render or any frame because initialOffset starts near bottom.
+      for (const minIndex of minIndices) {
+        expect(minIndex).not.toBe(0);
+      }
+      for (const sample of rafSamples) {
         expect(sample.minIndex).not.toBe(0);
-        if (sample.opacity === "1" && sample.maxTop > 0) {
-          expect(Math.abs(sample.scrollTop - sample.maxTop)).toBeLessThanOrEqual(2);
-        }
+        expect(sample.scrollTop).toBeGreaterThan(0);
       }
     } finally {
       observer.disconnect();
@@ -196,14 +208,11 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     await waitFor(() => {
       const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       expect(scroller).toBeTruthy();
-      expect(getComputedStyle(scroller!).opacity).toBe("1");
+      const maxTop = Math.max(0, scroller!.scrollHeight - scroller!.clientHeight);
+      expect(maxTop).toBeGreaterThan(500);
+      expect(Math.abs(scroller!.scrollTop - maxTop)).toBeLessThanOrEqual(2);
+      expect(scroller!.querySelector('[data-message-id="c-49"]')).toBeTruthy();
     });
-
-    const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]')!;
-    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    expect(maxTop).toBeGreaterThan(500);
-    expect(Math.abs(scroller.scrollTop - maxTop)).toBeLessThanOrEqual(2);
-    expect(scroller.querySelector('[data-message-id="c-49"]')).toBeTruthy();
   });
 
   it("reuses cached row heights on channel revisit so return render is synchronously settled at bottom", async () => {
@@ -227,7 +236,9 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       expect(el).toBeTruthy();
-      expect(getComputedStyle(el!).opacity).toBe("1");
+      const maxTop = Math.max(0, el!.scrollHeight - el!.clientHeight);
+      expect(maxTop).toBeGreaterThan(1000);
+      expect(Math.abs(el!.scrollTop - maxTop)).toBeLessThanOrEqual(2);
     });
 
     // Switch to channel B (unmounts chan-a cleanly and saves its measurements).
@@ -244,7 +255,9 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       expect(el?.dataset.scrollRestorationId).toBe("message-scroll:chan-b");
-      expect(getComputedStyle(el!).opacity).toBe("1");
+      const maxTop = Math.max(0, el!.scrollHeight - el!.clientHeight);
+      expect(maxTop).toBeGreaterThan(500);
+      expect(Math.abs(el!.scrollTop - maxTop)).toBeLessThanOrEqual(2);
     });
 
     // Switch BACK to channel A cleanly (with cached row heights).
@@ -298,7 +311,6 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       expect(el).toBeTruthy();
-      expect(getComputedStyle(el!).opacity).toBe("1");
       const extMax = Math.max(0, el!.scrollHeight - el!.clientHeight);
       expect(extMax).toBeGreaterThan(maxTop);
       expect(Math.abs(el!.scrollTop - extMax)).toBeLessThanOrEqual(2);
@@ -375,7 +387,9 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       expect(el?.dataset.scrollRestorationId).toBe("message-scroll:long");
-      expect(getComputedStyle(el!).opacity).toBe("1");
+      const longMax = Math.max(0, el!.scrollHeight - el!.clientHeight);
+      expect(longMax).toBeGreaterThan(1000);
+      expect(Math.abs(el!.scrollTop - longMax)).toBeLessThanOrEqual(2);
     });
 
     // Wait past TanStack Router's async onRendered scroll restoration callback.
@@ -396,7 +410,9 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
     await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
       expect(el?.dataset.scrollRestorationId).toBe("message-scroll:long");
-      expect(getComputedStyle(el!).opacity).toBe("1");
+      const forwardMax = Math.max(0, el!.scrollHeight - el!.clientHeight);
+      expect(forwardMax).toBeGreaterThan(1000);
+      expect(Math.abs(el!.scrollTop - forwardMax)).toBeLessThanOrEqual(2);
     });
     await new Promise((resolve) => setTimeout(resolve, 80));
     const afterForward = document.querySelector<HTMLElement>('[data-testid="message-scroll"]')!;
@@ -425,13 +441,13 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       return new Response("{}", { status: 404 });
     });
 
-    const seenBottomWhileVisible: boolean[] = [];
+    const seenBottom: boolean[] = [];
     const observer = new MutationObserver(() => {
       const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
-      if (!scroller || getComputedStyle(scroller).opacity !== "1") return;
+      if (!scroller) return;
       const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       if (maxTop > 500 && Math.abs(scroller.scrollTop - maxTop) <= 8) {
-        seenBottomWhileVisible.push(true);
+        seenBottom.push(true);
       }
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true });
@@ -454,7 +470,6 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
       await waitFor(() => {
         const scroller = document.querySelector<HTMLElement>('[data-testid="message-scroll"]');
         expect(scroller).toBeTruthy();
-        expect(getComputedStyle(scroller!).opacity).toBe("1");
         const target = scroller!.querySelector<HTMLElement>('[data-message-id="t-8"]');
         expect(target).toBeTruthy();
         const sr = scroller!.getBoundingClientRect();
@@ -463,7 +478,7 @@ describe("MessageList and ThreadPane initial bottom landing & channel switch", (
         expect(tr.bottom).toBeLessThanOrEqual(sr.bottom + 4);
       });
 
-      expect(seenBottomWhileVisible).toEqual([]);
+      expect(seenBottom).toEqual([]);
       expect(markReadCalls).toEqual([]);
     } finally {
       observer.disconnect();

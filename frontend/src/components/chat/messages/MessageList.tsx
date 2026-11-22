@@ -439,7 +439,6 @@ function MessageScrollViewport({
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(!targetMessageId && !firstUnreadId);
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const [settled, setSettled] = useState(false);
   const settlingRef = useRef(true);
   const settledOnceRef = useRef(false);
   const latestMetricsRef = useRef({ width: 0, height: 0 });
@@ -608,6 +607,11 @@ function MessageScrollViewport({
       Math.abs(element.clientWidth - latestMountDepsRef.current.initialPlan.cachedWidth) > 2
     ) {
       virtualizer.measure();
+      if (typeof virtualizer.measureElement === "function") {
+        for (const row of element.querySelectorAll<HTMLElement>("[data-index]")) {
+          virtualizer.measureElement(row);
+        }
+      }
     }
 
     const finishSettling = () => {
@@ -630,7 +634,6 @@ function MessageScrollViewport({
         setHasNewBelow(false);
         deps.markRead();
       }
-      setSettled(true);
     };
 
     const alignTargetNow = () => {
@@ -995,7 +998,7 @@ function MessageScrollViewport({
         onScroll={handleScroll}
         data-testid="message-scroll"
         data-scroll-restoration-id={channelId ? `message-scroll:${channelId}` : "message-scroll"}
-        className={`h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none] ${settled ? "" : "opacity-0"}`}
+        className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
       >
         <div role="list" className="relative w-full" style={{ height: totalSize }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
