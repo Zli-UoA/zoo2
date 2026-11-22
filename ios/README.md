@@ -249,12 +249,13 @@ Keychainへ保存し、退出成功後に削除します。通信に失敗した
 音声通話には [stasel/WebRTC](https://github.com/stasel/WebRTC/tree/157.0.0) の配布バイナリを使用し、バージョンを固定しています。
 [ライセンス原文](Sources/Resources/WebRTC-LICENSE.txt) をアプリにも同梱します。
 
-## TestFlightへの配布と内部テスター招待
+## 移行元でのTestFlight配布記録
 
 以下のXcode Cloudの記録は移行元の `Zli-UoA/zoo2-ios` に対するものです。
 コードの取り込みだけでは接続先は変わりません。zoo2から配布するには、App Store Connectで
 接続リポジトリと `ios/Zoo.xcodeproj`、配布対象のブランチを設定し、配布を確認する必要があります。
-この取り込みではXcode Cloudの設定変更・配布は行っていません。
+移行先にはXcode Cloudの製品接続用manifestを含めていません。
+移行元のXcode Cloud設定の変更や配布は行っていません。
 
 2026-11-21に移行元のXcode Cloudの配布起点を`release`へ変更しました。
 「releaseから内部テスト配信」は`release`の更新を契機にZooスキームをアーカイブし、内部グループ「zli」へ配信します。
@@ -263,10 +264,7 @@ Keychainへ保存し、退出成功後に削除します。通信に失敗した
 `release`は`ca89ffd`から作成しました。
 [導入PR #83の記録](https://github.com/Zli-UoA/zoo2-ios/pull/83)では、`02143f7`からのビルド21が成功し、
 TestFlight 1.0（21）が「テスト中」になったことを確認しています。これは配布起点を変更する前の記録です。
-ワークフローの開始条件と配布先はApp Store Connectで管理し、リポジトリには製品の接続情報を保存しています。
-
-GitHub Actionsから、App Store Connectへのユーザー招待と、承諾済みユーザーの内部グループ「zli」への追加を実行できます。
-設定方法・実行方法は[内部テスター管理](Scripts/TestFlight/README.md)を参照してください。
+ワークフローの開始条件と配布先はApp Store Connectで管理し、移行元リポジトリには製品の接続情報を保存しています。
 
 ## リポジトリの統合と履歴
 
@@ -285,9 +283,9 @@ git merge-base --is-ancestor 67bda878fb012bdc829fa8de6d1aef4816c62773 HEAD
 
 移行元のIssue・PR、未マージのブランチ、GitHub Secrets・Variables、Xcode Cloudの接続設定は
 この取り込みの対象に含めていません。移行元リポジトリはそのまま残しています。
-IssueテンプレートとPRのチェックはzoo2の共通設定を使い、TestFlight管理のワークフローは
-ルートの `.github/workflows/ios-testflight-invitations.yaml` に移しています。
-`Scripts/IssueWebhook` は移行元を対象とする既存ツールとして保持しており、zoo2向けには有効化していません。
+IssueテンプレートとPRのチェックはzoo2の共通設定を使います。
+iOS専用のGitHub Actions、`Scripts/IssueWebhook`、`Scripts/TestFlight`、Xcode Cloudの製品接続用manifestは移行先から削除しました。
+削除前のコードは元のコミット履歴に残っています。移行元のActions・常駐自動化は変更していません。
 
 ## 検証
 

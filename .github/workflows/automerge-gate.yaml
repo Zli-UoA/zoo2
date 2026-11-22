@@ -29,7 +29,6 @@ on:
       - "OpenTofu R2"
       - "Read state and worker query budget"
       - "Validate Flux production status"
-      - "TestFlightの内部テスター管理"
     types: [requested, in_progress, completed]
   check_run:
     types: [created, completed, rerequested]

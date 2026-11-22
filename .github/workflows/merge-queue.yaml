@@ -38,7 +38,6 @@ jobs:
       ci-db-erd: ${{ steps.match.outputs.ci-db-erd }}
       terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
       ci-android: ${{ steps.match.outputs.ci-android }}
-      ios-testflight-invitations: ${{ steps.match.outputs.ios-testflight-invitations }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -151,11 +150,6 @@ jobs:
     permissions:
       contents: write
 
-  ios-testflight-invitations:
-    needs: changes
-    if: needs.changes.outputs.ios-testflight-invitations == 'true'
-    uses: ./.github/workflows/ios-testflight-invitations.yaml
-
   all-passed:
     needs:
       - changes
@@ -176,7 +170,6 @@ jobs:
       - ci-db-erd
       - terraform-r2
       - ci-android
-      - ios-testflight-invitations
     if: ${{ !cancelled() }}
     # merge_group でしか動かず、キューに入った PR のコードを扱うので、常に GitHub-hosted で実行する。
     runs-on: ubuntu-latest
