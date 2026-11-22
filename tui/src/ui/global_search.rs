@@ -333,6 +333,17 @@ pub fn focus_first_hit(segments: Vec<(String, bool)>, width: usize) -> Vec<(Stri
     out
 }
 
+/// `after:`・`before:` の日付（端末の暦の日）の 0 時を、オフセット付きの時刻にして API に送る。
+/// UTC の日付で区切ると、JST の 0〜9 時の投稿が前日に入るため（Web と同じ）。夏時間で 0 時がない日は、
+/// その日の最初の時刻。日付にならない値はそのまま送り、サーバーの 400 に任せる。
+pub fn local_midnight(day: &str, tz: &jiff::tz::TimeZone) -> String {
+    day.parse::<jiff::civil::Date>()
+        .ok()
+        .and_then(|date| date.to_zoned(tz.clone()).ok())
+        .map(|at| at.strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .unwrap_or_else(|| day.to_string())
+}
+
 /// 結果の日付。`created_at` は UTC の naive 値なので、タイムラインと同じく `tz`（端末のタイムゾーン）に直す。
 pub fn result_day(created_at: &str, tz: &jiff::tz::TimeZone) -> String {
     created_at
@@ -362,6 +373,20 @@ mod tests {
         // 収まるなら変えない。
         let short = highlight_segments("明日の会議", &["会議".to_string()]);
         assert_eq!(focus_first_hit(short.clone(), 74), short);
+    }
+
+    #[test]
+    fn local_midnight_sends_the_terminal_day_with_its_offset() {
+        let jst = jiff::tz::TimeZone::fixed(jiff::tz::offset(9));
+        assert_eq!(
+            local_midnight("2026-11-22", &jst),
+            "2026-11-22T00:00:00+09:00"
+        );
+        assert_eq!(
+            local_midnight("2026-11-22", &jiff::tz::TimeZone::UTC),
+            "2026-11-22T00:00:00+00:00"
+        );
+        assert_eq!(local_midnight("2026-13-01", &jst), "2026-13-01");
     }
 
     #[test]

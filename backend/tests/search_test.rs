@@ -366,6 +366,26 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         .await),
         vec![m(15)]
     );
+    // オフセット付きの境界（端末の日付の 0 時）。JST の {day} 9 時は UTC の {day} 0 時ちょうど。
+    let jst = |time: &str| q(&format!("{day}T{time}+09:00"));
+    assert_eq!(
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=messages&q={}&before={}", q("日境界"), jst("09:00:00"))
+        )
+        .await),
+        vec![m(16)]
+    );
+    assert_eq!(
+        ids(&search(
+            &app,
+            &alice,
+            &format!("type=messages&q={}&after={}", q("日境界"), jst("08:59:00"))
+        )
+        .await),
+        vec![m(15), m(16)]
+    );
     let tomorrow = sql
         .query_one(
             "SELECT (LOCALTIMESTAMP + interval '1 day')::date::text",
@@ -558,6 +578,7 @@ async fn search_respects_visibility_encryption_and_months() -> anyhow::Result<()
         "type=messages&q=a%20b%20c%20d%20e%20f",
         "type=messages&q=x&cursor=nope",
         "type=messages&q=x&after=2026-13-01",
+        "type=messages&q=x&after=2026-11-01T00:00:00",
         "type=messages&q=x&type=users",
     ] {
         let (status, _) = call(&app, "GET", &format!("/api/search?{bad}"), &alice, None).await;

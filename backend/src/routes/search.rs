@@ -82,9 +82,10 @@ struct SearchQuery {
     kind: SearchKind,
     channel_id: Option<String>,
     user_id: Option<String>,
-    /// この日（UTC、`YYYY-MM-DD`）以降。
+    /// この時刻以降。`YYYY-MM-DD`（UTC のその日の 0 時）か、オフセット付きの時刻（RFC 3339）。
+    /// クライアントは端末の日付の 0 時を、オフセット付きで送る。
     after: Option<String>,
-    /// この日（UTC、`YYYY-MM-DD`）より前。
+    /// この時刻より前。書き方は `after` と同じ。
     before: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
@@ -134,14 +135,38 @@ fn month_label(month: i64) -> String {
     format!("{year:04}-{m:02}")
 }
 
-fn parse_day(value: Option<&str>, name: &str) -> Result<Option<jiff::civil::Date>, AppError> {
+/// 期間の境界を、UTC の naive な日時（`created_at` と同じ）にする。`YYYY-MM-DD` は UTC のその日の 0 時、
+/// オフセット付きの時刻（`2026-11-22T00:00:00+09:00` など）はその瞬間。
+fn parse_bound(value: Option<&str>, name: &str) -> Result<Option<jiff::civil::DateTime>, AppError> {
     value
         .filter(|v| !v.is_empty())
         .map(|v| {
-            v.parse::<jiff::civil::Date>()
-                .map_err(|_| AppError::BadRequest(format!("{name} must be YYYY-MM-DD")))
+            let parsed = if v.len() == 10 {
+                v.parse::<jiff::civil::Date>()
+                    .ok()
+                    .map(|d| d.to_datetime(jiff::civil::Time::midnight()))
+            } else {
+                v.parse::<jiff::Timestamp>()
+                    .ok()
+                    .map(|t| t.to_zoned(jiff::tz::TimeZone::UTC).datetime())
+            };
+            parsed.ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{name} must be YYYY-MM-DD or an RFC 3339 timestamp with an offset"
+                ))
+            })
         })
         .transpose()
+}
+
+/// `before` より前の最後の瞬間が入る月。`before` が月初の 0 時ちょうどなら前の月。
+fn month_before(before: jiff::civil::DateTime) -> i64 {
+    let date = before.date();
+    if before.time() == jiff::civil::Time::midnight() {
+        month_of(date.yesterday().unwrap_or(date))
+    } else {
+        month_of(date)
+    }
 }
 
 fn parse_cursor(value: &str) -> Result<Cursor, AppError> {
@@ -316,8 +341,8 @@ async fn search(
 ) -> Result<Json<Value>, AppError> {
     let terms = parse_terms(&query.q)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let after = parse_day(query.after.as_deref(), "after")?;
-    let before = parse_day(query.before.as_deref(), "before")?;
+    let after = parse_bound(query.after.as_deref(), "after")?;
+    let before = parse_bound(query.before.as_deref(), "before")?;
     let cursor = query.cursor.as_deref().map(parse_cursor).transpose()?;
     let channel = query.channel_id.as_deref().unwrap_or("");
     let author = query.user_id.as_deref().unwrap_or("");
@@ -346,9 +371,9 @@ async fn search(
         return Ok(empty());
     }
 
-    // `before` の日を含まない（その日の 0 時より前）。`before` が月初なら前の月から始める。
-    let before_month = before.map(|d| month_of(d.yesterday().unwrap_or(d)));
-    let floor = after.map_or(floor, |d| floor.max(month_of(d)));
+    // `before` の瞬間を含まない。`before` が月初の 0 時ちょうどなら前の月から始める。
+    let before_month = before.map(month_before);
+    let floor = after.map_or(floor, |d| floor.max(month_of(d.date())));
     let start = cursor
         .as_ref()
         .map(|c| c.m)
@@ -479,6 +504,26 @@ mod tests {
         assert_eq!(cut_snippet("会議の\n  資料", true, false), "…会議の 資料");
         assert_eq!(cut_snippet("短い本文", false, false), "短い本文");
         assert_eq!(cut_snippet("途中", true, true), "…途中…");
+    }
+
+    #[test]
+    fn bounds_accept_utc_days_and_offset_timestamps() {
+        let at = |v: &str| parse_bound(Some(v), "after").unwrap().unwrap().to_string();
+        assert_eq!(at("2026-11-22"), "2026-11-22T00:00:00");
+        // 端末の日付の 0 時（JST）は、UTC の前日 15 時。
+        assert_eq!(at("2026-11-22T00:00:00+09:00"), "2026-11-21T15:00:00");
+        assert_eq!(at("2026-11-22T00:00:00-05:00"), "2026-11-22T05:00:00");
+        assert_eq!(at("2026-11-22T00:00:00Z"), "2026-11-22T00:00:00");
+        assert!(parse_bound(Some(""), "after").unwrap().is_none());
+        for bad in ["2026-13-01", "2026-11-22T00:00:00", "nope"] {
+            assert!(parse_bound(Some(bad), "after").is_err(), "{bad}");
+        }
+        let month = |v: &str| month_before(parse_bound(Some(v), "before").unwrap().unwrap());
+        assert_eq!(month("2026-12-01"), 2026 * 12 + 11);
+        // JST の 12/1 の 0 時は UTC の 11/30 15 時なので、11 月。
+        assert_eq!(month("2026-12-01T00:00:00+09:00"), 2026 * 12 + 11);
+        // UTC の 12/1 の 9 時より前は、12 月の 0 時〜9 時も含む。
+        assert_eq!(month("2026-12-01T00:00:00-09:00"), 2026 * 12 + 12);
     }
 
     #[test]

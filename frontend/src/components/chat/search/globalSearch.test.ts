@@ -6,6 +6,7 @@ import {
   parseSearchRouteParams,
   beforeFromEndDay,
   endDayFromBefore,
+  localMidnight,
   periodAfter,
   periodOf,
   searchItemKey,
@@ -91,8 +92,43 @@ describe("searchItemKey", () => {
   });
 });
 
+/** 端末のタイムゾーンを一時的に替える（Node は `TZ` の変更をすぐ反映する）。 */
+function inTimeZone(zone: string, run: () => void) {
+  const original = process.env.TZ;
+  process.env.TZ = zone;
+  try {
+    run();
+  } finally {
+    if (original === undefined) delete process.env.TZ;
+    else process.env.TZ = original;
+  }
+}
+
 describe("periods", () => {
   const now = new Date("2026-11-21T12:00:00Z");
+  it("uses the terminal's calendar day", () => {
+    // JST では 11/22 の 8 時なので、今日は 11/22。
+    inTimeZone("Asia/Tokyo", () =>
+      expect(periodAfter("last7", new Date("2026-11-21T23:00:00Z"))).toBe("2026-11-16"),
+    );
+    inTimeZone("UTC", () =>
+      expect(periodAfter("last7", new Date("2026-11-21T23:00:00Z"))).toBe("2026-11-15"),
+    );
+  });
+  it("sends the terminal's midnight with its offset", () => {
+    inTimeZone("Asia/Tokyo", () =>
+      expect(localMidnight("2026-11-22")).toBe("2026-11-22T00:00:00+09:00"),
+    );
+    inTimeZone("America/New_York", () => {
+      expect(localMidnight("2026-11-22")).toBe("2026-11-22T00:00:00-05:00");
+      expect(localMidnight("2026-07-01")).toBe("2026-07-01T00:00:00-04:00");
+    });
+    // 0 時がない日（サンパウロの 2018-11-04 は 0 時に 1 時へ進んだ）は、その日の最初の時刻。
+    inTimeZone("America/Sao_Paulo", () =>
+      expect(localMidnight("2018-11-04")).toBe("2018-11-04T01:00:00-02:00"),
+    );
+    inTimeZone("UTC", () => expect(localMidnight("0002-01-01")).toBe("0002-01-01T00:00:00+00:00"));
+  });
   it("counts today as the first of the last N days", () => {
     expect(periodAfter("last7", now)).toBe("2026-11-15");
     expect(periodOf({ after: "2026-11-15" }, now)).toBe("last7");
@@ -103,9 +139,18 @@ describe("periods", () => {
 
 describe("searchRequestPath", () => {
   it("sends the filters as the API parameters", () => {
-    expect(
-      searchRequestPath("会議", "all", null, { from: "u1", in: "c1", after: "2026-11-01" }),
-    ).toBe("/api/search?q=%E4%BC%9A%E8%AD%B0&type=all&user_id=u1&channel_id=c1&after=2026-11-01");
+    inTimeZone("Asia/Tokyo", () =>
+      expect(
+        searchRequestPath("会議", "all", null, {
+          from: "u1",
+          in: "c1",
+          after: "2026-11-01",
+          before: "2026-11-22",
+        }),
+      ).toBe(
+        "/api/search?q=%E4%BC%9A%E8%AD%B0&type=all&user_id=u1&channel_id=c1&after=2026-11-01T00%3A00%3A00%2B09%3A00&before=2026-11-22T00%3A00%3A00%2B09%3A00",
+      ),
+    );
   });
   it("encodes the query, kind and cursor", () => {
     expect(searchRequestPath("a&b %", "messages", null)).toBe(

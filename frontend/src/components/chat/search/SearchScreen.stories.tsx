@@ -13,7 +13,12 @@ import {
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { StoryShell } from "../../../../.storybook/shell";
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
-import type { SearchFileItem, SearchMessageItem, SearchPage } from "./globalSearch";
+import {
+  localMidnight,
+  type SearchFileItem,
+  type SearchMessageItem,
+  type SearchPage,
+} from "./globalSearch";
 import { SearchScreen } from "./SearchScreen";
 
 const general = storyChannels[0]!;
@@ -396,13 +401,17 @@ export const CustomDates: Story = {
     await fireEvent.change(after, { target: { value: "2025-11-01" } });
     await expect(requests).toHaveLength(before);
     await fireEvent.keyDown(after, { key: "Enter" });
-    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toBe("2025-11-01"));
+    await waitFor(() =>
+      expect(requests.at(-1)!.searchParams.get("after")).toBe(localMidnight("2025-11-01")),
+    );
     await expect(requests).toHaveLength(before + 1);
     await fireEvent.change(end, { target: { value: "2026-11-21" } });
     await expect(requests).toHaveLength(before + 1);
     await fireEvent.focusOut(end);
     // 終了日はその日を含む（API の before は翌日）。
-    await waitFor(() => expect(requests.at(-1)!.searchParams.get("before")).toBe("2026-11-22"));
+    await waitFor(() =>
+      expect(requests.at(-1)!.searchParams.get("before")).toBe(localMidnight("2026-11-22")),
+    );
     // 日付を空にしても、日付の指定は表示したまま。
     await fireEvent.change(after, { target: { value: "" } });
     await fireEvent.focusOut(after);
@@ -431,14 +440,18 @@ export const ReversedDates: Story = {
     const end = region.getByLabelText("終了日");
     await fireEvent.change(end, { target: { value: "2026-11-25" } });
     await fireEvent.focusOut(end);
-    await waitFor(() => expect(requests.at(-1)!.searchParams.get("before")).toBe("2026-11-26"));
-    await expect(requests.at(-1)!.searchParams.get("after")).toBe("2026-11-20");
+    await waitFor(() =>
+      expect(requests.at(-1)!.searchParams.get("before")).toBe(localMidnight("2026-11-26")),
+    );
+    await expect(requests.at(-1)!.searchParams.get("after")).toBe(localMidnight("2026-11-20"));
     await expect(requests).toHaveLength(before + 1);
     await expect(region.queryByRole("alert")).toBeNull();
     // 同じ日はよい。
     await fireEvent.change(after, { target: { value: "2026-11-25" } });
     await fireEvent.focusOut(after);
-    await waitFor(() => expect(requests.at(-1)!.searchParams.get("after")).toBe("2026-11-25"));
+    await waitFor(() =>
+      expect(requests.at(-1)!.searchParams.get("after")).toBe(localMidnight("2026-11-25")),
+    );
     await expect(region.queryByRole("alert")).toBeNull();
   }),
 };

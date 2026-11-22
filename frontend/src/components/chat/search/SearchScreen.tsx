@@ -145,6 +145,8 @@ export function SearchScreen() {
     // 入力途中などで日付にならない値は捨てて、確定済みの値に戻す。
     const after = shownAfter ? (valid(shownAfter) ?? filters.after) : undefined;
     const before = shownEnd ? (beforeFromEndDay(valid(shownEnd)) ?? filters.before) : undefined;
+    // 無効な値を確定済みの値に戻した結果、開始日が終了日の翌日（`before`）以降になるなら確定しない。
+    if (after && before && after >= before) return;
     setDayDraft({});
     // 確定した後も、日付を空にしても、入力欄は出したままにする。
     setCustomPeriod(true);

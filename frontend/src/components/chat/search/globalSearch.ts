@@ -101,14 +101,14 @@ const PERIOD_DAYS: Record<"last7" | "last30" | "last365", number> = {
   last365: 365,
 };
 
-/** 実在する UTC の日付（`YYYY-MM-DD`）か。`2026-13-01` や `2026-02-30` は除く。 */
+/** 実在する日付（`YYYY-MM-DD`）か。`2026-13-01` や `2026-02-30` は除く。日付は端末の暦の日。 */
 export function isSearchDay(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return false;
   const time = Date.parse(`${value}T00:00:00Z`);
   return !Number.isNaN(time) && new Date(time).toISOString().slice(0, 10) === value;
 }
 
-/** UTC の日付（`YYYY-MM-DD`）を `days` 日ずらす。 */
+/** 日付（`YYYY-MM-DD`）を `days` 日ずらす（暦の上で数えるので、タイムゾーンによらない）。 */
 export function shiftDay(day: string, days: number): string {
   return utcDay(new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000));
 }
@@ -122,14 +122,38 @@ export function endDayFromBefore(before: string | undefined): string | undefined
   return before ? shiftDay(before, -1) : undefined;
 }
 
-/** UTC の日付（`YYYY-MM-DD`）。 */
-export function utcDay(date: Date): string {
+/** UTC の日付（`YYYY-MM-DD`）。暦の計算にだけ使う。 */
+function utcDay(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-/** 「過去 N 日間」の開始日（今日を含めて N 日）。 */
+const pad = (value: number, length = 2) => String(value).padStart(length, "0");
+
+/** 端末のタイムゾーンでの日付（`YYYY-MM-DD`）。 */
+export function localDay(date: Date): string {
+  return `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 「過去 N 日間」の開始日（端末の今日を含めて N 日）。 */
 export function periodAfter(period: "last7" | "last30" | "last365", now: Date): string {
-  return utcDay(new Date(now.getTime() - (PERIOD_DAYS[period] - 1) * 86_400_000));
+  return localDay(
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() - (PERIOD_DAYS[period] - 1)),
+  );
+}
+
+/**
+ * 日付（端末の暦の日）の 0 時を、オフセット付きの時刻（`2026-11-22T00:00:00+09:00`）にする。API の
+ * `after`/`before` は、この瞬間で区切る（UTC の日付で区切ると、JST の 0〜9 時の投稿が前日に入る）。
+ * 夏時間で 0 時がない日は、その日の最初の時刻にする。
+ */
+export function localMidnight(day: string): string {
+  const [year, month, date] = day.split("-").map(Number);
+  const at = new Date(2000, 0, 1);
+  at.setFullYear(year!, month! - 1, date!);
+  const offset = -at.getTimezoneOffset();
+  const sign = offset < 0 ? "-" : "+";
+  const abs = Math.abs(offset);
+  return `${localDay(at)}T${pad(at.getHours())}:${pad(at.getMinutes())}:00${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 /** 今の絞り込みが、どの期間の選択肢に当たるか。 */
@@ -161,8 +185,8 @@ export function searchRequestPath(
   const params = new URLSearchParams({ q: query, type: kind });
   if (filters.from) params.set("user_id", filters.from);
   if (filters.in) params.set("channel_id", filters.in);
-  if (filters.after) params.set("after", filters.after);
-  if (filters.before) params.set("before", filters.before);
+  if (filters.after) params.set("after", localMidnight(filters.after));
+  if (filters.before) params.set("before", localMidnight(filters.before));
   if (cursor) params.set("cursor", cursor);
   return `/api/search?${params}`;
 }

@@ -1613,9 +1613,12 @@ impl App {
         };
         // `from:@名前`・`in:#チャンネル`・`after:`・`before:` を絞り込みにする（名前は同期済みの一覧で引く）。
         let parsed = global_search::parse_modifiers(&query);
+        // 日付は端末の暦の日として、その 0 時で区切る。
+        let tz = jiff::tz::TimeZone::system();
+        let midnight = |day: Option<String>| day.map(|d| global_search::local_midnight(&d, &tz));
         let mut filters = crate::api::SearchFilters {
-            after: parsed.after,
-            before: parsed.before,
+            after: midnight(parsed.after),
+            before: midnight(parsed.before),
             ..Default::default()
         };
         if let Some(name) = &parsed.from {
