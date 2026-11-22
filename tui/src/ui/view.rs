@@ -1576,6 +1576,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn leaving_a_thread_keeps_the_cursor_when_thread_rows_disappear() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            let before = app.sidebar_items().len();
+            // 退出の応答を待つあいだに動かしたカーソルは、スレッドの行が消えても、同じ行に残る。
+            // ピン留めの下の行は c1 より前にあるので、消えると c1 の添字がずれる。
+            app.on_app_event(AppEvent::ThreadLeft("m1".into()));
+
+            assert!(app.sidebar_items().len() < before, "{pinned}");
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reopening_a_thread_keeps_the_cursor_when_a_thread_row_appears() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            // m1 はアーカイブ済みで、一覧には出ていない。
+            let mut archived = app.active_threads.remove(0);
+            archived.thread_archive_at = Some("2026-11-10T00:00:00".into());
+            app.archived_threads.push(archived);
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            let target = SidebarItem::Channel("c2".into());
+            put_cursor_on(&mut app, &target);
+
+            // 再Openすると、c1 の下に行が増える。c2 の添字がずれても、カーソルは c2 に残る。
+            app.on_app_event(AppEvent::ThreadsChanged {
+                reopened: Some("m1".into()),
+            });
+
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .any(|item| matches!(item, SidebarItem::Thread { .. })),
+                "{pinned}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
     async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
         let mut app = app();
         pin_c1(&mut app);

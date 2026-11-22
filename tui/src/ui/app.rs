@@ -747,8 +747,11 @@ impl App {
                 ));
             }
             AppEvent::ThreadLeft(id) => {
+                // 退出の応答を待つあいだにカーソルを動かしていても、同じ行に残す（行が消えて添字がずれるため）。
+                let selected = self.selected_sidebar_item();
                 self.active_threads.retain(|thread| thread.id != id);
                 self.archived_threads.retain(|thread| thread.id != id);
+                self.restore_sidebar_selection(selected);
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
             }
@@ -764,6 +767,8 @@ impl App {
                 }
             }
             AppEvent::ThreadsChanged { reopened } => {
+                // 再Openしたスレッドの行が増えて添字がずれるので、カーソルは同じ行に残す。
+                let selected = self.selected_sidebar_item();
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
                         id.clone(),
@@ -775,6 +780,7 @@ impl App {
                         .insert(id.clone(), (false, Instant::now()));
                     self.ensure_active_thread(&id);
                 }
+                self.restore_sidebar_selection(selected);
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
