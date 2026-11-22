@@ -1,6 +1,7 @@
 name: TestFlightの内部テスター管理
 
 on:
+  workflow_call:
   workflow_dispatch:
     inputs:
       operation:
@@ -11,10 +12,14 @@ on:
   schedule:
     - cron: '7,22,37,52 * * * *'
   pull_request:
-    paths: ['Scripts/TestFlight/**', '.github/workflows/testflight-invitations.yml']
+    paths:
+      - 'ios/Scripts/TestFlight/**'
+      - '.github/workflows/ios-testflight-invitations.yaml'
   push:
     branches: [main]
-    paths: ['Scripts/TestFlight/**', '.github/workflows/testflight-invitations.yml']
+    paths:
+      - 'ios/Scripts/TestFlight/**'
+      - '.github/workflows/ios-testflight-invitations.yaml'
 
 permissions:
   contents: read
@@ -36,10 +41,10 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: 検証用の依存を準備
-        working-directory: Scripts/TestFlight
+        working-directory: ios/Scripts/TestFlight
         run: npm ci --ignore-scripts
       - name: 型検査とテストを実行
-        working-directory: Scripts/TestFlight
+        working-directory: ios/Scripts/TestFlight
         run: npm test
 
   manage:
@@ -71,4 +76,4 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
           TESTFLIGHT_INVITEES_JSON: ${{ secrets.TESTFLIGHT_INVITEES_JSON }}
-        run: node Scripts/TestFlight/manage.mjs
+        run: node ios/Scripts/TestFlight/manage.mjs

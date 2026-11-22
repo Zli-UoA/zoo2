@@ -157,9 +157,11 @@ DMの送信・通話は1対1が対象です。無効なメンバー・bot・自�
 
 ## 開発手順
 
-Xcode で `Zoo.xcodeproj` を開きます。プロジェクトは XcodeGen で `project.yml` から生成します。
+macOSにXcodeとXcodeGenを用意し、Xcodeで `ios/Zoo.xcodeproj` を開きます。
+プロジェクトは `ios/project.yml` から生成します。以下はリポジトリのルートから実行する手順です。
 
 ```sh
+cd ios
 make generate
 make build
 make build-watch
@@ -249,7 +251,12 @@ Keychainへ保存し、退出成功後に削除します。通信に失敗した
 
 ## TestFlightへの配布と内部テスター招待
 
-2026-11-21にXcode Cloudの配布起点を`release`へ変更しました。
+以下のXcode Cloudの記録は移行元の `Zli-UoA/zoo2-ios` に対するものです。
+コードの取り込みだけでは接続先は変わりません。zoo2から配布するには、App Store Connectで
+接続リポジトリと `ios/Zoo.xcodeproj`、配布対象のブランチを設定し、配布を確認する必要があります。
+この取り込みではXcode Cloudの設定変更・配布は行っていません。
+
+2026-11-21に移行元のXcode Cloudの配布起点を`release`へ変更しました。
 「releaseから内部テスト配信」は`release`の更新を契機にZooスキームをアーカイブし、内部グループ「zli」へ配信します。
 通常の開発は`main`へ統合し、配布する内容を`release`へ反映します。`main`の更新だけでは配布を開始しません。
 自動開始・手動開始とも対象は`release`のみです。設定保存後に両方の条件を再確認しましたが、変更後の配布はまだ実行していません。
@@ -260,6 +267,27 @@ TestFlight 1.0（21）が「テスト中」になったことを確認してい�
 
 GitHub Actionsから、App Store Connectへのユーザー招待と、承諾済みユーザーの内部グループ「zli」への追加を実行できます。
 設定方法・実行方法は[内部テスター管理](Scripts/TestFlight/README.md)を参照してください。
+
+## リポジトリの統合と履歴
+
+`Zli-UoA/zoo2-ios` のmain（`67bda878fb012bdc829fa8de6d1aef4816c62773`）を、
+`git subtree add --prefix=ios` でSquashせずに取り込みました。元の172コミットとコミットIDを保持しています。
+取り込み前のコミットではファイルは元のルートにあり、取り込み時点から `ios/` 配下になります。
+
+リポジトリのルートで次を実行すると、移行元の先頭コミットが現在の履歴に含まれることを確認できます。
+
+```sh
+git merge-base --is-ancestor 67bda878fb012bdc829fa8de6d1aef4816c62773 HEAD
+```
+
+移行PRはマージコミット方式で統合してください。Squash・Rebaseでは元のコミット履歴を保持できません。
+2026-11-22時点のmainには線形履歴必須の保護があるため、履歴を保持してマージする前に保護設定の調整が必要です。
+
+移行元のIssue・PR、未マージのブランチ、GitHub Secrets・Variables、Xcode Cloudの接続設定は
+この取り込みの対象に含めていません。移行元リポジトリはそのまま残しています。
+IssueテンプレートとPRのチェックはzoo2の共通設定を使い、TestFlight管理のワークフローは
+ルートの `.github/workflows/ios-testflight-invitations.yaml` に移しています。
+`Scripts/IssueWebhook` は移行元を対象とする既存ツールとして保持しており、zoo2向けには有効化していません。
 
 ## 検証
 

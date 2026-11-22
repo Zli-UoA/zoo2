@@ -1,6 +1,6 @@
 # TestFlightの内部テスター管理
 
-[GitHub Actions](https://github.com/Zli-UoA/zoo2-ios/actions/workflows/testflight-invitations.yml)で、Zoo2へのユーザー招待と、承諾後の内部グループ「zli」への追加を行います。
+[GitHub Actions](https://github.com/Zli-UoA/zoo2/actions/workflows/ios-testflight-invitations.yaml)で、Zoo2へのユーザー招待と、承諾後の内部グループ「zli」への追加を行います。
 対象はアプリ `6836791230`（`works.zli.zoo`）と内部グループ `23cb9feb-5ccb-4a4b-829e-11a9b6f4fd0f` に固定しています。
 
 ## 実行できること
@@ -23,8 +23,12 @@
 
 ## 設定
 
-リポジトリの [Actions Secrets](https://github.com/Zli-UoA/zoo2-ios/settings/secrets/actions) に次を登録します。
+リポジトリの [Actions Secrets](https://github.com/Zli-UoA/zoo2/settings/secrets/actions) に次を登録します。
 公開リポジトリのため、名簿や秘密鍵をファイルとしてコミットしたり、Actionsの入力欄・Issue・ログに書いたりしないでください。
+
+コードの移行では移行元のSecrets・Variablesはコピーしていません。未設定でもPRとマージキューでの
+型検査・模擬APIテストは実行できます。定期同期は `TESTFLIGHT_SYNC_ENABLED=true` の場合だけ動きます。
+切り替えるときは移行元の定期同期を無効にし、両リポジトリから同時に更新しないようにしてください。
 
 | Secret | 内容 |
 | --- | --- |
@@ -55,14 +59,14 @@ Zoo2にアクセスできるApp Managerの個人キーを候補にし、`check` 
 1. Actionsで「TestFlightの内部テスター管理」を選び、mainの `check` を実行します。
 2. `plan` を実行し、ジョブの概要で対象者ごとの予定を確認します。番号は名簿の配列順です。
 3. `invite` を実行してApp Store Connectへの招待を送信します。
-4. [Actions Variables](https://github.com/Zli-UoA/zoo2-ios/settings/variables/actions) に `TESTFLIGHT_SYNC_ENABLED` を値 `true` で登録すると、15分間隔の承諾確認・グループ追加が有効になります。無効化する場合は `false` にします。
+4. [Actions Variables](https://github.com/Zli-UoA/zoo2/settings/variables/actions) に `TESTFLIGHT_SYNC_ENABLED` を値 `true` で登録すると、15分間隔の承諾確認・グループ追加が有効になります。無効化する場合は `false` にします。
 
 手動実行は次のCLIでも行えます。
 
 ```sh
-gh workflow run testflight-invitations.yml --repo Zli-UoA/zoo2-ios --ref main -f operation=check
-gh workflow run testflight-invitations.yml --repo Zli-UoA/zoo2-ios --ref main -f operation=plan
-gh workflow run testflight-invitations.yml --repo Zli-UoA/zoo2-ios --ref main -f operation=invite
+gh workflow run ios-testflight-invitations.yaml --repo Zli-UoA/zoo2 --ref main -f operation=check
+gh workflow run ios-testflight-invitations.yaml --repo Zli-UoA/zoo2 --ref main -f operation=plan
+gh workflow run ios-testflight-invitations.yaml --repo Zli-UoA/zoo2 --ref main -f operation=invite
 ```
 
 定期実行はGitHub側の混雑で遅れる場合があり、公開リポジトリの活動が60日間ない場合は無効になります。必要に応じて `sync` を手動実行できます。
@@ -85,7 +89,7 @@ gh workflow run testflight-invitations.yml --repo Zli-UoA/zoo2-ios --ref main -f
 Node.js 24で、型検査と模擬APIを使ったテストを実行します。テストは実際の招待を送信しません。
 
 ```sh
-cd Scripts/TestFlight
+cd ios/Scripts/TestFlight
 npm ci --ignore-scripts
 npm test
 ```

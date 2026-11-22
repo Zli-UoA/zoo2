@@ -24,6 +24,8 @@ GitHub のコメント・状態変更を Zoo に通知する外部 Bot は [GitH
 
 ターミナルから使うチャットクライアントは [zoo2 TUI](tui/README.md) を参照してください。
 
+iPhone・iPad・Apple Watch向けのアプリは [iOS版](ios/README.md) を参照してください。
+
 Home・チャンネル連携と ActivityPub の対応範囲・設定は [Home / ActivityPub](docs/activitypub.md) を参照してください。
 
 エンドツーエンド暗号化の鍵の設計、脅威モデル、失効と復旧の手順は [E2EE](docs/e2ee.md) を参照してください。
