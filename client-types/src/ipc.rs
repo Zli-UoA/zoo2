@@ -76,7 +76,36 @@ pub mod command {
     /// ログインし直してもらい、ループバックのリダイレクトで受け取る。古い版のアプリにはないので、
     /// 呼べなかったら Web 側はアプリの更新を案内する (`PROTOCOL_VERSION` は上げない)。
     pub const REAUTHENTICATE: &str = "zoo_reauthenticate";
+    /// 引数なし。[`super::DownloadSettings`] を返す。添付の保存先の設定。
+    /// 古い版のアプリにはないので、呼べなかったら Web 側はブラウザーの保存に戻す
+    /// (`PROTOCOL_VERSION` は上げない)。
+    pub const DOWNLOAD_SETTINGS: &str = "zoo_download_settings";
+    /// [`super::DownloadSettingsUpdate`]。確認の有無を変えて、保存する。新しい設定を返す。
+    pub const SET_DOWNLOAD_SETTINGS: &str = "zoo_set_download_settings";
+    /// 引数なし。OS のフォルダーの選択を出し、選ばれた保存先を Rust 側で保存して、新しい
+    /// [`super::DownloadSettings`] を返す。閉じたら `null`。パスは JS に決めさせない。
+    pub const PICK_DOWNLOAD_DIRECTORY: &str = "zoo_pick_download_directory";
+    /// [`super::DownloadBegin`]。保存先を決め、書き込み先の ID を返す。確認なし保存が
+    /// 有効で選択済みフォルダーを使え、対象形式が許可リストに含まれる場合はダイアログを
+    /// 出さない。それ以外は OS の保存ダイアログを出す。添付の大きさを受け取り、1 件の
+    /// 上限に使う。
+    pub const DOWNLOAD_BEGIN: &str = "zoo_download_begin";
+    /// 本文は octet-stream。`x-zoo-download-id` ヘッダーの ID に追記する。
+    /// x-zoo-download-offset を付けると、その位置への書き込みだけを受け付ける。
+    pub const DOWNLOAD_WRITE: &str = "zoo_download_write";
+    /// `{ id: String }`。`.part` を本来の名前へ置き換える。
+    pub const DOWNLOAD_FINISH: &str = "zoo_download_finish";
+    /// `{ id: String }`。途中までのファイルを消す。
+    pub const DOWNLOAD_CANCEL: &str = "zoo_download_cancel";
 }
+
+/// [`command::DOWNLOAD_WRITE`] の、書き込み先の ID を渡すヘッダー。
+pub const DOWNLOAD_ID_HEADER: &str = "x-zoo-download-id";
+/// DOWNLOAD_WRITE の本文が、保存先のどの位置に対応するか（10進のバイト数）。
+/// ヘッダーがある場合は、その位置にだけ書く。期待位置と異なる場合は拒否するが、
+/// 直前に書いた同一チャンク（offset + len == 現在位置）の再送は no-op で成功を返す。
+/// ヘッダーを省略した場合は位置検査を行わず、現在位置へ追記する。
+pub const DOWNLOAD_OFFSET_HEADER: &str = "x-zoo-download-offset";
 
 /// Rust 側から WebView へ送るイベントの名前。
 pub mod event {
@@ -153,6 +182,73 @@ impl Default for NotificationSettings {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// 添付を保存するときの、デスクトップ版の設定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadSettings {
+    /// 保存のたびに OS の「名前を付けて保存」を出すか。既定は出す。
+    #[serde(default = "ask_every_time_default")]
+    pub ask_every_time: bool,
+    /// 「都度確認」がオフのときの保存先（絶対パス）。確認なしで保存するには必須。
+    /// 画面に出すためだけに返す。JS からは変えられず、OS のフォルダーの選択でだけ決まる。
+    #[serde(default)]
+    pub directory: Option<String>,
+}
+
+/// [`command::SET_DOWNLOAD_SETTINGS`] の引数。
+///
+/// 保存先のパスは受け取らない。保存先を決められるのは OS のフォルダーの選択
+/// （[`command::PICK_DOWNLOAD_DIRECTORY`]）だけで、リモートの画面から任意の場所へ
+/// 書き込めないようにするため。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadSettingsUpdate {
+    /// 保存のたびに OS の「名前を付けて保存」を出すか。
+    pub ask_every_time: bool,
+    /// 選んだ保存先を消して、保存のたびに確認する設定へ戻すか。
+    #[serde(default)]
+    pub reset_directory: bool,
+}
+
+fn ask_every_time_default() -> bool {
+    true
+}
+
+impl Default for DownloadSettings {
+    fn default() -> Self {
+        Self {
+            ask_every_time: true,
+            directory: None,
+        }
+    }
+}
+
+/// [`command::DOWNLOAD_BEGIN`] の引数。保存するファイルの名前（拡張子を含む）。
+/// Rust 側で使えない文字を除くので、そのまま渡してよい。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadBegin {
+    pub file_name: String,
+    /// 添付の大きさ（平文のバイト数）。分からなければ `None`。Rust 側はこの値から
+    /// 1 件の上限を決める（サーバーの添付の上限を上げても、ここが連動する）。
+    /// 上限は 512 MiB で頭打ちになる。サーバーの添付の上限をそれより大きくするときは、
+    /// `desktop-tauri/src-tauri/src/downloads.rs` の天井も上げること。
+    #[serde(default)]
+    pub size: Option<u64>,
+}
+
+/// [`command::DOWNLOAD_BEGIN`] の結果。保存先が決まったか、利用者がダイアログを閉じたか。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DownloadStart {
+    /// 書き込み先の ID と、保存するファイルのパス（画面に出すためだけ）。
+    /// `prompted` はこの保存で OS の保存ダイアログを出したか。
+    Started {
+        id: String,
+        path: String,
+        prompted: bool,
+    },
+    /// 利用者が保存ダイアログをキャンセルした。
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +344,10 @@ pub enum ErrorCode {
     Timeout,
     /// 新しい操作を始めたので、前の操作を取り消した。
     Cancelled,
+    /// 保存先が、既存のファイルを上書きせずに保存する操作に対応していない。
+    UnsupportedDestination,
+    /// 同時に保存できる件数の上限に達した。ほかの保存が終われば保存できる。
+    TooManyDownloads,
     Internal,
 }
 
@@ -327,6 +427,71 @@ mod tests {
             serde_json::to_value(IpcError::new(ErrorCode::NotLoggedIn, "x")).unwrap(),
             json!({ "code": "not_logged_in", "message": "x" })
         );
+        assert_eq!(
+            serde_json::to_value(IpcError::new(ErrorCode::TooManyDownloads, "x")).unwrap(),
+            json!({ "code": "too_many_downloads", "message": "x" })
+        );
+    }
+
+    #[test]
+    fn download_json_is_stable() {
+        assert_eq!(
+            serde_json::to_value(DownloadStart::Started {
+                id: "abc".into(),
+                path: "C:\\Users\\a\\file.pdf".into(),
+                prompted: true,
+            })
+            .unwrap(),
+            json!({
+                "status": "started",
+                "id": "abc",
+                "path": "C:\\Users\\a\\file.pdf",
+                "prompted": true
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(DownloadStart::Cancelled).unwrap(),
+            json!({ "status": "cancelled" })
+        );
+        // 添付の大きさは任意。古い画面が大きさを送らなくても読める。
+        assert_eq!(
+            serde_json::from_value::<DownloadBegin>(json!({ "file_name": "a.pdf" })).unwrap(),
+            DownloadBegin {
+                file_name: "a.pdf".into(),
+                size: None
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<DownloadBegin>(json!({ "file_name": "a.pdf", "size": 1234 }))
+                .unwrap(),
+            DownloadBegin {
+                file_name: "a.pdf".into(),
+                size: Some(1234)
+            }
+        );
+        // 古い設定ファイルに項目がなくても、既定 (都度確認する) で読める。
+        assert_eq!(
+            serde_json::from_value::<DownloadSettings>(json!({})).unwrap(),
+            DownloadSettings::default()
+        );
+        assert_eq!(
+            serde_json::from_value::<DownloadSettings>(json!({ "directory": null })).unwrap(),
+            DownloadSettings {
+                ask_every_time: true,
+                directory: None
+            }
+        );
+        // 更新の引数は保存先のパスを受け取らない（`directory` を足しても無視される）。
+        assert_eq!(
+            serde_json::from_value::<DownloadSettingsUpdate>(
+                json!({ "ask_every_time": false, "directory": "C:\\Windows" })
+            )
+            .unwrap(),
+            DownloadSettingsUpdate {
+                ask_every_time: false,
+                reset_directory: false
+            }
+        );
     }
 
     #[test]
@@ -346,6 +511,13 @@ mod tests {
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
             command::REAUTHENTICATE,
+            command::DOWNLOAD_SETTINGS,
+            command::SET_DOWNLOAD_SETTINGS,
+            command::PICK_DOWNLOAD_DIRECTORY,
+            command::DOWNLOAD_BEGIN,
+            command::DOWNLOAD_WRITE,
+            command::DOWNLOAD_FINISH,
+            command::DOWNLOAD_CANCEL,
         ] {
             assert!(
                 name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),

@@ -70,6 +70,8 @@ pub struct Core {
     browser_launch: Arc<BrowserLaunchGate>,
     /// OS の通知を出すか (`notifications.json` に保存する)。
     notifications: std::sync::Mutex<NotificationSettings>,
+    /// 添付の保存先と、書き込み中のもの。
+    downloads: crate::downloads::Downloads,
     /// 待っている E2EE の再認証。新しく始めたら、前のものは取り消す。
     reauth: std::sync::Mutex<Option<AbortHandle>>,
 }
@@ -196,6 +198,9 @@ impl Drop for Session {
 
 impl Core {
     pub fn new(app: AppHandle, ui: UiMode, config: Result<Config>) -> Self {
+        let downloads = crate::downloads::Downloads::new();
+        // 前回のクラッシュなどで残った `.part` を、起動時に消す（削除は裏のスレッド）。
+        downloads.spawn_stale_part_cleanup();
         Self {
             app,
             ui,
@@ -204,6 +209,7 @@ impl Core {
             no_redirect_http: build_no_redirect_http_client(),
             browser_launch: Arc::new(BrowserLaunchGate::default()),
             notifications: std::sync::Mutex::new(load_notification_settings()),
+            downloads,
             reauth: std::sync::Mutex::new(None),
             inner: Mutex::new(Inner {
                 generation: 0,
@@ -256,6 +262,10 @@ impl Core {
         inner.state = state;
         let _ = self.app.emit(event::SESSION, self.info(&inner.state));
         crate::window::follow_session(&self.app, self, &inner.state);
+    }
+
+    pub fn downloads(&self) -> &crate::downloads::Downloads {
+        &self.downloads
     }
 
     pub fn notification_settings(&self) -> NotificationSettings {

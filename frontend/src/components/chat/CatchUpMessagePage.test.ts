@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   rangeReady: [] as boolean[],
   exhausted: [] as boolean[],
   boundaryTooOld: [] as boolean[],
+  messageList: vi.fn(),
 }));
 
 const message = (id: string, created_at: string) => ({
@@ -76,7 +77,10 @@ vi.mock("../../lib/e2ee/messageDecryption", () => ({
   },
 }));
 vi.mock("./messages/MessageList", () => ({
-  MessageList: () => createElement("div", null, "messages"),
+  MessageList: (props: { currentUserId: string | null; viewerId?: string | null }) => {
+    mocks.messageList(props);
+    return createElement("div", null, "messages");
+  },
 }));
 
 afterEach(() => {
@@ -88,6 +92,20 @@ afterEach(() => {
   mocks.exhausted = [];
   mocks.boundaryTooOld = [];
   mocks.loadOlder.mockReset();
+  mocks.messageList.mockClear();
+});
+
+it("passes the viewer to the read-only list without enabling message actions", () => {
+  render(
+    createElement(CatchUpMessagePage, {
+      channelId: "c1",
+      firstUnreadAt: null,
+      onBoundaryMessage: vi.fn(),
+    }),
+  );
+  expect(mocks.messageList).toHaveBeenCalledWith(
+    expect.objectContaining({ currentUserId: null, viewerId: "me", canReact: false }),
+  );
 });
 
 it("keeps the boundary at the newest message shown when the page opened", async () => {

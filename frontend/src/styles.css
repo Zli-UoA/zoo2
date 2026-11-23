@@ -92,6 +92,7 @@ body {
   --color-brand-muted-foreground: var(--brand-muted-foreground);
   --color-highlight: var(--highlight);
   --color-highlight-foreground: var(--highlight-foreground);
+  --color-mention: var(--mention);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -128,6 +129,8 @@ body {
   /* 検索語の強調（<mark>）。メンションの brand-muted より濃く、本文の文字と 4.5:1 以上。 */
   --highlight: #ffe680;
   --highlight-foreground: #000000;
+  /* メンションを含むメッセージ行の背景と左端のアクセント。 */
+  --mention: #f0b232;
   --border: #e5e5e5;
   --input: #d4d4d4;
   /* focus-visible:ring-ring/50 で 50% 透過されるため、白背景でも 3:1 を超えるよう暗くする。 */
@@ -172,6 +175,7 @@ body {
   --brand-muted-foreground: #e5e5e5;
   --highlight: #5c4a00;
   --highlight-foreground: #ffffff;
+  --mention: #f0b232;
   --border: #454545;
   --input: #575757;
   --ring: #bdbdbd;
