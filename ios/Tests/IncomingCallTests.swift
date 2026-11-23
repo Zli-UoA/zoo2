@@ -13,6 +13,8 @@ private final class FakeCallReporting: SystemCallReporting {
     var incomingNames: [String] = []
     var ended: [UUID] = []
     var failure: Error?
+    var holdsReports = false
+    var reportCompletion: (@Sendable ((any Error)?) -> Void)?
     var onEnd: (() -> Void)?
     var connecting: [UUID] = []
     var connected: [UUID] = []
@@ -23,7 +25,8 @@ private final class FakeCallReporting: SystemCallReporting {
     func reportNewIncomingCall(with UUID: UUID, update: CXCallUpdate, completion: @escaping @Sendable ((any Error)?) -> Void) {
         incoming.append(UUID)
         incomingNames.append(update.localizedCallerName ?? "")
-        completion(failure)
+        if holdsReports { reportCompletion = completion }
+        else { completion(failure) }
     }
     func reportCall(with UUID: UUID, endedAt dateEnded: Date?, reason endedReason: CXCallEndedReason) {
         ended.append(UUID)
@@ -683,6 +686,49 @@ struct IncomingCallTests {
         #expect((requesting.requests[0].actions.first as? CXCallAction)?.callUUID == call.id)
         #expect((requesting.requests[0].actions.first is CXAnswerCallAction) == (actionIdentifier == IncomingCallNotifications.answerID))
         #expect(reporting.incoming == [call.id] && backgroundEnds == 1)
+    }
+
+    @Test("CallKit報告待ちのまま着信期限が切れた場合も保留した通知操作の失敗を伝える")
+    func notificationActionExpiresWhileReporting() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        var value = payload
+        let userID = try #require(value["user_id"])
+        let calls = CallStore(client: FakeCallClient(), userID: userID, makeMedia: { FakeCallMedia() }, permission: { true })
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+        let reporting = FakeCallReporting(), requesting = FakeCallRequesting()
+        reporting.holdsReports = true
+        var backgroundEnds = 0
+        let controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {}, updateAudio: { _ in },
+            beginBackgroundTask: { _ in UIBackgroundTaskIdentifier(rawValue: 1) }, endBackgroundTask: { _ in backgroundEnds += 1 },
+            notificationTimeout: .seconds(10))
+        defer { reporting.reportCompletion = nil; controller.disconnect(); workspace.shutdown() }
+        controller.setForeground(false)
+        controller.connect(workspace)
+        value["expires_at"] = Date.now.addingTimeInterval(1).ISO8601Format(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+        let call = try #require(IncomingCall(payload: value))
+        let content = UNMutableNotificationContent()
+        content.categoryIdentifier = IncomingCallNotifications.categoryID
+        content.userInfo = ["invite_id": call.id.uuidString, "user_id": call.userID]
+        let request = UNNotificationRequest(identifier: IncomingCallNotifications.identifierPrefix + UUID().uuidString, content: content, trigger: nil)
+        let response = try #require(IncomingCallNotificationAction(request: request, actionIdentifier: IncomingCallNotifications.answerID))
+        await controller.performNotificationAction(response)
+        controller.receive(call) {}
+        try #require(reporting.incoming == [call.id] && controller.isManagingCall)
+        #expect(calls.error == nil && requesting.requests.isEmpty)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while controller.isManagingCall, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(!controller.isManagingCall)
+        #expect(calls.error == "着信を確認できませんでした。iPhoneでZooを開いて確認してください。")
+        #expect(backgroundEnds == 1 && requesting.requests.isEmpty)
+        let complete = try #require(reporting.reportCompletion)
+        reporting.reportCompletion = nil
+        complete(nil)
+        let completionDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while reporting.ended.count < 2, ContinuousClock.now < completionDeadline { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(reporting.ended == [call.id, call.id])
+        #expect(backgroundEnds == 1 && requesting.requests.isEmpty)
     }
 
     @Test("保留した通知操作は期限切れを伝え、ログアウトや別アカウントの復元後に実行しない", arguments: ["期限", "ログアウト", "別アカウント"])

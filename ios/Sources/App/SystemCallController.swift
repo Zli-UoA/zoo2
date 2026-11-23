@@ -512,6 +512,7 @@ final class SystemCallController: NSObject {
         guard let callID else { return }
         let hadCall = startedCall
         let recipientID = current?.userID
+        if pendingNotification != nil { failNotificationAction() }
         clear()
         if let answerError, let recipientID {
             // 認証復元より先に応答が失敗しても、着信先の接続時に一度だけ伝える。
