@@ -957,6 +957,7 @@ export function MessagePane({
             isLoading={messagesQuery.isLoading}
             isError={messagesQuery.isError}
             currentUserId={readOnly ? null : currentUserId}
+            viewerId={isMember ? currentUserId : null}
             canModerate={canModerate}
             editingId={editingId}
             editingText={editingText}
@@ -1077,6 +1078,8 @@ export function MessagePane({
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+            viewerId={currentUserId}
+            mentionUserId={isMember ? currentUserId : null}
             canModerate={canModerate && !threadIsArchived && !!threadRoot}
             reactions={reactionGroups}
             attachments={attachmentsByMessage}

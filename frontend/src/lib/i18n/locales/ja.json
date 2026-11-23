@@ -139,8 +139,7 @@
     "candidates": "メンバー候補",
     "usersLoading": "ユーザーを読み込み中…",
     "usersError": "ユーザー取得に失敗しました。",
-    "usersEmpty": "該当するユーザーがいません。",
-    "back": "チャンネルに戻る"
+    "usersEmpty": "該当するユーザーがいません。"
   },
   "moderation": {
     "archived": "アーカイブ済み",
@@ -273,6 +272,14 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
+    "downloadSaved": "{{name}}を保存しました。",
+    "downloadDestinationUnsupported": "この保存先には保存できません。別のフォルダーを選ぶか、設定の「ダウンロード」で保存先を変えてください。",
+    "downloadDestinationUnsupportedAskEveryTimeOff": "この保存先には保存できません。設定の「ダウンロード」で保存先を変えるか、「保存のたびに確認する」をオンにしてください。",
+    "downloadTooMany": "同時に保存できる件数の上限に達しました。ほかの保存が終わってから、もう一度お試しください。",
+    "downloading": "ダウンロード中",
+    "saving": "保存しています…",
+    "cancelDownload": "{{name}}のダウンロードを中止",
+    "cancelDownloadShort": "中止",
     "retry": "再試行",
     "sensitive": "センシティブな画像",
     "markSensitive": "画像をセンシティブとして投稿",
@@ -497,6 +504,19 @@
     "desktopTitle": "通知",
     "desktopValue": "OS の通知",
     "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
+  },
+  "downloads": {
+    "desktopTitle": "ダウンロード",
+    "desktopDescription": "添付ファイルの保存先です。保存のたびに場所を確認するか、あらかじめ決めたフォルダーへ保存するかを選べます。",
+    "askEveryTime": "保存のたびに確認する",
+    "noFolder": "フォルダー未選択",
+    "chooseFolder": "フォルダーを選ぶ",
+    "resetDirectory": "保存先フォルダーを消して毎回確認する",
+    "olderAppValue": "アプリの既定の保存先",
+    "olderAppDescription": "この版のアプリでは、アプリが決めた保存先に保存されます。保存先を変えるには、アプリを更新してください。",
+    "loadError": "保存先の設定を読み込めませんでした。",
+    "retry": "再読み込み",
+    "error": "保存先の設定を変更できませんでした。もう一度お試しください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",

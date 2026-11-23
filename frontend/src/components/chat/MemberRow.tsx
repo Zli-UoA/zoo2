@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { AppAvatar, openApp } from "./AppIdentity";
 
 /**
- * メンバー一覧の1行。チャンネルのメンバー（`MembersPanel`）とスレッドのメンバー
+ * メンバー一覧の1行。チャンネルのメンバー（`ChannelMembersDialog`）とスレッドのメンバー
  * （`ThreadParticipantsDialog`）で、アバター・名前・「作成者」「あなた」の印をそろえる。
  */
 export function MemberRow({

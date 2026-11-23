@@ -178,12 +178,17 @@
       ]
     },
     {
-      "file": "src/components/chat/MembersScreen.stories.tsx",
-      "states": ["Default", "PublicNotJoined"]
-    },
-    {
-      "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
+      "file": "src/components/chat/ChannelMembersDialog.stories.tsx",
+      "states": [
+        "Default",
+        "AddCandidates",
+        "Archived",
+        "PrivateNotJoined",
+        "UserAvatar",
+        "EncryptedUnreadableMember",
+        "Mobile",
+        "MobilePublicNotJoined"
+      ]
     },
     {
       "file": "src/components/chat/CatchUpScreen.stories.tsx",
@@ -338,6 +343,8 @@
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "MentionedMessage",
+        "MentionedChannelMessage",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
@@ -585,6 +592,33 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
       "states": ["On", "TurnOff", "Off", "OlderApp"]
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.stories.tsx",
+      "states": [
+        "Idle",
+        "Preparing",
+        "Downloading",
+        "UnknownSize",
+        "Finishing",
+        "Complete",
+        "WithLabel",
+        "FinishingWithLabel",
+        "Pending"
+      ]
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.stories.tsx",
+      "states": [
+        "AskEveryTime",
+        "SaveToFolder",
+        "ToggleOff",
+        "ChooseFolder",
+        "ResetFolder",
+        "OlderApp",
+        "LoadError",
+        "LongPath"
+      ]
     },
     {
       "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
@@ -1155,8 +1189,8 @@
       "reason": "Default・Empty・Loading・LoadError・UsersError の一覧状態と、PinFromMenu で実際の行メニューからピン留めする操作を確認する。"
     },
     {
-      "file": "src/components/chat/MembersPanel.tsx",
-      "story": "src/components/chat/MembersPanel.stories.tsx"
+      "file": "src/components/chat/ChannelMembersDialog.tsx",
+      "story": "src/components/chat/ChannelMembersDialog.stories.tsx"
     },
     {
       "file": "src/components/chat/CatchUpButton.tsx",
@@ -1306,9 +1340,9 @@
     },
     {
       "file": "src/components/chat/MemberRow.tsx",
-      "story": "src/components/chat/MembersPanel.stories.tsx",
+      "story": "src/components/chat/ChannelMembersDialog.stories.tsx",
       "composed": true,
-      "reason": "チャンネルのメンバー一覧（MembersPanel）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。MembersPanelのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsでスレ主・あなたの印を確認する。"
+      "reason": "チャンネルのメンバーのダイアログ（ChannelMembersDialog）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。ChannelMembersDialogのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsでスレ主・あなたの印を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPaneStatus.tsx",
@@ -1380,6 +1414,14 @@
     {
       "file": "src/components/desktop/DesktopNotificationSelect.tsx",
       "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DownloadProgressButton.tsx",
+      "story": "src/components/desktop/DownloadProgressButton.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopDownloadSettings.tsx",
+      "story": "src/components/desktop/DesktopDownloadSettings.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",

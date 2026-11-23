@@ -62,7 +62,18 @@ export interface ThreadPaneProps {
   onReopenAndJoinThread?: () => void;
   isLoading: boolean;
   isError: boolean;
+  /**
+   * 編集・削除・リアクションなどの操作に使う自分の ID。アーカイブ済み・読み取り専用のときは、
+   * 操作を止めるために呼び出し元が null にする。
+   */
   currentUserId: string | null;
+  /**
+   * 本人の判定（メンバーのダイアログの「あなた」の印）に使う閲覧者の ID。操作可否では null にしない。
+   * 省略時は `currentUserId` を使う。
+   */
+  viewerId?: string | null;
+  /** 行のメンション強調に使う ID。null は強調を無効にし、省略時は閲覧者の ID を使う。 */
+  mentionUserId?: string | null;
   canModerate?: boolean;
   isArchived?: boolean;
   readOnly?: boolean;
@@ -137,6 +148,8 @@ export function ThreadPane({
   isLoading,
   isError,
   currentUserId,
+  viewerId,
+  mentionUserId = viewerId === undefined ? currentUserId : viewerId,
   canModerate = false,
   isArchived = false,
   readOnly = false,
@@ -411,7 +424,8 @@ export function ThreadPane({
           count={participantCount}
           participants={participants ?? []}
           creatorId={root.user_id}
-          currentUserId={currentUserId}
+          // アーカイブ済み・読み取り専用でも、自分の行に「あなた」の印を付ける。
+          currentUserId={viewerId === undefined ? currentUserId : viewerId}
           status={participantsStatus}
           action={participantsAction}
           // ペイン側の表示と同じ条件（メンバーでない人・読み取り専用には、参加・退出の操作がないので出さない）。
@@ -450,6 +464,7 @@ export function ThreadPane({
         ) : (
           <MessageRow
             item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
+            mentionUserId={mentionUserId}
             isOwn={!!currentUserId && root.user_id === currentUserId}
             canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
             isEditing={editingId === root.id}
@@ -527,6 +542,7 @@ export function ThreadPane({
               >
                 <MessageRow
                   item={item}
+                  mentionUserId={mentionUserId}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
                   canDelete={
                     canModerate || (!!currentUserId && item.message.user_id === currentUserId)

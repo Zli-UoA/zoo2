@@ -56,6 +56,7 @@ describe("MfmContent", () => {
     );
     expect(html).toContain('aria-label=":@alice:"');
     expect(html).toContain("AuthZ Name");
+    expect(html).toContain('class="sr-only">@alice</span>');
     expect(html).toContain(":@unknown:");
     expect(html).toContain("@unknown");
     expect(html).toContain("<code");
@@ -258,7 +259,7 @@ describe("MfmContent", () => {
     const html = render("@alice @bob **@channel** @here @carol@example.com", {
       mentions: { userNames: new Set(["alice"]), channel: true, here: false },
     });
-    // メンションの表示（bg-brand-muted）は @alice と @channel の 2 つだけ。
+    // メンションの表示（bg-brand-muted）は alice と channel の 2 つだけ。
     expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
     expect(html).toContain("@alice</span>");
     expect(html).toContain("@channel</span>");

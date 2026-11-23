@@ -11,6 +11,7 @@ mod commands;
 #[cfg(test)]
 mod commands_list;
 mod core;
+mod downloads;
 mod toast;
 mod update;
 mod updater_window;
@@ -90,6 +91,13 @@ pub fn run() {
             commands::zoo_notifications_observed,
             commands::zoo_take_call_accept,
             commands::zoo_reauthenticate,
+            commands::zoo_download_settings,
+            commands::zoo_set_download_settings,
+            commands::zoo_pick_download_directory,
+            commands::zoo_download_begin,
+            commands::zoo_download_write,
+            commands::zoo_download_finish,
+            commands::zoo_download_cancel,
         ])
         .setup(move |app| {
             #[cfg(target_os = "macos")]
@@ -112,13 +120,19 @@ pub fn run() {
         .on_window_event(window::on_window_event)
         .build(tauri::generate_context!())
         .expect("Tauri の初期化に失敗しました")
-        .run(|app, event| {
+        .run(|app, event| match event {
             #[cfg(target_os = "windows")]
-            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
                 update::on_exit_requested(app, code, &api);
             }
-            #[cfg(not(target_os = "windows"))]
-            let _ = (app, event);
+            // `App::run` はまだ書き込み中のダウンロードの `Drop` を呼ばずにプロセスを
+            // 終えるので、ここで `.part` を消す。待ちきれなかったものは次の起動で消す。
+            tauri::RunEvent::Exit => {
+                if let Some(core) = app.try_state::<Arc<core::Core>>() {
+                    core.downloads().shutdown(std::time::Duration::from_secs(1));
+                }
+            }
+            _ => {}
         });
 }
 
@@ -157,6 +171,13 @@ mod tests {
             command::NOTIFICATIONS_OBSERVED,
             command::TAKE_CALL_ACCEPT,
             command::REAUTHENTICATE,
+            command::DOWNLOAD_SETTINGS,
+            command::SET_DOWNLOAD_SETTINGS,
+            command::PICK_DOWNLOAD_DIRECTORY,
+            command::DOWNLOAD_BEGIN,
+            command::DOWNLOAD_WRITE,
+            command::DOWNLOAD_FINISH,
+            command::DOWNLOAD_CANCEL,
         ];
         assert_eq!(super::commands_list::COMMANDS, ipc);
     }
