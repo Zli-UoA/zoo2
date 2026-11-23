@@ -100,9 +100,6 @@ struct WorkspaceView: View {
             Tab("DM", systemImage: "bubble.left.and.bubble.right.fill", value: WorkspaceTab.directMessages) {
                 chatStack(path: $workspace.dmPath, directMessages: true)
             }
-            Tab("検索", systemImage: "magnifyingglass", value: WorkspaceTab.search) {
-                GlobalSearchScreen(workspace: workspace)
-            }
             Tab("通知", systemImage: "bell.fill", value: WorkspaceTab.notifications) {
                 NavigationStack {
                     InboxView(store: workspace.inbox, workspace: workspace,
@@ -112,6 +109,9 @@ struct WorkspaceView: View {
                 }
             }
             .badge(workspace.inbox.unreadCount)
+            Tab("検索", systemImage: "magnifyingglass", value: WorkspaceTab.search) {
+                GlobalSearchScreen(workspace: workspace)
+            }
             Tab("プロフィール", systemImage: "person.crop.circle.fill", value: WorkspaceTab.profile) {
                 NavigationStack(path: $workspace.profilePath) {
                     ProfileView(workspace: workspace, session: session)

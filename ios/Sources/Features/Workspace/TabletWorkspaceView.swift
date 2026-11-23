@@ -39,8 +39,8 @@ struct TabletWorkspaceView: View {
                 .frame(height: 44).accessibilityHidden(true)
             destination("チャンネル", symbol: "number", tab: .channels)
             destination("DM", symbol: "bubble.left.and.bubble.right.fill", tab: .directMessages)
-            destination("検索", symbol: "magnifyingglass", tab: .search)
             destination("通知", symbol: "bell.fill", tab: .notifications)
+            destination("検索", symbol: "magnifyingglass", tab: .search)
             Spacer(minLength: 16)
             destination("プロフィール", symbol: "person.crop.circle.fill", tab: .profile)
         }

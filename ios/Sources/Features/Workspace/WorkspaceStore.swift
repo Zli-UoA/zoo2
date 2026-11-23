@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 enum WorkspaceTab: Hashable {
-    case channels, directMessages, search, notifications, profile
+    case channels, directMessages, notifications, search, profile
 }
 
 enum WorkspaceSheet: Identifiable {
