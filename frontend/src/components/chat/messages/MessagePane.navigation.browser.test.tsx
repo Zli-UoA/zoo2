@@ -1,7 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { LOCALE_STORAGE_KEY } from "../../../lib/i18n/locale";
+import { ApiError } from "../../../lib/api/client";
 import { MessagePane } from "./MessagePane";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn() } }));
 
 const fixture = vi.hoisted(() => {
   const root = {
@@ -45,11 +51,25 @@ const fixture = vi.hoisted(() => {
     closeThread: vi.fn(),
     openThread: vi.fn(),
     api: { request: vi.fn(), post: vi.fn().mockResolvedValue({}) },
+    /** useWriteRunner の失敗を差し替えてトーストの文言を検証する。 */
+    writeError: null as string | null,
+    writeErrorCause: null as unknown,
+    setWriteError: vi.fn(),
+    /** `useThreadMembership` の取り直し（`retry`）。参加が必要な 403 のあとに呼ばれる。 */
+    retryMembership: vi.fn(),
+    /** `useE2ee` の値。既定は暗号ストアなし（暗号化チャンネルの送信を試すテストだけ差し替える）。 */
+    e2ee: {} as Record<string, unknown>,
+    /** 暗号化チャンネルの送信（`sendEncryptedMessage`）。 */
+    sendEncrypted: vi.fn(),
+    /** メッセージのコレクションに入っている行（`get` で返す）。 */
+    collectionRows: [] as { id: string; parent_id: string | null; deleted_at: string | null }[],
+    /** モックの ReactionPicker が受け取った最新の選択。 */
+    pickReaction: null as ((emoji: string) => void) | null,
   };
 });
 const collection = {
   insert: fixture.insert,
-  get: () => undefined,
+  get: (id: string) => fixture.collectionRows.find((row) => row.id === id),
   values: () => fixture.empty.values(),
 };
 vi.mock("../../../lib/electric/collections-context", () => ({
@@ -67,6 +87,24 @@ vi.mock("../../../lib/api/client", async (original) => ({
 }));
 vi.mock("../../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ currentUserId: "alice" }),
+}));
+vi.mock("../../../hooks/useThreadMembership", async (original) => ({
+  ...(await original<typeof import("../../../hooks/useThreadMembership")>()),
+  useThreadMembership: () => ({
+    data: null,
+    pending: false,
+    error: false,
+    change: vi.fn(),
+    retry: fixture.retryMembership,
+  }),
+}));
+vi.mock("../../../lib/e2ee/e2ee-context", async (original) => ({
+  ...(await original<typeof import("../../../lib/e2ee/e2ee-context")>()),
+  useE2ee: () => fixture.e2ee,
+}));
+vi.mock("../../../lib/e2ee/channelSend", async (original) => ({
+  ...(await original<typeof import("../../../lib/e2ee/channelSend")>()),
+  sendEncryptedMessage: (...args: unknown[]) => fixture.sendEncrypted(...args),
 }));
 vi.mock("../../../hooks/useKitchenCatalog", () => ({
   useKitchenCatalog: () => ({ catalog: null }),
@@ -111,8 +149,9 @@ vi.mock("../../../hooks/useTyping", () => ({
 }));
 vi.mock("../../../hooks/useWriteRunner", () => ({
   useWriteRunner: () => ({
-    error: null,
-    setError: () => {},
+    error: fixture.writeError,
+    errorCause: fixture.writeErrorCause,
+    setError: fixture.setWriteError,
     run: async (action: () => unknown) => action(),
     isPending: false,
   }),
@@ -138,20 +177,39 @@ vi.mock("./ThreadPane", () => ({
   ThreadPane: ({
     root,
     replies,
+    targetMessageId,
     readOnly,
     isMember,
     onSendReply,
+    onPickReaction,
+    onRequestDelete,
+    currentUserId,
+    viewerId,
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
+    targetMessageId?: string;
     readOnly?: boolean;
     isMember?: boolean;
     onSendReply: (content: string) => Promise<boolean>;
+    onPickReaction?: (id: string) => void;
+    onRequestDelete?: (id: string) => void;
+    currentUserId: string | null;
+    viewerId?: string | null;
   }) => (
-    <div>
+    <div
+      data-testid="thread-pane-mock"
+      data-target-message-id={targetMessageId ?? ""}
+      data-current-user-id={currentUserId ?? ""}
+      data-viewer-id={viewerId ?? ""}
+    >
       {root.content}
       {replies.map((reply) => (
-        <p key={reply.id}>{reply.content}</p>
+        <p key={reply.id}>
+          {reply.content}
+          <button onClick={() => onPickReaction?.(reply.id)}>React to {reply.id}</button>
+          <button onClick={() => onRequestDelete?.(reply.id)}>Delete {reply.id}</button>
+        </p>
       ))}
       {!readOnly ? (
         <button disabled={!isMember} onClick={() => void onSendReply("Continued reply")}>
@@ -161,7 +219,12 @@ vi.mock("./ThreadPane", () => ({
     </div>
   ),
 }));
-vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
+vi.mock("./ReactionPicker", () => ({
+  ReactionPicker: ({ open, onSelect }: { open: boolean; onSelect: (emoji: string) => void }) => {
+    fixture.pickReaction = open ? onSelect : null;
+    return open ? <div>Reaction picker</div> : null;
+  },
+}));
 
 const pane = (targetMessageId?: string) => (
   <LocaleProvider>
@@ -189,6 +252,16 @@ beforeEach(() => {
   fixture.closeThread.mockClear();
   fixture.openThread.mockClear();
   fixture.loadOlder.mockClear();
+  fixture.writeError = null;
+  fixture.writeErrorCause = null;
+  fixture.setWriteError.mockClear();
+  fixture.retryMembership.mockClear();
+  fixture.e2ee = {};
+  fixture.sendEncrypted.mockReset();
+  fixture.collectionRows = [];
+  fixture.pickReaction = null;
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.info).mockClear();
 });
 
 describe("links and threads whose rows are older than the loaded range", () => {
@@ -225,6 +298,18 @@ describe("links and threads whose rows are older than the loaded range", () => {
       expect(screen.getByText("Reply 10 days ago")).toBeTruthy();
     });
   });
+  it("passes the viewer id to an archived thread while keeping the action id null", async () => {
+    fixture.root.thread_archive_at = new Date().toISOString();
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember />
+      </LocaleProvider>,
+    );
+    const threadPane = await screen.findByTestId("thread-pane-mock");
+    // 編集・削除などは止めたまま、メンバーのダイアログの「あなた」の印には閲覧者の ID を使う。
+    expect(threadPane.dataset.currentUserId).toBe("");
+    expect(threadPane.dataset.viewerId).toBe("alice");
+  });
   it("opens the thread of a linked reply once the reply row is loaded", async () => {
     const reply = { ...fixture.root, id: "old-reply", parent_id: "old-root" };
     const { rerender } = render(pane("old-reply"));
@@ -232,6 +317,37 @@ describe("links and threads whose rows are older than the loaded range", () => {
     fixture.targetRows = [reply];
     rerender(pane("old-reply"));
     await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("old-root"));
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("passes targetMessageId to ThreadPane only for replies in the active thread", async () => {
+    const { rerender } = render(pane("old-root"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("");
+
+    fixture.targetRows = [{ ...fixture.root, id: "unloaded-reply", parent_id: "old-root" }];
+    rerender(pane("unloaded-reply"));
+    await waitFor(() => {
+      expect(screen.getByTestId("thread-pane-mock").getAttribute("data-target-message-id")).toBe(
+        "unloaded-reply",
+      );
+    });
+  });
+
+  it("passes targetMessageId to ThreadPane when opening a surviving reply under a deleted root", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "surviving-reply",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+      deleted_at: null,
+    };
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    render(pane("surviving-reply"));
+    const paneEl = await screen.findByTestId("thread-pane-mock");
+    expect(paneEl.getAttribute("data-target-message-id")).toBe("surviving-reply");
     expect(fixture.closeThread).not.toHaveBeenCalled();
   });
 
@@ -264,6 +380,49 @@ describe("links and threads whose rows are older than the loaded range", () => {
     fixture.root.deleted_at = "2020-01-02 00:00:00.000";
     render(pane());
     await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
+  });
+
+  it("closes the reaction picker of a reply and does not write once its root is deleted", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "reply-1",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+    };
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    fixture.collectionRows = [fixture.root, reply];
+    const { rerender } = render(pane("reply-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "React to reply-1" }));
+    await screen.findByText("Reaction picker");
+    const pick = fixture.pickReaction!;
+    // 選んだ後に親が削除された（スレッドは返信を読むだけで残る）。
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    rerender(pane("reply-1"));
+    await waitFor(() => expect(screen.queryByText("Reaction picker")).toBeNull());
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+    pick("👍");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fixture.insert).not.toHaveBeenCalled();
+  });
+
+  it("closes the delete confirmation of a reply once its root is deleted", async () => {
+    const reply = {
+      ...fixture.root,
+      id: "reply-1",
+      content: "Surviving reply",
+      parent_id: fixture.root.id,
+    };
+    fixture.replies = [reply];
+    fixture.targetRows = [reply];
+    fixture.collectionRows = [fixture.root, reply];
+    const { rerender } = render(pane("reply-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete reply-1" }));
+    await screen.findByRole("alertdialog");
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    rerender(pane("reply-1"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(fixture.closeThread).not.toHaveBeenCalled();
   });
 
   it("loads older pages until a linked top-level message is in the feed", async () => {
@@ -319,4 +478,108 @@ it("shows a retryable pane without closing when its root request fails", async (
   expect(screen.getByRole("button", { name: "再試行" })).toBeTruthy();
   screen.getByRole("button", { name: "スレッドを閉じる" }).click();
   expect(fixture.closeThread).toHaveBeenCalledTimes(1);
+});
+
+it("shows a localized description for an offline write failure", async () => {
+  const previousLocale = localStorage.getItem(LOCALE_STORAGE_KEY);
+  localStorage.setItem(LOCALE_STORAGE_KEY, "ja");
+  try {
+    fixture.writeError = "Failed to fetch";
+    fixture.writeErrorCause = new TypeError("Failed to fetch");
+    render(pane());
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("操作に失敗しました", {
+        description: "サーバーに接続できませんでした。接続を確認してもう一度お試しください。",
+        id: "message-write-error",
+      }),
+    );
+    expect(fixture.setWriteError).toHaveBeenCalledWith(null);
+  } finally {
+    if (previousLocale === null) localStorage.removeItem(LOCALE_STORAGE_KEY);
+    else localStorage.setItem(LOCALE_STORAGE_KEY, previousLocale);
+  }
+});
+
+describe("a reply that the server refuses until the thread is joined", () => {
+  async function failWith(cause: unknown) {
+    fixture.writeError = "Forbidden";
+    fixture.writeErrorCause = cause;
+    render(pane());
+    await waitFor(() => expect(fixture.setWriteError).toHaveBeenCalledWith(null));
+  }
+
+  it.each([
+    ["the code", { error: "any text", code: "THREAD_JOIN_REQUIRED" }],
+    [
+      "the old message, from a server that sends no code",
+      { error: "Join the thread before replying" },
+    ],
+  ])("refreshes the membership and asks for a join (%s)", async (_label, body) => {
+    await failWith(new ApiError(403, "forbidden", body));
+    expect(fixture.retryMembership).toHaveBeenCalled();
+    expect(toast.info).toHaveBeenCalledWith(
+      expect.stringContaining("参加"),
+      expect.objectContaining({ id: "thread-join-required" }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another code", { error: "Join the thread before replying", code: "OTHER" }],
+    [
+      "a posting restriction",
+      { error: "Only channel managers may post here", code: "POSTING_RESTRICTED" },
+    ],
+  ])("keeps the generic error for a 403 that a join does not cure (%s)", async (_label, body) => {
+    await failWith(new ApiError(403, "forbidden", body));
+    expect(fixture.retryMembership).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it("answers the same 403 of an encrypted reply the same way", async () => {
+    fixture.e2ee = {
+      worker: { request: vi.fn().mockResolvedValue(undefined) },
+      deviceId: "device",
+      requestKeyBackup: vi.fn(),
+    };
+    fixture.sendEncrypted.mockRejectedValue(
+      new ApiError(403, "forbidden", { error: "any text", code: "THREAD_JOIN_REQUIRED" }),
+    );
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember encrypted />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Reply to thread" }));
+    await waitFor(() => expect(fixture.retryMembership).toHaveBeenCalled());
+    expect(toast.info).toHaveBeenCalledWith(
+      expect.stringContaining("参加"),
+      expect.objectContaining({ id: "thread-join-required" }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the generic error for an encrypted reply refused for another reason", async () => {
+    fixture.e2ee = {
+      worker: { request: vi.fn().mockResolvedValue(undefined) },
+      deviceId: "device",
+      requestKeyBackup: vi.fn(),
+    };
+    fixture.sendEncrypted.mockRejectedValue(
+      new ApiError(403, "forbidden", {
+        error: "Only channel managers may post here",
+        code: "POSTING_RESTRICTED",
+      }),
+    );
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember encrypted />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Reply to thread" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(fixture.retryMembership).not.toHaveBeenCalled();
+    expect(toast.info).not.toHaveBeenCalled();
+  });
 });

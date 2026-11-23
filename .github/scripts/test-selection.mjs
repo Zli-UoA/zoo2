@@ -83,14 +83,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } catch {
     console.log('Test Selection: diff unavailable; running all suites');
   }
-  let selection = { ...selectSuites(process.env.GITHUB_EVENT_NAME, changes), ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, changes, { base }) };
+  let selection = { ...selectSuites(process.env.GITHUB_EVENT_NAME, changes), ...selectOtherJobs(process.env.GITHUB_EVENT_NAME, changes) };
   if (base && changes) {
     const workflow = process.env.TEST_WORKFLOW;
     const jobs = workflowJobs(workflow, changes, { base });
     if (jobs) console.log(`Changed workflow job closure (${workflow}): ${[...jobs].join(', ') || 'no application jobs'}`);
     selection = restrictWorkflow(selection, workflow, jobs);
   }
-  selection.desktopTauri ??= { check: true, macos: true };
+  selection.desktopTauri ??= { check: true, macos: true, windows: true };
   selection.backend.check ??= true;
   selection.backend.deploy ??= selection.backend.full;
   console.log(JSON.stringify(selection, null, 2));

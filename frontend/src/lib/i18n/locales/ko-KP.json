@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "본문으로 건너뛰기"
+  },
+  "aboutZoo": {
+    "title": "Zoo 정보",
+    "version": "판본: {{version}}",
+    "versionUnknown": "알 수 없음"
+  },
+  "notFoundPage": {
+    "title": "페이지를 찾을 수 없습니다",
+    "description": "요청하신 페이지가 옮겨졌거나 더 이상 존재하지 않을수 있습니다."
+  },
   "nav": {
     "main": "주요 탐색"
   },
@@ -10,6 +22,10 @@
     "unread": "읽지 않은 통보문이 있습니다",
     "editTitle": "통로 편집",
     "editHelp": "통로 이름은 조선글 등의 글자와 수자, 반각 하이픈(-), 밑줄(_)로 80자 이내여야 합니다. 공백, 그림글자, 그 밖의 기호와 예약어는 쓸수 없습니다.",
+    "nameRequired": "통로 이름을 입력하십시오.",
+    "nameTooLong": "통로 이름은 {{max}}자 이내여야 합니다 (현재 {{length}}자).",
+    "nameReserved": "'{{name}}'은 예약어라 쓸수 없습니다.",
+    "invalidName": "통로 이름에는 글자, 수자, 반각 하이픈(-), 밑줄(_)만 쓸수 있습니다.",
     "saveName": "저장",
     "savingName": "저장하는 중…",
     "title": "통로",
@@ -44,6 +60,7 @@
     "notFound": "통로를 찾을수 없습니다.",
     "duplicateName": "같은 이름의 통로가 이미 있습니다.",
     "privateMessages": "이 통로는 비공개입니다. 초대를 받으면 통보문을 볼수 있습니다.",
+    "postingManagersOnly": "이 통로에는 관리자만 통보문을 올릴수 있습니다.",
     "back": "통로 목록으로 돌아가기",
     "noDescription": "설명이 아직 없습니다",
     "visibilityHelp": "공개 통로에는 누구나 참가할수 있습니다. 비공개 통로에는 만든 사람이 초대한 사람만 참가할수 있습니다.",
@@ -122,8 +139,7 @@
     "candidates": "성원 후보",
     "usersLoading": "사용자를 불러오는 중…",
     "usersError": "사용자를 얻지 못했습니다.",
-    "usersEmpty": "해당하는 사용자가 없습니다.",
-    "back": "통로로 돌아가기"
+    "usersEmpty": "해당하는 사용자가 없습니다."
   },
   "moderation": {
     "archived": "보관됨",
@@ -159,6 +175,11 @@
     "invalidState": "이 조작은 현재 상태에서는 실행할수 없습니다."
   },
   "settings": {
+    "appearance": "겉모양",
+    "interaction": "조작",
+    "swipeReply": "밀어서 답변",
+    "operationHaptics": "촉각 되알림",
+    "navTitle": "설정",
     "admin": "관리자",
     "member": "성원",
     "makeAdmin": "관리자로 지정",
@@ -198,6 +219,7 @@
     "description": "왼쪽 목록에서 통로를 선택하면 통보문 교환내용이 표시됩니다."
   },
   "messages": {
+    "loadingOlder": "이전 통보문을 불러오는 중…",
     "typing": "{{names}}이(가) 입력하는 중…",
     "typingSeparator": ", ",
     "compose": "통보문 보내기",
@@ -205,6 +227,7 @@
     "edit": "편집",
     "delete": "삭제",
     "more": "다른 조작",
+    "actions": "메시지 조작",
     "editLabel": "통보문 편집",
     "loadError": "통보문을 얻지 못했습니다",
     "retryHelp": "접속상태를 확인하고 다시 시도하십시오.",
@@ -227,6 +250,10 @@
     "edited": "편집됨"
   },
   "attachments": {
+    "recentPhotos": "최근 사진",
+    "systemPhotos": "사진 선택기 열기",
+    "allowRecentPhotos": "사진 접근 허용",
+    "noRecentPhotos": "표시할 사진이 없습니다",
     "play": "재생",
     "pause": "일시 정지",
     "add": "화일 첨부",
@@ -257,6 +284,8 @@
     "containedFiles": "포함된 파일",
     "previousPage": "이전 페지",
     "nextPage": "다음 페지",
+    "pageNumber": "페지 번호",
+    "pdfPages": "PDF 페지 목록",
     "pdfPage": "PDF {{page}}페지",
     "mail": {
       "subject": "제목",
@@ -293,8 +322,18 @@
     "join": "스레드 참가",
     "leave": "스레드 나가기",
     "reopen": "다시 열기",
-    "reopenOnSend": "답장을 보내면 스레드를 다시 열고 참가합니다.",
-    "membershipError": "스레드 참가 상태를 변경하지 못했습니다."
+    "reopenOnSend": "답장을 보내면 스레드를 다시 엽니다.",
+    "membershipError": "스레드 참가 상태를 변경하지 못했습니다.",
+    "participants_one": "참가자 {{count}}명",
+    "participants_other": "참가자 {{count}}명",
+    "participantsMore": "그밖에 {{count}}명",
+    "participantsEmpty": "참가자가 없습니다",
+    "threadStarter": "스레드 만든 사람",
+    "participantsSearch": "이름으로 검색",
+    "participantsFilterPartial": "불러온 처음 {{loaded}}명 가운데서만 검색합니다(그밖에 {{count}}명은 검색할수 없습니다).",
+    "participantsDescription": "이 스레드에 참가중인 사람입니다.",
+    "joinToReply": "스레드에 참가하면 답글을 보낼 수 있습니다.",
+    "reopenAndJoin": "다시 열고 참가하기"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
@@ -328,7 +367,6 @@
     "noSearchResults": "일치하는 그림글자가 없습니다",
     "tabEmoji": "그림글자",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "모든 그림글자에서 선택할수 있습니다.",
     "emojiLoading": "그림글자를 불러오는 중…",
     "recent": "최근에 쓴 그림글자",
     "skinTone": "피부색"
@@ -366,6 +404,8 @@
     "channels": "통로 후보"
   },
   "notifications": {
+    "filterAll": "전체",
+    "filterMentions": "언급",
     "label": "알림",
     "close": "알림 닫기",
     "title": "알림",
@@ -563,6 +603,7 @@
     "micNotFound": "마이크를 찾을수 없었습니다."
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "입력하는 글자가 그대로 실시간으로 표시되는 방입니다",
     "emptyTitle": "현재 입력하고 있는 사용자가 없습니다",
@@ -776,6 +817,7 @@
     "showLess": "접기"
   },
   "home": {
+    "navTitle": "홈",
     "back": "뒤로",
     "deleted": "게시물을 삭제했습니다",
     "newPosts": "새 게시물 보기 ({{count}}개)",
@@ -791,6 +833,7 @@
     "post": "올리기",
     "sending": "올리는 중…",
     "sendError": "올리지 못했습니다. 초안은 남아있습니다. 다시 시도하십시오.",
+    "postForbidden": "이 통로에는 올릴수 없습니다.",
     "loadError": "시간선을 얻지 못했습니다.",
     "loading": "불러오는 중…",
     "empty": "아직 올린 글이 없습니다",
@@ -1691,6 +1734,9 @@
     "empty": "사용할 수 있는 공개 통로가 없습니다.",
     "saved": "보관했습니다."
   },
+  "androidUpdate": {
+    "title": "앱 갱신"
+  },
   "androidNotifications": {
     "enable": "알림 사용",
     "scope": "로그인한 세션이 동기화되는 동안 새 알림을 받습니다.",
@@ -1799,11 +1845,81 @@
   "androidPhone": {
     "description": "개인 또는 공유 SIP 회선과 DM 음성 통화를 기기의 통화 기능과 함께 사용합니다.",
     "nativeCalls": "기기 통화 기능 연동",
-    "nativeHelp": "수신을 켜면 지속 알림과 함께 연결을 유지합니다. 기기의 통화 제어로 응답, 종료 및 음성 출력을 조작할 수 있습니다. 마이크 권한이 필요합니다.",
+    "nativeHelp": "전화가 오면 통화 알림이 표시됩니다. 알림을 허용하면 지원되는 기기에서 배경에서도 DM 전화를 받을 수 있습니다. SIP 전화를 기다리거나 FCM을 사용할 수 없는 기기에서 DM 전화를 기다릴 때는 Zoo를 화면에 열어 두세요. 기기의 통화 제어로 응답, 종료 및 음성 출력을 조작할 수 있으며 마이크 권한이 필요합니다.",
+    "minimizeCall": "최소화",
+    "expandCall": "통화 열기",
+    "floatCall": "작은 창으로 보기",
+    "pipUnavailable": "안드로이드 설정에서 화면 속 화면을 확인하세요.",
+    "incomingScreenSettings": "전체 화면 수신 설정",
     "receiveDm": "DM 전화 받기",
     "callError": "통화 준비 또는 조작에 실패했습니다. 마이크 권한, 기기의 통화 지원, 네트워크와 회선 설정을 확인하세요.",
     "speaker": "스피커",
     "waiting": "전화 수신 대기 중",
     "dmCall": "통화"
+  },
+  "globalSearch": {
+    "title": "검색",
+    "placeholder": "통보문과 화일 검색",
+    "kinds": {
+      "all": "전체",
+      "messages": "통보문",
+      "files": "화일"
+    },
+    "prompt": "검색할 단어를 입력하십시오. 공백으로 구분하면 모든 단어를 포함한 결과를 찾습니다.",
+    "empty": "결과가 없습니다.",
+    "emptyOlder": "{{month}}까지 결과가 없습니다. 더 이전 기간을 검색할수 있습니다.",
+    "searchedUntil": "{{month}}까지 검색하였습니다",
+    "searchOlder": "이전 결과 더 검색",
+    "loading": "검색중…",
+    "loadError": "검색하지 못하였습니다.",
+    "retry": "다시 시도",
+    "tooManyTerms": "검색어는 최대 {{max}}개까지 입력할수 있습니다. 단어를 줄여주십시오.",
+    "termTooLong": "한 단어는 최대 {{max}}자까지 입력할수 있습니다. 단어를 짧게 줄여주십시오.",
+    "encryptedNote": "암호화된 통로는 검색대상에서 제외됩니다.",
+    "openNav": "검색",
+    "inThread": "타래 답글",
+    "filters": {
+      "label": "거르기",
+      "from": "보낸 사람",
+      "anyone": "모든 사람",
+      "in": "통로",
+      "anywhere": "모든 통로",
+      "period": "기간",
+      "anytime": "지정하지 않음",
+      "last7": "지난 7일",
+      "last30": "지난 30일",
+      "last365": "지난 1년",
+      "custom": "날자 지정",
+      "after": "시작날자",
+      "before": "마감날자",
+      "reversed": "시작일은 종료일과 같거나 그 이전이여야 합니다.",
+      "reset": "조건 초기화"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "안 읽은 대화 {{count}}개",
+    "navUnread_other": "안 읽은 대화 {{count}}개",
+    "title": "안 읽은 메시지 확인",
+    "close": "닫기",
+    "count_one": "읽지 않은 메시지 {{count}}개",
+    "count_other": "읽지 않은 메시지 {{count}}개",
+    "overCount_one": "읽지 않은 메시지 {{count}}개 이상",
+    "overCount_other": "읽지 않은 메시지 {{count}}개 이상",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "읽음으로 표시",
+    "keepUnread": "읽지 않고 다음으로",
+    "readError": "읽음으로 표시할 수 없습니다. 다시 시도해 주세요.",
+    "loadError": "안 읽은 대화를 불러올 수 없습니다",
+    "retry": "다시 시도",
+    "loading": "안 읽은 대화를 불러오는 중",
+    "empty": "안 읽은 대화가 없습니다",
+    "emptyDescription": "새 메시지가 오면 다시 확인해 주세요",
+    "complete": "모두 확인했습니다",
+    "summary": "읽음 {{read}}개 · 읽지 않음 {{skipped}}개",
+    "refresh": "새로 고침",
+    "conversation": "대화",
+    "unreadTooOld": "이전 안 읽은 메시지가 아직 범위 밖에 있습니다. 더 불러온 뒤 읽음으로 표시하세요.",
+    "loadMore": "더 불러오기",
+    "unreadChanged": "읽는 동안 새로운 안 읽은 메시지가 도착했습니다. 이 대화는 읽지 않은 상태로 다음으로 넘어가세요."
   }
 }

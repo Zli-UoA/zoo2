@@ -57,9 +57,9 @@
 ## クライアントごとの範囲
 
 - Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン（下の「Web の動き」）。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
-- デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き（下の「デスクトップ版の動き」）。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
+- デスクトップ版（Tauri）: トースト。Linux と Windows は応答/拒否のボタン付き（下の「デスクトップ版の動き」）。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
-- Compose（Android）: DMヘッダーから音声通話を開始する。「設定 → 電話（SIP）」でDM着信を有効にすると、セッション全体で招待Shapeを1本購読し、Android Telecomに着信を通知する。応答後に既存のaccept APIと通話SSEへ参加する。音声はWebRTC。SIP通話との同時通話は受け付けない。バックグラウンド待ち受けの条件は [Android版](android.md#sipdm通話とandroid-telecom) を参照。不在着信は従来どおりAndroidの通知一覧・未読数から除く。
+- Compose（Android）: DMヘッダーから音声通話を開始する。「設定 → 電話（SIP）」でDM着信を有効にすると、セッション全体で招待Shapeを1本購読し、Android Telecomに着信を通知する。応答後に既存のaccept APIと通話SSEへ参加する。DM発信中の呼び出し音はZooが再生し、招待の終了または接続・切断で停止する。再生は最長30秒。音声はWebRTC。SIP通話との同時通話は受け付けない。バックグラウンド待ち受けの条件は [Android版](android.md#sipdm通話とandroid-telecom) を参照。不在着信は従来どおりAndroidの通知一覧・未読数から除く。
 
 ## Web の動き
 
@@ -91,6 +91,7 @@ Tauri 版（`desktop-tauri/`）は、ウィンドウが前面にないときだ�
   - 「拒否」: Rust 側の API クライアントで `POST /api/call-invites/{id}/decline`。
   - 「応答」: Rust 側が「応答の印」（招待の ID と時刻。60 秒で無効。ログイン中の同じセッションで、自分あての呼び出し中の招待だけ。ウィンドウの前面化でトーストが先に閉じられていても残す）を残し、、ウィンドウを前に出して、`zoo://call-accept` を送る。このイベントは「印を取りに来て」の合図にすぎない。React（`DesktopBridge`）は、`zoo_take_call_accept` で印を一度だけ取れたときだけ、`IncomingCallDialog` に応答を頼む（API の accept と `joinCall`）。イベントの購読が有効になってから、残った印を取る（先に取ると、購読が有効になるまでの間に押された「応答」を取りこぼす）。Web Push の「応答」の印（Cache）と同じ考え方で、イベントや URL だけでは応答しない。`zoo://open` は招待を扱わない。
   - Leptos の画面には通話の UI がなく、マイクの許可もないので、「応答」のボタンは出さず、「拒否」だけにする。
+- **Windows**: WinRT トースト（`ToastNotificationManager`、`scenario="reminder"`）で着信トーストを出し、招待が終わるかウィンドウが前面に来たら通知履歴から閉じる。`remote` では「応答」「拒否」のボタンを出し、`leptos` では「拒否」だけを出す（ウィンドウが前面にあっても閉じない）。「応答」「拒否」と本文クリックの動作は Linux と同じ。
 - **mac**: トーストを出し、招待が終わったら閉じる。クリックは受け取れない（他の通知と同じ）ので、ボタンはなく、応答は画面（ダイアログ）で行う。
 - **古い版との組み合わせ**: 古い Web と新しいアプリ: 合図は無視されるが、ウィンドウが前に出て、ダイアログで応答できる。新しい Web と古いアプリ: `zoo_take_call_accept` がなく、何もしない。`PROTOCOL_VERSION` は上げない。
 

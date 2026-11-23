@@ -44,6 +44,8 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 
 frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。Storybookを含む `browser-test` も、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。どちらもDockerは不要ですが、必要なメモリを持つHosted、またはARC（Runner limit 6GiB）を選びます。テスト内容や失敗条件は維持します。
 
+なお、`frontend/vite.config.ts` の `browser` プロジェクトは Linux の `chromium-headless-shell` でアニメーション停止時に `requestAnimationFrame` が停滞する問題を避けるため、`CHROME_BIN` 未指定時（CI 等）はフル Chromium（`channel: "chromium"`）を使います（Linux の `nix develop` では、`browser` と `storybook` が `CHROME_BIN` の Nix 版 Chromium を使います。`vrt` は常に、`storybook` は `CHROME_BIN` 未指定時に、既存の基準画像・設定に合わせて既定の `chromium-headless-shell` を使います）。
+
 ## kubecamp固定と自動選択
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
@@ -84,7 +86,7 @@ Vitestのbrowser・VRTは、ファイル単位の`related`に加え、ケース�
 
 GitHub BotとSDKのNodeテストは、import・再export・静的なdynamic import・`new URL(..., import.meta.url)`の資源を解析し、変更ファイルへ依存するテストファイルを実行します。computed importや未解決の依存を持つテストは必ず含め、設定・データ資源・削除では全件へ戻します。PWAとavatar-cacheのスクリプトも、この依存解析で変更に無関係なら実行しません。Botのテストだけの変更ではイメージ生成とコンテナsmokeも省きます。Botだけの変更でSDK暗号テストは起動せず、SDK暗号部分だけの変更でBotのイメージ検証を起動しません。
 
-バックエンドの共有テストfixtureだけの変更はバックエンドを全件検証し、アプリ本体が変わらないフロントE2Eは省きます。proxyの検証はNodeのモックサーバーを使うため、proxyだけの変更ではWasm・フロントの型検査／ビルド・アプリのテストを省きます。nginx／entrypointだけの変更はコンテナ検証を選びます。独立したテストの変更ではアプリ本体のビルドも省きます。RustクライアントはCargoのpath依存で区分し、Reactだけの変更でTUI本体を検証しません。desktopは実際にincludeするCSS・翻訳と、既存スキャナーで抽出したlucide importの変化で選びます。バックエンドだけの変更ではStorybookプレビューを生成しません。
+バックエンドの共有テストfixtureだけの変更はバックエンドを全件検証し、アプリ本体が変わらないフロントE2Eは省きます。proxyの検証はNodeのモックサーバーを使うため、proxyだけの変更ではWasm・フロントの型検査／ビルド・アプリのテストを省きます。nginx／entrypointだけの変更はコンテナ検証を選びます。独立したテストの変更ではアプリ本体のビルドも省きます。RustクライアントはCargoのpath依存で区分し、Reactだけの変更でTUI本体を検証しません。バックエンドだけの変更ではStorybookプレビューを生成しません。
 
 ## 待機しないマージゲート
 

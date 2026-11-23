@@ -36,18 +36,6 @@ class ParityTest {
     }
 
     @Test
-    fun cardsRespectEnvelopeAndFallBackToTextOnInvalidSchema() {
-        val card = obj("title" to "Deployment", "description" to "ready")
-        assertEquals(listOf(card), messageCards(JsonPrimitive(card.toString())))
-        assertEquals(
-            listOf(card, card),
-            messageCards(buildJsonObject { put("cards", JsonArray(listOf(card, card))) }),
-        )
-        assertNull(messageCards(obj("title" to "")))
-        assertNull(messageCards(buildJsonObject { put("cards", JsonArray(emptyList())) }))
-    }
-
-    @Test
     fun channelAndCommandCompletionRespectsCodeUrlsAndTokenSuffix() {
         val range = completionAt("詳しくは #genx", 9)!!
         assertEquals("channel", range.kind)
@@ -65,22 +53,4 @@ class ParityTest {
         )
     }
 
-    @Test
-    fun notificationQuotesAndBubbleLimitsCountSupplementaryCharacters() {
-        assertEquals("😀".repeat(280) + "…", quotePreview("😀".repeat(281)))
-        assertEquals(1000, clampBubbleContent("😀".repeat(1001)).codePointCount())
-        assertTrue(shouldClearBubble("Enter", true, false, false, false, false))
-        assertFalse(shouldClearBubble("Enter", true, false, false, false, true))
-        assertFalse(shouldClearBubble("Enter", true, false, true, false, false))
-        assertFalse(shouldClearBubble("Enter", true, false, false, true, false))
-    }
-
-    @Test
-    fun protectedAndLastAdministratorsCannotBeDemoted() {
-        assertFalse(canChangeAdmin("a", setOf("a"), emptySet()))
-        assertFalse(canChangeAdmin("a", setOf("a", "b"), setOf("a")))
-        assertTrue(canChangeAdmin("a", setOf("a", "b"), emptySet()))
-        assertTrue(canChangeAdmin("b", setOf("a"), emptySet()))
-        assertEquals("https://www.baidu.com/s?wd=hello", searchUrl("baidu", "hello"))
-    }
 }

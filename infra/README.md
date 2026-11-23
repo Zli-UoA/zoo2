@@ -185,9 +185,9 @@ POSTGRES_PASSWORD=staging-test-password \
     logs --no-color migrate
   ```
 
-  `20261129020002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、対象インデックスだけを削除してください。
+  `20261130030002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、対象インデックスだけを削除してください。
 
-  1. `migrate status` とログで停止箇所が `20261129020002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
+  1. `migrate status` とログで停止箇所が `20261130030002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
   2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`table_name` が `channel_notes` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。別スキーマ、別名、別テーブル、または対象 migration 以外の失敗なら削除しない。`indisvalid` は真偽どちらもあり得る (下記 3 を参照)。
 
      ```bash
@@ -206,9 +206,9 @@ POSTGRES_PASSWORD=staging-test-password \
        AND idx.relname = 'idx_channel_notes_expired';
      ```
 
-  3. 行の `indisvalid` で分岐する。いずれの場合も、`migrate status` で `20261129020002` が未記録 (pending) であることと、他の apply が動いていないことを先に確認する。
+  3. 行の `indisvalid` で分岐する。いずれの場合も、`migrate status` で `20261130030002` が未記録 (pending) であることと、他の apply が動いていないことを先に確認する。
      - `indisvalid = false` (INVALID): `CREATE INDEX CONCURRENTLY` が中断・キャンセルされた場合。無効なインデックスは再実行の妨げになるため削除する。
-     - `indisvalid = true` (有効): `CREATE INDEX` 自体は完了したが、文ごとに進むこの migration で Atlas が記録の前に停止した場合 (コンテナの強制終了など)。この場合、再実行は同名インデックスの作成で失敗するため、有効でも同じく削除する。`migrate status` が `20261129020002` を適用済みと報告するなら、そのインデックスは完了した migration の成果物なので削除しない。
+     - `indisvalid = true` (有効): `CREATE INDEX` 自体は完了したが、文ごとに進むこの migration で Atlas が記録の前に停止した場合 (コンテナの強制終了など)。この場合、再実行は同名インデックスの作成で失敗するため、有効でも同じく削除する。`migrate status` が `20261130030002` を適用済みと報告するなら、そのインデックスは完了した migration の成果物なので削除しない。
 
      `CONCURRENTLY` はトランザクション外で実行する必要があるため、削除も `DROP INDEX CONCURRENTLY` を使う。
 
@@ -224,7 +224,7 @@ POSTGRES_PASSWORD=staging-test-password \
      docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
      ```
 
-  `20261129020008_slack_sync_claim_team_index.sql` の
+  `20261130030008_slack_sync_claim_team_index.sql` の
   `CREATE INDEX CONCURRENTLY slack_channel_syncs_team_due_order` が失敗した場合も同じ流れで
   復旧します。この migration は `-- atlas:txmode none` のため、`CREATE` の完了後に Atlas が
   停止したときは有効 (`indisvalid = true`) なインデックスが残り、再実行は同名エラーで失敗します。
@@ -244,7 +244,7 @@ POSTGRES_PASSWORD=staging-test-password \
   ```
 
   `table_name = 'slack_channel_syncs'` の行があり、この migration の記録がまだ無い
-  （`migrate status` で `20261129020008` が pending）場合、`indisvalid` の真偽にかかわらず、
+  （`migrate status` で `20261130030008` が pending）場合、`indisvalid` の真偽にかかわらず、
   他の apply が動いていない状態で次を実行してから Atlas を再実行します。
   `DROP INDEX CONCURRENTLY` は名前で削除するため、有効なインデックスにも同じ手順が使えます。
   `IF NOT EXISTS` で再試行すると INVALID インデックスが残ったまま成功するため、使わないでください。
@@ -253,15 +253,15 @@ POSTGRES_PASSWORD=staging-test-password \
   DROP INDEX CONCURRENTLY public.slack_channel_syncs_team_due_order;
   ```
 
-  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261129020003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
+  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261130030003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
 
 ### Slack ゲスト所属トリガーの適用順序
 
-`20261129020001_guest_membership_no_key_update.sql` は、条件付き single ゲスト検査の
+`20261130030001_guest_membership_no_key_update.sql` は、条件付き single ゲスト検査の
 `users` ロックを `FOR NO KEY UPDATE` に弱めた `app_guest_membership_rules()` を適用します。
 `FOR UPDATE` は `channel_user` 挿入が外部キー検証で取る `users` 行の KEY SHARE とも競合するため、
 協調書き込み経路による同じユーザーへの所属挿入まで止め得ました。常時 `users` をロックする版は
-`infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql`
+`infra/db/deferred-migrations/20261130030009_guest_membership_lock_order.sql`
 に置いています。旧バックエンドの `lock_members` は、single 以外のゲストでは `users` を先にロックせず
 advisory lock を取る経路があるため、旧インスタンスが動いている間にこの関数を適用すると
 「暗号化チャンネルへの所属追加」と「ユーザー無効化」が並行して PostgreSQL のデッドロック
@@ -274,7 +274,7 @@ advisory lock を取る経路があるため、旧インスタンスが動いて
 切り替え、旧インスタンスの終了を確認してから、deferred migration を適用してください。
 
 適用には、canonical と共通の `atlas_schema_revisions` を使わず、deferred 専用の
-リビジョン表に記録します。共有表に `20261129020009` が記録されると、将来の canonical
+リビジョン表に記録します。共有表に `20261130030009` が記録されると、将来の canonical
 migration が同じ版番号を使ったときに適用済みと判定されたり checksum 不一致で止まったりする
 ためです。
 
@@ -312,7 +312,7 @@ follow-up ファイルは、適用済み DB の履歴を壊さないために次
    上書きするため、deferred migration を適用済みの DB では実質的な変更なしに
    canonical 側の適用記録だけが追加され、未適用の DB では関数が 1 回適用される。
    適用記録を進めるために Atlas は 1 文でも実行する必要があるため、コメントだけの空ファイルにはしない。
-2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261129020009` 記録を
+2. **適用済み DB の `atlas_schema_revisions_deferred` の `20261130030009` 記録を
    削除・無効化しないこと。** follow-up の移動や再ハッシュでこのリビジョン表を触らない。
    全環境で canonical 版の適用が記録されるまで `atlas_schema_revisions_deferred` はそのまま残し、
    収束を確認してからスキーマごと削除する (その時点で再適用の痕跡としては不要になる)。
@@ -323,7 +323,7 @@ follow-up ファイルは、適用済み DB の履歴を壊さないために次
    それぞれで `atlas migrate apply` が成功すること、`pg_get_functiondef` の結果が
    `infra/db/schema.sql` と一致すること、`migrate status` が follow-up を適用済みとして
    報告すること、(a) では `atlas_schema_revisions_deferred.atlas_schema_revisions` に
-   `20261129020009` が記録されたまま残ることを確認する。
+   `20261130030009` が記録されたまま残ることを確認する。
 
   `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 

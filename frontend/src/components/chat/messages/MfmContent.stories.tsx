@@ -77,6 +77,22 @@ export const CodeAndMath: Story = {
       "`const zoo = true`\n```ts\nconst channel = { name: 'general' };\n```\n数式: \\(x^2 + y^2\\)",
   },
 };
+/** 検索結果の強調。文字・太字・リンク・<plain> の中は強調し、コードの中は強調しない。 */
+export const SearchHighlight: Story = {
+  args: {
+    content: "会議 **会議** [会議の資料](https://example.com) <plain>**会議**</plain> `会議`",
+    highlight: ["会議"],
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const marks = [...canvasElement.querySelectorAll("mark[data-search-highlight]")];
+    await expect(marks.map((mark) => mark.textContent)).toEqual(["会議", "会議", "会議", "会議"]);
+    await expect(marks[1]!.closest("strong")).not.toBeNull();
+    await expect(marks[2]!.closest("a")).not.toBeNull();
+    // <plain> は記法を文字のまま出し、強調だけ付ける。
+    await expect(within(canvasElement).getByText(/\*\*/).querySelector("mark")).not.toBeNull();
+    await expect(canvasElement.querySelector("code mark")).toBeNull();
+  }),
+};
 export const EmojiAndFallback: Story = {
   args: { content: "😀 🎉 :smile: :unregistered_zoo_emoji:" },
 };
@@ -138,4 +154,25 @@ export const SharedShortcodes: Story = {
     await expect(canvasElement.querySelector("code")).toHaveTextContent(":service_gemoji:");
     await expect(canvasElement).toHaveTextContent(":unknown_service_emoji:");
   }),
+};
+
+export const KitchenBody: Story = {
+  args: { content: "本文 **:kitchen_1f431_1f600:** と `:kitchen_1f431_1f600:`" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("img", { name: "🐱 + 😀" })).toBeVisible();
+    await expect(canvasElement.querySelector("code")).toHaveTextContent(":kitchen_1f431_1f600:");
+  },
+};
+
+export const KitchenTaggedEmoji: Story = {
+  args: {
+    content: "投稿のタグを優先 :kitchen_1f431_1f600:",
+    emojis: { kitchen_1f431_1f600: customEmojiFixture },
+  },
+  play: async ({ canvasElement }) => {
+    const image = await within(canvasElement).findByRole("img", { name: ":kitchen_1f431_1f600:" });
+    const box = image.getBoundingClientRect();
+    await expect(box.width / box.height).toBeCloseTo(3);
+  },
 };

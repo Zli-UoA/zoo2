@@ -1,7 +1,11 @@
+import { ComposerEmojiButton } from "./ComposerEmojiButton";
 import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
-import { ComposerField, composerTextareaClassName } from "./ComposerField";
-import { useAutosizeTextarea } from "../../../hooks/useAutosizeTextarea";
+import {
+  ComposerField,
+  composerTextareaClassName,
+  composerTextareaFitClass,
+} from "./ComposerField";
 import { useTranslation } from "react-i18next";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
 import { PaperclipIcon, SendIcon, XIcon } from "lucide-react";
@@ -30,8 +34,6 @@ import type { UserRow } from "../../../lib/electric/types";
 
 import { useMfmChannels } from "./MfmChannels";
 import { composerQuery, insertSuggestion, type CommandSuggestion } from "./composerSuggestions";
-
-const MAX_COMPOSER_HEIGHT = 200;
 
 export type ComposerPlatform = "mac" | "windows" | "linux" | "unknown";
 
@@ -253,8 +255,6 @@ export function Composer({
   useLayoutEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selectedOption, options.length]);
-
-  useAutosizeTextarea(textareaRef, value, MAX_COMPOSER_HEIGHT);
 
   function updateDraft(element: HTMLTextAreaElement, isComposing = composingRef.current) {
     setCaret(isComposing ? element.selectionEnd : element.selectionStart);
@@ -586,6 +586,19 @@ export function Composer({
         </ul>
       ) : null}
       <ComposerField>
+        <ComposerEmojiButton
+          className="md:mt-1"
+          textareaRef={textareaRef}
+          value={value}
+          disabled={disabled}
+          isComposing={() => composingRef.current}
+          onChange={(next) => {
+            draftVersion.current++;
+            setValue(next);
+            setDismissed(true);
+            onTyping?.(true);
+          }}
+        />
         {onUploadAttachment ? (
           <>
             <input
@@ -603,7 +616,7 @@ export function Composer({
               type="button"
               variant="ghost"
               size="icon-lg"
-              className="mb-1 size-11! shrink-0 md:size-9!"
+              className="size-11! shrink-0 md:mt-1 md:size-9!"
               aria-label={t("attachments.add")}
               title={t("attachments.add")}
               disabled={disabled || drafts.length >= MAX_ATTACHMENTS_PER_MESSAGE}
@@ -620,7 +633,7 @@ export function Composer({
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className={`${composerTextareaClassName} min-h-11 px-2 py-2.5`}
+          className={`${composerTextareaClassName} ${composerTextareaFitClass(value)} max-h-[200px] min-h-11 px-2 py-2.5`}
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
@@ -698,7 +711,7 @@ export function Composer({
         <Button
           type="submit"
           size="icon-lg"
-          className="mb-1 size-11! md:size-9!"
+          className="size-11! md:mt-1 md:size-9!"
           disabled={!canSubmitComposer(value, disabled, readyAttachmentCount, isUploading)}
           aria-label={t("messages.send")}
           title={t("messages.send")}

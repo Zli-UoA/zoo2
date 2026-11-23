@@ -155,6 +155,16 @@ pub struct NotificationPayload {
     /// 通話の招待 (`call_invite` / `call_invite_end`) だけに付ける、招待の id。
     #[serde(rename = "inviteId", skip_serializing_if = "Option::is_none")]
     invite_id: Option<String>,
+    #[serde(skip)]
+    android_preview: Option<AndroidPreview>,
+}
+
+#[derive(Clone)]
+struct AndroidPreview {
+    actor: String,
+    channel: String,
+    avatar_url: Option<String>,
+    image_id: Option<String>,
 }
 
 /// 暗号化チャンネルの通知に付ける、受信端末が復号に使う値。どれもサーバーが元から持つ値で、
@@ -191,40 +201,72 @@ impl NotificationPayload {
 /// 暗号化チャンネルの Web Push の本文。
 pub const ENCRYPTED_MESSAGE_BODY: &str = "新しいメッセージ";
 
+#[derive(Serialize)]
+pub(crate) struct NotificationPreview {
+    pub title: String,
+    pub body: String,
+    #[serde(rename = "notificationType")]
+    pub notification_type: String,
+}
+
+impl NotificationPreview {
+    pub(crate) fn new(
+        notification: &Notification,
+        name: &str,
+        channel_name: &str,
+        is_dm: bool,
+        visible_content: Option<&str>,
+    ) -> Self {
+        let name: String = name.chars().take(60).collect();
+        let title = if is_dm {
+            name
+        } else {
+            format!(
+                "{name} · #{}",
+                channel_name.chars().take(60).collect::<String>()
+            )
+        };
+        let body = if notification.message_id.is_none() {
+            "不在着信"
+        } else {
+            visible_content.unwrap_or(ENCRYPTED_MESSAGE_BODY)
+        };
+        Self {
+            title,
+            body: body.chars().take(240).collect(),
+            notification_type: notification.notification_type.clone(),
+        }
+    }
+}
+
 fn notification_payload(
     notification: &Notification,
     actor: &User,
     channel: &Channel,
-    message: &Message,
+    message: Option<&Message>,
 ) -> NotificationPayload {
-    let name = if actor.display_name.is_empty() {
-        &actor.user_name
-    } else {
-        &actor.display_name
+    let preview = NotificationPreview::new(
+        notification,
+        display_name(actor),
+        &channel.channel_name,
+        channel.is_dm,
+        message
+            .filter(|_| !channel.encrypted)
+            .map(|message| message.content.as_str()),
+    );
+    let url = match message {
+        Some(message) => format!("/channels/{}?message={}", channel.id, message.id),
+        None => format!("/channels/{}", channel.id),
     };
-    let channel_name: String = channel.channel_name.chars().take(60).collect();
     NotificationPayload {
-        title: if channel.is_dm {
-            name.chars().take(60).collect()
-        } else {
-            format!(
-                "{} · #{}",
-                name.chars().take(60).collect::<String>(),
-                channel_name
-            )
-        },
-        // 暗号化チャンネルの本文はサーバーで読めないので、「新しいメッセージ」を送り、暗号文を
-        // `e2ee` に付ける (#358、#365)。Service Worker が復号できたら本文に置き換える。
-        body: if channel.encrypted {
-            ENCRYPTED_MESSAGE_BODY.to_string()
-        } else {
-            message.content.chars().take(240).collect()
-        },
-        url: format!("/channels/{}?message={}", channel.id, message.id),
+        title: preview.title,
+        body: preview.body,
+        url,
         tag: format!("zoo-{}", notification.id),
-        notification_type: notification.notification_type.clone(),
+        notification_type: preview.notification_type,
         e2ee: None,
         invite_id: None,
+        android_preview: None,
     }
 }
 
@@ -288,7 +330,7 @@ async fn build_payload(
     }
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let mut payload = notification_payload(notification, &actor, &channel, &message);
+    let mut payload = notification_payload(notification, &actor, &channel, Some(&message));
     if channel.encrypted {
         payload.e2ee = encrypted_push(db, notification, &message).await?;
     }
@@ -332,9 +374,15 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
     }
     let client = push_client()?;
     for notification in notifications {
-        let Some(payload) = build_payload(&mut db, &notification).await? else {
+        let Some(mut payload) = build_payload(&mut db, &notification).await? else {
             continue;
         };
+        if android.is_some() && notification.message_id.is_some() {
+            match android_preview(&mut db, &notification).await {
+                Ok(preview) => payload.android_preview = preview,
+                Err(_) => tracing::warn!("Android push preview unavailable"),
+            }
+        }
         push_to_user(
             &client,
             config.as_ref(),
@@ -347,6 +395,52 @@ async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow
         .await?;
     }
     Ok(())
+}
+
+async fn android_preview(
+    db: &mut toasty::Db,
+    notice: &Notification,
+) -> anyhow::Result<Option<AndroidPreview>> {
+    let mut tx = db.transaction().await?;
+    let row = crate::apps::query(&mut tx, "
+        SELECT json_build_object(
+          'actor', COALESCE(NULLIF(u.display_name::text, ''), u.user_name),
+          'channel', CASE WHEN c.is_dm THEN '' ELSE c.channel_name END,
+          'avatar_url', CASE WHEN NOT c.encrypted THEN u.avatar_url END,
+          'image_id', CASE WHEN NOT c.encrypted AND NOT c.is_private AND NOT c.is_dm AND NOT c.is_nsfw
+            AND $3 <> 'reaction' THEN (
+              SELECT a.id FROM attachments a
+              JOIN home_posts p ON p.id = a.message_id AND p.channel_id = c.id AND p.deleted_at IS NULL
+              WHERE a.channel_id = c.id AND a.message_id = m.id AND NOT a.is_sensitive
+                AND a.file_size <= 4194304
+                AND a.content_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif')
+              ORDER BY a.created_at, a.id LIMIT 1
+            ) END
+        )::text
+        FROM messages m JOIN channels c ON c.id = m.channel_id
+        JOIN users u ON u.id = $2
+        WHERE m.id = $1 AND m.deleted_at IS NULL AND c.deleted_at IS NULL",
+        &[notice.message_id.as_deref().unwrap_or_default(), &notice.actor_id, &notice.notification_type],
+    ).await?.into_iter().next();
+    Ok(row.map(|row| AndroidPreview {
+        actor: row["actor"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        channel: row["channel"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(60)
+            .collect(),
+        avatar_url: row["avatar_url"]
+            .as_str()
+            .filter(|url| url.starts_with("https://") && url.len() <= 512)
+            .map(str::to_owned),
+        image_id: row["image_id"].as_str().map(str::to_owned),
+    }))
 }
 
 pub(crate) fn push_client() -> anyhow::Result<reqwest::Client> {
@@ -369,6 +463,14 @@ struct Delivery {
 }
 
 impl Delivery {
+    fn remaining_ttl(&self) -> u32 {
+        self.expires.map_or(self.ttl, |expires| {
+            expires
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs() as u32
+        })
+    }
+
     const NORMAL: Self = Self {
         ttl: 300,
         urgent: false,
@@ -450,10 +552,15 @@ async fn push_to_user(
         .await?;
     for subscription in subscriptions {
         if subscription.endpoint.starts_with("fcm:") {
-            // Calls are a Web-only feature; native Android subscribes to message notifications.
-            if let Some(android) = android.filter(|_| payload.notification_type != "missed_call") {
+            if let Some(android) = android.filter(|_| {
+                fcm::accepts_notification(&subscription.endpoint, &payload.notification_type)
+            }) {
+                let ttl = delivery.remaining_ttl();
+                if ttl == 0 {
+                    continue;
+                }
                 match android
-                    .send(client, &subscription.endpoint, user_id, payload)
+                    .send(client, &subscription.endpoint, user_id, payload, ttl)
                     .await
                 {
                     Ok(true) => {
@@ -494,15 +601,10 @@ async fn push_to_user(
         };
         let result = send_current_web_push(db, &subscription, async {
             // 購読の照合を待つ間にも、着信の期限が過ぎることがある。
-            let remaining = delivery.expires.map(|expires| {
-                expires
-                    .saturating_duration_since(std::time::Instant::now())
-                    .as_secs()
-            });
-            if remaining == Some(0) {
+            let ttl = delivery.remaining_ttl();
+            if ttl == 0 {
                 return Ok(None);
             }
-            let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
             send_with(client, config, endpoint, body, delivery, ttl)
                 .await
                 .map(Some)
@@ -524,13 +626,12 @@ async fn push_to_user(
     Ok(())
 }
 
-fn display_name(user: &User) -> String {
-    let name = if user.display_name.is_empty() {
+fn display_name(user: &User) -> &str {
+    if user.display_name.is_empty() {
         &user.user_name
     } else {
         &user.display_name
-    };
-    name.chars().take(60).collect()
+    }
 }
 
 /// 不在着信の Web Push の本文。
@@ -540,23 +641,7 @@ async fn missed_call_payload(
 ) -> anyhow::Result<NotificationPayload> {
     let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
     let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
-    let name = display_name(&actor);
-    Ok(NotificationPayload {
-        title: if channel.is_dm {
-            name
-        } else {
-            format!(
-                "{name} · #{}",
-                channel.channel_name.chars().take(60).collect::<String>()
-            )
-        },
-        body: "不在着信".into(),
-        url: format!("/channels/{}", channel.id),
-        tag: format!("zoo-{}", notification.id),
-        notification_type: "missed_call".into(),
-        e2ee: None,
-        invite_id: None,
-    })
+    Ok(notification_payload(notification, &actor, &channel, None))
 }
 
 /// 通話の招待の、Web Push に必要な値。
@@ -568,14 +653,15 @@ pub struct CallInvitePush {
     pub invitee_id: String,
 }
 
-/// 招待の着信を、呼ばれた人の Web Push へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
+/// 招待の着信を、呼ばれた人の Push 購読へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
 pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
     if invites.is_empty() {
         return;
     }
+    crate::apns::dispatch_call_invites(db.clone(), invites.clone());
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, false).await.is_err() {
-            tracing::warn!("Web Push call invite delivery failed");
+            tracing::warn!("Push call invite delivery failed");
         }
     });
 }
@@ -587,7 +673,7 @@ pub fn dispatch_call_invite_ends(db: toasty::Db, invites: Vec<CallInvitePush>) {
     }
     tokio::spawn(async move {
         if deliver_call_invites(db, invites, true).await.is_err() {
-            tracing::warn!("Web Push call invite end delivery failed");
+            tracing::warn!("Push call invite end delivery failed");
         }
     });
 }
@@ -596,33 +682,54 @@ fn call_invite_tag(invite_id: &str) -> String {
     format!("zoo-call-{invite_id}")
 }
 
+fn call_invite_end_notification(
+    invite: &CallInvitePush,
+    channel_is_dm: bool,
+) -> (NotificationPayload, bool) {
+    (
+        NotificationPayload {
+            title: String::new(),
+            body: String::new(),
+            url: format!("/channels/{}", invite.channel_id),
+            tag: call_invite_tag(&invite.id),
+            notification_type: "call_invite_end".into(),
+            e2ee: None,
+            invite_id: Some(invite.id.clone()),
+            android_preview: None,
+        },
+        channel_is_dm,
+    )
+}
+
 async fn deliver_call_invites(
     mut db: toasty::Db,
     invites: Vec<CallInvitePush>,
     end: bool,
 ) -> anyhow::Result<()> {
-    let Some(config) = PushConfig::from_env()? else {
+    let config = PushConfig::from_env()?;
+    let android = fcm::FcmConfig::from_env()?;
+    if config.is_none() && android.is_none() {
         return Ok(());
-    };
+    }
     let client = push_client()?;
     let started = std::time::Instant::now();
     for invite in invites {
         // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
         let result: anyhow::Result<()> = async {
+            let mut android_for_invite = android.as_ref();
             let payload = if end {
-                NotificationPayload {
-                    title: String::new(),
-                    body: String::new(),
-                    url: format!("/channels/{}", invite.channel_id),
-                    tag: call_invite_tag(&invite.id),
-                    notification_type: "call_invite_end".into(),
-                    e2ee: None,
-                    invite_id: Some(invite.id.clone()),
-                }
+                let channel_is_dm = android_for_invite.is_some()
+                    && Channel::get_by_id(&mut db, invite.channel_id.as_str())
+                        .await
+                        .is_ok_and(|channel| channel.is_dm);
+                let (payload, send_android) = call_invite_end_notification(&invite, channel_is_dm);
+                android_for_invite = android_for_invite.filter(|_| send_android);
+                payload
             } else {
                 let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
                 let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
-                let name = display_name(&actor);
+                android_for_invite = android_for_invite.filter(|_| channel.is_dm);
+                let name: String = display_name(&actor).chars().take(60).collect();
                 NotificationPayload {
                     title: if channel.is_dm {
                         name
@@ -642,6 +749,7 @@ async fn deliver_call_invites(
                     notification_type: "call_invite".into(),
                     e2ee: None,
                     invite_id: Some(invite.id.clone()),
+                    android_preview: None,
                 }
             };
             let delivery = Delivery {
@@ -655,8 +763,8 @@ async fn deliver_call_invites(
             };
             push_to_user(
                 &client,
-                Some(&config),
-                None,
+                config.as_ref(),
+                android_for_invite,
                 &mut db,
                 &invite.invitee_id,
                 &payload,
@@ -667,7 +775,7 @@ async fn deliver_call_invites(
         }
         .await;
         if result.is_err() {
-            tracing::warn!("Web Push call invite delivery failed for one invite");
+            tracing::warn!("Push call invite delivery failed for one invite");
         }
     }
     Ok(())
@@ -724,6 +832,34 @@ async fn send_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ending_a_public_channel_invite_keeps_web_delivery_only() {
+        let invite = super::CallInvitePush {
+            id: "invite".into(),
+            channel_id: "channel".into(),
+            inviter_id: "caller".into(),
+            invitee_id: "recipient".into(),
+        };
+
+        let (payload, send_android) = super::call_invite_end_notification(&invite, false);
+        assert!(!send_android);
+        assert_eq!(payload.notification_type, "call_invite_end");
+        assert_eq!(payload.url, "/channels/channel");
+        assert_eq!(payload.invite_id.as_deref(), Some("invite"));
+
+        let (_, send_android) = super::call_invite_end_notification(&invite, true);
+        assert!(send_android);
+    }
+
+    #[test]
+    fn expired_delivery_has_no_ttl() {
+        let delivery = super::Delivery {
+            expires: Some(std::time::Instant::now()),
+            ..super::Delivery::NORMAL
+        };
+        assert_eq!(delivery.remaining_ttl(), 0);
+    }
+
     use super::*;
     #[test]
     fn endpoint_validation_prevents_ssrf() {
@@ -877,6 +1013,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             notification_type: "mention".into(),
             e2ee: None,
             invite_id: None,
+            android_preview: None,
         };
         let encrypted = keys.encrypt(&payload).unwrap();
         let server = MockServer::start().await;
@@ -944,7 +1081,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             "message_id":"message", "notification_type":"mention", "is_read":false, "created_at":now
         }))
         .unwrap();
-        let payload = notification_payload(&notification, &actor, &channel, &message);
+        let payload = notification_payload(&notification, &actor, &channel, Some(&message));
         assert_eq!(payload.title, "Alice · #general");
         assert_eq!(
             payload.body,
@@ -959,12 +1096,12 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         assert!(keys.encrypt(&payload).unwrap().len() <= 4096);
         channel.is_dm = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).title,
+            notification_payload(&notification, &actor, &channel, Some(&message)).title,
             "Alice"
         );
         channel.encrypted = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).body,
+            notification_payload(&notification, &actor, &channel, Some(&message)).body,
             ENCRYPTED_MESSAGE_BODY
         );
     }
@@ -977,6 +1114,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             tag: "zoo-n".into(),
             notification_type: "mention".into(),
             invite_id: None,
+            android_preview: None,
             e2ee: Some(EncryptedPush {
                 recipient_id: "00000000-0000-4000-8000-000000000001".into(),
                 message: EncryptedRow {

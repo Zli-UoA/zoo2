@@ -98,15 +98,16 @@ for (const [name, input, expected, hostedExpected] of cases) {
 const fixedJobs = {"pr-assign.yaml": ["assign"], "flux-status.yaml": ["report"],"cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["promote", "publish"], "cd-storybook.yaml": ["deploy"], "cd-db-erd.yaml": ["deploy"], "deployment-badges.yaml": ["test", "publish"], "terraform-r2.yaml": ["apply", "plan", "validate"]};
 const dockerJobs = {"cd-db-erd.yaml": ["build"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
-const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve", "gate"], "pr-review-relay.yaml": ["relay"], "select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
+const hostedJobs = {"cd-images.yaml": ["plan"], "automerge-gate.yaml": ["resolve", "gate"], "pr-review-relay.yaml": ["relay"], "select-tests.yaml": ["select"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"],
   "ci-desktop-tauri.yaml": ["check"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
-// macOS でビルドを確かめるジョブ。GitHub ホストの macOS を使う (公開リポジトリなので無料)。
+// macOS・Windows でビルドを確かめるジョブ。GitHub ホストの実行先を使う (公開リポジトリなので無料)。
 const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
+const windowsJobs = {"ci-desktop-tauri.yaml": ["windows"]};
 // Keep timing comparisons on a fixed hosted OS, independent of shared runners.
-const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-phone-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-components-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};
+const benchmarkJobs = {"ci-home-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-read-state-worker-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-phone-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-search-query-budget.yaml": {"query-budget": "ubuntu-24.04"}, "ci-components-query-budget.yaml": {"query-budget": "ubuntu-24.04"}};
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
   "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
@@ -150,6 +151,19 @@ test('phone query budgets are mandatory in the merge queue', () => {
   assert.ok(queue.includes(`    uses: ./.github/workflows/${key}.yaml`));
   assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${key}`));
 });
+test('search query budgets are mandatory in the merge queue', () => {
+  const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
+  const key = 'ci-search-query-budget';
+  for (const path of ['backend/src/routes/search.rs', 'backend/src/routes/mod.rs', 'backend/tests/search_query_budget_test.rs', 'infra/db/schema.sql', 'infra/db/compare-search-work.py', 'infra/db/postgres/Dockerfile', `.github/workflows/${key}.yaml`]) {
+    assert.equal(selectWorkflows([path], readWorkflow)[key], true, path);
+  }
+  assert.equal(selectWorkflows(['docs/example.md'], readWorkflow)[key], false);
+  const queue = readWorkflow('merge-queue');
+  assert.ok(queue.includes('      '+key+': ${{ steps.match.outputs.'+key+' }}'));
+  assert.ok(queue.includes(`    if: needs.changes.outputs.${key} == 'true'`));
+  assert.ok(queue.includes(`    uses: ./.github/workflows/${key}.yaml`));
+  assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${key}`));
+});
 test('message component query budgets are mandatory in the merge queue', () => {
   const readWorkflow = name => readFileSync(new URL(`.github/workflows/${name}.yaml`, root), 'utf8');
   const key = 'ci-components-query-budget';
@@ -163,6 +177,42 @@ test('message component query budgets are mandatory in the merge queue', () => {
   assert.ok(queue.includes(`    uses: ./.github/workflows/${key}.yaml`));
   assert.ok(queue.split('  all-passed:\n')[1].includes(`      - ${key}`));
 });
+function parseNeeds(block) {
+  const match = block.match(/^    needs:[ \t]*([^\r\n]*)$/m);
+  if (!match) return new Set();
+  const rest = match[1].replace(/[ \t]*#.*$/, '').trim();
+  if (rest.startsWith('[')) {
+    const end = rest.indexOf(']');
+    return new Set(
+      rest
+        .slice(1, end >= 0 ? end : rest.length)
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean),
+    );
+  }
+  if (rest) {
+    return new Set([rest]);
+  }
+  const afterNeeds = block.slice(match.index + match[0].length).replace(/^\r?\n/, '').split(/\r?\n/);
+  const items = new Set();
+  for (const line of afterNeeds) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const item = line.match(/^ {4,}-\s+([\w-]+)/);
+    if (item) {
+      items.add(item[1]);
+    } else {
+      break;
+    }
+  }
+  return items;
+}
+
+function assertSelectorIndependent(block, label) {
+  assert.ok(!parseNeeds(block).has('runner'), label);
+  assert.doesNotMatch(block, /needs\.runner\./, label);
+}
+
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -185,7 +235,7 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       if (benchmarkJobs[file]?.[id]) {
         assert.ok(block.includes(`    runs-on: ${benchmarkJobs[file][id]}\n`), `${file}/${id}: pinned hosted benchmark OS`);
-        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
         assert.match(text, /^  workflow_call:$/m, `${file}: merge queue must call the budget gate`);
         checked++;
         continue;
@@ -193,7 +243,7 @@ test('every workload uses the right output and protects fork PRs', () => {
       if ((releaseJobs[file] || []).includes(id)) {
         assert.doesNotMatch(text.split(/^jobs:\s*$/m)[0], /pull_request/, `${file}: hosted-only workflows must not run on PRs`);
         assert.match(block, /^    runs-on: (?:ubuntu-latest|\$\{\{ matrix\.os \}\})$/m, `${file}/${id}: hosted pool`);
-        assert.doesNotMatch(block, /needs\.runner\./, `${file}/${id}: selector dependency`);
+        assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
         checked++;
         continue;
       }
@@ -206,16 +256,24 @@ test('every workload uses the right output and protects fork PRs', () => {
       if (mac) {
         // macOS は GitHub ホストにしかないので、fork の PR でも同じ実行先にする。
         assert.match(block, /^    runs-on: macos-\d+$/m, `${file}/${id}: hosted macOS`);
-        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
+        checked++;
+        continue;
+      }
+      const win = (windowsJobs[file] || []).includes(id);
+      if (win) {
+        // Windows ビルドと Inno Setup も GitHub ホストの実行先を使い、fork の PR でも同じ実行先にする。
+        assert.match(block, /^    runs-on: windows-(?:latest|\d+)$/m, `${file}/${id}: hosted Windows`);
+        assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
         checked++;
         continue;
       }
       if (hosted) {
         assert.match(block, /^    runs-on: ubuntu-latest$/m, `${file}/${id}: hosted for all PRs`);
-        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
       } else if (fixed) {
         assert.match(block, /runs-on:.*\|\| 'zli-kubecamp-no-docker' \}\}/, `${file}/${id}: fixed pool`);
-        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
       } else {
         assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
         if (docker) {
@@ -247,9 +305,17 @@ test('Kotlin build workflows keep hosted builds independent of runner selection'
     for (const id of ids) {
       const block = text.split(`  ${id}:\n`)[1].split(/^  [\w-]+:\s*$/m)[0];
       assert.match(block, /^    runs-on: ubuntu-latest$/m);
-      assert.doesNotMatch(block, /needs\.runner|^    needs: runner$/m);
+      assertSelectorIndependent(block, `${file}/${id}: selector dependency`);
     }
   }
+});
+
+test('parseNeeds detects runner dependencies across scalar, inline, and multiline formats', () => {
+  assert.ok(parseNeeds('    needs: runner\n    runs-on: ubuntu-latest').has('runner'));
+  assert.ok(parseNeeds('    needs: [version, runner]\n    runs-on: ubuntu-latest').has('runner'));
+  assert.ok(parseNeeds('    needs:\n      - version\n      - runner\n    runs-on: ubuntu-latest').has('runner'));
+  assert.ok(parseNeeds('    needs:\n    - version\n    - runner\n    runs-on: ubuntu-latest').has('runner'));
+  assert.equal(parseNeeds('    needs:\n      - version\n      - build\n    runs-on: ubuntu-latest').has('runner'), false);
 });
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);

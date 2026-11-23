@@ -9,12 +9,19 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.graphics.Bitmap
+import android.os.Bundle
 import android.os.Build
 import com.google.android.gms.tasks.Task
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.http.URLProtocol
+import io.ktor.http.Url
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -72,6 +79,51 @@ internal class PushBinding(private val context: Context) {
             prefs.getString("binding", null) == binding && prefs.getString("user", null) == user
     }
 
+    fun dmCallsEnabled(user: String): Boolean = synchronized(lock) {
+        prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false)
+    }
+
+    fun phoneLocale(): String? = prefs.getString("locale", null)
+
+    fun setPhoneLocale(binding: String, locale: String) = synchronized(lock) {
+        if (prefs.getString("binding", null) == binding && phoneLocale() != locale) {
+            prefs.edit().putString("locale", locale).apply()
+        }
+    }
+
+    fun setDmCallsEnabled(user: String, enabled: Boolean) = synchronized(lock) {
+        if (prefs.getString("user", null) == user && prefs.getBoolean("dmCalls", false) != enabled) {
+            check(prefs.edit().putBoolean("dmCalls", enabled).commit())
+            if (!enabled) {
+                val manager = context.getSystemService(NotificationManager::class.java)
+                manager.activeNotifications.filter { it.tag?.startsWith("zoo:$user:call:") == true }
+                    .forEach { zoo.android.phone.dismissIncomingCall(context, it.tag) }
+            }
+            AndroidPushRegistration.tokenChanged()
+        }
+    }
+
+    fun dmInviteEnded(id: String): Boolean = synchronized(lock) {
+        val now = System.currentTimeMillis() / 1000L
+        prefs.getStringSet("endedDmInvites", emptySet()).orEmpty().any {
+            it.substringBefore(':') == id && (it.substringAfter(':').toLongOrNull() ?: 0L) > now
+        }
+    }
+
+    fun rememberEndedDmInvite(user: String, id: String) = synchronized(lock) {
+        if (prefs.getString("user", null) != user) return@synchronized
+        val now = System.currentTimeMillis() / 1000L
+        val recent = prefs.getStringSet("endedDmInvites", emptySet()).orEmpty()
+            .filter { it.substringBefore(':') != id && (it.substringAfter(':').toLongOrNull() ?: 0L) > now }
+            .sortedByDescending { it.substringAfter(':').toLongOrNull() }
+            .take(63).toSet()
+        prefs.edit().putStringSet("endedDmInvites", recent + "$id:${now + 60}").apply()
+    }
+
+    fun base(binding: String): String? = synchronized(lock) {
+        if (prefs.getString("binding", null) == binding) prefs.getString("base", null) else null
+    }
+
     fun endpoint(binding: String): String? = synchronized(lock) {
         if (prefs.getString("binding", null) == binding) prefs.getString("endpoint", null) else null
     }
@@ -115,6 +167,18 @@ internal class PushSubscriptionRegistration(
     private val binding: String,
     private val request: suspend (method: String, endpoint: String) -> Unit,
 ) {
+    private var registeredEndpoint: String? = null
+
+    suspend fun refresh(token: String, supportsDmCalls: Boolean) {
+        val suffix = if (supportsDmCalls && store.dmCallsEnabled(user)) ":dm-calls" else ""
+        val endpoint = "fcm:$token:$binding$suffix"
+        cleanup()
+        if (endpoint == registeredEndpoint) return
+        registeredEndpoint = null
+        register(endpoint)
+        registeredEndpoint = endpoint
+    }
+
     suspend fun cleanup() {
         for (endpoint in store.pendingRemovals(base, user)) {
             request("DELETE", endpoint)
@@ -167,14 +231,17 @@ internal class AndroidPushRegistration(
     private val updates = Channel<Unit>(Channel.CONFLATED)
     private var closed = false
     private var projectId: String? = null
-    private var registeredEndpoint: String? = null
+    private var supportsDmCalls = false
     private val registration = PushSubscriptionRegistration(store, app.config.apiBaseUrl, app.config.userId, binding) { method, endpoint ->
         app.api.request("/api/push/subscriptions", method,
             if (method == "POST") obj("transport" to "fcm", "endpoint" to endpoint) else obj("endpoint" to endpoint))
         Unit
     }
     private val observer = app.scope.launch {
-        snapshotFlow { app.env.online to app.env.visible }.collectLatest { (online, _) -> if (online) refresh() }
+        snapshotFlow { Triple(app.env.online, app.env.visible, app.env.locale) }.collectLatest { (online, _, locale) ->
+            store.setPhoneLocale(binding, locale)
+            if (online) refresh()
+        }
     }
     private val worker = app.scope.launch {
         for (ignored in updates) {
@@ -184,18 +251,13 @@ internal class AndroidPushRegistration(
                 if (projectId == null) {
                     val config = app.api.request("/api/push/config") as? Row ?: continue
                     projectId = config.text("fcmProjectId").takeIf { it.isNotEmpty() }
+                    supportsDmCalls = config.flag("fcmDmCalls")
                 }
                 if (projectId == null || projectId != firebase.options.projectId) continue
                 val messaging = FirebaseMessaging.getInstance()
                 messaging.isAutoInitEnabled = true
                 val token = messaging.token.awaitPushTask()
-                val endpoint = "fcm:$token:$binding"
-                registration.cleanup()
-                if (endpoint != registeredEndpoint) {
-                    registration.register(endpoint)
-                    if (!closed) registeredEndpoint = endpoint
-                }
-
+                registration.refresh(token, supportsDmCalls)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -270,41 +332,139 @@ internal fun clearNotifications(context: Context, user: String) {
         .forEach { manager.cancel(it.tag, it.id) }
 }
 
-/** Data-only delivery always passes through the same account/permission checks, including cold starts. */
+/** Data-only delivery also runs while no Activity or Session is present. */
 class ZooMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) { AndroidPushRegistration.tokenChanged() }
-    override fun onMessageReceived(message: RemoteMessage) { showPushNotification(this, message.data) }
-}
 
-internal fun showPushNotification(context: Context, data: Map<String, String>) {
-    synchronized(PushBinding.lock) { showBoundPushNotification(context, data) }
-}
-
-private fun showBoundPushNotification(context: Context, data: Map<String, String>) {
-    val binding = data["binding"]
-    val user = data["userId"]
-    if (!PushBinding(context).matches(binding, user) || !notificationsAllowed(context)) return
-    val path = pushDestination(data["url"]) ?: return
-    val kind = data["notificationType"]
-    if (kind !in setOf("mention", "dm", "reply", "reaction")) return
-    val id = data["tag"]?.removePrefix("zoo-")?.takeIf { runCatching { UUID.fromString(it) }.isSuccess } ?: return
-    val tag = notificationTag(user!!, id)
-    val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
-    val manager = context.getSystemService(NotificationManager::class.java)
-    // Existing localized channel names are preserved; cold installs get a safe app-name fallback.
-    if (manager.getNotificationChannel("zoo.$channel") == null) {
-        manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
-            if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
+    override fun onMessageReceived(message: RemoteMessage) {
+        val posted = showPushNotification(this, message.data) ?: return
+        if (posted.avatarUrl == null && posted.imageUrl == null) return
+        runBlocking {
+            val client = HttpClient(OkHttp) {
+                followRedirects = false
+                engine { config { followSslRedirects(false) } }
+                install(HttpTimeout) { requestTimeoutMillis = 3_000 }
+            }
+            try {
+                enrichPushNotification(this@ZooMessagingService, posted) { url, maxEdge ->
+                    val bytes = loadPublicImage(client, url, limit = 4 * 1024 * 1024)
+                    withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes, maxEdge) }
+                }
+            } finally {
+                client.close()
+            }
+        }
     }
-    val intent = PushBinding(context).openIntent(user, id, path) ?: return
-    val body = data["body"].orEmpty().take(2000)
-    val notification = Notification.Builder(context, "zoo.$channel")
-        .setSmallIcon(works.zli.zoo.R.drawable.ic_notification)
-        .setContentTitle(data["title"].orEmpty().take(200)).setContentText(body)
-        .setStyle(Notification.BigTextStyle().bigText(body))
-        .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
-        .setCategory(Notification.CATEGORY_MESSAGE).build()
-    try { manager.notify(tag, 0, notification) }
-    catch (_: SecurityException) { /* Permission can be revoked between the check and delivery. */ }
+}
+
+private const val PUSH_RENDER = "zoo.push.render"
+
+internal data class PostedPush(
+    val binding: String,
+    val user: String,
+    val tag: String,
+    val render: String,
+    val avatarUrl: String?,
+    val imageUrl: String?,
+    val build: (Bitmap?, Bitmap?) -> Notification,
+)
+
+internal fun showPushNotification(context: Context, data: Map<String, String>): PostedPush? =
+    synchronized(PushBinding.lock) {
+        val binding = data["binding"] ?: return@synchronized null
+        val user = data["userId"] ?: return@synchronized null
+        val store = PushBinding(context)
+        if (!store.matches(binding, user)) return@synchronized null
+        if (data["notificationType"] in setOf("call_invite", "call_invite_end")) {
+            zoo.android.phone.showDmCallPush(context, store, user, binding, data)
+            return@synchronized null
+        }
+        if (!notificationsAllowed(context)) return@synchronized null
+        val base = store.base(binding) ?: return@synchronized null
+        val path = pushDestination(data["url"]) ?: return@synchronized null
+        val kind = data["notificationType"]
+        if (kind !in setOf("mention", "dm", "reply", "reaction")) return@synchronized null
+        val id = data["tag"]?.removePrefix("zoo-")?.takeIf(::isCanonicalUuid) ?: return@synchronized null
+        val tag = notificationTag(user, id)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val existing = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == 0 }
+        // The synchronized session notification may already have reply actions or a richer preview.
+        if (existing != null) return@synchronized null
+        val channel = when (kind) { "reaction" -> "reactions"; "dm" -> "messages"; else -> "mentions" }
+        if (manager.getNotificationChannel("zoo.$channel") == null) {
+            manager.createNotificationChannel(NotificationChannel("zoo.$channel", "Zoo",
+                if (channel == "reactions") NotificationManager.IMPORTANCE_DEFAULT else NotificationManager.IMPORTANCE_HIGH))
+        }
+        val intent = store.openIntent(user, id, path) ?: return@synchronized null
+        val title = data["title"].orEmpty().take(200)
+        val body = data["body"].orEmpty().take(2000)
+        val conversation = data["channelName"].orEmpty().take(120)
+        val actor = data["actor"].orEmpty().take(120).ifBlank { title.ifBlank { "Zoo" } }
+        val timestamp = System.currentTimeMillis()
+        val row = obj(
+            "notification_type" to kind,
+            "actor_id" to actor,
+            "created_at" to java.time.Instant.ofEpochMilli(timestamp).toString(),
+            "display_data" to obj("actor" to obj("display_name" to actor),
+                "channel" to obj("channel_name" to conversation, "is_dm" to (kind == "dm"))),
+        )
+        val render = UUID.randomUUID().toString()
+        val group = "$channel:${path.substringAfter("/channels/").substringBefore('?')}"
+        val avatarUrl = pushAvatarUrl(base, data["avatarUrl"])
+        val imageUrl = data["imageId"]?.takeIf { kind != "reaction" && kind != "dm" && isCanonicalUuid(it) }
+            ?.let { endpoint(base, "/api/home/images/$it") }
+        val posted = PostedPush(binding, user, tag, render, avatarUrl, imageUrl) { avatar, picture ->
+            Notification.Builder(context, "zoo.$channel")
+                .setSmallIcon(works.zli.zoo.R.drawable.ic_notification)
+                .setContentTitle(title).setContentText(body).setWhen(timestamp)
+                .setStyle(if (picture != null) Notification.BigPictureStyle().bigPicture(picture).setSummaryText(body)
+                    else notificationStyle(row, body, "Zoo", avatar))
+                .setLargeIcon(avatar)
+                .setGroup("zoo:$user:$group")
+                .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+                .setExtras(Bundle().apply { putString(PUSH_RENDER, render) })
+                .setContentIntent(PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                .setAutoCancel(true).setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setCategory(Notification.CATEGORY_MESSAGE).build()
+        }
+        try {
+            manager.notify(tag, 0, posted.build(null, null))
+            posted
+        } catch (_: SecurityException) { null }
+    }
+
+private fun isCanonicalUuid(value: String): Boolean =
+    runCatching { UUID.fromString(value).toString().equals(value, ignoreCase = true) }.getOrDefault(false)
+
+private fun pushAvatarUrl(base: String, raw: String?): String? {
+    val avatar = raw?.let(::publicUrl) ?: return null
+    val origin = publicUrl(base) ?: return null
+    if (avatar.protocol != URLProtocol.HTTPS || avatar.port != 443) return null
+    if (avatar.host != origin.host && avatar.host != "avater.zliusercontent.com") return null
+    return avatar.toString()
+}
+
+internal suspend fun enrichPushNotification(
+    context: Context,
+    posted: PostedPush,
+    load: suspend (url: String, maxEdge: Int) -> Bitmap,
+) = coroutineScope {
+    suspend fun media(url: String?, maxEdge: Int): Bitmap? = if (url == null) null else try {
+        withTimeoutOrNull(3_000) { load(url, maxEdge) }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) { null }
+    val avatar = async { media(posted.avatarUrl, 256) }
+    val picture = async { media(posted.imageUrl, 720) }
+    val icon = avatar.await()
+    val image = picture.await()
+    if (icon == null && image == null) return@coroutineScope
+    synchronized(PushBinding.lock) {
+        if (!PushBinding(context).matches(posted.binding, posted.user) || !notificationsAllowed(context))
+            return@synchronized
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val current = manager.activeNotifications.firstOrNull { it.tag == posted.tag && it.id == 0 }
+        if (current?.notification?.extras?.getString(PUSH_RENDER) != posted.render) return@synchronized
+        try { manager.notify(posted.tag, 0, posted.build(icon, image)) } catch (_: SecurityException) { }
+    }
 }

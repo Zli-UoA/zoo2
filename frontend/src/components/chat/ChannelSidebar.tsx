@@ -5,7 +5,7 @@ import { HashIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { useThreadIndex } from "../../hooks/useThreadIndex";
-import { useUnreadChannels } from "../../hooks/useUnreadChannels";
+import { useUnread } from "../../hooks/useUnread";
 import { useChannelLeaveDates } from "../../hooks/useChannelLeaveDates";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
@@ -48,7 +48,7 @@ export function ChannelSidebar({
   const { channelUsers } = useCollections();
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
-  const unreadChannelIds = useUnreadChannels(currentUserId);
+  const { unreadChannelIds } = useUnread();
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [dmOpen, setDmOpen] = useState(false);
@@ -129,6 +129,8 @@ export function ChannelSidebar({
           currentUserId={currentUserId}
           activeChannelId={shell.selectedChannelId}
           unreadChannelIds={unreadChannelIds}
+          threads={threadIndex.threads}
+          onObserveThread={threadIndex.observeThread}
           onOpen={() => shell.showChat()}
           loading={sidebarLoading}
         />

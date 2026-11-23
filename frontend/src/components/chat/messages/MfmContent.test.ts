@@ -19,6 +19,29 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   );
 
 describe("MfmContent", () => {
+  it("renders Kitchen body shortcodes with a readable fallback while preserving literal contexts", () => {
+    expect(render("**:kitchen_1f431_1f600:**")).toBe("<strong>🐱 + 😀</strong>");
+    expect(render("`:kitchen_1f431_1f600:`")).toContain(":kitchen_1f431_1f600:</code>");
+    expect(render("<plain>:kitchen_1f431_1f600:</plain>")).toBe(":kitchen_1f431_1f600:");
+    expect(render(":kitchen_110000_1f431:")).toBe(":kitchen_110000_1f431:");
+  });
+  it("prefers supplied emoji renderers and metadata over a matching Kitchen name", () => {
+    const name = "kitchen_1f431_1f600";
+    expect(
+      render(`:${name}:`, {
+        renderEmoji: (value) =>
+          value === name
+            ? createElement("img", { src: "/remote-custom.png", alt: "remote" })
+            : undefined,
+      }),
+    ).toContain('src="/remote-custom.png"');
+    expect(
+      render(`:${name}:`, {
+        emojis: { [name]: { url: "/joined-custom.png", width: 2, height: 1 } },
+      }),
+    ).toContain('src="http://localhost:8000/joined-custom.png"');
+    expect(render(`:${name}:`, { renderEmoji: () => undefined, emojis: {} })).toBe("🐱 + 😀");
+  });
   it("resolves account icons and mention labels only from the AuthZ directory", () => {
     const html = renderToStaticMarkup(
       createElement(LocaleProvider, {

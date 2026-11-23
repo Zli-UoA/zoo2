@@ -44,7 +44,9 @@ tail -c 65 vapid-public.der | openssl base64 -A | tr '+/' '-_' | tr -d '='
 
 ### iPhoneアプリへの配信
 
-iOSアプリは `GET /api/push/apns/config` で利用できる環境を確認し、`POST /api/push/apns/subscriptions` で端末を登録する。ログアウトや通知を無効にしたときは、端末が保存した解除情報を `POST /api/push/apns/revoke` に送る。通知本文にはチャットの内容を含めず、タップ後に対象の会話を開く。
+iOSアプリは `GET /api/push/apns/config` で利用できる環境を確認し、`POST /api/push/apns/subscriptions` で端末を登録する。ログアウトや通知を無効にしたときは、端末が保存した解除情報を `POST /api/push/apns/revoke` に送る。通知をタップすると対象の会話を開く。
+
+通知プレビューに対応するiPhoneでは、Web版と同じく、チャンネルは「送信者名 · #チャンネル名」、DMは送信者名を表示する。本文は投稿の先頭240文字で、リアクションには「リアクション: 」を付ける。プレビューは購読ごとに暗号化し、iOSの通知サービス拡張が端末内で復号する。暗号化チャンネルの本文には「新しいメッセージ」を使う。対応する鍵がない場合は「Zoo」「新しい通知があります」を表示する。
 
 登録したiPhoneの設定からテスト通知を送ると、`POST /api/push/apns/test` がログイン中のユーザーと端末の登録情報を照合し、そのiPhoneに確認用の通知を1件送る。送信は同じ購読につき1分に1回までで、登録を解除した後に新しく作った購読には新しい送信枠が割り当てられる。Appleが送信を受け付けた時点と、端末が受信した時点は別々に確認できる。
 
@@ -76,7 +78,7 @@ Service Worker は静的 app shell（`/index.html`、ビルド済みの `/assets
 
 全て既存の API と同じ認証が必要。
 
-- `GET /api/push/config`: `{ "publicKey": "..." }`（未設定なら `null`）。
+- `GET /api/push/config` は Web Push の `publicKey`（未設定時は `null`）、Android向けの `fcmProjectId`（未設定時は `null`）、DM着信のFCM配送の可否を示す `fcmDmCalls` を返します。Androidは `fcmDmCalls` が `true` で端末のDM着信が有効なら、FCMの購読endpointに `:dm-calls` を付けます。DM着信と取り消しはこの購読にだけ配送されます。
 - `POST /api/push/subscriptions`: `{ "endpoint": "https://...", "keys": { "p256dh": "...", "auth": "..." } }`。同じユーザー・endpoint の再登録では暗号化鍵を更新する。別ユーザーの既存登録は引き継がず、画面の初期化時に端末側の登録を解除して再度の有効化を求める。
 - `DELETE /api/push/subscriptions`: `{ "endpoint": "https://..." }`。自分の登録だけを削除する。
 

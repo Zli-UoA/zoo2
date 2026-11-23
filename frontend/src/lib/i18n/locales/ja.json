@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "本文へスキップ"
+  },
+  "aboutZoo": {
+    "title": "Zooについて",
+    "version": "バージョン: {{version}}",
+    "versionUnknown": "不明"
+  },
+  "notFoundPage": {
+    "title": "ページが見つかりません",
+    "description": "お探しのページは移動または削除された可能性があります。"
+  },
   "nav": {
     "main": "メインナビゲーション"
   },
@@ -10,6 +22,10 @@
     "unread": "未読メッセージあり",
     "editTitle": "チャンネルを編集",
     "editHelp": "チャンネル名は日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
+    "nameRequired": "チャンネル名を入力してください。",
+    "nameTooLong": "チャンネル名は{{max}}文字以内で入力してください（現在{{length}}文字）。",
+    "nameReserved": "「{{name}}」は予約語のため使用できません。",
+    "invalidName": "チャンネル名には文字・数字・半角ハイフン（-）・半角アンダースコア（_）のみ使用できます。",
     "saveName": "保存",
     "savingName": "保存中…",
     "title": "チャンネル",
@@ -44,6 +60,7 @@
     "notFound": "チャンネルが見つかりません。",
     "duplicateName": "同名のチャンネルが既に存在します。",
     "privateMessages": "このチャンネルは非公開です。招待されるとメッセージを表示できます。",
+    "postingManagersOnly": "このチャンネルは管理者のみ投稿できます。",
     "back": "チャンネル一覧へ戻る",
     "noDescription": "説明はまだありません",
     "visibilityHelp": "公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。",
@@ -122,8 +139,7 @@
     "candidates": "メンバー候補",
     "usersLoading": "ユーザーを読み込み中…",
     "usersError": "ユーザー取得に失敗しました。",
-    "usersEmpty": "該当するユーザーがいません。",
-    "back": "チャンネルに戻る"
+    "usersEmpty": "該当するユーザーがいません。"
   },
   "moderation": {
     "archived": "アーカイブ済み",
@@ -159,6 +175,11 @@
     "invalidState": "この操作は現在の状態では実行できません。"
   },
   "settings": {
+    "appearance": "外観",
+    "interaction": "操作",
+    "swipeReply": "スワイプで返信",
+    "operationHaptics": "触覚フィードバック",
+    "navTitle": "設定",
     "admin": "管理者",
     "member": "メンバー",
     "makeAdmin": "管理者にする",
@@ -198,6 +219,7 @@
     "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
   },
   "messages": {
+    "loadingOlder": "古いメッセージを読み込み中…",
     "typing": "{{names}}が入力中…",
     "typingSeparator": "、",
     "compose": "メッセージを送信",
@@ -205,6 +227,7 @@
     "edit": "編集",
     "delete": "削除",
     "more": "その他の操作",
+    "actions": "メッセージを操作",
     "editLabel": "メッセージを編集",
     "loadError": "メッセージの取得に失敗しました",
     "retryHelp": "接続を確認して、もう一度お試しください。",
@@ -227,6 +250,10 @@
     "edited": "編集済み"
   },
   "attachments": {
+    "recentPhotos": "最近の写真",
+    "systemPhotos": "写真アプリで選ぶ",
+    "allowRecentPhotos": "写真へのアクセスを許可",
+    "noRecentPhotos": "表示できる写真がありません",
     "play": "再生",
     "pause": "一時停止",
     "add": "ファイルを添付",
@@ -257,6 +284,8 @@
     "containedFiles": "含まれるファイル",
     "previousPage": "前のページ",
     "nextPage": "次のページ",
+    "pageNumber": "ページ番号",
+    "pdfPages": "PDFページ一覧",
     "pdfPage": "PDF {{page}}ページ",
     "mail": {
       "subject": "件名",
@@ -293,8 +322,18 @@
     "join": "参加する",
     "leave": "退出する",
     "reopen": "再Open",
-    "reopenOnSend": "送信すると再Openして参加します。",
-    "membershipError": "スレッドの参加状態を更新できませんでした。"
+    "reopenOnSend": "送信すると再Openします。",
+    "membershipError": "スレッドの参加状態を更新できませんでした。",
+    "participants_one": "参加者 {{count}}人",
+    "participants_other": "参加者 {{count}}人",
+    "participantsMore": "ほか {{count}}人",
+    "participantsEmpty": "参加者はいません",
+    "threadStarter": "スレ主",
+    "participantsSearch": "名前で検索",
+    "participantsFilterPartial": "読み込んだ先頭{{loaded}}人の中から絞り込んでいます（ほか {{count}}人は検索できません）。",
+    "participantsDescription": "このスレッドに参加している人です。",
+    "joinToReply": "参加するとこのスレッドに返信できます。",
+    "reopenAndJoin": "再Openして参加する"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -328,7 +367,6 @@
     "noSearchResults": "一致する絵文字がありません",
     "tabEmoji": "絵文字",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "すべての絵文字から選べます。",
     "emojiLoading": "絵文字を読み込み中…",
     "recent": "最近使った絵文字",
     "skinTone": "肌の色"
@@ -366,6 +404,8 @@
     "channels": "チャンネル候補"
   },
   "notifications": {
+    "filterAll": "すべて",
+    "filterMentions": "メンション",
     "label": "通知",
     "close": "通知を閉じる",
     "title": "通知",
@@ -563,6 +603,7 @@
     "micNotFound": "マイクが見つかりませんでした。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "入力中の文字がそのままリアルタイムに表示されるルームです",
     "emptyTitle": "現在入力中のユーザーはいません",
@@ -776,6 +817,7 @@
     "showLess": "折りたたむ"
   },
   "home": {
+    "navTitle": "ホーム",
     "back": "戻る",
     "deleted": "投稿を削除しました",
     "newPosts": "新しい投稿を見る（{{count}}件）",
@@ -791,6 +833,7 @@
     "post": "投稿",
     "sending": "投稿中…",
     "sendError": "投稿できませんでした。下書きは残っています。もう一度お試しください。",
+    "postForbidden": "このチャンネルには投稿できません。",
     "loadError": "タイムラインを取得できませんでした。",
     "loading": "読み込み中…",
     "empty": "まだ投稿がありません",
@@ -1691,6 +1734,9 @@
     "empty": "選択できる公開チャンネルがありません。",
     "saved": "保存しました。"
   },
+  "androidUpdate": {
+    "title": "アプリの更新"
+  },
   "androidNotifications": {
     "enable": "通知を有効にする",
     "scope": "ログイン中に同期した新着通知を受信します。",
@@ -1799,11 +1845,81 @@
   "androidPhone": {
     "description": "個人用・共有回線のSIP電話とDM音声通話を、端末の通話機能と連携して利用できます。",
     "nativeCalls": "端末の通話機能との連携",
-    "nativeHelp": "待ち受けを有効にすると、通知を表示して接続を維持します。応答・切断・音声出力は端末の通話機能とも連携します。マイクの許可が必要です。",
+    "nativeHelp": "着信時に通話通知を表示します。通知を許可すると、対応端末ではDM着信をバックグラウンドでも受け取れます。SIPの着信待ちと、FCMが使えない端末でのDMの着信待ちでは、Zooを前面に開いてください。応答・切断・音声出力は端末の通話機能と連携し、マイクの許可が必要です。",
+    "minimizeCall": "最小化",
+    "expandCall": "通話を開く",
+    "floatCall": "フローティング表示",
+    "pipUnavailable": "Androidの設定でピクチャーインピクチャーを確認してください。",
+    "incomingScreenSettings": "着信時の全画面表示を設定",
     "receiveDm": "DM通話の着信を受ける",
     "callError": "通話の準備または操作に失敗しました。マイク権限、端末の通話対応、ネットワークと回線設定を確認してください。",
     "speaker": "スピーカー",
     "waiting": "電話の着信を待ち受け中",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "検索",
+    "placeholder": "メッセージとファイルを検索",
+    "kinds": {
+      "all": "すべて",
+      "messages": "メッセージ",
+      "files": "ファイル"
+    },
+    "prompt": "検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。",
+    "empty": "見つかりませんでした。",
+    "emptyOlder": "{{month}} までに見つかりませんでした。さらに古い期間を検索できます。",
+    "searchedUntil": "{{month}} まで検索しました",
+    "searchOlder": "さらに古い結果を検索",
+    "loading": "検索中…",
+    "loadError": "検索できませんでした。",
+    "retry": "再試行",
+    "tooManyTerms": "検索できる語は {{max}} 個までです。語を減らしてください。",
+    "termTooLong": "1 つの語は {{max}} 文字までです。語を短くしてください。",
+    "encryptedNote": "暗号化されたチャンネルは検索の対象外です。",
+    "openNav": "検索",
+    "inThread": "スレッドの返信",
+    "filters": {
+      "label": "絞り込み",
+      "from": "送信者",
+      "anyone": "すべての人",
+      "in": "チャンネル",
+      "anywhere": "すべてのチャンネル",
+      "period": "期間",
+      "anytime": "指定なし",
+      "last7": "過去 7 日間",
+      "last30": "過去 30 日間",
+      "last365": "過去 1 年間",
+      "custom": "日付を指定",
+      "after": "開始日",
+      "before": "終了日",
+      "reversed": "開始日は終了日と同じか、それより前にしてください。",
+      "reset": "条件をリセット"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "未読キャッチアップ {{count}} 件",
+    "navUnread_other": "未読キャッチアップ {{count}} 件",
+    "title": "未読キャッチアップ",
+    "close": "終了",
+    "count_one": "未読 {{count}} 件",
+    "count_other": "未読 {{count}} 件",
+    "overCount_one": "未読 {{count}} 件以上",
+    "overCount_other": "未読 {{count}} 件以上",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "既読にする",
+    "keepUnread": "未読のまま次へ",
+    "readError": "既読にできませんでした。もう一度お試しください",
+    "loadError": "未読の会話を読み込めませんでした",
+    "retry": "再試行",
+    "loading": "未読の会話を読み込み中",
+    "empty": "未読の会話はありません",
+    "emptyDescription": "未読が届いたら、もう一度開いてください",
+    "complete": "キャッチアップ完了",
+    "summary": "既読 {{read}} 件・未読のまま {{skipped}} 件",
+    "refresh": "更新",
+    "conversation": "会話",
+    "unreadTooOld": "古い未読がまだ範囲外です。もっと読んでから既読にしてください。",
+    "loadMore": "もっと読む",
+    "unreadChanged": "表示中に新しい未読が届きました。この会話は未読のまま次へ進んでください。"
   }
 }

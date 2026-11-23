@@ -263,10 +263,14 @@ CREATE TABLE apns_subscriptions (
   environment text NOT NULL CHECK (environment IN ('sandbox', 'production')),
   revocation_hash text NOT NULL,
   created_at timestamp(3) NOT NULL,
-  last_test_at timestamptz,
-  UNIQUE (device_token, environment)
+  last_test_at timestamptz
 );
 CREATE INDEX idx_apns_subscriptions_user_id ON apns_subscriptions (user_id);
+-- 既存のIDから用途を判定し、旧サーバーの書き込みや解除情報も維持する。
+CREATE UNIQUE INDEX apns_subscriptions_token_environment_kind_key ON apns_subscriptions (
+  device_token, environment,
+  (id = encode(sha256(('voip:' || environment || ':' || device_token)::bytea), 'hex'))
+);
 
 -- 遅れて届いた登録要求で、ログアウト済みの端末に通知が再開されるのを防ぐ。
 CREATE TABLE apns_revocations (
@@ -4326,3 +4330,73 @@ CREATE TABLE user_channel_pin_states (
 );
 
 ALTER TABLE user_pinned_channels REPLICA IDENTITY FULL;
+
+-- 全文検索（メッセージ・添付ファイル名・チャンネルノート）。docs/search.md を参照。
+-- pg_bigm は trusted ではないので、本番では CNPG の Database リソースがスーパーユーザーとして作る。
+-- ここは IF NOT EXISTS なので、作成済みなら zoo2 ロールでも通る。
+-- 拡張は public に置き、opclass と関数は public. を付けて呼ぶ（テストは別スキーマの search_path で動くため）。
+CREATE EXTENSION IF NOT EXISTS pg_bigm WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS btree_gin WITH SCHEMA public;
+-- 先頭の列は作成月（年*12+月）。検索は新しい月から 1 か月ずつ、月の等価条件で引く。
+-- 2 文字以上の語では、GIN は月とバイグラムの posting を突き合わせるので、索引の読み取りはその月の、語の 2 文字の組の
+-- posting（候補が 0 件でも読む）に、ヒープの走査は「その月の候補」（2 文字の組をすべて含む行。再確認で除かれる行を
+-- 含む）に限られ、総履歴に比例しない。
+-- 1 文字の語は部分一致で読み飛ばせないため、検索側で索引の条件から外し、その月の行をヒープで確かめる（docs/search.md）。
+-- 本文は lower() で英字の大文字・小文字を区別しない（C ロケールなので日本語には影響しない）。
+-- fastupdate = off: 既定の pending list は、検索のたびに月によらず全体を読むので持たない（書き込みは索引に直接入れる）。
+CREATE INDEX messages_search_month ON messages USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(content) public.gin_bigm_ops
+) WITH (fastupdate = off) WHERE deleted_at IS NULL AND content <> '';
+CREATE INDEX attachments_search_month ON attachments USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(file_name) public.gin_bigm_ops
+) WITH (fastupdate = off) WHERE message_id IS NOT NULL;
+CREATE INDEX channel_notes_search_month ON channel_notes USING gin (
+  ((date_part('year', created_at) * 12 + date_part('month', created_at))::integer) public.int4_ops,
+  lower(title || E'\n' || content) public.gin_bigm_ops
+) WITH (fastupdate = off) WHERE deleted_at IS NULL;
+-- 検索範囲の下限（SCOPE_SQL の floor）に、生きている最古の返信も入れるため。親が削除されても返信は残り、
+-- 取り込みでチャンネルの作成日時より古い返信もありうる。チャンネルごとに先頭の 1 行だけ引く。
+CREATE INDEX messages_search_reply_floor ON messages (channel_id, created_at)
+  WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
+
+-- Slack の取り込み（差分同期・イベント）が、直近の返信を、zoo の返信と同じライブの投稿として扱えるようにする。
+-- 取り込みの返信は作成日時が Slack の投稿時刻なので、トランザクション開始時刻との比べだけでは、ライブと判定されない。
+-- `zoo.thread_live_import` が `on` のトランザクションの INSERT は、ライブの返信として、スレッドを再Openし、
+-- 退出済みの投稿者を再参加させる（Home の返信と同じ）。フラグは、バックエンドが直近の返信にだけ立てる。
+-- 履歴の取り込みや、同じ投稿IDの再送（AFTER INSERT が動かない）では、立てても何も変わらない。
+CREATE OR REPLACE FUNCTION update_thread_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE parent_author text; live_post boolean; posted_now boolean; imported_live boolean; import_flag text;
+BEGIN
+  IF current_setting('zoo.thread_migration',true)='on' THEN RETURN NULL; END IF;
+  IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NULL; END IF;
+  SELECT user_id INTO parent_author FROM messages
+    WHERE id=NEW.parent_id AND deleted_at IS NULL FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  posted_now:=TG_OP='INSERT' AND NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC');
+  -- フラグ zoo.thread_live_import: on は、取り込みの直近の返信（ライブ）、off は、取り込みの履歴（ライブにしない）、
+  -- 未設定・空文字列は、zoo の返信。一度も設定していない接続では、current_setting が NULL を返すので、空文字列にそろえる
+  -- （NULL のままだと、条件が NULL になって、zoo の返信の再参加の UPDATE が動かなくなる）
+  import_flag:=COALESCE(current_setting('zoo.thread_live_import',true),'');
+  imported_live:=TG_OP='INSERT' AND import_flag='on';
+  -- 履歴の取り込み（off）は、時計のずれで作成日時が DB の時刻より先でも（posted_now が真でも）、ライブにしない
+  live_post:=imported_live OR (posted_now AND import_flag<>'off');
+  INSERT INTO thread_participants(thread_id,user_id)
+    VALUES(NEW.parent_id,parent_author),(NEW.parent_id,NEW.user_id) ON CONFLICT DO NOTHING;
+  IF live_post THEN
+    -- 取り込みの返信は作成日時が過去なので、遅れて届くと、返信より後に退出した人を再参加させてしまう。
+    -- 取り込みの直近の返信（imported_live）は、時計のずれで作成日時が DB の時刻より先でも、返信より後の退出は
+    -- 取り消さない（left_at < created_at の返信だけが再参加させる）。
+    -- zoo の返信（フラグなしで posted_now）は、従来どおり常に再参加する。履歴の取り込み（off）は、ここに来ない。
+    UPDATE thread_participants SET left_at=NULL,joined_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC'
+      WHERE thread_id=NEW.parent_id AND user_id=NEW.user_id AND left_at IS NOT NULL
+        AND (left_at < NEW.created_at OR NOT imported_live);
+  END IF;
+  UPDATE messages SET
+    thread_activity_at=GREATEST(thread_activity_at,created_at,NEW.created_at),
+    thread_archive_at=CASE WHEN live_post THEN NULL ELSE thread_archive_at END
+    WHERE id=NEW.parent_id;
+  RETURN NULL;
+END $$;

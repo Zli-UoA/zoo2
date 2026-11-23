@@ -130,10 +130,11 @@ impl FcmConfig {
         endpoint: &str,
         user: &str,
         payload: &NotificationPayload,
+        ttl: u32,
     ) -> anyhow::Result<bool> {
         let (token, binding) = registration(endpoint)
             .ok_or_else(|| anyhow::anyhow!("Invalid Android registration"))?;
-        let body = message(token, binding, user, payload);
+        let body = message(token, binding, user, payload, ttl);
         anyhow::ensure!(
             serde_json::to_vec(&body["message"]["data"])?.len() <= 4096,
             "FCM data payload too large"
@@ -176,7 +177,20 @@ async fn post_message(
 }
 
 /// A binding changes on logout/account switch, so delayed pushes cannot cross sessions.
+const DM_CALLS_SUFFIX: &str = ":dm-calls";
+
+pub(super) fn accepts_notification(endpoint: &str, kind: &str) -> bool {
+    match kind {
+        "missed_call" => false,
+        "call_invite" | "call_invite_end" => {
+            endpoint.ends_with(DM_CALLS_SUFFIX) && registration(endpoint).is_some()
+        }
+        _ => true,
+    }
+}
+
 pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
+    let endpoint = endpoint.strip_suffix(DM_CALLS_SUFFIX).unwrap_or(endpoint);
     let (token, binding) = endpoint.strip_prefix("fcm:")?.rsplit_once(':')?;
     if token.is_empty()
         || token.len() > 4096
@@ -190,12 +204,43 @@ pub fn registration(endpoint: &str) -> Option<(&str, &str)> {
     Some((token, binding))
 }
 
-fn message(token: &str, binding: &str, user: &str, payload: &NotificationPayload) -> Value {
+fn message(
+    token: &str,
+    binding: &str,
+    user: &str,
+    payload: &NotificationPayload,
+    ttl: u32,
+) -> Value {
     // Data-only messages reach FirebaseMessagingService in the foreground and after process death.
     // Never attach E2EE ciphertext: Android displays the existing generic encrypted-message body.
-    json!({"message": {"token": token, "android": {"priority": "HIGH", "ttl": "300s"},
-        "data": {"binding": binding, "userId": user, "title": payload.title, "body": payload.body,
-            "url": payload.url, "tag": payload.tag, "notificationType": payload.notification_type}}})
+    let mut data = json!({"binding": binding, "userId": user, "title": payload.title,
+        "body": payload.body, "url": payload.url, "tag": payload.tag,
+        "notificationType": payload.notification_type});
+    if let Some(id) = &payload.invite_id {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        data["inviteId"] = json!(id);
+        data["expiresAt"] = json!((now + u64::from(ttl)).to_string());
+    }
+    if let Some(preview) = &payload.android_preview {
+        data["actor"] = json!(preview.actor);
+        data["channelName"] = json!(preview.channel);
+        if let Some(avatar) = &preview.avatar_url {
+            data["avatarUrl"] = json!(avatar);
+        }
+        if let Some(image) = &preview.image_id {
+            data["imageId"] = json!(image);
+        }
+    }
+    let priority = if payload.notification_type == "call_invite_end" {
+        "NORMAL"
+    } else {
+        "HIGH"
+    };
+    json!({"message": {"token": token, "android": {"priority": priority, "ttl": format!("{ttl}s")},
+        "data": data}})
 }
 
 fn is_unregistered(error: &Value) -> bool {
@@ -252,6 +297,20 @@ mod tests {
     }
 
     #[test]
+    fn only_opted_in_subscriptions_receive_dm_invites_and_ends() {
+        let endpoint = format!("fcm:test:{}", uuid::Uuid::new_v4());
+        let opted_in = format!("{endpoint}{DM_CALLS_SUFFIX}");
+        assert_eq!(registration(&endpoint), registration(&opted_in));
+        for kind in ["call_invite", "call_invite_end"] {
+            assert!(!accepts_notification(&endpoint, kind));
+            assert!(accepts_notification(&opted_in, kind));
+            assert!(!accepts_notification("fcm:invalid:dm-calls", kind));
+        }
+        assert!(accepts_notification(&endpoint, "mention"));
+        assert!(!accepts_notification(&opted_in, "missed_call"));
+    }
+
+    #[test]
     fn only_unregistered_tokens_are_removed() {
         assert!(!is_unregistered(&json!({"error":{"status":"NOT_FOUND"}})));
         assert!(!is_unregistered(
@@ -272,14 +331,68 @@ mod tests {
             notification_type: "dm".into(),
             e2ee: None,
             invite_id: None,
+            android_preview: Some(super::super::AndroidPreview {
+                actor: "Actor".into(),
+                channel: "General".into(),
+                avatar_url: Some("https://zoo.example/avatar.png".into()),
+                image_id: Some("attachment-id".into()),
+            }),
         };
-        let body = message("token", "binding", "user", &payload);
+        let body = message("token", "binding", "user", &payload, 300);
         assert_eq!(body["message"]["android"]["priority"], "HIGH");
         assert_eq!(body["message"]["data"]["binding"], "binding");
         assert_eq!(body["message"]["data"]["userId"], "user");
         assert!(body["message"].get("notification").is_none());
         assert!(body["message"]["data"].get("e2ee").is_none());
+        assert_eq!(body["message"]["data"]["actor"], "Actor");
+        assert_eq!(body["message"]["data"]["imageId"], "attachment-id");
+        assert!(
+            serde_json::to_value(&payload)
+                .unwrap()
+                .get("android_preview")
+                .is_none()
+        );
     }
+    #[test]
+    fn call_invite_carries_its_short_ttl_and_identifier() {
+        let payload = NotificationPayload {
+            title: "Caller".into(),
+            body: "Incoming call".into(),
+            url: "/channels/dm?call_invite=invite".into(),
+            tag: "zoo-call-invite".into(),
+            notification_type: "call_invite".into(),
+            e2ee: None,
+            invite_id: Some("invite".into()),
+            android_preview: None,
+        };
+        let body = message("token", "binding", "user", &payload, 17);
+        assert_eq!(body["message"]["android"]["ttl"], "17s");
+        assert_eq!(body["message"]["data"]["inviteId"], "invite");
+        assert!(
+            body["message"]["data"]["expiresAt"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn call_end_is_normal_priority() {
+        let payload = NotificationPayload {
+            title: String::new(),
+            body: String::new(),
+            url: "/channels/dm".into(),
+            tag: "zoo-call-invite".into(),
+            notification_type: "call_invite_end".into(),
+            e2ee: None,
+            invite_id: Some("invite".into()),
+            android_preview: None,
+        };
+        let body = message("token", "binding", "user", &payload, 60);
+        assert_eq!(body["message"]["android"]["priority"], "NORMAL");
+    }
+
     #[tokio::test]
     async fn http_delivery_authenticates_and_preserves_devices_on_project_errors() {
         use wiremock::{

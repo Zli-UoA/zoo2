@@ -18,6 +18,10 @@
 
 N はどの処理の探索上限にも入れない。無関係なチャンネルのノートは `channel_id` の索引範囲外であり、一覧・書き込み・削除の対象にならない。API は有効ノートが 500 件に達している状態の作成・復元を `409 Conflict` で拒否するため、K の最悪値は 500 件である。一覧・削除済み一覧は、1 要求あたりの応答件数・転送量・メモリが SQL の LIMIT で K_page ≤ 200（既定 50）に制限される一方、SQL 側の走査は対象チャンネルの範囲（一覧は有効ノート K ≤ 500、削除済み一覧は 24 時間以内の D 行）に収まる。有効ノート一覧はページ継続の競合検出に `order_token` を使うため、同じ文でチャンネルの有効ノート K 行全体を (position, id) 順に 1 回集約する。これは K に比例し N に依存しない。`idx_channel_notes_channel_position` は (channel_id, position) で id を含まないため、一覧の走査は (position, id) の Incremental Sort を挟み、after が空でないページでも `CASE WHEN $2 = ''` は (position, id) への直接シークにならず、同じチャンネルの K ≤ 500 範囲内の走査になる。以下の 50 件計測は代表値で、一覧・復元は O(K)、並べ替えは更新 O(K) に加えてソート分の O(K log K) が上乗せされる。
 
+### 削除済みノートの保持量
+
+復元期限内の削除済みノート数 D には、API の件数・サイズ上限を設けていない。有効ノートの K ≤ 500 は作成・復元時に強制するが、削除は編集・整理の正当な操作でも起きるため、削除を上限で拒否すると復元できるノートを失う。D は cleanup ワーカーが 24 時間で物理削除するので、通常のチャンネルでは 24 時間あたり数十件〜100 件程度（下の fixture の削除済み 100 件と同じ範囲）に収まる。削除済み一覧の SQL は `(deleted_at, id)` のカーソルから索引走査を始め、1 ページの読み取りを LIMIT（≤ 200、既定 50）で抑えるため、D が増えても 1 要求の仕事は D に比例しない（O(log D + K_page)）。削除ループのような高頻度の削除が観測された場合は、削除済みノートの件数上限や rate limit を追加する余地がある。
+
 ## 検証結果
 
 PostgreSQL 16.15、JIT 無効。ローカルの使い捨て DB（`initdb -E UTF8 --locale=C`）で、Rust の統合テストから `EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON)` を実行した。probe は本番と同じ位置にパラメーターを置き、対象 ID を `EXECUTE` の引数で渡す。単独 30 回は custom plan（バインド値で計画）、8 同時×30 回は `force_generic_plan`（値を参照しない計画）で、初回も捨てない。API は実際の Axum Router を in-process で呼び、認証・プール待ち・トランザクション・シリアライズを含む。HTTP ネットワークとブラウザー描画は含まない。debug build の参考値である。有効ノート一覧の probe は本番と同じ SQL（メタデータ列 + `order_token` を出す `ordering` CTE + 外側の `ORDER BY page.position, page.id`）を使う。

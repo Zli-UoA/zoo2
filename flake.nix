@@ -57,8 +57,8 @@
           vulkan-loader
           wayland
         ];
-        # デスクトップの画面撮影 (scripts/desktop-screenshot.sh) 用。
-        # 仮想ディスプレイ (Xvfb) と WM (openbox) の上で GPUI を lavapipe (CPU の Vulkan) で描く。
+        # デスクトップの起動時間・メモリの測定 (scripts/desktop-bench.sh) 用。
+        # 仮想ディスプレイ (Xvfb) と WM (openbox) の上で動かす。
         desktopScreenshotTools = with pkgs; [
           xvfb
           openbox
@@ -201,7 +201,7 @@
         # CI Android（.github/workflows/ci-android.yaml）の setup-android と同じ版にそろえる。
         androidNdkVersion = "29.0.14206865";
         androidComposition = androidPkgs.androidenv.composeAndroidPackages {
-          platformVersions = [ "35" ];
+          platformVersions = [ "35" "36" ];
           buildToolsVersions = [ "35.0.0" ];
           includeNDK = true;
           ndkVersions = [ androidNdkVersion ];
@@ -281,7 +281,7 @@
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ tauriLibs ++ desktopScreenshotTools);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
-          # lavapipe の Vulkan ICD。desktop-screenshot.sh が VK_ICD_FILENAMES に使う。
+          # lavapipe の Vulkan ICD。desktop-bench.sh が VK_ICD_FILENAMES に使う。
           ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
           LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath (linuxDesktopLibs ++ tauriLibs));

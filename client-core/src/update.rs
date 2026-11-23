@@ -54,7 +54,7 @@ pub async fn check(
     .await
 }
 
-/// 指定したタグ接頭辞 (`tui-v` や `desktop-v` など) で新しいリリースを調べる。
+/// 指定したタグ接頭辞 (`tui-v` など) で新しいリリースを調べる。
 pub async fn check_for(
     http: &reqwest::Client,
     url: &str,

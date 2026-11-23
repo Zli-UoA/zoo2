@@ -186,7 +186,7 @@ export function ChannelHeader({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          <h1 className="truncate text-sm font-semibold">{displayTitle}</h1>
           {channel.encrypted ? (
             // 見た目の印は左のアイコン（DM は鍵を重ねたアイコン）だけにし、印の文字はチャンネル設定に出す。読み上げでは、
             // 送信の前に暗号化されているかを確かめられるよう、見出しの隣で伝える。
@@ -247,8 +247,11 @@ export function ChannelHeader({
           <Button
             variant="outline"
             size="sm"
-            onClick={shell.toggleMembers}
-            aria-expanded={shell.membersOpen}
+            // sm 未満ではラベルが非表示になりアイコンだけになるため、タッチ時は縦横とも 44px 以上にする。
+            className="[@media(hover:none)]:min-h-11 [@media(hover:none)]:min-w-11"
+            // スレッドの人数ボタンと同じく、画面中央のダイアログを開く。
+            onClick={() => shell.setMembersOpen(true)}
+            aria-haspopup="dialog"
             aria-label={
               memberCount === undefined || memberCount === null
                 ? t("members.title")

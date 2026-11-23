@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { previewUrls, proxyImageUrl } from "./linkPreviews";
+import { proxyImageUrl } from "../../../lib/media-proxy";
+import { previewUrls } from "./linkPreviews";
 
 describe("link previews", () => {
   it("extracts visible links, deduplicates and limits cards", () => {

@@ -116,8 +116,8 @@ export function restrictWorkflow(selection, workflow, jobs) {
     selection.frontendBuild = { check: jobs.has('check'), build: jobs.has('build'), wasm: jobs.has('crypto-wasm') };
   } else if (workflow === 'ci-backend') {
     Object.assign(selection.backend, { check: jobs.has('check'), deploy: jobs.has('deploy-image'), run: jobs.has('e2e'), emoji: jobs.has('shared-emoji-projection') });
-  } else if (workflow === 'ci-desktop-tauri') selection.desktopTauri = { check: jobs.has('check'), macos: jobs.has('macos') };
-  else if (workflow === 'ci-tui') selection.clients = { tui: jobs.has('check'), desktop: jobs.has('desktop') };
+  } else if (workflow === 'ci-desktop-tauri') selection.desktopTauri = { check: jobs.has('check'), macos: jobs.has('macos'), windows: jobs.has('windows') };
+  else if (workflow === 'ci-tui') selection.clients = { tui: jobs.has('check') };
   else if (workflow === 'ci-github-bot') selection.bots = { bot: jobs.has('test'), sdk: jobs.has('sdk-e2ee'), image: jobs.has('test') };
   else if (workflow === 'ci-frontend-auth-e2e') selection.frontend.auth = jobs.has('oidc-e2e');
   else if (workflow === 'ci-frontend-e2ee-e2e') selection.frontend.e2ee = jobs.has('e2ee-e2e');

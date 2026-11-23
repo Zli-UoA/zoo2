@@ -877,6 +877,68 @@ async fn encrypted_messages_require_ciphertext_and_the_current_epoch() {
     assert_eq!(seen[0]["recent"], true);
 }
 
+/// 暗号化チャンネルでも、参加行があるスレッドへの返信は、スレッドへの参加が要る
+/// （`THREAD_JOIN_REQUIRED`）。参加すれば同じ返信が通る。
+#[tokio::test]
+async fn replies_to_a_tracked_thread_need_a_join_in_encrypted_channels_too() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    let channel = env.encrypted_channel(&alice, &[&bob]).await;
+    let epoch = env.epoch(&channel).await;
+    let alice_device = env.device(&alice).await;
+    let bob_device = env.device(&bob).await;
+    let root = Uuid::new_v4().to_string();
+    let (status, body) = env
+        .call(
+            "POST",
+            "/api/messages",
+            &alice,
+            message(&channel, &root, &alice_device, epoch, "root"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reply = |account: &DeviceAccount, text: &str| {
+        let mut body = message(&channel, &Uuid::new_v4().to_string(), account, epoch, text);
+        body["parent_id"] = json!(root);
+        body
+    };
+    // The first reply creates the thread; Bob is then a participant.
+    let (status, body) = env
+        .call("POST", "/api/messages", &bob, reply(&bob_device, "first"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = env
+        .call(
+            "POST",
+            &format!("/api/threads/{root}/leave"),
+            &bob,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The retry after the join is the same request: the client keeps the payload (and its post ID)
+    // of the refused reply, as `reply` makes a new ID on every call.
+    let again = reply(&bob_device, "again");
+    let (status, body) = env.call("POST", "/api/messages", &bob, again.clone()).await;
+    assert_eq!(
+        (status, code(&body)),
+        (StatusCode::FORBIDDEN, "THREAD_JOIN_REQUIRED"),
+        "{body}"
+    );
+    let (status, body) = env
+        .call(
+            "POST",
+            &format!("/api/threads/{root}/join"),
+            &bob,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = env.call("POST", "/api/messages", &bob, again).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 #[tokio::test]
 async fn edits_check_revision_and_deletes_clear_ciphertext() {
     let env = env().await;
@@ -1906,7 +1968,7 @@ async fn membership_insert_racing_single_guest_transition_preserves_single_chann
         .get::<_, String>(0);
     deferred_db
         .batch_execute(include_str!(
-            "../../infra/db/deferred-migrations/20261129020009_guest_membership_lock_order.sql"
+            "../../infra/db/deferred-migrations/20261130030009_guest_membership_lock_order.sql"
         ))
         .await?;
     let result = std::panic::AssertUnwindSafe(run_membership_race(&env))

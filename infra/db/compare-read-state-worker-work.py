@@ -6,11 +6,11 @@ from pathlib import Path
 small = json.loads((Path(sys.argv[1]) / 'work.json').read_text())
 large = json.loads((Path(sys.argv[2]) / 'work.json').read_text())
 
-# The exact 14 measured query conditions written by
+# The exact 15 measured query conditions written by
 # backend/tests/read_state_worker_scale_test.rs. Both scales must report the
 # same complete set so a skipped or renamed condition cannot silently pass.
 EXPECTED_CONDITIONS = frozenset({
-    'read_list', 'read_single',
+    'read_list', 'read_list_light', 'read_single',
     'slack_wake_empty', 'slack_due_empty',
     'slack_wake_ready', 'slack_due_ready',
     'slack_wake_team_empty', 'slack_due_team_empty',
@@ -28,6 +28,7 @@ def condition_diff(label, conditions):
 
 small_conditions = frozenset(small)
 large_conditions = frozenset(large)
+assert small.keys() == large.keys(), 'small and large work.json disagree on query conditions'
 assert small_conditions == EXPECTED_CONDITIONS, condition_diff('small', small_conditions)
 assert large_conditions == EXPECTED_CONDITIONS, condition_diff('large', large_conditions)
 

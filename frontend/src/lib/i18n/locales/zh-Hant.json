@@ -1,4 +1,16 @@
 {
+  "a11y": {
+    "skipToContent": "跳至主要內容"
+  },
+  "aboutZoo": {
+    "title": "關於 Zoo",
+    "version": "版本：{{version}}",
+    "versionUnknown": "未知"
+  },
+  "notFoundPage": {
+    "title": "找不到頁面",
+    "description": "你要找的頁面可能已移動或不存在。"
+  },
   "nav": {
     "main": "主導覽"
   },
@@ -10,6 +22,10 @@
     "unread": "有未讀訊息",
     "editTitle": "編輯頻道",
     "editHelp": "頻道名稱最多80個字元，僅限文字、數字、半形連字號（-）和底線（_）。不能使用空格、表情符號、其他符號或保留名稱。",
+    "nameRequired": "請輸入頻道名稱。",
+    "nameTooLong": "頻道名稱請控制在{{max}}個字元以內（目前{{length}}個字元）。",
+    "nameReserved": "「{{name}}」是保留名稱，無法使用。",
+    "invalidName": "頻道名稱只能使用文字、數字、半形連字號（-）和底線（_）。",
     "saveName": "儲存",
     "savingName": "儲存中…",
     "title": "頻道",
@@ -44,6 +60,7 @@
     "notFound": "找不到頻道。",
     "duplicateName": "同名頻道已存在。",
     "privateMessages": "此頻道為私人頻道，受邀後即可查看訊息。",
+    "postingManagersOnly": "此頻道僅管理員可以發文。",
     "back": "返回頻道列表",
     "noDescription": "尚無說明",
     "visibilityHelp": "任何人都可以加入公開頻道。私人頻道僅限建立者邀請的人加入。",
@@ -122,8 +139,7 @@
     "candidates": "成員建議",
     "usersLoading": "正在載入使用者…",
     "usersError": "無法載入使用者。",
-    "usersEmpty": "找不到符合的使用者。",
-    "back": "返回頻道"
+    "usersEmpty": "找不到符合的使用者。"
   },
   "moderation": {
     "archived": "已封存",
@@ -159,6 +175,11 @@
     "invalidState": "目前狀態無法執行此操作。"
   },
   "settings": {
+    "appearance": "外觀",
+    "interaction": "操作方式",
+    "swipeReply": "滑動回覆",
+    "operationHaptics": "觸覺回饋",
+    "navTitle": "設定",
     "admin": "管理員",
     "member": "成員",
     "makeAdmin": "設為管理員",
@@ -198,6 +219,7 @@
     "description": "從左側列表選擇頻道，即可查看對話。"
   },
   "messages": {
+    "loadingOlder": "正在載入較早的訊息…",
     "typing": "{{names}}正在輸入…",
     "typingSeparator": "、",
     "compose": "輸入訊息",
@@ -205,6 +227,7 @@
     "edit": "編輯",
     "delete": "刪除",
     "more": "更多操作",
+    "actions": "操作訊息",
     "editLabel": "編輯訊息",
     "loadError": "無法載入訊息",
     "retryHelp": "請檢查連線後再試一次。",
@@ -227,6 +250,10 @@
     "edited": "已編輯"
   },
   "attachments": {
+    "recentPhotos": "最近的照片",
+    "systemPhotos": "開啟照片選擇器",
+    "allowRecentPhotos": "允許存取照片",
+    "noRecentPhotos": "沒有可顯示的照片",
     "play": "播放",
     "pause": "暫停",
     "add": "附加檔案",
@@ -257,6 +284,8 @@
     "containedFiles": "包含的檔案",
     "previousPage": "上一頁",
     "nextPage": "下一頁",
+    "pageNumber": "頁碼",
+    "pdfPages": "PDF 頁面列表",
     "pdfPage": "PDF 第{{page}}頁",
     "mail": {
       "subject": "主旨",
@@ -293,8 +322,18 @@
     "join": "加入討論串",
     "leave": "退出討論串",
     "reopen": "重新開啟",
-    "reopenOnSend": "傳送回覆將重新開啟並加入此討論串。",
-    "membershipError": "無法更新討論串參與狀態。"
+    "reopenOnSend": "傳送回覆將重新開啟此討論串。",
+    "membershipError": "無法更新討論串參與狀態。",
+    "participants_one": "參與者 {{count}} 人",
+    "participants_other": "參與者 {{count}} 人",
+    "participantsMore": "另有 {{count}} 人",
+    "participantsEmpty": "沒有參與者",
+    "threadStarter": "討論串發起人",
+    "participantsSearch": "搜尋姓名",
+    "participantsFilterPartial": "僅在已載入的前 {{loaded}} 人中篩選（另有 {{count}} 人無法搜尋）。",
+    "participantsDescription": "已加入此討論串的人。",
+    "joinToReply": "參與後才能回覆此討論串。",
+    "reopenAndJoin": "重新開啟並參與"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
@@ -328,7 +367,6 @@
     "noSearchResults": "沒有符合的表情",
     "tabEmoji": "表情符號",
     "tabKitchen": "Emoji Kitchen",
-    "emojiDescription": "可以從所有表情符號中選擇。",
     "emojiLoading": "正在載入表情符號…",
     "recent": "最近使用的表情符號",
     "skinTone": "膚色"
@@ -366,6 +404,8 @@
     "channels": "頻道建議"
   },
   "notifications": {
+    "filterAll": "全部通知",
+    "filterMentions": "提及",
     "label": "通知",
     "close": "關閉通知",
     "title": "通知",
@@ -563,6 +603,7 @@
     "micNotFound": "未找到麥克風設備。"
   },
   "bubbleChat": {
+    "navTitle": "Bubble",
     "title": "Bubble Chat",
     "description": "輸入的文字會即時顯示在此房間中",
     "emptyTitle": "目前沒有人在輸入",
@@ -776,6 +817,7 @@
     "showLess": "收合"
   },
   "home": {
+    "navTitle": "首頁",
     "back": "返回",
     "deleted": "已刪除貼文",
     "newPosts": "查看新貼文（{{count}}）",
@@ -791,6 +833,7 @@
     "post": "發佈",
     "sending": "發佈中…",
     "sendError": "發佈失敗，草稿已保留，請重試。",
+    "postForbidden": "你無法在此頻道發佈。",
     "loadError": "無法載入時間軸。",
     "loading": "載入中…",
     "empty": "還沒有貼文",
@@ -1691,6 +1734,9 @@
     "empty": "沒有可用的公開頻道。",
     "saved": "已儲存。"
   },
+  "androidUpdate": {
+    "title": "應用程式更新"
+  },
   "androidNotifications": {
     "enable": "啟用通知",
     "scope": "登入工作階段同步期間接收新通知。",
@@ -1799,11 +1845,81 @@
   "androidPhone": {
     "description": "透過裝置的通話功能使用個人或共用SIP線路及私訊語音通話。",
     "nativeCalls": "裝置通話整合",
-    "nativeHelp": "啟用來電後會顯示持續通知並保持連線。可透過裝置的通話控制接聽、掛斷和切換音訊輸出。需要麥克風權限。",
+    "nativeHelp": "有來電時會顯示通話通知。允許通知後，支援的裝置可在背景接收私訊來電。等待 SIP 來電，或在無法使用 FCM 的裝置上等待私訊來電時，請將 Zoo 保持在前景。可透過裝置的通話控制接聽、掛斷和切換音訊輸出，需要麥克風權限。",
+    "minimizeCall": "最小化",
+    "expandCall": "展開通話",
+    "floatCall": "子母畫面",
+    "pipUnavailable": "請在 Android 設定中檢查子母畫面。",
+    "incomingScreenSettings": "全螢幕來電設定",
     "receiveDm": "接收私訊來電",
     "callError": "無法準備或操作通話，請檢查麥克風權限、裝置通話支援、網路和線路設定。",
     "speaker": "揚聲器",
     "waiting": "正在等候來電",
     "dmCall": "通話"
+  },
+  "globalSearch": {
+    "title": "搜尋",
+    "placeholder": "搜尋訊息和檔案",
+    "kinds": {
+      "all": "全部",
+      "messages": "訊息",
+      "files": "檔案"
+    },
+    "prompt": "請輸入要搜尋的字詞。以空格分隔時，會尋找包含所有字詞的結果。",
+    "empty": "找不到結果。",
+    "emptyOlder": "截至 {{month}} 找不到結果。可以繼續搜尋更早的內容。",
+    "searchedUntil": "已搜尋至 {{month}}",
+    "searchOlder": "搜尋更早的結果",
+    "loading": "搜尋中…",
+    "loadError": "無法搜尋。",
+    "retry": "重試",
+    "tooManyTerms": "最多可以搜尋 {{max}} 個詞。請減少詞數。",
+    "termTooLong": "每個詞最多 {{max}} 個字元。請縮短該詞。",
+    "encryptedNote": "加密頻道不在搜尋範圍內。",
+    "openNav": "搜尋",
+    "inThread": "子討論回覆",
+    "filters": {
+      "label": "篩選",
+      "from": "傳送者",
+      "anyone": "所有人",
+      "in": "頻道",
+      "anywhere": "所有頻道",
+      "period": "日期",
+      "anytime": "不限",
+      "last7": "過去 7 天",
+      "last30": "過去 30 天",
+      "last365": "過去 1 年",
+      "custom": "指定日期",
+      "after": "開始日期",
+      "before": "結束日期",
+      "reversed": "開始日期不能晚於結束日期。",
+      "reset": "重設條件"
+    }
+  },
+  "catchUp": {
+    "navUnread_one": "{{count}} 個未讀對話待查看",
+    "navUnread_other": "{{count}} 個未讀對話待查看",
+    "title": "未讀訊息速覽",
+    "close": "結束",
+    "count_one": "{{count}} 則未讀訊息",
+    "count_other": "{{count}} 則未讀訊息",
+    "overCount_one": "{{count}}+ 則未讀訊息",
+    "overCount_other": "{{count}}+ 則未讀訊息",
+    "progress": "{{current}} / {{total}}",
+    "markRead": "標為已讀",
+    "keepUnread": "保持未讀並前往下一則",
+    "readError": "無法標為已讀，請再試一次",
+    "loadError": "無法載入未讀對話",
+    "retry": "重試",
+    "loading": "正在載入未讀對話",
+    "empty": "沒有未讀對話",
+    "emptyDescription": "有新訊息時再回來查看",
+    "complete": "全部看完",
+    "summary": "已讀 {{read}} 個 · 保持未讀 {{skipped}} 個",
+    "refresh": "重新整理",
+    "conversation": "對話",
+    "unreadTooOld": "部分較舊的未讀訊息仍在讀取範圍外。請先載入更多再標為已讀。",
+    "loadMore": "載入更多",
+    "unreadChanged": "閱讀期間有新的未讀訊息。請保持此對話未讀並繼續。"
   }
 }

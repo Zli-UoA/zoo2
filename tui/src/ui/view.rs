@@ -13,14 +13,18 @@ use super::{
     app::{App, Focus, Mode, SidebarItem, Target},
     e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
+    global_search,
     timeline::{self, Context},
 };
+use crate::api::SearchKind;
 use crate::e2ee::reauth;
 use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Style = Style::new().fg(Color::DarkGray);
+/// 全文検索の結果で、検索語に当たった部分。
+const HIGHLIGHT: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
@@ -80,6 +84,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let scroll = *scroll;
             draw_recipients(frame, app, scroll);
         }
+        Mode::GlobalSearch => draw_global_search(frame, app),
         _ => {}
     }
 }
@@ -254,6 +259,202 @@ fn draw_recipients(frame: &mut Frame, app: &App, scroll: usize) {
     draw_popup_sized(frame, "配布先の詳細", visible, 72);
 }
 
+/// 全文検索の画面（docs/search.md）。結果は 2 行ずつ（行き先・投稿者・日付と、抜粋）。
+fn draw_global_search(frame: &mut Frame, app: &App) {
+    const WIDTH: u16 = 84;
+    let search = &app.global_search;
+    let accent = Style::new().fg(ACCENT);
+    let inner = usize::from(WIDTH.min(frame.area().width).saturating_sub(2));
+    let kind = |value: SearchKind, label: &'static str| {
+        if search.kind == value {
+            Span::styled(format!("[{label}]"), accent.add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(format!(" {label} "), DIM)
+        }
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("検索: ", accent),
+            // 検索語は残したまま、入力欄は 1 行にする。長ければ末尾（入力位置）が見えるよう先頭を省く。
+            Span::raw(tail_width(&search.query, inner.saturating_sub(7))),
+            Span::styled("▏", accent),
+        ]),
+        Line::from(vec![
+            kind(SearchKind::All, "すべて"),
+            Span::raw(" "),
+            kind(SearchKind::Messages, "メッセージ"),
+            Span::raw(" "),
+            kind(SearchKind::Files, "ファイル"),
+            Span::styled(
+                "   絞り込み: from:@名前 in:#チャンネル after:/before:YYYY-MM-DD",
+                DIM,
+            ),
+        ]),
+        Line::from(""),
+    ];
+    let status = if search.loading {
+        Line::styled("検索中…", DIM)
+    } else if let Some(error) = &search.error {
+        Line::styled(
+            format!("検索できませんでした: {error}  Enter で再試行します。"),
+            Style::new().fg(Color::Red),
+        )
+    } else if search.searched.is_none() {
+        Line::styled(
+            "語を入れて Enter。空白で区切ると、すべての語を含むものを探します。",
+            DIM,
+        )
+    } else {
+        match (
+            &search.next_cursor,
+            &search.searched_until,
+            search.items.is_empty(),
+        ) {
+            (Some(_), Some(month), true) => Line::styled(
+                format!("{month} までに見つかりませんでした。↓ でさらに古い期間を検索します。"),
+                DIM,
+            ),
+            (Some(_), Some(month), false) => Line::styled(
+                format!(
+                    "{month} まで検索しました。末尾で ↓ を押すと、さらに古い結果を検索します。"
+                ),
+                DIM,
+            ),
+            // 最後まで見終わったときも、どこまで見たかは出す。
+            (None, Some(month), true) => Line::styled(
+                format!("{month} まで検索しました。見つかりませんでした。"),
+                DIM,
+            ),
+            (None, Some(month), false) => Line::styled(
+                format!("{} 件（{month} まで検索しました）", search.items.len()),
+                DIM,
+            ),
+            (_, _, true) => Line::styled("見つかりませんでした。", DIM),
+            _ => Line::styled(format!("{} 件", search.items.len()), DIM),
+        }
+    };
+    let footer = vec![
+        Line::from(""),
+        status,
+        Line::styled("暗号化されたチャンネルは検索の対象外です。", DIM),
+        Line::styled("Enter: 検索 / 開く  ↑↓: 選ぶ  Tab: 種類  Esc: 閉じる", DIM),
+    ];
+    // 結果は 1 件 2 行（見出しと抜粋はどちらも 1 行に切り詰める）。見出しと末尾の案内が折り返した後の
+    // 行数と枠の 2 行を先に取り、残りの高さに入る件数だけ、選択が見える範囲を出す。
+    let width = WIDTH.min(frame.area().width);
+    let fixed = popup_rows(&lines, width) + popup_rows(&footer, width) + 2;
+    let room = (usize::from(frame.area().height).saturating_sub(fixed) / 2).max(1);
+    let first = search.selected.saturating_sub(room.saturating_sub(1));
+    let terms = global_search::highlight_terms(search);
+    for (index, item) in search.items.iter().enumerate().skip(first).take(room) {
+        let selected = index == search.selected;
+        let place = match app.store.channel(&item.channel_id) {
+            Some(channel) if channel.is_dm => app.store.channel_label(channel, &app.me.id),
+            _ => format!("#{}", item.channel_name),
+        };
+        let mut head = vec![
+            Span::styled(if selected { "▶ " } else { "  " }, accent),
+            Span::styled(place, if selected { accent } else { Style::new() }),
+        ];
+        if let Some(author) = &item.author {
+            head.push(Span::styled(format!("  {author}"), DIM));
+        }
+        head.push(Span::styled(
+            format!(
+                "  {}",
+                global_search::result_day(&item.created_at, &jiff::tz::TimeZone::system())
+            ),
+            DIM,
+        ));
+        if item.parent_id.is_some() {
+            head.push(Span::styled("  スレッドの返信", DIM));
+        }
+        // 見出しも 1 行に収める（折り返すと 1 件 2 行の前提が崩れ、狭い端末で選択や案内が画面外に出る）。
+        lines.push(Line::from(truncate_spans(head, inner)));
+        let text = item.file_name.as_deref().unwrap_or(&item.snippet);
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        // 検索語に当たった部分を強調する（Web の `<mark>` と同じ）。
+        let base = if selected {
+            Style::new().add_modifier(Modifier::BOLD)
+        } else {
+            Style::new()
+        };
+        // 一致箇所が後ろにあっても見えるよう、その前を省いてから末尾を切り詰める。
+        let body = global_search::focus_first_hit(
+            global_search::highlight_segments(&text, &terms),
+            inner.saturating_sub(4),
+        )
+        .into_iter()
+        .map(|(piece, hit)| Span::styled(piece, if hit { base.patch(HIGHLIGHT) } else { base }))
+        .collect();
+        let mut row = vec![Span::raw("    ")];
+        row.extend(truncate_spans(body, inner.saturating_sub(4)));
+        lines.push(Line::from(row));
+    }
+    lines.extend(footer);
+    draw_popup_sized(frame, "全文検索", lines, WIDTH);
+}
+
+/// 表示幅で切り詰める（全角は 2）。切ったら末尾を `…` にする。
+/// 幅 `width` に収まるよう末尾を残し、先頭を省いたら `…` を付ける（全角は 2）。
+fn tail_width(text: &str, width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 1; // `…`
+    for ch in text.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
+}
+
+/// 幅 `width` に収まるよう、はみ出す span を `…` で切り、その後ろを捨てる。
+fn truncate_spans(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        if used >= width {
+            break;
+        }
+        let w = span.content.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        out.push(Span::styled(
+            truncate_width(&span.content, width - used),
+            span.style,
+        ));
+        break;
+    }
+    out
+}
+
+fn truncate_width(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width.saturating_sub(1) {
+            out.push('…');
+            return out;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out
+}
+
 /// チャンネルか DM の作成の入力欄（#361）。
 fn draw_create(frame: &mut Frame, form: &CreateForm) {
     let accent = Style::new().fg(ACCENT);
@@ -323,7 +524,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            if let SidebarItem::Thread { id, channel_id } = item {
+            if let SidebarItem::Thread { id, channel_id, .. } = item {
                 let thread = app.threads().find(|thread| thread.id == *id);
                 let archived = app.thread_is_archived(channel_id, id);
                 let content = app.thread_content(channel_id, id)?;
@@ -521,11 +722,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
-    app.newest_shown = built
-        .ranges
-        .iter()
-        .rfind(|(_, range)| range.start < scroll + height)
-        .map(|(id, _)| (channel_id.clone(), id.clone()));
+    // 全文検索の画面が覆っている間は、背後のタイムラインを読んだことにしない（既読を進めない）。
+    if app.mode != Mode::GlobalSearch {
+        app.newest_shown = built
+            .ranges
+            .iter()
+            .rfind(|(_, range)| range.start < scroll + height)
+            .map(|(id, _)| (channel_id.clone(), id.clone()));
+    }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
 }
@@ -544,22 +748,41 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(root) = app.store.message(&channel_id, &thread.root_id) else {
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                if app.store.is_synced(&ShapeId::Messages(channel_id.clone())) {
+    let replies = app.store.replies(&channel_id, &thread.root_id);
+    let mut inner = inner;
+    let mut messages = Vec::new();
+    match app.store.message(&channel_id, &thread.root_id) {
+        Some(root) => messages.push(root),
+        None => {
+            let synced = app.store.is_synced(&ShapeId::Messages(channel_id.clone()));
+            let notice = Paragraph::new(Line::styled(
+                if synced {
                     "元のメッセージは削除されました"
                 } else {
                     "読み込み中…"
                 },
                 DIM,
-            )),
-            inner,
-        );
-        return;
-    };
-    let mut messages = vec![root];
-    messages.extend(app.store.replies(&channel_id, &thread.root_id));
+            ));
+            // 親が削除されても返信は残る（全文検索から開くこともある）。返信があれば、知らせの下に描く。
+            if !synced || replies.is_empty() {
+                frame.render_widget(notice, inner);
+                return;
+            }
+            frame.render_widget(
+                notice,
+                Rect {
+                    height: 1.min(inner.height),
+                    ..inner
+                },
+            );
+            inner = Rect {
+                y: inner.y + 1.min(inner.height),
+                height: inner.height.saturating_sub(1),
+                ..inner
+            };
+        }
+    }
+    messages.extend(replies);
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
@@ -723,6 +946,7 @@ const HELP: &[(&str, &str)] = &[
     ("[ / ] / Alt+↑↓", "ピン留めを上 / 下へ (ピン留め選択中)"),
     ("J / L", "チャンネル・スレッドに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
+    ("S / Ctrl+F", "メッセージ・ファイルを全文検索"),
     ("u", "選択中のスレッドを再開"),
     ("c / m", "チャンネル / DM を作る (Tab で暗号化)"),
     ("V", "暗号化チャンネルの配布先の詳細"),
@@ -1146,6 +1370,7 @@ mod tests {
         let selected = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&selected));
         press(&mut app, KeyCode::Esc);
@@ -1172,6 +1397,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "empty".into(),
+            pinned: false,
         };
         assert!(app.thread.is_some());
         assert!(!app.sidebar_items().contains(&row));
@@ -1202,6 +1428,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -1244,6 +1471,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "r1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.current = Some("c1".into());
@@ -1321,6 +1549,484 @@ mod tests {
         assert_eq!(items[1], SidebarItem::Pinned("c1".into()));
         assert_eq!(items[2], SidebarItem::Channel("c1".into()));
         assert!(render(&mut app).contains("★"));
+    }
+
+    fn pin_c1(app: &mut App) {
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p1",
+                json!({
+                    "user_id": "u1", "channel_id": "c1", "position": "0",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+    }
+
+    #[tokio::test]
+    async fn pinned_channels_show_their_threads_like_the_channel_list() {
+        let mut app = app();
+        pin_c1(&mut app);
+        let thread = |pinned| SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+            pinned,
+        };
+        let items = app.sidebar_items();
+        // ピン留めの行の下にも、通常の一覧と同じスレッドを出す。通常の一覧のスレッドも残る。
+        assert_eq!(items[0], SidebarItem::Pinned("c1".into()));
+        assert_eq!(items[1], thread(true));
+        assert_eq!(items[2], SidebarItem::Channel("c1".into()));
+        assert_eq!(items[3], thread(false));
+        // 閲覧中のスレッドは、どちらの行の下にも残る。
+        app.current = Some("c1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "m1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(true)).count(),
+            1
+        );
+        assert_eq!(
+            items.iter().filter(|item| **item == thread(false)).count(),
+            1
+        );
+        assert_eq!(render(&mut app).matches("hello (1)").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn opening_a_pinned_thread_keeps_the_cursor_on_the_pinned_row() {
+        for pinned in [true, false] {
+            let mut app = app();
+            pin_c1(&mut app);
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+                pinned,
+            };
+            app.focus = Focus::Sidebar;
+            app.sidebar_index = app
+                .sidebar_items()
+                .iter()
+                .position(|item| *item == row)
+                .unwrap();
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("m1")
+            );
+            // 開いたあとも、カーソルは押した行（ピン留めの下か通常の一覧か）にある。
+            assert_eq!(app.sidebar_items()[app.sidebar_index], row, "{pinned}");
+        }
+    }
+
+    /// 別チャンネル (c2) の、一覧にないスレッド (r1) の一時の行。ピン留めの下にも、通常の一覧の下にも出る。
+    fn temporary_row(pinned: bool) -> SidebarItem {
+        SidebarItem::Thread {
+            channel_id: "c2".into(),
+            id: "r1".into(),
+            pinned,
+        }
+    }
+
+    /// c2（参加済み）に、返信のあるスレッド r1 がある。一覧 (`active_threads`) には載せない。
+    /// `viewing` なら c2 を開いて r1 を閲覧中にして、c2 の下に一時の行を出す。
+    fn app_with_unlisted_c2_thread(pin_c2: bool, viewing: bool) -> App {
+        let mut app = app();
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("c2".into()),
+            vec![
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u2", "channel_id": "c2",
+                               "content": "root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c2", "content": "reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "r1" }),
+                ),
+            ],
+        );
+        if pin_c2 {
+            feed(
+                &mut app,
+                ShapeId::UserPinnedChannels,
+                vec![(
+                    "p2",
+                    json!({
+                        "user_id": "u1", "channel_id": "c2", "position": "0",
+                        "created_at": "2026-11-11 00:00:00",
+                        "updated_at": "2026-11-11 00:00:00"
+                    }),
+                )],
+            );
+        }
+        app.current = Some("c2".into());
+        if viewing {
+            app.thread = Some(crate::ui::app::ThreadView {
+                root_id: "r1".into(),
+                selected: None,
+                scroll: 0,
+                inner_scroll: 0,
+            });
+        }
+        app
+    }
+
+    fn put_cursor_on(app: &mut App, row: &SidebarItem) {
+        app.sidebar_index = app
+            .sidebar_items()
+            .iter()
+            .position(|item| item == row)
+            .unwrap();
+    }
+
+    fn cursor_row(app: &App) -> SidebarItem {
+        app.sidebar_items()[app.sidebar_index].clone()
+    }
+
+    // 一時のスレッドの行が増減しても、カーソルは同じ行に残る。
+    // ピン留めの下の行は c1 より前にあるので、増減すると、c1 の添字がずれる。
+
+    #[tokio::test]
+    async fn opening_a_channel_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            let before = app.sidebar_items();
+            assert!(before.contains(&temporary_row(false)), "{pin_c2}");
+            assert_eq!(before.contains(&temporary_row(true)), pin_c2, "{pin_c2}");
+
+            let target = SidebarItem::Channel("c1".into());
+            app.focus = Focus::Sidebar;
+            put_cursor_on(&mut app, &target);
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.current.as_deref(), Some("c1"));
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            let after = app.sidebar_items();
+            assert!(
+                !after.contains(&temporary_row(false)) && !after.contains(&temporary_row(true))
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // c1 の行にカーソルを置いたまま、スレッドへ戻って Esc で閉じる。
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            app.focus = Focus::Thread;
+            press(&mut app, KeyCode::Esc);
+
+            assert!(app.thread.is_none());
+            assert_eq!(app.focus, Focus::Messages);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn opening_a_thread_keeps_the_cursor_when_a_temporary_thread_row_appears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, false);
+            assert!(!app.sidebar_items().contains(&temporary_row(true)));
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            // メッセージ欄で、返信のあるメッセージを選んで Enter でスレッドを開く。
+            app.focus = Focus::Messages;
+            app.selected = Some("r1".into());
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(app.focus, Focus::Thread);
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r1")
+            );
+            assert_eq!(
+                app.sidebar_items().contains(&temporary_row(true)),
+                pin_c2,
+                "{pin_c2}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn restoring_a_failed_draft_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        let mut app = app_with_unlisted_c2_thread(true, true);
+        let target = SidebarItem::Channel("c1".into());
+        put_cursor_on(&mut app, &target);
+        app.focus = Focus::Sidebar;
+        // 別のチャンネル (c1) の送れなかった本文を戻すと、c1 を開き、c2 のスレッドは閉じる。
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "戻す本文".into(),
+            edit_base: None,
+        });
+        press(&mut app, KeyCode::Char('R'));
+
+        assert_eq!(app.current.as_deref(), Some("c1"));
+        assert_eq!(app.composer.lines(), ["戻す本文"]);
+        assert!(!app.sidebar_items().contains(&temporary_row(true)));
+        assert_eq!(cursor_row(&app), target);
+    }
+
+    #[tokio::test]
+    async fn leaving_a_thread_keeps_the_cursor_when_thread_rows_disappear() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+            let before = app.sidebar_items().len();
+            // 退出の応答を待つあいだに動かしたカーソルは、スレッドの行が消えても、同じ行に残る。
+            // ピン留めの下の行は c1 より前にあるので、消えると c1 の添字がずれる。
+            app.on_app_event(AppEvent::ThreadLeft("m1".into()));
+
+            assert!(app.sidebar_items().len() < before, "{pinned}");
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn reopening_a_thread_keeps_the_cursor_when_a_thread_row_appears() {
+        for pinned in [true, false] {
+            let mut app = app();
+            if pinned {
+                pin_c1(&mut app);
+            } else {
+                app.active_threads.push(ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "hello".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                });
+            }
+            // m1 はアーカイブ済みで、一覧には出ていない。
+            let mut archived = app.active_threads.remove(0);
+            archived.thread_archive_at = Some("2026-11-10T00:00:00".into());
+            app.archived_threads.push(archived);
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+            );
+            let target = SidebarItem::Channel("c2".into());
+            put_cursor_on(&mut app, &target);
+
+            // 再Openすると、c1 の下に行が増える。c2 の添字がずれても、カーソルは c2 に残る。
+            app.on_app_event(AppEvent::ThreadsChanged {
+                reopened: Some("m1".into()),
+            });
+
+            assert!(
+                app.sidebar_items()
+                    .iter()
+                    .any(|item| matches!(item, SidebarItem::Thread { .. })),
+                "{pinned}"
+            );
+            assert_eq!(cursor_row(&app), target, "{pinned}");
+        }
+    }
+
+    #[tokio::test]
+    async fn redirecting_a_thread_keeps_the_cursor_when_a_temporary_thread_row_disappears() {
+        for pin_c2 in [true, false] {
+            let mut app = app_with_unlisted_c2_thread(pin_c2, true);
+            // 返信先は、一覧にあるスレッド r0。閲覧中の r1 は一覧になく、一時の行が出ている。
+            app.active_threads.push(ThreadSummary {
+                id: "r0".into(),
+                channel_id: "c2".into(),
+                content: "listed".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            });
+            let temporary = |pinned| SidebarItem::Thread {
+                channel_id: "c2".into(),
+                id: "r1".into(),
+                pinned,
+            };
+            assert!(app.sidebar_items().contains(&temporary(false)), "{pin_c2}");
+            let target = SidebarItem::Channel("c1".into());
+            put_cursor_on(&mut app, &target);
+
+            // 返信すると、バックエンドは返信先を親 r0 に正規化する。r1 の行は消え、r0 の行が代わりになる。
+            app.on_app_event(AppEvent::ThreadRedirected {
+                from: "r1".into(),
+                to: "r0".into(),
+            });
+
+            assert_eq!(
+                app.thread.as_ref().map(|thread| thread.root_id.as_str()),
+                Some("r0")
+            );
+            let after = app.sidebar_items();
+            assert!(!after.contains(&temporary(false)) && !after.contains(&temporary(true)));
+            assert_eq!(cursor_row(&app), target, "{pin_c2}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_dms_and_archived_threads_have_no_thread_rows() {
+        let mut app = app();
+        pin_c1(&mut app);
+        app.archived_threads.push(ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "hello".into(),
+            thread_archive_at: Some("2026-11-10T00:00:00".into()),
+            reply_count: 1,
+        });
+        // アーカイブ済みは、ピン留めの下にも出さない。
+        app.active_threads.clear();
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+        // 参加していないチャンネルは、ピン留めしても、スレッドを出さない（通常の一覧と同じ）。
+        app.active_threads.push(ThreadSummary {
+            id: "m2".into(),
+            channel_id: "c2".into(),
+            content: "secret".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p2",
+                json!({
+                    "user_id": "u1", "channel_id": "c2", "position": "1",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        assert!(
+            app.sidebar_items()
+                .iter()
+                .all(|item| !matches!(item, SidebarItem::Thread { .. }))
+        );
+
+        // 参加済みの DM をピン留めして、その DM で、返信のあるスレッドを閲覧中にしても、ピン留めの下にスレッドの行を
+        // 出さない。DM の除外は、未参加による除外とは別の条件なので、参加済みの DM で確かめる
+        // （通常の一覧の DM の下には、閲覧中のスレッドが出る。ピン留めの下には出さない）
+        let feed =
+            |app: &mut App, id: ShapeId, rows| app.on_shape(ShapeEvent::Batch(id, batch(rows)));
+        feed(
+            &mut app,
+            ShapeId::Channels,
+            vec![(
+                "d1",
+                json!({ "id": "d1", "channel_name": "dm:u1:u2", "is_private": "t", "is_dm": "t" }),
+            )],
+        );
+        feed(
+            &mut app,
+            ShapeId::ChannelUsers,
+            vec![("dm-m", json!({ "user_id": "u1", "channel_id": "d1" }))],
+        );
+        feed(
+            &mut app,
+            ShapeId::Messages("d1".into()),
+            vec![
+                (
+                    "dr1",
+                    json!({ "id": "dr1", "user_id": "u2", "channel_id": "d1",
+                               "content": "dm root", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "dr2",
+                    json!({ "id": "dr2", "user_id": "u1", "channel_id": "d1", "content": "dm reply",
+                               "created_at": "2026-11-01 03:01:00", "parent_id": "dr1" }),
+                ),
+            ],
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::UserPinnedChannels,
+            batch(vec![(
+                "p3",
+                json!({
+                    "user_id": "u1", "channel_id": "d1", "position": "2",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:00:00"
+                }),
+            )]),
+        ));
+        app.active_threads.push(ThreadSummary {
+            id: "dr1".into(),
+            channel_id: "d1".into(),
+            content: "dm root".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.current = Some("d1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "dr1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let items = app.sidebar_items();
+        assert!(items.contains(&SidebarItem::Pinned("d1".into())));
+        // 設定が、閲覧中のスレッドの行を出す経路に届いていることの確認（通常の一覧の DM の下には出る）
+        assert!(items.contains(&SidebarItem::Thread {
+            channel_id: "d1".into(),
+            id: "dr1".into(),
+            pinned: false,
+        }));
+        assert!(
+            !items.iter().any(|item| matches!(
+                item,
+                SidebarItem::Thread { channel_id, pinned: true, .. } if channel_id == "d1"
+            )),
+            "{items:?}"
+        );
     }
 
     #[tokio::test]
@@ -1431,6 +2137,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         app.on_app_event(AppEvent::Threads {
@@ -1490,6 +2197,7 @@ mod tests {
                 let row = SidebarItem::Thread {
                     channel_id: "c1".into(),
                     id: "m1".into(),
+                    pinned: false,
                 };
                 assert!(app.sidebar_items().contains(&row));
                 let mut snapshot = batch(vec![(
@@ -1565,6 +2273,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             app.focus = Focus::Messages;
             app.selected = Some("m1".into());
@@ -1659,6 +2368,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if root_exists {
@@ -1820,6 +2530,7 @@ mod tests {
             let row = SidebarItem::Thread {
                 channel_id: "c1".into(),
                 id: "m1".into(),
+                pinned: false,
             };
             assert!(app.sidebar_items().contains(&row));
             if archived {
@@ -1976,6 +2687,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(app.thread.is_none());
         assert!(!app.sidebar_items().contains(&row));
@@ -2026,6 +2738,7 @@ mod tests {
         let row = SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "m1".into(),
+            pinned: false,
         };
         assert!(!app.sidebar_items().contains(&row));
         assert!(!app.thread_is_archived("c1", "m1"));
@@ -2085,6 +2798,133 @@ mod tests {
                 .collect();
             assert_eq!(ids, expected);
         }
+    }
+
+    #[test]
+    fn truncate_spans_keeps_the_heading_on_one_line() {
+        use unicode_width::UnicodeWidthStr;
+        let spans = vec![
+            Span::raw("▶ "),
+            Span::raw("#とても長いチャンネル名"),
+            Span::raw("  投稿者"),
+        ];
+        let out = truncate_spans(spans, 16);
+        let text: String = out.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= 16, "{text}");
+        assert!(text.ends_with('…'), "{text}");
+        let short = truncate_spans(vec![Span::raw("ab"), Span::raw("cd")], 16);
+        assert_eq!(short.len(), 2);
+        // 前の span が幅を使い切ったら、`…` も足さずに止める。
+        let full = truncate_spans(vec![Span::raw("ab"), Span::raw("c")], 2);
+        let text: String = full.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "ab");
+    }
+
+    #[tokio::test]
+    async fn thread_with_deleted_root_still_shows_its_replies() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "r2",
+                    json!({ "id": "r2", "user_id": "u1", "channel_id": "c1", "content": "親なしの返信",
+                               "created_at": "2026-11-01 03:05:00", "parent_id": "gone" }),
+                ),
+                (
+                    "r3",
+                    json!({ "id": "r3", "user_id": "u1", "channel_id": "c1", "content": "次の返信",
+                               "created_at": "2026-11-01 03:06:00", "parent_id": "gone" }),
+                ),
+            ]),
+        ));
+        app.open_channel("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "gone".into(),
+            selected: Some("r2".into()),
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let screen = render(&mut app);
+        assert!(
+            screen.contains("元のメッセージは削除されました"),
+            "{screen}"
+        );
+        assert!(screen.contains("親なしの返信"), "{screen}");
+        // 描かれていない親は選べない。先頭は最初の返信。
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r2"));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r2"));
+    }
+
+    #[test]
+    fn tail_width_keeps_the_end_of_a_long_query() {
+        use unicode_width::UnicodeWidthStr;
+        let text = tail_width(&"a".repeat(1000), 20);
+        assert_eq!(text.width(), 20);
+        assert!(text.starts_with('…') && text.ends_with('a'));
+        assert_eq!(tail_width("会議", 20), "会議");
+        assert_eq!(tail_width("あいうえお", 5), "…えお");
+    }
+
+    #[tokio::test]
+    async fn global_search_keeps_the_help_line_on_a_small_terminal() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), SearchKind::All));
+        // 長い検索語を貼り付けても、入力欄は 1 行で、末尾の案内は残る。
+        app.global_search.query = "x".repeat(1000);
+        app.global_search.items = (0..6)
+            .map(|i| {
+                serde_json::from_value(json!({
+                    "id": format!("m{i}"), "channel_id": "c1", "channel_name": "general",
+                    "snippet": "会議の資料", "created_at": "2026-11-21T00:00:00.000"
+                }))
+                .unwrap()
+            })
+            .collect();
+        let mut terminal = Terminal::new(TestBackend::new(40, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Esc"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn global_search_shows_the_searched_month_after_the_last_page() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('S'));
+        app.global_search.searched = Some(("会議".into(), SearchKind::All));
+        app.global_search.searched_until = Some("2025-12".into());
+        app.global_search.next_cursor = None;
+        assert!(render(&mut app).contains("2025-12 まで検索しました。見つかりませんでした。"));
+    }
+
+    #[tokio::test]
+    async fn global_search_takes_pastes_and_does_not_mark_the_timeline_read() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('S'));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        app.on_terminal_event(Event::Paste("会議\n資料".into()));
+        assert_eq!(app.global_search.query, "会議資料");
+        assert!(app.composer.is_empty());
+        app.newest_shown = None;
+        render(&mut app);
+        assert_eq!(app.newest_shown, None, "the popup covers the timeline");
+        press(&mut app, KeyCode::Esc);
+        render(&mut app);
+        assert!(app.newest_shown.is_some());
     }
 
     #[tokio::test]
@@ -2216,7 +3056,8 @@ mod tests {
             app.sidebar_items()[app.sidebar_index],
             SidebarItem::Thread {
                 channel_id: "c1".into(),
-                id: "older".into()
+                id: "older".into(),
+                pinned: false,
             }
         );
         assert!(render(&mut app).contains("Older thread"));
@@ -2291,6 +3132,9 @@ mod tests {
             channel_id: "c2".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         assert!(render(&mut app).contains("● #secret"));
 
@@ -2322,6 +3166,9 @@ mod tests {
             channel_id: "c1".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         press(&mut app, KeyCode::Enter);
         // まだ描画していないので、最新を見たとは言えない。
@@ -2338,6 +3185,9 @@ mod tests {
             channel_id: "c1".into(),
             has_unread: true,
             last_read_at: None,
+            unread_count: 1,
+            unread_count_truncated: false,
+            first_unread_at: None,
         }]));
         assert!(app.unread.contains("c1"));
     }
@@ -3180,5 +4030,74 @@ mod tests {
             app.channel_encryption("c2"),
             crate::ui::e2ee_chat::ChannelEncryption::Downgraded
         );
+    }
+
+    #[tokio::test]
+    async fn global_search_lists_results_and_opens_a_thread_reply() {
+        let mut app = app();
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.mode, Mode::GlobalSearch);
+        for ch in "会議".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        // 取得はつながらない宛先へ出るが、結果は直接入れる。
+        let (generation, ..) = app.global_search.start(false).unwrap();
+        let page: crate::api::SearchPage = serde_json::from_value(json!({
+            "items": [
+                {"id":"m1","channel_id":"c1","channel_name":"general","parent_id":null,
+                 "author":{"display_name":"Bob"},"snippet":"…ああああああああああああああああああああああああああああああああああああああああ明日の会議の資料","created_at":"2026-11-20T09:00:00.000"},
+                {"id":"m2","channel_id":"c2","channel_name":"random","parent_id":"root",
+                 "author":{"display_name":"Carol"},"snippet":"会議は中止","created_at":"2026-11-19T09:00:00.000"}
+            ],
+            "next_cursor":"{\"m\":24322}","searched_until":"2025-12"
+        }))
+        .unwrap();
+        app.on_app_event(AppEvent::SearchResults {
+            generation,
+            append: false,
+            page,
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("全文検索"), "{screen}");
+        assert!(
+            screen.contains("#general") && screen.contains("Bob"),
+            "{screen}"
+        );
+        // 一致箇所の前に全角 40 文字があっても、検索語は欄の中に見える。
+        assert!(screen.contains("明日の会議の資料"), "{screen}");
+        assert!(screen.contains("スレッドの返信"), "{screen}");
+        // 検索語の「会議」だけを強調する。
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let highlighted: String = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter(|&p| buffer[p].bg == Color::Yellow)
+            .map(|p| buffer[p].symbol().to_string())
+            .collect();
+        assert_eq!(highlighted, "会議会議", "{screen}");
+        assert!(screen.contains("2025-12 まで検索しました"), "{screen}");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        let thread = app.thread.as_ref().expect("thread opens");
+        assert_eq!(
+            (thread.root_id.as_str(), thread.selected.as_deref()),
+            ("root", Some("m2"))
+        );
+        // 長いメッセージを読み進めた後でも、トップレベルの結果は先頭から表示する。
+        app.inner_scroll = 7;
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected.as_deref(), Some("m1"));
+        assert_eq!(app.inner_scroll, 0);
     }
 }

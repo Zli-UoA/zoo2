@@ -4,25 +4,14 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.browser.auth.AuthTabIntent
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import io.ktor.client.*
@@ -34,11 +23,11 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
-import zoo.phone.LocalPhoneController
-import zoo.phone.PhoneCallBanner
 import zoo.android.phone.AndroidPhoneHost
 import zoo.android.phone.PhonePermissionRequest
-import zoo.android.update.AndroidUpdateFrame
+import zoo.android.phone.PhonePictureInPictureActivity
+import zoo.android.ui.DialogAction
+import zoo.android.ui.UiIcon
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
 
@@ -59,10 +48,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private var notificationIntent by mutableStateOf<Intent?>(null)
-    private var notificationPermissionRevision by mutableStateOf(0)
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            notificationPermissionRevision++
             AndroidPushRegistration.tokenChanged()
         }
 
@@ -80,12 +67,41 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openIncomingSettings() {
+        try {
+            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                android.net.Uri.fromParts("package", packageName, null)))
+        } catch (_: android.content.ActivityNotFoundException) {
+            startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+        }
+    }
+
     private val phonePermissionRequest = PhonePermissionRequest()
     private val phonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> phonePermissionRequest.complete(granted) }
     private suspend fun preparePhone() {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
         check(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
         phonePermissionRequest.await { phonePermission.launch(android.Manifest.permission.RECORD_AUDIO) }
+    }
+
+    private val recentPhotos by lazy { RecentPhotos(this) }
+    private var photoPermissionResult: CompletableDeferred<Unit>? = null
+    private val photoPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        photoPermissionResult?.complete(Unit)
+        photoPermissionResult = null
+    }
+
+    private suspend fun requestRecentPhotos() {
+        if (photoPermissionResult != null || recentPhotos.permissions().isEmpty()) return
+        val result = CompletableDeferred<Unit>()
+        photoPermissionResult = result
+        try {
+            photoPermissions.launch(recentPhotos.permissions())
+            result.await()
+        } finally {
+            if (photoPermissionResult === result) photoPermissionResult = null
+        }
     }
 
     private var fileResult: CompletableDeferred<List<Uri>>? = null
@@ -95,12 +111,20 @@ class MainActivity : ComponentActivity() {
             fileResult = null
         }
 
-    private suspend fun chooseFiles(): List<Uri> {
+    private val photoPicker =
+        registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) {
+            fileResult?.complete(it)
+            fileResult = null
+        }
+
+    private suspend fun chooseFiles(photos: Boolean): List<Uri> {
         check(fileResult == null) { "ファイル選択中です" }
         val result = CompletableDeferred<List<Uri>>()
         fileResult = result
-        picker.launch(arrayOf("*/*"))
         return try {
+            if (photos) photoPicker.launch(
+                androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            ) else picker.launch(arrayOf("*/*"))
             result.await()
         } finally {
             if (fileResult === result) fileResult = null
@@ -111,9 +135,33 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var reauth: AndroidReauth? = null
 
+    private var authTabResult: ((AuthTabIntent.AuthResult) -> Unit)? = null
+    private val authTab = AuthTabIntent.registerActivityResultLauncher(this) { result ->
+        val receive = authTabResult
+        authTabResult = null
+        receive?.invoke(result)
+    }
+
+    private fun launchAuthTab(
+        tab: AuthTabIntent, url: Uri, redirect: Uri, receive: (AuthTabIntent.AuthResult) -> Unit,
+    ): Boolean {
+        // A canceled app coroutine can leave a browser activity open. Its result belongs to that launch.
+        if (authTabResult != null) return false
+        authTabResult = receive
+        try {
+            tab.launch(authTab, url, requireNotNull(redirect.host), requireNotNull(redirect.path))
+        } catch (failure: RuntimeException) {
+            authTabResult = null
+            throw failure
+        }
+        return true
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         notificationIntent = intent
+        UpdatePreferences(this).confirmInstalledUpdate(works.zli.zoo.BuildConfig.VERSION_CODE.toLong(), works.zli.zoo.BuildConfig.VERSION_NAME)
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
     }
@@ -121,25 +169,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        notificationIntent = intent
-        // 再認証のリダイレクト（ReauthCallbackActivity から）。待っている再認証の state と合うものだけを受け取る。
+        // 初回ログインと再認証で同じ App Link を使い、待機中の state と合うものだけを受け取る。
         if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
             intent.dataString?.let { reauth?.deliver(it) }
-        }
-    }
-
-    /** リカバリーキーをクリップボードに置く。キーボードの候補やプレビューに出ないよう、機微な内容の印を付ける。 */
-    private fun copySecret(value: String) {
-        val clip = android.content.ClipData.newPlainText("Zoo", value)
-        clip.description.extras =
-            android.os.PersistableBundle().apply {
-                putBoolean(
-                    if (android.os.Build.VERSION.SDK_INT >= 33) android.content.ClipDescription.EXTRA_IS_SENSITIVE
-                    else "android.content.extra.IS_SENSITIVE",
-                    true,
-                )
-            }
-        getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+        } else notificationIntent = intent
     }
 
     @Composable
@@ -149,13 +182,14 @@ class MainActivity : ComponentActivity() {
         val dark = isSystemInDarkTheme()
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
-        var restoring by remember { mutableStateOf(true) }
+        var restoring by remember { mutableStateOf(loginStore.hasSession) }
         var restoreCancelRequested by remember { mutableStateOf(false) }
         var restoreAttempt by remember { mutableIntStateOf(0) }
         var restoreJob by remember { mutableStateOf<Job?>(null) }
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        var callPresentation by remember(current) { mutableIntStateOf(0) }
         LaunchedEffect(current) {
             if (current != null && android.os.Build.VERSION.SDK_INT >= 33 &&
                 !current.notifications.allowed() &&
@@ -165,15 +199,21 @@ class MainActivity : ComponentActivity() {
         }
         LaunchedEffect(current, notificationIntent) {
             if (current != null) {
-                notificationIntent?.let { if (!current.phone.open(it) && !current.push.open(it, current.notifications::dismissTag)) current.notifications.open(it) }
+                notificationIntent?.let { intent ->
+                    if (!current.phone.open(intent) { callPresentation++ } &&
+                        !current.push.open(intent, current.notifications::dismissTag)
+                    ) {
+                        current.notifications.open(intent)
+                    }
+                }
                 notificationIntent = null
             }
         }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
-        suspend fun connect(connection: LoginConnection, refresh: String?, show: (String, String) -> Unit) {
+        suspend fun connect(connection: LoginConnection, refresh: String?) {
             active = openSession(
-                connection, loginStore, dark, refresh, show,
+                connection, loginStore, dark, refresh,
                 onExpired = { expiredAuth ->
                     scope.launch {
                         val running = active
@@ -211,14 +251,14 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(restoreAttempt) {
             restoreJob = currentCoroutineContext()[Job]
-            restoring = true
+            restoring = loginStore.hasSession
             restoreCancelRequested = false
             restoreError = ""
             try {
                 val saved = loginStore.load()
                 canRestore = saved != null
                 if (saved == null) PushBinding(this@MainActivity).forgetAll()
-                if (saved != null) connect(saved.connection, saved.refreshToken) { _, _ -> }
+                if (saved != null) connect(saved.connection, saved.refreshToken)
             } catch (failure: CancellationException) {
                 throw failure
             } catch (failure: LoginFailure) {
@@ -233,117 +273,92 @@ class MainActivity : ComponentActivity() {
                 restoreJob = null
             }
         }
-        AndroidUpdateFrame(this, current?.platform?.env?.dark ?: dark) {
-            if (current == null) {
-                MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
-                    if (restoring) {
-                        Surface(Modifier.fillMaxSize()) {
-                            Column(
-                                Modifier.safeDrawingPadding().padding(24.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp),
-                            ) {
-                                Text(if (restoreCancelRequested) "トークン更新の終了を待っています" else "ログインを復元しています")
-                                CircularProgressIndicator()
-                                TextButton(
-                                    enabled = !restoreCancelRequested,
-                                    onClick = {
-                                        restoreCancelRequested = true
-                                        restoreJob?.cancel()
-                                    },
-                                ) { Text("ログイン画面を開く") }
-                            }
-                        }
-                    } else Login(
-                        initialError = restoreError,
-                        retryRestore = if (canRestore) ({ restoreAttempt++ }) else null,
-                    ) { base, issuer, client, resource, code ->
-                        canRestore = false
-                        loginStore.clear()
-                        PushBinding(this@MainActivity).forgetAll()
-                        connect(LoginConnection(base, issuer, client, resource), null, code)
-                    }
-                }
-            } else {
-                val platform = current.platform
-                LaunchedEffect(platform.env, dark) {
-                    platform.systemDark(dark)
-                    current.session.update(platform.env)
-                }
-                DisposableEffect(current) {
-                    var disposed = false
-                    val observer = LifecycleEventObserver { _, event ->
-                        if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
-                        platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                        current.session.update(platform.env)
-                    }
-                    lifecycle.addObserver(observer)
+        if (current == null) {
+            SignInRoute(dark, restoring, restoreError,
+                retry = if (canRestore && !restoring) ({ restoreAttempt++ }) else null,
+                cancelRestore = if (restoreCancelRequested) null else ({
+                    restoreCancelRequested = true
+                    restoreJob?.cancel()
+                }),
+                connect = { connection ->
+                    canRestore = false
+                    loginStore.clear()
+                    PushBinding(this@MainActivity).forgetAll()
+                    connect(connection, null)
+                },
+            )
+        } else {
+            val platform = current.platform
+            LaunchedEffect(platform.env, dark) {
+                platform.systemDark(dark)
+                current.session.update(platform.env)
+            }
+            DisposableEffect(current) {
+                var disposed = false
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) current.push.refresh()
                     platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     current.session.update(platform.env)
-                    val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-                    fun updateOnline() = runOnUiThread {
-                        if (!disposed) platform.online(hasInternet(
-                            connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
-                        ))
-                    }
-                    val callback =
-                        object : android.net.ConnectivityManager.NetworkCallback() {
-                            override fun onAvailable(network: android.net.Network) = updateOnline()
+                }
+                lifecycle.addObserver(observer)
+                platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                current.session.update(platform.env)
+                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+                fun updateOnline() = runOnUiThread {
+                    if (!disposed) platform.online(hasInternet(
+                        connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
+                    ))
+                }
+                val callback =
+                    object : android.net.ConnectivityManager.NetworkCallback() {
+                        override fun onAvailable(network: android.net.Network) = updateOnline()
 
-                            override fun onLost(network: android.net.Network) = updateOnline()
+                        override fun onLost(network: android.net.Network) = updateOnline()
 
-                            override fun onCapabilitiesChanged(
-                                network: android.net.Network,
-                                caps: android.net.NetworkCapabilities,
-                            ) = updateOnline()
-                        }
-                    connectivity.registerDefaultNetworkCallback(callback)
-                    updateOnline()
-                    onDispose {
-                        disposed = true
-                        lifecycle.removeObserver(observer)
-                        connectivity.unregisterNetworkCallback(callback)
+                        override fun onCapabilitiesChanged(
+                            network: android.net.Network,
+                            caps: android.net.NetworkCapabilities,
+                        ) = updateOnline()
                     }
+                connectivity.registerDefaultNetworkCallback(callback)
+                updateOnline()
+                onDispose {
+                    disposed = true
+                    lifecycle.removeObserver(observer)
+                    connectivity.unregisterNetworkCallback(callback)
                 }
-                BackHandler {
-                    when {
-                        current.session.escape() -> Unit
-                        current.session.thread != null -> current.session.thread = null
-                        platform.back() -> Unit
-                        else -> moveTaskToBack(true)
-                    }
+            }
+            ConnectedScreens(current.session, platform, current.phone.controller,
+                enableNotifications = ::enableNotifications,
+                background = { moveTaskToBack(true) },
+                callPresentation = callPresentation,
+                openIncomingSettings = if (android.os.Build.VERSION.SDK_INT >= 34) ::openIncomingSettings else null,
+                openPictureInPicture = if (packageManager.hasSystemFeature(
+                    android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE,
+                )) { id -> PhonePictureInPictureActivity.open(this, current.phone, id) } else null,
+            )
+            unbackedKeysPrompt?.let { prompt ->
+                val args = "count" to prompt.count.toString()
+                val detail = when {
+                    prompt.count < 0 -> current.session.t("e2ee.logout.unknownDescription")
+                    prompt.count == 1 -> current.session.t("e2ee.logout.unbackedDescription_one", args)
+                    else -> current.session.t("e2ee.logout.unbackedDescription_other", args)
                 }
-                val encryption =
-                    remember(current) {
-                        current.e2eeSettings?.let { host ->
-                            @Composable { app: Session -> zoo.crypto.EncryptionSettings(app, host) }
+                AlertDialog(
+                    onDismissRequest = { prompt.answer.complete(false) },
+                    title = { Text(current.session.t("e2ee.logout.unbackedTitle")) },
+                    text = { Text(detail) },
+                    confirmButton = {
+                        DialogAction(current.session.t("e2ee.logout.confirm"), UiIcon.SignIn) {
+                            prompt.answer.complete(true)
                         }
-                    }
-                CompositionLocalProvider(
-                    LocalWebPlatform provides platform,
-                    LocalApp provides current.session,
-                    LocalEncryptionSettings provides encryption,
-                    LocalTouchUi provides true,
-                    LocalPhoneController provides current.phone.controller,
-                ) {
-                    ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
-                            val notificationsAllowed = remember(notificationPermissionRevision, platform.env.visible) {
-                                current.notifications.allowed()
-                            }
-                            if (!notificationsAllowed) {
-                                TextButton(onClick = ::enableNotifications) {
-                                    Text(current.session.t("androidNotifications.enable"))
-                                }
-                                Text(current.session.t("androidNotifications.scope"), style = MaterialTheme.typography.bodySmall)
-                            }
-                            Box(Modifier.weight(1f)) {
-                                NativeWindow(current.session) { ZooApp(current.session) }
-                            }
-                            PhoneCallBanner(current.session, current.phone.controller)
+                    },
+                    dismissButton = {
+                        DialogAction(current.session.t("common.cancel"), UiIcon.Close) {
+                            prompt.answer.complete(false)
                         }
-                        unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
-                    }
-                }
+                    },
+                )
             }
         }
     }
@@ -353,7 +368,6 @@ class MainActivity : ComponentActivity() {
         loginStore: AndroidLoginStore,
         dark: Boolean,
         savedRefresh: String?,
-        showCode: (String, String) -> Unit,
         onExpired: (DeviceAuth) -> Unit,
         logout: () -> Unit,
     ): RunningSession {
@@ -383,9 +397,11 @@ class MainActivity : ComponentActivity() {
             consumeRefresh = { loginStore.consume(owner) },
             onExpired = onExpired,
         )
+        val reauthenticator = AndroidReauth(this, http, connection, ::launchAuthTab)
+        reauth = reauthenticator
         try {
             if (savedRefresh == null)
-                auth.login(connection.issuer, connection.client, connection.resource, showCode)
+                auth.acceptBrowserLogin(connection, reauthenticator.signIn())
             else auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
             val authHeaders = auth.headers()
             val response = http.get(endpoint(connection.base, "/api/users/me")) {
@@ -400,7 +416,7 @@ class MainActivity : ComponentActivity() {
             currentCoroutineContext().ensureActive()
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
-                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, ::confirmUnbackedKeys,
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, recentPhotos, ::requestRecentPhotos, ::confirmUnbackedKeys,
             )
             platform.systemDark(dark)
             platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
@@ -427,189 +443,26 @@ class MainActivity : ComponentActivity() {
                 setupApi = e2eeApi,
             )
             platform.e2ee = e2ee
+            platform.reauthenticate = reauthenticator::reauthenticate
+            runCatching { io.ktor.http.Url(connection.issuer) }.getOrNull()
+                ?.takeIf { it.protocol == io.ktor.http.URLProtocol.HTTPS && it.host.isNotBlank() }
+                ?.let { platform.passkey = zoo.crypto.UnlockMethod.Passkey(AndroidPasskeys(this), it.host) }
             platform.messageEncryption = zoo.crypto.AndroidMessageEncryption(e2ee, session.api, lifetime)
-            // 設定の「暗号化」タブ（#360）。再認証は Custom Tabs、パスキーは Credential Manager。
-            val reauthenticator = AndroidReauth(this, http, connection)
-            reauth = reauthenticator
-            val e2eeSettings = e2ee.setup?.let { setup ->
-                zoo.crypto.E2eeSettingsHost(
-                    setup = setup,
-                    rpId = passkeyRpId(connection.issuer),
-                    passkeys = AndroidPasskeys(this),
-                    reauthenticate = reauthenticator::reauthenticate,
-                    copySecret = ::copySecret,
-                )
-            }
             val logoutApi = ZooApi(config, object : Platform by platform {
                 override suspend fun headers() = auth.headersWithoutRefresh()
             }, http)
-            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, AndroidNotifications(this, session), AndroidPushRegistration(this, session, logoutApi), AndroidPhoneHost(applicationContext, session, http, ::preparePhone)).also {
                 session.start()
                 e2ee.start()
             }
         } catch (failure: Throwable) {
+            if (reauth === reauthenticator) reauth = null
             auth.close()
             http.close()
             throw failure
         }
     }
 
-    @Composable
-    private fun Login(
-        initialError: String = "",
-        retryRestore: (() -> Unit)? = null,
-        connect: suspend (String, String, String, String, (String, String) -> Unit) -> Unit
-    ) {
-        val prefs = remember { getSharedPreferences("connection", 0) }
-        var base by rememberSaveable {
-            mutableStateOf(prefs.getString("base", "https://zli.chat").orEmpty())
-        }
-        var issuer by rememberSaveable {
-            mutableStateOf(
-                prefs.getString("issuer", "https://account.zli.works/api/auth").orEmpty()
-            )
-        }
-        var client by rememberSaveable { mutableStateOf(prefs.getString("client", "").orEmpty()) }
-        var resource by rememberSaveable {
-            mutableStateOf(prefs.getString("resource", "https://zli.chat/api").orEmpty())
-        }
-        var code by remember { mutableStateOf("") }
-        var link by remember { mutableStateOf("") }
-        var error by remember { mutableStateOf(initialError) }
-        var job by remember { mutableStateOf<Job?>(null) }
-        val scope = rememberCoroutineScope()
-        Surface(Modifier.fillMaxSize()) {
-            Column(
-                Modifier.safeDrawingPadding()
-                    .imePadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text("Zoo", style = MaterialTheme.typography.headlineLarge)
-                Text("Android 版")
-                OutlinedTextField(
-                    base,
-                    { base = it },
-                    label = { Text("Zoo サーバー URL") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                )
-                OutlinedTextField(
-                    issuer,
-                    { issuer = it },
-                    label = { Text("OIDC issuer") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                )
-                OutlinedTextField(
-                    client,
-                    { client = it },
-                    label = { Text("Android 用 public client ID") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
-                )
-                OutlinedTextField(
-                    resource,
-                    { resource = it },
-                    label = { Text("Resource / audience") },
-                    enabled = job == null,
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-                )
-                Text("サーバー管理者が登録したデバイス認証対応の client ID を指定してください。ブラウザーでコードを承認してログインします。")
-                if (error.isNotEmpty()) Text(
-                    error,
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                    color = MaterialTheme.colorScheme.error,
-                )
-                if (retryRestore != null && job == null) {
-                    TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
-                }
-                if (code.isNotEmpty()) {
-                    Text("確認コード: $code", style = MaterialTheme.typography.headlineSmall)
-                    Text("ブラウザーに表示されたコードが一致することを確認してください。")
-                    androidx.compose.material3.Button(
-                        onClick = { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }
-                    ) {
-                        Text("認証画面を開く")
-                    }
-                }
-                if (job != null) {
-                    CircularProgressIndicator()
-                    TextButton(
-                        onClick = {
-                            job?.cancel()
-                            job = null
-                            code = ""
-                            link = ""
-                        }
-                    ) {
-                        Text("キャンセル")
-                    }
-                } else {
-                    androidx.compose.material3.Button(
-                        enabled = client.isNotBlank(),
-                        onClick = {
-                            job =
-                                scope.launch {
-                                    error = ""
-                                    code = ""
-                                    link = ""
-                                    try {
-                                        val server = base.trim().trimEnd('/')
-                                        val url = Url(server)
-                                        require(
-                                            url.protocol == URLProtocol.HTTPS &&
-                                                url.user.isNullOrEmpty() &&
-                                                url.password.isNullOrEmpty() &&
-                                                url.encodedPath in listOf("", "/") &&
-                                                url.parameters.isEmpty() &&
-                                                url.fragment.isEmpty()
-                                        ) {
-                                            "サーバーには HTTPS の origin URL を指定してください"
-                                        }
-                                        prefs
-                                            .edit()
-                                            .putString("base", server)
-                                            .putString("issuer", issuer.trim())
-                                            .putString("client", client.trim())
-                                            .putString("resource", resource.trim())
-                                            .apply()
-                                        connect(
-                                            server,
-                                            issuer.trim(),
-                                            client.trim(),
-                                            resource.trim(),
-                                        ) { userCode, uri ->
-                                            code = userCode
-                                            link = uri
-                                        }
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (failure: LoginFailure) {
-                                        error = failure.message.orEmpty()
-                                    } catch (_: Exception) {
-                                        error = "ログインできません。接続先・client ID・コードの期限とネットワークを確認してください。"
-                                    } finally {
-                                        job = null
-                                    }
-                                }
-                        },
-                    ) {
-                        Text("ログイン")
-                    }
-                }
-            }
-        }
-    }
 }
 
 private class RunningSession(
@@ -619,7 +472,6 @@ private class RunningSession(
     private val http: HttpClient,
     val auth: DeviceAuth,
     private val e2ee: zoo.crypto.E2eeDeviceManager,
-    val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
     val notifications: AndroidNotifications,
     val push: AndroidPushRegistration,
     val phone: AndroidPhoneHost,
@@ -644,44 +496,6 @@ private class RunningSession(
     }
 }
 
-/**
- * パスキーの RP ID（docs/e2ee.md の「RP ID の決め方」）。ログインに使う issuer のホスト名（本番は
- * `account.zli.works`）。HTTPS でなければ `null`（リカバリーキーだけを使う）。
- */
-private fun passkeyRpId(issuer: String): String? =
-    try {
-        Url(issuer).takeIf { it.protocol == URLProtocol.HTTPS }?.host?.takeIf { it.isNotEmpty() }
-    } catch (_: Exception) {
-        null
-    }
-
 /** 端末名（`display_name`）。本人の端末一覧（#362）にだけ出る。例：`Zoo Android（Pixel 8）`。 */
 private fun e2eeDisplayName(): String =
     "Zoo Android（${android.os.Build.MODEL.orEmpty().ifBlank { "Android" }.take(100)}）"
-
-/** 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（React の `UnbackedKeysLogoutDialog`）。 */
-@Composable
-private fun UnbackedKeysDialog(platform: AndroidPlatform, prompt: UnbackedKeysPrompt) {
-    val t = { key: String -> platform.translate(key, mapOf("count" to prompt.count.toString())) }
-    AlertDialog(
-        onDismissRequest = { prompt.answer.complete(false) },
-        title = { Text(t("e2ee.logout.unbackedTitle")) },
-        text = {
-            Text(
-                when {
-                    prompt.count < 0 -> t("e2ee.logout.unknownDescription")
-                    prompt.count == 1 -> t("e2ee.logout.unbackedDescription_one")
-                    else -> t("e2ee.logout.unbackedDescription_other")
-                }
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { prompt.answer.complete(true) }) {
-                Text(t("e2ee.logout.confirm"), color = MaterialTheme.colorScheme.error)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = { prompt.answer.complete(false) }) { Text(t("common.cancel")) }
-        },
-    )
-}

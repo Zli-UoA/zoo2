@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const E2EE_NOTES_MIGRATION: &str =
-    include_str!("../../infra/db/migrations/20261129020003_e2ee_channel_notes.sql");
+    include_str!("../../infra/db/migrations/20261130030003_e2ee_channel_notes.sql");
 
 use backend::{
     config::Config,

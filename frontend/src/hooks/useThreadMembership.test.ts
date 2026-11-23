@@ -2,10 +2,18 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { useThreadMembership, type ThreadMembership } from "./useThreadMembership";
+import { ApiError } from "../lib/api/client";
+import {
+  isThreadJoinRequired,
+  useThreadMembership,
+  type ThreadMembership,
+} from "./useThreadMembership";
 import { THREADS_CHANGED } from "../lib/electric/threads";
 const fixture = vi.hoisted(() => ({ api: { get: vi.fn(), post: vi.fn() }, config: {} }));
-vi.mock("../lib/api/client", () => ({ createConfiguredApiClient: () => fixture.api }));
+vi.mock("../lib/api/client", async (original) => ({
+  ...(await original<typeof import("../lib/api/client")>()),
+  createConfiguredApiClient: () => fixture.api,
+}));
 vi.mock("../lib/electric/collections-context", () => ({
   useCollections: () => ({ config: fixture.config }),
 }));
@@ -117,10 +125,65 @@ it("keeps data on a failed operation and allows retry", async () => {
     .mockRejectedValueOnce(new Error("offline"))
     .mockResolvedValue({ data: { ...data, membership: "left" } });
   await act(async () => root.render(createElement(Test)));
-  await act(async () => value.change!("leave"));
+  let failed: boolean | undefined;
+  let retried: boolean | undefined;
+  await act(async () => {
+    failed = await value.change!("leave");
+  });
+  expect(failed).toBe(false);
   expect(value.error).toBe(true);
   expect(value.data?.membership).toBe("joined");
-  await act(async () => value.change!("leave"));
+  await act(async () => {
+    retried = await value.change!("leave");
+  });
+  expect(retried).toBe(true);
   expect(value.error).toBe(false);
   expect(value.data?.membership).toBe("left");
+});
+
+it("keeps the participant fields when a write answers without them", async () => {
+  const withParticipants: ThreadMembership = {
+    ...data,
+    tracked: true,
+    participant_count: 3,
+    participants: [{ id: "alice", user_name: "alice", display_name: null, avatar_url: null }],
+  };
+  fixture.api.get.mockReset().mockResolvedValue({ data: withParticipants });
+  // The participant read after the commit failed, so the response has no such fields.
+  fixture.api.post.mockResolvedValue({ data: { ...data, membership: "left" } });
+  await act(async () => root.render(createElement(Test)));
+  expect(value.data?.participant_count).toBe(3);
+  let changed: boolean | undefined;
+  await act(async () => {
+    changed = await value.change!("leave");
+  });
+  expect(changed).toBe(true);
+  expect(value.data?.membership).toBe("left");
+  expect(value.data?.participant_count).toBe(3);
+  expect(value.data?.participants).toHaveLength(1);
+  // A write is reflected without a refetch; the next periodic read corrects the kept count.
+  expect(fixture.api.get).toHaveBeenCalledTimes(1);
+});
+
+it("recognises the 403 that asks for a join: the code first, the old message only without a code", () => {
+  const forbidden = (body: unknown) => new ApiError(403, "forbidden", body);
+  // The code wins, whatever the message says.
+  expect(isThreadJoinRequired(forbidden({ error: "any text", code: "THREAD_JOIN_REQUIRED" }))).toBe(
+    true,
+  );
+  expect(
+    isThreadJoinRequired(forbidden({ error: "Join the thread before replying", code: "OTHER" })),
+  ).toBe(false);
+  // A server from before the code existed answers with the message only.
+  expect(isThreadJoinRequired(forbidden({ error: "Join the thread before replying" }))).toBe(true);
+  // A posting restriction (or any other 403) is not cured by a join.
+  expect(isThreadJoinRequired(forbidden({ error: "Only channel managers may post here" }))).toBe(
+    false,
+  );
+  expect(isThreadJoinRequired(forbidden({ code: "POSTING_RESTRICTED" }))).toBe(false);
+  expect(isThreadJoinRequired(new ApiError(409, "x", { code: "THREAD_JOIN_REQUIRED" }))).toBe(
+    false,
+  );
+  expect(isThreadJoinRequired(forbidden(null))).toBe(false);
+  expect(isThreadJoinRequired(new Error("network"))).toBe(false);
 });

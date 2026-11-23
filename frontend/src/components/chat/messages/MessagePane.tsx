@@ -3,11 +3,11 @@ import {
   THREAD_REPLY_REDIRECTED,
   type ThreadReplyRedirect,
 } from "../../../lib/electric/threads";
-import { useThreadMembership } from "../../../hooks/useThreadMembership";
+import { isThreadJoinRequired, useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
@@ -37,11 +37,11 @@ import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
 import { useShell } from "../../layout/shell-context";
-import { Button } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { JoinPrompt } from "./JoinPrompt";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
@@ -57,19 +57,13 @@ import {
   type ChannelCryptoDeps,
 } from "../../../lib/e2ee/channelSend";
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
-import {
-  encryptionSendState,
-  encryptedChannelsVersion,
-  noteEncryptedChannel,
-  subscribeEncryptedChannels,
-  type KnownEncryptedState,
-} from "../../../lib/e2ee/encryptionGuard";
+import { useEncryptedDisplay } from "../../../hooks/useEncryptedDisplay";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import {
   isPlaintextBeforeEncryption,
   MessageDecryptionsProvider,
   firstEncryptedAt,
-  type MessageDecryption,
+  withUnencryptedRows,
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
 import { localizeApiError } from "../../../lib/i18n/apiError";
@@ -89,14 +83,13 @@ function JoinToPostPrompt({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="border-t px-3 py-3">
-      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
-        <p className="text-sm text-muted-foreground">{t("messages.joinToPostDescription")}</p>
-        <Button size="sm" onClick={onJoin} disabled={disabled || joining} aria-busy={joining}>
-          {t("messages.joinToPost")}
-        </Button>
-      </div>
-    </div>
+    <JoinPrompt
+      description={t("messages.joinToPostDescription")}
+      actionLabel={t("messages.joinToPost")}
+      onAction={onJoin}
+      pending={joining}
+      disabled={disabled}
+    />
   );
 }
 
@@ -117,6 +110,7 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  postingForbidden = false,
   encrypted = false,
   membershipEpoch,
   channelName,
@@ -126,6 +120,8 @@ export function MessagePane({
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** 投稿権限がない（`posting_policy=managers` で管理者・作成者ではない）。閲覧はでき、入力欄だけを理由付きで止める。 */
+  postingForbidden?: boolean;
   /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
   encrypted?: boolean;
   /** 暗号化チャンネルの Channels Shape の `membership_epoch`（int8 なので文字列）。 */
@@ -159,51 +155,12 @@ export function MessagePane({
   const reactionsQuery = useMessageReactions(channelId);
   const channelUpload = useAttachmentUpload(channelId);
   const e2ee = useE2ee();
-  // 暗号化の格下げを防ぐ（docs/e2ee.md）。一度 `encrypted = true` を見たチャンネル、名前が `edm:` の
-  // チャンネル、暗号文のある行があるチャンネルに `encrypted = false` が届いたら、平文では送らず警告する。
-  // 見た時点で同期的に覚える（暗号ストアへの問い合わせを待たずに、格下げとして扱えるように）。
-  if (encrypted) noteEncryptedChannel(channelId);
-  // ほかの場所（暗号化への切り替えの確認の画面。#367）で覚えたときも描き直し、Shape の反映を待たずに送信を止める。
-  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
-  const [knownEncrypted, setKnownEncrypted] = useState<{
-    channelId: string;
-    known: KnownEncryptedState;
-  } | null>(null);
-  useEffect(() => {
-    const worker = e2ee.worker;
-    if (!worker) return;
-    let active = true;
-    if (encrypted) {
-      void worker.request({ op: "megolmRememberEncrypted", channelId }).catch(() => undefined);
-    } else {
-      setKnownEncrypted({ channelId, known: "pending" });
-      void worker
-        .request({ op: "megolmIsKnownEncrypted", channelId })
-        .then((known) => {
-          if (active) setKnownEncrypted({ channelId, known });
-        })
-        .catch(() => {
-          if (active) setKnownEncrypted({ channelId, known: "failed" });
-        });
-    }
-    return () => {
-      active = false;
-    };
-  }, [channelId, e2ee.worker, encrypted]);
-  // 別のチャンネルの結果や、問い合わせを始める前の描画では、確かめ終わっていないものとして扱う。
-  const { downgraded, checking: checkingEncryption } = encryptionSendState({
+  const { downgraded, checkingEncryption, treatAsEncrypted } = useEncryptedDisplay({
     channelId,
-    encrypted,
-    known: !e2ee.worker
-      ? "unavailable"
-      : knownEncrypted?.channelId === channelId
-        ? knownEncrypted.known
-        : "pending",
     channelName,
+    encrypted,
     hasCiphertext: feed.some((row) => row.ciphertext != null),
   });
-  /** 表示と添付の扱いを暗号化チャンネルにするか（格下げを見つけたときも暗号化として扱う）。 */
-  const treatAsEncrypted = encrypted || downgraded;
   // 暗号化チャンネルには、送る直前に Megolm で暗号化して送る（docs/e2ee.md）。このタブが暗号ストアを
   // 開いていない（別のタブが開いている、登録中、使えないブラウザー）あいだは、平文を送らないよう
   // 投稿、返信、編集を止める。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
@@ -261,7 +218,7 @@ export function MessagePane({
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
-  const { error, setError, run, isPending: isWritePending } = useWriteRunner();
+  const { error, errorCause, setError, run, isPending: isWritePending } = useWriteRunner();
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
   const reactionRows = reactionsQuery.data ?? [];
@@ -293,6 +250,19 @@ export function MessagePane({
   );
   const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
   const threadMembership = useThreadMembership(currentUserId, threadRootId);
+  const retryMembership = threadMembership.retry;
+  // 参加が必要な 403 への対応（平文・暗号化の返信で共通）。表示している参加状態が古かった（ほかの画面・
+  // クライアントで退出した、など）ので、参加状態を取り直す。すると入力欄の代わりに参加ボタンが出る。
+  // 入力欄は隠れるだけなので、下書きは残る。対象のエラーなら true を返す。
+  const noticeJoinRequired = useCallback(
+    (cause: unknown): boolean => {
+      if (!isThreadJoinRequired(cause)) return false;
+      void retryMembership?.();
+      toast.info(t("threads.joinToReply"), { id: "thread-join-required" });
+      return true;
+    },
+    [retryMembership, t],
+  );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
@@ -348,32 +318,22 @@ export function MessagePane({
   // `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367）なので、本文を出す（MessageRow）。
   // 区切りより上の行には印を付けず、暗号化したメッセージより後ろにある行だけ警告を付ける（チャンネルの一覧は
   // MessageList が並びから、スレッドのペインは `encryptedSince` の日時から決める）。
-  const decryptions = useMemo(() => {
-    // フィードは削除済みの行を除くが、念のため `deleted_at` のある行（暗号文は DB が消す）は除く。
-    const unencrypted = decryptionRows.filter(
-      (row) =>
-        !row.ciphertext &&
-        !isPlaintextBeforeEncryption(row) &&
-        !(row as { deleted_at?: string | null }).deleted_at,
-    );
-    if (unencrypted.length === 0) return workerDecryptions;
-    const next = new Map(workerDecryptions);
-    for (const row of unencrypted) {
-      next.set(row.id, { status: "undecryptable", reason: "unencrypted" });
-    }
-    return next as ReadonlyMap<string, MessageDecryption>;
-  }, [decryptionRows, workerDecryptions]);
+  const decryptions = useMemo(
+    () => withUnencryptedRows(decryptionRows, workerDecryptions),
+    [decryptionRows, workerDecryptions],
+  );
 
   /** 暗号化した送信の失敗を利用者に知らせる。 */
   const reportEncryptedFailure = useCallback(
     (cause: unknown) => {
+      if (noticeJoinRequired(cause)) return;
       const code = (cause as { code?: unknown } | null)?.code;
       if (code === "NeedsUnlock") toast.error(t("e2ee.sendNeedsUnlock"));
       else if (cause instanceof EncryptedSendError) toast.error(t("e2ee.sendStaleEpoch"));
       else if (apiErrorCode(cause) === "E2EE_STALE_REVISION") toast.error(t("e2ee.editConflict"));
       else toast.error(t("common.writeErrorDetail", { error: localizeApiError(cause, t) }));
     },
-    [t],
+    [noticeJoinRequired, t],
   );
 
   const attachmentsQuery = useMessageAttachments(
@@ -416,14 +376,32 @@ export function MessagePane({
     [messagesCollection, threadIsArchived, threadRootId, threadReplies],
   );
 
+  // 親が削除されたスレッドの返信（検索・リンクで開いたまま読むだけにするもの）。
+  const isUnderDeletedRoot = useCallback(
+    (id: string) =>
+      !!threadRootRow?.deleted_at &&
+      (messagesCollection.get(id)?.parent_id === threadRootId ||
+        threadReplies.some((reply) => reply.id === id)),
+    [threadRootRow?.deleted_at, messagesCollection, threadRootId, threadReplies],
+  );
+
   useEffect(() => {
-    if (editingId && isArchivedMessage(editingId)) {
+    // 開いた後に親が削除されたら、その返信の編集・削除確認・リアクション選択も閉じる。
+    if (editingId && (isArchivedMessage(editingId) || isUnderDeletedRoot(editingId))) {
       setEditingId(null);
       setEditingText("");
     }
-    if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
-    if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
-  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+    if (
+      pendingDeleteId &&
+      (isArchivedMessage(pendingDeleteId) || isUnderDeletedRoot(pendingDeleteId))
+    )
+      setPendingDeleteId(null);
+    if (
+      reactionMessageId &&
+      (isArchivedMessage(reactionMessageId) || isUnderDeletedRoot(reactionMessageId))
+    )
+      setReactionMessageId(null);
+  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage, isUnderDeletedRoot]);
 
   // 編集中にチャンネルが暗号化に切り替わったら（#367）、切り替える前の平文のメッセージの編集をやめる。
   // サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。
@@ -442,6 +420,7 @@ export function MessagePane({
       if (
         !currentUserId ||
         isArchivedMessage(messageId) ||
+        isUnderDeletedRoot(messageId) ||
         !messagesCollection.get(messageId) ||
         messagesCollection.get(messageId)?.deleted_at
       ) {
@@ -475,7 +454,14 @@ export function MessagePane({
         pendingReactions.current.delete(pendingKey);
       }
     },
-    [currentUserId, messagesCollection, reactionsCollection, run, isArchivedMessage],
+    [
+      currentUserId,
+      messagesCollection,
+      reactionsCollection,
+      run,
+      isArchivedMessage,
+      isUnderDeletedRoot,
+    ],
   );
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
@@ -536,6 +522,15 @@ export function MessagePane({
     t,
   ]);
 
+  // 検索・リンクで開いた返信の親が削除されていても、返信は残っている。そのスレッドは閉じずに、親の代わりに
+  // 知らせを出して読むだけにする。
+  const deletedRootForTarget =
+    !!threadRootRow?.deleted_at &&
+    !!target &&
+    !target.deleted_at &&
+    target.parent_id === threadRootId;
+  const threadPaneRoot = threadRoot ?? (deletedRootForTarget ? threadRootRow : null);
+
   // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
   // ID で取る。取得が終わるまでは判断しない。
@@ -544,6 +539,9 @@ export function MessagePane({
       return;
     }
     if (threadRootRow && !threadRootRow.deleted_at) return;
+    if (deletedRootForTarget) return;
+    // 検索・リンクの対象（返信）を取り終えるまでは決めない。先に閉じると対象の指定も消え、開き直せない。
+    if (resolvedTargetId && targetQuery.isLoading) return;
     closeThread();
     if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
@@ -553,18 +551,28 @@ export function MessagePane({
     threadRootRow,
     threadRootQuery.isLoading,
     threadRootQuery.isError,
+    deletedRootForTarget,
+    resolvedTargetId,
+    targetQuery.isLoading,
     closeThread,
     t,
   ]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
+  // `error` は英語の技術メッセージになり得るため、生の原因があれば localizeApiError で
+  // 現在のロケールの文言に換えてから出す（暗号化送信の失敗と同じ経路）。
   useEffect(() => {
     if (!error) {
       return;
     }
-    toast.error(t("common.writeError"), { description: error, id: "message-write-error" });
+    if (noticeJoinRequired(errorCause)) {
+      setError(null);
+      return;
+    }
+    const description = errorCause == null ? error : localizeApiError(errorCause, t);
+    toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
-  }, [error, setError, t]);
+  }, [error, errorCause, noticeJoinRequired, setError, t]);
 
   const handleJoin = useCallback(async () => {
     if (!currentUserId || isJoining) {
@@ -781,7 +789,7 @@ export function MessagePane({
   const handleStartEdit = useCallback(
     (id: string, content: string) => {
       // 暗号化チャンネルの編集も、暗号化して送れないあいだは始めない。
-      if (sendBlocked) return;
+      if (sendBlocked || isUnderDeletedRoot(id)) return;
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
@@ -797,7 +805,7 @@ export function MessagePane({
       setEditingId(id);
       setEditingText(content);
     },
-    [sendBlocked, encrypted, decryptions, messagesCollection],
+    [sendBlocked, encrypted, decryptions, messagesCollection, isUnderDeletedRoot],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -808,7 +816,7 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content || isArchivedMessage(id) || sendBlocked) {
+    if (!id || !content || isArchivedMessage(id) || isUnderDeletedRoot(id) || sendBlocked) {
       return;
     }
     if (cryptoDeps) {
@@ -870,6 +878,7 @@ export function MessagePane({
     run,
     messagesCollection,
     isArchivedMessage,
+    isUnderDeletedRoot,
     sendBlocked,
     cryptoDeps,
     decryptions,
@@ -882,7 +891,7 @@ export function MessagePane({
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    if (!id || isArchivedMessage(id)) {
+    if (!id || isArchivedMessage(id) || isUnderDeletedRoot(id)) {
       return;
     }
     // 論理削除は `deleted_at` の update。Electric が流す operation と揃えて
@@ -892,7 +901,16 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
+  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage, isUnderDeletedRoot]);
+
+  const threadTargetMessageId =
+    resolvedTargetId &&
+    threadPaneRoot &&
+    resolvedTargetId !== threadPaneRoot.id &&
+    (threadReplies.some((reply) => reply.id === resolvedTargetId) ||
+      (target?.id === resolvedTargetId && target.parent_id === threadPaneRoot.id))
+      ? resolvedTargetId
+      : undefined;
 
   return (
     <MessageDecryptionsProvider
@@ -990,17 +1008,25 @@ export function MessagePane({
                 onTyping={typing.onTyping}
                 // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
                 // 最初のページの取得を止めるため、互いに待ち合って失敗する。
-                disabled={readOnly || sendBlocked || !isOnline || messagesQuery.isLoading}
+                disabled={
+                  readOnly ||
+                  postingForbidden ||
+                  sendBlocked ||
+                  !isOnline ||
+                  messagesQuery.isLoading
+                }
                 placeholder={
-                  downgraded
-                    ? t("e2ee.downgraded")
-                    : checkingEncryption
-                      ? t("e2ee.checking")
-                      : sendBlocked
-                        ? t("e2ee.deviceNotReady")
-                        : isOnline
-                          ? undefined
-                          : t("offline.composeDisabled")
+                  postingForbidden
+                    ? t("channels.postingManagersOnly")
+                    : downgraded
+                      ? t("e2ee.downgraded")
+                      : checkingEncryption
+                        ? t("e2ee.checking")
+                        : sendBlocked
+                          ? t("e2ee.deviceNotReady")
+                          : isOnline
+                            ? undefined
+                            : t("offline.composeDisabled")
                 }
               />
             </>
@@ -1013,33 +1039,46 @@ export function MessagePane({
           )}
         </div>
 
-        {threadRoot ? (
+        {threadPaneRoot ? (
           <ThreadPane
             commands={commandSuggestions.commands}
             onRequestCommands={commandSuggestions.load}
-            targetMessageId={resolvedTargetId}
+            targetMessageId={threadTargetMessageId}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
-            key={threadRoot.id}
-            readOnly={readOnly}
+            key={threadPaneRoot.id}
+            readOnly={readOnly || !threadRoot}
+            rootDeleted={!threadRoot}
             isArchived={threadIsArchived}
             isMember={!readOnly && isMember}
             isOffline={!isOnline}
             typingUsers={threadTyping.users}
             onTyping={threadTyping.onTyping}
-            root={threadRoot}
+            root={threadPaneRoot}
             replies={threadReplies}
             membership={threadMembership.data?.membership}
             membershipPending={threadMembership.pending}
             membershipError={threadMembership.error}
+            membershipLoading={!threadMembership.data}
+            participantCount={threadMembership.data?.participant_count}
+            participants={threadMembership.data?.participants}
             onMembershipRetry={() => void threadMembership.retry?.()}
             onJoinThread={() => void threadMembership.change?.("join")}
             onLeaveThread={() => void threadMembership.change?.("leave")}
             onReopenThread={() => void threadMembership.change?.("unarchive")}
+            onReopenAndJoinThread={() =>
+              void (async () => {
+                // 再Openに失敗したら参加しない（アーカイブ中の参加は 409 になり、原因が分からなくなる）。
+                if (await threadMembership.change?.("unarchive")) {
+                  await threadMembership.change?.("join");
+                }
+              })()
+            }
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
-            currentUserId={readOnly || threadIsArchived ? null : currentUserId}
-            canModerate={canModerate && !threadIsArchived}
+            currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+            viewerId={currentUserId}
+            canModerate={canModerate && !threadIsArchived && !!threadRoot}
             reactions={reactionGroups}
             attachments={attachmentsByMessage}
             onUploadAttachment={uploadAttachment}
@@ -1047,6 +1086,7 @@ export function MessagePane({
             canReact={
               !readOnly &&
               !threadIsArchived &&
+              !!threadRoot &&
               !!currentUserId &&
               !reactionsQuery.isLoading &&
               !reactionsQuery.isError
@@ -1063,14 +1103,17 @@ export function MessagePane({
             onSendReply={handleSendReply}
             onOpenThread={openThread}
             composeDisabledReason={
-              downgraded
-                ? t("e2ee.downgraded")
-                : checkingEncryption
-                  ? t("e2ee.checking")
-                  : sendBlocked
-                    ? t("e2ee.deviceNotReady")
-                    : undefined
+              postingForbidden
+                ? t("channels.postingManagersOnly")
+                : downgraded
+                  ? t("e2ee.downgraded")
+                  : checkingEncryption
+                    ? t("e2ee.checking")
+                    : sendBlocked
+                      ? t("e2ee.deviceNotReady")
+                      : undefined
             }
+            postingForbidden={postingForbidden}
             hasOlder={threadQuery.hasOlder}
             isLoadingOlder={threadQuery.isLoadingOlder}
             onLoadOlder={() => void threadQuery.loadOlder()}

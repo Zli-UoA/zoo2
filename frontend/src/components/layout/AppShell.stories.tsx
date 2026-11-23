@@ -78,12 +78,14 @@ export const ChannelWithMembers: Story = {
   play: playForImplementation(async (context) => {
     await Channel.play?.(context);
     await userEvent.click(screen.getByRole("button", { name: /^メンバー / }));
-    const membersHeader = (
-      await screen.findByRole("heading", { name: "メンバー", level: 3 })
-    ).closest("header")!;
-    const railHeader = screen.getByRole("navigation").querySelector("header")!;
-    await expect(membersHeader.getBoundingClientRect().bottom).toBe(
-      railHeader.getBoundingClientRect().bottom,
+    // スレッドのメンバーと同じ、画面中央のダイアログ。右ペインは出さず、チャットの幅も変えない。
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    await waitFor(() => expect(dialog).toBeVisible());
+    const box = dialog.getBoundingClientRect();
+    const center = document.documentElement.clientWidth / 2;
+    await expect(Math.abs(box.left + box.width / 2 - center)).toBeLessThan(1);
+    await expect(screen.getByRole("main").getBoundingClientRect().right).toBe(
+      document.documentElement.clientWidth,
     );
   }),
 };
@@ -171,12 +173,17 @@ export const MobileMembers: Story = {
   globals: { viewport: { value: "mobile" } },
   parameters: {
     a11y: { test: "error" },
-    router: { initialEntries: ["/channels/00000000-0000-4000-8000-000000000001?members=true"] },
+    router: { initialEntries: ["/channels/00000000-0000-4000-8000-000000000001"] },
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
-    await expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await expect(screen.getByLabelText("メインナビゲーション")).not.toBeVisible();
+    await screen.findByRole("heading", { name: "general" });
+    await userEvent.click(screen.getByRole("button", { name: /^メンバー/ }));
+    // 狭幅でも全画面に切り替えず、広幅と同じダイアログを重ねる。閉じるとチャンネルに戻る。
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    await waitFor(() => expect(dialog).toBeVisible());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await expect(screen.getByRole("heading", { name: "general" })).toBeVisible();
   }),
 };
 

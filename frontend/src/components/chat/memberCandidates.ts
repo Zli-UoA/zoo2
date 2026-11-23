@@ -12,7 +12,7 @@ export function userLabel(user: Pick<UserRow, "display_name" | "user_name">): st
 /**
  * 選択言語のラベル順に並べた新しい配列を返す。
  *
- * キー入力のたびに全ユーザーを並べ替えないよう、`MembersPanel` 側でユーザー一覧に
+ * キー入力のたびに全ユーザーを並べ替えないよう、`ChannelMembersDialog` 側でユーザー一覧に
  * 対して一度だけ適用し、`filterMemberCandidates` は並びを保ったまま絞り込む。
  */
 export function sortUsersByLabel(users: UserRow[], locale: Locale = DEFAULT_LOCALE): UserRow[] {
@@ -32,7 +32,7 @@ export interface MemberCandidateFilter {
  * 追加できるメンバー候補を絞り込む。
  *
  * - 既にメンバーのユーザーは出さない（重複追加はサーバが変更を返さず `awaitTxId`
- *   がタイムアウトするため、`MembersPanel` 側のガードと二重で防ぐ）。
+ *   がタイムアウトするため、`ChannelMembersDialog` 側のガードと二重で防ぐ）。
  * - 表示名 / ユーザー名の部分一致（大文字小文字を無視）で絞る。
  * - 並べ替えは行わず、渡された順のまま先頭 `limit` 件を返す。
  */

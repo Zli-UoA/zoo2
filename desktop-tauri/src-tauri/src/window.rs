@@ -34,6 +34,10 @@ pub enum Origin {
 }
 
 pub fn classify(url: &Url, core: &Core) -> Origin {
+    classify_url(url, core.ui(), &remote_origins(core))
+}
+
+fn classify_url(url: &Url, ui: UiMode, allowed_remote_origins: &[String]) -> Origin {
     let origin = url.origin().ascii_serialization();
     // 同梱の画面は、macOS と Linux では tauri://localhost、Windows では http(s)://tauri.localhost。
     // 開発中は trunk の dev サーバー (tauri.conf.json の devUrl)。
@@ -43,7 +47,7 @@ pub fn classify(url: &Url, core: &Core) -> Origin {
     if bundled {
         return Origin::Bundled;
     }
-    if core.ui() == UiMode::Remote && remote_origins(core).contains(&origin) {
+    if ui == UiMode::Remote && allowed_remote_origins.contains(&origin) {
         return Origin::Remote;
     }
     Origin::Other
@@ -132,10 +136,13 @@ pub fn open_external(app: &AppHandle, core: &Core, url: &Url) {
     });
 }
 
-/// 同梱の画面の URL。release では tauri://localhost、開発中は trunk の dev サーバー。
+/// 同梱の画面の URL。release では macOS・Linux が tauri://localhost、Windows が http://tauri.localhost。
+/// 開発中は trunk の dev サーバー。
 fn bundled_url() -> Url {
     let url = if cfg!(debug_assertions) {
         "http://localhost:1420/"
+    } else if cfg!(target_os = "windows") {
+        "http://tauri.localhost/"
     } else {
         "tauri://localhost/"
     };
@@ -218,37 +225,46 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let popup_core = core.clone();
     let perm_core = core.clone();
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-    let window = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
-        .title("zoo2")
-        .inner_size(1100.0, 760.0)
-        .min_inner_size(480.0, 360.0)
-        .on_navigation(move |url| {
-            if classify(url, &nav_core) != Origin::Other {
-                return true;
-            }
-            // 許したオリジン以外 (メッセージ中のリンクなど) は、既定のブラウザーで開く。
-            open_external(&handle, &nav_core, url);
-            false
-        })
-        // `target="_blank"` や `window.open` も、新しいウィンドウは作らず、既定のブラウザーで開く。
-        .on_new_window(move |url, _features| {
-            open_external(&popup_handle, &popup_core, &url);
-            NewWindowResponse::Deny
-        })
-        // 通話 (getUserMedia) のマイクとカメラは、(b) の Web の画面にだけ許す。
-        // macOS では、このあと OS がマイクの使用を尋ねる (Info.plist の説明文を出す)。
-        .on_permission_request(move |webview, kind| {
-            let remote = webview
-                .url()
-                .is_ok_and(|url| classify(&url, &perm_core) == Origin::Remote);
-            match kind {
-                PermissionKind::Microphone | PermissionKind::Camera if remote => {
-                    PermissionResponse::Allow
+    let window = {
+        let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
+            .title("zoo2")
+            .inner_size(1100.0, 760.0)
+            .min_inner_size(480.0, 360.0)
+            .on_navigation(move |url| {
+                if classify(url, &nav_core) != Origin::Other {
+                    return true;
                 }
-                _ => PermissionResponse::Default,
-            }
-        })
-        .build()?;
+                // 許したオリジン以外 (メッセージ中のリンクなど) は、既定のブラウザーで開く。
+                open_external(&handle, &nav_core, url);
+                false
+            })
+            // `target="_blank"` や `window.open` も、新しいウィンドウは作らず、既定のブラウザーで開く。
+            .on_new_window(move |url, _features| {
+                open_external(&popup_handle, &popup_core, &url);
+                NewWindowResponse::Deny
+            })
+            // 通話 (getUserMedia) のマイクとカメラは、(b) の Web の画面にだけ許す。
+            // macOS では、このあと OS がマイクの使用を尋ねる (Info.plist の説明文を出す)。
+            .on_permission_request(move |webview, kind| {
+                let remote = webview
+                    .url()
+                    .is_ok_and(|url| classify(&url, &perm_core) == Origin::Remote);
+                match kind {
+                    PermissionKind::Microphone | PermissionKind::Camera if remote => {
+                        PermissionResponse::Allow
+                    }
+                    _ => PermissionResponse::Default,
+                }
+            });
+        #[cfg(target_os = "windows")]
+        let builder = if let Ok(dir) = app.path().app_local_data_dir() {
+            // WebView2 の保存データもアンインストール対象 (%LOCALAPPDATA%\chat.zli.desktop) に揃える。
+            builder.data_directory(dir)
+        } else {
+            builder
+        };
+        builder.build()?
+    };
     #[cfg(target_os = "linux")]
     enable_webrtc(&window);
     Ok(())
@@ -332,8 +348,20 @@ pub fn create_app_menu(app: &App) -> tauri::Result<()> {
 pub fn create_tray(app: &App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "開く", true, None::<&str>)?;
     let reload = MenuItem::with_id(app, TRAY_RELOAD_MENU_ID, "再読み込み", true, None::<&str>)?;
+    #[cfg(not(target_os = "macos"))]
+    let check_update = MenuItem::with_id(
+        app,
+        crate::update::CHECK_MENU_ID,
+        "アップデートを確認…",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
+    #[cfg(target_os = "macos")]
     let menu = Menu::with_items(app, &[&open, &reload, &quit])?;
+    #[cfg(not(target_os = "macos"))]
+    let menu = Menu::with_items(app, &[&open, &reload, &check_update, &quit])?;
+
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("zoo2")
         .menu(&menu)
@@ -343,14 +371,38 @@ pub fn create_tray(app: &App) -> tauri::Result<()> {
                 show_main(app);
                 reload_main(app);
             }
-            "quit" => app.exit(0),
+            #[cfg(not(target_os = "macos"))]
+            crate::update::CHECK_MENU_ID => crate::update::check_now(app),
+            "quit" => {
+                crate::update::prepare_manual_exit(app);
+                app.exit(0);
+            }
+            #[cfg(target_os = "macos")]
             crate::update::MENU_ID => crate::update::install_and_restart(app),
             _ => {}
         });
+    #[cfg(target_os = "windows")]
+    {
+        tray = tray
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(|tray, event| {
+                if let tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    show_main(tray.app_handle());
+                }
+            });
+    }
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
+    #[cfg(not(target_os = "macos"))]
+    app.manage(crate::update::CheckMenuItem(check_update));
+    #[cfg(target_os = "macos")]
     app.manage(crate::update::TrayMenu(menu));
     Ok(())
 }
@@ -387,5 +439,62 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             });
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_url_matches_platform_and_build_profile() {
+        let url = bundled_url();
+        if cfg!(debug_assertions) {
+            assert_eq!(url.as_str(), "http://localhost:1420/");
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(url.as_str(), "http://tauri.localhost/");
+        } else {
+            assert_eq!(url.as_str(), "tauri://localhost/");
+        }
+    }
+
+    #[test]
+    fn classify_url_recognizes_bundled_remote_and_other() {
+        let remote = vec!["https://zli.chat".to_string()];
+        for bundled in [
+            "tauri://localhost/index.html",
+            "http://tauri.localhost/index.html",
+            "https://tauri.localhost/index.html",
+        ] {
+            let parsed = Url::parse(bundled).unwrap();
+            assert_eq!(
+                classify_url(&parsed, UiMode::Remote, &remote),
+                Origin::Bundled
+            );
+        }
+        assert_eq!(
+            classify_url(
+                &Url::parse("https://zli.chat/channels/1").unwrap(),
+                UiMode::Remote,
+                &remote
+            ),
+            Origin::Remote
+        );
+        assert_eq!(
+            classify_url(
+                &Url::parse("https://zli.chat/channels/1").unwrap(),
+                UiMode::Leptos,
+                &remote
+            ),
+            Origin::Other
+        );
+        assert_eq!(
+            classify_url(
+                &Url::parse("https://example.com").unwrap(),
+                UiMode::Remote,
+                &remote
+            ),
+            Origin::Other
+        );
     }
 }

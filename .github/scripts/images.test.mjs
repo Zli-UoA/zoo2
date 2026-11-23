@@ -12,6 +12,7 @@ test('component filters and common inputs', () => {
   assert.deepEqual(changedComponents(['frontend-compose/src/commonMain/kotlin/zoo/App.kt']), []);
   assert.deepEqual(changedComponents(['backend/Cargo.lock']), ['backend']);
   assert.deepEqual(changedComponents(['docs/slack-event-coverage.json']), ['backend']);
+  assert.deepEqual(changedComponents(['frontend/src/lib/emoji/emoji-kitchen.json']), ['frontend', 'backend']);
   // backend は E2EE の署名の検証に crates/zoo-crypto を path で依存する。
   assert.deepEqual(changedComponents(['crates/zoo-crypto/src/lib.rs']), ['frontend', 'backend']);
   assert.deepEqual(changedComponents(['crates/zoo-crypto-wasm/src/lib.rs']), ['frontend']);

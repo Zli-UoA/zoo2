@@ -3,14 +3,25 @@ package zoo.android
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Intent
 import android.content.Context
+import android.graphics.Bitmap
+import kotlinx.coroutines.test.runTest
 import java.util.UUID
 import kotlin.test.*
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import zoo.android.phone.DM_PUSH_ANSWER_ACTION
+import zoo.android.phone.DM_PUSH_OPEN_ACTION
+import zoo.android.phone.DmCallPushAnswer
+import zoo.android.phone.IncomingCallActivity
+import zoo.android.phone.incomingCallerInitials
+import zoo.android.phone.phoneDictionaryLocale
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -67,6 +78,129 @@ class AndroidPushTest {
         shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.POST_NOTIFICATIONS)
         showPushNotification(context, data(binding))
         assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun optedInDmCallPushRingsOnColdStartAndAnEndPreventsReorderedDelivery() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+        val payload = data(binding) + mapOf(
+            "notificationType" to "call_invite", "inviteId" to id, "title" to "山田 葵",
+            "expiresAt" to (System.currentTimeMillis() / 1000L + 25).toString(),
+        )
+        showPushNotification(context, payload)
+        assertTrue(manager.activeNotifications.isEmpty())
+
+        store.setDmCallsEnabled(user, true)
+        repeat(2) { showPushNotification(context, payload) }
+        val notification = manager.activeNotifications.single().notification
+        assertEquals(Notification.CATEGORY_CALL, notification.category)
+        assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        val channel = manager.getNotificationChannel(notification.channelId)
+        assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
+        assertTrue(channel.shouldVibrate())
+        val fullScreen = assertNotNull(notification.fullScreenIntent)
+        val incomingScreen = shadowOf(fullScreen).savedIntent
+        assertEquals(IncomingCallActivity::class.java.name, incomingScreen.component?.className)
+        assertEquals("山田 葵", incomingScreen.getStringExtra("callerName"))
+        val intent = notification.actions.map { shadowOf(it.actionIntent).savedIntent }
+            .single { it.action == DM_PUSH_ANSWER_ACTION }
+        val open = shadowOf(notification.contentIntent).savedIntent
+        assertEquals(DM_PUSH_OPEN_ACTION, open.action)
+        assertEquals(id, DmCallPushAnswer.fromIntent(open)?.id)
+        assertEquals(DM_PUSH_ANSWER_ACTION, intent.action)
+        assertEquals(id, DmCallPushAnswer.fromIntent(intent)?.id)
+        assertEquals(binding, DmCallPushAnswer.fromIntent(intent)?.binding)
+
+        showPushNotification(context, payload + ("notificationType" to "call_invite_end"))
+        showPushNotification(context, payload)
+        assertTrue(manager.activeNotifications.isEmpty())
+        showPushNotification(context, payload + mapOf("inviteId" to UUID.randomUUID().toString(), "expiresAt" to "1"))
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun disablingDmCallingClearsRingingNotificationAndRejectsNewOrStaleBinding() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+        store.setDmCallsEnabled(user, true)
+        val payload = data(binding) + mapOf(
+            "notificationType" to "call_invite", "inviteId" to id,
+            "expiresAt" to (System.currentTimeMillis() / 1000L + 25).toString(),
+        )
+        showPushNotification(context, payload + ("binding" to UUID.randomUUID().toString()))
+        assertTrue(manager.activeNotifications.isEmpty())
+        showPushNotification(context, payload)
+        assertEquals(1, manager.activeNotifications.size)
+        store.setDmCallsEnabled(user, false)
+        assertTrue(manager.activeNotifications.isEmpty())
+        showPushNotification(context, payload)
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun phoneLabelsUseTheCurrentBindingsSavedLocale() {
+        val store = PushBinding(context)
+        val binding = store.bind("https://zoo.example", user)
+
+        store.setPhoneLocale("stale-binding", "ja")
+        assertNull(store.phoneLocale())
+        store.setPhoneLocale(binding, "ja")
+        store.setPhoneLocale("stale-binding", "en")
+        assertEquals("ja", PushBinding(context).phoneLocale())
+        assertEquals("ja", phoneDictionaryLocale(context))
+    }
+
+    @Test fun initialsPreserveWholeEmoji() {
+        assertEquals("A😀", incomingCallerInitials("A😀B"))
+        assertEquals("👩‍💻B", incomingCallerInitials("👩‍💻Bob"))
+    }
+
+    @Test fun lockScreenFinishesIfRingEndedBeforeItWasCreated() {
+        val action = PendingIntent.getBroadcast(context, 0, Intent("zoo.test.action"), PendingIntent.FLAG_IMMUTABLE)
+        val screen = Intent(context, IncomingCallActivity::class.java)
+            .putExtra("answer", action).putExtra("dismiss", action)
+        val activity = Robolectric.buildActivity(IncomingCallActivity::class.java, screen).create().get()
+        assertTrue(activity.isFinishing)
+    }
+
+    @Test fun publicImageUpgradesExistingPushToBigPicture() = runTest {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val attachment = UUID.randomUUID().toString()
+        val posted = assertNotNull(showPushNotification(context, data(binding) + mapOf(
+            "notificationType" to "mention", "actor" to "投稿者", "channelName" to "開発",
+            "avatarUrl" to "https://zoo.example/avatar.png", "imageId" to attachment,
+        )))
+        assertEquals("https://zoo.example/api/home/images/$attachment", posted.imageUrl)
+        assertEquals("android.app.Notification\$MessagingStyle",
+            manager.activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEMPLATE))
+        val requested = mutableSetOf<String>()
+        enrichPushNotification(context, posted) { url, _ ->
+            requested += url
+            Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        }
+        val displayed = manager.activeNotifications.single().notification
+        assertEquals("android.app.Notification\$BigPictureStyle", displayed.extras.getString(Notification.EXTRA_TEMPLATE))
+        assertNotNull(displayed.getLargeIcon())
+        assertEquals(setOf(posted.avatarUrl, posted.imageUrl), requested)
+        assertEquals(Notification.VISIBILITY_PRIVATE, displayed.visibility)
+    }
+
+    @Test fun dismissedPushIsNotRestoredByLateMedia() = runTest {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val posted = assertNotNull(showPushNotification(context, data(binding) +
+            ("avatarUrl" to "https://zoo.example/avatar.png")))
+        enrichPushNotification(context, posted) { _, _ ->
+            manager.cancel(posted.tag, 0)
+            Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        }
+        assertTrue(manager.activeNotifications.isEmpty())
+    }
+
+    @Test fun blocksExternalAvatarAndDoesNotRequestAttachmentsForDm() {
+        val binding = PushBinding(context).bind("https://zoo.example", user)
+        val posted = assertNotNull(showPushNotification(context, data(binding) + mapOf(
+            "avatarUrl" to "https://elsewhere.example/avatar.png", "imageId" to UUID.randomUUID().toString(),
+        )))
+        assertNull(posted.avatarUrl)
+        assertNull(posted.imageUrl)
     }
 
     @Test fun notificationTapUsesOnlyAnInternalMessageDestination() {

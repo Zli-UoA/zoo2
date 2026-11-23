@@ -129,7 +129,13 @@ const config = defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright({ launchOptions: { executablePath: process.env.CHROME_BIN } }),
+            // Linux の chromium-headless-shell はアニメーション停止時に rAF が停滞することがあるため、
+            // CHROME_BIN 未指定時はフル Chromium（channel: "chromium"）を使う。
+            provider: playwright({
+              launchOptions: process.env.CHROME_BIN
+                ? { executablePath: process.env.CHROME_BIN }
+                : { channel: "chromium" },
+            }),
             instances: [{ browser: "chromium" }],
           },
         },
