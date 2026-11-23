@@ -97,7 +97,7 @@ afterEach(() => {
   desktop.isMissing.mockClear();
   desktop.begin.mockReset();
   desktop.write.mockReset();
-  desktop.finish.mockReset();
+  desktop.finish.mockReset().mockResolvedValue("a.txt");
   desktop.cancel.mockReset();
 });
 
@@ -157,7 +157,7 @@ describe("downloadUrlToDesktop", () => {
     desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
     desktop.begin.mockResolvedValue(started());
     desktop.write.mockResolvedValue(undefined);
-    desktop.finish.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("a (1).txt");
     const fetchMock = vi.fn(async () => blobResponse([1, 2, 3, 4, 5, 6]));
     vi.stubGlobal("fetch", fetchMock);
     const resolve = vi.fn().mockResolvedValue("https://files.test/a");
@@ -167,7 +167,7 @@ describe("downloadUrlToDesktop", () => {
       if (state?.status === "downloading") fractions.push(state.fraction);
     });
 
-    await downloadUrlToDesktop("a1", "a.txt", resolve);
+    await expect(downloadUrlToDesktop("a1", "a.txt", resolve)).resolves.toBe("a (1).txt");
 
     unsubscribe();
     expect(resolve).toHaveBeenCalledWith({ refresh: false });
@@ -399,7 +399,9 @@ describe("downloadUrlToDesktop", () => {
     const first = downloadUrlToDesktop("a7", "a.txt", vi.fn().mockResolvedValue("u"));
     // 行が仮想スクロールで外れて戻ってきても、状態はモジュール側に残っている。
     expect(desktopDownloadState("a7")).toEqual({ status: "preparing" });
-    await downloadUrlToDesktop("a7", "a.txt", vi.fn().mockResolvedValue("u"));
+    await expect(
+      downloadUrlToDesktop("a7", "a.txt", vi.fn().mockResolvedValue("u")),
+    ).resolves.toBeNull();
     expect(desktop.begin).toHaveBeenCalledTimes(1);
 
     release(started("d7"));
@@ -411,8 +413,8 @@ describe("downloadUrlToDesktop", () => {
   it("does not abort while the file is being moved into place", async () => {
     desktop.begin.mockResolvedValue(started("d8"));
     desktop.write.mockResolvedValue(undefined);
-    let release!: () => void;
-    desktop.finish.mockReturnValue(new Promise<void>((resolve) => (release = resolve)));
+    let release!: (name: string) => void;
+    desktop.finish.mockReturnValue(new Promise<string>((resolve) => (release = resolve)));
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => blobResponse([1])),
@@ -421,9 +423,9 @@ describe("downloadUrlToDesktop", () => {
     const promise = downloadUrlToDesktop("a8", "a.txt", vi.fn().mockResolvedValue("u"));
     await vi.waitFor(() => expect(desktopDownloadState("a8")?.status).toBe("finishing"));
     cancelDesktopDownload("a8");
-    release();
+    release("a (1).txt");
 
-    await expect(promise).resolves.toBeUndefined();
+    await expect(promise).resolves.toBe("a (1).txt");
     expect(desktop.cancel).not.toHaveBeenCalled();
   });
 });
@@ -432,17 +434,19 @@ describe("downloadBlobToDesktop", () => {
   it("writes a decrypted blob and reaches a complete circle", async () => {
     desktop.begin.mockResolvedValue(started());
     desktop.write.mockResolvedValue(undefined);
-    desktop.finish.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("secret (1).bin");
     const fractions: Array<number | null> = [];
     const unsubscribe = subscribeDesktopDownloads(() => {
       const state = desktopDownloadState("e1");
       if (state?.status === "downloading") fractions.push(state.fraction);
     });
 
-    await downloadBlobToDesktop("e1", "secret.bin", async (_signal, report) => {
-      report(1);
-      return new Blob([new Uint8Array([9, 8, 7])]);
-    });
+    await expect(
+      downloadBlobToDesktop("e1", "secret.bin", async (_signal, report) => {
+        report(1);
+        return new Blob([new Uint8Array([9, 8, 7])]);
+      }),
+    ).resolves.toBe("secret (1).bin");
 
     unsubscribe();
     const written = desktop.write.mock.calls.flatMap(([, bytes]) => [...(bytes as Uint8Array)]);

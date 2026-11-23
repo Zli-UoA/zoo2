@@ -208,9 +208,14 @@ function AttachmentDownloadButton({
       // デスクトップ版では OS の保存ダイアログと保存先の設定を使う。古い版のアプリでは
       // コマンドがないので、ブラウザーの保存に戻す。
       if (await desktopDownloadsAvailable()) {
-        await downloadUrlToDesktop(attachment.id, attachment.file_name, state.getFreshUrl, {
-          size: Number(attachment.file_size),
-        });
+        const savedName = await downloadUrlToDesktop(
+          attachment.id,
+          attachment.file_name,
+          state.getFreshUrl,
+          { size: Number(attachment.file_size) },
+        );
+        // 同じ名前が既にあったときは番号が足されるので、実際の名前を伝える。
+        if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
       } else {
         await downloadAttachmentWithRetry(state.getFreshUrl, attachment.file_name);
       }

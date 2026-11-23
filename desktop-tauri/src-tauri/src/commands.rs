@@ -374,19 +374,24 @@ fn json_body_bytes(value: &serde_json::Value) -> Result<Vec<u8>, IpcError> {
     Ok(bytes)
 }
 
-/// 書き終えたら、`.part` を本来の名前に置き換える。
+/// 書き終えたら、`.part` を本来の名前に置き換える。実際に保存した名前を返す
+/// （同じ名前が既にあるときは番号を足すため、始めたときの名前と違うことがある）。
 #[tauri::command]
 pub async fn zoo_download_finish(
     webview: Webview,
     core: Core_<'_>,
     id: String,
-) -> Result<(), IpcError> {
+) -> Result<String, IpcError> {
     require(&webview, &core, ANY)?;
-    core.downloads()
+    let saved = core
+        .downloads()
         .finish(&id)
         .await
         .map_err(download_ipc_error)?;
-    Ok(())
+    Ok(saved
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| saved.to_string_lossy().into_owned()))
 }
 
 /// 中止して、途中までのファイルを消す。

@@ -257,6 +257,7 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
+    "downloadSaved": "Saved as {{name}}.",
     "downloadDestinationUnsupported": "This folder cannot be used to save the file. Choose another folder, or change the save location in Settings > Downloads.",
     "downloadDestinationUnsupportedAskEveryTimeOff": "This folder cannot be used to save the file. Change the save location in Settings > Downloads, or turn on \"Ask where to save each time\".",
     "downloadTooMany": "Too many downloads are running at once. Wait for the other downloads to finish, then try again.",

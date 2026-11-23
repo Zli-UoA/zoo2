@@ -1799,6 +1799,7 @@ fn replace_file(part: &Path, target: &Path) -> std::io::Result<()> {
 /// 保存先が既にあると失敗する形で、`part` を `target` へ移す。Unix の `rename` は既存の
 /// ファイルを置き換えるため、`exists` の確認と `rename` の間の競合で他のファイルを消さないよう、
 /// OS の「既にあれば失敗する移動」を使う。
+#[cfg_attr(windows, allow(dead_code))]
 fn rename_unique(part: &Path, target: &Path) -> std::io::Result<()> {
     match rename_no_replace(part, target) {
         Ok(()) => Ok(()),
@@ -1856,6 +1857,20 @@ fn destination_identity_available(_file: &std::fs::File) -> bool {
     true
 }
 
+/// 事前検査の目印も、本番と同じハンドル経由の改名で移せるかを確かめる。
+#[cfg(windows)]
+fn rename_probe_with_handle(from: &Path, to: &Path) -> std::io::Result<()> {
+    let file = open_for_rename(from, false)?;
+    let result = rename_handle_no_replace(&file, to);
+    drop(file);
+    result
+}
+
+#[cfg(not(windows))]
+fn rename_probe_with_handle(from: &Path, to: &Path) -> std::io::Result<()> {
+    rename_no_replace(from, to)
+}
+
 /// `.part` を作り、確定できる保存先かを確かめる。`spawn_blocking` の中で動く。
 fn prepare_part(
     journal: &Arc<Journal>,
@@ -1868,7 +1883,7 @@ fn prepare_part(
         part,
         final_path,
         deduplicate,
-        rename_no_replace,
+        rename_probe_with_handle,
         |from, to| std::fs::hard_link(from, to),
         destination_identity_available,
     )
@@ -1893,15 +1908,9 @@ fn prepare_part_with(
         .filter(|entry| entry.path != part)
         .collect();
     // ダイアログは既にあるフォルダーを返し、決まったフォルダーは上の分岐で存在を
-    // 確かめてある。ここで `create_dir_all` はしない。
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = match options.open(part) {
+    // 確かめてある。ここで `create_dir_all` はしない。Windows では確定時の
+    // ハンドルからの改名に必要な DELETE 権限も付けて開く。
+    let file = match open_for_rename(part, true) {
         Ok(file) => file,
         Err(err) => {
             journal.forget(part);
@@ -2108,6 +2117,7 @@ fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
 /// 長いパスの設定が無効な環境でも 260 文字を超える保存先へ移せるよう、`\\?\` 付きの
 /// 形にして渡す（`std::fs::rename` と同じ扱い）。
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
     use windows::Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW};
     use windows::core::PCWSTR;
@@ -2167,9 +2177,111 @@ fn rename_no_replace(_part: &Path, _target: &Path) -> std::io::Result<()> {
     Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
+/// ハンドルからの改名に使うファイルを開く。Windows では `FileRenameInfo` に DELETE 権限が
+/// 必要なので `CreateFileW` で明示的に付ける。ほかの OS では通常の方法で開く。
+#[cfg(windows)]
+fn open_for_rename(path: &Path, create_new: bool) -> std::io::Result<File> {
+    use std::os::windows::io::FromRawHandle;
+    use windows::Win32::{
+        Foundation::GENERIC_WRITE,
+        Storage::FileSystem::{
+            CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        },
+    };
+    use windows::core::PCWSTR;
+
+    let wide = wide_extended_path(path);
+    let disposition = if create_new {
+        CREATE_NEW
+    } else {
+        OPEN_EXISTING
+    };
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            GENERIC_WRITE.0 | DELETE.0 | FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            disposition,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    }
+    .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xFFFF))?;
+    // SAFETY: CreateFileW が返したハンドルの所有権を File に移す。失敗は上の Result で返る。
+    Ok(unsafe { File::from_raw_handle(handle.0) })
+}
+
+#[cfg(not(windows))]
+fn open_for_rename(path: &Path, create_new: bool) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+    }
+    options.open(path)
+}
+
+/// 開いたハンドルが指すファイルを、移す先が既にあるときは失敗する形で改名する。
+/// パスをもう一度解決しないため、確認したハンドルと同じファイルだけを確定できる。
+#[cfg(windows)]
+fn rename_handle_no_replace(file: &File, target: &Path) -> std::io::Result<()> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle},
+    };
+
+    let wide = wide_extended_path(target); // NUL 終端を含む
+    // `FileNameLength` は終端 NUL を含めない長さ（ドキュメント上 NUL は不要）。
+    let name_bytes = (wide.len() - 1) * size_of::<u16>();
+    let header = size_of::<FILE_RENAME_INFO>() - size_of::<u16>();
+    let words = (header + name_bytes + size_of::<u64>() - 1) / size_of::<u64>();
+    let mut buffer = vec![0u64; words];
+    // SAFETY: buffer は 8 バイト境界にあり、構造体と名前を入れる十分な大きさがある。
+    unsafe {
+        let info = buffer.as_mut_ptr() as *mut FILE_RENAME_INFO;
+        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).RootDirectory = HANDLE::default();
+        (*info).FileNameLength = name_bytes as u32;
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), (*info).FileName.as_mut_ptr(), wide.len());
+        SetFileInformationByHandle(
+            HANDLE(file.as_raw_handle()),
+            FileRenameInfo,
+            buffer.as_ptr() as *const std::ffi::c_void,
+            (words * size_of::<u64>()) as u32,
+        )
+        .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xFFFF))
+    }
+}
+
+/// 保存先が既にあると失敗する形で、`part` を `target` へ移す。`file` は `part` のハンドル。
+#[cfg(windows)]
+fn rename_unique_from(file: &File, part: &Path, target: &Path) -> std::io::Result<()> {
+    match rename_handle_no_replace(file, target) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(err),
+        Err(err) if is_unsupported(&err) => move_without_replace(part, target),
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(not(windows))]
+fn rename_unique_from(_file: &File, part: &Path, target: &Path) -> std::io::Result<()> {
+    rename_unique(part, target)
+}
+
 /// 決まったフォルダーへ保存するときは上書きしない。`begin` の後に同じ名前のファイルができたら、
 /// 番号を足した名前へ移す（同時に始めた保存や、別のアプリが作ったファイルを消さない）。
-fn move_unique(part: &Path, target: &Path) -> std::io::Result<PathBuf> {
+/// `file` は `part` を開いたハンドルで、Windows ではこれから直接改名する。
+fn move_unique_from(file: &File, part: &Path, target: &Path) -> std::io::Result<PathBuf> {
     let dir = target.parent().unwrap_or_else(|| Path::new("."));
     let name = target
         .file_name()
@@ -2182,7 +2294,7 @@ fn move_unique(part: &Path, target: &Path) -> std::io::Result<PathBuf> {
         } else {
             dir.join(numbered_name(stem, n, extension))
         };
-        match rename_unique(part, &candidate) {
+        match rename_unique_from(file, part, &candidate) {
             Ok(()) => return Ok(candidate),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -2306,8 +2418,10 @@ fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
     })
 }
 
+/// 保存先を一度だけ開き、その同じハンドルから ID とメタデータを取る。
+/// サイズと ID を別々の照会から組み合わせないため、途中で差し替えられても混ざらない。
 #[cfg(windows)]
-fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
+fn windows_saved_info(path: &Path) -> Option<(WindowsFileId, std::fs::Metadata)> {
     use std::mem::size_of;
     use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
     use windows::Win32::{
@@ -2338,24 +2452,31 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
             size_of::<FILE_ID_INFO>() as u32,
         )
     };
-    if ok.is_ok() {
-        return Some(WindowsFileId {
+    let id = if ok.is_ok() {
+        WindowsFileId {
             volume: info.VolumeSerialNumber,
             file_id: info.FileId.Identifier,
             stable_across_move: true,
-        });
-    }
-    // FileIdInfo に対応しないファイルシステム（FAT32 / exFAT / SMB 共有など）では、
-    // GetFileInformationByHandle のボリューム番号と 64-bit ファイル ID にフォールバックする。
-    let mut by_handle = BY_HANDLE_FILE_INFORMATION::default();
-    if unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.is_err() {
-        return None;
-    }
-    Some(WindowsFileId {
-        volume: by_handle.dwVolumeSerialNumber as u64,
-        file_id: file_id_from_index(by_handle.nFileIndexHigh, by_handle.nFileIndexLow),
-        stable_across_move: false,
-    })
+        }
+    } else {
+        // FileIdInfo に対応しないファイルシステム（FAT32 / exFAT / SMB 共有など）では、
+        // GetFileInformationByHandle のボリューム番号と 64-bit ファイル ID にフォールバックする。
+        let mut by_handle = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.is_err() {
+            return None;
+        }
+        WindowsFileId {
+            volume: by_handle.dwVolumeSerialNumber as u64,
+            file_id: file_id_from_index(by_handle.nFileIndexHigh, by_handle.nFileIndexLow),
+            stable_across_move: false,
+        }
+    };
+    Some((id, meta))
+}
+
+#[cfg(windows)]
+fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
+    windows_saved_info(path).map(|(id, _)| id)
 }
 
 #[cfg(unix)]
@@ -2386,34 +2507,50 @@ fn same_file_as_path(_source: &std::fs::Metadata, _path: &Path) -> bool {
     true
 }
 
-/// 移動後の保存先を確認する。`FileIdInfo` が使えないファイルシステムでは ID が
-/// 移動で変わり得るため、そのときは ID の比較ではなく、再解析ポイントを辿らない
-/// 通常ファイルであることとサイズの一致だけを確かめる。同じサイズの差し替えは
-/// 検出できないので、確認に失敗した保存先の名前は削除しない。
+/// 移動前のハンドルと保存先の ID を比べる。安定 ID なら移動前後で同じ値を要求する。
+/// フォールバック ID は移動で値が変わり得るため、移動に使ったハンドルが今も
+/// 保存先と同じファイルを指していることを確認する（両方とも移動後に読む）。
+#[cfg(windows)]
+fn saved_file_ids_match(
+    source: WindowsFileId,
+    saved: WindowsFileId,
+    moved: Option<WindowsFileId>,
+) -> bool {
+    if let Some(moved) = moved
+        && moved != saved
+    {
+        // 保存先の名前が、移動したファイル以外のものに差し替えられている。
+        return false;
+    }
+    if source.stable_across_move && source != saved {
+        // 安定 ID が読めるなら、移動前後で同じファイルであることも確かめる。
+        // フォールバック ID では移動後の値が変わり得るので、この比較はしない。
+        return false;
+    }
+    // フォールバック ID で移動ハンドルが無い場合は、同一性を証明できない。
+    source.stable_across_move || moved.is_some()
+}
+
+/// 移動後の保存先を確認する。保存先は一度だけ開き、サイズと ID を同じハンドルから取る。
+/// 差し替えを確認できたときは、保存先の名前を削除せずにエラーを返す。
 #[cfg(windows)]
 fn post_move_file_matches(
-    source: &std::fs::Metadata,
+    source_len: u64,
     source_file_id: Option<WindowsFileId>,
     saved: &Path,
+    moved_file: Option<&File>,
 ) -> bool {
     let Some(source_file_id) = source_file_id else {
         return false;
     };
-    let Ok(saved_meta) = std::fs::symlink_metadata(saved) else {
+    let Some((saved_id, saved_meta)) = windows_saved_info(saved) else {
         return false;
     };
-    if !saved_meta.is_file() {
+    if saved_meta.len() != source_len {
         return false;
     }
-    if !source_file_id.stable_across_move {
-        // フォールバック ID は移動で変わることがあり、トンネリングで作成日時も
-        // 復元され得る。どちらも同一性の根拠にせず、通常ファイルとサイズだけを見る。
-        return windows_file_id_from_path(saved).is_some() && saved_meta.len() == source.len();
-    }
-    let Some(saved_id) = windows_file_id_from_path(saved) else {
-        return false;
-    };
-    source_file_id == saved_id
+    let moved_id = moved_file.and_then(windows_file_id_from_handle);
+    saved_file_ids_match(source_file_id, saved_id, moved_id)
 }
 
 #[cfg(unix)]
@@ -2427,14 +2564,14 @@ fn post_move_file_matches(_source: &std::fs::Metadata, _saved: &Path) -> bool {
 }
 
 fn finish_entry(entry: Pending) -> Result<PathBuf> {
-    finish_entry_with(entry, move_unique)
+    finish_entry_with(entry, move_unique_from)
 }
 
 /// [`finish_entry`] の本体。テストで「上書きしない移動」の失敗を再現できるよう、
-/// 確定に使う関数を受け取る。
+/// 確定に使う関数を受け取る。Windows では渡されたハンドルから直接改名する。
 fn finish_entry_with(
     entry: Pending,
-    move_unique: impl Fn(&Path, &Path) -> std::io::Result<PathBuf>,
+    move_unique: impl Fn(&File, &Path, &Path) -> std::io::Result<PathBuf>,
 ) -> Result<PathBuf> {
     // 中止と確定が同時に来ても、ファイルのロックの中で決める。中止はロックの前で
     // `cancelled` を立てるので、ここで見てから確定するまでの間に取り消されることはない。
@@ -2475,8 +2612,8 @@ fn finish_entry_with(
     #[cfg(windows)]
     let source_file_id = windows_file_id_from_handle(&file);
     let synced = file.sync_all();
-    drop(file);
     if let Err(err) = synced {
+        drop(file);
         let _ = std::fs::remove_file(&entry.part);
         return Err(err.into());
     }
@@ -2527,12 +2664,20 @@ fn finish_entry_with(
             ));
         }
     }
-    let saved = if entry.deduplicate {
-        move_unique(&entry.part, &entry.final_path)
+    // `.part` を開いたハンドルを確定後まで持ち、保存先が本当にこのハンドルの
+    // ファイルかを確認する。Windows ではパスを再解決しない改名を使う。
+    let (saved_result, moved_file) = if entry.deduplicate {
+        (
+            move_unique(&file, &entry.part, &entry.final_path),
+            Some(file),
+        )
     } else {
-        replace_file(&entry.part, &entry.final_path).map(|()| entry.final_path.clone())
+        let result =
+            replace_file(&entry.part, &entry.final_path).map(|()| entry.final_path.clone());
+        drop(file);
+        (result, None)
     };
-    let saved = saved.map_err(|err| {
+    let saved = saved_result.map_err(|err| {
         let _ = std::fs::remove_file(&entry.part);
         if is_unsupported_destination(&err) {
             anyhow::Error::new(UnsupportedDestination)
@@ -2542,12 +2687,16 @@ fn finish_entry_with(
                 .context(format!("保存できません: {}", entry.final_path.display()))
         }
     })?;
-    if !post_move_file_matches(
-        &source_meta,
-        #[cfg(windows)]
+    #[cfg(windows)]
+    let verified = post_move_file_matches(
+        source_meta.len(),
         source_file_id,
         &saved,
-    ) {
+        moved_file.as_ref(),
+    );
+    #[cfg(not(windows))]
+    let verified = post_move_file_matches(&source_meta, &saved);
+    if !verified {
         let _ = std::fs::remove_file(&entry.part);
         // 確認に失敗した保存先の名前は触らない。差し替えられていた場合に、
         // こちらのファイルだと断定できずに他人のファイルを消すおそれがあるため。
@@ -2582,11 +2731,7 @@ mod tests {
 
     fn pending(target: &Path, id: &str, deduplicate: bool, limit: u64) -> Pending {
         let part = part_path(target, id);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&part)
-            .unwrap();
+        let file = open_for_rename(&part, true).unwrap();
         Pending {
             file: Arc::new(Mutex::new(Some(file))),
             part,
@@ -3083,7 +3228,9 @@ mod tests {
         std::fs::write(&part, b"new").unwrap();
         std::fs::write(&target, b"old").unwrap();
 
-        let saved = move_unique(&part, &target).unwrap();
+        let file = open_for_rename(&part, false).unwrap();
+        let saved = move_unique_from(&file, &part, &target).unwrap();
+        drop(file);
         assert_eq!(saved, dir.join("x (1).txt"));
         assert_eq!(std::fs::read(&target).unwrap(), b"old");
         assert_eq!(std::fs::read(&saved).unwrap(), b"new");
@@ -3130,49 +3277,91 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn post_move_check_ignores_an_unstable_fallback_id() {
-        let dir = temp_dir();
-        let source_path = dir.join("source.bin");
-        let payload = vec![7u8; 16];
-        std::fs::write(&source_path, &payload).unwrap();
-        let source = std::fs::metadata(&source_path).unwrap();
-        let stable_id = {
-            let file = std::fs::File::open(&source_path).unwrap();
-            windows_file_id_from_handle(&file).expect("id")
+    fn saved_file_ids_match_is_not_tied_to_a_volume() {
+        let stable = WindowsFileId {
+            volume: 1,
+            file_id: file_id_from_index(1, 2),
+            stable_across_move: true,
         };
-        let mut fallback_id = stable_id;
-        fallback_id.file_id = file_id_from_index(1, 2);
-        fallback_id.stable_across_move = false;
+        let other = WindowsFileId {
+            volume: 1,
+            file_id: file_id_from_index(3, 4),
+            stable_across_move: true,
+        };
+        let fallback = WindowsFileId {
+            stable_across_move: false,
+            ..stable
+        };
+        let other_fallback = WindowsFileId {
+            volume: 1,
+            file_id: other.file_id,
+            stable_across_move: false,
+        };
+
+        // 安定 ID は移動前後で同じ値、かつ移動ハンドルと保存先が同じであること。
+        assert!(saved_file_ids_match(stable, stable, Some(stable)));
+        assert!(!saved_file_ids_match(stable, other, Some(other)));
+        assert!(!saved_file_ids_match(stable, stable, Some(other)));
+        assert!(!saved_file_ids_match(stable, other, Some(stable)));
+
+        // フォールバック ID は値が変わり得るので、移動ハンドルと保存先の一致だけを見る。
+        assert!(saved_file_ids_match(
+            fallback,
+            other_fallback,
+            Some(other_fallback)
+        ));
+        assert!(!saved_file_ids_match(
+            fallback,
+            other_fallback,
+            Some(fallback)
+        ));
+        // 移動ハンドルが無いフォールバック経路は同一性を証明できない。
+        assert!(!saved_file_ids_match(fallback, other_fallback, None));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn post_move_check_uses_the_moved_handle_and_one_saved_handle() {
+        let dir = temp_dir();
+        let part = dir.join(".zoo-0123456789abcdef.part");
+        let payload = vec![7u8; 16];
+        let mut file = open_for_rename(&part, true).unwrap();
+        file.write_all(&payload).unwrap();
+        file.sync_all().unwrap();
+        let source_id = windows_file_id_from_handle(&file).expect("id");
 
         let saved = dir.join("saved.bin");
-        std::fs::rename(&source_path, &saved).unwrap();
-        assert!(post_move_file_matches(&source, Some(fallback_id), &saved));
-        assert!(post_move_file_matches(&source, Some(stable_id), &saved));
+        std::fs::write(&saved, b"old").unwrap();
+        // ハンドルから直接、既存のファイルを置き換えずに移す。
+        rename_handle_no_replace(&file, &saved).unwrap_err(); // 既存なので失敗する
+        let numbered = dir.join("saved (1).bin");
+        rename_handle_no_replace(&file, &numbered).unwrap();
 
-        // サイズ違いと通常ファイルでない場合は失敗する。フォールバック経路では
-        // 同じサイズの別ファイルを時刻で見分けないため、その比較はしない。
-        let shorter = dir.join("shorter.bin");
-        std::fs::write(&shorter, b"short").unwrap();
+        // 移動したハンドルと保存先は同じファイルを指す。
+        assert!(post_move_file_matches(
+            payload.len() as u64,
+            Some(source_id),
+            &numbered,
+            Some(&file),
+        ));
+        // サイズが違えば、ID が同じでも成功にしない。
         assert!(!post_move_file_matches(
-            &source,
-            Some(fallback_id),
-            &shorter
+            payload.len() as u64 + 1,
+            Some(source_id),
+            &numbered,
+            Some(&file),
+        ));
+        // 別のファイルを保存先に置いた場合は、移動ハンドルとの不一致で失敗する。
+        let replaced = dir.join("replaced.bin");
+        std::fs::write(&replaced, &payload).unwrap();
+        assert!(!post_move_file_matches(
+            payload.len() as u64,
+            Some(source_id),
+            &replaced,
+            Some(&file),
         ));
 
-        // 安定 ID が読めて別の ID なら失敗する。
-        let different = dir.join("different.bin");
-        std::fs::write(&different, b"other").unwrap();
-        let different_id = {
-            let file = std::fs::File::open(&different).unwrap();
-            windows_file_id_from_handle(&file).expect("id")
-        };
-        assert_ne!(different_id, stable_id);
-        assert!(!post_move_file_matches(&source, Some(different_id), &saved));
-
-        let folder = dir.join("folder");
-        std::fs::create_dir(&folder).unwrap();
-        assert!(!post_move_file_matches(&source, Some(fallback_id), &folder));
-
+        drop(file);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3589,7 +3778,7 @@ mod tests {
 
         // `renameat2` が使えず、ハードリンクも使えない保存先を再現する。確定の失敗で
         // `.part` を残さず、最終名も作らない。
-        let err = finish_entry_with(entry, |_, _| {
+        let err = finish_entry_with(entry, |_, _, _| {
             Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
         })
         .unwrap_err();
@@ -4105,7 +4294,7 @@ mod tests {
         }
 
         // 権限や一時的な I/O の失敗は、保存先が対応していない扱いにしない。
-        let err = finish_entry_with(entry, |_, _| {
+        let err = finish_entry_with(entry, |_, _, _| {
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
         })
         .unwrap_err();

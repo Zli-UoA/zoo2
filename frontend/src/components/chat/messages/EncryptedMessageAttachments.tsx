@@ -361,7 +361,7 @@ function EncryptedDownloadButton({
     try {
       // デスクトップ版では OS の保存ダイアログと保存先の設定を使う。復号した `Blob` を同じ書き込み先へ渡す。
       if (await desktopDownloadsAvailable()) {
-        await downloadBlobToDesktop(
+        const savedName = await downloadBlobToDesktop(
           attachment.attachment_id,
           attachment.name,
           async (signal, report) => {
@@ -379,6 +379,8 @@ function EncryptedDownloadButton({
           },
           attachment.size,
         );
+        // 番号が足された場合もあるので、実際の名前を伝える。
+        if (savedName) toast.success(t("attachments.downloadSaved", { name: savedName }));
       } else {
         // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
         saveBlob(blob ?? (await source.load(attachment, { retry: true })), attachment.name);

@@ -177,6 +177,17 @@ describe("download commands", () => {
     expect(internals.invoke).toHaveBeenLastCalledWith("zoo_download_cancel", { id: "d1" });
   });
 
+  it("returns the name that was actually saved", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_download_finish") return "a (1).txt";
+      throw new Error(`unexpected command: ${cmd}`);
+    });
+    await detectDesktop();
+
+    await expect(desktopDownloadFinish("d1")).resolves.toBe("a (1).txt");
+  });
+
   it("marks a save destination that cannot be written without overwriting", async () => {
     install((cmd) => {
       if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");

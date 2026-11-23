@@ -352,10 +352,10 @@ export async function desktopDownloadWrite(
   await invokeRaw("zoo_download_write", bytes, headers);
 }
 
-/** `.part` を本来の名前に置き換える。 */
-export async function desktopDownloadFinish(id: string): Promise<void> {
+/** `.part` を本来の名前に置き換え、実際に保存された名前を返す。 */
+export async function desktopDownloadFinish(id: string): Promise<string> {
   try {
-    await invoke("zoo_download_finish", { id });
+    return await invoke<string>("zoo_download_finish", { id });
   } catch (error) {
     throw downloadError(error);
   }

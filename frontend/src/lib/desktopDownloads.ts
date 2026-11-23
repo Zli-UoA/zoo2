@@ -231,9 +231,9 @@ async function run(
   size: number | null | undefined,
   runner: Runner,
   retryDelayMs?: number,
-): Promise<void> {
-  // 同じ添付を二重に保存しない（円を押したときは中止になる）。
-  if (states.has(id)) return;
+): Promise<string | null> {
+  // 同じ添付を二重に保存しない（円を押したときは中止になる）。保存していないので名前は返さない。
+  if (states.has(id)) return null;
   const controller = new AbortController();
   controllers.set(id, controller);
   setState(id, { status: "preparing" });
@@ -305,8 +305,10 @@ async function run(
     }
     if (controller.signal.aborted) throw new DesktopDownloadCancelledError();
     setState(id, { status: "finishing" });
-    await desktopDownloadFinish(downloadId);
+    // 同じ名前が既にあったときは番号が足される。Rust が実際に保存した名前を返す。
+    const savedName = await desktopDownloadFinish(downloadId);
     downloadId = null;
+    return savedName;
   } catch (error) {
     if (downloadId) {
       // 失敗したときも、途中までのファイルを残さない。
@@ -400,9 +402,9 @@ export async function downloadUrlToDesktop(
   fileName: string,
   resolveUrl: AttachmentUrlResolver,
   options: { retryDelayMs?: number; size?: number | null } = {},
-): Promise<void> {
+): Promise<string | null> {
   const retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS;
-  await run(
+  return run(
     id,
     fileName,
     options.size,
@@ -447,8 +449,8 @@ export async function downloadBlobToDesktop(
   fileName: string,
   load: (signal: AbortSignal, onProgress: (fraction: number | null) => void) => Promise<Blob>,
   size?: number | null,
-): Promise<void> {
-  await run(id, fileName, size, async (downloadId, signal, report) => {
+): Promise<string | null> {
+  return run(id, fileName, size, async (downloadId, signal, report) => {
     const blob = await raceAbort(
       signal,
       load(signal, (fraction) => report(fraction === null ? null : Math.min(0.8, fraction * 0.8))),
