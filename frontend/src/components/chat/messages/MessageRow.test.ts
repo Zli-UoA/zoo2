@@ -86,7 +86,7 @@ describe("MessageRow", () => {
           }),
         }),
       );
-      expect(html.includes("bg-[#f0b232]/[0.08]")).toBe(highlighted);
+      expect(html.includes("bg-mention/[0.08]")).toBe(highlighted);
       expect(html).not.toContain("bg-primary");
     },
   );

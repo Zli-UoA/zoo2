@@ -479,7 +479,7 @@ export function MessageRow({
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors",
           isMentioned
-            ? "bg-[#f0b232]/[0.08] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[#f0b232] before:content-[''] hover:bg-[#f0b232]/[0.12] focus-within:bg-[#f0b232]/[0.12]"
+            ? "bg-mention/[0.08] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-mention before:content-[''] hover:bg-mention/[0.12] focus-within:bg-mention/[0.12]"
             : "hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",
           item.isGroupEnd ? "pb-1.5" : "pb-0",

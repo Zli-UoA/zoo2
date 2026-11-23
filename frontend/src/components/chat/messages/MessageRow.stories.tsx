@@ -470,7 +470,12 @@ export const MentionedMessage: Story = {
       await expect(getComputedStyle(row!).backgroundColor).toMatch(/(?:,|\/)\s*0\.08\)$/);
     });
     await expect(getComputedStyle(row!, "::before").width).toBe("3px");
-    await expect(getComputedStyle(row!, "::before").backgroundColor).toBe("rgb(240, 178, 50)");
+    const swatch = document.createElement("span");
+    swatch.style.color = "var(--mention)";
+    row!.append(swatch);
+    const mentionColor = getComputedStyle(swatch).color;
+    swatch.remove();
+    await expect(getComputedStyle(row!, "::before").backgroundColor).toBe(mentionColor);
   }),
 };
 

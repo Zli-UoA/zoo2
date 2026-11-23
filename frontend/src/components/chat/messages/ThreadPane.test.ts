@@ -80,7 +80,7 @@ describe("ThreadPane", () => {
           }),
         ],
       });
-      expect(html.match(/bg-\[#f0b232\]\/\[0\.08\]/g) ?? []).toHaveLength(count);
+      expect(html.match(/bg-mention\/\[0\.08\]/g) ?? []).toHaveLength(count);
     },
   );
 
