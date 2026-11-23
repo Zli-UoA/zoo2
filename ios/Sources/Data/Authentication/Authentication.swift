@@ -165,15 +165,15 @@ final class Authentication {
         }
         var fields = ["client_id": settings.clientID, "scope": settings.scope]
         if !settings.resource.isEmpty { fields["resource"] = settings.resource }
-        let started = clock.now
         let (data, response) = try await postForm(endpoint: endpoint, fields: fields)
+        let received = clock.now
         try checkLogin(epoch)
         guard (200..<300).contains(response.statusCode) else {
             throw deviceLoginError(data, status: response.statusCode)
         }
         let grant = try JSONDecoder().decode(DeviceAuthorizationResponse.self, from: data)
         let prompt = try grant.prompt(issuer: settings.issuer)
-        let deadline = started.advanced(by: .seconds(grant.expires_in))
+        let deadline = received.advanced(by: .seconds(grant.expires_in))
         guard clock.now < deadline else { throw ZooError.auth("確認コードの期限が切れました。ログインし直してください。") }
         show(prompt)
         var interval = Duration.seconds(grant.interval ?? 5)

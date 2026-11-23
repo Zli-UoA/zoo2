@@ -77,7 +77,8 @@ struct MessageRenderCacheTests {
         #expect((pdf ? state.pdfThumbnail : state.image) === original)
         state.retryLoading()
         await state.load(workspace: workspace, channelID: "11111111-1111-4111-8111-111111111111")
-        #expect((pdf ? state.pdfThumbnail : state.image) !== original)
+        let retried = try #require(pdf ? state.pdfThumbnail : state.image)
+        #expect(retried !== original)
         #expect(state.error == nil)
     }
 

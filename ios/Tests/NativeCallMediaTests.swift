@@ -121,17 +121,11 @@ struct NativeCallMediaTests {
         let channel = Channel(id: UUID().uuidString, channel_name: "会話", is_private: false, is_dm: false)
         defer { calls.finish() }
         calls.setSystemAudioActive(true)
-        await withCheckedContinuation { continuation in
-            client.delivered = { continuation.resume() }
-            calls.start(channel: channel, systemAudio: true)
-        }
+        try await waitForCallDelivery(client) { calls.start(channel: channel, systemAudio: true) }
         #expect(firstWaiting.running)
         calls.finish()
         #expect(!firstWaiting.running)
-        await withCheckedContinuation { continuation in
-            client.delivered = { continuation.resume() }
-            calls.start(channel: channel, systemAudio: true)
-        }
+        try await waitForCallDelivery(client) { calls.start(channel: channel, systemAudio: true) }
         #expect(!nextWaiting.running)
         calls.setSystemAudioActive(false)
         #expect(!nextWaiting.running)

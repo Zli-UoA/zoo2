@@ -77,7 +77,8 @@ struct CallRecoveryTests {
         let client = FakeCallClient()
         let calls = store(client, journal: journal)
         defer { calls.shutdown() }
-        await calls.start(channel: channel)?.value
+        await calls.start(channel: channel, invitationID: "未受理の招待")?.value
+        #expect(client.answeredInvitations.isEmpty)
         #expect(!client.observed && calls.channel == nil && calls.error != nil)
     }
 
@@ -346,7 +347,10 @@ struct CallRecoveryTests {
         let client = FakeCallClient()
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
+        var leaveCount = 0
         client.beforeCommand = { _ in
+            leaveCount += 1
+            guard leaveCount == 1 else { return }
             started.continuation.yield(())
             for await _ in release.stream { break }
         }

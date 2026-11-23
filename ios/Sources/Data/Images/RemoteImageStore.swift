@@ -46,6 +46,9 @@ final class RemoteImageStore {
     }
     private var liveStates: [URL: WeakState] = [:]
     private var pending: [URL: Task<Void, Never>] = [:]
+    #if DEBUG
+    var onRequestJoined: (() -> Void)?
+    #endif
     private var active = true
     nonisolated private static let refreshInterval: TimeInterval = 5 * 60
     nonisolated private static let maximumImageBytes = 8 * 1024 * 1024
@@ -97,6 +100,9 @@ final class RemoteImageStore {
     func load(_ url: URL, policy: RemoteImagePolicy = .refreshing) async {
         guard active, !Task.isCancelled, Self.isValid(url) else { return }
         while let request = pending[url] {
+            #if DEBUG
+            onRequestJoined?()
+            #endif
             await request.value
             guard active, !Task.isCancelled else { return }
         }
@@ -130,9 +136,9 @@ final class RemoteImageStore {
 
     func nextLoadDelay(for displayed: [URL: RemoteImageState], policy: RemoteImagePolicy) -> TimeInterval {
         var delay = Self.refreshInterval
-        guard policy == .refreshing else { return delay }
         let time = uptime()
         for state in displayed.values {
+            guard policy == .refreshing || state.image == nil else { continue }
             let deadline: TimeInterval
             if let retryAfter = state.retryAfter { deadline = retryAfter }
             else if state.image != nil { deadline = state.refreshAfter }

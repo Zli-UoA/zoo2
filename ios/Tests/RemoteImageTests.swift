@@ -99,6 +99,33 @@ struct RemoteImageTests {
         #expect(state.image === image)
     }
 
+    @Test("未取得の保存画像も通信失敗から30秒後に再試行する", arguments: [RemoteImagePolicy.refreshing, .stored])
+    func retriesMissingImage(policy: RemoteImagePolicy) async throws {
+        let folder = try folder()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let clock = Clock(), attempts = Mutex(0)
+        let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
+        harness.stub { _ in
+            let count = attempts.withLock { $0 += 1; return $0 }
+            if count == 1 { throw URLError(.notConnectedToInternet) }
+            return (200, [:], bytes)
+        }
+        var waits: [TimeInterval] = []
+        let store = RemoteImageStore(namespace: "再試行", disk: RemoteImageDiskCache(directory: folder.url),
+            session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime }, sleep: { delay in
+                waits.append(delay)
+                if waits.count == 2 { throw CancellationError() }
+                clock.advance(delay)
+            })
+        defer { store.close() }
+        let state = store.state(for: url)
+        await store.watch([url: state], policy: policy)
+        #expect(waits == [30, 300])
+        #expect(state.image != nil && attempts.withLock { $0 } == 2)
+    }
+
     @Test("期限後の更新が失敗しても画像を残し、再試行期限まで待機する")
     func waitsAfterRefreshFailure() async throws {
         let folder = try folder()
@@ -332,6 +359,8 @@ struct RemoteImageTests {
         defer { harness.close() }
         let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
         let requested = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let joined = AsyncStream<Void>.makeStream()
+        defer { requested.continuation.finish(); release.continuation.finish(); joined.continuation.finish() }
         let requests = Mutex(0)
         harness.stub { _ in
             requests.withLock { $0 += 1 }
@@ -345,7 +374,17 @@ struct RemoteImageTests {
         let first = Task { await store.load(url) }
         var iterator = requested.stream.makeAsyncIterator()
         _ = await iterator.next()
-        let second = Task { await store.load(url) }
+        store.onRequestJoined = { joined.continuation.yield(()) }
+        let second = Task {
+            defer { joined.continuation.finish() }
+            await store.load(url)
+        }
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(2)); joined.continuation.finish() } catch { }
+        }
+        defer { deadline.cancel(); first.cancel(); second.cancel(); release.continuation.finish() }
+        var joins = joined.stream.makeAsyncIterator()
+        try #require(await joins.next() != nil)
         first.cancel()
         release.continuation.yield(())
         await first.value

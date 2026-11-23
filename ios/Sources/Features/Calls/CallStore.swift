@@ -167,11 +167,11 @@ final class CallStore {
                 if let prepareSystemCall { try await prepareSystemCall(callID, channel) }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
+                // 招待受理後に保存が失敗すると再試行できないため、復旧記録を先に残す。
+                try sessionJournal?.record(CallSessionRecord(channelID: channel.id, sessionID: session))
                 if let invitationID { try await client.answerCallInvitation(id: invitationID, accept: true) }
                 try Task.checkCancellation()
                 guard sessionID == session else { return }
-                // 強制終了時は終了通知が届かないため、入室要求より先にこの端末のセッションを残す。
-                try sessionJournal?.record(CallSessionRecord(channelID: channel.id, sessionID: session))
                 timeout = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(20)) } catch { return }
                     guard let self, sessionID == session, !ready else { return }

@@ -140,8 +140,10 @@ struct ChatPresentationAPITests {
             #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first == URLQueryItem(name: "expected_version", value: "8"))
             return (200, [:], Data(#"{"data":{"pins":[],"version":9}}"#.utf8))
         }
-        #expect(try await harness.client.setChannelPinned(id: id, pinned: true, expectedVersion: 7).pins.first?.channel_id == id)
-        #expect(try await harness.client.setChannelPinned(id: id, pinned: false, expectedVersion: 8).pins.isEmpty == true)
+        let added = try await harness.client.setChannelPinned(id: id, pinned: true, expectedVersion: 7)
+        #expect(added.pins.first?.channel_id == id && added.version == 8)
+        let removed = try await harness.client.setChannelPinned(id: id, pinned: false, expectedVersion: added.version)
+        #expect(removed.pins.isEmpty && removed.version == 9)
     }
 
     @Test("別端末との競合は最新の版で再試行し、他のピンを保持する")

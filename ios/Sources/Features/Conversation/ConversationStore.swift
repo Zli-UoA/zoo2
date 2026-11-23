@@ -396,15 +396,17 @@ final class ConversationStore {
             var uploaded: [MessageAttachment] = []
             for (index, attachment) in attachments.enumerated() {
                 try Task.checkCancellation()
-                guard canPost, epoch == accessGeneration else { return }
+                guard epoch == accessGeneration else { return }
+                guard canPost else { throw ZooError.rejected(403, "この会話には投稿できません。") }
                 uploadStatus[key] = "ファイルを送信中（\(index + 1)/\(attachments.count)）"
                 let id: String
                 if let existing = uploadedAttachmentIDs[attachment.id] { id = existing }
                 else {
                     id = try await client.upload(attachment, channelID: channel.id)
                     try Task.checkCancellation()
-                    guard canPost, epoch == accessGeneration else { return }
+                    guard epoch == accessGeneration else { return }
                     uploadedAttachmentIDs[attachment.id] = id
+                    guard canPost else { throw ZooError.rejected(403, "この会話には投稿できません。") }
                 }
                 uploaded.append(MessageAttachment(id: id, file_name: attachment.fileName,
                                                   content_type: attachment.contentType, is_sensitive: true))

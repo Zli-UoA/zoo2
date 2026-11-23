@@ -33,6 +33,7 @@ struct RootView: View {
             if AppSession.isUITesting {
                 if ProcessInfo.processInfo.arguments.contains("--uitesting-paged-history") {
                     Button("取得を再開") { PreviewTestControl.releaseHistory() }
+                        .disabled(!PreviewTestControl.shared.waitingForHistory)
                         .accessibilityIdentifier("preview-release-history")
                 }
                 if ProcessInfo.processInfo.arguments.contains("--uitesting-long-history"),

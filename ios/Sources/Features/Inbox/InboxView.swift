@@ -214,7 +214,7 @@ private struct InboxCard: View {
             store.setVisible(entry, visible: onScreen)
         }
         .onDisappear { store.setVisible(entry, visible: false) }
-        .onChange(of: isActive && visible ? entry.unreadIDs : [], initial: true) { _, unread in
+        .onChange(of: isActive && visible && !store.markingAll ? entry.unreadIDs : [], initial: true) { _, unread in
             if !unread.isEmpty { Task { await store.markRead(entry) } }
         }
         .task(id: ContextRequest(noticeID: needsPreview ? entry.noticeID : nil, retry: retry)) {

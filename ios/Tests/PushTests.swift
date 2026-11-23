@@ -20,6 +20,7 @@ private final class StubPushBackend: PushBackend {
     var failSubscribe = false
     var failRevoke = false
     var beforeSubscribe: (() async -> Void)?
+    var beforeRevoke: (() async -> Void)?
     func subscribe(_ receipt: PushReceipt) async throws {
         subscribed.append(receipt)
         await beforeSubscribe?()
@@ -27,6 +28,7 @@ private final class StubPushBackend: PushBackend {
     }
     func revoke(_ receipt: PushReceipt) async throws {
         revoked.append(receipt)
+        await beforeRevoke?()
         if failRevoke { throw URLError(.notConnectedToInternet) }
     }
 }
@@ -111,7 +113,9 @@ final class PushTests: XCTestCase {
             XCTAssertEqual(backend.subscribed.last, renewed)
             XCTAssertTrue(backend.revoked.isEmpty)
             backend.failSubscribe = false
+            let attempts = backend.subscribed.count
             await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
+            XCTAssertEqual(backend.subscribed.count, attempts + 1)
             XCTAssertEqual(backend.subscribed.last, renewed)
         }
     }
@@ -135,11 +139,26 @@ final class PushTests: XCTestCase {
         XCTAssertNil(store.receipt?.revocationPending)
     }
 
-    func testTokenRotationRevokesPreviousDeviceBeforeRegistering() async {
+    func testTokenRotationRevokesPreviousDeviceBeforeRegistering() async throws {
         let store = MemoryPushStore(), backend = StubPushBackend()
         let registration = PushRegistration(store: store)
         await registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox").value
-        await registration.update(backend: backend, account: "user", token: "ccdd", environment: "sandbox").value
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        backend.beforeRevoke = {
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+        }
+        let update = registration.update(backend: backend, account: "user", token: "ccdd", environment: "sandbox")
+        let completion = Task { await update.value; started.continuation.finish() }
+        defer { completion.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        let received = await iterator.next()
+        XCTAssertNotNil(received)
+        XCTAssertEqual(backend.subscribed.map(\.token), ["aabb"])
+        release.continuation.finish()
+        await update.value
+        XCTAssertEqual(backend.subscribed.map(\.token), ["aabb", "ccdd"])
         XCTAssertEqual(backend.revoked.first?.token, "aabb")
         XCTAssertEqual(store.receipt?.token, "ccdd")
     }

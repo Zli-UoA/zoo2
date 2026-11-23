@@ -179,7 +179,7 @@ struct ShapeStream {
                 state = result.state
                 if state.offset == "-1" { cached = nil }
                 if state.isLive || state.offset == "-1" {
-                    try await sync?.store(state, key: key, channelID: query["channel_id"], channelVersion: version,
+                    try await sync?.storeRecovery(state, key: key, channelID: query["channel_id"], channelVersion: version,
                                           notificationVersion: notificationVersion)
                 }
                 try sync?.checkNotificationVersion(notificationVersion)

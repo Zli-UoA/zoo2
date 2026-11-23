@@ -36,6 +36,7 @@
 		2B5E49E1F342B071682412A5 /* emoji-kitchen.json in Resources */ = {isa = PBXBuildFile; fileRef = 282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */; };
 		2BBF832A281944225B1D2A6C /* SiriCallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54B6A271234210960610C440 /* SiriCallTests.swift */; };
 		2CFD7013D5467E9EDE3D7C07 /* MessageSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C95B5F4BDB5E3364893D00 /* MessageSync.swift */; };
+		2D14BBEC6D95C29C58E9C2AD /* Emojibase-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 971C80BE82DD7FAD2CD30559 /* Emojibase-LICENSE.txt */; };
 		30F58F229E22FC2239A1A5DE /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56A4F9C874CC22CFE3F5EA06 /* PeopleView.swift */; };
 		321F928016165948A8736531 /* NativeCallMediaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B7F6D3EBD0B387B6C5B77A /* NativeCallMediaTests.swift */; };
 		3263A20A1D055056EC277DE4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6A7719EDD1AC7F79FA44F275 /* Assets.xcassets */; };
@@ -364,6 +365,7 @@
 		95CD8497F45D2ECAF97A769C /* AvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarView.swift; sourceTree = "<group>"; };
 		95F69CCAB38F5C906204A606 /* NotificationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationController.swift; sourceTree = "<group>"; };
 		96F6015E6B7D6AF3165BB826 /* ElectricTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ElectricTransport.swift; sourceTree = "<group>"; };
+		971C80BE82DD7FAD2CD30559 /* Emojibase-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Emojibase-LICENSE.txt"; sourceTree = "<group>"; };
 		984E216091B094C68ED1D671 /* Channel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Channel.swift; sourceTree = "<group>"; };
 		9B322A74F9E678893991ADB5 /* Envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Envelope.swift; sourceTree = "<group>"; };
 		9BB00E9CE7E9A70261228578 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
@@ -842,6 +844,7 @@
 			children = (
 				282DDBDDEB96DE924165AE86 /* emoji-kitchen.json */,
 				0D12A552929A7154204E90F7 /* emoji-shortcodes.json */,
+				971C80BE82DD7FAD2CD30559 /* Emojibase-LICENSE.txt */,
 				01F4605EEE99FB8A46EE593A /* IncomingCall.caf */,
 				48A7AE9F1620A0188FA8757C /* PreviewVideo.mp4 */,
 				FF44DD9C064D4786249C50F9 /* PrivacyInfo.xcprivacy */,
@@ -1074,6 +1077,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3263A20A1D055056EC277DE4 /* Assets.xcassets in Resources */,
+				2D14BBEC6D95C29C58E9C2AD /* Emojibase-LICENSE.txt in Resources */,
 				A5B3B2174411ED707B979BEF /* IncomingCall.caf in Resources */,
 				6F7EC3297CC479A2FF50706E /* LaunchScreen.storyboard in Resources */,
 				C60AE94239D392D3FFAACB49 /* PreviewVideo.mp4 in Resources */,

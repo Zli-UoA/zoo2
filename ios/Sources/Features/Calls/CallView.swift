@@ -3,6 +3,10 @@ import SwiftUI
 
 struct CallBanner: View {
     let workspace: WorkspaceStore
+    @State private var joinTask: Task<Void, Never>?
+    @State private var joinID = UUID()
+    @State private var joining = false
+    @State private var declining = false
     private var calls: CallStore { workspace.calls }
     var body: some View {
         VStack(spacing: 0) {
@@ -33,18 +37,30 @@ struct CallBanner: View {
                             Label("\(workspace.people[invite.inviter_id]?.name ?? "メンバー")から通話", systemImage: "phone.fill")
                             Spacer()
                             Button("拒否") {
-                                if workspace.systemCalls?.decline(invite) != true { Task { await calls.decline(invite) } }
-                            }.buttonStyle(.glass).accessibilityIdentifier("incoming-call-decline")
+                                joinID = UUID()
+                                joinTask?.cancel()
+                                joining = false
+                                if workspace.systemCalls?.decline(invite) != true {
+                                    declining = true
+                                    Task { await calls.decline(invite); declining = false }
+                                }
+                            }.disabled(declining).buttonStyle(.glass).accessibilityIdentifier("incoming-call-decline")
                             Button("参加") {
                                 if workspace.systemCalls?.answer(invite) == true { return }
-                                Task {
+                                let operation = UUID()
+                                joinID = operation
+                                joining = true
+                                joinTask = Task {
+                                    defer { if joinID == operation { joining = false; joinTask = nil } }
                                     do {
                                         let channel = try await workspace.client.channel(id: invite.channel_id)
                                         try Task.checkCancellation()
+                                        guard joinID == operation, calls.invitations.contains(where: { $0.id == invite.id }),
+                                              (ZooDate.parse(invite.expires_at) ?? .distantPast) > .now else { return }
                                         calls.start(channel: channel, invitationID: invite.id)
-                                    } catch { workspace.report(error) }
+                                    } catch { if !Task.isCancelled { workspace.report(error) } }
                                 }
-                            }.buttonStyle(.glassProminent)
+                            }.disabled(joining || declining).buttonStyle(.glassProminent)
                                 .tint(AppDesign.primary).foregroundStyle(AppDesign.primaryForeground)
                                 .accessibilityIdentifier("incoming-call-answer")
                         }
@@ -55,6 +71,7 @@ struct CallBanner: View {
                 }
             }
         }
+        .onDisappear { joinID = UUID(); joinTask?.cancel(); joinTask = nil; joining = false }
     }
 }
 

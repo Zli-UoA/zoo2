@@ -39,6 +39,16 @@ extension MessageDisplayData {
         var emojis: [String: DisplayEmoji]?
         var attachments: [MessageAttachment]?
         var reply_count: Int?
+
+        private enum CodingKeys: String, CodingKey { case reactions, emojis, attachments, reply_count }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            reactions = try? container.decodeIfPresent([MessageReaction].self, forKey: .reactions)
+            emojis = try? container.decodeIfPresent([String: DisplayEmoji].self, forKey: .emojis)
+            attachments = try? container.decodeIfPresent([MessageAttachment].self, forKey: .attachments)
+            reply_count = try? container.decodeIfPresent(Int.self, forKey: .reply_count)
+        }
     }
 
     init(from decoder: any Decoder) throws {

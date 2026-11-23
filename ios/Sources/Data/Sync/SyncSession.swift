@@ -8,6 +8,7 @@ final class SyncSession {
     private var revokedChannels: Set<String> = []
     private var channelVersions: [String: UUID] = [:]
     private var notificationVersion = UUID()
+    private var channelRevocation: Task<Void, Error>?
     var onChannelRevoked: (@MainActor (String) -> Void)?
 
     init(cache: SyncCache, lease: SyncLease) { self.cache = cache; self.lease = lease }
@@ -80,7 +81,14 @@ final class SyncSession {
         channelVersions[id] = version
         notificationVersion = UUID()
         onChannelRevoked?(id)
-        do { try await cache.revokeChannel(id, version: version, notificationVersion: notificationVersion, lease: lease) }
+        let previous = channelRevocation
+        let notificationVersion = notificationVersion
+        let revocation = Task { [cache, lease] in
+            _ = await previous?.result
+            try await cache.revokeChannel(id, version: version, notificationVersion: notificationVersion, lease: lease)
+        }
+        channelRevocation = revocation
+        do { try await revocation.value }
         catch {
             // キャッシュの削除失敗で403/404や削除済みの会話情報を隠さず、画面でも失効を反映する。
             try check()
@@ -88,10 +96,13 @@ final class SyncSession {
         }
     }
 
-    func storeRecovery<T: Encodable & Sendable>(_ value: T, key: String) async throws {
-        do { try await store(value, key: key) }
+    func storeRecovery<T: Encodable & Sendable>(_ value: T, key: String, channelID: String? = nil,
+                                               channelVersion: UUID? = nil, notificationVersion: UUID? = nil) async throws {
+        do { try await store(value, key: key, channelID: channelID, channelVersion: channelVersion,
+                             notificationVersion: notificationVersion) }
         catch {
-            try check()
+            try check(channelID: channelID, channelVersion: channelVersion)
+            try checkNotificationVersion(notificationVersion)
             if error is CancellationError || error is SyncInvalidation { throw error }
         }
     }

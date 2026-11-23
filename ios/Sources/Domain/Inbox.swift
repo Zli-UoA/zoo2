@@ -157,7 +157,9 @@ struct InboxFeed {
             }
             if let message = row.message_id, ["reply", "mention", "reaction"].contains(row.notification_type) {
                 let kind = row.notification_type == "reaction" ? "like" : "reply"
-                mirrors["\(kind):\(row.actor_id):\(message)"] = (key, isUnread)
+                let mirrorID = "\(kind):\(row.actor_id):\(message)"
+                let previous = mirrors[mirrorID]
+                mirrors[mirrorID] = (previous?.key ?? key, isUnread || previous?.unread == true)
             }
         }
         var oldest: Date?

@@ -57,7 +57,9 @@ struct RecentEmojiTests {
         let reply = try #require(store.replies(to: root.id).first)
         await store.toggleReaction(messageID: reply.id, emoji: "🎉")
         #expect(workspace.recentEmojis.values == ["🎉", "👍"])
+        #expect(store.reactions(for: root.id).contains { $0.emoji == "👍" && $0.isMine })
         await store.toggleReaction(messageID: root.id, emoji: "👍")
+        #expect(!store.reactions(for: root.id).contains { $0.emoji == "👍" && $0.isMine })
         #expect(workspace.recentEmojis.values == ["🎉", "👍"])
     }
 }

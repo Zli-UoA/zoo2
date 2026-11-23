@@ -255,7 +255,7 @@ struct NetworkTests {
         let receipts = PreviewPushReceiptStore()
         let previewKeys = InMemoryNotificationPreviewKeys()
         let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: previewKeys)
-        let started = AsyncStream<UUID>.makeStream()
+        let started = AsyncStream<UUID?>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         defer {
             started.continuation.finish()
@@ -300,9 +300,13 @@ struct NetworkTests {
         await #expect(throws: ZooError.self) {
             try await LivePushBackend(api: api, transport: api.transport).sendTest(to: receipt, account: "別のアカウント", id: UUID())
         }
-        let send = Task { await controller.sendTest() }
+        let send = Task {
+            defer { started.continuation.yield(nil) }
+            await controller.sendTest()
+        }
         var iterator = started.stream.makeAsyncIterator()
-        let testID = try #require(await iterator.next())
+        let firstEvent = try #require(await iterator.next())
+        let testID = try #require(firstEvent)
         await controller.sendTest()
         #expect(requests.withLock { $0 } == 1)
         #expect(!controller.receive(.test(userID: UUID().uuidString, id: testID)))
@@ -311,13 +315,19 @@ struct NetworkTests {
         #expect(controller.receive(.test(userID: user, id: testID)))
         release.continuation.yield(())
         await send.value
+        #expect(await iterator.next() == .some(nil))
         #expect(controller.testStatus == "この端末でテスト通知を受信しました。")
 
-        let second = Task { await controller.sendTest() }
-        let nextID = try #require(await iterator.next())
+        let second = Task {
+            defer { started.continuation.yield(nil) }
+            await controller.sendTest()
+        }
+        let nextEvent = try #require(await iterator.next())
+        let nextID = try #require(nextEvent)
         #expect(nextID != testID)
         release.continuation.yield(())
         await second.value
+        #expect(await iterator.next() == .some(nil))
         #expect(controller.testStatus == "テスト通知を送信しました。")
         let restarted = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: previewKeys)
         restarted.opened(.test(userID: user, id: nextID))

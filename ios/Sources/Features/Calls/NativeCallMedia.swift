@@ -326,7 +326,6 @@ final class NativeCallMedia: NSObject, CallMedia {
                         failed?()
                         return
                     }
-                    peer.restartCount += 1
                     peer.state = .reconnecting
                     onPeerState?(id, .reconnecting)
                     peer.sendingDescription = true
@@ -348,6 +347,7 @@ final class NativeCallMedia: NSObject, CallMedia {
                         }
                         return
                     }
+                    peer.restartCount += 1
                     sendDescription(id, peer: peer, type: "offer", sdp: sdp)
                     scheduleRecovery(id, delay: restartTimeout)
                 }

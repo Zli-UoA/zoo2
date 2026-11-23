@@ -406,6 +406,37 @@ struct PersistentSyncIntegrationTests {
         return SyncSession(cache: cache, lease: lease)
     }
 
+    @Test("ライブ一覧はディスク保存が失敗しても返す")
+    func snapshotSurvivesPersistenceFailure() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let fail = Mutex(false)
+        let cache = try await SyncCache.open(inMemory: true, beforeSave: {
+            if fail.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        let lease = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: syncUser)
+        let sync = SyncSession(cache: cache, lease: lease)
+        fail.withLock { $0 = true }
+        harness.stub { _ in
+            let events: [JSONValue] = [.object(["key": .string("k1"), "headers": .object(["operation": .string("insert")]), "value": .object(syncRow(1))])]
+            return (200, ["electric-handle": "h", "electric-offset": "1_0", "electric-up-to-date": "true"], try JSONEncoder().encode(events))
+        }
+        let values = try await ShapeStream(api: harness.api, sync: sync).snapshot("api/shapes/messages", query: ["channel_id": syncChannel], as: Message.self)
+        #expect(values.count == 1)
+    }
+
+    @Test("複数チャンネルの同時失効後も最新の通知世代で保存できる")
+    func overlappingRevocationsKeepNotificationVersion() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let tasks = (0..<20).map { id in Task { try await sync.revokeChannel("channel-\(id)") } }
+        for task in tasks { try await task.value }
+        let version = try #require(sync.notificationVersion(for: "api/shapes/notifications"))
+        try await sync.store([String](), key: "snapshot:api/shapes/notifications", notificationVersion: version)
+        #expect(try await sync.load("snapshot:api/shapes/notifications", as: [String].self) == [])
+    }
+
     @Test("再取得で保存したoffsetを使い、オフラインでは取得済みの行を返す")
     func resumesSnapshot() async throws {
         let harness = try ChatHarness()
@@ -717,7 +748,7 @@ struct PersistentSyncIntegrationTests {
         try await sync.store(state, key: "messages-v1:" + syncChannel, channelID: syncChannel)
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
-        let ready = AsyncStream<Void>.makeStream()
+        let ready = AsyncStream<Bool>.makeStream()
         let firstRequest = Mutex(true)
         let subsets = Mutex(0)
         harness.stub { request in
@@ -731,7 +762,7 @@ struct PersistentSyncIntegrationTests {
                 return (200, ["electric-handle": "h", "electric-offset": "100_0"], try subsetData(Array(1...50)))
             }
             if query["live"] == "true" {
-                ready.continuation.yield(())
+                ready.continuation.yield(true)
                 try await Task.sleep(for: .seconds(60))
             }
             return (200, ["electric-handle": "h", "electric-offset": "100_0", "electric-up-to-date": "true"], Data("[]".utf8))
@@ -739,9 +770,13 @@ struct PersistentSyncIntegrationTests {
         let store = ConversationStore(channel: Channel(id: syncChannel, channel_name: "履歴", is_private: false, is_dm: false),
                                       client: NativeChatClient(api: harness.api, sync: sync), userID: syncUser.id)
         #expect(store.postingRestrictionMessage == nil)
-        var run = Task { await store.run() }
+        var run = Task {
+            defer { started.continuation.finish(); ready.continuation.yield(false) }
+            await store.run()
+        }
         defer { run.cancel() }
-        for await _ in started.stream { break }
+        var starts = started.stream.makeAsyncIterator()
+        try #require(await starts.next() != nil)
         #expect(store.showingCachedMessages)
         store.drafts["root"] = "同期中に入力した下書き"
         #expect(!store.canSend(parentID: nil))
@@ -758,7 +793,7 @@ struct PersistentSyncIntegrationTests {
         #expect(store.syncRequest == initialRequest)
         release.continuation.yield(())
         var iterator = ready.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() == true)
         #expect(!store.showingCachedMessages && store.messages.count == 100)
         #expect(store.drafts["root"] == "同期中に入力した下書き")
         #expect(store.canSend(parentID: nil))
@@ -773,8 +808,12 @@ struct PersistentSyncIntegrationTests {
         #expect(store.syncRequest == nextRequest)
         run.cancel()
         await run.value
-        run = Task { await store.run() }
-        _ = await iterator.next()
+        #expect(await iterator.next() == false)
+        run = Task {
+            defer { started.continuation.finish(); ready.continuation.yield(false) }
+            await store.run()
+        }
+        try #require(await iterator.next() == true)
         #expect(store.messages.count == 150)
         #expect(store.historyRevision == 1)
         #expect(!store.loadingOlder)

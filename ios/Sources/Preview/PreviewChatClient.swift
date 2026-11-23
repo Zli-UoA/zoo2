@@ -7,6 +7,7 @@ final class PreviewTestControl {
     static let shared = PreviewTestControl()
     var incomingReleased = false
     var incomingDelivered = false
+    var waitingForHistory = false
     static var typingVisible = true
     private static var historyWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
 
@@ -14,7 +15,12 @@ final class PreviewTestControl {
         let id = UUID()
         let pending = AsyncStream<Void>.makeStream()
         historyWaiters[id] = pending.continuation
-        defer { historyWaiters[id] = nil; pending.continuation.finish() }
+        shared.waitingForHistory = true
+        defer {
+            historyWaiters[id] = nil
+            shared.waitingForHistory = !historyWaiters.isEmpty
+            pending.continuation.finish()
+        }
         for await _ in pending.stream { break }
     }
 
@@ -270,8 +276,11 @@ final class PreviewChatClient: ChatClient {
             failedReadOnce = true
             throw URLError(.notConnectedToInternet)
         }
-        let unread = ["--uitesting-chat-details", "--uitesting-read-retry"].contains { ProcessInfo.processInfo.arguments.contains($0) }
-        return ChannelReadState(channel_id: channelID, has_unread: unread && readPositions[channelID] == nil, last_read_at: readPositions[channelID])
+        return previewReadState(channelID)
+    }
+    private func previewReadState(_ channelID: String) -> ChannelReadState {
+        ChannelReadState(channel_id: channelID, has_unread: channelID == Self.channelID && readPositions[channelID] == nil,
+                         last_read_at: readPositions[channelID])
     }
     func attachmentData(from url: URL) async throws -> Data {
         if url == Bundle.main.url(forResource: "PreviewVideo", withExtension: "mp4") { return try Data(contentsOf: url) }
@@ -330,7 +339,7 @@ final class PreviewChatClient: ChatClient {
     }
     func readStates(allowCached: Bool) async throws -> [ChannelReadState] {
         allChannels.filter { $0.id != discoverableID || joinedPublic }
-            .map { ChannelReadState(channel_id: $0.id, has_unread: $0.id == Self.channelID && readPositions[$0.id] == nil, last_read_at: readPositions[$0.id]) }
+            .map { previewReadState($0.id) }
     }
     func emojis() async throws -> [WorkspaceEmoji] {
         [WorkspaceEmoji(name: "sakura", url: "https://ui.test.invalid/stamp.png", category: "動物園", aliases: ["hana"])]

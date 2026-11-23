@@ -718,7 +718,7 @@ struct CallStoreTests {
         }
     }
 
-    @Test("Siriの発信待ちをキャンセルしたら接続とマイクを終了する")
+    @Test("Siriの入室待ちをキャンセルしたら接続を終了する")
     func cancelledShortcutCall() async throws {
         let client = FakeCallClient()
         let media = FakeCallMedia()
@@ -729,6 +729,7 @@ struct CallStoreTests {
         client.delivered = { started.continuation.yield(()) }
         let pending = Task { try await store.startAndWait(channel: channel) }
         for await _ in started.stream { break }
+        #expect(!media.started)
         pending.cancel()
         await #expect(throws: CancellationError.self) { try await pending.value }
         #expect(store.channel == nil && !store.ready)

@@ -202,7 +202,7 @@ struct InboxTests {
             started.continuation.finish(); release.continuation.finish()
             headStarted.continuation.finish(); releaseHead.continuation.finish()
         }
-        let state = Mutex((acknowledgements: 0, read: false, failCheck: true, heads: 0, holdHead: waiting))
+        let state = Mutex((acknowledgements: 0, read: false, failCheck: true, heads: 0, failedChecks: 0, successfulChecks: 0, holdHead: waiting))
         harness.stub { request in
             switch request.url?.path {
             case "/api/shapes/notifications":
@@ -228,7 +228,10 @@ struct InboxTests {
                     var iterator = releaseHead.stream.makeAsyncIterator()
                     _ = await iterator.next()
                 }
-                if checking, current.failCheck { return (500, [:], Data()) }
+                if checking {
+                    state.withLock { if current.failCheck { $0.failedChecks += 1 } else { $0.successfulChecks += 1 } }
+                    if current.failCheck { return (500, [:], Data()) }
+                }
                 let row: [String: Any] = ["id": old ? "old" : "new", "actor_id": "https://remote.test/user/member",
                     "display_name": "メンバー", "kind": "reply", "activity_id": old ? "old" : "new",
                     "created_at": old ? "2026-11-18T09:00:00Z" : "2026-11-18T10:00:00Z", "is_read": current.read, "pending": false]
@@ -253,6 +256,8 @@ struct InboxTests {
         if waiting {
             var headIterator = headStarted.stream.makeAsyncIterator()
             try #require(await headIterator.next() != nil)
+            #expect(state.withLock { $0.failedChecks } >= 1)
+            let heads = state.withLock { $0.heads }
             state.withLock { $0.failCheck = false }
             let refreshing = Task { await inbox.refresh() }
             defer { refreshing.cancel() }
@@ -262,6 +267,8 @@ struct InboxTests {
             releaseHead.continuation.finish()
             await marking.value
             await refreshing.value
+            #expect(state.withLock { $0.successfulChecks } >= 1)
+            #expect(state.withLock { $0.heads } == heads + 1)
             #expect(inbox.error == nil && inbox.unreadCount == 0)
             #expect(try #require(inbox.entries.first { $0.noticeID == "old" }).isUnread == false)
             #expect(state.withLock { $0.acknowledgements } == 1)
@@ -339,10 +346,12 @@ struct InboxTests {
 
     @Test("同じ投稿へのスタンプと連合の重複通知をまとめ、取得済みの時間範囲を表示する")
     func groupedFeed() throws {
-        let rows = [("first", "alice", "12:00:02"), ("next", "bob", "12:00:01"), ("old", "alice", "11:59:59")].map { id, actor, time in
+        var rows = [("first", "alice", "12:00:02"), ("next", "bob", "12:00:01"), ("old", "alice", "11:59:59")].map { id, actor, time in
             ChannelNotice(id: id, user_id: "u", actor_id: actor, channel_id: "c", message_id: id == "old" ? "other" : "m",
                           notification_type: "reaction", created_at: "2026-11-18T" + time + "Z", is_read: false, display: nil)
         }
+        rows.append(ChannelNotice(id: "read-duplicate", user_id: "u", actor_id: "alice", channel_id: "c", message_id: "m",
+                                  notification_type: "reaction", created_at: "2026-11-18T12:00:00Z", is_read: true, display: nil))
         let mirror = FederatedNotice(id: "f", actor_id: "local:alice", display_name: "花", avatar: nil, kind: "like",
                                      activity_id: "activity", post_id: "m", content: nil, created_at: "2026-11-18T12:00:00Z",
                                      is_read: false, pending: false, reaction: "👍")
@@ -400,9 +409,12 @@ struct InboxTests {
         #expect(link.host == "api.test.invalid")
         #expect(link.absoluteString.hasSuffix("home/users/https%3A%2F%2Fremote.test%2Fuser%2Fperson"))
         await inbox.markRead(first)
+        #expect(acknowledged.withLock { $0 } == ["new"])
         #expect(inbox.unreadCount == 1)
         await inbox.markAllRead()
+        #expect(acknowledged.withLock { $0 } == ["new", "old"])
         #expect(inbox.unreadCount == 0)
+        #expect(inbox.entries.map(\.noticeID) == ["new", "old"])
         #expect(inbox.entries.allSatisfy { !$0.isUnread })
     }
 

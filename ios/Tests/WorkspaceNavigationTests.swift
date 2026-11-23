@@ -32,7 +32,10 @@ struct WorkspaceNavigationTests {
         }
         let workspace = WorkspaceStore(client: harness.client, user: member, recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
-        let first = Task { await workspace.loadMembers(channelID: channelID) }
+        let first = Task {
+            defer { started.continuation.finish() }
+            await workspace.loadMembers(channelID: channelID)
+        }
         defer { first.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)

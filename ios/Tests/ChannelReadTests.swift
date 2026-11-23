@@ -94,6 +94,46 @@ struct ChannelReadTests {
         await #expect(throws: ZooError.self) { _ = try await harness.client.markChannelRead(channelID: readChannel.id) }
     }
 
+    @Test("別チャンネルの保存完了で単件の既読状態を取り直さない")
+    func independentReadWrites() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let rereads = Mutex(0)
+        harness.stub { request in
+            let path = request.url?.path ?? ""
+            if path == "/api/shapes/messages" {
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                return (200, [:], try readSnapshot(channelID: try #require(query.first { $0.name == "channel_id" }?.value)))
+            }
+            if path.hasSuffix("/read-state") {
+                if request.httpMethod == "POST", path.contains(readChannel.id) {
+                    started.continuation.yield(())
+                    for await _ in release.stream { break }
+                } else if request.httpMethod == "GET" { rereads.withLock { $0 += 1 } }
+                let id = path.contains(readChannel.id) ? readChannel.id : readOtherChannel.id
+                return (200, [:], try JSONEncoder().encode(["data": ChannelReadState(channel_id: id, has_unread: false, last_read_at: nil)]))
+            }
+            return try readWorkspaceResponse(request)
+        }
+        let store = workspace(harness)
+        defer { store.shutdown() }
+        await store.refresh()
+        let first = Task {
+            defer { started.continuation.finish() }
+            await store.markChannelRead(readChannel)
+        }
+        defer { first.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        await store.markChannelRead(readOtherChannel)
+        release.continuation.finish()
+        await first.value
+        #expect(store.unread.isEmpty && store.readUpdateError == nil)
+        #expect(rereads.withLock { $0 } == 0)
+    }
+
     @Test("対象だけ既読にし、保存中の新着がある場合は未読を残す", arguments: [false, true])
     func appliesServerState(hasNewMessage: Bool) async throws {
         let harness = try ChatHarness()
@@ -162,9 +202,12 @@ struct ChannelReadTests {
         }
         let store = workspace(harness)
         await store.refresh()
-        let pending = Task { await store.markChannelRead(readChannel) }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            await store.markChannelRead(readChannel)
+        }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         #expect(store.markingReadChannelIDs == [readChannel.id])
         await store.markChannelRead(readChannel)
         #expect(writes.withLock { $0 } == 1)
@@ -203,9 +246,12 @@ struct ChannelReadTests {
         let store = workspace(harness)
         defer { store.shutdown() }
         await store.refresh()
-        let refreshing = Task { await store.refresh() }
+        let refreshing = Task {
+            defer { started.continuation.finish() }
+            await store.refresh()
+        }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         await store.markChannelRead(readChannel)
         release.continuation.yield(())
         await refreshing.value
@@ -240,9 +286,12 @@ struct ChannelReadTests {
         let store = workspace(harness)
         defer { store.shutdown() }
         await store.refresh()
-        let pending = Task { await store.markChannelRead(readChannel) }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            await store.markChannelRead(readChannel)
+        }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         await store.refresh()
         release.continuation.yield(())
         await pending.value

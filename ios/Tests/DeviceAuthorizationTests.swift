@@ -210,22 +210,45 @@ struct DeviceAuthorizationTests {
         }
     }
 
+    @Test("コード発行の待機時間を受信後の有効期間から引かない")
+    func delayedGrantKeepsLifetime() async throws {
+        let clock = AdvancingClock()
+        stub { request in
+            switch request.url?.path {
+            case "/.well-known/openid-configuration": return Self.discovery
+            case "/device/code":
+                clock.advance(by: .seconds(20))
+                return try Self.grant(["expires_in": .number(10)])
+            default: return Self.token
+            }
+        }
+        try await withAuthentication { auth in
+            try await auth.login(clock: clock) { _ in }
+            #expect(try auth.hasSession)
+            #expect(clock.waits == [.seconds(5)])
+        }
+    }
+
     @Test("通信中に期限を過ぎた応答は保存しない")
     func expiresDuringResponse() async throws {
         let clock = AdvancingClock()
+        let receivedToken = Mutex(false)
         stub { request in
             switch request.url?.path {
             case "/.well-known/openid-configuration": return Self.discovery
             case "/device/code": return try Self.grant(["expires_in": .number(10)])
             default:
+                #expect(request.url?.path == "/token")
                 #expect(request.timeoutInterval == 5)
                 clock.advance(by: .seconds(6))
+                receivedToken.withLock { $0 = true }
                 return Self.token
             }
         }
         try await withAuthentication { (auth: Authentication) async throws in
             await #expect(throws: ZooError.self) { try await auth.login(clock: clock) { _ in } }
             #expect(try !auth.hasSession)
+            #expect(receivedToken.withLock { $0 })
         }
     }
 

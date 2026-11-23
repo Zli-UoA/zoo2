@@ -169,6 +169,7 @@ struct MessageList: View {
             .padding(.top, 8)
         }
         .accessibilityIdentifier(parentID == nil ? "message-list" : "thread-message-list")
+        .accessibilityValue("\(messages.count)件のメッセージ")
         .scrollBounceBehavior(store.hasOlder(parentID: parentID) ? .always : .basedOnSize)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(parentID == nil ? .bottom : .top, for: .alignment)

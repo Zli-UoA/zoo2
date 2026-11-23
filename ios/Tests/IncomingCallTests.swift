@@ -907,10 +907,16 @@ struct IncomingCallTests {
         let provider = FakeCallReporting()
         let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
         await withCheckedContinuation { continuation in controller.receive(first) { continuation.resume() } }
-        await withCheckedContinuation { continuation in
-            provider.onEnd = { provider.onEnd = nil; continuation.resume() }
-            controller.receive(second) {}
+        let events = AsyncStream<String>.makeStream()
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(2)); events.continuation.finish() } catch { }
         }
+        defer { deadline.cancel(); events.continuation.finish(); provider.onEnd = nil; controller.disconnect() }
+        provider.onEnd = { events.continuation.yield("ended") }
+        controller.receive(second) { events.continuation.yield("received") }
+        var iterator = events.stream.makeAsyncIterator()
+        let observed = [try #require(await iterator.next()), try #require(await iterator.next())]
+        #expect(Set(observed) == ["ended", "received"])
         #expect(provider.ended == [second.id] && controller.isManagingCall)
         controller.disconnect()
     }

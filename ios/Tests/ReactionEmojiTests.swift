@@ -14,9 +14,10 @@ struct ReactionFlowLayoutTests {
     }
 
     @Test("大きな文字や画像の高さを次の行に反映する")
-    func respectsTallestChip() {
+    func respectsTallestChip() throws {
         let sizes = [CGSize(width: 44, height: 70), CGSize(width: 44, height: 44), CGSize(width: 70, height: 50)]
         let frames = ReactionFlowLayout.frames(for: sizes, maxWidth: 145)
+        try #require(frames.count == sizes.count)
         #expect(frames.allSatisfy { $0.size == CGSize(width: 70, height: 70) })
         #expect(frames[2].minY == 75)
         #expect(frames[2].maxY == 145)

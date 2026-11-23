@@ -22,6 +22,7 @@ final class InboxStore {
     @ObservationIgnored private var channelRows: [ChannelNotice] = []
     @ObservationIgnored private var federationRows: [FederatedNotice] = []
     @ObservationIgnored private var federationUnread = 0
+    @ObservationIgnored private var countRevision = UUID()
     @ObservationIgnored private var nextCursor: String?
     @ObservationIgnored private var loadedOlder = false
     @ObservationIgnored private var headIDs: Set<String> = []
@@ -40,7 +41,7 @@ final class InboxStore {
     @ObservationIgnored private var readRevision = 0
     @ObservationIgnored private var readChannelIDs: Set<String> = []
     @ObservationIgnored private var pendingReads: Set<String> = []
-    @ObservationIgnored private var markingAll = false
+    private(set) var markingAll = false
     @ObservationIgnored private var responding: Set<String> = []
     @ObservationIgnored private var runID = UUID()
     @ObservationIgnored private var channelRevision = 0
@@ -309,6 +310,7 @@ final class InboxStore {
         }
         headIDs = head
         federationUnread = page.unread_count
+        countRevision = UUID()
     }
 
     func setVisible(_ entry: InboxEntry, visible: Bool) {
@@ -351,9 +353,12 @@ final class InboxStore {
             let selected = Array(ids)
             for start in stride(from: 0, to: selected.count, by: 500) {
                 let batch = Array(selected[start..<min(start + 500, selected.count)])
+                let countRevision = countRevision
                 try await client.acknowledgeNotices(ids: batch)
                 guard active else { return }
-                applyRead(Set(batch))
+                let needsCountRefresh = countRevision != self.countRevision
+                applyRead(Set(batch), decrementCount: !needsCountRefresh)
+                if needsCountRefresh { await refreshFederation() }
             }
             actionError = nil
         } catch {
@@ -366,10 +371,11 @@ final class InboxStore {
         markingAll = true
         defer { markingAll = false }
         let ids = Set(channelRows.map(\.id) + federationRows.map(\.id))
+        let countRevision = countRevision
         do {
             try await client.acknowledgeNotices(ids: nil)
             guard active else { return }
-            applyRead(ids)
+            applyRead(ids, decrementCount: countRevision == self.countRevision)
             pendingReadIDs.formUnion(Set(federationRows.map(\.id)).subtracting(ids))
             actionError = nil
             await reconcilePendingReadIDs()
@@ -406,12 +412,12 @@ final class InboxStore {
         if pendingReadIDs.isEmpty { readReconciliationError = nil }
     }
 
-    private func applyRead(_ ids: Set<String>) {
+    private func applyRead(_ ids: Set<String>, decrementCount: Bool = true) {
         readRevision += 1
         readChannelIDs.formUnion(channelRows.lazy.filter { !$0.is_read && ids.contains($0.id) }.map(\.id))
         for i in federationRows.indices where ids.contains(federationRows[i].id) && !federationRows[i].is_read {
             federationRows[i].is_read = true
-            federationUnread = max(0, federationUnread - 1)
+            if decrementCount { federationUnread = max(0, federationUnread - 1) }
         }
         render()
     }

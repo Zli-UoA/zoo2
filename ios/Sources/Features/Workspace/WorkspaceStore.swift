@@ -134,6 +134,8 @@ final class WorkspaceStore {
     private var channelGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
     @ObservationIgnored private var readStateRevision = UUID()
+    @ObservationIgnored private var readListRevision = UUID()
+    @ObservationIgnored private var channelReadRevisions: [String: UUID] = [:]
 
     init(client: any ChatClient, user: Person, recentEmojiDefaults: UserDefaults? = .standard, calls: CallStore? = nil) {
         self.client = client
@@ -198,6 +200,7 @@ final class WorkspaceStore {
             if self.people != previousPeople { onPeopleChanged?() }
             unread = Set(states.filter(\.has_unread).map(\.channel_id))
             readStateRevision = UUID()
+            readListRevision = UUID()
             joinedChannelIDs = Set(states.map(\.channel_id))
             let visibleIDs = Set(self.channels.map(\.id))
             channelWrites = channelWrites.filter { visibleIDs.contains($0.key) }
@@ -227,11 +230,14 @@ final class WorkspaceStore {
     func run() async {
         if !hasLoaded {
             do {
-                if let cached = try await client.cachedWorkspace(), active, !hasLoaded, !Task.isCancelled {
+                let epoch = channelGeneration
+                if let cached = try await client.cachedWorkspace(), active, !hasLoaded, !Task.isCancelled,
+                   channelGeneration == epoch {
                     channels = cached.channels.filter { $0.deleted_at == nil }.sorted { $0.channel_name.localizedStandardCompare($1.channel_name) == .orderedAscending }
                     people = Dictionary(cached.people.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
                     unread = Set(cached.readStates.filter(\.has_unread).map(\.channel_id))
                     readStateRevision = UUID()
+                    readListRevision = UUID()
                     joinedChannelIDs = Set(cached.readStates.map(\.channel_id))
                     hasLoaded = true
                     onPeopleChanged?()
@@ -252,13 +258,13 @@ final class WorkspaceStore {
         readUpdateError = nil
         defer { markingReadChannelIDs.remove(channel.id) }
         do {
-            var readRevision = readStateRevision
+            var readRevision = (readListRevision, channelReadRevisions[channel.id])
             var state = try await client.markChannelRead(channelID: channel.id)
             try Task.checkCancellation()
             guard active else { return }
             // 待機中に一覧が新着を反映した可能性があるため、遅れた保存応答だけでは未読を消さない。
-            while readRevision != readStateRevision {
-                readRevision = readStateRevision
+            while readRevision != (readListRevision, channelReadRevisions[channel.id]) {
+                readRevision = (readListRevision, channelReadRevisions[channel.id])
                 state = try await client.readState(channelID: channel.id, allowCached: false)
                 try Task.checkCancellation()
                 guard active else { return }
@@ -266,6 +272,7 @@ final class WorkspaceStore {
             if state.has_unread { unread.insert(channel.id) }
             else { unread.remove(channel.id) }
             readStateRevision = UUID()
+            channelReadRevisions[channel.id] = UUID()
         } catch {
             guard active, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?() }
@@ -339,10 +346,15 @@ final class WorkspaceStore {
 
     private func reconcileChannel(_ incoming: Channel, confirmsWrite: Bool = false) -> Channel {
         // 書き込みの同期確認後も、先に始まった単件取得で表示を巻き戻さない。
-        if !confirmsWrite, let current = channels.first(where: { $0.id == incoming.id }),
+        if let current = channels.first(where: { $0.id == incoming.id }),
            let currentDate = current.updated_at.flatMap(ZooDate.parse),
            currentDate > (incoming.updated_at.flatMap(ZooDate.parse) ?? .distantPast) {
-            return current
+            var merged = incoming
+            merged.channel_name = current.channel_name
+            merged.description = current.description
+            merged.archive_at = current.archive_at
+            merged.updated_at = current.updated_at
+            return merged
         }
         guard let written = channelWrites[incoming.id] else { return incoming }
         let caughtUp = incoming.updated_at.flatMap(ZooDate.parse).map { date in
@@ -413,6 +425,7 @@ final class WorkspaceStore {
             guard let self else { return }
             unread.remove(channel.id)
             readStateRevision = UUID()
+            channelReadRevisions[channel.id] = UUID()
         }
         store.onReactionAdded = { [weak self] emoji in self?.recentEmojis.record(emoji) }
         conversations[channel.id] = store

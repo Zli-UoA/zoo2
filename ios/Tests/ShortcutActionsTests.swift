@@ -113,8 +113,13 @@ struct ShortcutActionsTests {
             let restored = AsyncStream<Void>.makeStream()
             workspace.onPeopleChanged = { restored.continuation.yield(()) }
             harness.stub { _ in throw URLError(.notConnectedToInternet) }
-            let run = Task { await workspace.run() }
-            for await _ in restored.stream { break }
+            let run = Task {
+                defer { restored.continuation.finish() }
+                await workspace.run()
+            }
+            defer { run.cancel(); restored.continuation.finish() }
+            var iterator = restored.stream.makeAsyncIterator()
+            try #require(await iterator.next() != nil)
             run.cancel()
             await run.value
             restored.continuation.finish()

@@ -577,8 +577,8 @@ final class ZooUITests: XCTestCase {
             XCTAssertEqual(chip.frame.width, chipSize.width, accuracy: 1)
             XCTAssertEqual(chip.frame.height, chipSize.height, accuracy: 1)
             XCTAssertTrue(chip.isHittable)
-            XCTAssertGreaterThanOrEqual(chip.frame.minX, 0)
-            XCTAssertLessThanOrEqual(chip.frame.maxX, app.frame.width)
+            XCTAssertGreaterThanOrEqual(chip.frame.minX, app.frame.minX)
+            XCTAssertLessThanOrEqual(chip.frame.maxX, app.frame.maxX)
         }
         capture(app, name: "複数行に折り返すスタンプ")
         celebration.tap()
@@ -1579,9 +1579,15 @@ final class ZooUITests: XCTestCase {
         }
         let anchor = list.staticTexts[candidate.identifier]
         let originalY = anchor.frame.minY
+        let previousCount = list.value as? String
         let release = app.buttons["preview-release-message"]
         release.tap()
         XCTAssertTrue(release.wait(for: \.label, toEqual: "配信済み", timeout: 5))
+        let updated = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard let count = list.value as? String else { return false }
+            return count != previousCount
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [updated], timeout: 5), .completed)
         XCTAssertTrue(anchor.exists && anchor.isHittable)
         XCTAssertEqual(anchor.frame.minY, originalY, accuracy: 2)
         capture(app, name: "新着を受信しても読み返し中の位置を維持")

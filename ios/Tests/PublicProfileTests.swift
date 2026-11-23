@@ -28,13 +28,13 @@ struct PublicProfileTests {
 
     @Test("表示名と自己紹介の上限をサーバーと同じUnicodeスカラー数で判定する")
     func profileLimits() {
-        var draft = PublicProfile(display_name: String(repeating: "猫", count: 100), default_display_name: "自分",
-                                  summary: String(repeating: "🌸", count: 1000))
+        var draft = PublicProfile(display_name: String(repeating: "👩‍💻", count: 33) + "a", default_display_name: "自分",
+                                  summary: String(repeating: "👩‍💻", count: 333) + "a")
         #expect(draft.canSave)
-        draft.display_name += "猫"
+        draft.display_name += "b"
         #expect(!draft.canSave)
-        draft.display_name = "🐈‍⬛"
-        draft.summary += "🌸"
+        draft.display_name = "👩‍💻"
+        draft.summary += "b"
         #expect(!draft.canSave)
     }
 }

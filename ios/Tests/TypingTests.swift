@@ -211,6 +211,8 @@ struct TypingStoreTests {
         try await until { complete != nil }
         for _ in 0..<20 { store.activity(true, parentID: "スレッド") }
         store.activity(false, parentID: "スレッド")
+        // 停止要求側のタスクを実行できる間も、保留中の開始を追い越さない。
+        try await Task.sleep(for: .milliseconds(50))
         #expect(client.writes.map(\.active) == [true])
         let pending = complete; complete = nil
         pending?.resume()

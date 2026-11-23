@@ -256,6 +256,8 @@ Keychainへ保存し、退出成功後に削除します。通信に失敗した
 音声通話には [stasel/WebRTC](https://github.com/stasel/WebRTC/tree/157.0.0) の配布バイナリを使用し、バージョンを固定しています。
 [ライセンス原文](Sources/Resources/WebRTC-LICENSE.txt) をアプリにも同梱します。
 
+絵文字短縮名のデータにはEmojibaseを使用し、Web版と同じ[ライセンス原文](Sources/Resources/Emojibase-LICENSE.txt)をアプリに同梱します。
+
 ## 移行元でのTestFlight配布記録
 
 以下のXcode Cloudの記録は移行元の `Zli-UoA/zoo2-ios` に対するものです。

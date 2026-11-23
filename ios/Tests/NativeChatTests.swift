@@ -29,9 +29,20 @@ struct ShapeTests {
         #expect(try state.apply(deleted, response: response(offset: "0_4"), as: Message.self)?.isEmpty == true)
     }
 
+    @Test("表示情報の一項目が不正でも他の項目を復号する", arguments: [false, true])
+    func decodesDisplayFieldsIndependently(string: Bool) throws {
+        let json = #"{"emojis":{"flower":{"url":"https://example.invalid/flower.png"}},"reactions":[],"reply_count":"不正"}"#
+        let bytes = string ? try JSONEncoder().encode(json) : Data(json.utf8)
+        let data = try JSONDecoder().decode(MessageDisplayData.self, from: bytes)
+        #expect(data.emojis["flower"]?.url == "https://example.invalid/flower.png")
+        #expect(data.reactions == [] && data.reply_count == nil)
+    }
+
     @Test("shape 交換時に行とカーソルを破棄する", arguments: [200, 409])
     func reset(status: Int) throws {
         var state = ShapeState()
+        _ = try state.apply(Data(#"[{"key":"m1","headers":{"operation":"insert"},"value":{"id":"m1","channel_id":"c","user_id":"u","content":"本文","created_at":"2026-11-18 09:00:00"}}]"#.utf8), response: response(), as: Message.self)
+        #expect(state.rows["m1"] != nil)
         _ = try state.apply(Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8), response: response(), as: Message.self)
         let bytes = Data(#"[{"headers":{"control":"must-refetch"}}]"#.utf8)
         #expect(try state.apply(bytes, response: response(status: status, handle: "shape-2"), as: Message.self) == nil)
@@ -749,11 +760,22 @@ struct NativeChatTests {
     }
 
     @Test("参加不足の403の判定は、code を優先し、code のない応答だけ本文で見る")
-    func joinRequiredDecision() {
+    func joinRequiredDecision() throws {
         #expect(ZooError.requiresThreadJoin(code: "THREAD_JOIN_REQUIRED", message: "何でも"))
         #expect(ZooError.requiresThreadJoin(code: nil, message: "Join the thread before replying"))
         #expect(!ZooError.requiresThreadJoin(code: nil, message: "Only managers can post in this channel"))
         #expect(!ZooError.requiresThreadJoin(code: "POSTING_RESTRICTED", message: "Join the thread before replying"))
+        let fullMessage = String(repeating: " ", count: 250) + "Join the thread before replying"
+        let body = try JSONEncoder().encode(["message": fullMessage])
+        let response = try #require(HTTPURLResponse(url: URL(string: "https://api.test.invalid")!, statusCode: 403,
+                                                   httpVersion: nil, headerFields: nil))
+        do {
+            try HTTPTransport.check(body, response)
+            Issue.record("参加不足を判定しませんでした。")
+        } catch ZooError.threadJoinRequired(let message) {
+            #expect(message.count == 240)
+        }
+
     }
 
     @Test("暗号化・アーカイブ済みチャンネルには平文を送らない", arguments: [true, false])

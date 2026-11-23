@@ -81,6 +81,7 @@ final class AppSession {
 
     @discardableResult
     private func beginConnection(interactive: Bool) -> Task<Void, Never> {
+        generation = UUID()
         let epoch = generation
         let task = Task {
             guard generation == epoch, !Task.isCancelled else { return }
@@ -222,6 +223,7 @@ final class AppSession {
         }
         if userID == nil || !validatedSession {
             guard !connecting else { return }
+            var epoch = generation
             do {
                 if try authentication.hasSession {
                     await beginConnection(interactive: false).value
@@ -229,11 +231,19 @@ final class AppSession {
                     isStarting = false
                     if workspace != nil { logout() }
                     else if !Self.isUITesting { SiriVocabulary.update(nil) }
+                    epoch = generation
                     if syncCache == nil { syncCache = try await SyncCache.open(inMemory: Self.isUITesting) }
-                    try await syncCache?.forget(connection: SyncCache.connectionKey(api.settings))
-                    await notifications.revokeRegistration().value
+                    guard generation == epoch, !connecting else { return }
+                    let previous = cacheCleanup
+                    let cleanup = Task { [self] in
+                        _ = await previous?.result
+                        try await syncCache?.forget(connection: SyncCache.connectionKey(api.settings))
+                        await notifications.revokeRegistration().value
+                    }
+                    cacheCleanup = cleanup
+                    try await cleanup.value
                 }
-            } catch { self.error = error.localizedDescription }
+            } catch { if generation == epoch { self.error = error.localizedDescription } }
             return
         }
         await notifications.resume()
