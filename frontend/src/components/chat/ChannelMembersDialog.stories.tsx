@@ -34,8 +34,9 @@ type Story = StoryObj<typeof meta>;
  */
 export const Default: Story = {
   play: playForImplementation(async ({ args }) => {
+    // 開くアニメーションが終わるまでは透明なので、見えるまで待つ。
     const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
-    await expect(dialog).toBeVisible();
+    await waitFor(() => expect(dialog).toBeVisible());
     await expect(await screen.findByText("Alice")).toBeVisible();
     await expect(screen.getByText(`#${general.channel_name}`)).toBeVisible();
     await userEvent.keyboard("{Escape}");
@@ -81,9 +82,10 @@ export const UserAvatar: Story = {
     collections: { ...storyCollections, users: avatarUsers },
     msw: { handlers: [userAvatarHandler] },
   },
-  play: playForImplementation(async ({ canvasElement }) => {
+  play: playForImplementation(async () => {
     await waitFor(async () => {
-      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      // ダイアログは canvas の外（body 直下）へポータルで描画する。
+      const image = document.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
       await expect(image?.naturalWidth).toBeGreaterThan(0);
     });
   }),
@@ -135,7 +137,8 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   parameters: { a11y: { test: "error" } },
   play: playForImplementation(async () => {
-    await expect(await screen.findByRole("dialog", { name: /メンバー/ })).toBeVisible();
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    await waitFor(() => expect(dialog).toBeVisible());
     await expect(screen.getByRole("button", { name: "退出" })).toBeVisible();
   }),
 };
@@ -152,6 +155,7 @@ export const MobilePublicNotJoined: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByRole("button", { name: "参加" })).toBeVisible();
+    const join = await screen.findByRole("button", { name: "参加" });
+    await waitFor(() => expect(join).toBeVisible());
   }),
 };

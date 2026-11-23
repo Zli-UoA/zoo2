@@ -80,7 +80,7 @@ export const ChannelWithMembers: Story = {
     await userEvent.click(screen.getByRole("button", { name: /^メンバー / }));
     // スレッドのメンバーと同じ、画面中央のダイアログ。右ペインは出さず、チャットの幅も変えない。
     const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
-    await expect(dialog).toBeVisible();
+    await waitFor(() => expect(dialog).toBeVisible());
     const box = dialog.getBoundingClientRect();
     const center = document.documentElement.clientWidth / 2;
     await expect(Math.abs(box.left + box.width / 2 - center)).toBeLessThan(1);
@@ -179,7 +179,8 @@ export const MobileMembers: Story = {
     await screen.findByRole("heading", { name: "general" });
     await userEvent.click(screen.getByRole("button", { name: /^メンバー/ }));
     // 狭幅でも全画面に切り替えず、広幅と同じダイアログを重ねる。閉じるとチャンネルに戻る。
-    await expect(await screen.findByRole("dialog", { name: /メンバー/ })).toBeVisible();
+    const dialog = await screen.findByRole("dialog", { name: /メンバー/ });
+    await waitFor(() => expect(dialog).toBeVisible());
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await expect(screen.getByRole("heading", { name: "general" })).toBeVisible();
