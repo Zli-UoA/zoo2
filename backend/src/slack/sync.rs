@@ -958,7 +958,9 @@ async fn store(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を入れずに止める。次に取ったときに休ませる
     super::worker::ensure_plaintext_allowed(&mut tx, &task.channel_id).await?;
-    // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない
+    // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない。
+    // API の最初の全履歴の同期 (`is_initial`) は履歴なので、直近の返信でも、再Openも再参加もしない
+    let live_replies = !is_initial(task);
     for message in importable {
         insert_message(
             &mut tx,
@@ -966,6 +968,7 @@ async fn store(
             &task.slack_channel_id,
             &task.channel_id,
             "",
+            live_replies,
             message,
         )
         .await?;

@@ -53,6 +53,8 @@ export interface MessageFeedOptions {
  * 端末に同期するのは、画面に出す範囲 (新しい方から `MESSAGE_PAGE_SIZE` 件ずつ) だけ。`loadOlder()` で、
  * 1 ページ分、古い方へ範囲を広げる (Electric の subset snapshot で、そのページだけを取る)。`data` は古い順。
  */
+const ONLINE_CACHE_FALLBACK_MS = 1_500;
+
 export function useMessageFeed(channelId: string, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
   const { isOnline, namespace } = useOfflineStatus();
@@ -65,15 +67,65 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
 
   // オフラインで再読み込みすると、on-demand のコレクションは保存済みの行を使えない。
-  // 最新ページの控え (IndexedDB) を、読み込めた間だけ、代わりに表示する。
+  // 最新ページの控え (IndexedDB) を、オフライン・失敗時、またはオンライン接続が長引いたときだけ代わりに表示する。
+  // オンラインの通常切替で即座に控えを出すと、古い履歴から最新への跳ね返りが見えるため少し待つ。
+  // すでに控えを表示している間のオンライン復帰・再試行では、ライブの行（または空の確定）が届くまで維持する。
   const cacheable = parentId === null;
   const live = oldestFirst as FeedRow[];
   const liveReady = !query.isLoading && live.length > 0;
+  // 正常に取得できた結果が空 (全件が削除された) なら、控えも消す。読み込み中の空やエラーとは区別する。
+  const loadedEmpty =
+    isOnline && !query.isError && query.isReady && !query.isLoading && live.length === 0;
   const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
-  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
-  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
+  const [fallbackChannelId, setFallbackChannelId] = useState<string | null>(null);
+  const showingCache = cached?.channelId === channelId && cached.rows !== null;
+  const immediateCache =
+    cacheable && !loadedEmpty && live.length === 0 && (!isOnline || query.isError);
+  const waitingOnline =
+    cacheable &&
+    !loadedEmpty &&
+    isOnline &&
+    live.length === 0 &&
+    query.isLoading &&
+    !query.isError &&
+    !showingCache &&
+    fallbackChannelId !== channelId;
+  useEffect(() => {
+    if (!cacheable || live.length > 0 || loadedEmpty) {
+      setFallbackChannelId(null);
+      setCached((prev) => (prev?.channelId === channelId ? null : prev));
+      return;
+    }
+    if (immediateCache) {
+      setFallbackChannelId(channelId);
+      return;
+    }
+    if (!waitingOnline) {
+      if (fallbackChannelId !== channelId) {
+        setFallbackChannelId(null);
+      }
+      return;
+    }
+    const timer = setTimeout(() => setFallbackChannelId(channelId), ONLINE_CACHE_FALLBACK_MS);
+    return () => clearTimeout(timer);
+  }, [
+    cacheable,
+    live.length,
+    loadedEmpty,
+    immediateCache,
+    waitingOnline,
+    fallbackChannelId,
+    channelId,
+  ]);
+  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフライン・失敗時だけでなく、
+  // オンラインでも応答が返らないまま待機が続いたときは控えを表示する。
+  // オフライン・失敗で一度控えを表示したら、オンライン復帰中・再試行中も結果が届くまで維持する。
   const wantCache =
-    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
+    cacheable &&
+    live.length === 0 &&
+    !loadedEmpty &&
+    (immediateCache ||
+      ((query.isLoading || !query.isReady) && (fallbackChannelId === channelId || showingCache)));
   useEffect(() => {
     if (!wantCache) return;
     let cancelled = false;
@@ -98,13 +150,11 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     return () => clearTimeout(timer);
   }, [cacheable, isOnline, liveReady, namespace, channelId, query.data]);
 
-  // 正常に取得できた結果が空 (全件が削除された) なら、控えも消す。読み込み中の空とは区別する。
-  const loadedEmpty = query.isReady && !query.isLoading && live.length === 0;
   useEffect(() => {
-    if (!cacheable || !isOnline || !loadedEmpty) return;
+    if (!cacheable || !loadedEmpty) return;
     const timer = setTimeout(() => void clearFeedCache(namespace, channelId), 1_000);
     return () => clearTimeout(timer);
-  }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
+  }, [cacheable, loadedEmpty, namespace, channelId]);
 
   const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
   const fromCache = cachedRows !== null;

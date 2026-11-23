@@ -134,6 +134,7 @@
         "MobileSections",
         "Pinned",
         "MobilePinned",
+        "PinnedThreads",
         "PinnedReorderError"
       ]
     },
@@ -432,6 +433,8 @@
         "MembershipFailed",
         "ReopenArchived",
         "WithParticipants",
+        "ParticipantsJoinFromDialog",
+        "ParticipantsMembershipFailed",
         "ReopenAndJoin",
         "MembershipLoadingBlocksComposer",
         "LeftWithNoParticipants",
@@ -1116,7 +1119,13 @@
       "file": "src/components/chat/PinnedSection.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持は ChannelSidebar.browser.test.tsx で検証する。"
+      "reason": "Pinned・MobilePinned Story でピン留め行の順序、NSFW の印、DM 行、アーカイブ中の非表示、下へ移動の PATCH を確認し、PinnedThreads でピン留め行の下にもスレッドのツリーが出ることを確認し、PinnedReorderError でエラー表示を確認する。最後のピン解除後のフォーカス維持と、行とスレッドの行を囲むブロックを1つの置き先にする並べ替え（線はスレッドの行の下、ほかのドラッグは受け付けない）は ChannelSidebar.browser.test.tsx で検証する。"
+    },
+    {
+      "file": "src/components/chat/DropIndicator.tsx",
+      "story": "src/components/chat/ChannelListItem.stories.tsx",
+      "composed": true,
+      "reason": "ドラッグ中の挿入位置の線。ChannelListItem・DmListItemのStoryで、前・後ろの線が出ることを確認する。ピン留めの行とスレッドの行を囲むブロックでの置き先と、線がスレッドの行の下に出ることは、ChannelSidebar.browser.test.tsxで検証する。"
     },
     {
       "file": "src/components/chat/ChannelThreadItems.tsx",
@@ -1288,6 +1297,18 @@
       "story": "src/components/chat/messages/ThreadPane.stories.tsx",
       "composed": true,
       "reason": "ThreadPaneのNotParticipating・ReopenAndJoin・PostingForbiddenNotJoinedで、参加の案内・再Openして参加・権限がないときの理由だけの表示を確認する。チャンネルの参加案内はMessagePaneのNotJoinedで確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/ThreadParticipantsDialog.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "ThreadPaneのWithParticipantsで、画面中央のダイアログの並び（スレ主が先頭）・「スレ主」「あなた」の印・名前の絞り込み・退出・Escapeで閉じてフォーカスが戻ることを、ParticipantsJoinFromDialogで未参加の「参加する」を、ParticipantsMembershipFailedで参加・退出の失敗と再試行がダイアログの中に出ることを、WithParticipantsで50人を超えるときの検索の注記も、Participatingで人数が未取得でも退出できることを確認する。ThreadPane.browser.test.tsxで、狭幅・再Openして参加・投稿権限がないとき・メンバーでないときを検証する。"
+    },
+    {
+      "file": "src/components/chat/MemberRow.tsx",
+      "story": "src/components/chat/MembersPanel.stories.tsx",
+      "composed": true,
+      "reason": "チャンネルのメンバー一覧（MembersPanel）とスレッドのメンバーのダイアログ（ThreadParticipantsDialog）が共有する1行。MembersPanelのStoryで作成者・あなた・Bot・暗号化の警告・キックの表示を、ThreadPaneのWithParticipantsでスレ主・あなたの印を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPaneStatus.tsx",
