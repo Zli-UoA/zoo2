@@ -17,12 +17,12 @@ struct PublicProfileTests {
             #expect(request.httpMethod == "PUT")
             let fields = try JSONDecoder().decode([String: String].self, from: StubProtocol.body(request))
             #expect(fields == ["display_name": " 花 ", "summary": "こんにちは🌸"])
-            return (200, [:], Data(#"{"display_name":"花","default_display_name":"動物園","summary":"こんにちは🌸"}"#.utf8))
+            return (200, [:], Data(#"{"display_name":"花","default_display_name":"動物園","summary":"応答側で整えた自己紹介🌸"}"#.utf8))
         }
         #expect(try await harness.client.publicProfile().name == "動物園")
         let updated = try await harness.client.updatePublicProfile(name: " 花 ", summary: "こんにちは🌸")
         #expect(updated.name == "花")
-        #expect(updated.summary == "こんにちは🌸")
+        #expect(updated.summary == "応答側で整えた自己紹介🌸")
         #expect(harness.client.accountProfileURL?.absoluteString == "https://id.test.invalid/settings/profile")
     }
 

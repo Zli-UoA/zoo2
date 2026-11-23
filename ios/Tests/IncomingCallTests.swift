@@ -533,11 +533,14 @@ struct IncomingCallTests {
 
     @Test("再認可待ちで終了した取得を取り消し、次の着信は取り直す")
     func cancelsReauthorizationBeforeNextCall() async throws {
-        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let started = AsyncStream<Void>.makeStream()
+        let releases = [AsyncStream<Void>.makeStream(), AsyncStream<Void>.makeStream()]
         let cancelled = AsyncStream<Void>.makeStream(), updated = AsyncStream<Void>.makeStream()
-        defer { started.continuation.finish(); release.continuation.finish(); cancelled.continuation.finish(); updated.continuation.finish() }
+        defer { started.continuation.finish(); releases.forEach { $0.continuation.finish() }; cancelled.continuation.finish(); updated.continuation.finish() }
         var requests = 0
         let context = try AnswerContext(payload: payload, loadChannel: { client, id in
+            try #require(requests < releases.count)
+            let release = releases[requests]
             requests += 1
             started.continuation.yield(())
             for await _ in release.stream { break }
@@ -562,7 +565,7 @@ struct IncomingCallTests {
         await withCheckedContinuation { continuation in context.controller.receive(next) { continuation.resume() } }
         try #require(await iterator.next() != nil)
         #expect(requests == 2)
-        release.continuation.finish()
+        releases[1].continuation.finish()
         var update = updated.stream.makeAsyncIterator()
         try #require(await update.next() != nil)
         #expect(context.controller.incomingInvitationID == next.id && !context.calls.isChannelRevoked(next.channelID))

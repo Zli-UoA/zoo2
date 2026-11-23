@@ -53,10 +53,75 @@ final class IncompleteHTTPResponse: HTTPURLResponse, @unchecked Sendable {
     required init?(coder: NSCoder) { return nil }
 }
 
+// 受信チャンクごとに上限を確認し、応答本文でメモリーを使い切らない。
+private final class BoundedHTTPBody: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private struct State {
+        var response: HTTPURLResponse?
+        var data = Data()
+        var error: (any Error)?
+    }
+    private let state = Mutex(State())
+    private let maximumBytes: Int
+    private let completion: @Sendable (Result<(Data, HTTPURLResponse), any Error>) -> Void
+
+    init(maximumBytes: Int, completion: @escaping @Sendable (Result<(Data, HTTPURLResponse), any Error>) -> Void) {
+        self.maximumBytes = maximumBytes
+        self.completion = completion
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        guard let response = response as? HTTPURLResponse else {
+            state.withLock { $0.error = ZooError.invalidResponse }
+            completionHandler(.cancel)
+            return
+        }
+        state.withLock { $0.response = response }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let exceeded = state.withLock { state in
+            let success = state.response.map { (200..<300).contains($0.statusCode) } == true
+            let limit = success ? maximumBytes : min(maximumBytes, 64 * 1024)
+            let remaining = max(0, limit - state.data.count)
+            state.data.append(data.prefix(remaining))
+            if data.count > remaining { state.error = URLError(.dataLengthExceedsMaximum); return true }
+            return false
+        }
+        if exceeded { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let result: Result<(Data, HTTPURLResponse), any Error> = state.withLock { state in
+            let failure = state.error ?? error
+            if let failure {
+                if let response = state.response, !(200..<300).contains(response.statusCode),
+                   (failure as? URLError)?.code != .cancelled,
+                   let incomplete = IncompleteHTTPResponse(response: response, error: failure) {
+                    return .success((state.data, incomplete))
+                }
+                return .failure(failure)
+            }
+            guard let response = state.response else { return .failure(ZooError.invalidResponse) }
+            return .success((state.data, response))
+        }
+        completion(result)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 final class HTTPTransport: Sendable {
     let session: URLSession
+    private let maximumResponseBytes: Int
 
-    init(session: URLSession? = nil) {
+    init(session: URLSession? = nil, maximumResponseBytes: Int = 64 * 1024 * 1024) {
+        self.maximumResponseBytes = max(1, maximumResponseBytes)
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.httpMaximumConnectionsPerHost = 12
@@ -81,27 +146,13 @@ final class HTTPTransport: Sendable {
         let state = Mutex((task: Optional<URLSessionDataTask>.none, cancelled: false))
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
-            // 完了コールバックなら一括取得の速度を保ち、本文失敗時も受信済みの応答を参照できる。
             let result: (Data, HTTPURLResponse) = try await withCheckedThrowingContinuation { continuation in
-                let task = session.dataTask(with: request) { data, rawResponse, error in
-                    let response = state.withLock {
-                        defer { $0.task = nil }
-                        return (rawResponse ?? $0.task?.response) as? HTTPURLResponse
-                    }
-                    if let error {
-                        if !(error is CancellationError), (error as? URLError)?.code != .cancelled,
-                           let response, !(200..<300).contains(response.statusCode),
-                           let incomplete = IncompleteHTTPResponse(response: response, error: error) {
-                            continuation.resume(returning: (Data(), incomplete))
-                        } else {
-                            continuation.resume(throwing: error)
-                        }
-                    } else if let response {
-                        continuation.resume(returning: (data ?? Data(), response))
-                    } else {
-                        continuation.resume(throwing: ZooError.invalidResponse)
-                    }
+                let receiver = BoundedHTTPBody(maximumBytes: maximumResponseBytes) { result in
+                    state.withLock { $0.task = nil }
+                    continuation.resume(with: result)
                 }
+                let task = session.dataTask(with: request)
+                task.delegate = receiver
                 let cancelled = state.withLock {
                     $0.task = task
                     return $0.cancelled
@@ -118,6 +169,18 @@ final class HTTPTransport: Sendable {
             }
             task?.cancel()
         }
+    }
+
+    @concurrent
+    func download(_ request: URLRequest) async throws -> (AttachmentFile, HTTPURLResponse) {
+        let (temporary, response) = try await session.download(for: request, delegate: NoRedirects())
+        let downloaded = AttachmentFile(url: temporary)
+        try Task.checkCancellation()
+        guard let response = response as? HTTPURLResponse else { throw ZooError.invalidResponse }
+        let file = AttachmentFile(url: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+        try FileManager.default.moveItem(at: downloaded.url, to: file.url)
+        try Task.checkCancellation()
+        return (file, response)
     }
 
     static func check(_ data: Data, _ response: HTTPURLResponse) throws {

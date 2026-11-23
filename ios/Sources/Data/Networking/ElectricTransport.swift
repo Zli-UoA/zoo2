@@ -90,6 +90,7 @@ extension HTTPTransport {
             for try await byte in bytes {
                 try Task.checkCancellation()
                 guard let data = try parser.feed(byte) else { continue }
+                guard events.count < 10_000 else { throw ZooError.invalidResponse }
                 let event = try JSONDecoder().decode(ShapeEvent.self, from: data)
                 events.append(event)
                 pendingBytes += data.count

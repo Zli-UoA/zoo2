@@ -80,6 +80,35 @@ struct AttachmentSaveTests {
         await #expect(throws: CancellationError.self) { try await task.value }
     }
 
+    @Test("保存先へ渡す前に失効・ログアウトしたファイルは書き出しへ公開しない", arguments: [false, true])
+    func invalidationBeforeExport(logout: Bool) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            if request.url?.host == "api.test.invalid" {
+                return (200, [:], Data(#"{"data":{"download_url":"https://storage.test.invalid/file"}}"#.utf8))
+            }
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            return (200, [:], Data("失効前の添付".utf8))
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: "u", user_name: "user", display_name: "利用者"), recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
+        let state = AttachmentSaveState()
+        state.save(.files, attachment: MessageAttachment(id: attachmentID, file_name: "資料.pdf", content_type: "application/pdf"), workspace: workspace, channelID: "channel")
+        let saving = try #require(state.task)
+        let completion = Task { await saving.value; started.continuation.finish() }
+        defer { saving.cancel(); completion.cancel(); state.dismissFileExport() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        if logout { workspace.shutdown() } else { workspace.revokeChannel("channel") }
+        release.continuation.finish()
+        await saving.value
+        #expect(state.exportedFile == nil && !state.isSaving && state.notice != nil)
+    }
+
     private func stubDownload(_ harness: ChatHarness, status: Int = 200) {
         harness.stub { request in
             if request.url?.host == "api.test.invalid" {

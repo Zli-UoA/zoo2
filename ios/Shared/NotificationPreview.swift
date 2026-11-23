@@ -19,13 +19,16 @@ struct NotificationPreviewKey: Codable, Equatable, Sendable {
 }
 
 struct NotificationPreviewKeyStore {
+    var account = "current"
+    var updateItem: @Sendable (CFDictionary, CFDictionary) -> OSStatus = { SecItemUpdate($0, $1) }
+    var deleteItem: @Sendable (CFDictionary) -> OSStatus = { SecItemDelete($0) }
     private func query() throws -> [String: Any] {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "ZooPreviewKeychainGroup") as? String,
               !group.isEmpty, !group.contains("$(") else { throw error(errSecMissingEntitlement) }
         return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "works.zli.zoo.notification-preview",
-            kSecAttrAccount as String: "current",
+            kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: group
         ]
     }
@@ -42,13 +45,15 @@ struct NotificationPreviewKeyStore {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw error(status) }
         guard let data = result as? Data else { throw error(errSecDecode) }
-        return try JSONDecoder().decode(NotificationPreviewKey.self, from: data)
+        return try JSONDecoder().decode(NotificationPreviewKey?.self, from: data)
     }
 
     func save(_ key: NotificationPreviewKey?) throws {
         let query = try query()
         guard let key else {
-            let status = SecItemDelete(query as CFDictionary)
+            // 削除だけが失敗しても復号を止めるため、先に同じ共有項目を鍵なしへ更新する。
+            _ = updateItem(query as CFDictionary, [kSecValueData as String: Data("null".utf8)] as CFDictionary)
+            let status = deleteItem(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else { throw error(status) }
             return
         }

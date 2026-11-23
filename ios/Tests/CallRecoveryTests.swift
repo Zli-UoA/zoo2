@@ -120,6 +120,7 @@ struct CallRecoveryTests {
         try journal.save([previous, later])
         let client = FakeCallClient()
         client.commandFailure = { _ in client.commandBodies.count == 1 ? ZooError.rejected(409, "退出失敗") : nil }
+        defer { client.commandFailure = nil }
         let calls = store(client, journal: journal)
         defer { calls.shutdown() }
         await calls.refreshActiveCalls()

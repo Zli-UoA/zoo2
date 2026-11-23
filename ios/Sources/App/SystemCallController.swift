@@ -111,10 +111,12 @@ final class SystemCallController: NSObject {
             return
         }
         clearNotificationAction()
+        let originalWorkspace = workspace
         do {
             try await performWatchAction(WatchRequest(action: response.action, callID: call.id))
         } catch {
-            workspace?.calls.error = "通話を操作できませんでした。iPhoneで着信を確認してください。"
+            guard current?.id == call.id, workspace === originalWorkspace else { return }
+            originalWorkspace?.calls.error = "通話を操作できませんでした。iPhoneで着信を確認してください。"
         }
     }
 
@@ -478,19 +480,25 @@ final class SystemCallController: NSObject {
 
     @discardableResult
     func answer(_ invitation: CallInvitation) -> Bool {
-        guard let id = UUID(uuidString: invitation.id), current?.id == id else { return false }
+        guard let id = UUID(uuidString: invitation.id), current?.id == id, let workspace else { return false }
         guard phase == .ringing else { return true }
-        callController.request(CXTransaction(action: CXAnswerCallAction(call: id))) { [weak self] error in
-            if error != nil { Task { @MainActor in self?.workspace?.calls.error = "通話に参加できませんでした。" } }
+        callController.request(CXTransaction(action: CXAnswerCallAction(call: id))) { [weak self, weak workspace] error in
+            if error != nil { Task { @MainActor in
+                guard let self, let workspace, self.workspace === workspace, self.current?.id == id else { return }
+                workspace.calls.error = "通話に参加できませんでした。"
+            } }
         }
         return true
     }
 
     @discardableResult
     func decline(_ invitation: CallInvitation) -> Bool {
-        guard let id = UUID(uuidString: invitation.id), current?.id == id else { return false }
-        callController.request(CXTransaction(action: CXEndCallAction(call: id))) { [weak self] error in
-            if error != nil { Task { @MainActor in self?.workspace?.calls.error = "通話を拒否できませんでした。" } }
+        guard let id = UUID(uuidString: invitation.id), current?.id == id, let workspace else { return false }
+        callController.request(CXTransaction(action: CXEndCallAction(call: id))) { [weak self, weak workspace] error in
+            if error != nil { Task { @MainActor in
+                guard let self, let workspace, self.workspace === workspace, self.current?.id == id else { return }
+                workspace.calls.error = "通話を拒否できませんでした。"
+            } }
         }
         return true
     }

@@ -55,7 +55,7 @@ final class ConversationStore {
     private var reactionWrites: [String: [String: ReactionWrite]] = [:]
     private var latestReactionWrite = UUID()
     private var reactionErrors: [String: String] = [:]
-    private var active = true
+    private(set) var active = true
     private var streamGeneration = UUID()
     private(set) var accessGeneration = UUID()
     private var localWrites: [String: Message] = [:]
@@ -639,7 +639,7 @@ extension ConversationStore {
                 write = ReactionWrite(row: row, isRemoval: false)
             }
             try Task.checkCancellation()
-            guard accessGeneration == epoch, canReact(to: messageID) else { return }
+            guard active, !blocked, accessGeneration == epoch, messagesByID[messageID] != nil else { return }
             reactionWrites[messageID, default: [:]][write.row.id] = write
             latestReactionWrite = write.token
             reconcileReactionWrites()

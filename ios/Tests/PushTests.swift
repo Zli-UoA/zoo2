@@ -143,6 +143,8 @@ final class PushTests: XCTestCase {
         XCTAssertEqual(store.receipt?.id, original.id)
         XCTAssertNotEqual(store.receipt?.secret, original.secret)
         XCTAssertNil(store.receipt?.revocationPending)
+        XCTAssertEqual(backend.subscribed.count, 2)
+        XCTAssertEqual(backend.subscribed.last, store.receipt)
     }
 
     func testTokenRotationRevokesPreviousDeviceBeforeRegistering() async throws {

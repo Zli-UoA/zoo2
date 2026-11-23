@@ -132,7 +132,7 @@ final class WorkspaceStore {
     private(set) var active = true
     private var destinationGeneration = UUID()
     private var channelGeneration = UUID()
-    private var revocationGeneration = UUID()
+    private(set) var revocationGeneration = UUID()
     private var resolvedAuthors: [String: Person] = [:]
     @ObservationIgnored private var readStateRevision = UUID()
     @ObservationIgnored private var readListRevision = UUID()
@@ -616,6 +616,7 @@ final class WorkspaceStore {
 
     func revokeChannel(_ id: String, retaining channel: Channel? = nil) {
         guard active else { return }
+        if #available(iOS 27.0, *) { ZooSentMessageStore.shared.revokeChannel(id, in: self) }
         channelGeneration = UUID()
         revocationGeneration = UUID()
         destinationGeneration = UUID()

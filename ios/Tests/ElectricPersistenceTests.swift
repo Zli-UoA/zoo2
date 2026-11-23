@@ -596,7 +596,7 @@ struct PersistentSyncIntegrationTests {
         }
         let store = ConversationStore(channel: Channel(id: syncChannel, channel_name: "失効確認", is_private: true, is_dm: false),
                                       client: NativeChatClient(api: harness.api, sync: sync), userID: syncUser.id)
-        let running = Task { await store.run() }
+        let running = Task { defer { started.continuation.finish() }; await store.run() }
         defer { running.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
@@ -1194,13 +1194,15 @@ struct PersistentSyncIntegrationTests {
             defer { updates.continuation.finish() }
             try await client.observeMessageFeed(channelID: syncChannel, request: request) { updates.continuation.yield($0) }
         }
-        for await value in updates.stream where !value.fromCache && value.messages != nil {
-            task.cancel()
-            _ = await task.result
-            return value
-        }
-        try await task.value
-        throw ZooError.invalidResponse
+        return try await withTaskCancellationHandler {
+            for await value in updates.stream where !value.fromCache && value.messages != nil {
+                task.cancel()
+                _ = await task.result
+                return value
+            }
+            try await task.value
+            throw ZooError.invalidResponse
+        } onCancel: { task.cancel() }
     }
 
     @Test("最初の50件、次の50件、保存位置からの再開で全履歴を取り直さない")

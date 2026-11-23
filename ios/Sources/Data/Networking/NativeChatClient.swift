@@ -161,9 +161,13 @@ struct NativeChatClient: ChatClient {
 
     func attachmentData(_ attachment: MessageAttachment, channelID: String? = nil, reload: Bool = false) async throws -> Data {
         guard let sync, let channelID, attachment.isImage || attachment.isPDF else {
+            let version = channelID.flatMap { sync?.channelVersion($0) }
+            if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
             let url = try await attachmentURL(id: attachment.id)
             try Task.checkCancellation()
-            return try await attachmentData(from: url)
+            let data = try await attachmentData(from: url)
+            if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
+            return data
         }
         _ = try segment(attachment.id)
         _ = try segment(channelID)
@@ -188,6 +192,26 @@ struct NativeChatClient: ChatClient {
         try await sync.cache.storeAttachment(data, attachment: attachment, channelID: channelID, version: version, lease: sync.lease)
         try sync.check(channelID: channelID, channelVersion: version)
         return data
+    }
+
+    func attachmentFile(_ attachment: MessageAttachment, channelID: String?) async throws -> AttachmentFile {
+        let version = channelID.flatMap { sync?.channelVersion($0) }
+        if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
+        let file: AttachmentFile
+        if attachment.isImage || attachment.isPDF {
+            file = try await AttachmentFile.write(attachmentData(attachment, channelID: channelID))
+        } else {
+            let url = try await attachmentURL(id: attachment.id)
+            guard DisplayEmoji.assetURL(url.absoluteString) != nil else { throw ZooError.invalidResponse }
+            let (downloaded, response) = try await api.transport.download(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+            guard (200..<300).contains(response.statusCode) else {
+                throw ZooError.rejected(response.statusCode, "添付ファイルを取得できませんでした。")
+            }
+            file = downloaded
+        }
+        try Task.checkCancellation()
+        if let channelID { try sync?.check(channelID: channelID, channelVersion: version) }
+        return file
     }
 
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws {

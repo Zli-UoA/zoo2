@@ -225,8 +225,8 @@ struct ShortcutActionsTests {
         }
     }
 
-    @Test("DM作成中にログアウトしたら送信しない")
-    func logoutWhileResolvingDM() async throws {
+    @Test("DM作成中に失効・ログアウトしたら送信しない", arguments: [false, true])
+    func logoutWhileResolvingDM(logout: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let peer = peer, channel = channel
@@ -243,6 +243,7 @@ struct ShortcutActionsTests {
             return (500, [:], Data())
         }
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
+        defer { workspace.shutdown() }
         let actions = ShortcutActions(workspace: workspace), target = recipient(workspace)
         let pending = Task {
             defer { started.continuation.finish() }
@@ -254,14 +255,15 @@ struct ShortcutActionsTests {
             Issue.record("対象の通信が開始されずに送信処理が終了しました。")
             return
         }
-        workspace.shutdown()
+        if logout { workspace.shutdown() } else { workspace.revokeChannel(channel.id) }
         release.continuation.yield(())
-        await #expect(throws: ZooError.self) { try await pending.value }
+        if logout { await #expect(throws: ZooError.self) { try await pending.value } }
+        else { await #expect(throws: CancellationError.self) { try await pending.value } }
         #expect(workspace.dmPath.isEmpty)
     }
 
-    @Test("送信中にログアウトしても成立済みの送信を失敗へ変えない")
-    func logoutWhileSending() async throws {
+    @Test("送信中に失効・ログアウトしても送信成功は保持し、会話は復活させない", arguments: [false, true])
+    func logoutWhileSending(logout: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let peer = peer, channel = channel, user = user
@@ -292,10 +294,11 @@ struct ShortcutActionsTests {
             Issue.record("対象の通信が開始されずに送信処理が終了しました。")
             return
         }
-        workspace.shutdown()
+        if logout { workspace.shutdown() }
+        else { workspace.revokeChannel(channel.id) }
         release.continuation.yield(())
         #expect(try await pending.value.id == "accepted")
-        #expect(workspace.dmPath.isEmpty)
+        #expect(workspace.dmPath.isEmpty && workspace.channels.isEmpty)
     }
 
     @Test("Siriの下書き作成は送信せず、既存の入力を上書きしない",
@@ -516,7 +519,9 @@ struct ShortcutActionsTests {
         let workspace = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
         let other = WorkspaceStore(client: client, user: client.currentUser, recentEmojiDefaults: nil)
         defer { workspace.shutdown(); other.shutdown() }
-        let store = ZooSentMessageStore()
+        workspace.addAndOpen(channel)
+        other.addAndOpen(channel)
+        let store = ZooSentMessageStore.shared
         var results: [ZooSentMessage] = []
         for index in 0..<21 {
             let message = Message(id: String(index), user_id: workspace.user.id, channel_id: channel.id,
@@ -530,8 +535,13 @@ struct ShortcutActionsTests {
         #expect(store.conversations(for: [results[0].conversation.id], in: workspace).first?.previewText == "本文20")
         #expect(store.messages(for: ids, in: other).isEmpty)
         #expect(store.conversations(for: [results[0].conversation.id], in: other).isEmpty)
-        store.clear(in: workspace)
+        workspace.revokeChannel(channel.id)
         #expect(store.messages(for: ids, in: workspace).isEmpty)
+        #expect(store.conversations(for: [results[0].conversation.id], in: workspace).isEmpty)
+        store.remember(results[0], in: workspace)
+        #expect(store.messages(for: ids, in: workspace).isEmpty)
+        workspace.addAndOpen(channel)
+        store.clear(in: workspace)
         store.remember(results[0], in: workspace)
         workspace.shutdown()
         store.remember(results[1], in: workspace)

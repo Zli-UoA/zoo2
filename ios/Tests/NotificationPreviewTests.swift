@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 import UserNotifications
 @testable import Zoo
@@ -25,6 +26,21 @@ struct NotificationPreviewTests {
         content.userInfo = ["preview_v1": preview, "user_id": userID, "notification_id": noticeID,
                             "channel_id": channelID, "message_id": messageID]
         return content
+    }
+
+    @Test("無効化更新か鍵削除が成功すれば旧鍵を返さず、同時失敗は既知の制約として残る", arguments: [(false, true), (true, false), (true, true)])
+    func invalidationAndDeletion(failures: (Bool, Bool)) throws {
+        let live = NotificationPreviewKeyStore(account: "preview-test-" + UUID().uuidString)
+        defer { try? live.save(nil) }
+        try live.save(key)
+        var failing = live
+        if failures.0 { failing.updateItem = { _, _ in errSecInteractionNotAllowed } }
+        if failures.1 { failing.deleteItem = { _ in errSecInteractionNotAllowed } }
+        do {
+            try failing.save(nil)
+            #expect(!failures.1)
+        } catch { #expect(failures.1) }
+        #expect(try live.load() == (failures.0 && failures.1 ? key : nil))
     }
 
     @Test("端末登録の復号鍵とリアクション表示が共通ベクトルに一致する")
@@ -85,8 +101,10 @@ struct NotificationPreviewTests {
         ] {
             let original = content(reaction)
             original.userInfo[field] = value
+            let title = original.title, body = original.body
             let rendered = NotificationPreview.content(for: original, key: key)
-            #expect(rendered.body == original.body)
+            #expect(rendered.title == title)
+            #expect(rendered.body == body)
             #expect(rendered.userInfo[NotificationPreview.renderedKey] == nil)
         }
     }

@@ -170,6 +170,7 @@ struct ChatPresentationAPITests {
                 let body = try JSONDecoder().decode([String: JSONValue].self, from: StubProtocol.body(request))
                 #expect(request.httpMethod == "POST")
                 #expect(body["expected_version"] == .number(2))
+                #expect(body["channel_id"] == .string(id))
                 return (200, [:], Data("{\"data\":{\"pins\":[{\"channel_id\":\"other\",\"position\":0},{\"channel_id\":\"\(id)\",\"position\":1}],\"version\":3}}".utf8))
             default:
                 Issue.record("予期しない再試行")

@@ -154,7 +154,7 @@ final class FakeCallMedia: CallMedia {
 struct CallStoreTests {
     private var channel: Channel { Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false) }
 
-    @Test("初期メディアの処理中に生成したofferを既存参加者へ送信する")
+    @Test("初期メディアの処理中もpresenceを更新し、offerを既存参加者へ送信する")
     func initialOfferReachesExistingParticipant() async throws {
         let client = FakeCallClient(), media = FakeCallMedia()
         let peer = CallParticipant(session_id: "peer", user_id: "other", user_name: "相手", display_name: "相手", is_muted: false)
@@ -166,10 +166,11 @@ struct CallStoreTests {
             #expect(!store.ready)
             media.signal?(peer.id, CallSignal(type: "offer", sdp: "テスト用SDP"))
             let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while !client.commands.contains("signal"), ContinuousClock.now < deadline {
+            while (!client.commands.contains("signal") || !client.commands.contains("heartbeat")), ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(1))
             }
             try #require(client.commands.contains("signal"), "メディア初期化の完了前でもofferを送信する")
+            #expect(client.commands.contains("heartbeat"), "メディア準備の完了前にもpresenceを延長する")
             #expect(!store.ready)
         }
         try await waitForCallDelivery(client) { store.start(channel: channel) }
@@ -266,12 +267,16 @@ struct CallStoreTests {
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         client.commandFailure = { action in
             guard action == "heartbeat" else { return nil }
+            if status == 401 { return ZooError.expiredSession }
             return status == 0 ? URLError(.timedOut) : ZooError.rejected(status, "テスト")
         }
         let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true }, retryDelay: .milliseconds(1))
+        var expired = false
+        store.onExpiredSession = { expired = true }
         defer { store.shutdown() }
         await store.start(channel: channel)?.value
         #expect(client.commands.filter { $0 == "heartbeat" }.count == (status == 0 ? 3 : 1))
+        #expect(expired == (status == 401))
         #expect(store.channel == nil && store.error != nil)
         #expect((store.retryChannel != nil) == (status == 0))
     }

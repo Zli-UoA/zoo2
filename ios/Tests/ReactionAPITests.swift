@@ -79,7 +79,7 @@ struct ReactionAPITests {
             let url = try #require(request.url)
             #expect(url.path == "/api/shapes/message_reactions")
             let items = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
-            #expect(items.contains(URLQueryItem(name: "channel_id", value: channelID)))
+            #expect(items.filter { $0.name == "channel_id" } == [URLQueryItem(name: "channel_id", value: channelID)])
             let events = #"[{"key":"r1","headers":{"operation":"insert"},"value":{"id":"r1","message_id":"m","user_id":"u","emoji":"👍"}},{"headers":{"control":"up-to-date"}}]"#
             return (200, ["electric-offset": "0_1", "electric-handle": "shape"], Data(events.utf8))
         }

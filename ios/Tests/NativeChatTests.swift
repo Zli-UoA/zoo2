@@ -1095,8 +1095,8 @@ struct NativeChatTests {
             }
             await workspace.refresh()
             #expect(workspace.error == nil)
-            #expect(workspace.people[peerID]?.avatarURL?.absoluteString == avatar)
-            #expect(workspace.directMessagePeer(for: dm)?.avatarURL?.absoluteString == avatar)
+            #expect(try #require(workspace.people[peerID]).avatarURL?.absoluteString == avatar)
+            #expect(try #require(workspace.directMessagePeer(for: dm)).avatarURL?.absoluteString == avatar)
         }
     }
 }

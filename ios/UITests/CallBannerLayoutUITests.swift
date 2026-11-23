@@ -18,7 +18,9 @@ final class CallBannerLayoutUITests: XCTestCase {
         if !diagnostics.isHittable { app.swipeUp() }
         diagnostics.tap()
         let server = app.staticTexts["call-diagnostics-server"]
-        if !server.exists { app.swipeUp() }
+        for _ in 0..<3 where !server.isHittable { app.swipeUp() }
+        XCTAssertTrue(server.waitForExistence(timeout: 5))
+        XCTAssertTrue(server.wait(for: \.isHittable, toEqual: true, timeout: 5))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "通話の通信状況"
         screenshot.lifetime = .keepAlways

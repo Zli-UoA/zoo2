@@ -232,6 +232,7 @@ struct TypingStoreTests {
         defer { first.cancel(); store.stop() }
         try await until { !client.reads.isEmpty }
         store.activity(true, parentID: "別スレッド")
+        try await Task.sleep(for: .milliseconds(50))
         #expect(client.writes.isEmpty)
         store.activity(true, parentID: nil)
         try await until { client.writes.count == 1 }

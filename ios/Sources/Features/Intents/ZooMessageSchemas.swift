@@ -272,7 +272,8 @@ final class ZooSentMessageStore {
     private var results: [ZooSentMessage] = []
 
     func remember(_ message: ZooSentMessage, in workspace: WorkspaceStore) {
-        guard workspace.active else { return }
+        let prefix = "\(workspace.client.serverURL)|\(workspace.user.id)|"
+        guard workspace.active, workspace.channels.contains(where: { $0.canPost && prefix + $0.id == message.conversation.id }) else { return }
         if self.workspace !== workspace { results.removeAll(); self.workspace = workspace }
         results.removeAll { $0.id == message.id }
         results.append(message)
@@ -293,6 +294,12 @@ final class ZooSentMessageStore {
         guard self.workspace === workspace else { return }
         results.removeAll()
         self.workspace = nil
+    }
+
+    func revokeChannel(_ channelID: String, in workspace: WorkspaceStore) {
+        guard self.workspace === workspace else { return }
+        let id = "\(workspace.client.serverURL)|\(workspace.user.id)|\(channelID)"
+        results.removeAll { $0.conversation.id == id }
     }
 }
 
@@ -326,7 +333,9 @@ struct SendZooSchemaMessageIntent: AppIntent {
             let person = try await actions.resolve(recipient)
             Self.logger.notice("DMの宛先を解決し、送信確認を要求します。")
             try await requestConfirmation(dialog: "Zooで\(person.name)（@\(person.user_name)）さんに「\(text)」を送信しますか？")
+            let epoch = workspace.revocationGeneration
             let message = try await actions.send(text, to: recipient)
+            guard workspace.active, workspace.revocationGeneration == epoch else { return .result(value: []) }
             let result = ZooSentMessage(message, recipient: recipient, workspace: workspace)
             ZooSentMessageStore.shared.remember(result, in: workspace)
             Self.logger.notice("Siri AIからの送信が完了しました。")

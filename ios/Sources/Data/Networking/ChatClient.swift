@@ -17,6 +17,7 @@ protocol ChatClient: InboxClient, CallClient, TypingClient {
     func attachmentURL(id: String) async throws -> URL
     func attachmentData(from url: URL) async throws -> Data
     func attachmentData(_ attachment: MessageAttachment, channelID: String?, reload: Bool) async throws -> Data
+    func attachmentFile(_ attachment: MessageAttachment, channelID: String?) async throws -> AttachmentFile
     func readStates(allowCached: Bool) async throws -> [ChannelReadState]
     func observeMessages(channelID: String, receive: @MainActor ([Message]?) -> Void) async throws
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws
@@ -60,6 +61,9 @@ extension ChatClient {
         return try await attachmentData(from: url)
     }
     func cachedWorkspace() async throws -> CachedWorkspace? { nil }
+    func attachmentFile(_ attachment: MessageAttachment, channelID: String?) async throws -> AttachmentFile {
+        try await AttachmentFile.write(attachmentData(attachment, channelID: channelID, reload: false))
+    }
     func observeMessageFeed(channelID: String, request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         try await observeMessages(channelID: channelID) { receive(MessageFeedSnapshot(messages: $0)) }
     }

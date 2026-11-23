@@ -216,6 +216,7 @@ final class CallStore {
                     guard let self, sessionID == session, !Task.isCancelled else { throw CancellationError() }
                     if case .room(let room) = event {
                         guard !ready, room.participants.count <= 6 else { throw ZooError.invalidResponse }
+                        startHeartbeat(channelID: channel.id, session: session)
                         let engine = makeMedia()
                         (engine as? NativeCallMedia)?.systemAudio = usesSystemAudio
                         try (engine as? NativeCallMedia)?.setSystemAudioActive(systemAudioActive)
@@ -261,7 +262,6 @@ final class CallStore {
                         early = []
                         ready = true
                         timeout?.cancel(); timeout = nil
-                        startHeartbeat(channelID: channel.id, session: session)
                         // CallKitの応答完了で音声セッションが有効になるため、入室と音声接続を分ける。
                         onReady?()
                     } else if ready { try await receive(event, session: session) }

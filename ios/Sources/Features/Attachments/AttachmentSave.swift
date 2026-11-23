@@ -10,17 +10,17 @@ struct DownloadedAttachment: Identifiable, Sendable {
     @MainActor
     static func download(_ attachment: MessageAttachment, client: any ChatClient, channelID: String? = nil) async throws -> Self {
         try Task.checkCancellation()
-        let data = try await client.attachmentData(attachment, channelID: channelID, reload: false)
-        return try await write(data, attachment: attachment)
+        let file = try await client.attachmentFile(attachment, channelID: channelID)
+        return try await move(file, attachment: attachment)
     }
 
     @concurrent
-    private static func write(_ data: Data, attachment: MessageAttachment) async throws -> Self {
+    private static func move(_ file: AttachmentFile, attachment: MessageAttachment) async throws -> Self {
         try Task.checkCancellation()
         let directory = AttachmentFile(url: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
         try FileManager.default.createDirectory(at: directory.url, withIntermediateDirectories: true)
         let url = directory.url.appendingPathComponent(fileName(for: attachment))
-        try data.write(to: url, options: .atomic)
+        try FileManager.default.moveItem(at: file.url, to: url)
         try Task.checkCancellation()
         return Self(url: url, directory: directory)
     }
@@ -75,18 +75,21 @@ final class AttachmentSaveState {
     @ObservationIgnored private(set) var task: Task<Void, Never>?
 
     func save(_ destination: Destination, attachment: MessageAttachment, workspace: WorkspaceStore, channelID: String? = nil) {
-        guard !isSaving, exportedFile == nil else { return }
+        guard workspace.active, !isSaving, exportedFile == nil else { return }
         isSaving = true
         presentsFileExport = destination == .files
         let client = workspace.client
+        let epoch = workspace.revocationGeneration
         // 開始済みの保存は、スクロールやプレビューを閉じる操作で中断しない。
         task = Task { [self, weak workspace] in
             notice = nil
             defer { isSaving = false; task = nil }
             do {
                 if destination == .photos { try await AttachmentPhotoLibrary.authorize() }
+                guard workspace?.active == true, workspace?.revocationGeneration == epoch else { throw CancellationError() }
                 let file = try await DownloadedAttachment.download(attachment, client: client, channelID: channelID)
                 try Task.checkCancellation()
+                guard workspace?.active == true, workspace?.revocationGeneration == epoch else { throw CancellationError() }
                 if destination == .photos {
                     try await AttachmentPhotoLibrary.save(file, attachment: attachment)
                     notice = Notice(title: "保存しました", message: "写真に保存しました。")

@@ -229,7 +229,7 @@ struct DeviceAuthorizationTests {
         }
     }
 
-    @Test("通信中に期限を過ぎた応答は保存しない")
+    @Test("期限内に開始した要求の成功応答は、再開時に期限を過ぎても保存する")
     func expiresDuringResponse() async throws {
         let clock = AdvancingClock()
         let receivedToken = Mutex(false)
@@ -246,8 +246,8 @@ struct DeviceAuthorizationTests {
             }
         }
         try await withAuthentication { (auth: Authentication) async throws in
-            await #expect(throws: ZooError.self) { try await auth.login(clock: clock) { _ in } }
-            #expect(try !auth.hasSession)
+            try await auth.login(clock: clock) { _ in }
+            #expect(try auth.hasSession)
             #expect(receivedToken.withLock { $0 })
         }
     }
@@ -536,11 +536,13 @@ struct DeviceAuthorizationTests {
             requests.continuation.yield(request.url?.path ?? "")
             throw URLError(.notConnectedToInternet)
         }
-        session.startLogin()
+        let login = try #require(session.startLogin())
+        let completion = Task { await login.value; requests.continuation.finish() }
+        defer { login.cancel(); completion.cancel() }
         #expect(keys.load() == nil)
         var iterator = requests.stream.makeAsyncIterator()
-        let first = await iterator.next(), second = await iterator.next()
-        #expect(Set([first, second].compactMap { $0 }) == ["/api/push/apns/revoke", "/.well-known/openid-configuration"])
+        let first = try #require(await iterator.next()), second = try #require(await iterator.next())
+        #expect(Set([first, second]) == ["/api/push/apns/revoke", "/.well-known/openid-configuration"])
         #expect(try TokenVault.load(settings.storageKey) == nil)
         #expect(try receipts.load()?.revocationPending == true)
         #expect(keys.load() == nil)

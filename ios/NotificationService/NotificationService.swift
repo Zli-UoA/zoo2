@@ -21,14 +21,18 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         if let previous { previous.handler(previous.fallback) }
 
-        let key = try? NotificationPreviewKeyStore().load()
+        let keys = NotificationPreviewKeyStore()
+        let key = try? keys.load()
         let content = NotificationPreview.content(for: fallback, key: key)
+        // 再照合中も期限切れの汎用通知を渡せるよう、配信権をまだ取り出さない。
+        let valid = key != nil && (try? keys.load()) == key
         let handler = lock.withLock {
             guard pending?.id == delivery.id else { return nil as ((UNNotificationContent) -> Void)? }
             pending = nil
             return delivery.handler
         }
-        handler?(content)
+        // 復号中のログアウトや登録切替を、配信へ渡す直前にも照合する。
+        handler?(valid ? content : fallback)
     }
 
     override func serviceExtensionTimeWillExpire() {

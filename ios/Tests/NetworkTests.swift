@@ -809,9 +809,10 @@ struct NetworkTests {
                 _ = await iterator.next()
                 return status == 200 ? Self.tokenResponse : (status, [:], Data())
             }
-            let first = Task { try await api.auth.accessToken() }
+            let first = Task { defer { started.continuation.finish() }; return try await api.auth.accessToken() }
+            defer { first.cancel() }
             var startedIterator = started.stream.makeAsyncIterator()
-            _ = await startedIterator.next()
+            try #require(await startedIterator.next() != nil)
             let joined = AsyncStream<Void>.makeStream()
             defer { joined.continuation.finish() }
             let second = Task {
@@ -854,9 +855,10 @@ struct NetworkTests {
             _ = await iterator.next()
             return Self.tokenResponse
         }
-        let request = Task { try await api.auth.accessToken() }
+        let request = Task { defer { started.continuation.finish() }; return try await api.auth.accessToken() }
+        defer { request.cancel() }
         var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         try? api.auth.logout()
         release.continuation.yield(())
         await #expect(throws: CancellationError.self) { try await request.value }
@@ -906,6 +908,40 @@ private final class FailedBodyProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 @Suite("HTTP応答の一括取得", .timeLimit(.minutes(1)))
 struct HTTPResponseTests {
+    @Test("受信上限を超える成功応答を拒否し、エラー応答は状態と上限内の本文を保つ", arguments: [200, 401, 403, 503])
+    func boundsResponse(status: Int) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        harness.stub { _ in (status, ["Retry-After": "12"], Data(repeating: 65, count: 4096)) }
+        let transport = HTTPTransport(session: harness.api.transport.session, maximumResponseBytes: 1024)
+        let request = URLRequest(url: URL(string: "https://api.test.invalid/bounded")!)
+        if status == 200 {
+            do { _ = try await transport.send(request); Issue.record("受信上限を超えた応答が成功しました。") }
+            catch { #expect((error as? URLError)?.code == .dataLengthExceedsMaximum) }
+        } else {
+            let (data, response) = try await transport.send(request)
+            #expect(data.count == 1024 && response.statusCode == status)
+            #expect(response.value(forHTTPHeaderField: "Retry-After") == "12")
+            #expect((try #require(response as? IncompleteHTTPResponse).bodyReadError as? URLError)?.code == .dataLengthExceedsMaximum)
+            if status == 401 {
+                do { try HTTPTransport.check(data, response); Issue.record("401が認証切れになりませんでした。") }
+                catch ZooError.expiredSession { }
+            }
+        }
+    }
+
+    @Test("メモリー受信上限より大きな添付を一時ファイルへ保存する")
+    func downloadsToFile() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let body = Data(repeating: 0xA5, count: 256 * 1024)
+        harness.stub { _ in (200, [:], body) }
+        let transport = HTTPTransport(session: harness.api.transport.session, maximumResponseBytes: 1024)
+        let (file, response) = try await transport.download(URLRequest(url: URL(string: "https://api.test.invalid/file")!))
+        #expect(response.statusCode == 200)
+        #expect(try Data(contentsOf: file.url) == body)
+    }
+
     @Test("50MiBの応答を再要求せず、そのまま取得する")
     func largeResponse() async throws {
         let harness = try ChatHarness()
@@ -950,7 +986,7 @@ struct HTTPResponseTests {
             } catch { #expect((error as? URLError)?.code == .networkConnectionLost) }
         } else {
             let (data, response) = try await sending.value
-            #expect(data.isEmpty && response.statusCode == status)
+            #expect(data == Data(repeating: 0xA5, count: 16 * 1024) && response.statusCode == status)
             #expect(response.value(forHTTPHeaderField: "Retry-After") == "12")
             let incomplete = try #require(response as? IncompleteHTTPResponse)
             #expect((incomplete.bodyReadError as? URLError)?.code == .networkConnectionLost)

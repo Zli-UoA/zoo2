@@ -169,7 +169,10 @@ struct ChannelManagementTests {
         defer { harness.close() }
         var channel = channel
         channel.channel_name = "general"
+        let patches = Mutex(0)
         harness.stub { request in
+            #expect(request.httpMethod == "PATCH")
+            patches.withLock { $0 += 1 }
             let body = try JSONDecoder().decode([String: JSONValue].self, from: StubProtocol.body(request))
             #expect(body == ["description": .string("説明だけ変更")])
             return (403, [:], Data())
@@ -178,6 +181,7 @@ struct ChannelManagementTests {
         defer { workspace.shutdown() }
         workspace.addAndOpen(channel)
         await #expect(throws: ZooError.self) { try await workspace.updateChannel(channel, name: "general", description: "説明だけ変更") }
+        #expect(patches.withLock { $0 } == 1)
         #expect(workspace.channels.first?.description == "元の説明")
         #expect(workspace.updatingChannels.isEmpty)
     }

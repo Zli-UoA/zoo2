@@ -98,6 +98,15 @@ final class AttachmentFile: Sendable {
     let url: URL
     init(url: URL) { self.url = url }
     deinit { try? FileManager.default.removeItem(at: url) }
+
+    @concurrent
+    static func write(_ data: Data) async throws -> AttachmentFile {
+        let file = AttachmentFile(url: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+        try Task.checkCancellation()
+        try data.write(to: file.url, options: .atomic)
+        try Task.checkCancellation()
+        return file
+    }
 }
 
 enum AttachmentImportError: LocalizedError {

@@ -42,12 +42,14 @@ struct MessageActionsView: View {
     @ScaledMetric(relativeTo: .body) private var stampSize: CGFloat = 44
 
     private enum Page { case actions, reactions, edit }
-    private var canEdit: Bool { store.canPost && message.user_id == store.userID }
+    private var currentMessage: Message? { store.message(id: message.id) }
+    private var canRetainEditor: Bool { store.active && !store.blocked && currentMessage?.user_id == store.userID }
+    private var canEdit: Bool { store.canPost && canRetainEditor }
     private var detents: Set<PresentationDetent> {
         if dynamicTypeSize.isAccessibilitySize || page == .edit { return [.large] }
         if page == .reactions { return [.medium, .large] }
         let height = 56 + (store.canPost ? stampSize + 12 : 0) + (canOpenThread ? 96 : 0)
-        return [.height(height + (message.content.isEmpty ? 0 : 48) + (canEdit ? 98 : 0)), .large]
+        return [.height(height + (currentMessage?.content.isEmpty == false ? 48 : 0) + (canEdit ? 98 : 0)), .large]
     }
 
     var body: some View {
@@ -71,11 +73,15 @@ struct MessageActionsView: View {
         .onChange(of: store.canReact(to: message.id)) { _, allowed in
             if page == .reactions && !allowed { page = .actions }
         }
-        .onChange(of: canEdit) { _, allowed in
+        .onChange(of: canRetainEditor) { _, allowed in
             if !allowed {
                 if page == .edit { page = .actions }
                 confirmingDelete = false
             }
+        }
+        .onChange(of: store.accessGeneration) { _, _ in
+            if page == .edit { page = .actions }
+            confirmingDelete = false
         }
     }
 
@@ -109,7 +115,7 @@ struct MessageActionsView: View {
                 }
 
                 VStack(spacing: 0) {
-                    if !message.content.isEmpty {
+                    if currentMessage?.content.isEmpty == false {
                         Button {
                             if let current = store.message(id: message.id), !current.content.isEmpty {
                                 UIPasteboard.general.string = current.content

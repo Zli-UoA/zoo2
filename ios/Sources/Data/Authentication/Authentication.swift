@@ -200,9 +200,6 @@ final class Authentication {
                 continue
             }
             try checkLogin(epoch)
-            guard clock.now < deadline else {
-                throw ZooError.auth("確認コードの期限が切れました。ログインし直してください。")
-            }
             let (tokenData, tokenResponse) = result
             if tokenResponse.statusCode == 429 {
                 // 承認待ち中のレート制限でも、サーバーの待機指定とコードの期限を守る。

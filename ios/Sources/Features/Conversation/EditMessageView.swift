@@ -30,7 +30,7 @@ struct EditMessageView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { AppCloseButton { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { saving = true }.disabled(saving || store.mutationInProgress || !store.validContent(content))
+                    Button("保存") { saving = true }.disabled(saving || !store.canPost || store.mutationInProgress || !store.validContent(content))
                         .keyboardShortcut("s", modifiers: .command)
                         .accessibilityIdentifier("save-message-edit")
                 }

@@ -1817,6 +1817,7 @@ final class ZooUITests: XCTestCase {
         XCTAssertLessThanOrEqual(latest.frame.maxY, input.frame.minY)
         let content = "境界の確認\n2行目\n3行目"
         app.typeText(content)
+        XCTAssertTrue(latest.wait(for: \.isHittable, toEqual: true, timeout: 5))
         XCTAssertLessThanOrEqual(latest.frame.maxY, input.frame.minY)
         app.buttons["send-reply"].tap()
         XCTAssertTrue(app.staticTexts[content].wait(for: \.isHittable, toEqual: true, timeout: 5))

@@ -179,6 +179,7 @@ final class AppSession {
             try await cache.revoke(lease)
             throw CancellationError()
         }
+        if workspace != nil { systemCalls?.disconnect() }
         workspace?.shutdown()
         let sync = SyncSession(cache: cache, lease: lease)
         syncSession = sync
@@ -189,9 +190,10 @@ final class AppSession {
         let workspace = WorkspaceStore(client: client, user: user, calls: calls)
         sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
         sync.onChannelAuthorized = { [weak workspace] id in workspace?.calls.authorizeChannel(id) }
-        workspace.onExpiredSession = { [weak self] in
-            self?.logout()
-            if self?.error == nil { self?.error = ZooError.expiredSession.localizedDescription }
+        workspace.onExpiredSession = { [weak self, weak workspace] in
+            guard let self, let workspace, self.workspace === workspace else { return }
+            logout()
+            if error == nil { error = ZooError.expiredSession.localizedDescription }
         }
         workspace.onPeopleChanged = { [weak workspace] in
             if !Self.isUITesting {

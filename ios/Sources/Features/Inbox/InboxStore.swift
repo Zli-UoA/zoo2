@@ -390,28 +390,32 @@ final class InboxStore {
     }
 
     private func reconcilePendingReadIDs() async {
-        guard active, !Task.isCancelled, !reconcilingReadIDs else { return }
+        guard active, !Task.isCancelled else { return }
+        guard !reconcilingReadIDs else { readReconciliationRequested = true; return }
         reconcilingReadIDs = true
         defer { reconcilingReadIDs = false }
-        while !pendingReadIDs.isEmpty, active, !Task.isCancelled {
-            let batch = Set(pendingReadIDs.sorted().prefix(100))
-            let revision = readRevision
-            do {
-                let checked = try await client.federatedNotices(ids: batch.sorted())
-                guard active, !Task.isCancelled else { return }
-                guard revision == readRevision else { continue }
-                let fresh = Dictionary(checked.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-                federationRows = federationRows.compactMap { row in batch.contains(row.id) ? fresh[row.id] : row }
-                pendingReadIDs.subtract(batch)
-                readRevision += 1
-                render()
-            } catch {
-                if active, !Task.isCancelled, !handleExpiry(error) {
-                    readReconciliationError = "全既読は完了しましたが、以前の通知の表示を更新できませんでした。再読み込みしてください。"
+        repeat {
+            readReconciliationRequested = false
+            while !pendingReadIDs.isEmpty, active, !Task.isCancelled {
+                let batch = Set(pendingReadIDs.sorted().prefix(100))
+                let revision = readRevision
+                do {
+                    let checked = try await client.federatedNotices(ids: batch.sorted())
+                    guard active, !Task.isCancelled else { return }
+                    guard revision == readRevision else { continue }
+                    let fresh = Dictionary(checked.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                    federationRows = federationRows.compactMap { row in batch.contains(row.id) ? fresh[row.id] : row }
+                    pendingReadIDs.subtract(batch)
+                    readRevision += 1
+                    render()
+                } catch {
+                    if active, !Task.isCancelled, !handleExpiry(error) {
+                        readReconciliationError = "全既読は完了しましたが、以前の通知の表示を更新できませんでした。再読み込みしてください。"
+                    }
+                    break
                 }
-                return
             }
-        }
+        } while readReconciliationRequested && active && !Task.isCancelled
         if pendingReadIDs.isEmpty { readReconciliationError = nil }
     }
 

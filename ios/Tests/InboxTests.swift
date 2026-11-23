@@ -119,7 +119,7 @@ struct InboxTests {
         #expect(inbox.error == nil)
     }
 
-    @Test("全既読中の追加申請は再確認を再試行でき、並行した承認を巻き戻さない", arguments: [false, true])
+    @Test("全既読中の再照合要求を失わずに再試行し、並行した承認を巻き戻さない", arguments: [false, true])
     func markAllRevalidatesConcurrentFollowResponse(failsCheck: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
@@ -181,11 +181,7 @@ struct InboxTests {
         await inbox.respond(request, accept: true)
         releaseCheck.continuation.finish()
         await marking.value
-        if failsCheck {
-            #expect(inbox.error?.hasPrefix("全既読は完了しましたが") == true)
-            await inbox.refresh()
-            #expect(inbox.error?.hasPrefix("全既読は完了しましたが") != true)
-        }
+        #expect(inbox.error?.hasPrefix("全既読は完了しましたが") != true)
         let updated = try #require(inbox.entries.first { $0.noticeID == "old" })
         #expect(!updated.pendingFollow && !updated.isUnread)
         #expect(state.withLock { $0.checks } == 2)

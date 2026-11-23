@@ -186,8 +186,8 @@ struct AttachmentCacheTests {
         #expect(files(folder.url).isEmpty)
     }
 
-    @Test("ダウンロード途中の失効・再招待やログアウトで遅い応答を保存しない", arguments: [false, true])
-    func rejectsLateDownload(logout: Bool) async throws {
+    @Test("ダウンロード途中の失効・再招待やログアウトで遅い応答を保存しない", arguments: [false, true], ["pdf", "video-data", "video-file"])
+    func rejectsLateDownload(logout: Bool, kind: String) async throws {
         let folder = try directory()
         defer { withExtendedLifetime(folder) {} }
         let harness = try ChatHarness()
@@ -206,8 +206,15 @@ struct AttachmentCacheTests {
             for await _ in release.stream { break }
             return (200, [:], data)
         }
-        let pending = Task { try await client.attachmentData(pdf, channelID: channelID) }
-        for await _ in started.stream { break }
+        let attachment = kind == "pdf" ? pdf : MessageAttachment(id: pdf.id, file_name: "動画.mp4", content_type: "video/mp4")
+        let pending = Task {
+            defer { started.continuation.finish() }
+            if kind == "video-file" { _ = try await client.attachmentFile(attachment, channelID: channelID) }
+            else { _ = try await client.attachmentData(attachment, channelID: channelID) }
+        }
+        defer { pending.cancel(); started.continuation.finish(); release.continuation.finish() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
         if logout { try await sync.close().value }
         else {
             try await sync.revokeChannel(channelID)

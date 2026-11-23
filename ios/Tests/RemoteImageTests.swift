@@ -181,7 +181,8 @@ struct RemoteImageTests {
             _ = await iterator.next()
             return (200, [:], bytes)
         }
-        let watching = Task { await store.watch([url: failed, secondURL: store.state(for: secondURL)]) }
+        let watching = Task { defer { started.continuation.finish() }; await store.watch([url: failed, secondURL: store.state(for: secondURL)]) }
+        defer { watching.cancel() }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
         clock.advance(35)
@@ -260,9 +261,10 @@ struct RemoteImageTests {
             _ = await iterator.next()
             return (200, [:], next)
         }
-        let refresh = Task { await store.load(url) }
+        let refresh = Task { defer { requested.continuation.finish() }; await store.load(url) }
+        defer { refresh.cancel(); release.continuation.finish(); requested.continuation.finish() }
         var iterator = requested.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         #expect(state.image === image)
         #expect(state.inlineImage(height: 24) === inline)
         release.continuation.yield(())
@@ -334,13 +336,15 @@ struct RemoteImageTests {
         let store = RemoteImageStore(namespace: "利用者", disk: disk, session: harness.api.transport.session)
         defer { store.close() }
         let loads = Task {
+            defer { requested.continuation.finish() }
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { await store.load(url, policy: .stored) }
                 for _ in 0..<16 { group.addTask { await store.load(url) } }
             }
         }
+        defer { loads.cancel(); release.continuation.finish(); requested.continuation.finish() }
         var iterator = requested.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         let state = store.state(for: url)
         let cachedImage = try #require(state.image)
         #expect(cachedImage.size.width == cachedImage.size.height)
@@ -371,9 +375,10 @@ struct RemoteImageTests {
         }
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url), session: harness.api.transport.session)
         defer { store.close() }
-        let first = Task { await store.load(url) }
+        let first = Task { defer { requested.continuation.finish() }; await store.load(url) }
+        defer { first.cancel(); release.continuation.finish() }
         var iterator = requested.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         store.onRequestJoined = { joined.continuation.yield(()) }
         let second = Task {
             defer { joined.continuation.finish() }
@@ -409,9 +414,10 @@ struct RemoteImageTests {
         let disk = RemoteImageDiskCache(directory: folder.url)
         let store = RemoteImageStore(namespace: "利用者", disk: disk, session: harness.api.transport.session)
         let state = store.state(for: url)
-        let load = Task { await store.load(url) }
+        let load = Task { defer { requested.continuation.finish() }; await store.load(url) }
+        defer { load.cancel(); release.continuation.finish(); store.close() }
         var iterator = requested.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil)
         store.close()
         release.continuation.finish()
         await load.value
