@@ -455,3 +455,49 @@ describe("downloadBlobToDesktop", () => {
     expect(desktopDownloadState("e2")).toBeUndefined();
   });
 });
+
+describe("desktopDownloads chunk offsets", () => {
+  afterEach(() => {
+    resetDesktopDownloadsForTest();
+    vi.clearAllMocks();
+  });
+
+  it("passes absolute offsets for multi-chunk URL responses", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.probe.mockResolvedValue(undefined);
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValue(started("u1"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("C:\\Downloads\\u1");
+    const chunkSize = 256 * 1024;
+    const bytes = new Uint8Array(chunkSize * 2 + 10);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(bytes, {
+      headers: { "content-length": String(bytes.length) },
+    })));
+
+    await downloadUrlToDesktop("u1", "big.bin", async () => "https://example.com/big.bin");
+
+    const offsets = desktop.write.mock.calls.map((call) => call[2]);
+    expect(offsets).toEqual([0, chunkSize, chunkSize * 2]);
+    expect(desktop.finish).toHaveBeenCalledWith("u1");
+  });
+
+  it("passes absolute offsets for multi-chunk blob streams", async () => {
+    desktop.detect.mockResolvedValue(true);
+    desktop.probe.mockResolvedValue(undefined);
+    desktop.settings.mockResolvedValue({ ask_every_time: true, directory: null });
+    desktop.begin.mockResolvedValue(started("b1"));
+    desktop.write.mockResolvedValue(undefined);
+    desktop.finish.mockResolvedValue("C:\\Downloads\\b1");
+    const chunkSize = 256 * 1024;
+    const part1 = new Uint8Array(chunkSize);
+    const part2 = new Uint8Array(chunkSize + 10);
+    const blob = new Blob([part1, part2]);
+
+    await downloadBlobToDesktop("b1", "big.bin", async () => blob);
+
+    const offsets = desktop.write.mock.calls.map((call) => call[2]);
+    expect(offsets).toEqual([0, chunkSize, chunkSize * 2]);
+    expect(desktop.finish).toHaveBeenCalledWith("b1");
+  });
+});

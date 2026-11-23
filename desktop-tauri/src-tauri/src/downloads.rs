@@ -2225,10 +2225,13 @@ fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
+        Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle,
+            GetFileInformationByHandleEx,
+        },
     };
-    let mut info = FILE_ID_INFO::default();
     let handle = HANDLE(file.as_raw_handle());
+    let mut info = FILE_ID_INFO::default();
     // SAFETY: file は呼び出し中有効なハンドルを持ち、info は出力先。
     let ok = unsafe {
         GetFileInformationByHandleEx(
@@ -2238,12 +2241,24 @@ fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
             size_of::<FILE_ID_INFO>() as u32,
         )
     };
-    if ok.is_err() {
+    if ok.is_ok() {
+        return Some(WindowsFileId {
+            volume: info.VolumeSerialNumber,
+            file_id: info.FileId.Identifier,
+        });
+    }
+    // FAT32/exFAT など、FileIdInfo に対応していないファイルシステムでは、
+    // GetFileInformationByHandle のボリューム番号と 64-bit ファイル ID にフォールバックする。
+    let mut by_handle = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.is_err() {
         return None;
     }
+    let mut file_id = [0u8; 16];
+    file_id[..8].copy_from_slice(&by_handle.nFileIndexLow.to_le_bytes());
+    file_id[8..].copy_from_slice(&by_handle.nFileIndexHigh.to_le_bytes());
     Some(WindowsFileId {
-        volume: info.VolumeSerialNumber,
-        file_id: info.FileId.Identifier,
+        volume: by_handle.dwVolumeSerialNumber as u64,
+        file_id,
     })
 }
 
@@ -2254,8 +2269,8 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
     use windows::Win32::{
         Foundation::HANDLE,
         Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileIdInfo,
-            GetFileInformationByHandleEx,
+            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
         },
     };
     // 再解析ポイントを辿らず、パス自体のエントリを開く。
@@ -2268,8 +2283,8 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
     if !meta.is_file() {
         return None;
     }
-    let mut info = FILE_ID_INFO::default();
     let handle = HANDLE(file.as_raw_handle());
+    let mut info = FILE_ID_INFO::default();
     // SAFETY: file は呼び出し中有効なハンドルを持ち、info は出力先。
     let ok = unsafe {
         GetFileInformationByHandleEx(
@@ -2279,12 +2294,24 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
             size_of::<FILE_ID_INFO>() as u32,
         )
     };
-    if ok.is_err() {
+    if ok.is_ok() {
+        return Some(WindowsFileId {
+            volume: info.VolumeSerialNumber,
+            file_id: info.FileId.Identifier,
+        });
+    }
+    // FAT32/exFAT など、FileIdInfo に対応していないファイルシステムでは、
+    // GetFileInformationByHandle のボリューム番号と 64-bit ファイル ID にフォールバックする。
+    let mut by_handle = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut by_handle) }.is_err() {
         return None;
     }
+    let mut file_id = [0u8; 16];
+    file_id[..8].copy_from_slice(&by_handle.nFileIndexLow.to_le_bytes());
+    file_id[8..].copy_from_slice(&by_handle.nFileIndexHigh.to_le_bytes());
     Some(WindowsFileId {
-        volume: info.VolumeSerialNumber,
-        file_id: info.FileId.Identifier,
+        volume: by_handle.dwVolumeSerialNumber as u64,
+        file_id,
     })
 }
 
@@ -2410,11 +2437,8 @@ fn finish_entry_with(
                 entry.part.display()
             ));
         }
-        let current_meta = std::fs::metadata(&entry.part).map_err(|err| {
-            let _ = std::fs::remove_file(&entry.part);
-            anyhow::Error::new(err).context("保存したファイルを確認できません")
-        })?;
-        if current_meta.dev() != source_meta.dev() || current_meta.ino() != source_meta.ino() {
+        // `metadata` は symlink を辿るので、`symlink_metadata` の結果を使う。
+        if sym_meta.dev() != source_meta.dev() || sym_meta.ino() != source_meta.ino() {
             let _ = std::fs::remove_file(&entry.part);
             return Err(anyhow!(
                 "保存先の一時ファイルを確認できません。もう一度お試しください: {}",
@@ -3019,7 +3043,6 @@ mod tests {
         let target = dir.join("saved.txt");
         std::fs::write(&real, b"new").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let id = new_download_id();
         let file = OpenOptions::new().write(true).open(&real).unwrap();
         let entry = Pending {
             part: link.clone(),
