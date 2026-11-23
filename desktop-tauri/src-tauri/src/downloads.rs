@@ -143,10 +143,9 @@ impl SaveDecision {
     /// 保存ダイアログで選ばれた名前。`existed` は、ダイアログが閉じた直後に確かめた
     /// 最終名の有無。あったなら、ダイアログが上書きを確認して利用者が承認している。
     /// 無かったなら、転送中にできた同名のファイルは置き換えない。
-    fn dialog(existed: bool) -> Self {
-        Self {
-            deduplicate: !existed,
-        }
+    fn dialog(_existed: bool) -> Self {
+        // OS ダイアログの上書き承認は取得できないため、存在確認から推測しない。
+        Self { deduplicate: true }
     }
 }
 
@@ -955,14 +954,6 @@ impl Downloads {
             return Err(anyhow!("書き込みに失敗したダウンロードです"));
         }
         let len = bytes.len() as u64;
-        let before = written.load(Ordering::SeqCst);
-        let maybe_resend = offset.is_some_and(|o| o.saturating_add(len) <= before);
-        if !maybe_resend && before.saturating_add(len) > limit {
-            return Err(anyhow!(
-                "添付が大きすぎます（上限は {} MiB）",
-                limit / (1024 * 1024)
-            ));
-        }
         let data = bytes.to_vec();
         let failure = Arc::clone(&failed);
         let cancel_flag = Arc::clone(&cancelled);
@@ -998,11 +989,18 @@ impl Downloads {
                     "ダウンロードの書き込み位置が一致しません（期待 {current}, 受信 {offset}）"
                 )));
             }
+            if current.saturating_add(len) > limit {
+                failure.store(true, Ordering::SeqCst);
+                return Err(std::io::Error::other(format!(
+                    "添付が大きすぎます（上限は {} MiB）",
+                    limit / (1024 * 1024)
+                )));
+            }
             if let Err(err) = file.write_all(&data) {
                 failure.store(true, Ordering::SeqCst);
                 return Err(err);
             }
-            written_counter.fetch_add(len, Ordering::SeqCst);
+            written_counter.fetch_max(current.saturating_add(len), Ordering::SeqCst);
             Ok(true)
         })
         .await;
@@ -1232,15 +1230,9 @@ async fn ask_save_decision(
     start_dir: Option<&Path>,
 ) -> Option<(PathBuf, SaveDecision)> {
     let path = ask_save_path(app, file_name, start_dir).await?;
-    // 上書きの承認は、ダイアログが閉じた直後の状態で決める。`journal.record`（ファイルへの
-    // 書き込み）を待つと、その間に別のアプリが作った同名のファイルを「承認済み」と誤判定する。
-    // 共有フォルダーでは `exists` が待つことがあるので、ブロッキングのタスクへ移す。
-    let target = path.clone();
-    let existed = tokio::task::spawn_blocking(move || target.exists())
-        .await
-        // 確かめられなかったときは、上書きしない側に倒す。
-        .unwrap_or(false);
-    Some((path, SaveDecision::dialog(existed)))
+    // OS の保存ダイアログが上書き承認を返さないため、終了後の存在確認から推測しない。
+    // 既存ファイルを黙って置き換えないよう、確定は常に上書きしない移動を使う。
+    Some((path, SaveDecision::dialog(false)))
 }
 
 /// OS の「名前を付けて保存」を出す。選ばれた絶対パス。閉じられたら `None`。
@@ -2223,39 +2215,47 @@ fn mark_of_the_web(_path: &Path) -> bool {
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WindowsFileId {
-    volume: u32,
-    file_index_high: u32,
-    file_index_low: u32,
+    volume: u64,
+    file_id: [u8; 16],
 }
 
 #[cfg(windows)]
 fn windows_file_id_from_handle(file: &std::fs::File) -> Option<WindowsFileId> {
+    use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+        Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
     };
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    let mut info = FILE_ID_INFO::default();
     let handle = HANDLE(file.as_raw_handle());
     // SAFETY: file は呼び出し中有効なハンドルを持ち、info は出力先。
-    if unsafe { GetFileInformationByHandle(handle, &mut info) }.is_err() {
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            &mut info as *mut _ as *mut _,
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok.is_err() {
         return None;
     }
     Some(WindowsFileId {
-        volume: info.dwVolumeSerialNumber,
-        file_index_high: info.nFileIndexHigh,
-        file_index_low: info.nFileIndexLow,
+        volume: info.VolumeSerialNumber,
+        file_id: info.FileId.Identifier,
     })
 }
 
 #[cfg(windows)]
 fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
+    use std::mem::size_of;
     use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
     use windows::Win32::{
         Foundation::HANDLE,
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-            GetFileInformationByHandle,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO, FileIdInfo,
+            GetFileInformationByHandleEx,
         },
     };
     // 再解析ポイントを辿らず、パス自体のエントリを開く。
@@ -2268,16 +2268,23 @@ fn windows_file_id_from_path(path: &Path) -> Option<WindowsFileId> {
     if !meta.is_file() {
         return None;
     }
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    let mut info = FILE_ID_INFO::default();
     let handle = HANDLE(file.as_raw_handle());
     // SAFETY: file は呼び出し中有効なハンドルを持ち、info は出力先。
-    if unsafe { GetFileInformationByHandle(handle, &mut info) }.is_err() {
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileIdInfo,
+            &mut info as *mut _ as *mut _,
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok.is_err() {
         return None;
     }
     Some(WindowsFileId {
-        volume: info.dwVolumeSerialNumber,
-        file_index_high: info.nFileIndexHigh,
-        file_index_low: info.nFileIndexLow,
+        volume: info.VolumeSerialNumber,
+        file_id: info.FileId.Identifier,
     })
 }
 
@@ -2320,12 +2327,14 @@ fn same_file_metadata(_source: &std::fs::Metadata, _meta: &std::fs::Metadata) ->
 
 #[cfg(unix)]
 fn same_file_as_path(source: &std::fs::Metadata, path: &Path) -> bool {
-    std::fs::symlink_metadata(path)
-        .ok()
-        .filter(|meta| meta.file_type().is_file())
-        .and_then(|_| std::fs::metadata(path).ok())
-        .map(|meta| same_file_metadata(source, &meta))
-        .unwrap_or(false)
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(_) => return false,
+    };
+    if !meta.file_type().is_file() {
+        return false;
+    }
+    same_file_metadata(source, &meta)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -3011,11 +3020,12 @@ mod tests {
         std::fs::write(&real, b"new").unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let id = new_download_id();
+        let file = OpenOptions::new().write(true).open(&real).unwrap();
         let entry = Pending {
             part: link.clone(),
-            target: target.clone(),
+            final_path: target.clone(),
             deduplicate: true,
-            file: Arc::new(Mutex::new(None)),
+            file: Arc::new(Mutex::new(Some(file))),
             written: Arc::new(AtomicU64::new(3)),
             limit: DEFAULT_MAX_DOWNLOAD_BYTES,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -3284,12 +3294,11 @@ mod tests {
     }
 
     #[test]
-    fn the_dialog_overwrite_is_only_approved_when_the_name_existed_at_selection() {
-        // 選んだ時点で既にあった: ダイアログが上書きを確認し、利用者が承認している。
-        assert!(!SaveDecision::dialog(true).deduplicate);
-        // 無かった: 転送中にできた同名のファイルは置き換えない。
+    fn dialog_save_never_infers_overwrite_approval() {
+        // OS ダイアログの上書き承認は取得できないため、存在確認から推測しない。
+        assert!(SaveDecision::dialog(true).deduplicate);
         assert!(SaveDecision::dialog(false).deduplicate);
-        // 決まったフォルダーへの保存: 常に置き換えない（始めた時点で同名は無い扱いと同じ）。
+        // 決まったフォルダーへの保存: 常に置き換えない。
         assert_eq!(SaveDecision::AUTO, SaveDecision::dialog(false));
     }
 

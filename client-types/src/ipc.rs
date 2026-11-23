@@ -102,7 +102,9 @@ pub mod command {
 /// [`command::DOWNLOAD_WRITE`] の、書き込み先の ID を渡すヘッダー。
 pub const DOWNLOAD_ID_HEADER: &str = "x-zoo-download-id";
 /// DOWNLOAD_WRITE の本文が、保存先のどの位置に対応するか（10進のバイト数）。
-/// IPC 再送で同じチャンクが二重に書かれないよう、期待する位置と違うと拒否する。
+/// ヘッダーがある場合は、その位置にだけ書く。期待位置と異なる場合は拒否するが、
+/// 直前に書いた同一チャンク（offset + len == 現在位置）の再送は no-op で成功を返す。
+/// ヘッダーを省略した場合は位置検査を行わず、現在位置へ追記する。
 pub const DOWNLOAD_OFFSET_HEADER: &str = "x-zoo-download-offset";
 
 /// Rust 側から WebView へ送るイベントの名前。

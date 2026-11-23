@@ -43,10 +43,19 @@ export class DesktopDownloadCancelledError extends Error {
 
 function asDestinationError(error: unknown): DesktopDownloadDestinationError | null {
   if (error instanceof DesktopDownloadDestinationError) return error;
-  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
-  const message = error instanceof Error ? error.message : typeof (error as { message?: unknown } | null)?.message === "string" ? (error as { message: string }).message : "";
-  if (code === "unsupported_destination") {
-    return new DesktopDownloadDestinationError(message || "この保存先には保存できません");
+  const code =
+    typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof (error as { message?: unknown } | null)?.message === "string"
+        ? (error as { message: string }).message
+        : "";
+  // code があるエラーは code で判定し、文言で再分類しない。
+  if (typeof code === "string") {
+    return code === "unsupported_destination"
+      ? new DesktopDownloadDestinationError(message || "この保存先には保存できません")
+      : null;
   }
   // 古い desktop 実装との互換: code が無い場合だけ文字列を見る。
   if (error instanceof Error) {
@@ -324,12 +333,17 @@ function contentLength(response: Response): number | null {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-async function writeChunk(downloadId: string, bytes: Uint8Array): Promise<void> {
+async function writeChunk(
+  downloadId: string,
+  bytes: Uint8Array,
+  written: { value: number },
+): Promise<void> {
   for (let offset = 0; offset < bytes.byteLength; offset += CHUNK_SIZE) {
     const end = Math.min(bytes.byteLength, offset + CHUNK_SIZE);
     // `subarray` のまま渡すと、後ろに余分なバイトが付いたバッファーを送ることがある。
-    await desktopDownloadWrite(downloadId, bytes.slice(offset, end), offset);
+    await desktopDownloadWrite(downloadId, bytes.slice(offset, end), written.value + offset);
   }
+  written.value += bytes.byteLength;
 }
 
 /** 本文の取得だけを再試行対象にする。IPC への書き込み失敗はここを通さない。 */
@@ -350,10 +364,11 @@ async function writeResponse(
 ): Promise<void> {
   const total = contentLength(response);
   const reader = response.body?.getReader();
+  const written = { value: 0 };
   if (!reader) {
     const bytes = new Uint8Array(await readBody(() => response.arrayBuffer(), signal));
     if (signal.aborted) throw new DesktopDownloadCancelledError();
-    await writeChunk(downloadId, bytes);
+    await writeChunk(downloadId, bytes, written);
     report(1);
     return;
   }
@@ -363,7 +378,7 @@ async function writeResponse(
       const { done, value } = await readBody(() => reader.read(), signal);
       if (done) break;
       if (signal.aborted) throw new DesktopDownloadCancelledError();
-      await writeChunk(downloadId, value);
+      await writeChunk(downloadId, value, written);
       received += value.byteLength;
       report(total ? Math.min(1, received / total) : null);
     }
@@ -440,6 +455,7 @@ export async function downloadBlobToDesktop(
     );
     if (signal.aborted) throw new DesktopDownloadCancelledError();
     const stream = blob.stream?.();
+    const written = { value: 0 };
     if (stream) {
       const reader = stream.getReader();
       let received = 0;
@@ -450,7 +466,7 @@ export async function downloadBlobToDesktop(
           if (signal.aborted) {
             throw new DesktopDownloadCancelledError();
           }
-          await writeChunk(downloadId, value);
+          await writeChunk(downloadId, value, written);
           received += value.byteLength;
           report(blob.size > 0 ? 0.8 + 0.2 * Math.min(1, received / blob.size) : 1);
         }
@@ -461,7 +477,7 @@ export async function downloadBlobToDesktop(
       }
     } else {
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      await writeChunk(downloadId, bytes);
+      await writeChunk(downloadId, bytes, written);
     }
     report(1);
   });

@@ -330,17 +330,19 @@ pub async fn zoo_download_write(
         .and_then(|value| value.to_str().ok())
         .filter(|id| !id.is_empty())
         .ok_or_else(|| IpcError::new(ErrorCode::Internal, "ダウンロードの ID がありません"))?;
-    let offset = request
-        .headers()
-        .get(DOWNLOAD_OFFSET_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            value.parse::<u64>().map_err(|_| {
-                IpcError::new(ErrorCode::Internal, "ダウンロードのオフセットが不正です")
-            })
-        })
-        .transpose()?;
+    let offset = match request.headers().get(DOWNLOAD_OFFSET_HEADER) {
+        Some(value) => Some(
+            value
+                .to_str()
+                .ok()
+                .filter(|value| !value.is_empty())
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| {
+                    IpcError::new(ErrorCode::Internal, "ダウンロードのオフセットが不正です")
+                })?,
+        ),
+        None => None,
+    };
     let bytes = download_body(request.body())?;
     core.downloads()
         .write(id, offset, &bytes)
