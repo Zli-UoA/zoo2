@@ -15,7 +15,9 @@ import { MfmContent, type MfmContentProps } from "./MfmContent";
 
 const render = (content: string, options: Omit<MfmContentProps, "content"> = {}) =>
   renderToStaticMarkup(
-    createElement(LocaleProvider, { children: createElement(MfmContent, { content, ...options }) }),
+    createElement(LocaleProvider, {
+      children: createElement(MfmContent, { content, ...options }),
+    }),
   );
 
 describe("MfmContent", () => {
@@ -215,7 +217,9 @@ describe("MfmContent", () => {
   });
   it("renders registered custom emoji and standard shortcode fallback", () => {
     expect(render(":smile:")).toBe("😄");
-    const html = render(":party:", { emojiUrls: { party: "/emoji/party.webp" } });
+    const html = render(":party:", {
+      emojiUrls: { party: "/emoji/party.webp" },
+    });
     expect(html).toContain('src="/emoji/party.webp"');
     expect(html).toContain('alt=":party:"');
     expect(render(":party:", { emojiUrls: { party: "javascript:alert(1)" } })).not.toContain(
@@ -258,8 +262,9 @@ describe("MfmContent", () => {
     const html = render("@alice @bob **@channel** @here @carol@example.com", {
       mentions: { userNames: new Set(["alice"]), channel: true, here: false },
     });
-    // メンションの表示（bg-brand-muted）は @alice と @channel の 2 つだけ。
-    expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
+    // ユーザー宛ては通常色、全体宛ては現在のユーザーにも届くため強調する。
+    expect(html.match(/bg-brand-muted/g)).toHaveLength(1);
+    expect(html.match(/bg-primary/g)).toHaveLength(1);
     expect(html).toContain("@alice</span>");
     expect(html).toContain("@channel</span>");
     expect(html).toContain(" @bob ");
@@ -269,6 +274,9 @@ describe("MfmContent", () => {
     expect(html).toContain("@carol@example.com");
     // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
     expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);
+  });
+  it("matches the current user's mention without regard to case", () => {
+    expect(render("@ALICE", { me: "alice" })).toContain("bg-primary");
   });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
@@ -286,7 +294,10 @@ describe("MfmContent", () => {
     ];
     const html = renderToStaticMarkup(
       createElement(RouterContextProvider, {
-        router: createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() }),
+        router: createRouter({
+          routeTree: createRootRoute(),
+          history: createMemoryHistory(),
+        }),
         children: createElement(MfmChannelsProvider, {
           channels,
           children: createElement(MfmContent, {

@@ -392,6 +392,7 @@
         "SharedShortcodes",
         "AuthZAccounts",
         "SelfMentions",
+        "SelfMentionsDark",
         "KitchenBody",
         "KitchenTaggedEmoji"
       ]

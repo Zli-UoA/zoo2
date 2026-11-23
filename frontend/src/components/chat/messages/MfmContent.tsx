@@ -92,11 +92,7 @@ function text(
 function isSelfMention(token: string, me?: string): boolean {
   const normalized = token.toLowerCase();
   const name = token.slice(1).split("@", 1)[0]?.toLowerCase();
-  return (
-    normalized === "@channel" ||
-    normalized === "@here" ||
-    (!!me && name === me.toLowerCase())
-  );
+  return normalized === "@channel" || normalized === "@here" || (!!me && name === me.toLowerCase());
 }
 
 // Custom emoji live in an operator-managed same-origin registry, not on an arbitrary remote host.
@@ -403,13 +399,17 @@ function messageBlocks(nodes: MfmNode[]): MessageBlock[] {
       level = marker[1].length;
       line[0] = {
         type: "text",
-        props: { text: (first?.type === "text" ? first.props.text : "").slice(marker[0].length) },
+        props: {
+          text: (first?.type === "text" ? first.props.text : "").slice(marker[0].length),
+        },
       };
       const last = line.at(-1);
       if (last?.type === "text") {
         line[line.length - 1] = {
           type: "text",
-          props: { text: last.props.text.replace(/[ \t]+#+[ \t]*$/, "").trimEnd() },
+          props: {
+            text: last.props.text.replace(/[ \t]+#+[ \t]*$/, "").trimEnd(),
+          },
         };
       }
     }
@@ -487,7 +487,10 @@ export function MfmContent({ content, ...options }: MfmContentProps) {
 function accountEmojiNodes(input: MfmNode[]): MfmNode[] {
   const nodes = input.map((node) => {
     if ("children" in node && !["plain", "link"].includes(node.type))
-      return { ...node, children: accountEmojiNodes(node.children ?? []) } as MfmNode;
+      return {
+        ...node,
+        children: accountEmojiNodes(node.children ?? []),
+      } as MfmNode;
     return node;
   });
   const out: MfmNode[] = [];
@@ -503,9 +506,18 @@ function accountEmojiNodes(input: MfmNode[]): MfmNode[] {
       next?.type === "text" &&
       next.props.text.startsWith(":")
     ) {
-      out[out.length - 1] = { type: "text", props: { text: previous.props.text.slice(0, -1) } };
-      out.push({ type: "emojiCode", props: { name: `@${node.props.username}` } });
-      nodes[i + 1] = { type: "text", props: { text: next.props.text.slice(1) } };
+      out[out.length - 1] = {
+        type: "text",
+        props: { text: previous.props.text.slice(0, -1) },
+      };
+      out.push({
+        type: "emojiCode",
+        props: { name: `@${node.props.username}` },
+      });
+      nodes[i + 1] = {
+        type: "text",
+        props: { text: next.props.text.slice(1) },
+      };
     } else out.push(node);
   }
   return out;

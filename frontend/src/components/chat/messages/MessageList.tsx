@@ -66,6 +66,8 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
+  /** 操作権限を伴わない閲覧者 ID。読み取り専用表示でメンションを判定する。 */
+  viewerId?: string | null;
   canModerate?: boolean;
   editingId: string | null;
   editingText: string;
@@ -164,6 +166,7 @@ interface MessageScrollViewportProps {
   markRead: () => void;
   firstEncryptedIndex: number;
   currentUserId: string | null;
+  viewerId?: string | null;
   canModerate: boolean;
   editingId: string | null;
   editingText: string;
@@ -200,6 +203,7 @@ export function MessageList({
   isWritePending = false,
   isError,
   currentUserId,
+  viewerId,
   canModerate = false,
   editingId,
   editingText,
@@ -355,6 +359,7 @@ export function MessageList({
           markRead={markRead}
           firstEncryptedIndex={firstEncryptedIndex}
           currentUserId={currentUserId}
+          viewerId={viewerId}
           canModerate={canModerate}
           editingId={editingId}
           editingText={editingText}
@@ -401,6 +406,7 @@ function MessageScrollViewport({
   markRead,
   firstEncryptedIndex,
   currentUserId,
+  viewerId,
   canModerate,
   editingId,
   editingText,
@@ -476,7 +482,10 @@ function MessageScrollViewport({
 
   const invalidateWidthGeneration = useCallback((nextWidth: number, resetEstimates: boolean) => {
     if (resetEstimates) {
-      activeEstimateRef.current = { sizes: undefined, rowHeight: ESTIMATED_ROW_HEIGHT };
+      activeEstimateRef.current = {
+        sizes: undefined,
+        rowHeight: ESTIMATED_ROW_HEIGHT,
+      };
     }
     widthInvalidatedRef.current = true;
     measuredWidthRef.current = nextWidth;
@@ -556,7 +565,10 @@ function MessageScrollViewport({
     for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
       const bounds = row.getBoundingClientRect();
       if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
-        scrollAnchorRef.current = { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
+        scrollAnchorRef.current = {
+          id: row.dataset.messageId!,
+          offset: bounds.top - viewport.top,
+        };
         break;
       }
     }
@@ -798,7 +810,10 @@ function MessageScrollViewport({
       deps.captureScrollAnchor();
       const el = scrollRef.current;
       if (el && el.clientWidth > 0 && el.clientHeight > 0) {
-        latestMetricsRef.current = { width: el.clientWidth, height: el.clientHeight };
+        latestMetricsRef.current = {
+          width: el.clientWidth,
+          height: el.clientHeight,
+        };
       }
       if (
         el &&
@@ -844,7 +859,11 @@ function MessageScrollViewport({
       }
       atBottomRef.current = true;
       deps.scrollToBottom("auto");
-      return { mode: "bottom" as const, targetId: null as string | null, expectedTop: null };
+      return {
+        mode: "bottom" as const,
+        targetId: null as string | null,
+        expectedTop: null,
+      };
     };
 
     const isConverged = (state: ReturnType<typeof alignTargetNow>): boolean => {
@@ -991,7 +1010,10 @@ function MessageScrollViewport({
       return;
     }
     if (element.clientWidth > 0 && element.clientHeight > 0) {
-      latestMetricsRef.current = { width: element.clientWidth, height: element.clientHeight };
+      latestMetricsRef.current = {
+        width: element.clientWidth,
+        height: element.clientHeight,
+      };
     }
     const ids = items.map((item) => item.message.id);
     const next = snapshot(ids);
@@ -1328,7 +1350,7 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
-                  mentionUserId={currentUserId}
+                  mentionUserId={viewerId ?? currentUserId}
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
