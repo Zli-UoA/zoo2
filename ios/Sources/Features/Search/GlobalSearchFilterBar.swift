@@ -77,7 +77,10 @@ struct SearchFilterBar: View {
     }
 
     private func chipLabel(_ title: String, active: Bool, symbol: String) -> some View {
-        Label(title, systemImage: symbol)
+        HStack(spacing: 6) {
+            Image(systemName: symbol).imageScale(.small).accessibilityHidden(true)
+            Text(title)
+        }
             .font(.subheadline).lineLimit(1)
             .padding(.horizontal, 12).frame(minHeight: 36)
             .foregroundStyle(active ? AppDesign.selectionForeground : .primary)
