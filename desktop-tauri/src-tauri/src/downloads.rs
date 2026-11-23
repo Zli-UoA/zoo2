@@ -1799,7 +1799,7 @@ fn replace_file(part: &Path, target: &Path) -> std::io::Result<()> {
 /// 保存先が既にあると失敗する形で、`part` を `target` へ移す。Unix の `rename` は既存の
 /// ファイルを置き換えるため、`exists` の確認と `rename` の間の競合で他のファイルを消さないよう、
 /// OS の「既にあれば失敗する移動」を使う。
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg(not(windows))]
 fn rename_unique(part: &Path, target: &Path) -> std::io::Result<()> {
     match rename_no_replace(part, target) {
         Ok(()) => Ok(()),
@@ -2194,30 +2194,7 @@ fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
-/// 既存のファイルを置き換えずに `part` を `target` へ移す。`MOVEFILE_REPLACE_EXISTING` を
-/// 付けない `MoveFileExW` は、移す先があると `ERROR_ALREADY_EXISTS` で失敗する。
-/// 長いパスの設定が無効な環境でも 260 文字を超える保存先へ移せるよう、`\\?\` 付きの
-/// 形にして渡す（`std::fs::rename` と同じ扱い）。
-#[cfg(target_os = "windows")]
-#[allow(dead_code)]
-fn rename_no_replace(part: &Path, target: &Path) -> std::io::Result<()> {
-    use windows::Win32::Storage::FileSystem::{MOVE_FILE_FLAGS, MoveFileExW};
-    use windows::core::PCWSTR;
-
-    let from = wide_extended_path(part);
-    let to = wide_extended_path(target);
-    // SAFETY: どちらも NUL で終わるバッファーで、呼び出しの間生きている。
-    unsafe {
-        MoveFileExW(
-            PCWSTR(from.as_ptr()),
-            PCWSTR(to.as_ptr()),
-            MOVE_FILE_FLAGS(0),
-        )
-    }
-    .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xFFFF))
-}
-
-/// `MoveFileExW` に渡す、長いパス対応（`\\?\`）の UTF-16 文字列（NUL 終端）。
+/// Windows API に渡す、長いパス対応（`\\?\`）の UTF-16 文字列（NUL 終端）。
 /// `to_string_lossy()` は孤立サロゲートを U+FFFD に変えて別の名前を指してしまうので、
 /// OS の文字列をそのまま使う。
 #[cfg(target_os = "windows")]
@@ -4084,7 +4061,7 @@ mod tests {
                 &part,
                 &target,
                 deduplicate,
-                |_, from, to| rename_no_replace(from, to),
+                rename_probe_with_handle,
                 |from, to| std::fs::hard_link(from, to),
                 |_| false,
             )
@@ -4113,12 +4090,9 @@ mod tests {
         symlink(&victim, &probe).unwrap();
 
         let journal = Arc::new(journal);
-        let err = check_destination_with(
-            &part,
-            &journal,
-            |_, from, to| rename_no_replace(from, to),
-            |from, to| std::fs::hard_link(from, to),
-        )
+        let err = check_destination_with(&part, &journal, rename_probe_with_handle, |from, to| {
+            std::fs::hard_link(from, to)
+        })
         .unwrap_err();
         assert!(err.downcast_ref::<UnsupportedDestination>().is_none());
         assert_eq!(
