@@ -11,14 +11,26 @@ struct NativeChatClient: ChatClient {
         guard let sync else { return try await api.get("api/channels") }
         var version = sync.revocationVersion(for: "workspace:channels")
         let knownRevision = sync.knownChannelsRevision
-        let channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self, restoreCached: false)
+        var channels = try await shapes.snapshot("api/shapes/channels", as: Channel.self, restoreCached: false)
         let cached = try await sync.load("workspace:channels", as: [Channel].self) ?? []
         try sync.checkRevocationVersion(version)
         try sync.checkKnownChannelsRevision(knownRevision)
         var previous = Dictionary(cached.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
         previous.merge(sync.knownChannels) { _, current in current }
-        let available = Dictionary(channels.filter { $0.deleted_at == nil }.map { ($0.id, $0) },
+        var available = Dictionary(channels.filter { $0.deleted_at == nil }.map { ($0.id, $0) },
                                    uniquingKeysWith: { _, new in new })
+        if previous.values.contains(where: { channel in
+            channel.deleted_at == nil && (available[channel.id] == nil
+                || (channel.encrypted != true && available[channel.id]?.encrypted == true))
+        }) {
+            // ElectricはRESTより遅れるため、失効候補がある場合だけ正本一覧を一度照合する。
+            channels = try await api.get("api/channels")
+            try sync.check()
+            try sync.checkRevocationVersion(version)
+            try sync.checkKnownChannelsRevision(knownRevision)
+            available = Dictionary(channels.filter { $0.deleted_at == nil }.map { ($0.id, $0) },
+                                   uniquingKeysWith: { _, new in new })
+        }
         for channel in previous.values where channel.deleted_at == nil {
             let current = available[channel.id]
             if current == nil || (channel.encrypted != true && current?.encrypted == true) {

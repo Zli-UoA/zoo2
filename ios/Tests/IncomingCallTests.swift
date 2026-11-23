@@ -488,7 +488,8 @@ struct IncomingCallTests {
         var start = started.stream.makeAsyncIterator()
         try #require(await start.next() != nil)
         #expect(context.reporting.incomingNames == ["Zooの通話"])
-        #expect(context.controller.incomingNotification == nil && context.reporting.ended.isEmpty)
+        #expect(context.controller.incomingNotification == nil && context.controller.watchCall == nil && context.reporting.ended.isEmpty)
+        context.controller.synchronize([])
         let action = RecordingAnswerAction(call: context.call.id)
         if answerDuringValidation { context.controller.provider(context.native, perform: action) }
         release.continuation.finish()
@@ -496,12 +497,75 @@ struct IncomingCallTests {
         try #require(await update.next() != nil)
         #expect(!context.calls.isChannelRevoked(context.call.channelID))
         #expect(context.reporting.names.last == context.call.callerName && context.reporting.ended.isEmpty)
+        if !answerDuringValidation { #expect(context.controller.watchCall?.phase == .incoming) }
         if !answerDuringValidation { context.controller.provider(context.native, perform: action) }
         var progress = context.progress.stream.makeAsyncIterator()
         #expect(await progress.next() == "入室")
         #expect(context.calls.ready && action.results == [true])
         #expect(requests == 1)
         context.reporting.onEnd = nil
+    }
+
+    @Test("再認可でアーカイブ済みと分かった会話は着信・応答とも終了する", arguments: [false, true])
+    func endsArchivedReinvitation(answerDuringValidation: Bool) async throws {
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let context = try AnswerContext(payload: payload, loadChannel: { client, id in
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            var channel = try await client.channel(id: id)
+            channel.archive_at = "2026-11-23 10:00:00"
+            return channel
+        })
+        defer { context.close() }
+        context.calls.revokeChannel(context.call.channelID)
+        await context.receive()
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        let action = RecordingAnswerAction(call: context.call.id)
+        if answerDuringValidation { context.controller.provider(context.native, perform: action) }
+        release.continuation.finish()
+        var progress = context.progress.stream.makeAsyncIterator()
+        #expect(await progress.next() == "終了")
+        #expect(!context.calls.ready && !context.controller.isManagingCall && context.reporting.names.isEmpty)
+        if answerDuringValidation { #expect(action.results == [false]) }
+    }
+
+    @Test("再認可待ちで終了した取得を取り消し、次の着信は取り直す")
+    func cancelsReauthorizationBeforeNextCall() async throws {
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        let cancelled = AsyncStream<Void>.makeStream(), updated = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish(); cancelled.continuation.finish(); updated.continuation.finish() }
+        var requests = 0
+        let context = try AnswerContext(payload: payload, loadChannel: { client, id in
+            requests += 1
+            started.continuation.yield(())
+            for await _ in release.stream { break }
+            if Task.isCancelled { cancelled.continuation.yield(()); throw CancellationError() }
+            return try await client.channel(id: id)
+        })
+        defer { context.close() }
+        context.calls.revokeChannel(context.call.channelID)
+        await context.receive()
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        context.controller.provider(context.native, perform: CXEndCallAction(call: context.call.id))
+        var cancellation = cancelled.stream.makeAsyncIterator()
+        try #require(await cancellation.next() != nil)
+        #expect(!context.controller.isManagingCall && context.reporting.names.isEmpty)
+        var nextPayload = payload
+        nextPayload["channel_id"] = context.call.channelID
+        nextPayload["user_id"] = context.call.userID
+        let next = try #require(IncomingCall(payload: nextPayload))
+        context.reporting.onUpdate = { updated.continuation.yield(()) }
+        context.reporting.onEnd = { updated.continuation.finish() }
+        await withCheckedContinuation { continuation in context.controller.receive(next) { continuation.resume() } }
+        try #require(await iterator.next() != nil)
+        #expect(requests == 2)
+        release.continuation.finish()
+        var update = updated.stream.makeAsyncIterator()
+        try #require(await update.next() != nil)
+        #expect(context.controller.incomingInvitationID == next.id && !context.calls.isChannelRevoked(next.channelID))
     }
 
     @Test("Watchの通知・アプリからの応答は音声を先に準備し、バックグラウンドで入室してCallKitへ完了を返す",

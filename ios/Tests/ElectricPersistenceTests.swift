@@ -791,6 +791,7 @@ struct PersistentSyncIntegrationTests {
         let events: [JSONValue] = encrypted
             ? [.object(["key": .string("channel"), "headers": .object(["operation": .string("insert")]), "value": row])] : []
         harness.stub { request in
+            if request.url?.path == "/api/channels" { return (200, [:], try JSONEncoder().encode(expected)) }
             let bytes = request.url?.path == "/api/shapes/channels" ? try JSONEncoder().encode(events) : Data("[]".utf8)
             return (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"], bytes)
         }
@@ -821,9 +822,10 @@ struct PersistentSyncIntegrationTests {
         let row = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(removed))
         let events: [JSONValue] = deleted
             ? [.object(["key": .string("channel"), "headers": .object(["operation": .string("insert")]), "value": row])] : []
-        harness.stub { _ in
-            (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"],
-             try JSONEncoder().encode(events))
+        harness.stub { request in
+            if request.url?.path == "/api/channels" { return (200, [:], Data("[]".utf8)) }
+            return (200, ["electric-handle": "fresh", "electric-offset": "2_0", "electric-up-to-date": "true"],
+                    try JSONEncoder().encode(events))
         }
         let client = NativeChatClient(api: harness.api, sync: sync)
         let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil)
@@ -943,6 +945,97 @@ struct PersistentSyncIntegrationTests {
         #expect(try await client.channels().isEmpty)
         #expect(sync.isRevoked(syncChannel))
         #expect(calls.channel == nil && media.closed && conversation.drafts.isEmpty)
+    }
+
+    @Test("単件取得後に遅れたShapeが来ても正本を一度照合し、確認済みの失効だけを反映する",
+          arguments: ["許可", "失効", "通信断"])
+    func confirmsDirectoryRevocation(confirmation: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let channel = Channel(id: syncChannel, channel_name: "参加直後", is_private: true, is_dm: false)
+        let other = Channel(id: "22222222-2222-4222-8222-222222222222", channel_name: "もう一つの会話", is_private: true, is_dm: false)
+        let rows = [channel, other]
+        harness.stub { request in
+            let row = request.url?.path.hasSuffix(syncChannel) == true ? channel : other
+            return (200, [:], try JSONEncoder().encode(row))
+        }
+        _ = try await client.channel(id: channel.id)
+        _ = try await client.channel(id: other.id)
+        let callClient = FakeCallClient(), media = FakeCallMedia()
+        callClient.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
+        let calls = CallStore(client: callClient, userID: syncUser.id, makeMedia: { media }, permission: { true })
+        let workspace = WorkspaceStore(client: client, user: syncUser, recentEmojiDefaults: nil, calls: calls)
+        defer { workspace.shutdown() }
+        sync.onChannelRevoked = { [weak workspace] id, channel in workspace?.revokeChannel(id, retaining: channel) }
+        workspace.addAndOpen(channel)
+        let conversation = workspace.conversation(for: channel)
+        conversation.drafts["root"] = "保持する下書き"
+        try await waitForCallDelivery(callClient) { calls.start(channel: channel) }
+        let requests = Mutex<[String]>([])
+        harness.stub { request in
+            let path = request.url?.path ?? ""
+            requests.withLock { $0.append(path) }
+            if path == "/api/channels" {
+                if confirmation == "通信断" { throw URLError(.notConnectedToInternet) }
+                return (200, [:], try JSONEncoder().encode(confirmation == "許可" ? rows : []))
+            }
+            #expect(path == "/api/shapes/channels")
+            return (200, ["electric-handle": "lagging", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+        }
+        if confirmation == "通信断" {
+            await #expect(throws: URLError.self) { _ = try await client.channels() }
+        } else { #expect(try await client.channels() == (confirmation == "許可" ? rows : [])) }
+        #expect(requests.withLock { $0 } == ["/api/shapes/channels", "/api/channels"])
+        if confirmation == "失効" {
+            #expect(sync.isRevoked(channel.id) && sync.isRevoked(other.id))
+            #expect(!calls.ready && media.closed && conversation.drafts.isEmpty)
+        } else {
+            #expect(!sync.isRevoked(channel.id) && !sync.isRevoked(other.id))
+            #expect(calls.ready && !media.closed && conversation.drafts["root"] == "保持する下書き")
+        }
+        let events = try rows.map { row -> JSONValue in
+            .object(["key": .string(row.id), "headers": .object(["operation": .string("insert")]),
+                     "value": try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(row))])
+        }
+        harness.stub { request in
+            #expect(request.url?.path == "/api/shapes/channels")
+            return (200, ["electric-handle": "caught-up", "electric-offset": "2_0", "electric-up-to-date": "true"], try JSONEncoder().encode(events))
+        }
+        #expect(Set(try await client.channels().map(\.id)) == Set(rows.map(\.id)))
+    }
+
+    @Test("正本一覧の照合中に失効した会話を成功応答で復活させない")
+    func rejectsLateAuthoritativeDirectory() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        let client = NativeChatClient(api: harness.api, sync: sync)
+        let channel = Channel(id: syncChannel, channel_name: "照合対象", is_private: true, is_dm: false)
+        harness.stub { _ in (200, [:], try JSONEncoder().encode(channel)) }
+        _ = try await client.channel(id: syncChannel)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { request in
+            if request.url?.path == "/api/channels" {
+                started.continuation.yield(())
+                for await _ in release.stream { break }
+                return (200, [:], try JSONEncoder().encode([channel]))
+            }
+            return (200, ["electric-handle": "lagging", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+        }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            return try await client.channels()
+        }
+        defer { pending.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        try await sync.revokeChannel(syncChannel)
+        release.continuation.finish()
+        await #expect(throws: SyncInvalidation.self) { _ = try await pending.value }
+        #expect(sync.isRevoked(syncChannel) && sync.knownChannels[syncChannel] == nil)
     }
 
     @Test("会話取得中の失効やログアウト後に古い成功応答を返さない", arguments: [false, true])
