@@ -103,20 +103,26 @@ struct GlobalSearchTests {
         let harness = try ChatHarness()
         defer { harness.close() }
         let gate = AsyncStream<Void>.makeStream()
+        let started = AsyncStream<String>.makeStream()
         harness.stub { request in
             let q = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "q" }?.value
+            started.continuation.yield(q ?? "")
             if q == "old" {
                 for await _ in gate.stream { break }
                 return (200, [:], Self.page([Self.messageJSON("stale")]))
             }
             return (200, [:], Self.page([Self.messageJSON("fresh")]))
         }
+        var iterator = started.stream.makeAsyncIterator()
         let search = store(harness)
         search.text = "old"
         search.submit()
         let stale = search.inflight
+        // 旧い要求が通信を始めてから、語を変える。
+        #expect(await iterator.next() == "old")
         search.text = "new"
         search.submit()
+        #expect(await iterator.next() == "new")
         await search.inflight?.value
         gate.continuation.yield(())
         await stale?.value
@@ -263,6 +269,11 @@ struct GlobalSearchTests {
         filters.customEnd = Date(timeIntervalSinceNow: -3 * 86400)
         search.setFilters(filters)
         #expect(search.inflight == nil && calls.withLock { $0 } == 1)
+        #expect(search.phase == .idle && search.items.isEmpty)
+        // 同じ語の送信や種類の変更からも、期間なしの検索を送らない。
+        search.submit()
+        search.select(.files)
+        #expect(search.inflight == nil && calls.withLock { $0 } == 1)
     }
 
     @Test("閲覧権限を失う前に送った取得の応答でも、そのチャンネルの結果を戻さない")
@@ -270,16 +281,60 @@ struct GlobalSearchTests {
         let harness = try ChatHarness()
         defer { harness.close() }
         let gate = AsyncStream<Void>.makeStream()
+        let started = AsyncStream<Void>.makeStream()
         harness.stub { _ in
+            started.continuation.yield(())
             for await _ in gate.stream { break }
             return (200, [:], Self.page([Self.messageJSON("m1")]))
         }
         let search = store(harness)
         search.text = "a"
         search.submit()
+        var iterator = started.stream.makeAsyncIterator()
+        // 通信が始まってから、権限を失う。
+        try #require(await iterator.next() != nil)
         search.revokeChannel(Self.channelID)
         gate.continuation.yield(())
         await search.inflight?.value
         #expect(search.phase == .loaded && search.items.isEmpty)
+    }
+
+    @Test("取得済みの同じ語を明示的に送信すると取り直す")
+    func resubmitRefetches() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let calls = Mutex(0)
+        harness.stub { _ in calls.withLock { $0 += 1 }; return (200, [:], Self.page([Self.messageJSON("m1")])) }
+        let search = store(harness)
+        search.text = "a"
+        search.submit()
+        await search.inflight?.value
+        search.submit()
+        await search.inflight?.value
+        #expect(calls.withLock { $0 } == 2 && search.items.count == 1)
+    }
+
+    @Test("検索タブを離れたら、遅れて届いた応答でタブを奪わない")
+    func leavingSearchTabCancelsOpening() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let channel = Channel(id: Self.channelID, channel_name: "一般", is_private: false, is_dm: false)
+        let bytes = try JSONEncoder().encode(channel)
+        let gate = AsyncStream<Void>.makeStream()
+        let started = AsyncStream<Void>.makeStream()
+        harness.stub { _ in
+            started.continuation.yield(())
+            for await _ in gate.stream { break }
+            return (200, [:], bytes)
+        }
+        let workspace = WorkspaceStore(client: harness.client, user: Person(id: Self.userID, user_name: "you", display_name: "あなた"))
+        workspace.selectedTab = .search
+        let open = Task { await workspace.openSearchResultInTab(SearchDestination(channelID: Self.channelID, messageID: Self.replyID, parentID: nil)) }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        workspace.selectedTab = .profile
+        gate.continuation.yield(())
+        #expect(await open.value == false)
+        #expect(workspace.selectedTab == .profile && workspace.channelPath.isEmpty)
     }
 }

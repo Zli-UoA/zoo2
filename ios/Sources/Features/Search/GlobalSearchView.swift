@@ -6,7 +6,7 @@ struct GlobalSearchScreen: View {
     var body: some View {
         NavigationStack {
             GlobalSearchContent(workspace: workspace, search: workspace.search) { item in
-                Task { _ = await workspace.openSearchResult(item.destination) }
+                Task { _ = await workspace.openSearchResultInTab(item.destination) }
             }
             .safeAreaInset(edge: .top, spacing: 0) { CallBanner(workspace: workspace) }
             .navigationTitle("検索")
@@ -43,7 +43,7 @@ struct GlobalSearchContent: View {
     private var states: some View {
         switch search.phase {
         case .idle:
-            if search.validationError == nil {
+            if search.validationError == nil, !search.filters.hasReversedDays() {
                 ContentUnavailableView("検索", systemImage: "magnifyingglass",
                                        description: Text("検索する語を入力してください。空白で区切ると、すべての語を含むものを探します。"))
                     .listRowSeparator(.hidden)

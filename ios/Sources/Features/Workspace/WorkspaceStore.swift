@@ -619,9 +619,15 @@ final class WorkspaceStore {
     }
 
     /// 検索結果を開く。返信は親が未取得でも、親のスレッドを開いてその返信へ移動する。
-    func openSearchResult(_ destination: SearchDestination) async -> Bool {
+    func openSearchResultInTab(_ destination: SearchDestination) async -> Bool {
+        guard selectedTab == .search else { return false }
+        // 取得中に別のタブへ移ったら、遅れて届いた応答でタブを奪わない。
+        return await openSearchResult(destination, requiredVisit: tabVisit)
+    }
+
+    func openSearchResult(_ destination: SearchDestination, requiredVisit: UUID? = nil) async -> Bool {
         guard let parentID = destination.parentID else {
-            return await openMessage(channelID: destination.channelID, messageID: destination.messageID)
+            return await openMessage(channelID: destination.channelID, messageID: destination.messageID, requiredVisit: requiredVisit)
         }
         guard active else { return false }
         let epoch = UUID()
@@ -630,7 +636,8 @@ final class WorkspaceStore {
             let incoming = try await client.channel(id: destination.channelID)
             try Task.checkCancellation()
             let channel = reconcileChannel(incoming)
-            guard active, destinationGeneration == epoch, channel.deleted_at == nil, channel.encrypted != true else { return false }
+            guard active, destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit,
+                  channel.deleted_at == nil, channel.encrypted != true else { return false }
             let store = conversation(for: channel)
             store.update(channel)
             guard !store.blocked else { throw ZooError.rejected(403, "この会話を閲覧できません。") }
@@ -643,7 +650,7 @@ final class WorkspaceStore {
             else { channelPath = [.channel(channel.id), route] }
             return true
         } catch {
-            if destinationGeneration == epoch { report(error) }
+            if destinationGeneration == epoch, requiredVisit == nil || requiredVisit == tabVisit { report(error) }
             return false
         }
     }

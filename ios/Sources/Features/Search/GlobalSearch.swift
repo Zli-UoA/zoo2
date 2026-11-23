@@ -155,7 +155,8 @@ final class GlobalSearchStore {
             validationError = failure.message
             phase = .idle
         case .success(let normalized):
-            if normalized == requestedText, phase == .loaded || phase == .loading { return }
+            // 取得中の同じ語は既存の取得を続ける。取得済みの同じ語を明示的に送信したときは取り直す。
+            if normalized == requestedText, phase == .loading { return }
             validationError = nil
             requestedText = normalized
             start(cursor: nil)
@@ -172,7 +173,7 @@ final class GlobalSearchStore {
     func setFilters(_ newFilters: SearchFilters) {
         guard newFilters != filters else { return }
         filters = newFilters
-        guard hasSubmitted, !newFilters.hasReversedDays() else { return }
+        guard hasSubmitted else { return }
         start(cursor: nil)
     }
 
@@ -229,6 +230,12 @@ final class GlobalSearchStore {
         cancel()
         let request = requestID
         failedCursor = nil
+        // 開始日が終了日より後の期間では、期間なしの検索を送らない（画面に期間の誤りを出す）。
+        if cursor == nil, filters.hasReversedDays() {
+            clearResults()
+            phase = .idle
+            return
+        }
         if cursor == nil {
             requestFilters = filters.resolved()
             revokedChannelIDs = []
