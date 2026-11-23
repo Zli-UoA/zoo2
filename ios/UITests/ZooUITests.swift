@@ -607,7 +607,7 @@ final class ZooUITests: XCTestCase {
             CGPoint(x: message.frame.midX, y: reaction.frame.maxY + 4)
         ]
         for point in points {
-            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: point.x, dy: point.y)).press(forDuration: 0.8)
+            app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: point.x - app.frame.minX, dy: point.y - app.frame.minY)).press(forDuration: 0.8)
             XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5), "余白の長押し位置：\(point)")
             XCTAssertTrue(app.buttons["message-action-reply"].exists)
             XCTAssertFalse(app.buttons["message-action-edit"].exists)
@@ -624,7 +624,7 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(image.waitForExistence(timeout: 5))
         for x in [app.frame.minX + 5, (image.frame.maxX + app.frame.maxX) / 2] {
             app.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: x, dy: image.frame.midY)).press(forDuration: 0.8)
+                .withOffset(CGVector(dx: x - app.frame.minX, dy: image.frame.midY - app.frame.minY)).press(forDuration: 0.8)
             XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["message-action-reply"].exists)
             XCTAssertFalse(app.buttons["attachment-save"].exists)
@@ -654,7 +654,7 @@ final class ZooUITests: XCTestCase {
         for _ in 0..<4 where !image.isHittable { app.scrollViews["message-list"].swipeDown() }
         for x in [image.frame.minX - 8, image.frame.maxX + 4] {
             app.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: x, dy: image.frame.midY)).press(forDuration: 0.8)
+                .withOffset(CGVector(dx: x - app.frame.minX, dy: image.frame.midY - app.frame.minY)).press(forDuration: 0.8)
             XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons["message-action-reply"].exists)
             XCTAssertFalse(app.buttons["attachment-save"].exists)
@@ -686,7 +686,7 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(image.waitForExistence(timeout: 5))
         XCTAssertLessThan(image.frame.maxX, app.frame.maxX - 20)
         app.coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: (image.frame.maxX + app.frame.maxX) / 2, dy: image.frame.midY))
+            .withOffset(CGVector(dx: (image.frame.maxX + app.frame.maxX) / 2 - app.frame.minX, dy: image.frame.midY - app.frame.minY))
             .press(forDuration: 0.8)
         XCTAssertTrue(app.buttons["message-action-more-reactions"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["message-action-reply"].exists)
@@ -1567,24 +1567,23 @@ final class ZooUITests: XCTestCase {
         let thread = app.navigationBars["スレッド"]
         XCTAssertTrue(thread.waitForExistence(timeout: 5))
         composer(app, reply: true).typeText("新着受信前の返信")
-        let startedSendingAt = Date()
         app.buttons["send-reply"].tap()
         thread.buttons.firstMatch.tap()
         let list = app.scrollViews["message-list"]
         for _ in 0..<2 { list.swipeDown(velocity: .fast) }
         let jump = app.buttons["scroll-to-latest"]
         XCTAssertTrue(jump.waitForExistence(timeout: 5))
-        guard let anchor = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "履歴 "))
+        guard let candidate = list.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "履歴 "))
             .allElementsBoundByIndex.first(where: { $0.isHittable }) else {
             return XCTFail("読み返す履歴が表示されていません")
         }
+        let anchor = list.staticTexts[candidate.identifier]
         let originalY = anchor.frame.minY
-        XCTAssertLessThan(Date().timeIntervalSince(startedSendingAt), 25, "30秒後の新着より前に監視を開始する")
-        let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            !anchor.exists || !anchor.isHittable || abs(anchor.frame.minY - originalY) > 2
-        }, object: anchor)
-        moved.isInverted = true
-        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 32), .completed)
+        let release = app.buttons["preview-release-message"]
+        release.tap()
+        XCTAssertTrue(release.wait(for: \.label, toEqual: "配信済み", timeout: 5))
+        XCTAssertTrue(anchor.exists && anchor.isHittable)
+        XCTAssertEqual(anchor.frame.minY, originalY, accuracy: 2)
         capture(app, name: "新着を受信しても読み返し中の位置を維持")
         jump.tap()
         XCTAssertTrue(app.staticTexts["別の端末からの新着"].waitForExistence(timeout: 5))

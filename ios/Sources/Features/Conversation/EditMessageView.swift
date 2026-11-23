@@ -19,6 +19,10 @@ struct EditMessageView: View {
                 TextField("メッセージ", text: $content, axis: .vertical).lineLimit(5...15)
                     .disabled(saving)
                     .accessibilityIdentifier("edit-message-input")
+                if content.unicodeScalars.count > 40_000 {
+                    Text("メッセージは 40,000 文字以内で入力してください。")
+                        .font(.caption).foregroundStyle(.red)
+                }
                 if let error = store.actionError { Text(error).foregroundStyle(.red) }
             }
             .navigationTitle("メッセージを編集").navigationBarTitleDisplayMode(.inline)

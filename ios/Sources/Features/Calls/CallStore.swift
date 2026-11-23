@@ -207,22 +207,25 @@ final class CallStore {
                         })
                         let initial = CallRoom(participants: room.participants.filter { !departed.contains($0.id) },
                                                max_participants: room.max_participants, ice_servers: room.ice_servers)
-                        for id in departed { try await engine.handle(.left(id)) }
-                        ready = true
+                        for id in departed {
+                            try await engine.handle(.left(id))
+                            guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
+                        }
+                        try await engine.handle(.room(initial))
+                        guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
                         iceServerKinds = Array(Set(room.ice_servers.flatMap(\.urls).compactMap {
                             let kind = String($0.prefix(while: { $0 != ":" })).lowercased()
                             return ["stun", "turn", "turns"].contains(kind) ? kind.uppercased() : nil
                         })).sorted()
                         maxParticipants = min(6, max(1, room.max_participants))
-                        timeout?.cancel(); timeout = nil
                         participants = initial.participants
-                        try await engine.handle(.room(initial))
-                        guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
                         for pending in early {
                             try await receive(pending, session: session)
                             guard sessionID == session, !Task.isCancelled else { throw CancellationError() }
                         }
                         early = []
+                        ready = true
+                        timeout?.cancel(); timeout = nil
                         startHeartbeat(channelID: channel.id, session: session)
                         // CallKitの応答完了で音声セッションが有効になるため、入室と音声接続を分ける。
                         onReady?()
@@ -596,7 +599,7 @@ final class CallStore {
         defer { if sessionID == session { cancellingInvitations.remove(invitation.id) } }
         do {
             try await client.cancelCallInvitation(id: invitation.id)
-            guard active, sessionID == session, !Task.isCancelled else { return }
+            guard active else { return }
             // 取消APIより遅れて届くpending行で、終了した呼び出しを再表示しない。
             cancelledInvitationExpirations = cancelledInvitationExpirations.filter { $0.value > .now }
             cancelledInvitationExpirations[invitation.id] = ZooDate.parse(invitation.expires_at) ?? .now.addingTimeInterval(30)

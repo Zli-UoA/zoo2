@@ -6,7 +6,7 @@ struct ComposerView: View {
     let parentID: String?
     @FocusState.Binding var focused: Bool
     @State private var selection: TextSelection?
-    @State private var submitting = false
+    @State private var submission: UUID?
     @State private var showingEmoji = false
     @State private var emojiInsertionRange: Range<String.Index>?
     @State private var emojiInsertionText = ""
@@ -25,9 +25,9 @@ struct ComposerView: View {
         let name = workspace.name(for: store.channel)
         return store.channel.is_dm ? "\(name) へのメッセージ" : "#\(name) へのメッセージ"
     }
-    private var canSend: Bool { !submitting && store.canSend(parentID: parentID) }
+    private var canSend: Bool { submission == nil && store.canSend(parentID: parentID) }
     private var attachmentsBusy: Bool {
-        !store.canPost || submitting || store.sending.contains(key) || store.importingAttachments.contains(key)
+        !store.canPost || submission != nil || store.sending.contains(key) || store.importingAttachments.contains(key)
     }
     private var remainingAttachmentCount: Int { DraftAttachment.maximumCount - (store.draftAttachments[key]?.count ?? 0) }
     private var selectedRange: Range<String.Index>? {
@@ -105,11 +105,13 @@ struct ComposerView: View {
                 showingEmoji = false
             }
         }
-        .task(id: submitting) {
-            if submitting {
+        .onChange(of: store.accessGeneration) { _, _ in submission = nil }
+        .task(id: submission) {
+            if let id = submission {
                 await store.send(parentID: parentID)
+                guard submission == id else { return }
                 selection = nil
-                submitting = false
+                submission = nil
             }
         }
     }
@@ -191,7 +193,7 @@ struct ComposerView: View {
     }
 
     private var sendButton: some View {
-        Button { submitting = true } label: {
+        Button { submission = UUID() } label: {
             Group {
                 if store.sending.contains(key) { ProgressView() }
                 else { Image(systemName: "arrow.up").font(.system(size: 20, weight: .semibold)) }

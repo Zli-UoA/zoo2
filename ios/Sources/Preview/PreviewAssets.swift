@@ -63,7 +63,10 @@ final class PreviewEmojiURLProtocol: URLProtocol, @unchecked Sendable {
         guard let url = request.url,
               let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
                                              headerFields: ["Content-Type": "image/png"]),
-              let data = PreviewImage.data(for: url.path) else { return }
+              let data = PreviewImage.data(for: url.path) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cannotDecodeContentData))
+            return
+        }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)

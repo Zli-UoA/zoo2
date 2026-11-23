@@ -16,7 +16,7 @@ struct AttachmentDiskCache: Sendable {
             try FileManager.default.removeItem(at: url)
             return nil
         }
-        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
         return data
     }
 

@@ -17,7 +17,7 @@ struct IncomingCallNotificationTests {
         var requests: [UNNotificationRequest] = []
         var removed: [String] = []
         var hold = false
-        var completions: [String: CheckedContinuation<Void, Error>] = [:]
+        var completions: [UUID: (request: UNNotificationRequest, completion: CheckedContinuation<Void, Error>)] = [:]
         var existing: @MainActor () async -> [String] = { [] }
         let added = AsyncStream<String>.makeStream()
         let removals = AsyncStream<[String]>.makeStream()
@@ -27,7 +27,7 @@ struct IncomingCallNotificationTests {
                 self.requests.append(request)
                 if self.hold {
                     try await withCheckedThrowingContinuation { continuation in
-                        self.completions[request.identifier] = continuation
+                        self.completions[UUID()] = (request, continuation)
                         self.added.continuation.yield(request.identifier)
                     }
                 } else {
@@ -40,7 +40,17 @@ struct IncomingCallNotificationTests {
         }
 
         func finish(_ request: UNNotificationRequest) {
-            completions.removeValue(forKey: request.identifier)?.resume()
+            if let id = completions.first(where: { $0.value.request === request })?.key {
+                completions.removeValue(forKey: id)?.completion.resume()
+            }
+        }
+
+        func close() {
+            let pending = completions.values
+            completions = [:]
+            for item in pending { item.completion.resume(throwing: CancellationError()) }
+            added.continuation.finish()
+            removals.continuation.finish()
         }
     }
 
@@ -96,7 +106,7 @@ struct IncomingCallNotificationTests {
         notifications.update(call, enabled: true)
         let identifier = try #require(await added.next())
         let request = try #require(probe.requests.first { $0.identifier == identifier })
-        notifications.update(call, enabled: true)
+        await notifications.update(call, enabled: true)?.value
         #expect(probe.requests.count == 1)
         #expect(request.trigger == nil && request.content.sound != nil)
         #expect(request.content.body == "発信者からの着信です。")
@@ -129,6 +139,7 @@ struct IncomingCallNotificationTests {
     func handlesLateDelivery() async throws {
         let probe = Probe(), call = try call()
         probe.hold = true
+        defer { probe.close() }
         let notifications = probe.controller()
         var added = probe.added.stream.makeAsyncIterator()
         var removed = probe.removals.stream.makeAsyncIterator()
@@ -139,8 +150,8 @@ struct IncomingCallNotificationTests {
         #expect(await removed.next() == [old.identifier])
         notifications.update(call, enabled: true)
         let newID = try #require(await added.next())
-        let new = try #require(probe.requests.first { $0.identifier == newID })
-        #expect(old.identifier != new.identifier)
+        try #require(old.identifier != newID)
+        let new = try #require(probe.requests.last { $0.identifier == newID })
         probe.finish(old)
         #expect(await removed.next() == [old.identifier])
         probe.finish(new)

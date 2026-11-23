@@ -13,7 +13,7 @@ final class CallBannerLayoutUITests: XCTestCase {
         app.buttons["start-call"].tap()
         let state = app.staticTexts["call-connection-status"]
         XCTAssertTrue(state.waitForExistence(timeout: 5))
-        XCTAssertEqual(state.label, "参加者を待機中")
+        XCTAssertTrue(state.wait(for: \.label, toEqual: "参加者を待機中", timeout: 5))
         let diagnostics = app.buttons["call-diagnostics"]
         if !diagnostics.isHittable { app.swipeUp() }
         diagnostics.tap()

@@ -23,7 +23,7 @@ struct ShapeMovePattern: Codable, Sendable {
     let value: String
 }
 
-struct ShapeRowVisibility: Codable, Sendable {
+struct ShapeRowVisibility: Codable, Sendable, Equatable {
     var tags: Set<String> = []
     var conditions: [Bool]?
 
@@ -44,7 +44,7 @@ struct ShapeRowVisibility: Codable, Sendable {
     }
 }
 
-struct ShapeState: Codable, Sendable {
+struct ShapeState: Codable, Sendable, Equatable {
     var offset = "-1"
     var handle: String?
     var cursor: String?

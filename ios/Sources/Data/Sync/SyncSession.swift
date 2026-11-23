@@ -20,7 +20,8 @@ final class SyncSession {
 
     func load<T: Decodable & Sendable>(_ key: String, as type: T.Type) async throws -> T? {
         try check()
-        let data = try await cache.load(key, lease: lease)
+        let cached = try await cache.loadVersioned(key, lease: lease)
+        let data = cached?.payload
         try check()
         do {
             let value = try await data.asyncDecode(type)
@@ -28,7 +29,7 @@ final class SyncSession {
             return value
         } catch is DecodingError {
             // キャッシュはサーバーから再構築できるため、旧形式の値で同期を止めない。
-            try await cache.remove(key, lease: lease)
+            if let cached { try await cache.remove(key, matching: cached.revision, lease: lease) }
             return nil
         }
     }

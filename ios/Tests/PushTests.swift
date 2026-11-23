@@ -70,15 +70,18 @@ final class PushTests: XCTestCase {
         let store = MemoryPushStore(), backend = StubPushBackend()
         let registration = PushRegistration(store: store)
         let started = expectation(description: "通知の登録が開始された")
-        var release: CheckedContinuation<Void, Never>?
+        let release = AsyncStream<Void>.makeStream()
+        defer { release.continuation.finish() }
         backend.beforeSubscribe = {
-            await withCheckedContinuation { release = $0; started.fulfill() }
+            started.fulfill()
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
         }
         registration.update(backend: backend, account: "user", token: "aabb", environment: "sandbox")
         await fulfillment(of: [started], timeout: 2)
         let logout = registration.update(backend: backend, account: nil, token: nil, environment: "sandbox")
         XCTAssertTrue(backend.revoked.isEmpty)
-        release?.resume()
+        release.continuation.finish()
         await logout.value
         XCTAssertNil(store.receipt)
         XCTAssertEqual(backend.revoked.map(\.secret), backend.subscribed.map(\.secret))

@@ -35,6 +35,13 @@ struct RootView: View {
                     Button("取得を再開") { PreviewTestControl.releaseHistory() }
                         .accessibilityIdentifier("preview-release-history")
                 }
+                if ProcessInfo.processInfo.arguments.contains("--uitesting-long-history"),
+                   ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
+                    Button(PreviewTestControl.shared.incomingDelivered ? "配信済み" : "新着を配信") {
+                        PreviewTestControl.shared.incomingReleased = true
+                    }
+                    .accessibilityIdentifier("preview-release-message")
+                }
                 if ProcessInfo.processInfo.arguments.contains("--uitesting-typing-transition") {
                     Button("入力中表示を終了") { PreviewTestControl.typingVisible = false }
                         .accessibilityIdentifier("preview-end-typing")

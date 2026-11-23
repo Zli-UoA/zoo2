@@ -5,6 +5,26 @@ import Testing
 import UserNotifications
 @testable import Zoo
 
+@MainActor
+private func awaitCallback<Value: Sendable>(
+    _ start: (@escaping @Sendable (Result<Value, any Error>) -> Void) -> Void
+) async throws -> Value {
+    let state = Mutex((count: 0, result: Optional<Result<Value, any Error>>.none))
+    start { result in
+        let count = state.withLock {
+            $0.count += 1
+            if $0.result == nil { $0.result = result }
+            return $0.count
+        }
+        #expect(count == 1, "完了コールバックが複数回呼ばれました。")
+    }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while state.withLock({ $0.result == nil }), ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    return try #require(state.withLock { $0.result }, "完了コールバックが期限内に呼ばれませんでした。").get()
+}
+
 // 公開の復元APIで通知を作り、OSが呼ぶObjective-Cのデリゲート入口まで検証する。
 private final class NotificationTestCoder: NSCoder {
     private let values: [String: Any]
@@ -95,10 +115,29 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 @Suite("通話中の認証情報保存")
 struct TokenVaultTests {
+    @Test("Keychain削除失敗後は旧トークンを復元せず、削除を再試行する")
+    func failedLogoutIsRemembered() throws {
+        let account = "logout-test-" + UUID().uuidString
+        defer { try? TokenVault.delete(account) }
+        try TokenVault.save(TokenSet(access: "test-access", refresh: "test-refresh", expires: .now.addingTimeInterval(3600)), account: account)
+        #expect(throws: ZooError.self) {
+            try TokenVault.delete(account, deleteItem: { _ in errSecInteractionNotAllowed })
+        }
+        var retries = 0
+        #expect(throws: ZooError.self) {
+            _ = try TokenVault.load(account, deleteItem: { _ in retries += 1; return errSecInteractionNotAllowed })
+        }
+        #expect(retries == 1)
+        #expect(try TokenVault.load(account) == nil)
+        #expect(try TokenVault.load(account) == nil)
+        try TokenVault.save(TokenSet(access: "new-test-access", refresh: nil, expires: .now.addingTimeInterval(3600)), account: account)
+        #expect(try TokenVault.load(account)?.access == "new-test-access")
+    }
+
     @Test("新規保存と旧設定からの移行で、ロック中に更新できる端末専用項目を使う", arguments: [false, true])
     func backgroundAccessibility(legacy: Bool) throws {
         let account = "test-background-call-\(UUID().uuidString)"
-        defer { TokenVault.delete(account) }
+        defer { try? TokenVault.delete(account) }
         let token = TokenSet(access: "test-access", refresh: "test-refresh", expires: .now.addingTimeInterval(3600))
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: "works.zli.zoo.session", kSecAttrAccount as String: account]
@@ -146,7 +185,7 @@ struct NetworkTests {
 
     @Test func testPushCleanupUsesOriginalServerWithoutBearerAndRejectsSPAResponse() async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         let receipt = PushReceipt(server: "https://previous.test.invalid", account: "old", token: "aabb", environment: "sandbox", secret: String(repeating: "a", count: 64))
         let backend = LivePushBackend(api: api, transport: api.transport)
         stub { request in
@@ -165,7 +204,7 @@ struct NetworkTests {
 
     @Test func testPushRegistrationUsesEnvironmentConfigurationAndStableReceipt() async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         let receipt = PushReceipt(server: api.settings.server, account: "user", token: "aabb", environment: "sandbox", secret: String(repeating: "a", count: 64))
         stub { request in
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-access")
@@ -198,7 +237,7 @@ struct NetworkTests {
             release.continuation.finish()
             UserDefaults.standard.removeObject(forKey: preference)
             UserDefaults.standard.removeObject(forKey: "zoo.push.test." + account)
-            api.auth.logout()
+            try? api.auth.logout()
             api.transport.session.invalidateAndCancel()
             stub(nil)
         }
@@ -284,7 +323,7 @@ struct NetworkTests {
         let controller = NotificationController(transport: api.transport, receiptStore: receipts, previewKeys: keys)
         defer {
             UserDefaults.standard.removeObject(forKey: preference)
-            api.auth.logout()
+            try? api.auth.logout()
             api.transport.session.invalidateAndCancel()
             stub(nil)
         }
@@ -339,7 +378,7 @@ struct NetworkTests {
             started.continuation.finish()
             release.continuation.finish()
             UserDefaults.standard.removeObject(forKey: preference)
-            api.auth.logout()
+            try? api.auth.logout()
             api.transport.session.invalidateAndCancel()
             stub(nil)
         }
@@ -380,7 +419,7 @@ struct NetworkTests {
 
     @Test func testWritesUseBearerAndDecodeExistingBackendEnvelope() async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         stub { request in
             #expect(request.url?.path == "/api/messages")
             #expect(request.httpMethod == "POST")
@@ -405,7 +444,7 @@ struct NetworkTests {
         defer {
             UserDefaults.standard.removeObject(forKey: preference)
             UserDefaults.standard.removeObject(forKey: attemptKey)
-            api.auth.logout()
+            try? api.auth.logout()
             api.transport.session.invalidateAndCancel()
         }
         let matching = PushNotice.test(userID: user, id: id)
@@ -451,7 +490,7 @@ struct NetworkTests {
         UserDefaults.standard.set(true, forKey: preference)
         defer {
             UserDefaults.standard.removeObject(forKey: preference)
-            api.auth.logout()
+            try? api.auth.logout()
             api.transport.session.invalidateAndCancel()
         }
         let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
@@ -460,8 +499,9 @@ struct NetworkTests {
         let delegate = NotificationDelegate()
         delegate.bind(controller)
         let payload = validPayload ? ["user_id": user, "channel_id": UUID().uuidString] : [:]
+        try #require(delegate.responds(to: NSSelectorFromString("userNotificationCenter:willPresentNotification:withCompletionHandler:")))
         try await confirmation("通知表示の完了は1回だけ") { completed in
-            let options: UNNotificationPresentationOptions = try await withCheckedThrowingContinuation { continuation in
+            let options: UNNotificationPresentationOptions = try await awaitCallback { finish in
                 DispatchQueue.global().async {
                     #expect(!Thread.isMainThread)
                     do {
@@ -470,9 +510,9 @@ struct NetworkTests {
                         receiver.userNotificationCenter?(UNUserNotificationCenter.current(), willPresent: notification) { options in
                             #expect(Thread.isMainThread)
                             completed()
-                            continuation.resume(returning: options)
+                            finish(.success(options))
                         }
-                    } catch { continuation.resume(throwing: error) }
+                    } catch { finish(.failure(error)) }
                 }
             }
             #expect(options == (validPayload ? [.banner, .sound] : []))
@@ -483,14 +523,15 @@ struct NetworkTests {
     @Test("通知応答の完了をメインスレッドで一度だけ返し、接続前の宛先も保持する", arguments: [true, false], [true, false])
     func testNotificationResponseCompletion(validPayload: Bool, bindBeforeResponse: Bool) async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel() }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel() }
         let controller = NotificationController(transport: api.transport, receiptStore: PreviewPushReceiptStore(),
                                                 previewKeys: InMemoryNotificationPreviewKeys())
         let delegate = NotificationDelegate()
         if bindBeforeResponse { delegate.bind(controller) }
         let payload = validPayload ? ["user_id": UUID().uuidString, "channel_id": UUID().uuidString] : [:]
+        try #require(delegate.responds(to: NSSelectorFromString("userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:")))
         try await confirmation("通知応答の完了は1回だけ") { completed in
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            let _: Void = try await awaitCallback { finish in
                 DispatchQueue.global().async {
                     #expect(!Thread.isMainThread)
                     do {
@@ -502,9 +543,9 @@ struct NetworkTests {
                         receiver.userNotificationCenter?(UNUserNotificationCenter.current(), didReceive: response) {
                             #expect(Thread.isMainThread)
                             completed()
-                            continuation.resume()
+                            finish(.success(()))
                         }
-                    } catch { continuation.resume(throwing: error) }
+                    } catch { finish(.failure(error)) }
                 }
             }
         }
@@ -527,7 +568,7 @@ struct NetworkTests {
                                                previewKeys: InMemoryNotificationPreviewKeys(), voipStore: voip)
         defer {
             UserDefaults.standard.removeObject(forKey: preference)
-            api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil)
+            try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil)
         }
         let revocations = Mutex(0)
         stub { request in
@@ -551,11 +592,15 @@ struct NetworkTests {
         #expect(revocations.withLock { $0 } == 1)
     }
 
-    @Test("通知の投稿 ID は省略だけを許可し、文字列以外の値は拒否する")
+    @Test("通知の投稿 ID は省略とnullを許可し、不正な値は拒否する")
     func rejectsMalformedMessageID() {
         let base: [AnyHashable: Any] = ["user_id": UUID().uuidString, "channel_id": UUID().uuidString]
         #expect(PushDestination(payload: base) != nil)
-        for invalid in [42, NSNull(), ["id"]] as [Any] {
+        var channelOnly = base
+        channelOnly["message_id"] = NSNull()
+        #expect(PushDestination(payload: channelOnly) == PushDestination(payload: base))
+        #expect(PushNotice(payload: channelOnly) != nil)
+        for invalid in [42, "", "invalid", ["id"]] as [Any] {
             var payload = base
             payload["message_id"] = invalid
             #expect(PushDestination(payload: payload) == nil)
@@ -564,7 +609,7 @@ struct NetworkTests {
 
     @Test func testUnauthorizedIsAnExpiredSession() async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         stub { _ in (401, [:], Data()) }
         do { let _: Person = try await api.get("api/users/me"); Issue.record("認証エラーの応答が受け入れられました。") }
         catch ZooError.expiredSession { }
@@ -572,7 +617,7 @@ struct NetworkTests {
 
     @Test func testRefreshIsSharedAcrossConcurrentRequests() async throws {
         let api = try client(expired: true)
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         await confirmation("トークン交換が1回だけ行われる") { refreshed in
             stub { request in
                 if request.url?.path == "/.well-known/openid-configuration" {
@@ -595,7 +640,7 @@ struct NetworkTests {
     @Test("更新トークンがなくても実際の有効期限まではアクセストークンを使う")
     func accessTokenWithoutRefreshUsesRemainingLifetime() async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         try TokenVault.save(TokenSet(access: "remaining", refresh: nil, expires: .now.addingTimeInterval(20)), account: api.settings.storageKey)
         #expect(try await api.auth.accessToken() == "remaining")
     }
@@ -609,7 +654,7 @@ struct NetworkTests {
             if saves == 1 { throw ZooError.auth("保存失敗の検証") }
             try TokenVault.save(token, account: account)
         })
-        defer { auth.logout(); api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? auth.logout(); try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         try await confirmation("更新トークンを交換するのは一度だけ") { exchanged in
             stub { request in
                 if request.url?.path == "/.well-known/openid-configuration" { return Self.discoveryResponse }
@@ -629,7 +674,7 @@ struct NetworkTests {
           arguments: ["invalid_client", "invalid_grant", "unknown_error"])
     func classifiesRefreshErrors(code: String) async throws {
         let api = try client(expired: true)
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         stub { request in
             if request.url?.path == "/.well-known/openid-configuration" { return Self.discoveryResponse }
             return (400, [:], try JSONEncoder().encode(["error": code]))
@@ -645,16 +690,35 @@ struct NetworkTests {
         #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "test-refresh")
     }
 
+    @Test("Discoveryの失敗では更新トークンを保持し、復旧後に更新できる", arguments: [401, 403, 503])
+    func discoveryFailurePreservesSession(status: Int) async throws {
+        let api = try client(expired: true)
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        stub { request in
+            #expect(request.url?.path == "/.well-known/openid-configuration")
+            return (status, [:], Data())
+        }
+        do {
+            _ = try await api.auth.accessToken()
+            Issue.record("Discoveryの失敗が受け入れられました。")
+        } catch ZooError.auth { }
+        #expect(try TokenVault.load(api.settings.storageKey)?.refresh == "test-refresh")
+        stub { request in
+            request.url?.path == "/.well-known/openid-configuration" ? Self.discoveryResponse : Self.tokenResponse
+        }
+        #expect(try await api.auth.accessToken() == "renewed")
+    }
+
     @Test("設定取得中にログアウトした購読を新しい認証情報で登録しない")
     func subscriptionStopsAfterSessionChange() async throws {
         let api = try client()
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         let backend = LivePushBackend(api: api, transport: api.transport)
         let receipt = PushReceipt(server: api.settings.server, account: "old", token: "test-token",
                                   environment: "sandbox", secret: "test-secret")
         stub { request in
             #expect(request.url?.path == "/api/push/apns/config")
-            await api.auth.logout()
+            try? await api.auth.logout()
             return (200, [:], Data(#"{"sandbox":true,"production":false}"#.utf8))
         }
         await #expect(throws: CancellationError.self) { try await backend.subscribe(receipt) }
@@ -671,7 +735,7 @@ struct NetworkTests {
     @Test(arguments: [false, true])
     func cancelledRequestDoesNotReturnOrRefreshTokens(expired: Bool) async throws {
         let api = try client(expired: expired)
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         stub { _ in
             Issue.record("キャンセル済みの要求が通信を開始しました。")
             return Self.discoveryResponse
@@ -684,7 +748,7 @@ struct NetworkTests {
     @Test(arguments: [false, true], [200, 400, 401])
     func cancelledRefreshWaiterDoesNotCancelSharedRefresh(cancelFirst: Bool, status: Int) async throws {
         let api = try client(expired: true)
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         defer { started.continuation.finish(); release.continuation.finish() }
@@ -732,7 +796,7 @@ struct NetworkTests {
 
     @Test func logoutInvalidatesAnInFlightRefresh() async throws {
         let api = try client(expired: true)
-        defer { api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
+        defer { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); stub(nil) }
         let started = AsyncStream<Void>.makeStream()
         let release = AsyncStream<Void>.makeStream()
         defer { started.continuation.finish(); release.continuation.finish() }
@@ -748,7 +812,7 @@ struct NetworkTests {
         let request = Task { try await api.auth.accessToken() }
         var iterator = started.stream.makeAsyncIterator()
         _ = await iterator.next()
-        api.auth.logout()
+        try? api.auth.logout()
         release.continuation.yield(())
         await #expect(throws: CancellationError.self) { try await request.value }
         #expect(try !api.auth.hasSession)

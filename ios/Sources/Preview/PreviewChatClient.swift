@@ -1,8 +1,12 @@
 #if DEBUG
 import Foundation
+import Observation
 
-@MainActor
-enum PreviewTestControl {
+@Observable @MainActor
+final class PreviewTestControl {
+    static let shared = PreviewTestControl()
+    var incomingReleased = false
+    var incomingDelivered = false
     static var typingVisible = true
     private static var historyWaiters: [UUID: AsyncStream<Void>.Continuation] = [:]
 
@@ -388,7 +392,8 @@ final class PreviewChatClient: ChatClient {
             try await Task.sleep(for: .milliseconds(300))
         }
         while !Task.isCancelled {
-            if let incomingReply, ContinuousClock.now >= incomingReply.at {
+            let manualIncoming = ProcessInfo.processInfo.arguments.contains("--uitesting-long-history")
+            if let incomingReply, manualIncoming ? PreviewTestControl.shared.incomingReleased : ContinuousClock.now >= incomingReply.at {
                 self.incomingReply = nil
                 let replyContent = ProcessInfo.processInfo.arguments.contains("--uitesting-short-thread")
                     ? "別の端末からの返信\n追加の確認事項です。\n返信が増えても\n最新の内容を\n入力欄の上に\n表示します。" : "別の端末からの返信"
@@ -400,6 +405,9 @@ final class PreviewChatClient: ChatClient {
                                            display_data: MessageDisplayData(reactions: [])))
             }
             receive(allMessages.filter { $0.channel_id == channelID })
+            if manualIncoming, PreviewTestControl.shared.incomingReleased, incomingReply == nil {
+                PreviewTestControl.shared.incomingDelivered = true
+            }
             try await Task.sleep(for: .milliseconds(200))
         }
     }
@@ -436,9 +444,7 @@ final class PreviewChatClient: ChatClient {
         allMessages.append(message)
         if let parentID, ProcessInfo.processInfo.arguments.contains("--uitesting-live-message") {
             let arguments = ProcessInfo.processInfo.arguments
-            // 長い履歴を読み返すテストでは、画面遷移とスクロールの完了後に新着を届ける。
-            let delay: Double = arguments.contains("--uitesting-long-history") ? 30
-                : arguments.contains("--uitesting-short-thread") ? 10 : 5
+            let delay: Double = arguments.contains("--uitesting-short-thread") ? 10 : 5
             incomingReply = (.now.advanced(by: .seconds(delay)), channelID, parentID)
         }
         return message

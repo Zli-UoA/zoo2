@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 struct TokenSet: Codable, Sendable {
     let access: String
@@ -14,7 +15,28 @@ enum TokenVault {
          kSecAttrAccount as String: account]
     }
 
-    static func load(_ account: String) throws -> TokenSet? {
+    private static func logoutMarker(_ account: String) -> URL {
+        let key = SHA256.hash(data: Data(account.utf8)).map { String(format: "%02x", $0) }.joined()
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Zoo/LoggedOutSessions", isDirectory: true).appendingPathComponent(key)
+    }
+
+    private static func hasLogoutMarker(_ account: String) throws -> Bool {
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: logoutMarker(account).path)
+            return true
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            return false
+        } catch {
+            throw ZooError.auth("保存したログアウト状態を確認できませんでした。端末のロックを解除して再度お試しください。")
+        }
+    }
+
+    static func load(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete) throws -> TokenSet? {
+        if try hasLogoutMarker(account) {
+            try delete(account, deleteItem: deleteItem)
+            return nil
+        }
         var request = query(account)
         request[kSecReturnData as String] = true
         request[kSecReturnAttributes as String] = true
@@ -33,6 +55,7 @@ enum TokenVault {
     }
 
     static func save(_ token: TokenSet, account: String) throws {
+        if try hasLogoutMarker(account) { try delete(account) }
         let bytes = try JSONEncoder().encode(token)
         let attributes: [String: Any] = [kSecValueData as String: bytes,
                                         kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
@@ -45,7 +68,24 @@ enum TokenVault {
         guard status == errSecSuccess else { throw ZooError.auth("ログイン情報を安全に保存できませんでした。") }
     }
 
-    static func delete(_ account: String) { SecItemDelete(query(account) as CFDictionary) }
+    static func delete(_ account: String, deleteItem: (CFDictionary) -> OSStatus = SecItemDelete) throws {
+        let marker = logoutMarker(account)
+        var markerError: Error?
+        do {
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: marker, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch { markerError = error }
+        // 終了直後に再起動しても旧トークンを復元せず、削除できるまで再試行する。
+        let status = deleteItem(query(account) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            if markerError != nil {
+                throw ZooError.auth("ログイン情報の削除とログアウト状態の保存に失敗しました。端末を再起動せず、空き容量とロック状態を確認して再度お試しください。")
+            }
+            throw ZooError.auth("ログイン情報を削除できませんでした。端末のロックを解除し、再度ログアウトまたはログインしてください。")
+        }
+        do { try FileManager.default.removeItem(at: marker) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile { }
+    }
 }
 
 struct Discovery: Decodable, Sendable {
@@ -95,7 +135,9 @@ final class Authentication {
     func discovery() async throws -> Discovery {
         let issuer = try ConnectionSettings.secureURL(settings.issuer)
         let (data, response) = try await transport.send(URLRequest(url: issuer.appendingPathComponent(".well-known/openid-configuration")))
-        try HTTPTransport.check(data, response)
+        guard (200..<300).contains(response.statusCode) else {
+            throw ZooError.auth("認証サーバーの設定を取得できませんでした（HTTP \(response.statusCode)）。再度お試しください。")
+        }
         let discovery = try JSONDecoder().decode(Discovery.self, from: data)
         guard discovery.issuer.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ==
                 settings.issuer.trimmingCharacters(in: CharacterSet(charactersIn: "/")) else {
@@ -110,7 +152,7 @@ final class Authentication {
         try Task.checkCancellation()
         try settings.validate()
         // 手動ログインの開始後に、以前の更新処理が保存情報を上書きしないようにする。
-        logout()
+        try logout()
         let epoch = generation
         let discovery = try await discovery()
         try checkLogin(epoch)
@@ -295,13 +337,13 @@ final class Authentication {
         }
     }
 
-    func logout() {
+    func logout() throws {
         generation = UUID()
         refreshTask?.cancel()
         refreshTask = nil
         pendingTokens = nil
         tokens = nil
         loadedTokens = true
-        TokenVault.delete(settings.storageKey)
+        try TokenVault.delete(settings.storageKey)
     }
 }

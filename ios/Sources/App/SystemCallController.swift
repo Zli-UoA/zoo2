@@ -55,6 +55,11 @@ final class SystemCallController: NSObject {
     private(set) var answering: Task<Void, Never>?
     private var answerAction: CXAnswerCallAction?
     private var pendingAnswerError: (userID: String, message: String)?
+    private var pendingNotification: (id: UUID, response: IncomingCallNotificationAction)?
+    private var notificationRestore: Task<Void, Never>?
+    private var notificationDeadline: Task<Void, Never>?
+    private var notificationBackgroundTask = UIBackgroundTaskIdentifier.invalid
+    private let notificationTimeout: Duration
     private var validation: Task<Void, Never>?
     private var validationID: UUID?
     private var startedCall = false
@@ -64,6 +69,11 @@ final class SystemCallController: NSObject {
     private var callID: UUID? { current?.id ?? outgoingID }
     var isManagingCall: Bool { callID != nil }
     var incomingInvitationID: UUID? { current?.id }
+    func canPresentInvitation(_ invitation: CallInvitation, at date: Date) -> Bool {
+        guard let id = UUID(uuidString: invitation.id), (ZooDate.parse(invitation.expires_at) ?? .distantPast) > date,
+              (retired[id] ?? .distantPast) <= date else { return false }
+        return current == nil || current?.id == id
+    }
     var onWatchStateChanged: (() -> Void)?
 
     var incomingNotification: IncomingCall? {
@@ -73,13 +83,86 @@ final class SystemCallController: NSObject {
     }
 
     func performNotificationAction(_ response: IncomingCallNotificationAction) async {
-        guard let call = incomingNotification, response.callID == call.id,
-              response.userID.caseInsensitiveCompare(call.userID) == .orderedSame else { return }
+        if let current {
+            guard current.id == response.callID, phase == .ringing,
+                  response.userID.caseInsensitiveCompare(current.userID) == .orderedSame else { return }
+        }
+        if let workspace {
+            guard workspace.active, response.userID.caseInsensitiveCompare(workspace.user.id) == .orderedSame else { return }
+        }
+        guard retired[response.callID] == nil, outgoingID == nil else { return }
+        guard let call = incomingNotification else {
+            guard pendingNotification == nil else { return }
+            let id = UUID()
+            pendingNotification = (id, response)
+            notificationBackgroundTask = beginBackgroundTask { [weak self] in
+                guard self?.pendingNotification?.id == id else { return }
+                self?.failNotificationAction()
+            }
+            notificationDeadline = Task { [weak self] in
+                guard let timeout = self?.notificationTimeout else { return }
+                do { try await Task.sleep(for: timeout) } catch { return }
+                guard let self, pendingNotification?.id == id else { return }
+                failNotificationAction()
+            }
+            restoreNotificationAction()
+            return
+        }
+        clearNotificationAction()
         do {
             try await performWatchAction(WatchRequest(action: response.action, callID: call.id))
         } catch {
             workspace?.calls.error = "通話を操作できませんでした。iPhoneで着信を確認してください。"
         }
+    }
+
+    private func restoreNotificationAction() {
+        guard pendingNotification != nil else { return }
+        if let workspace {
+            guard workspace.active,
+                  pendingNotification?.response.userID.caseInsensitiveCompare(workspace.user.id) == .orderedSame else {
+                clearNotificationAction(); return
+            }
+            updateSync()
+            synchronize(workspace.calls.invitations)
+            resumeNotificationAction()
+        } else if notificationRestore == nil, let session, let pending = pendingNotification {
+            notificationRestore = Task { [weak self] in
+                let restored = await session.prepareForIncomingCall()
+                guard let self, !Task.isCancelled, pendingNotification?.id == pending.id else { return }
+                notificationRestore = nil
+                guard let restored else { failNotificationAction(); return }
+                connect(restored)
+            }
+        }
+    }
+
+    private func resumeNotificationAction() {
+        guard let response = pendingNotification?.response, let call = incomingNotification,
+              response.callID == call.id, response.userID.caseInsensitiveCompare(call.userID) == .orderedSame else { return }
+        clearNotificationAction()
+        Task { [weak self] in await self?.performNotificationAction(response) }
+    }
+
+    private func clearNotificationAction() {
+        pendingNotification = nil
+        notificationRestore?.cancel(); notificationRestore = nil
+        notificationDeadline?.cancel(); notificationDeadline = nil
+        if notificationBackgroundTask != .invalid {
+            let task = notificationBackgroundTask
+            notificationBackgroundTask = .invalid
+            endBackgroundTask(task)
+        }
+        updateSync()
+    }
+
+    private func failNotificationAction() {
+        let userID = pendingNotification?.response.userID
+        clearNotificationAction()
+        let message = "着信を確認できませんでした。iPhoneでZooを開いて確認してください。"
+        if let workspace, workspace.active, userID?.caseInsensitiveCompare(workspace.user.id) == .orderedSame {
+            workspace.calls.error = message
+        } else if workspace == nil { session?.error = message }
     }
 
     var watchCall: WatchCall? {
@@ -154,7 +237,8 @@ final class SystemCallController: NSObject {
          beginBackgroundTask: @escaping (@escaping @MainActor @Sendable () -> Void) -> UIBackgroundTaskIdentifier = {
              UIApplication.shared.beginBackgroundTask(withName: "着信への応答準備", expirationHandler: $0)
          },
-         endBackgroundTask: @escaping (UIBackgroundTaskIdentifier) -> Void = { UIApplication.shared.endBackgroundTask($0) }) {
+         endBackgroundTask: @escaping (UIBackgroundTaskIdentifier) -> Void = { UIApplication.shared.endBackgroundTask($0) },
+         notificationTimeout: Duration = .seconds(15)) {
         self.provider = provider
         self.callController = callController
         self.configureAudio = configureAudio
@@ -162,6 +246,7 @@ final class SystemCallController: NSObject {
         self.loadChannel = loadChannel
         self.beginBackgroundTask = beginBackgroundTask
         self.endBackgroundTask = endBackgroundTask
+        self.notificationTimeout = notificationTimeout
         super.init()
         (provider as? CXProvider)?.setDelegate(self, queue: .main)
     }
@@ -179,11 +264,12 @@ final class SystemCallController: NSObject {
         if let token { session.notifications.receivedVoIPToken(token) }
         if let workspace = session.workspace { connect(workspace) }
         if current != nil { wake() }
+        restoreNotificationAction()
     }
 
     func connect(_ workspace: WorkspaceStore) {
         deliverPendingAnswerError(to: workspace)
-        guard self.workspace !== workspace else { updateSync(); onWatchStateChanged?(); return }
+        guard self.workspace !== workspace else { restoreNotificationAction(); updateSync(); onWatchStateChanged?(); return }
         invitationSync?.cancel(); invitationSync = nil
         self.workspace = workspace
         workspace.systemCalls = self
@@ -205,6 +291,7 @@ final class SystemCallController: NSObject {
         }
         updateSync()
         onWatchStateChanged?()
+        restoreNotificationAction()
     }
 
     private func prepareOutgoingCall(id: UUID, channel: Channel) async throws {
@@ -247,7 +334,7 @@ final class SystemCallController: NSObject {
     func setForeground(_ value: Bool) { foreground = value; updateSync() }
 
     private func updateSync() {
-        let needed = foreground || (current != nil && phase != .connected)
+        let needed = foreground || pendingNotification != nil || (current != nil && phase != .connected)
         if needed, invitationSync == nil, let workspace {
             invitationSync = Task { await workspace.calls.runInvitations() }
         } else if !needed {
@@ -263,9 +350,10 @@ final class SystemCallController: NSObject {
             else if phase == .ringing, !present { validateUnseenCall(current, workspace: workspace) }
             else { observedInShape = observedInShape || present }
         }
-        guard foreground, !isManagingCall, workspace.calls.channel == nil else { return }
+        guard foreground || pendingNotification != nil, !isManagingCall, workspace.calls.channel == nil else { return }
         retired = retired.filter { $0.value > .now }
         for invitation in invitations {
+            if let pendingNotification, UUID(uuidString: invitation.id) != pendingNotification.response.callID { continue }
             guard let call = IncomingCall(invitation: invitation,
                     callerName: workspace.people[invitation.inviter_id]?.name ?? "メンバー"),
                   call.canAnswer(userID: workspace.user.id), retired[call.id] == nil else { continue }
@@ -316,7 +404,10 @@ final class SystemCallController: NSObject {
                 finish.call()
                 guard let self else { return }
                 if error != nil {
-                    if available, self.current?.id == call.id { self.clear() }
+                    if available, self.current?.id == call.id {
+                        if self.pendingNotification != nil { self.failNotificationAction() }
+                        self.clear()
+                    }
                     return
                 }
                 guard available, self.current?.id == call.id else {
@@ -326,6 +417,7 @@ final class SystemCallController: NSObject {
                 guard call.expiresAt > .now else { self.end(reason: .unanswered); return }
                 self.incomingReported = true
                 self.onWatchStateChanged?()
+                self.resumeNotificationAction()
                 self.wake()
             }
         }
@@ -387,6 +479,7 @@ final class SystemCallController: NSObject {
     }
 
     private func clear() {
+        clearNotificationAction()
         pendingAnswerError = nil
         finishAnswerBackgroundTask()
         if let current { retired[current.id] = max(current.expiresAt, .now.addingTimeInterval(60)) }
@@ -428,6 +521,7 @@ final class SystemCallController: NSObject {
     }
 
     func disconnect() {
+        clearNotificationAction()
         pendingAnswerError = nil
         end(reason: .remoteEnded)
         invitationSync?.cancel(); invitationSync = nil
@@ -583,13 +677,16 @@ extension SystemCallController: @preconcurrency PKPushRegistryDelegate, @preconc
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         guard callID == action.callUUID else { action.fail(); return }
         let call = current
-        let decline = call != nil && phase == .ringing
+        let decline = call != nil && !startedCall
         let hadCall = startedCall
         clear()
         action.fulfill()
-        if decline, let session, let call {
+        if decline, let call {
             Task {
-                guard let workspace = await session.prepareForIncomingCall(),
+                let workspace: WorkspaceStore?
+                if let connected = self.workspace { workspace = connected }
+                else { workspace = await session?.prepareForIncomingCall() }
+                guard let workspace, workspace.active,
                       call.canAnswer(userID: workspace.user.id) else { return }
                 await workspace.calls.decline(call.invitation)
             }

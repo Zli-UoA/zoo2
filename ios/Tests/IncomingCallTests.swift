@@ -586,6 +586,12 @@ struct IncomingCallTests {
         #expect(!context.controller.isManagingCall && context.calls.channel == nil && !context.media.started)
         #expect(!context.client.observed && !context.client.accepted)
         #expect(action.results == [false] && context.preparation.backgroundEnds == 1)
+        if reason == "取消" {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while context.client.answeredInvitations.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+            #expect(context.client.answeredInvitations.contains { $0.0 == context.call.invitation.id && !$0.1 })
+            #expect(!context.controller.canPresentInvitation(context.call.invitation, at: .now))
+        }
         expire()
         #expect(context.preparation.backgroundEnds == 1)
     }
@@ -640,6 +646,76 @@ struct IncomingCallTests {
         controller.disconnect()
         await controller.performNotificationAction(valid)
         #expect(requesting.requests.count == 1)
+    }
+
+    @Test("認証復元前の通知操作を保留し、背景で復元した同じ着信に一度だけ適用する",
+          arguments: [IncomingCallNotifications.answerID, IncomingCallNotifications.declineID])
+    func notificationActionBeforeWorkspace(actionIdentifier: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let call = try #require(IncomingCall(payload: payload))
+        let client = FakeCallClient()
+        let calls = CallStore(client: client, userID: call.userID, makeMedia: { FakeCallMedia() }, permission: { true })
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: call.userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+        let reporting = FakeCallReporting(), requesting = FakeCallRequesting()
+        var backgroundEnds = 0
+        let controller = SystemCallController(provider: reporting, callController: requesting, configureAudio: {}, updateAudio: { _ in },
+            beginBackgroundTask: { _ in UIBackgroundTaskIdentifier(rawValue: 1) }, endBackgroundTask: { _ in backgroundEnds += 1 })
+        defer { controller.disconnect(); workspace.shutdown() }
+        controller.setForeground(false)
+        let content = UNMutableNotificationContent()
+        content.categoryIdentifier = IncomingCallNotifications.categoryID
+        content.userInfo = ["invite_id": call.id.uuidString, "user_id": call.userID]
+        let request = UNNotificationRequest(identifier: IncomingCallNotifications.identifierPrefix + UUID().uuidString, content: content, trigger: nil)
+        let response = try #require(IncomingCallNotificationAction(request: request, actionIdentifier: actionIdentifier))
+        await controller.performNotificationAction(response)
+        await controller.performNotificationAction(response)
+        #expect(requesting.requests.isEmpty && reporting.incoming.isEmpty)
+        controller.connect(workspace)
+        #expect(requesting.requests.isEmpty)
+        // 認証とShapeの順序が逆でも、通知本文だけでは通話を開始しない。
+        client.invitationRows = [call.invitation]
+        controller.synchronize([call.invitation])
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while requesting.requests.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(requesting.requests.count == 1)
+        #expect((requesting.requests[0].actions.first as? CXCallAction)?.callUUID == call.id)
+        #expect((requesting.requests[0].actions.first is CXAnswerCallAction) == (actionIdentifier == IncomingCallNotifications.answerID))
+        #expect(reporting.incoming == [call.id] && backgroundEnds == 1)
+    }
+
+    @Test("保留した通知操作は期限切れを伝え、ログアウトや別アカウントの復元後に実行しない", arguments: ["期限", "ログアウト", "別アカウント"])
+    func cancelsPendingNotification(reason: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let call = try #require(IncomingCall(payload: payload))
+        let userID = reason == "別アカウント" ? UUID().uuidString : call.userID
+        let client = FakeCallClient()
+        let calls = CallStore(client: client, userID: userID, makeMedia: { FakeCallMedia() }, permission: { true })
+        let workspace = WorkspaceStore(client: harness.client,
+            user: Person(id: userID, user_name: "利用者", display_name: "利用者"), recentEmojiDefaults: nil, calls: calls)
+        let requesting = FakeCallRequesting()
+        var backgroundEnds = 0
+        let controller = SystemCallController(provider: FakeCallReporting(), callController: requesting, configureAudio: {}, updateAudio: { _ in },
+            beginBackgroundTask: { _ in UIBackgroundTaskIdentifier(rawValue: 1) }, endBackgroundTask: { _ in backgroundEnds += 1 },
+            notificationTimeout: .milliseconds(30))
+        defer { controller.disconnect(); workspace.shutdown() }
+        controller.setForeground(false)
+        let content = UNMutableNotificationContent()
+        content.categoryIdentifier = IncomingCallNotifications.categoryID
+        content.userInfo = ["invite_id": call.id.uuidString, "user_id": call.userID]
+        let request = UNNotificationRequest(identifier: IncomingCallNotifications.identifierPrefix + UUID().uuidString, content: content, trigger: nil)
+        let response = try #require(IncomingCallNotificationAction(request: request, actionIdentifier: IncomingCallNotifications.answerID))
+        await controller.performNotificationAction(response)
+        if reason == "ログアウト" { controller.disconnect() }
+        controller.connect(workspace)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while backgroundEnds == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(backgroundEnds == 1)
+        #expect((calls.error != nil) == (reason == "期限"))
+        controller.synchronize([call.invitation])
+        #expect(requesting.requests.isEmpty)
     }
 
     @Test("CallKitで拒否された着信と別アカウントの着信をWatchへ通知しない", arguments: [false, true])
@@ -756,22 +832,26 @@ struct IncomingCallTests {
         native.invalidate()
     }
 
-    @Test("期限切れのVoIPも報告してから終了し、PushKitの完了を呼ぶ")
-    func expires() async throws {
+    @Test("期限切れのVoIPは報告必須の場合だけ報告して終了し、常に受信を完了する", arguments: [false, true])
+    func expires(mustReport: Bool) async throws {
         var value = payload
         value["expires_at"] = Date.now.addingTimeInterval(-1).ISO8601Format()
         let call = try #require(IncomingCall(payload: value))
         let provider = FakeCallReporting()
         let controller = SystemCallController(provider: provider, configureAudio: {}, updateAudio: { _ in })
-        var completed = false
-        await withCheckedContinuation { continuation in
-            provider.onEnd = { provider.onEnd = nil; continuation.resume() }
-            controller.receive(call) { completed = true }
+        let completed = AsyncStream<Void>.makeStream(), ended = AsyncStream<Void>.makeStream()
+        defer { completed.continuation.finish(); ended.continuation.finish(); provider.onEnd = nil; controller.disconnect() }
+        provider.onEnd = { ended.continuation.yield(()) }
+        controller.receiveVoIPPayload(value, mustReport: mustReport) { completed.continuation.yield(()) }
+        var completions = completed.stream.makeAsyncIterator()
+        try #require(await completions.next() != nil)
+        if mustReport {
+            var endings = ended.stream.makeAsyncIterator()
+            try #require(await endings.next() != nil)
         }
-        #expect(provider.incoming == [call.id] && !controller.isManagingCall)
-        // 期限タイマーとCallKit完了は順不同でも、報告の完了コールバック自体を待つ。
-        if !completed { await Task.yield() }
-        #expect(completed)
+        #expect(provider.incoming == (mustReport ? [call.id] : []))
+        #expect(provider.ended == (mustReport ? [call.id] : []))
+        #expect(!controller.isManagingCall)
     }
 
     @Test("通話中の別着信は終了させ、最初の着信を保持する")

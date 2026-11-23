@@ -194,8 +194,12 @@ struct ShortcutActionsTests {
         if kind == "archived" { channel.archive_at = "2026-11-20T00:00:00Z" }
         if kind == "deleted" { channel.deleted_at = "2026-11-20T00:00:00Z" }
         let personData = try JSONEncoder().encode(peer), channelData = try Self.envelope(channel)
+        let requestedPeople = Mutex<[String]>([])
         harness.stub { request in
-            if request.url?.path.hasPrefix("/api/users/") == true { return (200, [:], personData) }
+            if let path = request.url?.path, path.hasPrefix("/api/users/") {
+                requestedPeople.withLock { $0.append(path) }
+                return (200, [:], personData)
+            }
             if request.url?.path == "/api/dms" { return (200, [:], channelData) }
             Issue.record("不正な入力で送信してはいけません")
             return (500, [:], Data())
@@ -206,6 +210,9 @@ struct ShortcutActionsTests {
         if kind == "account" { target = .init(id: "別アカウント", personID: target.personID, name: target.name, username: target.username) }
         let content = kind == "empty" ? " \n" : kind == "long" ? String(repeating: "あ", count: 40_001) : "本文"
         await #expect(throws: ZooError.self) { try await ShortcutActions(workspace: workspace).send(content, to: target) }
+        if kind == "inactive" || kind == "bot" {
+            #expect(requestedPeople.withLock { $0 } == ["/api/users/\(peer.id)"])
+        }
     }
 
     @Test("DM作成中にログアウトしたら送信しない")
@@ -227,8 +234,16 @@ struct ShortcutActionsTests {
         }
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
         let actions = ShortcutActions(workspace: workspace), target = recipient(workspace)
-        let pending = Task { try await actions.send("本文", to: target) }
-        for await _ in started.stream { break }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            return try await actions.send("本文", to: target)
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        guard await iterator.next() != nil else {
+            _ = try await pending.value
+            Issue.record("対象の通信が開始されずに送信処理が終了しました。")
+            return
+        }
         workspace.shutdown()
         release.continuation.yield(())
         await #expect(throws: ZooError.self) { try await pending.value }
@@ -257,8 +272,16 @@ struct ShortcutActionsTests {
         let workspace = WorkspaceStore(client: harness.client, user: user, recentEmojiDefaults: nil)
         defer { workspace.shutdown() }
         let actions = ShortcutActions(workspace: workspace), target = recipient(workspace)
-        let pending = Task { try await actions.send("本文", to: target) }
-        for await _ in started.stream { break }
+        let pending = Task {
+            defer { started.continuation.finish() }
+            return try await actions.send("本文", to: target)
+        }
+        var iterator = started.stream.makeAsyncIterator()
+        guard await iterator.next() != nil else {
+            _ = try await pending.value
+            Issue.record("対象の通信が開始されずに送信処理が終了しました。")
+            return
+        }
         workspace.shutdown()
         release.continuation.yield(())
         #expect(try await pending.value.id == "accepted")

@@ -14,7 +14,7 @@ struct MessageFeedSnapshot: Sendable {
     var loadedLimit = 0
 }
 
-struct MessageWindow: Codable, Sendable {
+struct MessageWindow: Codable, Sendable, Equatable {
     var parentID: String?
     var limit = 0
     var hasMore = true
@@ -22,7 +22,7 @@ struct MessageWindow: Codable, Sendable {
     var oldestID: String?
 }
 
-struct SnapshotBoundary: Codable, Sendable {
+struct SnapshotBoundary: Codable, Sendable, Equatable {
     let xmin: String
     let xmax: String
     let xip_list: [String]
@@ -53,7 +53,7 @@ struct SnapshotBoundary: Codable, Sendable {
     }
 }
 
-struct MessageSyncState: Codable, Sendable {
+struct MessageSyncState: Codable, Sendable, Equatable {
     var shape = ShapeState(offset: "now")
     var windows: [String: MessageWindow] = [:]
     var boundaries: [SnapshotBoundary] = []
@@ -158,7 +158,15 @@ struct MessageSync {
 
     func observe(_ request: MessageFeedRequest, receive: @MainActor (MessageFeedSnapshot) -> Void) async throws {
         let version = sync.channelVersion(channelID)
-        var state = try await sync.load(key, as: MessageSyncState.self) ?? MessageSyncState()
+        let restored = try await sync.load(key, as: MessageSyncState.self)
+        var state = restored ?? MessageSyncState()
+        var savedState = restored
+        @MainActor func persist(_ value: MessageSyncState) async throws {
+            try sync.check(channelID: channelID, channelVersion: version)
+            guard savedState != value else { return }
+            try await sync.store(value, key: key, channelID: channelID, channelVersion: version)
+            savedState = value
+        }
         if state.shape.isLive {
             let messages = try await decodeShapeRows(state.shape.rows, as: Message.self)
             try sync.check(channelID: channelID, channelVersion: version)
@@ -196,12 +204,12 @@ struct MessageSync {
                 } catch MessageSyncError.reset {
                     state = MessageSyncState()
                     lookedUpMessages.removeAll()
-                    try await sync.store(state, key: key, channelID: channelID, channelVersion: version)
+                    try await persist(state)
                     receive(MessageFeedSnapshot(messages: nil))
                     try await Task.sleep(for: .milliseconds(500))
                     continue
                 }
-                if state.shape.isLive { try await sync.store(state, key: key, channelID: channelID, channelVersion: version) }
+                if state.shape.isLive { try await persist(state) }
                 var query = state.query
                 query["channel_id"] = channelID
                 if catchingUp { query["live"] = nil; query["cursor"] = nil }
@@ -212,7 +220,7 @@ struct MessageSync {
                         let next = try await updateMessageState(state, data: data, response: response)
                         let messages = next.shape.isLive ? try await decodeShapeRows(next.shape.rows, as: Message.self) : nil
                         if next.shape.isLive || next.shape.offset == "now" {
-                            try await sync.store(next, key: key, channelID: channelID, channelVersion: version)
+                            try await persist(next)
                         }
                         state = next
                         if messages != nil || state.shape.offset == "now" {

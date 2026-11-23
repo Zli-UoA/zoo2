@@ -3,6 +3,7 @@ import XCTest
 @MainActor
 final class IncomingCallUITests: XCTestCase {
     func testAnswerIncomingCall() {
+        continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace", "--uitesting-incoming-call", "--uitesting-call"]
         app.launch()
@@ -19,6 +20,7 @@ final class IncomingCallUITests: XCTestCase {
     }
 
     func testDeclineIncomingCall() {
+        continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting-workspace", "--uitesting-incoming-call"]
         app.launch()

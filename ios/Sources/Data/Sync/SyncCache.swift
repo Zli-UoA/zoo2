@@ -2,10 +2,16 @@ import CryptoKit
 import Foundation
 import SwiftData
 
+struct SyncCacheValue: Sendable {
+    let payload: Data
+    let revision: UUID
+}
+
 // 行と同期位置を同じレコードに保存し、強制終了で片方だけ進むことを防ぐ。
 @ModelActor
 actor SyncCache {
     private var leases: [String: UUID] = [:]
+    private var recordVersions: [String: UUID] = [:]
     private var channelVersions: [String: UUID] = [:]
     private var blockedChannels: Set<String> = []
     private var notificationVersions: [String: UUID] = [:]
@@ -136,6 +142,14 @@ actor SyncCache {
         return row.payload
     }
 
+    func loadVersioned(_ resource: String, lease: SyncLease) throws -> SyncCacheValue? {
+        guard let data = try load(resource, lease: lease) else { return nil }
+        let id = lease.account + "|" + resource
+        let revision = recordVersions[id] ?? UUID()
+        recordVersions[id] = revision
+        return SyncCacheValue(payload: data, revision: revision)
+    }
+
     func store(_ payload: Data, resource: String, channelID: String? = nil, channelVersion: UUID? = nil,
                notificationVersion: UUID? = nil, lease: SyncLease) throws {
         try check(lease)
@@ -163,16 +177,19 @@ actor SyncCache {
             modelContext.insert(CachedSyncRecord(account: lease.account, resource: resource, channelID: channelID, payload: payload))
         }
         try save()
+        if recordVersions[id] != nil { recordVersions[id] = UUID() }
         for scope in permissionScopes(resource: resource, channelID: channelID) {
             try grantPermission(scope, account: account)
         }
     }
 
-    func remove(_ resource: String, lease: SyncLease) throws {
+    func remove(_ resource: String, matching revision: UUID? = nil, lease: SyncLease) throws {
         guard leases[lease.account] == lease.generation else { throw CancellationError() }
         let id = lease.account + "|" + resource
+        if let revision, recordVersions[id] != revision { return }
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.id == id })
         try save()
+        recordVersions[id] = nil
     }
 
     func loadAttachment(_ attachment: MessageAttachment, channelID: String, version: UUID,
@@ -274,6 +291,7 @@ actor SyncCache {
         if let directory = permissionDirectory(account: account) { try? FileManager.default.removeItem(at: directory) }
         memoryPermissions = memoryPermissions.filter { !$0.hasPrefix(account + "|") }
         revokedPermissions = revokedPermissions.filter { !$0.hasPrefix(account + "|") }
+        recordVersions = recordVersions.filter { !$0.key.hasPrefix(account + "|") }
         try modelContext.delete(model: CachedSyncRecord.self, where: #Predicate { $0.account == account })
         channelVersions = channelVersions.filter { !$0.key.hasPrefix(account + ":") }
         blockedChannels = blockedChannels.filter { !$0.hasPrefix(account + ":") }

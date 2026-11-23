@@ -5,6 +5,19 @@ import Testing
 
 @MainActor @Suite("画像・PDFのディスクキャッシュ", .timeLimit(.minutes(1)))
 struct AttachmentCacheTests {
+    @Test("利用日時を更新できなくても読み取り可能な添付を返す")
+    func readableAttachmentSurvivesTimestampFailure() throws {
+        let folder = try directory()
+        defer { withExtendedLifetime(folder) {} }
+        let cache = AttachmentDiskCache(directory: folder.url)
+        let data = PreviewPDF.data
+        try cache.store(data, attachment: pdf, account: "account", channelID: channelID)
+        let file = try #require(files(folder.url).first)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: file.path)
+        defer { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: file.path) }
+        #expect(throws: (any Error).self) { try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path) }
+        #expect(try cache.load(pdf, account: "account", channelID: channelID) == data)
+    }
     private let channelID = "11111111-1111-4111-8111-111111111111"
     private let otherChannel = "11111111-1111-4111-8111-111111111112"
     private let user = Person(id: "33333333-3333-4333-8333-333333333333", user_name: "cache", display_name: "キャッシュ確認")

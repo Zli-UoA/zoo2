@@ -37,6 +37,7 @@ struct MessageActionsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var page = Page.actions
+    @State private var editingMessage: Message?
     @State private var confirmingDelete = false
     @ScaledMetric(relativeTo: .body) private var stampSize: CGFloat = 44
 
@@ -54,7 +55,8 @@ struct MessageActionsView: View {
             switch page {
             case .actions: actions
             case .reactions: ReactionPicker(workspace: workspace, select: react)
-            case .edit: EditMessageView(store: store, message: message)
+            case .edit:
+                if let editingMessage { EditMessageView(store: store, message: editingMessage) }
             }
         }
         .presentationDetents(detents)
@@ -115,7 +117,11 @@ struct MessageActionsView: View {
                             .accessibilityIdentifier("message-action-copy")
                     }
                     if canEdit {
-                        Button { page = .edit } label: { actionLabel("メッセージを編集", icon: "pencil") }
+                        Button {
+                            guard let current = store.message(id: message.id) else { dismiss(); return }
+                            editingMessage = current
+                            page = .edit
+                        } label: { actionLabel("メッセージを編集", icon: "pencil") }
                             .accessibilityIdentifier("message-action-edit")
                         Divider()
                         Button(role: .destructive) { confirmingDelete = true } label: { actionLabel("メッセージを削除", icon: "trash") }

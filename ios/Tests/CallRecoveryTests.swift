@@ -57,10 +57,7 @@ struct CallRecoveryTests {
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         let calls = store(client, journal: journal)
         defer { calls.shutdown() }
-        await withCheckedContinuation { done in
-            client.delivered = { done.resume() }
-            calls.start(channel: channel)
-        }
+        try await waitForCallDelivery(client) { calls.start(channel: channel) }
         #expect(journal.records == [CallSessionRecord(channelID: channel.id, sessionID: try #require(client.sessions.first))])
         await calls.refreshActiveCalls()
         #expect(!client.commands.contains("leave"))
@@ -108,10 +105,7 @@ struct CallRecoveryTests {
         let calls = store(client, journal: journal)
         defer { calls.shutdown() }
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
-        await withCheckedContinuation { done in
-            client.delivered = { done.resume() }
-            calls.start(channel: channel, invitationID: incoming ? "invitation" : nil)
-        }
+        try await waitForCallDelivery(client) { calls.start(channel: channel, invitationID: incoming ? "invitation" : nil) }
         #expect(calls.ready && client.accepted == incoming)
         #expect(journal.records.contains(previous) && journal.records.count == 2)
         client.commandFailure = nil
@@ -188,10 +182,7 @@ struct CallRecoveryTests {
         client.commandObserved = { if $0 == "leave" { #expect(!client.observed) } }
         let calls = store(client, journal: journal)
         defer { client.commandObserved = nil; calls.shutdown() }
-        await withCheckedContinuation { done in
-            client.delivered = { done.resume() }
-            calls.start(channel: channel)
-        }
+        try await waitForCallDelivery(client) { calls.start(channel: channel) }
         let leftChannels = zip(client.commands, client.commandChannels).filter { $0.0 == "leave" }.map(\.1)
         #expect(leftChannels == [channel.id, "other-channel"])
         #expect(!journal.records.contains(previous) && calls.ready)
@@ -300,10 +291,7 @@ struct CallRecoveryTests {
         let client = FakeCallClient()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         let calls = store(client, journal: journal)
-        await withCheckedContinuation { done in
-            client.delivered = { done.resume() }
-            calls.start(channel: channel)
-        }
+        try await waitForCallDelivery(client) { calls.start(channel: channel) }
         let recorded = try #require(journal.records.first)
         let attempted = AsyncStream<Void>.makeStream()
         client.commandFailure = { $0 == "leave" ? URLError(.networkConnectionLost) : nil }

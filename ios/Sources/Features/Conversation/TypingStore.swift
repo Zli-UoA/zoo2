@@ -109,6 +109,7 @@ private final class TypingSession {
             let timeout = idleTimeout
             idle = Task { [weak self] in
                 do { try await Task.sleep(for: timeout) } catch { return }
+                guard !Task.isCancelled else { return }
                 self?.activity(false)
             }
         }

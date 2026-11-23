@@ -9,7 +9,7 @@ struct PushDestination: Equatable, Sendable {
               let user = payload["user_id"] as? String, UUID(uuidString: user) != nil,
               let channel = payload["channel_id"] as? String, UUID(uuidString: channel) != nil else { return nil }
         let message = payload["message_id"] as? String
-        if payload["message_id"] != nil {
+        if let value = payload["message_id"], !(value is NSNull) {
             guard let message, UUID(uuidString: message) != nil else { return nil }
         }
         userID = user; channelID = channel; messageID = message

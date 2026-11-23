@@ -61,11 +61,12 @@ struct MessageList: View {
     @State private var scrollPosition = ScrollPosition(idType: String.self)
     @State private var contentFits = false
     @State private var followsLatestIntent = true
+    @State private var preservesFocusedPosition = false
     @State private var userScrolling = false
     @State private var viewport = MessageViewport()
 
     private var positionKey: String {
-        "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)"
+        "\(messages.last?.id ?? "")|\(readStateLoaded)|\(store.loading)|\(scrollTarget.map { id in messages.contains { $0.id == id } } ?? false)"
     }
 
     private var messages: [Message] {
@@ -179,7 +180,7 @@ struct MessageList: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { _ in
-            guard parentID == nil, isVisible, contentFits, !userScrolling, !messages.isEmpty else { return }
+            guard parentID == nil, isVisible, contentFits, !userScrolling, !preservesFocusedPosition, !messages.isEmpty else { return }
             // キーボードの遷移中は安全領域が未確定なので、収まる会話は表示完了後にも末尾へ揃える。
             scrollPosition.scrollTo(edge: .bottom)
         }
@@ -190,6 +191,7 @@ struct MessageList: View {
             } else if phase == .idle, userScrolling {
                 userScrolling = false
                 followsLatestIntent = followingLatest
+                if followingLatest { preservesFocusedPosition = false }
                 updateHistoryAnchor()
             }
         }
@@ -201,7 +203,7 @@ struct MessageList: View {
                                       topInset: geometry.contentInsets.top, bottomInset: geometry.contentInsets.bottom)
         } action: { previous, layout in
             contentFits = layout.fits
-            guard isVisible, !store.loading, !userScrolling,
+            guard isVisible, !store.loading, !userScrolling, !preservesFocusedPosition,
                   previous.contentHeight != layout.contentHeight || previous.viewportHeight != layout.viewportHeight ||
                   previous.topInset != layout.topInset || previous.bottomInset != layout.bottomInset else { return }
             if parentID == nil {
@@ -264,11 +266,13 @@ struct MessageList: View {
         .onChange(of: positionKey, initial: true) { _, _ in
             guard isVisible, !messages.isEmpty, !store.loading, parentID != nil || readStateLoaded else { return }
             if let focused = scrollTarget, messages.contains(where: { $0.id == focused }) {
-                followsLatestIntent = false
+                let followsLatest = store.followsFocusedMessageToLatest
+                preservesFocusedPosition = !followsLatest
+                followsLatestIntent = followsLatest
                 positionedInitialMessages = true
-                scrollPosition.scrollTo(id: focused, anchor: .center)
+                scrollPosition.scrollTo(id: focused, anchor: followsLatest ? .bottom : .center)
                 store.focusedMessageID = nil
-            } else if !positionedInitialMessages || followingLatest {
+            } else if !preservesFocusedPosition && (!positionedInitialMessages || followingLatest) {
                 followsLatestIntent = true
                 let openingReplyComposer = !positionedInitialMessages && focusComposerOnAppear
                 positionedInitialMessages = true
@@ -285,10 +289,12 @@ struct MessageList: View {
         }
         .onChange(of: scrollTarget, initial: true) { _, id in
             if id != nil { viewport.pendingRevision = nil; viewport.pendingAnchor = nil }
-            if let id, messages.contains(where: { $0.id == id }) {
-                followsLatestIntent = false
+            if let id, id == scrollTarget, messages.contains(where: { $0.id == id }) {
+                let followsLatest = store.followsFocusedMessageToLatest
+                preservesFocusedPosition = !followsLatest
+                followsLatestIntent = followsLatest
                 positionedInitialMessages = true
-                scrollPosition.scrollTo(id: id, anchor: .center)
+                scrollPosition.scrollTo(id: id, anchor: followsLatest ? .bottom : .center)
                 store.focusedMessageID = nil
             }
         }
@@ -305,6 +311,7 @@ struct MessageList: View {
                     viewport.pendingRevision = nil
                     viewport.pendingAnchor = nil
                     followsLatestIntent = true
+                    preservesFocusedPosition = false
                     store.focusedMessageID = nil
                     // 長文の遅延計測中に行の高さと位置がアニメーションして重なるのを避ける。
                     scrollPosition.scrollTo(id: last.id, anchor: .bottom)
@@ -452,6 +459,11 @@ struct MessageList: View {
                                            galleryOutsets: EdgeInsets(top: 0, leading: horizontalPadding + AvatarView.size + avatarSpacing,
                                                                      bottom: 0, trailing: horizontalPadding),
                                            showMessageActions: showActions, messagePressingChanged: pressingChanged)
+                        .accessibilityActions {
+                            if message.content.isEmpty, hasActions(for: message) {
+                                Button("メッセージの操作", action: showActions)
+                            }
+                        }
                 }
                 // スタンプの押下を本文の長押し判定から外し、メッセージ全体を暗くしない。
                 ReactionChips(store: store, workspace: workspace, message: message)

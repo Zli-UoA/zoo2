@@ -100,7 +100,7 @@ private struct ReactionPeopleView: View {
     let message: Message
     let emoji: String
     @State private var resolved: [String: Person] = [:]
-    @State private var error: String?
+    @State private var failedIDs: Set<String> = []
 
     private var ids: [String] { store.reactionUserIDs(messageID: message.id, emoji: emoji) }
 
@@ -114,18 +114,22 @@ private struct ReactionPeopleView: View {
                 if let person = workspace.people[id] ?? resolved[id] { PersonRow(person: person) }
                 else { Label("ユーザー", systemImage: "person.crop.circle") }
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            if ids.contains(where: { failedIDs.contains($0) && workspace.people[$0] == nil && resolved[$0] == nil }) {
+                Text("一部のユーザー情報を取得できませんでした。").font(.caption).foregroundStyle(.secondary)
+            }
         }
         .accessibilityIdentifier("reaction-people-sheet")
         .task(id: ids) {
+            failedIDs.formIntersection(ids)
             for id in ids where workspace.people[id] == nil && resolved[id] == nil {
                 do {
                     let person = try await workspace.client.person(id: id)
                     try Task.checkCancellation()
                     resolved[id] = person
+                    failedIDs.remove(id)
                 } catch {
                     guard !Task.isCancelled else { return }
-                    self.error = "一部のユーザー情報を取得できませんでした。"
+                    failedIDs.insert(id)
                     if case ZooError.expiredSession = error { workspace.report(error) }
                 }
             }

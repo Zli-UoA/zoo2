@@ -20,7 +20,7 @@ struct DeviceAuthorizationResponse: Decodable, Sendable {
               expires_in > 0, (interval ?? 5) > 0 else { throw ZooError.invalidResponse }
         let origin = try ConnectionSettings.secureURL(issuer)
         func verifiedURL(_ raw: String) throws -> URL {
-            guard let url = URL(string: raw), url.scheme == "https", url.host == origin.host,
+            guard let url = URL(string: raw), url.scheme == "https", url.host?.lowercased() == origin.host?.lowercased(),
                   (url.port ?? 443) == (origin.port ?? 443), url.user == nil, url.password == nil,
                   url.fragment == nil else { throw ZooError.invalidResponse }
             return url

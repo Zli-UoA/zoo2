@@ -27,7 +27,7 @@ struct CallBanner: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     if let invite = calls.invitations.first(where: {
                         (ZooDate.parse($0.expires_at) ?? .distantPast) > context.date &&
-                        (workspace.systemCalls?.incomingInvitationID == nil || UUID(uuidString: $0.id) == workspace.systemCalls?.incomingInvitationID)
+                        (workspace.systemCalls?.canPresentInvitation($0, at: context.date) ?? true)
                     }) {
                         HStack(spacing: AppDesign.spacing) {
                             Label("\(workspace.people[invite.inviter_id]?.name ?? "メンバー")から通話", systemImage: "phone.fill")

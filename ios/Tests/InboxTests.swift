@@ -6,6 +6,54 @@ import Testing
 @MainActor
 @Suite("アプリ内通知", .timeLimit(.minutes(1)))
 struct InboxTests {
+    @Test("更新中に予約した次ページは更新元のキャンセル後も取得する")
+    func pendingPageSurvivesRefreshCancellation() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        let reads = Mutex((head: 0, older: 0))
+        harness.stub { request in
+            if request.url?.path == "/api/shapes/notifications" {
+                return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
+            }
+            #expect(request.url?.path == "/api/activitypub/notifications")
+            let older = request.url?.query?.contains("before=") == true
+            let head = reads.withLock { value in
+                if older { value.older += 1 } else { value.head += 1 }
+                return value.head
+            }
+            if !older, head == 2 {
+                started.continuation.yield(())
+                var iterator = release.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                throw CancellationError()
+            }
+            let row: [String: Any] = ["id": older ? "old" : "new", "actor_id": "https://remote.test/user/member",
+                "display_name": "メンバー", "kind": "reply", "activity_id": older ? "old" : "new",
+                "created_at": older ? "2026-11-18T09:00:00Z" : "2026-11-18T10:00:00Z", "is_read": false, "pending": false]
+            return (200, [:], try JSONSerialization.data(withJSONObject: ["items": [row], "unread_count": 2,
+                "next_cursor": older ? NSNull() as Any : "new" as Any]))
+        }
+        let inbox = InboxStore(client: harness.client, userID: "u")
+        defer { inbox.shutdown() }
+        await inbox.refresh()
+        let refreshing = Task { await inbox.refresh() }
+        defer { refreshing.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        await inbox.loadMore()
+        refreshing.cancel()
+        release.continuation.finish()
+        await refreshing.value
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !inbox.entries.contains(where: { $0.noticeID == "old" }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(inbox.entries.contains { $0.noticeID == "old" })
+        #expect(reads.withLock { $0.older } == 1)
+    }
+
     @Test("旧取得のキャンセル後も待機中の更新が連合通知を取得する")
     func pendingRefreshSurvivesCancellation() async throws {
         let harness = try ChatHarness()
@@ -71,8 +119,8 @@ struct InboxTests {
         #expect(inbox.error == nil)
     }
 
-    @Test("全既読中に追加された過去の申請を再確認し、並行した承認を巻き戻さない")
-    func markAllRevalidatesConcurrentFollowResponse() async throws {
+    @Test("全既読中の追加申請は再確認を再試行でき、並行した承認を巻き戻さない", arguments: [false, true])
+    func markAllRevalidatesConcurrentFollowResponse(failsCheck: Bool) async throws {
         let harness = try ChatHarness()
         defer { harness.close() }
         let acknowledged = AsyncStream<Void>.makeStream(), releaseAcknowledgement = AsyncStream<Void>.makeStream()
@@ -81,7 +129,7 @@ struct InboxTests {
             acknowledged.continuation.finish(); releaseAcknowledgement.continuation.finish()
             checked.continuation.finish(); releaseCheck.continuation.finish()
         }
-        let state = Mutex((approved: false, failHead: false, checks: 0))
+        let state = Mutex((approved: false, failHead: false, checks: 0, acknowledgements: 0))
         harness.stub { request in
             func page(old: Bool, pending: Bool, read: Bool) throws -> (Int, [String: String], Data) {
                 let row: [String: Any] = ["id": old ? "old" : "new", "actor_id": "https://remote.test/user/member",
@@ -94,6 +142,7 @@ struct InboxTests {
             case "/api/shapes/notifications":
                 return (200, ["electric-handle": "notices", "electric-offset": "1_0", "electric-up-to-date": "true"], Data("[]".utf8))
             case "/api/notifications/read-all":
+                state.withLock { $0.acknowledgements += 1 }
                 acknowledged.continuation.yield(())
                 var iterator = releaseAcknowledgement.stream.makeAsyncIterator()
                 _ = await iterator.next()
@@ -107,6 +156,7 @@ struct InboxTests {
                     checked.continuation.yield(())
                     var iterator = releaseCheck.stream.makeAsyncIterator()
                     _ = await iterator.next()
+                    if failsCheck { return (500, [:], Data()) }
                 }
                 return try page(old: true, pending: !current.approved, read: true)
             default:
@@ -131,9 +181,15 @@ struct InboxTests {
         await inbox.respond(request, accept: true)
         releaseCheck.continuation.finish()
         await marking.value
+        if failsCheck {
+            #expect(inbox.error?.hasPrefix("全既読は完了しましたが") == true)
+            await inbox.refresh()
+            #expect(inbox.error?.hasPrefix("全既読は完了しましたが") != true)
+        }
         let updated = try #require(inbox.entries.first { $0.noticeID == "old" })
         #expect(!updated.pendingFollow && !updated.isUnread)
         #expect(state.withLock { $0.checks } == 2)
+        #expect(state.withLock { $0.acknowledgements } == 1)
     }
 
     @Test("Electric の文字列化された既読値とメッセージの抜粋を読み取る")

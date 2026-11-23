@@ -15,7 +15,8 @@ final class InboxStore {
     private var channelError: String?
     private var federationError: String?
     private var actionError: String?
-    var error: String? { actionError ?? channelError ?? federationError }
+    private var readReconciliationError: String?
+    var error: String? { actionError ?? readReconciliationError ?? channelError ?? federationError }
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored private var active = true
     @ObservationIgnored private var channelRows: [ChannelNotice] = []
@@ -32,6 +33,9 @@ final class InboxStore {
     var pendingRefreshCount: Int { fetchWaiters.count }
     @ObservationIgnored private var refreshRequested = false
     @ObservationIgnored private var moreRequested = false
+    @ObservationIgnored private var pendingMore: Task<Void, Never>?
+    @ObservationIgnored private var pendingReadIDs: Set<String> = []
+    @ObservationIgnored private var reconcilingReadIDs = false
     @ObservationIgnored private var readRevision = 0
     @ObservationIgnored private var readChannelIDs: Set<String> = []
     @ObservationIgnored private var pendingReads: Set<String> = []
@@ -159,13 +163,10 @@ final class InboxStore {
                 if denied(error) { clearFederation(); render() }
                 federationError = "連合通知を取得できません。再読み込みしてください。"
             }
+            await reconcilePendingReadIDs()
             waitingForFederation = false
         } while refreshRequested && active && !Task.isCancelled
         finishFetch()
-        if moreRequested, active, !Task.isCancelled {
-            moreRequested = false
-            await loadMore()
-        }
     }
 
     private func finishFetch() {
@@ -173,6 +174,18 @@ final class InboxStore {
         let waiters = fetchWaiters
         fetchWaiters = []
         waiters.forEach { $0.resume() }
+        scheduleMore()
+    }
+
+    private func scheduleMore() {
+        if moreRequested, active, !fetching, nextCursor != nil, pendingMore == nil {
+            pendingMore = Task {
+                defer { pendingMore = nil; scheduleMore() }
+                guard active, !Task.isCancelled else { return }
+                moreRequested = false
+                await loadMore()
+            }
+        }
     }
 
     func loadMore() async {
@@ -347,28 +360,40 @@ final class InboxStore {
             try await client.acknowledgeNotices(ids: nil)
             guard active else { return }
             applyRead(ids)
-            let concurrentIDs = Set(federationRows.map(\.id)).subtracting(ids)
-            if !concurrentIDs.isEmpty {
-                let selected = concurrentIDs.sorted()
-                for start in stride(from: 0, to: selected.count, by: 100) {
-                    let batch = Set(selected[start..<min(start + 100, selected.count)])
-                    while active, !Task.isCancelled {
-                        let revision = readRevision
-                        let checked = try await client.federatedNotices(ids: Array(batch))
-                        guard active, !Task.isCancelled else { return }
-                        guard revision == readRevision else { continue }
-                        let fresh = Dictionary(checked.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-                        federationRows = federationRows.compactMap { row in batch.contains(row.id) ? fresh[row.id] : row }
-                        break
-                    }
-                }
-                render()
-            }
+            pendingReadIDs.formUnion(Set(federationRows.map(\.id)).subtracting(ids))
             actionError = nil
+            await reconcilePendingReadIDs()
+            guard pendingReadIDs.isEmpty else { return }
             await refreshFederation()
         } catch {
             if active, !handleExpiry(error) { actionError = "すべての通知を既読にできませんでした。" }
         }
+    }
+
+    private func reconcilePendingReadIDs() async {
+        guard active, !Task.isCancelled, !reconcilingReadIDs else { return }
+        reconcilingReadIDs = true
+        defer { reconcilingReadIDs = false }
+        while !pendingReadIDs.isEmpty, active, !Task.isCancelled {
+            let batch = Set(pendingReadIDs.sorted().prefix(100))
+            let revision = readRevision
+            do {
+                let checked = try await client.federatedNotices(ids: batch.sorted())
+                guard active, !Task.isCancelled else { return }
+                guard revision == readRevision else { continue }
+                let fresh = Dictionary(checked.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                federationRows = federationRows.compactMap { row in batch.contains(row.id) ? fresh[row.id] : row }
+                pendingReadIDs.subtract(batch)
+                readRevision += 1
+                render()
+            } catch {
+                if active, !Task.isCancelled, !handleExpiry(error) {
+                    readReconciliationError = "全既読は完了しましたが、以前の通知の表示を更新できませんでした。再読み込みしてください。"
+                }
+                return
+            }
+        }
+        if pendingReadIDs.isEmpty { readReconciliationError = nil }
     }
 
     private func applyRead(_ ids: Set<String>) {
@@ -441,6 +466,8 @@ final class InboxStore {
     }
 
     private func clearFederation() {
+        pendingReadIDs = []
+        readReconciliationError = nil
         federationRows = []
         federationUnread = 0
         nextCursor = nil
@@ -454,6 +481,9 @@ final class InboxStore {
 
     func shutdown() {
         active = false
+        pendingMore?.cancel()
+        pendingMore = nil
+        moreRequested = false
         finishFetch()
         runID = UUID()
         channelRows = []

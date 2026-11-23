@@ -13,8 +13,8 @@ enum RemoteImagePolicy: Sendable {
 final class RemoteImageState {
     fileprivate(set) var image: UIImage?
     @ObservationIgnored fileprivate var digest: Data?
-    @ObservationIgnored fileprivate var checkedAt = Date.distantPast
-    @ObservationIgnored fileprivate var retryAfter = Date.distantPast
+    @ObservationIgnored fileprivate var refreshAfter: TimeInterval = 0
+    @ObservationIgnored fileprivate var retryAfter: TimeInterval?
     @ObservationIgnored fileprivate var inlineThumbnail: (height: CGFloat, image: UIImage)?
 
     func inlineImage(height: CGFloat) -> UIImage? {
@@ -37,6 +37,7 @@ final class RemoteImageStore {
     private let disk: RemoteImageDiskCache
     private let session: URLSession
     private let now: @MainActor () -> Date
+    private let uptime: @MainActor () -> TimeInterval
     private let sleep: @MainActor (TimeInterval) async throws -> Void
     private let states = NSCache<NSURL, RemoteImageState>()
     private final class WeakState {
@@ -67,11 +68,17 @@ final class RemoteImageStore {
 
     init(namespace: String, disk: RemoteImageDiskCache = .shared, session: URLSession? = nil,
          now: @escaping @MainActor () -> Date = { .now },
+         uptime: (@MainActor () -> TimeInterval)? = nil,
          sleep: @escaping @MainActor (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.namespace = namespace
         self.disk = disk
         self.session = session ?? Self.publicSession
         self.now = now
+        let origin = ContinuousClock.now
+        self.uptime = uptime ?? {
+            let elapsed = origin.duration(to: .now).components
+            return Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+        }
         self.sleep = sleep
         states.totalCostLimit = 32 * 1024 * 1024
         states.countLimit = 256
@@ -95,8 +102,9 @@ final class RemoteImageStore {
         }
         guard active, !Task.isCancelled else { return }
         let state = state(for: url)
-        guard now() >= state.retryAfter,
-              state.image == nil || (policy == .refreshing && now().timeIntervalSince(state.checkedAt) >= Self.refreshInterval) else { return }
+        let time = uptime()
+        guard state.retryAfter.map({ time >= $0 }) ?? true,
+              state.image == nil || (policy == .refreshing && time >= state.refreshAfter) else { return }
         // 行の消滅で共有リクエストを止めず、同じ画像を待つ別の行へも結果を渡す。
         let request = Task { [weak self] in
             guard let self else { return }
@@ -123,13 +131,13 @@ final class RemoteImageStore {
     func nextLoadDelay(for displayed: [URL: RemoteImageState], policy: RemoteImagePolicy) -> TimeInterval {
         var delay = Self.refreshInterval
         guard policy == .refreshing else { return delay }
-        let time = now()
+        let time = uptime()
         for state in displayed.values {
-            let deadline: Date
-            if state.retryAfter != .distantPast { deadline = state.retryAfter }
-            else if state.image != nil { deadline = state.checkedAt.addingTimeInterval(Self.refreshInterval) }
+            let deadline: TimeInterval
+            if let retryAfter = state.retryAfter { deadline = retryAfter }
+            else if state.image != nil { deadline = state.refreshAfter }
             else { continue }
-            delay = min(delay, max(0, deadline.timeIntervalSince(time)))
+            delay = min(delay, max(0, deadline - time))
         }
         return delay
     }
@@ -140,31 +148,33 @@ final class RemoteImageStore {
                let decoded = try? await Self.decode(saved.bytes) {
                 try Task.checkCancellation()
                 guard active else { return }
-                update(state, decoded: decoded, checkedAt: saved.checkedAt, url: url)
-                if policy == .stored || now().timeIntervalSince(saved.checkedAt) < Self.refreshInterval { return }
+                let age = now().timeIntervalSince(saved.checkedAt)
+                let remaining = age >= 0 ? max(0, Self.refreshInterval - age) : 0
+                update(state, decoded: decoded, refreshAfter: uptime() + remaining, url: url)
+                if policy == .stored || remaining > 0 { return }
             }
             let bytes = try await Self.download(url, session: session)
             let decoded = try await Self.decode(bytes)
             try Task.checkCancellation()
             guard active else { return }
             let checkedAt = now()
-            update(state, decoded: decoded, checkedAt: checkedAt, url: url)
+            update(state, decoded: decoded, refreshAfter: uptime() + Self.refreshInterval, url: url)
             // ディスクの空き容量不足でも、取得済み画像の表示は続ける。
             try? await disk.store(RemoteImageData(bytes: bytes, checkedAt: checkedAt), for: url, namespace: namespace)
         } catch {
-            if active, !Task.isCancelled { state.retryAfter = now().addingTimeInterval(30) }
+            if active, !Task.isCancelled { state.retryAfter = uptime() + 30 }
         }
     }
 
-    private func update(_ state: RemoteImageState, decoded: Decoded, checkedAt: Date, url: URL) {
+    private func update(_ state: RemoteImageState, decoded: Decoded, refreshAfter: TimeInterval, url: URL) {
         // 同じ内容の再取得で画像を差し替えると、描画や本文のレイアウトが再実行される。
         if state.digest != decoded.digest {
             state.inlineThumbnail = nil
             state.image = decoded.image
             state.digest = decoded.digest
         }
-        state.checkedAt = checkedAt
-        state.retryAfter = .distantPast
+        state.refreshAfter = refreshAfter
+        state.retryAfter = nil
         cache(state, for: url)
     }
 

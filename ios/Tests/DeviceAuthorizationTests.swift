@@ -5,6 +5,7 @@ import Testing
 
 // URLProtocol の非同期コールバックを停止と競合させないため、タスク状態を Mutex で保護する。
 private final class StreamingTokenProtocol: URLProtocol, @unchecked Sendable {
+    static let chunks = Mutex(0)
     private let callbackLock = NSRecursiveLock()
     private let loading = Mutex((task: Optional<Task<Void, Never>>.none, stopped: false))
     override class func canInit(with request: URLRequest) -> Bool { request.url?.path == "/token" }
@@ -19,7 +20,10 @@ private final class StreamingTokenProtocol: URLProtocol, @unchecked Sendable {
                 while true {
                     try await Task.sleep(for: .milliseconds(20))
                     // 受信は続くが、トークン応答は完了しない状況を再現する。
-                    deliver { client?.urlProtocol(self, didLoad: Data(" ".utf8)) }
+                    deliver {
+                        Self.chunks.withLock { $0 += 1 }
+                        client?.urlProtocol(self, didLoad: Data(" ".utf8))
+                    }
                 }
             } catch { }
         }
@@ -70,6 +74,15 @@ private final class AdvancingClock: Clock, Sendable {
 @MainActor
 @Suite(.timeLimit(.minutes(1)))
 struct DeviceAuthorizationTests {
+    @Test("確認URLのホスト名は大文字と小文字を区別しない")
+    func acceptsEquivalentHostCase() throws {
+        let response = DeviceAuthorizationResponse(device_code: "test-device", user_code: "TEST-CODE",
+            verification_uri: "https://ID.TEST.INVALID/device",
+            verification_uri_complete: "https://Id.Test.Invalid/device?user_code=TEST-CODE", expires_in: 600, interval: 5)
+        let prompt = try response.prompt(issuer: "https://id.test.invalid/auth")
+        #expect(prompt.verificationURL.absoluteString == "https://Id.Test.Invalid/device?user_code=TEST-CODE")
+    }
+
     private let stubID = UUID().uuidString
     private let settings = ConnectionSettings(server: "https://api.test.invalid", issuer: "https://id.test.invalid",
                                                clientID: UUID().uuidString, resource: "https://api.test.invalid",
@@ -85,7 +98,7 @@ struct DeviceAuthorizationTests {
     private func withAuthentication(_ action: (Authentication) async throws -> Void) async throws {
         let transport = transport()
         let auth = Authentication(settings: settings, transport: transport)
-        defer { auth.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        defer { try? auth.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
         try await action(auth)
     }
 
@@ -285,12 +298,13 @@ struct DeviceAuthorizationTests {
 
     @Test("データが届き続けても有効期限で通信と承認待ちを終了する")
     func streamingResponseCannotExtendDeadline() async throws {
+        StreamingTokenProtocol.chunks.withLock { $0 = 0 }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StreamingTokenProtocol.self, StubProtocol.self]
         config.httpAdditionalHeaders = ["X-Zoo-Test-ID": stubID]
         let transport = HTTPTransport(session: URLSession(configuration: config))
         let auth = Authentication(settings: settings, transport: transport)
-        defer { auth.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        defer { try? auth.logout(); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
         stub { request in
             if request.url?.path == "/.well-known/openid-configuration" { return Self.discovery }
             return try Self.grant(["expires_in": .number(2), "interval": .number(1)])
@@ -298,6 +312,7 @@ struct DeviceAuthorizationTests {
         let started = ContinuousClock.now
         await #expect(throws: ZooError.self) { try await auth.login { _ in } }
         #expect(started.duration(to: .now) < .seconds(5))
+        #expect(StreamingTokenProtocol.chunks.withLock { $0 } > 0)
         #expect(try !auth.hasSession)
         #expect(try TokenVault.load(settings.storageKey) == nil)
     }
@@ -403,7 +418,7 @@ struct DeviceAuthorizationTests {
             let task = Task { try await auth.login(clock: AdvancingClock()) { _ in } }
             var iterator = started.stream.makeAsyncIterator()
             _ = await iterator.next()
-            auth.logout()
+            try? auth.logout()
             release.continuation.yield(())
             await #expect(throws: CancellationError.self) { try await task.value }
             #expect(try !auth.hasSession)
@@ -475,7 +490,7 @@ struct DeviceAuthorizationTests {
         keys.save(original)
         try receipts.save(receipt)
         try TokenVault.save(TokenSet(access: "test-access", refresh: nil, expires: .now.addingTimeInterval(3600)), account: settings.storageKey)
-        defer { TokenVault.delete(settings.storageKey); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
+        defer { try? TokenVault.delete(settings.storageKey); transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: stubID) }
         let paths = Mutex<[String]>([])
         stub { request in
             paths.withLock { $0.append(request.url?.path ?? "") }
@@ -556,7 +571,7 @@ struct DeviceAuthorizationTests {
         let revoked = AsyncStream<Void>.makeStream()
         defer {
             revoked.continuation.finish()
-            TokenVault.delete(settings.storageKey)
+            try? TokenVault.delete(settings.storageKey)
             transport.session.invalidateAndCancel()
             StubProtocol.install(nil, id: stubID)
         }
@@ -589,7 +604,7 @@ struct DeviceAuthorizationTests {
         defer {
             started.continuation.finish()
             release.continuation.finish()
-            TokenVault.delete(settings.storageKey)
+            try? TokenVault.delete(settings.storageKey)
             transport.session.invalidateAndCancel()
             StubProtocol.install(nil, id: stubID)
         }

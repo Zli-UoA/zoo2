@@ -144,6 +144,8 @@ final class AppSession {
             guard generation == epoch, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error {
                 logout()
+                if self.error == nil { self.error = error.localizedDescription }
+                return
             } else if isOfflineFailure(error), workspace != nil {
                 workspace?.error = "オフラインです。保存済みのデータを表示しています。"
                 return
@@ -169,7 +171,7 @@ final class AppSession {
         sync.onChannelRevoked = { [weak workspace] id in workspace?.inbox.revokeChannel(id) }
         workspace.onExpiredSession = { [weak self] in
             self?.logout()
-            self?.error = ZooError.expiredSession.localizedDescription
+            if self?.error == nil { self?.error = ZooError.expiredSession.localizedDescription }
         }
         workspace.onPeopleChanged = { [weak workspace] in
             if !Self.isUITesting {
@@ -204,7 +206,8 @@ final class AppSession {
             SiriVocabulary.update(nil)
         }
         notifications.logout()
-        authentication.logout()
+        do { try authentication.logout() }
+        catch { self.error = error.localizedDescription }
         if let syncSession {
             needsCacheCleanup = true
             cacheCleanup = syncSession.close()

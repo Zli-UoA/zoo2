@@ -224,6 +224,7 @@ struct TypingStoreTests {
         let client = TypingStub()
         let store = store(client)
         let first = Task { await store.run(parentID: nil) }
+        defer { first.cancel(); store.stop() }
         try await until { !client.reads.isEmpty }
         store.activity(true, parentID: "別スレッド")
         #expect(client.writes.isEmpty)

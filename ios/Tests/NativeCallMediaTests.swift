@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Zoo
 
@@ -7,14 +8,17 @@ import Testing
 struct NativeCallMediaTests {
     @Test("実際の待機音声エンジンを開始でき、通話終了で入力を解放する")
     func realWaitingInput() async throws {
-        let waiting = NativeCallWaitingAudio()
+        let received = Mutex(false)
+        let waiting = NativeCallWaitingAudio(onInput: { received.withLock { $0 = true } })
         let media = NativeCallMedia(waitingAudio: waiting)
         defer { media.close() }
         try media.start(sessionID: UUID().uuidString, room: CallRoom(participants: [], max_participants: 6, ice_servers: []),
                         signal: { _, _ in }, failed: { Issue.record("待機中の音声入力が停止しました。") })
         #expect(waiting.isRunning)
         // 開始直後に閉じると、別スレッドの音声コールバックで起きるクラッシュを検出できない。
-        try await Task.sleep(for: .seconds(2))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !received.withLock({ $0 }), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(received.withLock { $0 }, "待機音声の入力コールバックが実行されました。")
         #expect(waiting.isRunning)
         media.close()
         #expect(!waiting.isRunning)

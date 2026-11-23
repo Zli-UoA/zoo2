@@ -93,7 +93,7 @@ final class ChatHarness {
     }
 
     func stub(_ handler: @escaping StubProtocol.Handler) { StubProtocol.install(handler, id: id) }
-    func close() { api.auth.logout(); api.transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: id) }
+    func close() { try? api.auth.logout(); api.transport.session.invalidateAndCancel(); StubProtocol.install(nil, id: id) }
 }
 
 @MainActor
@@ -105,14 +105,18 @@ private final class ConversationHistoryHarness {
     private let responses = AsyncStream<Data>.makeStream()
     private var run: Task<Void, Never>?
 
-    init() throws {
+    init(mutation: StubProtocol.Handler? = nil) throws {
         harness = try ChatHarness()
         store = ConversationStore(channel: Channel(id: Self.channelID, channel_name: "履歴検証", is_private: false, is_dm: false),
                                   client: harness.client, userID: "33333333-3333-4333-8333-333333333333")
         let requests = requests.continuation
         let responses = responses.stream
         let reads = Mutex(0)
-        harness.stub { _ in
+        harness.stub { request in
+            if request.url?.path != "/api/shapes/messages" {
+                guard let mutation else { throw ZooError.invalidResponse }
+                return try await mutation(request)
+            }
             requests.yield(())
             var iterator = responses.makeAsyncIterator()
             guard let data = await iterator.next() else { throw CancellationError() }
@@ -121,17 +125,20 @@ private final class ConversationHistoryHarness {
         }
     }
 
-    func start() async {
-        run = Task { await store.run() }
+    func start() async throws {
+        run = Task {
+            defer { requests.continuation.finish() }
+            await store.run()
+        }
         var iterator = requests.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil, "同期処理が要求を開始せずに終了しました。")
     }
 
     func receive(_ events: [JSONValue]) async throws {
         responses.continuation.yield(try JSONEncoder().encode(events))
         // 次の要求はストアへの反映後に始まるため、固定時間の待機を使わず検証できる。
         var iterator = requests.stream.makeAsyncIterator()
-        _ = await iterator.next()
+        try #require(await iterator.next() != nil, "同期処理が次の要求を開始せずに終了しました。")
     }
 
     static func insert(_ message: Message) throws -> JSONValue {
@@ -159,7 +166,7 @@ final class ConversationPerformanceTests: XCTestCase {
                     content: "長い履歴の投稿 \(index)", created_at: "2026-11-18T09:00:00Z",
                     parent_id: index.isMultiple(of: 5) ? nil : "message-\(index / 5 * 5)")
         }
-        await harness.start()
+        try await harness.start()
         try await harness.receive(messages.map { try ConversationHistoryHarness.insert($0) } + [ConversationHistoryHarness.ready])
         XCTAssertEqual(harness.store.messages.count, 5_000)
         var count = 0
@@ -187,7 +194,7 @@ struct ConversationHistoryTests {
         defer { harness.close() }
         let store = harness.store
         var reply = message("reply", date: "2026-11-18T09:01:00Z", parent: "parent")
-        await harness.start()
+        try await harness.start()
         try await harness.receive([ConversationHistoryHarness.insert(reply), ConversationHistoryHarness.ready])
         #expect(store.roots.map(\.id) == ["reply"])
         #expect(store.replies(to: "parent") == [reply])
@@ -224,7 +231,7 @@ struct ConversationHistoryTests {
         foreign.channel_id = "別のチャンネル"
         let rows = [message("late", date: "2026-11-18 09:00:00.123456"), message("b"), parent,
                     message("invalid", date: "日時不明"), reply, deleted, foreign]
-        await harness.start()
+        try await harness.start()
         try await harness.receive(rows.map { try ConversationHistoryHarness.insert($0) } + [ConversationHistoryHarness.ready])
         #expect(store.messages.map(\.id) == ["invalid", "a", "b", "reply", "late"])
         #expect(store.roots.map(\.id) == ["invalid", "a", "b", "late"])
@@ -465,6 +472,86 @@ struct NativeChatTests {
         workspace.shutdown()
     }
 
+    @Test("権限の世代変更で操作を再開し、古い完了で新しい操作のロックを解放しない", arguments: ["送信", "編集", "削除"])
+    func operationLocksBelongToAccessGeneration(operation: String) async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let started = AsyncStream<Int>.makeStream(), firstRelease = AsyncStream<Void>.makeStream(), secondRelease = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); firstRelease.continuation.finish(); secondRelease.continuation.finish() }
+        let requests = Mutex(0)
+        let message = Message(id: "22222222-2222-4222-8222-222222222222", user_id: Self.userID, channel_id: Self.channelID,
+                              content: "本文", created_at: "2026-11-18T09:00:00Z")
+        harness.stub { request in
+            let count = requests.withLock { $0 += 1; return $0 }
+            started.continuation.yield(count)
+            var iterator = (count == 1 ? firstRelease.stream : secondRelease.stream).makeAsyncIterator()
+            _ = await iterator.next()
+            if operation == "削除" { return (200, [:], Data("{}".utf8)) }
+            return (200, [:], try Self.envelope(operation == "送信" ? Self.sentMessage(request) : message))
+        }
+        let store = ConversationStore(channel: channel, client: harness.client, userID: Self.userID)
+        func perform() async {
+            if operation == "送信" { await store.send() }
+            else if operation == "編集" { _ = await store.edit(message, content: "編集") }
+            else { await store.delete(message) }
+        }
+        store.drafts["root"] = "最初の送信"
+        let first = Task { await perform() }
+        defer { first.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() == 1)
+        var encrypted = channel
+        encrypted.encrypted = true
+        store.update(encrypted)
+        store.update(channel)
+        #expect(store.sending.isEmpty && !store.mutationInProgress)
+        store.drafts["root"] = "次の送信"
+        let second = Task { await perform() }
+        defer { second.cancel() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while requests.withLock({ $0 }) < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(requests.withLock { $0 } == 2, "古い操作の応答を待たずに新しい操作を開始できる")
+        firstRelease.continuation.finish()
+        await first.value
+        #expect(operation == "送信" ? store.sending.contains("root") : store.mutationInProgress)
+        secondRelease.continuation.finish()
+        await second.value
+        #expect(store.sending.isEmpty && !store.mutationInProgress)
+        #expect(requests.withLock { $0 } == 2)
+    }
+
+    @Test("同一時刻の古い同期行で編集結果を戻さず、取得範囲の変更後も削除結果を保つ", arguments: [false, true])
+    func preservesLocalMutationAcrossStaleFeeds(deleting: Bool) async throws {
+        let original = Message(id: "22222222-2222-4222-8222-222222222222", user_id: Self.userID, channel_id: Self.channelID,
+                               content: "編集前", created_at: "2026-11-18T09:00:00Z", updated_at: "2026-11-18T09:00:00Z")
+        var changed = original
+        changed.content = "編集後"
+        let updated = changed
+        let harness = try ConversationHistoryHarness { request in
+            #expect(request.httpMethod == (deleting ? "DELETE" : "PATCH"))
+            return (200, [:], deleting ? Data("{}".utf8) : try Self.envelope(updated))
+        }
+        defer { harness.close() }
+        try await harness.start()
+        try await harness.receive([ConversationHistoryHarness.insert(original), ConversationHistoryHarness.ready])
+        if deleting {
+            await harness.store.delete(original)
+            try await harness.receive([.object(["key": .string(original.id), "headers": .object(["operation": .string("delete")])])])
+        } else {
+            #expect(await harness.store.edit(original, content: updated.content))
+        }
+        try await harness.receive([ConversationHistoryHarness.insert(original)])
+        #expect(harness.store.message(id: original.id)?.content == (deleting ? nil : updated.content))
+        if !deleting {
+            try await harness.receive([ConversationHistoryHarness.insert(updated)])
+            var newer = updated
+            newer.content = "別端末の編集"
+            newer.updated_at = "2026-11-18T09:00:01Z"
+            try await harness.receive([ConversationHistoryHarness.insert(newer)])
+            #expect(harness.store.message(id: original.id)?.content == newer.content)
+        }
+    }
+
     @Test("送信失敗で下書きを保持し、同じ ID で再送する")
     func retryIsIdempotent() async throws {
         let harness = try ChatHarness()
@@ -515,6 +602,9 @@ struct NativeChatTests {
         await task.value
         #expect(store.messages.first?.content == "最初の本文")
         #expect(store.drafts["root"] == "次の本文")
+        #expect(store.followsFocusedMessageToLatest)
+        store.focusedMessageID = store.messages.first?.id
+        #expect(!store.followsFocusedMessageToLatest)
     }
 
     @Test("ログアウト後の送信応答で会話を復元しない")

@@ -2,6 +2,22 @@ import Foundation
 import Testing
 @testable import Zoo
 
+@MainActor
+func waitForCallDelivery(_ client: FakeCallClient, start: () -> Task<Void, Never>?) async throws {
+    let delivered = AsyncStream<Void>.makeStream()
+    client.delivered = { delivered.continuation.yield(()) }
+    defer { client.delivered = nil; delivered.continuation.finish() }
+    let connection = try #require(start(), "入室処理を開始できませんでした。")
+    let completion = Task {
+        await connection.value
+        delivered.continuation.finish()
+    }
+    defer { completion.cancel() }
+    var iterator = delivered.stream.makeAsyncIterator()
+    try #require(await iterator.next() != nil, "ルームを受信する前に接続処理が終了しました。")
+    try Task.checkCancellation()
+}
+
 @Suite("通話プロトコル")
 struct CallProtocolTests {
     @Test("SSEの空行境界とkeepaliveを処理する")
@@ -41,6 +57,7 @@ final class FakeCallClient: CallClient {
     var beforeCommand: (@MainActor (String) async throws -> Void)?
     var commandChannels: [String] = []
     var accepted = false
+    var answeredInvitations: [(String, Bool)] = []
     var failStream = false
     var delivered: (@MainActor () -> Void)?
     var beforeObserveCall: (@MainActor (String, String) -> Void)?
@@ -49,6 +66,7 @@ final class FakeCallClient: CallClient {
     var inviteResult: [CreatedCallInvitation] = []
     var inviteFailure: Error?
     var beforeInviteResult: (@MainActor () async -> Void)?
+    var beforeCancelResult: (@MainActor () async -> Void)?
     var invitationRows: [CallInvitation] = []
     var invitationsDelivered: (@MainActor () -> Void)?
     let invitationUpdates = AsyncStream<[CallInvitation]>.makeStream()
@@ -84,7 +102,10 @@ final class FakeCallClient: CallClient {
             invitationsDelivered?()
         }
     }
-    func answerCallInvitation(id: String, accept: Bool) async throws { accepted = accept }
+    func answerCallInvitation(id: String, accept: Bool) async throws {
+        accepted = accept
+        answeredInvitations.append((id, accept))
+    }
     func isCallInvitationPending(id: String) async throws -> Bool { true }
     func inviteToCall(channelID: String, userIDs: [String]) async throws -> [CreatedCallInvitation] {
         inviteRequests.append((channelID, userIDs))
@@ -93,6 +114,7 @@ final class FakeCallClient: CallClient {
         return inviteResult
     }
     func cancelCallInvitation(id: String) async throws {
+        await beforeCancelResult?()
         if let inviteFailure { throw inviteFailure }
         cancelledInvitations.append(id)
     }
@@ -107,10 +129,12 @@ final class FakeCallMedia: CallMedia {
     var handled: [String] = []
     var participantIDs: [String] = []
     var mutedWhenHandlingRoom: Bool?
+    var beforeHandle: (@MainActor (CallEvent) async throws -> Void)?
     var signal: (@MainActor (String, CallSignal) -> Void)?
     func start(sessionID: String, room: CallRoom, signal: @escaping @MainActor (String, CallSignal) -> Void,
                failed: @escaping @MainActor () -> Void) throws { started = true; self.signal = signal }
     func handle(_ event: CallEvent) async throws {
+        try await beforeHandle?(event)
         if case .room = event { mutedWhenHandlingRoom = muted }
         switch event { case .room(let room): handled.append("room"); participantIDs = room.participants.map(\.id); case .left: handled.append("left"); default: handled.append("other") }
     }
@@ -124,8 +148,45 @@ final class FakeCallMedia: CallMedia {
 struct CallStoreTests {
     private var channel: Channel { Channel(id: "11111111-1111-4111-8111-111111111111", channel_name: "一般", is_private: false, is_dm: false) }
 
+    @Test("初期メディアの待機中は準備完了にせず、終了した処理で次の通話を上書きしない", arguments: [false, true])
+    func initialMediaBelongsToSession(earlyLeave: Bool) async throws {
+        let client = FakeCallClient()
+        let firstMedia = FakeCallMedia(), secondMedia = FakeCallMedia()
+        var engines = [firstMedia, secondMedia]
+        var firstGate: CheckedContinuation<Void, Never>?, secondGate: CheckedContinuation<Void, Never>?
+        firstMedia.beforeHandle = { event in
+            let isLeft: Bool
+            if case .left = event { isLeft = true } else { isLeft = false }
+            if isLeft == earlyLeave { await withCheckedContinuation { firstGate = $0 } }
+        }
+        secondMedia.beforeHandle = { _ in await withCheckedContinuation { secondGate = $0 } }
+        let store = CallStore(client: client, userID: "me", makeMedia: { engines.removeFirst() }, permission: { true })
+        defer { store.shutdown(); firstGate?.resume(); secondGate?.resume() }
+        let room = CallRoom(participants: [], max_participants: 6, ice_servers: [])
+        client.events = earlyLeave ? [.left("退出済み"), .room(room)] : [.room(room)]
+        let first = try #require(store.start(channel: channel))
+        var deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while firstGate == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(firstGate != nil)
+        #expect(!store.ready)
+        store.finish()
+        client.events = [.room(room)]
+        let second = try #require(store.start(channel: channel))
+        defer { second.cancel() }
+        deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while secondGate == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        try #require(secondGate != nil)
+        let old = firstGate; firstGate = nil; old?.resume()
+        await first.value
+        #expect(!store.ready && store.participants.isEmpty)
+        let current = secondGate; secondGate = nil; current?.resume()
+        deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !store.ready, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(1)) }
+        #expect(store.ready)
+    }
+
     @Test("入室と音声接続を区別し、一部の相手だけ未接続でも通話中にしない")
-    func mediaConnectionStatus() async {
+    func mediaConnectionStatus() async throws {
         let client = FakeCallClient()
         let media = FakeCallMedia()
         let peers = ["one", "two"].map {
@@ -149,7 +210,7 @@ struct CallStoreTests {
     }
 
     @Test("heartbeatの一時失敗を再試行し、回復した通話を終了しない")
-    func heartbeatRecovers() async {
+    func heartbeatRecovers() async throws {
         let client = FakeCallClient()
         let media = FakeCallMedia()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
@@ -170,7 +231,7 @@ struct CallStoreTests {
     }
 
     @Test("heartbeatの継続障害は3回で終了し、認証・権限・session消失は再試行しない", arguments: [0, 401, 403, 404])
-    func heartbeatFailureIsBounded(status: Int) async {
+    func heartbeatFailureIsBounded(status: Int) async throws {
         let client = FakeCallClient()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         client.commandFailure = { action in
@@ -186,7 +247,7 @@ struct CallStoreTests {
     }
 
     @Test("再試行待ちで終了した通話を復活させない")
-    func cancelHeartbeatRetry() async {
+    func cancelHeartbeatRetry() async throws {
         let client = FakeCallClient()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         let failed = AsyncStream<Void>.makeStream()
@@ -203,7 +264,7 @@ struct CallStoreTests {
     }
 
     @Test("SSE切断では自動再着信せず、手動再接続で新しい参加IDを使う")
-    func retryUsesNewSession() async {
+    func retryUsesNewSession() async throws {
         let client = FakeCallClient()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         client.failStream = true
@@ -219,7 +280,7 @@ struct CallStoreTests {
     }
 
     @Test("ミュート中の切断後は音声接続前にミュートを戻し、サーバーにも同期する")
-    func retryPreservesMute() async {
+    func retryPreservesMute() async throws {
         let client = FakeCallClient()
         let media = FakeCallMedia()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
@@ -236,7 +297,7 @@ struct CallStoreTests {
     }
 
     @Test("ミュート更新の一時失敗を同じ値で再試行し、通話を継続する")
-    func muteUpdateRecovers() async {
+    func muteUpdateRecovers() async throws {
         let client = FakeCallClient()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true }, retryDelay: .milliseconds(1))
@@ -258,7 +319,7 @@ struct CallStoreTests {
     }
 
     @Test("未参加の通話も表示し、参加者ゼロと終了した通話は表示しない")
-    func activeCallsFollowServer() async {
+    func activeCallsFollowServer() async throws {
         let client = FakeCallClient()
         let store = CallStore(client: client, userID: "me")
         defer { store.shutdown() }
@@ -275,7 +336,7 @@ struct CallStoreTests {
     }
 
     @Test("通話一覧の失敗で古い表示を消し、次の取得で復帰する")
-    func activeCallsRecoverAfterFailure() async {
+    func activeCallsRecoverAfterFailure() async throws {
         let client = FakeCallClient()
         let store = CallStore(client: client, userID: "me")
         defer { store.shutdown() }
@@ -291,7 +352,7 @@ struct CallStoreTests {
     }
 
     @Test("通話一覧の認証切れをセッションへ通知する")
-    func activeCallsReportExpiredSession() async {
+    func activeCallsReportExpiredSession() async throws {
         let client = FakeCallClient()
         let store = CallStore(client: client, userID: "me")
         defer { store.shutdown() }
@@ -303,7 +364,7 @@ struct CallStoreTests {
     }
 
     @Test("古い通話一覧の応答で最新状態を巻き戻さない")
-    func staleActiveCallsAreIgnored() async {
+    func staleActiveCallsAreIgnored() async throws {
         let client = FakeCallClient()
         let store = CallStore(client: client, userID: "me")
         defer { store.shutdown() }
@@ -318,7 +379,7 @@ struct CallStoreTests {
     }
 
     @Test("キャンセル・ログアウト後の通話一覧の応答を反映しない", arguments: [false, true])
-    func lateActiveCallsAreIgnored(shutdown: Bool) async {
+    func lateActiveCallsAreIgnored(shutdown: Bool) async throws {
         let client = FakeCallClient()
         let store = CallStore(client: client, userID: "me")
         defer { store.shutdown() }
@@ -332,9 +393,9 @@ struct CallStoreTests {
     }
 
     @Test("参加した通話は一覧APIの反映を待たず表示し、退出すると消える")
-    func localCallAppearsImmediately() async {
+    func localCallAppearsImmediately() async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        let store = try await connected(client)
         defer { store.shutdown() }
         #expect(store.activeChannelIDs.isEmpty)
         #expect(store.hasActiveCall(in: channel.id))
@@ -342,14 +403,11 @@ struct CallStoreTests {
         #expect(!store.hasActiveCall(in: channel.id))
     }
 
-    private func connected(_ client: FakeCallClient, channel: Channel? = nil, participants: [CallParticipant] = [], capacity: Int = 6) async -> CallStore {
+    private func connected(_ client: FakeCallClient, channel: Channel? = nil, participants: [CallParticipant] = [], capacity: Int = 6) async throws -> CallStore {
         client.events = [.room(CallRoom(participants: participants, max_participants: capacity, ice_servers: []))]
         let store = CallStore(client: client, userID: "me", makeMedia: { FakeCallMedia() }, permission: { true })
-        await withCheckedContinuation { continuation in
-            client.delivered = { continuation.resume() }
-            store.start(channel: channel ?? self.channel)
-        }
-        client.delivered = nil
+        do { try await waitForCallDelivery(client) { store.start(channel: channel ?? self.channel) } }
+        catch { store.shutdown(); throw error }
         return store
     }
 
@@ -372,10 +430,10 @@ struct CallStoreTests {
     }
 
     @Test("チャンネルの招待候補から自分・bot・無効な人・参加者・呼び出し中の人を除く")
-    func invitationCandidates() async {
+    func invitationCandidates() async throws {
         let client = FakeCallClient()
         let participant = CallParticipant(session_id: "remote", user_id: "joined", user_name: "joined", display_name: "参加者", is_muted: false)
-        let store = await connected(client, participants: [participant], capacity: 3)
+        let store = try await connected(client, participants: [participant], capacity: 3)
         defer { store.shutdown() }
         let now = Date.now
         func invitation(_ id: String, invitee: String, channelID: String? = nil, expiry: Date? = nil) -> CallInvitation {
@@ -400,9 +458,9 @@ struct CallStoreTests {
     }
 
     @Test("招待失敗でも通話を続け、選択した相手へ再送できる")
-    func retryInvitation() async {
+    func retryInvitation() async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        let store = try await connected(client)
         defer { store.shutdown() }
         let members = [Person(id: "other", user_name: "other", display_name: "相手")]
         client.inviteFailure = URLError(.notConnectedToInternet)
@@ -424,9 +482,10 @@ struct CallStoreTests {
     }
 
     @Test("API応答より先に届いた招待を重複させず、終了済みなら復活させない", arguments: [false, true])
-    func inviteSynchronization(endsBeforeResponse: Bool) async {
+    func inviteSynchronization(endsBeforeResponse: Bool) async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        defer { client.beforeInviteResult = nil }
+        let store = try await connected(client)
         defer { store.shutdown() }
         let task = await observeInvitations(client, store: store)
         defer { task.cancel() }
@@ -445,9 +504,10 @@ struct CallStoreTests {
     }
 
     @Test("同期がAPI応答より遅れても招待の重複送信・重複表示を防ぐ")
-    func delayedInvitationSynchronization() async {
+    func delayedInvitationSynchronization() async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        defer { client.beforeInviteResult = nil }
+        let store = try await connected(client)
         defer { store.shutdown() }
         let task = await observeInvitations(client, store: store)
         defer { task.cancel() }
@@ -471,7 +531,7 @@ struct CallStoreTests {
     @Test("同期前に取り消した招待は古いpending行が届いても復活しない")
     func cancellationBeforeSynchronization() async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        let store = try await connected(client)
         defer { store.shutdown() }
         let task = await observeInvitations(client, store: store)
         defer { task.cancel() }
@@ -490,11 +550,11 @@ struct CallStoreTests {
     }
 
     @Test("DMと未接続の通話には手動招待を送らない")
-    func rejectsDMAndDisconnected() async {
+    func rejectsDMAndDisconnected() async throws {
         let client = FakeCallClient()
         var dm = channel
         dm.is_dm = true
-        let store = await connected(client, channel: dm)
+        let store = try await connected(client, channel: dm)
         let members = [Person(id: "other", user_name: "other", display_name: "相手")]
         #expect(store.invitationCandidates(members: members).isEmpty)
         #expect(!(await store.invite(userIDs: ["other"], members: members, channelID: channel.id)))
@@ -503,10 +563,32 @@ struct CallStoreTests {
         #expect(client.inviteRequests.isEmpty)
     }
 
-    @Test("通話を切り替えた後に古い招待の結果を表示しない")
-    func ignoresLateInvitationResult() async {
+    @Test("同じ会話で通話を切り替えても、成功した招待取消を同期の遅れで復活させない")
+    func cancellationSurvivesCallReplacement() async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        let store = try await connected(client)
+        defer { client.beforeCancelResult = nil; store.shutdown() }
+        let observing = await observeInvitations(client, store: store)
+        defer { observing.cancel() }
+        let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
+                                        status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
+        await deliverInvitations([invitation], client: client)
+        client.beforeCancelResult = {
+            store.finish()
+            do { try await waitForCallDelivery(client) { store.start(channel: channel) } }
+            catch { Issue.record(error) }
+        }
+        await store.cancelInvitation(invitation)
+        await deliverInvitations([invitation], client: client)
+        #expect(store.ready && store.pendingOutgoing().isEmpty)
+        #expect(client.cancelledInvitations == [invitation.id])
+    }
+
+    @Test("通話を切り替えた後に古い招待の結果を表示しない")
+    func ignoresLateInvitationResult() async throws {
+        let client = FakeCallClient()
+        defer { client.beforeInviteResult = nil }
+        let store = try await connected(client)
         defer { store.shutdown() }
         client.inviteResult = [CreatedCallInvitation(id: "invite", invitee_id: "other")]
         client.beforeInviteResult = {
@@ -523,9 +605,9 @@ struct CallStoreTests {
     }
 
     @Test("サーバーが一部または全員を招待しなかった場合を伝える", arguments: [0, 1])
-    func partialInvitations(count: Int) async {
+    func partialInvitations(count: Int) async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        let store = try await connected(client)
         defer { store.shutdown() }
         let members = ["one", "two"].map { Person(id: $0, user_name: $0, display_name: $0) }
         client.inviteResult = count == 0 ? [] : [CreatedCallInvitation(id: "invite", invitee_id: "one")]
@@ -536,9 +618,9 @@ struct CallStoreTests {
     }
 
     @Test("自分の呼び出しを取り消し、失敗時は再試行できる")
-    func cancelInvitation() async {
+    func cancelInvitation() async throws {
         let client = FakeCallClient()
-        let store = await connected(client)
+        let store = try await connected(client)
         defer { store.shutdown() }
         let invitation = CallInvitation(id: "invite", channel_id: channel.id, inviter_id: "me", invitee_id: "other",
                                         status: "pending", expires_at: Date.now.addingTimeInterval(30).ISO8601Format())
@@ -583,7 +665,7 @@ struct CallStoreTests {
     }
 
     @Test("マイク拒否時は招待を承認せず入室もしない")
-    func deniedMicrophone() async {
+    func deniedMicrophone() async throws {
         let client = FakeCallClient()
         let media = FakeCallMedia()
         let store = CallStore(client: client, userID: "me", makeMedia: { media }, permission: { false })
@@ -661,7 +743,7 @@ struct CallStoreTests {
     }
 
     @Test("切断後にメディアを残さず終了し、再入室できる")
-    func streamFailure() async {
+    func streamFailure() async throws {
         let client = FakeCallClient()
         client.events = [.room(CallRoom(participants: [], max_participants: 6, ice_servers: []))]
         client.failStream = true

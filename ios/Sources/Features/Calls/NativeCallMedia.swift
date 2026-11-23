@@ -22,10 +22,13 @@ protocol CallWaitingAudio: AnyObject {
 
 @MainActor
 final class NativeCallWaitingAudio: CallWaitingAudio {
+    private let onInput: (@Sendable () -> Void)?
     private var engine: AVAudioEngine?
     private var observer: (any NSObjectProtocol)?
     private var generation = UUID()
     var isRunning: Bool { engine?.isRunning == true }
+
+    init(onInput: (@Sendable () -> Void)? = nil) { self.onInput = onInput }
 
     func start(failed: @escaping @MainActor () -> Void) throws {
         guard engine == nil else { return }
@@ -35,7 +38,8 @@ final class NativeCallWaitingAudio: CallWaitingAudio {
         guard format.sampleRate > 0, format.channelCount > 0 else { throw ZooError.invalidResponse }
         // 待機中も通話の音声入力を稼働させる。音声は保存・送信せず、WebRTCの音声入出力開始時に譲る。
         // AVFAudioの音声スレッドで呼ばれるため、MainActorの隔離を継承させない。
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable _, _ in }
+        let onInput = onInput
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable _, _ in onInput?() }
         self.engine = engine
         do { try engine.start() }
         catch { stop(); throw error }
@@ -326,15 +330,29 @@ final class NativeCallMedia: NSObject, CallMedia {
                     peer.state = .reconnecting
                     onPeerState?(id, .reconnecting)
                     peer.sendingDescription = true
+                    defer {
+                        if generation == epoch, peers[id] === peer, peer.sendingDescription {
+                            peer.sendingDescription = false
+                            peer.localCandidates.removeAll()
+                        }
+                    }
                     peer.connection.restartIce()
                     let sdp = try await description(peer.connection, offer: true)
+                    guard generation == epoch, peers[id] === peer, peer.recoveryID == recoveryID else { return }
                     try await setDescription(peer.connection, sdp: sdp, type: .offer, local: true)
                     guard generation == epoch, peers[id] === peer else { return }
+                    if peer.recoveryID != recoveryID {
+                        // 接続復旧で不要になった未送信offerを残すと、次の交渉を開始できない。
+                        if peer.connection.signalingState == .haveLocalOffer {
+                            try await setDescription(peer.connection, sdp: "", type: .rollback, local: true)
+                        }
+                        return
+                    }
                     sendDescription(id, peer: peer, type: "offer", sdp: sdp)
                     scheduleRecovery(id, delay: restartTimeout)
                 }
             } catch {
-                guard !Task.isCancelled, let self, generation == epoch, peers[id] === peer else { return }
+                guard !Task.isCancelled, let self, generation == epoch, peers[id] === peer, peer.recoveryID == recoveryID else { return }
                 failed?()
             }
         }

@@ -36,7 +36,10 @@ final class ConversationStore {
     private var uploadedAttachmentIDs: [UUID: String] = [:]
     var sendErrors: [String: String] = [:]
     var actionError: String?
-    var focusedMessageID: String?
+    var focusedMessageID: String? {
+        didSet { followsFocusedMessageToLatest = false }
+    }
+    private(set) var followsFocusedMessageToLatest = false
     @ObservationIgnored var onExpiredSession: (() -> Void)?
     @ObservationIgnored var onAccessRevoked: (() -> Void)?
     @ObservationIgnored var onRead: (() -> Void)?
@@ -54,7 +57,7 @@ final class ConversationStore {
     private var reactionErrors: [String: String] = [:]
     private var active = true
     private var streamGeneration = UUID()
-    private var accessGeneration = UUID()
+    private(set) var accessGeneration = UUID()
     private var localWrites: [String: Message] = [:]
     private var remoteMessages: [Message] = []
     private var deletedIDs: Set<String> = []
@@ -209,6 +212,8 @@ final class ConversationStore {
         uploadedAttachmentIDs = [:]
         pendingSends = [:]
         uploadStatus = [:]
+        sending = []
+        mutationInProgress = false
     }
 
     func update(_ channel: Channel) {
@@ -330,8 +335,9 @@ final class ConversationStore {
         var rows = Dictionary(snapshot.filter { $0.channel_id == channel.id }.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
         for (id, local) in localWrites {
             if let remote = rows[id], remote.deleted_at != nil ||
-                (ZooDate.parse(remote.updated_at ?? remote.created_at) ?? .distantPast) >=
-                (ZooDate.parse(local.updated_at ?? local.created_at) ?? .distantPast) {
+                (ZooDate.parse(remote.updated_at ?? remote.created_at) ?? .distantPast) >
+                (ZooDate.parse(local.updated_at ?? local.created_at) ?? .distantPast) ||
+                (remote.content == local.content && remote.updated_at == local.updated_at && remote.created_at == local.created_at) {
                 localWrites[id] = nil
             } else {
                 var message = local
@@ -340,7 +346,8 @@ final class ConversationStore {
             }
         }
         for id in deletedIDs {
-            if rows[id] == nil || rows[id]?.deleted_at != nil { deletedIDs.remove(id) }
+            // 別フィードでの欠落を削除確認にせず、明示的な墓標かストア終了まで保持する。
+            if rows[id]?.deleted_at != nil { deletedIDs.remove(id) }
             rows[id] = nil
         }
         rows = rows.filter { $0.value.deleted_at == nil }
@@ -378,7 +385,7 @@ final class ConversationStore {
         pendingSends[key] = pending
         sending.insert(key)
         sendErrors[key] = nil
-        defer { sending.remove(key); uploadStatus[key] = nil }
+        defer { if epoch == accessGeneration { sending.remove(key); uploadStatus[key] = nil } }
         do {
             var uploaded: [MessageAttachment] = []
             for (index, attachment) in attachments.enumerated() {
@@ -417,6 +424,7 @@ final class ConversationStore {
             draftAttachments[key]?.removeAll { attachmentIDs.contains($0.id) }
             for id in attachmentIDs { uploadedAttachmentIDs[id] = nil }
             focusedMessageID = message.id
+            followsFocusedMessageToLatest = true
         } catch {
             guard active, epoch == accessGeneration, !Task.isCancelled, !(error is CancellationError) else { return }
             if case ZooError.expiredSession = error { onExpiredSession?(); return }
@@ -428,7 +436,7 @@ final class ConversationStore {
         guard canPost, message.user_id == userID, validContent(content), !mutationInProgress else { return false }
         let epoch = accessGeneration
         mutationInProgress = true
-        defer { mutationInProgress = false }
+        defer { if epoch == accessGeneration { mutationInProgress = false } }
         do {
             let updated = try await client.edit(id: message.id, content: content)
             try Task.checkCancellation()
@@ -444,7 +452,7 @@ final class ConversationStore {
         guard canPost, message.user_id == userID, !mutationInProgress else { return }
         let epoch = accessGeneration
         mutationInProgress = true
-        defer { mutationInProgress = false }
+        defer { if epoch == accessGeneration { mutationInProgress = false } }
         do {
             try await client.delete(id: message.id)
             try Task.checkCancellation()

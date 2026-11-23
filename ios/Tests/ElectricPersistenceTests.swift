@@ -32,6 +32,22 @@ private func subsetData(_ numbers: [Int], parent: String? = nil) throws -> Data 
 
 @Suite("SwiftDataの同期キャッシュ", .timeLimit(.minutes(1)))
 struct SyncCacheTests {
+    @Test("旧形式の削除では読出し後に保存された行を消さない")
+    func removesOnlyTheReadRevision() async throws {
+        let cache = try await SyncCache.open(inMemory: true)
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        let key = "snapshot:api/shapes/notifications"
+        let old = Data("旧形式".utf8), fresh = Data("新形式".utf8)
+        try await cache.store(old, resource: key, lease: lease)
+        let read = try #require(await cache.loadVersioned(key, lease: lease))
+        try await cache.store(fresh, resource: key, lease: lease)
+        try await cache.remove(key, matching: read.revision, lease: lease)
+        #expect(try await cache.load(key, lease: lease) == fresh)
+        let current = try #require(await cache.loadVersioned(key, lease: lease))
+        try await cache.remove(key, matching: current.revision, lease: lease)
+        #expect(try await cache.load(key, lease: lease) == nil)
+    }
+
     @Test("データと同期位置を保存し、コンテナを開き直して復元する")
     func reopensDiskStore() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -319,6 +335,71 @@ struct ElectricProtocolTests {
 @MainActor
 @Suite("永続同期の通信経路", .timeLimit(.minutes(1)))
 struct PersistentSyncIntegrationTests {
+    @Test("保存を省略する204応答でも待機中の権限失効後にはキャッシュを再配信しない")
+    func unchangedMessageResponseRespectsRevocation() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let sync = try await session(harness)
+        var state = MessageSyncState()
+        state.shape.handle = "h"; state.shape.offset = "100_0"; state.shape.isLive = true
+        state.shape.rows = ["k1": syncRow(1)]
+        state.windows["root"] = MessageWindow(parentID: nil, limit: 50, hasMore: false)
+        try await sync.store(state, key: "messages-v1:" + syncChannel, channelID: syncChannel)
+        let started = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
+        defer { started.continuation.finish(); release.continuation.finish() }
+        harness.stub { _ in
+            started.continuation.yield(())
+            var iterator = release.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            return (204, ["electric-handle": "h", "electric-offset": "100_0"], Data())
+        }
+        var received = 0
+        let observing = Task {
+            defer { started.continuation.finish() }
+            try await MessageSync(api: harness.api, sync: sync, channelID: syncChannel).observe(MessageFeedRequest()) { _ in received += 1 }
+        }
+        defer { observing.cancel() }
+        var iterator = started.stream.makeAsyncIterator()
+        try #require(await iterator.next() != nil)
+        #expect(received == 1)
+        try await sync.revokeChannel(syncChannel)
+        release.continuation.finish()
+        await #expect(throws: CancellationError.self) { try await observing.value }
+        #expect(received == 1)
+    }
+
+    @Test("変化のない204応答では保存せず、カーソルだけの変更は保存する")
+    func skipsUnchangedMessagePersistence() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let saves = Mutex(0)
+        let cache = try await SyncCache.open(inMemory: true, beforeSave: { saves.withLock { $0 += 1 } })
+        let lease = try await cache.activate(connection: "connection", user: syncUser)
+        let sync = SyncSession(cache: cache, lease: lease)
+        var state = MessageSyncState()
+        state.shape.handle = "h"; state.shape.offset = "100_0"; state.shape.isLive = true
+        state.shape.rows = ["k1": syncRow(1)]
+        state.windows["root"] = MessageWindow(parentID: nil, limit: 50, hasMore: false)
+        let key = "messages-v1:" + syncChannel
+        try await sync.store(state, key: key, channelID: syncChannel)
+        saves.withLock { $0 = 0 }
+        let requests = Mutex(0)
+        harness.stub { _ in
+            let count = requests.withLock { $0 += 1; return $0 }
+            if count == 4 { throw CancellationError() }
+            if count <= 3 { #expect(saves.withLock { $0 } == 0) }
+            var headers = ["electric-handle": "h", "electric-offset": "100_0"]
+            if count == 3 { headers["electric-cursor"] = "次のカーソル" }
+            return (204, headers, Data())
+        }
+        await #expect(throws: (any Error).self) {
+            try await MessageSync(api: harness.api, sync: sync, channelID: syncChannel).observe(MessageFeedRequest()) { _ in }
+        }
+        #expect(requests.withLock { $0 } == 4)
+        #expect(saves.withLock { $0 } == 1)
+        #expect(try await sync.load(key, as: MessageSyncState.self)?.shape.cursor == "次のカーソル")
+    }
+
     private func session(_ harness: ChatHarness) async throws -> SyncSession {
         let cache = try await SyncCache.open(inMemory: true)
         let lease = try await cache.activate(connection: SyncCache.connectionKey(harness.api.settings), user: syncUser)
@@ -603,6 +684,8 @@ struct PersistentSyncIntegrationTests {
                 if predicate.contains("created_at <") {
                     let parameters = try JSONDecoder().decode([String: String].self, from: Data((query["subset__params"] ?? "").utf8))
                     #expect(parameters.keys.sorted() == ["1", "2"])
+                    #expect(parameters["1"] == syncRow(51)["created_at"]?.text)
+                    #expect(parameters["2"] == syncRow(51)["id"]?.text)
                     #expect(predicate.contains("created_at < $1"))
                     #expect(predicate.contains("id < $2"))
                 }

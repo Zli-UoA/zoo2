@@ -12,7 +12,62 @@ struct RemoteImageTests {
         return result
     }
 
-    @MainActor private final class Clock { var value = Date() }
+    @MainActor private final class Clock {
+        var value = Date()
+        var uptime: TimeInterval = 0
+        func advance(_ seconds: TimeInterval) { value.addTimeInterval(seconds); uptime += seconds }
+    }
+
+    @Test("端末時計を戻しても更新間隔と再試行間隔は延びない")
+    func refreshAndRetryUseMonotonicTime() async throws {
+        let folder = try folder()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
+        let clock = Clock(), requests = Mutex(0)
+        let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
+            session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime })
+        defer { store.close() }
+        harness.stub { _ in
+            let count = requests.withLock { $0 += 1; return $0 }
+            if count == 2 { throw URLError(.notConnectedToInternet) }
+            return (200, [:], bytes)
+        }
+        await store.load(url)
+        clock.value.addTimeInterval(-3600)
+        clock.uptime = 299
+        await store.load(url)
+        #expect(requests.withLock { $0 } == 1)
+        clock.uptime = 300
+        await store.load(url)
+        #expect(requests.withLock { $0 } == 2)
+        clock.value.addTimeInterval(-3600)
+        clock.uptime = 329
+        await store.load(url)
+        #expect(requests.withLock { $0 } == 2)
+        clock.uptime = 330
+        await store.load(url)
+        #expect(requests.withLock { $0 } == 3)
+    }
+
+    @Test("未来の確認日時を持つ保存画像は表示しつつアイコンだけ更新する", arguments: [RemoteImagePolicy.refreshing, .stored])
+    func revalidatesFutureDiskTimestamp(policy: RemoteImagePolicy) async throws {
+        let folder = try folder()
+        defer { withExtendedLifetime(folder) {} }
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let bytes = try #require(PreviewImage.data(for: "/stamp.png"))
+        let disk = RemoteImageDiskCache(directory: folder.url)
+        try await disk.store(RemoteImageData(bytes: bytes, checkedAt: .now.addingTimeInterval(3600)), for: url, namespace: "利用者")
+        let requests = Mutex(0)
+        harness.stub { _ in requests.withLock { $0 += 1 }; throw URLError(.notConnectedToInternet) }
+        let store = RemoteImageStore(namespace: "利用者", disk: disk, session: harness.api.transport.session)
+        defer { store.close() }
+        await store.load(url, policy: policy)
+        #expect(store.state(for: url).image != nil)
+        #expect(requests.withLock { $0 } == (policy == .refreshing ? 1 : 0))
+    }
 
     @Test("再表示では残りの有効時間でアイコンを更新し、保存スタンプは再取得しない", arguments: [RemoteImagePolicy.refreshing, .stored])
     func schedulesRefreshFromLastCheck(policy: RemoteImagePolicy) async throws {
@@ -29,15 +84,15 @@ struct RemoteImageTests {
         let clock = Clock()
         var waits: [TimeInterval] = []
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                     session: harness.api.transport.session, now: { clock.value }, sleep: { delay in
+                                     session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime }, sleep: { delay in
             waits.append(delay)
             if waits.count == 2 { throw CancellationError() }
-            clock.value.addTimeInterval(delay)
+            clock.advance(delay)
         })
         defer { store.close() }
         await store.load(url, policy: policy)
         let state = store.state(for: url), image = try #require(store.state(for: url).image)
-        clock.value.addTimeInterval(299)
+        clock.advance(299)
         await store.watch([url: state], policy: policy)
         #expect(waits == (policy == .refreshing ? [1, 300] : [300, 300]))
         #expect(requests.withLock { $0 } == (policy == .refreshing ? 2 : 1))
@@ -54,7 +109,7 @@ struct RemoteImageTests {
         let clock = Clock()
         var waits: [TimeInterval] = []
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                     session: harness.api.transport.session, now: { clock.value }, sleep: { delay in
+                                     session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime }, sleep: { delay in
             waits.append(delay)
             throw CancellationError()
         })
@@ -62,7 +117,7 @@ struct RemoteImageTests {
         harness.stub { _ in (200, [:], bytes) }
         await store.load(url)
         let state = store.state(for: url), image = try #require(store.state(for: url).image)
-        clock.value.addTimeInterval(301)
+        clock.advance(301)
         harness.stub { _ in throw URLError(.notConnectedToInternet) }
         await store.watch([url: state])
         #expect(waits == [30])
@@ -78,7 +133,7 @@ struct RemoteImageTests {
         let clock = Clock()
         var waits: [TimeInterval] = []
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                     session: harness.api.transport.session, now: { clock.value }, sleep: { delay in
+                                     session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime }, sleep: { delay in
                                          waits.append(delay)
                                          throw CancellationError()
                                      })
@@ -102,7 +157,7 @@ struct RemoteImageTests {
         let watching = Task { await store.watch([url: failed, secondURL: store.state(for: secondURL)]) }
         var iterator = started.stream.makeAsyncIterator()
         try #require(await iterator.next() != nil)
-        clock.value.addTimeInterval(35)
+        clock.advance(35)
         release.continuation.finish()
         await watching.value
         #expect(waits == [0])
@@ -164,13 +219,13 @@ struct RemoteImageTests {
         let next = changed ? try #require(PreviewImage.data(for: "/wide.png")) : first
         let clock = Clock()
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                     session: harness.api.transport.session, now: { clock.value })
+                                     session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime })
         defer { store.close() }
         harness.stub { _ in (200, [:], first) }
         await store.load(url)
         let state = store.state(for: url), image = try #require(store.state(for: url).image)
         let inline = try #require(state.inlineImage(height: 24))
-        clock.value.addTimeInterval(301)
+        clock.advance(301)
         let requested = AsyncStream<Void>.makeStream(), release = AsyncStream<Void>.makeStream()
         harness.stub { _ in
             requested.continuation.yield(())
@@ -189,7 +244,7 @@ struct RemoteImageTests {
         #expect((state.inlineImage(height: 24) === inline) == !changed)
         #expect(state.image != nil)
 
-        clock.value.addTimeInterval(301)
+        clock.advance(301)
         let displayed = state.image
         harness.stub { _ in throw URLError(.notConnectedToInternet) }
         await store.load(url)
@@ -210,17 +265,17 @@ struct RemoteImageTests {
         }
         let clock = Clock()
         let store = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                     session: harness.api.transport.session, now: { clock.value })
+                                     session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime })
         await store.load(url, policy: .stored)
         let image = try #require(store.state(for: url).image)
-        clock.value.addTimeInterval(31 * 24 * 60 * 60)
+        clock.advance(31 * 24 * 60 * 60)
         await store.load(url, policy: .stored)
         #expect(store.state(for: url).image === image)
         #expect(requests.withLock { $0 } == 1)
         store.close()
 
         let reopened = RemoteImageStore(namespace: "利用者", disk: RemoteImageDiskCache(directory: folder.url),
-                                        session: harness.api.transport.session, now: { clock.value })
+                                        session: harness.api.transport.session, now: { clock.value }, uptime: { clock.uptime })
         defer { reopened.close() }
         await reopened.load(url, policy: .stored)
         #expect(reopened.state(for: url).image != nil)

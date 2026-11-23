@@ -66,6 +66,7 @@ extension HTTPTransport {
         defer { bytes.task.cancel() }
         guard let response = rawResponse as? HTTPURLResponse else { throw ZooError.invalidResponse }
         if response.statusCode == 409 {
+            try Task.checkCancellation()
             try await receive(Data(), response)
             return .complete
         }
@@ -77,6 +78,7 @@ extension HTTPTransport {
                 data.append(byte)
                 guard data.count <= 64 * 1024 * 1024 else { throw ZooError.invalidResponse }
             }
+            try Task.checkCancellation()
             try await receive(data, response)
             return .longPolling
         }
