@@ -50,10 +50,11 @@ export const AuthZAccounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("img", { name: ":@alice:" })).toBeVisible();
-    await waitFor(() => expect(canvasElement.querySelectorAll("img")).toHaveLength(2));
-    await waitFor(() => {
-      for (const image of canvasElement.querySelectorAll<HTMLImageElement>("img")) {
-        expect(image.naturalWidth).toBeGreaterThan(0);
+    await waitFor(async () => {
+      const images = [...canvasElement.querySelectorAll<HTMLImageElement>("img")];
+      await expect(images).toHaveLength(2);
+      for (const image of images) {
+        await expect(image.naturalWidth).toBeGreaterThan(0);
       }
     });
     await expect(canvas.getByText("AuthZの表示名")).toBeVisible();
