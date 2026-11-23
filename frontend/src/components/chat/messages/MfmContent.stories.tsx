@@ -61,6 +61,24 @@ export const AuthZAccounts: Story = {
     await expect(canvasElement).toHaveTextContent(":@unknown:");
   },
 };
+export const SelfMentions: Story = {
+  args: {
+    content: "@alice @bob @channel @here",
+    me: "alice",
+  },
+  decorators: [
+    (Story) => (
+      <MfmAccountsProvider
+        accounts={[
+          { username: "alice", display_name: "アリス", avatar_url: "/icons/icon-192.png" },
+          { username: "bob", display_name: "ボブ", avatar_url: null },
+        ]}
+      >
+        <Story />
+      </MfmAccountsProvider>
+    ),
+  ],
+};
 export const InlineLinks: Story = {
   args: {
     content:

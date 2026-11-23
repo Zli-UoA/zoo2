@@ -391,6 +391,7 @@
         "Headings",
         "SharedShortcodes",
         "AuthZAccounts",
+        "SelfMentions",
         "KitchenBody",
         "KitchenTaggedEmoji"
       ]

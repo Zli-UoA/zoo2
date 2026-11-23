@@ -85,6 +85,8 @@ const sheetActionClass =
 export interface MessageRowProps {
   item: MessageItem;
   isOwn: boolean;
+  /** 自分宛てメンションの強調に使う閲覧者 ID。 */
+  mentionUserId?: string | null;
   canDelete?: boolean;
   isEditing: boolean;
   editingText: string;
@@ -174,6 +176,7 @@ export function MessageBody({
   emojis,
   previews = "auto",
   mentions,
+  me,
   components,
 }: {
   emojis?: Record<string, DisplayEmoji>;
@@ -187,6 +190,7 @@ export function MessageBody({
   previews?: "auto" | "manual";
   /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
   mentions?: MentionAllowlist;
+  me?: string;
 }) {
   // 部品は MessageAppContent が描画する。本文を隠すフラグがあれば、本文は出さない
   // 読めない部品（`{}` など）は、ないものとして旧形式の表示に戻す（MessageAppContent と同じ判定）
@@ -206,7 +210,7 @@ export function MessageBody({
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} emojis={emojis} mentions={mentions} />
+        <MfmContent content={content} emojis={emojis} mentions={mentions} me={me} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
       {previews === "manual" ? (
@@ -316,6 +320,7 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
 export function MessageRow({
   item,
   isOwn,
+  mentionUserId,
   canDelete = isOwn,
   isEditing,
   editingText,
@@ -351,6 +356,7 @@ export function MessageRow({
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
   // 暗号化メッセージのメンションは、本文の `@name` ではなく、復号した `mentions` だけで表示する。
   const mentionUserNames = useMentionUserNames();
+  const mentionMe = mentionUserId ? mentionUserNames.get(mentionUserId) : undefined;
   const decryptedMentions =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.mentions : undefined;
   const mentionAllowlist = useMemo(
@@ -572,6 +578,7 @@ export function MessageRow({
                     editedAt={message.updated_at}
                     previews={resolvedDecryption ? "manual" : "auto"}
                     mentions={mentionAllowlist}
+                    me={mentionMe}
                   />
                 </>
               )}

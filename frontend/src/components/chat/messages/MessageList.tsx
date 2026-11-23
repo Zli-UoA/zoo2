@@ -1328,6 +1328,7 @@ function MessageScrollViewport({
                 ) : null}
                 <MessageRow
                   item={item}
+                  mentionUserId={currentUserId}
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(

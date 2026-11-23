@@ -42,6 +42,8 @@ export interface MfmContentProps {
    * 省くと（平文のメッセージ）、今までどおり本文の `@name` をすべてメンションとして表示する。
    */
   mentions?: MentionAllowlist;
+  /** 現在のユーザー名。該当するメンションと `@channel` / `@here` を強調する。 */
+  me?: string;
   /**
    * 検索結果で強調する語。本文の文字（リンクの文字を含む）の中で当たった部分を `<mark>` にする。
    * コード・数式・絵文字・メンションの中は強調しない。
@@ -61,6 +63,7 @@ function text(
   content: string,
   mentions?: MentionAllowlist,
   highlight?: readonly string[],
+  me?: string,
 ): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
@@ -70,7 +73,13 @@ function text(
           highlightText(segment.value.replace(/^https?:\/\//i, ""), highlight),
         )
       ) : segment.kind === "mention" && (!mentions || isAllowedMention(segment.value, mentions)) ? (
-        <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
+        <span
+          className={
+            isSelfMention(segment.value, me)
+              ? "rounded bg-primary px-0.5 font-medium text-primary-foreground"
+              : "rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground"
+          }
+        >
           <AccountGlyph name={segment.value.slice(1)} mention />
         </span>
       ) : (
@@ -78,6 +87,16 @@ function text(
       )}
     </Fragment>
   ));
+}
+
+function isSelfMention(token: string, me?: string): boolean {
+  const normalized = token.toLowerCase();
+  const name = token.slice(1).split("@", 1)[0]?.toLowerCase();
+  return (
+    normalized === "@channel" ||
+    normalized === "@here" ||
+    (!!me && name === me.toLowerCase())
+  );
 }
 
 // Custom emoji live in an operator-managed same-origin registry, not on an arbitrary remote host.
@@ -215,7 +234,7 @@ function renderNode(
     case "text":
       return inLink
         ? highlightText(node.props.text, options.highlight)
-        : text(node.props.text, options.mentions, options.highlight);
+        : text(node.props.text, options.mentions, options.highlight, options.me);
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
@@ -276,7 +295,7 @@ function renderNode(
           )
         : inLink
           ? node.props.acct
-          : text(node.props.acct, options.mentions);
+          : text(node.props.acct, options.mentions, undefined, options.me);
     }
     case "hashtag":
       return inLink ? (
