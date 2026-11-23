@@ -36,6 +36,7 @@ export function AccountGlyph({ name, mention = false }: { name: string; mention?
       className="inline-flex max-w-full items-baseline gap-0.5 align-baseline"
       title={`@${account.username}`}
     >
+      {mention ? <span className="sr-only">@{account.username}</span> : null}
       <span
         role="img"
         aria-label={mention ? undefined : `:@${name}:`}

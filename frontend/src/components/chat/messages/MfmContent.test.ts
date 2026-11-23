@@ -56,6 +56,7 @@ describe("MfmContent", () => {
     );
     expect(html).toContain('aria-label=":@alice:"');
     expect(html).toContain("AuthZ Name");
+    expect(html).toContain('class="sr-only">@alice</span>');
     expect(html).toContain(":@unknown:");
     expect(html).toContain("@unknown");
     expect(html).toContain("<code");

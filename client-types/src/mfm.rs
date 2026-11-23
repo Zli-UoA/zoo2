@@ -813,6 +813,8 @@ mod tests {
         );
         let text: String = spans.iter().map(|span| span.content.as_str()).collect();
         assert!(text.contains("AuthZ Name"));
+        assert!(text.contains("◉ AuthZ Name"));
+        assert!(!text.contains("@◉ AuthZ Name"));
         assert!(text.contains(":@unknown:"));
         assert!(text.contains(":@alice: @alice"));
         assert!(text.ends_with(":@alice:"));
