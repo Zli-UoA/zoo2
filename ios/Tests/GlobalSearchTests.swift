@@ -264,4 +264,22 @@ struct GlobalSearchTests {
         search.setFilters(filters)
         #expect(search.inflight == nil && calls.withLock { $0 } == 1)
     }
+
+    @Test("閲覧権限を失う前に送った取得の応答でも、そのチャンネルの結果を戻さない")
+    func revokedChannelIsNotRestored() async throws {
+        let harness = try ChatHarness()
+        defer { harness.close() }
+        let gate = AsyncStream<Void>.makeStream()
+        harness.stub { _ in
+            for await _ in gate.stream { break }
+            return (200, [:], Self.page([Self.messageJSON("m1")]))
+        }
+        let search = store(harness)
+        search.text = "a"
+        search.submit()
+        search.revokeChannel(Self.channelID)
+        gate.continuation.yield(())
+        await search.inflight?.value
+        #expect(search.phase == .loaded && search.items.isEmpty)
+    }
 }
