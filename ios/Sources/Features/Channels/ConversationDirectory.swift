@@ -108,6 +108,10 @@ struct ConversationDirectory: View {
                     unreadOnly.toggle()
                 }.accessibilityValue(unreadOnly ? "有効" : "無効")
             }
+            ToolbarItem(placement: .topBarLeading) {
+                Button("全文検索", systemImage: "text.magnifyingglass") { workspace.presentedSheet = .search }
+                    .accessibilityIdentifier("global-search-open")
+            }
         }
         .appSearch(text: $search, prompt: directMessages ? "DMを検索" : "チャンネルを検索", identifier: "conversation") {
             if directMessages {

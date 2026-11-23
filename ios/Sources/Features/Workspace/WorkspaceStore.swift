@@ -6,7 +6,7 @@ enum WorkspaceTab: Hashable {
 }
 
 enum WorkspaceSheet: Identifiable {
-    case createChannel, createDirectMessage, browseChannels, profile
+    case createChannel, createDirectMessage, browseChannels, profile, search
     case draftDirectMessage(String)
     case channelDetails(Channel)
     case messageActions(MessageActionSheet)
@@ -18,6 +18,7 @@ enum WorkspaceSheet: Identifiable {
         case .draftDirectMessage: "draft-dm"
         case .browseChannels: "browse-channels"
         case .profile: "profile"
+        case .search: "search"
         case .channelDetails(let channel): "details-\(channel.id)"
         case .messageActions(let sheet): sheet.id.uuidString
         }
@@ -56,6 +57,7 @@ final class WorkspaceStore {
     let client: any ChatClient
     let inbox: InboxStore
     let threads: ChannelThreads
+    let search: GlobalSearchStore
     let calls: CallStore
     @ObservationIgnored weak var systemCalls: SystemCallController?
     let videoPlayback = AttachmentVideoPlayback()
@@ -147,10 +149,12 @@ final class WorkspaceStore {
         recentEmojis = RecentEmojiStore(server: client.serverURL, userID: user.id, defaults: recentEmojiDefaults)
         inbox = InboxStore(client: client, userID: user.id)
         threads = ChannelThreads(client: client)
+        search = GlobalSearchStore(client: client)
         self.calls.onWillStart = { [weak self] in self?.videoPlayback.stop() }
         self.calls.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         inbox.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
         threads.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
+        search.onExpiredSession = { [weak self] in self?.onExpiredSession?() }
     }
 
     func name(for channel: Channel) -> String {
@@ -615,6 +619,36 @@ final class WorkspaceStore {
         }
     }
 
+    /// 検索結果を開く。返信は親が未取得でも、親のスレッドを開いてその返信へ移動する。
+    func openSearchResult(_ destination: SearchDestination) async -> Bool {
+        guard let parentID = destination.parentID else {
+            return await openMessage(channelID: destination.channelID, messageID: destination.messageID)
+        }
+        guard active else { return false }
+        let epoch = UUID()
+        destinationGeneration = epoch
+        do {
+            let incoming = try await client.channel(id: destination.channelID)
+            try Task.checkCancellation()
+            let channel = reconcileChannel(incoming)
+            guard active, destinationGeneration == epoch, channel.deleted_at == nil, channel.encrypted != true else { return false }
+            let store = conversation(for: channel)
+            store.update(channel)
+            guard !store.blocked else { throw ZooError.rejected(403, "この会話を閲覧できません。") }
+            addAndOpen(channel, joined: false)
+            // prepareForThread が focusedMessageID を消すので、必ず先に呼ぶ。
+            store.prepareForThread(parentID)
+            store.focusedMessageID = destination.messageID
+            let route = ChatRoute.thread(channelID: channel.id, parentID: parentID, focusComposer: false)
+            if channel.is_dm { dmPath = [.channel(channel.id), route] }
+            else { channelPath = [.channel(channel.id), route] }
+            return true
+        } catch {
+            if destinationGeneration == epoch { report(error) }
+            return false
+        }
+    }
+
     func isChannelAccessCurrent(_ id: String?, since generations: [String: UUID]) -> Bool {
         guard active else { return false }
         guard let id else { return channelRevocationGenerations == generations }
@@ -651,6 +685,7 @@ final class WorkspaceStore {
         groupMembers[id] = nil
         inbox.revokeChannel(id)
         threads.revokeChannel(id)
+        search.revokeChannel(id)
         videoPlayback.stop(in: id)
         if channel == nil {
             calls.revokeChannel(id)
@@ -689,6 +724,7 @@ final class WorkspaceStore {
         calls.shutdown()
         inbox.shutdown()
         threads.shutdown()
+        search.shutdown()
         pinnedChannelIDs = []; pinsError = nil; channelMembers = [:]; memberErrors = [:]
         pinsVersion = nil; pinUpdateError = nil
         channels = []

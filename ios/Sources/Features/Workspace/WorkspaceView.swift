@@ -30,6 +30,7 @@ struct WorkspaceView: View {
             case .createDirectMessage: PeopleView(workspace: workspace)
             case .draftDirectMessage(let content): PeopleView(workspace: workspace, draftContent: content)
             case .browseChannels: ChannelBrowser(workspace: workspace)
+            case .search: GlobalSearchView(workspace: workspace)
             case .channelDetails(let channel): ChannelDetailsView(channel: channel, workspace: workspace)
             case .messageActions(let action):
                 if let message = action.store.message(id: action.message.id) {
