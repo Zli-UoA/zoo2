@@ -1077,6 +1077,7 @@ export function MessagePane({
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived || !threadRoot ? null : currentUserId}
+            viewerId={currentUserId}
             canModerate={canModerate && !threadIsArchived && !!threadRoot}
             reactions={reactionGroups}
             attachments={attachmentsByMessage}
