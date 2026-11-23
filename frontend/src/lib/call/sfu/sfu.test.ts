@@ -9,7 +9,7 @@ import {
   speakerOfTrackName,
   type CfRealtimeApi,
 } from "./cf-realtime-adapter";
-import { speakerOf } from "./livekit-adapter";
+import { SpeakerTracks, speakerOf } from "./livekit-adapter";
 import { isSfuJoinResponse } from "./types";
 
 describe("enableOpusDtx", () => {
@@ -40,6 +40,52 @@ describe("speaker mapping", () => {
     expect(speakerOf(`${sid}.a.b`, "mic")).toBe(sid);
     // 割り当てが変わって identity が変わっても、同じ話者として扱う。
     expect(speakerOf(`${sid}.1`, "mic")).toBe(speakerOf(`${sid}.2`, "mic"));
+  });
+});
+
+describe("SpeakerTracks", () => {
+  const stream = () => ({}) as MediaStream;
+
+  it("keeps the new identity's audio when the old identity's track goes away", () => {
+    const onRemoteAudio = vi.fn();
+    const onRemoteGone = vi.fn();
+    const tracks = new SpeakerTracks({ onRemoteAudio, onRemoteGone });
+    const oldStream = stream();
+    const newStream = stream();
+    tracks.subscribed("TR_old", "sess-1", oldStream);
+    tracks.subscribed("TR_new", "sess-1", newStream);
+    onRemoteAudio.mockClear();
+    // 前の identity が外れて、前のトラックの購読が外れる。
+    tracks.unsubscribed("TR_old");
+    expect(onRemoteGone).not.toHaveBeenCalled();
+    expect(onRemoteAudio).not.toHaveBeenCalled();
+    tracks.unsubscribed("TR_new");
+    expect(onRemoteGone).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("falls back to the remaining track when the current one goes away first", () => {
+    const onRemoteAudio = vi.fn();
+    const onRemoteGone = vi.fn();
+    const tracks = new SpeakerTracks({ onRemoteAudio, onRemoteGone });
+    const oldStream = stream();
+    tracks.subscribed("TR_old", "sess-1", oldStream);
+    tracks.subscribed("TR_new", "sess-1", stream());
+    onRemoteAudio.mockClear();
+    tracks.unsubscribed("TR_new");
+    expect(onRemoteAudio).toHaveBeenCalledWith("sess-1", oldStream);
+    expect(onRemoteGone).not.toHaveBeenCalled();
+  });
+
+  it("reports every speaker on clear and ignores unknown tracks", () => {
+    const onRemoteGone = vi.fn();
+    const tracks = new SpeakerTracks({ onRemoteAudio: vi.fn(), onRemoteGone });
+    tracks.unsubscribed("TR_unknown");
+    tracks.subscribed("TR_a", "a", stream());
+    tracks.subscribed("TR_b", "b", stream());
+    tracks.subscribed("TR_b2", "b", stream());
+    tracks.clear();
+    expect(new Set(onRemoteGone.mock.calls.map(([s]) => s))).toEqual(new Set(["a", "b"]));
+    expect(onRemoteGone).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -179,11 +179,14 @@ async fn join(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
     let lan_client = sfu.is_lan_client(client_ip(&extensions, &headers));
+    let timings = JoinTimingKey::from_headers(&state, &headers);
 
     // 割り当ては、チャンネル行のロックの下で決める（bridge がないときの「部屋に Cloudflare の人がいるか」を
     // 入室と直列化するため）。
+    let begin = std::time::Instant::now();
     let mut tx = db.transaction().await?;
-    lock_channel(&mut tx, &channel_id).await?;
+    JoinTimingKey::record(timings.as_ref(), JoinPhase::Begin, begin);
+    lock_channel(&mut tx, &channel_id, timings.as_ref()).await?;
     let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
     let (Some(RoomMode::Sfu), Some(epoch)) = (me.mode, me.epoch) else {
         return Err(AppError::Conflict("Call is not in SFU mode".into()));
@@ -245,10 +248,12 @@ async fn join(
         // Cloudflare の API は、ロックを持ったまま呼ばない。
         tx.commit().await?;
         let cf_session = sfu.cloudflare.new_session().await?;
+        let begin = std::time::Instant::now();
         let mut tx = db.transaction().await?;
+        JoinTimingKey::record(timings.as_ref(), JoinPhase::Begin, begin);
         // ロックを取り直す。呼んでいるあいだに退出していたら、作ったセッションは使わない
         // （何も流れないので放置してよい）。割り当ても、ロックを外していたあいだに変わりうるので読み直す。
-        lock_channel(&mut tx, &channel_id).await?;
+        lock_channel(&mut tx, &channel_id, timings.as_ref()).await?;
         let me = own_presence(&mut tx, &channel_id, body.session_id, &user.id, true).await?;
         if me.epoch != Some(epoch) || me.mode != Some(RoomMode::Sfu) {
             return Err(AppError::Conflict("Call room changed while joining".into()));
@@ -302,31 +307,97 @@ async fn join(
 }
 
 /// チャンネル行のロック。入室と SFU の割り当てを、このロックで直列化する。
-async fn lock_channel(tx: &mut toasty::Transaction<'_>, channel_id: &str) -> Result<(), AppError> {
+async fn lock_channel(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    timings: Option<&JoinTimingKey>,
+) -> Result<(), AppError> {
     let started = std::time::Instant::now();
     toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
         .bind(channel_id.to_string())
         .exec(&mut *tx)
         .await?;
-    if LOCK_WAIT_RECORDING.load(std::sync::atomic::Ordering::Relaxed) {
-        LOCK_WAITS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(started.elapsed());
+    if let Some(key) = timings {
+        let lock = started.elapsed();
+        // 同じ接続での SQL の往復だけの時間（ロックを取ったあとなので待たない）。ロックの文の時間からこれを
+        // 引いたものが、ロック待ちの目安。計測するときだけ実行する。
+        let rtt_started = std::time::Instant::now();
+        toasty::sql::query("SELECT 1").exec(&mut *tx).await?;
+        let rtt = rtt_started.elapsed();
+        key.push(|t| {
+            t.lock.push(lock);
+            t.round_trip.push(rtt);
+            t.lock_wait.push(lock.saturating_sub(rtt));
+        });
     }
     Ok(())
 }
 
-/// テスト用：`lock_channel`（チャンネル行の FOR UPDATE）にかかった時間を記録するか。本番では使わない。
-static LOCK_WAIT_RECORDING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-static LOCK_WAITS: std::sync::Mutex<Vec<Duration>> = std::sync::Mutex::new(Vec::new());
+/// テスト用（join の計測）：join の各段階にかかった時間を、要求ごとの記録先に残す。開発用の認証が有効な
+/// ときだけ、`X-Test-Join-Timings` ヘッダーで記録先の名前を指定できる。名前ごとに分けるので、同じプロセスで
+/// 並行に動くほかのテストの要求は混ざらない。
+struct JoinTimingKey(String);
 
-/// テスト用（join の計測）：`on` なら、ここから `lock_channel` の時間を記録する。今までに記録した分を返して空にする。
+/// 記録する段階。
+#[derive(Clone, Copy)]
+enum JoinPhase {
+    /// トランザクションの開始（接続のプールからの取得と BEGIN）。
+    Begin,
+}
+
+/// 記録先ごとの、段階ごとの時間。
 #[doc(hidden)]
-pub fn record_lock_waits_for_test(on: bool) -> Vec<Duration> {
-    LOCK_WAIT_RECORDING.store(on, std::sync::atomic::Ordering::Relaxed);
-    std::mem::take(&mut *LOCK_WAITS.lock().unwrap_or_else(|e| e.into_inner()))
+#[derive(Default, Debug, Clone)]
+pub struct JoinTimings {
+    /// トランザクションの開始（接続のプールからの取得と BEGIN の往復）。
+    pub begin: Vec<Duration>,
+    /// チャンネル行の FOR UPDATE の文（ロック待ちと SQL の往復）。
+    pub lock: Vec<Duration>,
+    /// ロックのあと、同じ接続での `SELECT 1`（SQL の往復だけ）。
+    pub round_trip: Vec<Duration>,
+    /// `lock` から `round_trip` を引いたもの（ロック待ちの目安）。
+    pub lock_wait: Vec<Duration>,
+}
+
+static JOIN_TIMINGS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, JoinTimings>>,
+> = std::sync::LazyLock::new(Default::default);
+
+impl JoinTimingKey {
+    fn from_headers(state: &AppState, headers: &HeaderMap) -> Option<Self> {
+        if !state.config.dev_auth_enabled {
+            return None;
+        }
+        headers
+            .get("X-Test-Join-Timings")
+            .and_then(|v| v.to_str().ok())
+            .map(|k| Self(k.to_string()))
+    }
+
+    fn record(key: Option<&Self>, phase: JoinPhase, started: std::time::Instant) {
+        let Some(key) = key else {
+            return;
+        };
+        let elapsed = started.elapsed();
+        key.push(|t| match phase {
+            JoinPhase::Begin => t.begin.push(elapsed),
+        });
+    }
+
+    fn push(&self, f: impl FnOnce(&mut JoinTimings)) {
+        let mut map = JOIN_TIMINGS.lock().unwrap_or_else(|e| e.into_inner());
+        f(map.entry(self.0.clone()).or_default());
+    }
+}
+
+/// テスト用（join の計測）：記録先 `key` に残した時間を取り出して消す。
+#[doc(hidden)]
+pub fn take_join_timings_for_test(key: &str) -> JoinTimings {
+    JOIN_TIMINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(key)
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize, Default)]

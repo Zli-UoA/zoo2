@@ -27,11 +27,59 @@ export function speakerOf(participantIdentity: string, trackName: string): strin
   return dot < 0 ? participantIdentity : participantIdentity.slice(0, dot);
 }
 
+/**
+ * 話者ごとの購読中のトラック。同じ話者（session_id）に、前の割り当ての identity と新しい identity のトラックが
+ * 同時にあることがある（前の identity を外す RemoveParticipant が届くまで）。話者に流す音声は、最後に購読した
+ * トラック。前のトラックの購読が外れても、今流しているトラックでなければ何もしない。今流しているトラックが
+ * 外れたら、残っている最新のトラックに戻し、残りがなければ話者がいなくなったことにする。
+ */
+export class SpeakerTracks {
+  /** trackSid → 話者と音声。挿入順が購読順。 */
+  private tracks = new Map<string, { speaker: string; stream: MediaStream }>();
+  /** 話者 → 今流している trackSid。 */
+  private active = new Map<string, string>();
+
+  constructor(
+    private readonly callbacks: Pick<SfuAdapterCallbacks, "onRemoteAudio" | "onRemoteGone">,
+  ) {}
+
+  subscribed(trackSid: string, speaker: string, stream: MediaStream): void {
+    this.tracks.delete(trackSid);
+    this.tracks.set(trackSid, { speaker, stream });
+    this.active.set(speaker, trackSid);
+    this.callbacks.onRemoteAudio(speaker, stream);
+  }
+
+  unsubscribed(trackSid: string): void {
+    const entry = this.tracks.get(trackSid);
+    if (!entry) return;
+    this.tracks.delete(trackSid);
+    if (this.active.get(entry.speaker) !== trackSid) return;
+    let latest: [string, MediaStream] | null = null;
+    for (const [sid, t] of this.tracks) {
+      if (t.speaker === entry.speaker) latest = [sid, t.stream];
+    }
+    if (latest) {
+      this.active.set(entry.speaker, latest[0]);
+      this.callbacks.onRemoteAudio(entry.speaker, latest[1]);
+    } else {
+      this.active.delete(entry.speaker);
+      this.callbacks.onRemoteGone(entry.speaker);
+    }
+  }
+
+  clear(): void {
+    for (const speaker of this.active.keys()) this.callbacks.onRemoteGone(speaker);
+    this.active.clear();
+    this.tracks.clear();
+  }
+}
+
 export class LiveKitAdapter implements SfuAdapter {
   readonly kind = "livekit" as const;
   private room: Room;
   private localTrack: LocalAudioTrack | null = null;
-  private speakers = new Map<string, string>();
+  private speakers: SpeakerTracks;
   private closed = false;
 
   constructor(
@@ -40,6 +88,7 @@ export class LiveKitAdapter implements SfuAdapter {
     private mic: MediaStreamTrack,
     private readonly callbacks: SfuAdapterCallbacks,
   ) {
+    this.speakers = new SpeakerTracks(callbacks);
     this.room = new Room({
       adaptiveStream: false,
       dynacast: false,
@@ -52,15 +101,15 @@ export class LiveKitAdapter implements SfuAdapter {
       (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
         if (track.kind !== Track.Kind.Audio) return;
         const speaker = speakerOf(participant.identity, publication.trackName);
-        this.speakers.set(publication.trackSid, speaker);
-        this.callbacks.onRemoteAudio(speaker, new MediaStream([track.mediaStreamTrack]));
+        this.speakers.subscribed(
+          publication.trackSid,
+          speaker,
+          new MediaStream([track.mediaStreamTrack]),
+        );
       },
     );
     this.room.on(RoomEvent.TrackUnsubscribed, (_track, publication) => {
-      const speaker = this.speakers.get(publication.trackSid);
-      if (!speaker) return;
-      this.speakers.delete(publication.trackSid);
-      this.callbacks.onRemoteGone(speaker);
+      this.speakers.unsubscribed(publication.trackSid);
     });
     this.room.on(RoomEvent.Disconnected, () => {
       if (!this.closed) this.callbacks.onFailed("livekit_disconnected");
@@ -110,7 +159,6 @@ export class LiveKitAdapter implements SfuAdapter {
 
   close(): void {
     this.closed = true;
-    for (const speaker of new Set(this.speakers.values())) this.callbacks.onRemoteGone(speaker);
     this.speakers.clear();
     // マイクは通話側のもの（Cloudflare に移るときも使う）なので、切断で止めない。
     void this.room.disconnect(false);

@@ -1481,8 +1481,10 @@ CREATE TABLE call_sfu_departures (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- The departure worker claims each SFU's rows separately (sfu_id = $1 ORDER BY id), so rows of one SFU
--- (e.g. LiveKit rows kept while LiveKit is disabled) are never scanned by the other SFU's claim.
+-- The departure worker claims each SFU's rows separately (sfu_id = '<sfu>' ORDER BY id). When that SFU has
+-- few rows, the claim uses this index and does not read the other SFU's rows (e.g. LiveKit rows kept while
+-- LiveKit is disabled). When it has many, the planner may scan the primary key instead and filter out the
+-- other SFU's older rows, at most the other SFU's open departures.
 CREATE INDEX idx_call_sfu_departures_sfu ON call_sfu_departures (sfu_id, id);
 
 -- Every path that deletes call_presence (leave, sweep, kick, channel delete) records SFU departures here,

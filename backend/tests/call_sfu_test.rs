@@ -1267,8 +1267,10 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     }
     assert!(removed, "LiveKit RemoveParticipant was not called");
 
-    // 割り当てを変えたあとの RemoveParticipant が遅れて LiveKit に届いても（打ち切り後に LiveKit が処理した
-    // 場合を含む）、外れるのは前の割り当ての identity だけで、入り直した人の新しい identity は外れない。
+    // 割り当てを変えたあとの RemoveParticipant が遅れて LiveKit に届いても（backend が打ち切ったあとに LiveKit が
+    // 処理した場合を含む）、外れるのは前の割り当ての identity だけで、入り直した人の新しい identity は外れない。
+    // 前の identity への応答は、mock が 60 秒保留する。backend の LiveKit の呼び出しは 10 秒で打ち切るので、
+    // 応答は返らないまま打ち切られる（そのあと LiveKit がその要求を処理しうる状況）。
     let lk_room2 = format!("call-{channel}-{epoch_mesh}");
     let (status, joined) = request(
         &app,
@@ -1282,14 +1284,13 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "livekit");
     let first_identity = token_sub(joined["token"].as_str().unwrap());
-    // 前の identity の RemoveParticipant は、応答を 2 秒遅らせる（そのあいだに入り直す）。
     Mock::given(method("POST"))
         .and(path("/twirp/livekit.RoomService/RemoveParticipant"))
         .and(body_partial_json(json!({"identity": first_identity})))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(json!({}))
-                .set_delay(Duration::from_millis(2000)),
+                .set_delay(Duration::from_secs(60)),
         )
         .with_priority(1)
         .mount(&lk)
@@ -1317,8 +1318,8 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(removing, "the worker did not remove the old identity");
-    // RemoveParticipant の応答を待たずに（ロックはないので待たされない）、同じルームに入り直す。
-    let started = tokio::time::Instant::now();
+    let removal_sent = tokio::time::Instant::now();
+    // 応答を保留したまま（ロックはないので待たされない）、同じルームに入り直す。
     let (status, joined) = request(
         &app,
         &users[3],
@@ -1330,22 +1331,58 @@ async fn sfu_mode_switch_assignment_and_cleanup() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK, "{joined}");
     assert_eq!(joined["sfu"], "livekit");
-    assert!(
-        started.elapsed() < Duration::from_millis(1500),
-        "join waited for RemoveParticipant: {:?}",
-        started.elapsed()
-    );
     let second_identity = token_sub(joined["token"].as_str().unwrap());
     assert_ne!(second_identity, first_identity);
     assert!(second_identity.starts_with(&format!("{}.", sessions[3])));
-    // 遅れた応答が返ったあとも、外す要求は前の identity だけで、新しい identity への要求はない。
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // join が終わった時点で、前の identity の RemoveParticipant はまだ応答待ち（打ち切りの前）。
+    let departure_state = format!(
+        "SELECT attempts::text || ':' || (claimed_until > statement_timestamp() + interval '60 seconds')::text
+         FROM call_sfu_departures WHERE channel_id = $1 AND livekit_identity = '{first_identity}'"
+    );
+    assert!(removal_sent.elapsed() < Duration::from_secs(9));
+    assert_eq!(
+        text(&mut db, &departure_state, &channel).await?,
+        "0:true",
+        "the removal was no longer in flight when join returned"
+    );
+    // backend が打ち切るまで待つ（attempts が増え、再試行待ちになる）。
+    let mut timed_out = false;
+    for _ in 0..60 {
+        if text(&mut db, &departure_state, &channel).await? == "1:false" {
+            timed_out = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(timed_out, "the removal did not time out");
+    // 打ち切られた要求（LiveKit があとで処理しうるもの）も、ほかの要求も、前の identity だけを指す。
+    assert!(remove_participant_calls(&lk, lk_before, &lk_room2, &first_identity).await >= 1);
     assert_eq!(
         remove_participant_calls(&lk, lk_before, &lk_room2, &second_identity).await,
         0,
-        "a late removal targeted the new identity"
+        "a removal targeted the new identity"
     );
-    assert!(remove_participant_calls(&lk, lk_before, &lk_room2, &first_identity).await >= 1);
+    // 新しい割り当ては、新しい identity のまま。
+    assert_eq!(
+        text(
+            &mut db,
+            &format!(
+                "SELECT livekit_identity FROM call_presence WHERE channel_id = $1 AND session_id = '{}'",
+                sessions[3]
+            ),
+            &channel
+        )
+        .await?,
+        second_identity
+    );
+    // 再試行を止める（mock は応答しないので、残すとこのあとの検査に入る）。
+    toasty::sql::statement(
+        "DELETE FROM call_sfu_departures WHERE channel_id = $1 AND livekit_identity = $2",
+    )
+    .bind(channel.as_str())
+    .bind(first_identity.as_str())
+    .exec(&mut db)
+    .await?;
 
     // Cloudflare の close が応答待ちのままでも、LiveKit の後始末は待たない（SFU ごとに確保と処理を分ける）。
     // ほかの検査の件数に入らないよう、別のチャンネル ID で記録する（call_sfu_departures に外部キーはない）。
@@ -1589,6 +1626,7 @@ async fn join_round(
     db: &mut toasty::Db,
     n: usize,
     mode: JoinMode,
+    timings_key: &str,
 ) -> anyhow::Result<Vec<Duration>> {
     let rooms = match mode {
         JoinMode::SeparateRoomsConcurrent => n,
@@ -1645,16 +1683,18 @@ async fn join_round(
         } else {
             None
         };
+        let headers = vec![("X-Test-Join-Timings".to_string(), timings_key.to_string())];
         async move {
             let uri = format!("/api/channels/{channel}/call/sfu/join");
             let started = std::time::Instant::now();
-            let (status, body) = request(
+            let (status, body) = request_with(
                 &app,
                 &user,
                 "POST",
                 &uri,
                 Some(json!({"session_id": session})),
                 ip,
+                &headers,
             )
             .await?;
             anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
@@ -1694,8 +1734,16 @@ async fn join_round(
 /// 部屋で同時に出したときの、要求ごとの時間を比べる。join はチャンネル行を FOR UPDATE でロックするので、
 /// 「同じ部屋で同時」と「別々の部屋で同時」の差が、チャンネル行のロック待ち。半分は LAN（LiveKit）、
 /// 半分は Cloudflare（セッションを作る mock の遅延 0 / 100 ミリ秒）。DB は共有の DB をそのまま使う。
-/// 各条件を 3 回測る。最初の回（10 人、接続の準備を含む）は cold として分けて出す。join の時間とは別に、
-/// チャンネル行の FOR UPDATE にかかった時間（`record_lock_waits_for_test`）も出す。
+/// 各条件を 3 回測る（20 人で 60、50 人で 150 サンプル）。
+///
+/// cold は、遅延の条件ごとに新しく作った接続のプール（`init_db`）と AppState で、最初に出す 30 人の join
+/// （同じ部屋で同時）。部屋の用意（SSE での入室）は同じプールで先に済ませるので、プールには接続があるが、
+/// join の SQL はその接続で初めて実行する。
+///
+/// join の時間とは別に、要求ごとの記録先（`X-Test-Join-Timings`。ほかのテストの要求は混ざらない）に、
+/// 段階ごとの時間を出す：begin（プールからの取得と BEGIN）、lock（チャンネル行の FOR UPDATE の文）、
+/// rtt（ロックのあと同じ接続での `SELECT 1`。SQL の往復だけ）、wait（lock − rtt。ロック待ちの目安）。
+/// Cloudflare の join はロックを 2 回取るので、lock 系のサンプルは join より多い。
 #[tokio::test]
 #[ignore]
 async fn join_latency() -> anyhow::Result<()> {
@@ -1755,36 +1803,63 @@ async fn join_latency() -> anyhow::Result<()> {
         })
         .map_err(anyhow::Error::msg)?
         .expect("sfu config");
-        let mut state = base_state.clone();
-        state.call_sfu = Some(backend::call_sfu::CallSfu::new(cfg));
-        let app = create_router(state);
-        // 最初の回（接続の準備を含む）。ほかとは分けて出す。
-        backend::routes::call_sfu::record_lock_waits_for_test(true);
-        let mut cold = join_round(&app, &mut db, 10, JoinMode::SameRoomConcurrent).await?;
-        let mut cold_lock = backend::routes::call_sfu::record_lock_waits_for_test(false);
-        report.push(format!(
-            "cf_delay={delay_ms}ms n=10 cold SameRoomConcurrent: join {} / lock {}",
-            summary(&mut cold),
-            summary(&mut cold_lock),
-        ));
+        let sfu = backend::call_sfu::CallSfu::new(cfg);
+        let line = |label: String,
+                    all: &mut Vec<Duration>,
+                    t: &mut backend::routes::call_sfu::JoinTimings| {
+            format!(
+                "{label}\n  join  {}\n  begin {}\n  lock  {}\n  rtt   {}\n  wait  {}",
+                summary(all),
+                summary(&mut t.begin),
+                summary(&mut t.lock),
+                summary(&mut t.round_trip),
+                summary(&mut t.lock_wait),
+            )
+        };
 
+        // cold：新しいプールと AppState で、最初の join。
+        {
+            let mut cold_db = init_db(&config.database_url).await?;
+            let mut cold_state = AppState::new(cold_db.clone(), config.clone());
+            cold_state.call_registry.set_db(cold_db.clone()).await;
+            cold_state.call_sfu = Some(sfu.clone());
+            let cold_app = create_router(cold_state);
+            let key = format!("cold-{}", uuid::Uuid::new_v4());
+            let mut cold = join_round(
+                &cold_app,
+                &mut cold_db,
+                30,
+                JoinMode::SameRoomConcurrent,
+                &key,
+            )
+            .await?;
+            let mut t = backend::routes::call_sfu::take_join_timings_for_test(&key);
+            report.push(line(
+                format!("cf_delay={delay_ms}ms n=30 cold SameRoomConcurrent"),
+                &mut cold,
+                &mut t,
+            ));
+        }
+
+        let mut state = base_state.clone();
+        state.call_sfu = Some(sfu);
+        let app = create_router(state);
         for n in [20usize, 50] {
             for mode in [
                 JoinMode::SameRoomConcurrent,
                 JoinMode::SeparateRoomsConcurrent,
                 JoinMode::SameRoomSequential,
             ] {
+                let key = format!("warm-{}", uuid::Uuid::new_v4());
                 let mut all = Vec::new();
-                backend::routes::call_sfu::record_lock_waits_for_test(true);
                 for _ in 0..3 {
-                    all.extend(join_round(&app, &mut db, n, mode).await?);
+                    all.extend(join_round(&app, &mut db, n, mode, &key).await?);
                 }
-                // チャンネル行の FOR UPDATE にかかった時間（Cloudflare の join は 2 回取る）。
-                let mut lock = backend::routes::call_sfu::record_lock_waits_for_test(false);
-                report.push(format!(
-                    "cf_delay={delay_ms}ms n={n} {mode:?}: join {} / lock {}",
-                    summary(&mut all),
-                    summary(&mut lock),
+                let mut t = backend::routes::call_sfu::take_join_timings_for_test(&key);
+                report.push(line(
+                    format!("cf_delay={delay_ms}ms n={n} {mode:?}"),
+                    &mut all,
+                    &mut t,
                 ));
             }
         }
