@@ -342,6 +342,7 @@
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "MentionedMessage",
         "EncryptedBeforeEncryptionRow",
         "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
@@ -391,8 +392,6 @@
         "Headings",
         "SharedShortcodes",
         "AuthZAccounts",
-        "SelfMentions",
-        "SelfMentionsDark",
         "KitchenBody",
         "KitchenTaggedEmoji"
       ]
