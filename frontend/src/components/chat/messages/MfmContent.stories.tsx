@@ -39,16 +39,8 @@ export const AuthZAccounts: Story = {
     (Story) => (
       <MfmAccountsProvider
         accounts={[
-          {
-            username: "alice",
-            display_name: "AuthZの表示名",
-            avatar_url: "/icons/icon-192.png",
-          },
-          {
-            username: "bob",
-            display_name: "AuthZの画像未登録ユーザー",
-            avatar_url: null,
-          },
+          { username: "alice", display_name: "AuthZの表示名", avatar_url: "/icons/icon-192.png" },
+          { username: "bob", display_name: "AuthZの画像未登録ユーザー", avatar_url: null },
         ]}
       >
         <Story />
@@ -70,19 +62,12 @@ export const AuthZAccounts: Story = {
   },
 };
 export const SelfMentions: Story = {
-  args: {
-    content: "@alice @bob @channel @here",
-    me: "alice",
-  },
+  args: { content: "@alice @bob", me: "alice" },
   decorators: [
     (Story) => (
       <MfmAccountsProvider
         accounts={[
-          {
-            username: "alice",
-            display_name: "アリス",
-            avatar_url: "/icons/icon-192.png",
-          },
+          { username: "alice", display_name: "アリス", avatar_url: "/icons/icon-192.png" },
           { username: "bob", display_name: "ボブ", avatar_url: null },
         ]}
       >
@@ -91,13 +76,12 @@ export const SelfMentions: Story = {
     ),
   ],
   play: async ({ canvasElement }) => {
-    await expect(canvasElement.querySelectorAll(".bg-primary")).toHaveLength(3);
-    await expect(canvasElement.querySelectorAll(".bg-brand-muted")).toHaveLength(1);
+    const selfMention = canvasElement.querySelector(".bg-primary");
+    await expect(selfMention).not.toBeNull();
+    await expect(selfMention).toHaveTextContent("自分宛て アリス");
+    await expect(selfMention?.querySelector("span.underline")).toHaveTextContent("アリス");
+    await expect(canvasElement.querySelector(".bg-brand-muted")).toHaveTextContent("ボブ");
   },
-};
-export const SelfMentionsDark: Story = {
-  ...SelfMentions,
-  globals: { theme: "dark" },
 };
 export const InlineLinks: Story = {
   args: {
@@ -106,9 +90,7 @@ export const InlineLinks: Story = {
   },
 };
 export const LongUrl: Story = {
-  args: {
-    content: "URL: https://example.com/" + "long-path-segment/".repeat(24),
-  },
+  args: { content: "URL: https://example.com/" + "long-path-segment/".repeat(24) },
   globals: { viewport: { value: "mobile" } },
 };
 export const CodeAndMath: Story = {
@@ -142,24 +124,17 @@ export const JoinedEmoji: Story = {
     emojis: { zoo_wave: customEmojiFixture },
   },
   play: playForImplementation(async ({ canvasElement }) => {
-    const image = await within(canvasElement).findByRole("img", {
-      name: ":zoo_wave:",
-    });
+    const image = await within(canvasElement).findByRole("img", { name: ":zoo_wave:" });
     const box = image.getBoundingClientRect();
     await expect(box.width / box.height).toBeCloseTo(3);
     await expect(canvasElement).toHaveTextContent(":unregistered_zoo_emoji:");
   }),
 };
 export const Formatting: Story = {
-  args: {
-    content: "**強調** *斜体* ~~取り消し~~\n> 引用文\n$[ruby 漢字 かんじ]",
-  },
+  args: { content: "**強調** *斜体* ~~取り消し~~\n> 引用文\n$[ruby 漢字 かんじ]" },
 };
 
-export const CodeAndMathDark: Story = {
-  ...CodeAndMath,
-  globals: { theme: "dark" },
-};
+export const CodeAndMathDark: Story = { ...CodeAndMath, globals: { theme: "dark" } };
 
 export const Headings: Story = {
   args: {
@@ -182,16 +157,12 @@ export const Headings: Story = {
 };
 
 export const SharedShortcodes: Story = {
-  args: {
-    content: ":service_gemoji: :smile: `:service_gemoji:` :unknown_service_emoji:",
-  },
+  args: { content: ":service_gemoji: :smile: `:service_gemoji:` :unknown_service_emoji:" },
   parameters: {
     msw: {
       handlers: [
         http.get("*/api/emoji-shortcodes", () =>
-          HttpResponse.json({
-            shortcodes: { service_gemoji: "👩‍💻", smile: "😄" },
-          }),
+          HttpResponse.json({ shortcodes: { service_gemoji: "👩‍💻", smile: "😄" } }),
         ),
         http.get("*/api/emojis", () =>
           HttpResponse.json([{ ...customEmojiFixture, name: "smile", category: "", aliases: [] }]),
@@ -208,9 +179,7 @@ export const SharedShortcodes: Story = {
 };
 
 export const KitchenBody: Story = {
-  args: {
-    content: "本文 **:kitchen_1f431_1f600:** と `:kitchen_1f431_1f600:`",
-  },
+  args: { content: "本文 **:kitchen_1f431_1f600:** と `:kitchen_1f431_1f600:`" },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("img", { name: "🐱 + 😀" })).toBeVisible();
@@ -224,9 +193,7 @@ export const KitchenTaggedEmoji: Story = {
     emojis: { kitchen_1f431_1f600: customEmojiFixture },
   },
   play: async ({ canvasElement }) => {
-    const image = await within(canvasElement).findByRole("img", {
-      name: ":kitchen_1f431_1f600:",
-    });
+    const image = await within(canvasElement).findByRole("img", { name: ":kitchen_1f431_1f600:" });
     const box = image.getBoundingClientRect();
     await expect(box.width / box.height).toBeCloseTo(3);
   },

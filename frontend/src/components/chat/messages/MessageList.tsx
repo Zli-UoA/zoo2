@@ -482,10 +482,7 @@ function MessageScrollViewport({
 
   const invalidateWidthGeneration = useCallback((nextWidth: number, resetEstimates: boolean) => {
     if (resetEstimates) {
-      activeEstimateRef.current = {
-        sizes: undefined,
-        rowHeight: ESTIMATED_ROW_HEIGHT,
-      };
+      activeEstimateRef.current = { sizes: undefined, rowHeight: ESTIMATED_ROW_HEIGHT };
     }
     widthInvalidatedRef.current = true;
     measuredWidthRef.current = nextWidth;
@@ -565,10 +562,7 @@ function MessageScrollViewport({
     for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
       const bounds = row.getBoundingClientRect();
       if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
-        scrollAnchorRef.current = {
-          id: row.dataset.messageId!,
-          offset: bounds.top - viewport.top,
-        };
+        scrollAnchorRef.current = { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
         break;
       }
     }
@@ -810,10 +804,7 @@ function MessageScrollViewport({
       deps.captureScrollAnchor();
       const el = scrollRef.current;
       if (el && el.clientWidth > 0 && el.clientHeight > 0) {
-        latestMetricsRef.current = {
-          width: el.clientWidth,
-          height: el.clientHeight,
-        };
+        latestMetricsRef.current = { width: el.clientWidth, height: el.clientHeight };
       }
       if (
         el &&
@@ -859,11 +850,7 @@ function MessageScrollViewport({
       }
       atBottomRef.current = true;
       deps.scrollToBottom("auto");
-      return {
-        mode: "bottom" as const,
-        targetId: null as string | null,
-        expectedTop: null,
-      };
+      return { mode: "bottom" as const, targetId: null as string | null, expectedTop: null };
     };
 
     const isConverged = (state: ReturnType<typeof alignTargetNow>): boolean => {
@@ -1010,10 +997,7 @@ function MessageScrollViewport({
       return;
     }
     if (element.clientWidth > 0 && element.clientHeight > 0) {
-      latestMetricsRef.current = {
-        width: element.clientWidth,
-        height: element.clientHeight,
-      };
+      latestMetricsRef.current = { width: element.clientWidth, height: element.clientHeight };
     }
     const ids = items.map((item) => item.message.id);
     const next = snapshot(ids);

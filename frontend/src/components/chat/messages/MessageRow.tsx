@@ -356,7 +356,7 @@ export function MessageRow({
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
   // 暗号化メッセージのメンションは、本文の `@name` ではなく、復号した `mentions` だけで表示する。
   const mentionUserNames = useMentionUserNames();
-  const mentionMe = mentionUserId ? mentionUserNames.get(mentionUserId) : undefined;
+  const mentionMe = !isOwn && mentionUserId ? mentionUserNames.get(mentionUserId) : undefined;
   const decryptedMentions =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.mentions : undefined;
   const mentionAllowlist = useMemo(

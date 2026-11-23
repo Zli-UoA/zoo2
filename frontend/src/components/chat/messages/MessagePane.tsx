@@ -248,10 +248,7 @@ export function MessagePane({
     threadRootId,
     !readOnly && isMember && !!currentUserId && !!threadRootId,
   );
-  const [legacyThreadTarget, setLegacyThreadTarget] = useState<{
-    root: string;
-    target: string;
-  }>();
+  const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
   const threadMembership = useThreadMembership(currentUserId, threadRootId);
   const retryMembership = threadMembership.retry;
   // 参加が必要な 403 への対応（平文・暗号化の返信で共通）。表示している参加状態が古かった（ほかの画面・
@@ -573,10 +570,7 @@ export function MessagePane({
       return;
     }
     const description = errorCause == null ? error : localizeApiError(errorCause, t);
-    toast.error(t("common.writeError"), {
-      description,
-      id: "message-write-error",
-    });
+    toast.error(t("common.writeError"), { description, id: "message-write-error" });
     setError(null);
   }, [error, errorCause, noticeJoinRequired, setError, t]);
 
@@ -588,11 +582,7 @@ export function MessagePane({
     try {
       await run(() =>
         channelUsers.insert(
-          {
-            user_id: currentUserId,
-            channel_id: channelId,
-            joined_at: nowIso(),
-          },
+          { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
           { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
         ),
       );
@@ -718,9 +708,7 @@ export function MessagePane({
     ): Promise<boolean> => {
       if (sendBlocked) return false;
       if (readOnly || !isMember) {
-        toast.info(t("messages.joinToPostDescription"), {
-          id: "thread-reply-join-required",
-        });
+        toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
         return false;
       }
       if (cryptoDeps) {
@@ -969,7 +957,7 @@ export function MessagePane({
             isLoading={messagesQuery.isLoading}
             isError={messagesQuery.isError}
             currentUserId={readOnly ? null : currentUserId}
-            viewerId={currentUserId}
+            viewerId={isMember ? currentUserId : null}
             canModerate={canModerate}
             editingId={editingId}
             editingText={editingText}

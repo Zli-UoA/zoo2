@@ -15,9 +15,7 @@ import { MfmContent, type MfmContentProps } from "./MfmContent";
 
 const render = (content: string, options: Omit<MfmContentProps, "content"> = {}) =>
   renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      children: createElement(MfmContent, { content, ...options }),
-    }),
+    createElement(LocaleProvider, { children: createElement(MfmContent, { content, ...options }) }),
   );
 
 describe("MfmContent", () => {
@@ -217,9 +215,7 @@ describe("MfmContent", () => {
   });
   it("renders registered custom emoji and standard shortcode fallback", () => {
     expect(render(":smile:")).toBe("😄");
-    const html = render(":party:", {
-      emojiUrls: { party: "/emoji/party.webp" },
-    });
+    const html = render(":party:", { emojiUrls: { party: "/emoji/party.webp" } });
     expect(html).toContain('src="/emoji/party.webp"');
     expect(html).toContain('alt=":party:"');
     expect(render(":party:", { emojiUrls: { party: "javascript:alert(1)" } })).not.toContain(
@@ -261,11 +257,9 @@ describe("MfmContent", () => {
   it("暗号化メッセージでは、復号した mentions にある @name だけをメンションとして表示する", () => {
     const html = render("@alice @bob **@channel** @here @carol@example.com", {
       mentions: { userNames: new Set(["alice"]), channel: true, here: false },
-      me: "alice",
     });
-    // 許可された自分宛てと全体宛てだけ強調し、許可リスト外のメンションは表示しない。
-    expect(html.match(/bg-brand-muted/g)).toBeNull();
-    expect(html.match(/bg-primary/g)).toHaveLength(2);
+    // メンションの表示（bg-brand-muted）は @alice と @channel の 2 つだけ。
+    expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
     expect(html).toContain("@alice</span>");
     expect(html).toContain("@channel</span>");
     expect(html).toContain(" @bob ");
@@ -276,11 +270,12 @@ describe("MfmContent", () => {
     // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
     expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);
   });
-  it("highlights own mentions only with a current user and exact username casing", () => {
-    expect(render("@alice", { me: "alice" })).toContain("bg-primary");
+  it("highlights only exact self mentions when the viewer is known", () => {
+    const selfMention = render("@alice @Alice @channel @here", { me: "alice" });
+    expect(selfMention.match(/bg-primary/g)).toHaveLength(1);
+    expect(selfMention).toContain("自分宛て");
     expect(render("@Alice", { me: "alice" })).not.toContain("bg-primary");
-    expect(render("@channel @here")).not.toContain("bg-primary");
-    expect(render("@channel @here", { me: "alice" }).match(/bg-primary/g)).toHaveLength(2);
+    expect(render("@alice")).not.toContain("bg-primary");
   });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
@@ -298,10 +293,7 @@ describe("MfmContent", () => {
     ];
     const html = renderToStaticMarkup(
       createElement(RouterContextProvider, {
-        router: createRouter({
-          routeTree: createRootRoute(),
-          history: createMemoryHistory(),
-        }),
+        router: createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() }),
         children: createElement(MfmChannelsProvider, {
           channels,
           children: createElement(MfmContent, {

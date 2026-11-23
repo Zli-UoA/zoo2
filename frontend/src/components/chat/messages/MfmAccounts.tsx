@@ -24,7 +24,15 @@ export function useMfmAccounts() {
   return useContext(AccountsContext);
 }
 
-export function AccountGlyph({ name, mention = false }: { name: string; mention?: boolean }) {
+export function AccountGlyph({
+  name,
+  mention = false,
+  selfMention = false,
+}: {
+  name: string;
+  mention?: boolean;
+  selfMention?: boolean;
+}) {
   const account = useMfmAccounts().get(name);
   if (!account || ["channel", "here"].includes(name.toLowerCase()))
     return <>{mention ? `@${name}` : `:@${name}:`}</>;
@@ -48,7 +56,13 @@ export function AccountGlyph({ name, mention = false }: { name: string; mention?
           <AvatarFallback className="text-[0.7em]">{Array.from(label)[0] ?? "?"}</AvatarFallback>
         </Avatar>
       </span>
-      {mention ? <span className="[overflow-wrap:anywhere]">{label}</span> : null}
+      {mention ? (
+        <span
+          className={`[overflow-wrap:anywhere]${selfMention ? " underline decoration-2 underline-offset-2" : ""}`}
+        >
+          {label}
+        </span>
+      ) : null}
     </span>
   );
 }
