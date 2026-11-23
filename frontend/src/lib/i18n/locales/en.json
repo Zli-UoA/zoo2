@@ -329,6 +329,10 @@
     "participants_other": "{{count}} participants",
     "participantsMore": "and {{count}} more",
     "participantsEmpty": "No participants",
+    "threadStarter": "Thread starter",
+    "participantsSearch": "Search by name",
+    "participantsFilterPartial": "Searching only the first {{loaded}} people loaded ({{count}} more can't be searched).",
+    "participantsDescription": "People who have joined this thread.",
     "joinToReply": "Join the thread to reply.",
     "reopenAndJoin": "Reopen and join"
   },

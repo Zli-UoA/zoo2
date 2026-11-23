@@ -1105,8 +1105,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
-                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, &job.id, message)
-                    .await?;
+                // ZIP の取り込みは履歴。直近の返信でも、再Openも再参加もしない
+                insert_message(
+                    &mut tx,
+                    &mut ctx,
+                    &channel.id,
+                    channel_id,
+                    &job.id,
+                    false,
+                    message,
+                )
+                .await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
             }
@@ -1483,12 +1492,16 @@ pub(super) async fn id_taken_by_other(
     .is_empty())
 }
 
+/// `live_replies`: 直近の返信を、zoo の返信と同じライブの投稿として扱うか (スレッドの再Open・退出済みの
+/// 投稿者の再参加)。差分同期・イベントの取り込みは真。ZIP・API の履歴の取り込み (取り込みジョブ、API の
+/// 初回の全履歴の同期) は偽で、直近の返信でも履歴として入れるだけにする
 pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     slack_channel: &str,
     channel_id: &str,
     job_id: &str,
+    live_replies: bool,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
     // ループ防止: このアプリが投稿したメッセージ (#294 のブリッジが Zoo から Slack へ出したもの) は、取り込まない
@@ -1546,17 +1559,30 @@ pub(super) async fn insert_message(
         components,
         filled,
     } = render_message(tx, ctx, message).await?;
+    // 差分同期・イベントで取り込む直近の返信は、zoo の返信と同じライブの投稿として、アーカイブ済みのスレッドを
+    // 再Openし、退出済みの投稿者を再参加させる (DB トリガー `update_thread_activity`)。ZIP・API の履歴の取り込み
+    // (`live_replies` が偽) と、期間より古い返信は、立てない。フラグ (`zoo.thread_live_import`) は、下の INSERT 文が
+    // 先頭の CTE で、この返信の値 (`on` / `off`) を毎回決め直す。別の文・往復は増えず、同じトランザクションの
+    // 次の返信に値を引き継ぐことも起きない。同じ投稿IDの再送は、INSERT されないのでトリガーが動かず、何も変わらない
+    let live = live_replies && !parent.is_empty() && {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        super::is_live_reply_ts(&message.ts, now)
+    };
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     // 既存返信はON CONFLICTでも更新しない。BEFORE INSERTで削除済みの親を
     // 再検証しないよう、主キーで先に除外する。新規返信の制約はそのまま通す。
     exec(
         tx,
-        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
+        "WITH live AS MATERIALIZED (SELECT set_config('zoo.thread_live_import',$11,true) AS v) \
+         INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,components) \
          SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
           AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
-         NULLIF($8,'') WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
+         NULLIF($8,'') FROM live WHERE NOT EXISTS(SELECT 1 FROM messages existing WHERE existing.id=$1 AND existing.parent_id IS NOT NULL) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
@@ -1574,6 +1600,8 @@ pub(super) async fn insert_message(
             parent_ts,
             // 決定的な ID の行は、作成日時が同じ行だけを更新する (Zoo の投稿との対応 `slack_message_map` がある行は除く)
             if derived { "1" } else { "" },
+            // ライブの返信として扱うか (`zoo.thread_live_import`)。毎回、この文で決める
+            if live { "on" } else { "off" },
         ],
     )
     .await?;

@@ -4314,3 +4314,43 @@ CREATE INDEX channel_notes_search_month ON channel_notes USING gin (
 -- 取り込みでチャンネルの作成日時より古い返信もありうる。チャンネルごとに先頭の 1 行だけ引く。
 CREATE INDEX messages_search_reply_floor ON messages (channel_id, created_at)
   WHERE parent_id IS NOT NULL AND deleted_at IS NULL;
+
+-- Slack の取り込み（差分同期・イベント）が、直近の返信を、zoo の返信と同じライブの投稿として扱えるようにする。
+-- 取り込みの返信は作成日時が Slack の投稿時刻なので、トランザクション開始時刻との比べだけでは、ライブと判定されない。
+-- `zoo.thread_live_import` が `on` のトランザクションの INSERT は、ライブの返信として、スレッドを再Openし、
+-- 退出済みの投稿者を再参加させる（Home の返信と同じ）。フラグは、バックエンドが直近の返信にだけ立てる。
+-- 履歴の取り込みや、同じ投稿IDの再送（AFTER INSERT が動かない）では、立てても何も変わらない。
+CREATE OR REPLACE FUNCTION update_thread_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE parent_author text; live_post boolean; posted_now boolean; imported_live boolean; import_flag text;
+BEGIN
+  IF current_setting('zoo.thread_migration',true)='on' THEN RETURN NULL; END IF;
+  IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NULL; END IF;
+  SELECT user_id INTO parent_author FROM messages
+    WHERE id=NEW.parent_id AND deleted_at IS NULL FOR NO KEY UPDATE;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  posted_now:=TG_OP='INSERT' AND NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC');
+  -- フラグ zoo.thread_live_import: on は、取り込みの直近の返信（ライブ）、off は、取り込みの履歴（ライブにしない）、
+  -- 未設定・空文字列は、zoo の返信。一度も設定していない接続では、current_setting が NULL を返すので、空文字列にそろえる
+  -- （NULL のままだと、条件が NULL になって、zoo の返信の再参加の UPDATE が動かなくなる）
+  import_flag:=COALESCE(current_setting('zoo.thread_live_import',true),'');
+  imported_live:=TG_OP='INSERT' AND import_flag='on';
+  -- 履歴の取り込み（off）は、時計のずれで作成日時が DB の時刻より先でも（posted_now が真でも）、ライブにしない
+  live_post:=imported_live OR (posted_now AND import_flag<>'off');
+  INSERT INTO thread_participants(thread_id,user_id)
+    VALUES(NEW.parent_id,parent_author),(NEW.parent_id,NEW.user_id) ON CONFLICT DO NOTHING;
+  IF live_post THEN
+    -- 取り込みの返信は作成日時が過去なので、遅れて届くと、返信より後に退出した人を再参加させてしまう。
+    -- 取り込みの直近の返信（imported_live）は、時計のずれで作成日時が DB の時刻より先でも、返信より後の退出は
+    -- 取り消さない（left_at < created_at の返信だけが再参加させる）。
+    -- zoo の返信（フラグなしで posted_now）は、従来どおり常に再参加する。履歴の取り込み（off）は、ここに来ない。
+    UPDATE thread_participants SET left_at=NULL,joined_at=now() AT TIME ZONE 'UTC',updated_at=now() AT TIME ZONE 'UTC'
+      WHERE thread_id=NEW.parent_id AND user_id=NEW.user_id AND left_at IS NOT NULL
+        AND (left_at < NEW.created_at OR NOT imported_live);
+  END IF;
+  UPDATE messages SET
+    thread_activity_at=GREATEST(thread_activity_at,created_at,NEW.created_at),
+    thread_archive_at=CASE WHEN live_post THEN NULL ELSE thread_archive_at END
+    WHERE id=NEW.parent_id;
+  RETURN NULL;
+END $$;
