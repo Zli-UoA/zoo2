@@ -76,10 +76,20 @@ func configFromEnv() (config, error) {
 
 // checkBackendURL は BACKEND_INTERNAL_URL を確かめる。要求には Bearer トークンを付けるので、
 // http はクラスタ内（*.svc、*.svc.cluster.local）とループバックの宛先だけ許し、それ以外は https にする。
+//
+// 確かめるのは net/url で解析した u.Hostname()（net/http が接続する宛先）。バックスラッシュは、
+// 解析する実装によって区切りの扱いが違い、確かめた宛先と接続先が食い違いうるので拒む
+// （例：http://evil.example\@backend.zoo2.svc:8000/）。userinfo も、同じ理由と Bearer の送り先をはっきりさせるため拒む。
 func checkBackendURL(raw string) error {
+	if strings.Contains(raw, "\\") {
+		return errors.New("BACKEND_INTERNAL_URL must not contain a backslash")
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return errors.New("BACKEND_INTERNAL_URL must be an absolute http(s) URL")
+	}
+	if u.User != nil {
+		return errors.New("BACKEND_INTERNAL_URL must not contain userinfo")
 	}
 	switch u.Scheme {
 	case "https":

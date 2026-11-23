@@ -32,10 +32,18 @@ func stripExtensions(pkt *rtp.Packet) {
 	pkt.Header.Extensions = nil
 }
 
+// pulledTrack は Cloudflare の人の声の pull の予約。pull の応答は、要求したときの予約（ポインター）に対して入れる。
+// 応答を待つあいだに同じ id が一覧から外れて載り直すと、b.pulled には別の予約が入るので、古い応答はそれに触らない。
 type pulledTrack struct {
+	id      string
+	rev     string
 	speaker string
 	mid     string
 }
+
+// pullKey は予約の鍵。rev（Cloudflare のセッションと track 名から backend が作る）が変われば、
+// 同じ id でも別の音声なので、古い購読を止めて pull し直す。rev のない古い backend では "" として扱う。
+func pullKey(id, rev string) string { return id + "\x00" + rev }
 
 type pushedTrack struct {
 	mid         string
@@ -61,8 +69,7 @@ type roomBridge struct {
 	ready     chan struct{}
 	// latest は最新の一覧。接続中に届いた分も、接続が終わったら sync で反映する。
 	latest roomState
-	// wanted は Cloudflare の人の声（track id → 話者）。
-	wanted     map[string]string
+	// pulled は Cloudflare の人の声の予約（pullKey → 予約）。
 	pulled     map[string]*pulledTrack
 	pushed     map[string]*pushedTrack
 	midSpeaker map[string]string
@@ -77,7 +84,6 @@ func newRoomBridge(parent context.Context, api *backendAPI, bridgeEpoch int64, r
 		api: api, bridgeEpoch: bridgeEpoch, channelID: r.ChannelID, ctx: ctx, cancel: cancel,
 		ready:      make(chan struct{}),
 		latest:     r,
-		wanted:     map[string]string{},
 		pulled:     map[string]*pulledTrack{},
 		pushed:     map[string]*pushedTrack{},
 		midSpeaker: map[string]string{},
@@ -375,35 +381,37 @@ func (b *roomBridge) sync() {
 		}
 		delete(b.parked, speaker)
 	}
-	b.wanted = map[string]string{}
+	wanted := map[string]trackInfo{}
 	for _, t := range r.CloudflareTracks {
 		if t.Source == "direct" {
-			b.wanted[t.ID] = t.SessionID
+			wanted[pullKey(t.ID, t.Rev)] = t
 		}
 	}
-	var toPull []string
-	var toStop []*pulledTrack
-	for id := range b.wanted {
-		if _, ok := b.pulled[id]; !ok {
-			toPull = append(toPull, id)
+	var toPull []*pulledTrack
+	var toStop []string
+	for key, p := range b.pulled {
+		if _, ok := wanted[key]; !ok {
+			// mid がまだ無い予約は pull の応答待ち。応答が来たら pull が止める（assignPulled）。
+			if p.mid != "" {
+				toStop = append(toStop, p.mid)
+			}
+			delete(b.pulled, key)
 		}
 	}
-	for id, p := range b.pulled {
-		if _, ok := b.wanted[id]; !ok {
-			toStop = append(toStop, p)
-			delete(b.pulled, id)
+	for key, t := range wanted {
+		if _, ok := b.pulled[key]; !ok {
+			p := &pulledTrack{id: t.ID, rev: t.Rev, speaker: t.SessionID}
+			b.pulled[key] = p
+			toPull = append(toPull, p)
 		}
-	}
-	for _, id := range toPull {
-		b.pulled[id] = &pulledTrack{speaker: b.wanted[id]}
 	}
 	b.mu.Unlock()
 
 	for _, p := range toPush {
 		go b.relayToCloudflare(p.speaker, p.track)
 	}
-	for _, p := range toStop {
-		b.stopPulled(p)
+	if len(toStop) > 0 {
+		b.stopMids(toStop)
 	}
 	if len(toPull) > 0 {
 		go b.pull(toPull)
@@ -422,23 +430,29 @@ func (b *roomBridge) setLivekitSpeakersLocked(r roomState) {
 	}
 }
 
-func (b *roomBridge) pull(ids []string) {
+// pull は reqs の予約の音声を pull する。reqs は sync が b.pulled に入れた予約そのもの。
+func (b *roomBridge) pull(reqs []*pulledTrack) {
 	b.negotiate.Lock()
 	defer b.negotiate.Unlock()
 	ctx, cancel := context.WithTimeout(b.ctx, negotiateTimeout)
 	defer cancel()
+	ids := make([]string, len(reqs))
+	for i, p := range reqs {
+		ids[i] = p.id
+	}
 	res, err := b.api.cfPull(ctx, b.channelID, b.cfSession, ids)
 	if err != nil {
-		// 次の一覧の更新（最長 25 秒）で、もう一度 pull する。
+		// 次の一覧の更新（最長 25 秒）で、もう一度 pull する。外すのは、この pull の予約だけ。
+		// 応答を待つあいだに作り直された予約は、新しい pull のものなので残す。
 		b.mu.Lock()
-		for _, id := range ids {
-			delete(b.pulled, id)
+		for _, p := range reqs {
+			b.releaseLocked(p)
 		}
 		b.mu.Unlock()
 		b.log().Warn("pull from Cloudflare failed", "error", err)
 		return
 	}
-	orphans := b.assignPulled(ids, res.Tracks)
+	orphans := b.assignPulled(reqs, res.Tracks)
 	// 応答を待つあいだに一覧から外れた分は、受信の準備ができてから止める。
 	defer func() {
 		if len(orphans) > 0 && b.ctx.Err() == nil {
@@ -468,13 +482,28 @@ func (b *roomBridge) pull(ids []string) {
 	}
 }
 
-// assignPulled は pull の結果を b.pulled に入れる。
-//   - 成功した track の mid は、同じ話者の、まだ mid のない ids の予約に入れる。
-//   - 予約がもう無い（応答を待つあいだに一覧から外れた）mid は返す。呼び出し側が止める。
-//   - 失敗した（errorCode がある、または結果が無い）ids の予約は外す。次の一覧の更新で、もう一度 pull する。
-func (b *roomBridge) assignPulled(ids []string, tracks []trackResult) (orphans []string) {
+// current は、予約 p が今も b.pulled に入っている（外されたり、作り直されたりしていない）か。b.mu を持って呼ぶ。
+func (b *roomBridge) current(p *pulledTrack) bool {
+	return b.pulled[pullKey(p.id, p.rev)] == p
+}
+
+// releaseLocked は、mid のない予約 p が今も入っていれば外す。b.mu を持って呼ぶ。
+func (b *roomBridge) releaseLocked(p *pulledTrack) {
+	if b.current(p) && p.mid == "" {
+		delete(b.pulled, pullKey(p.id, p.rev))
+	}
+}
+
+// assignPulled は pull の結果を、要求したときの予約（reqs）に入れる。
+//   - 成功した track の mid は、同じ話者の、まだ mid のない reqs の予約に入れる。
+//   - その予約がもう b.pulled に無い（応答を待つあいだに一覧から外れた、または外れて載り直し、別の予約になった）なら、
+//     mid は返す。呼び出し側が止める。
+//   - 失敗した（errorCode がある、または結果が無い）reqs の予約は、今も入っていれば外す。次の一覧の更新で、もう一度 pull する。
+func (b *roomBridge) assignPulled(reqs []*pulledTrack, tracks []trackResult) (orphans []string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// used は、この応答の track を対応させた予約。外された古い予約には mid を入れず、used で使用済みにだけする。
+	used := map[*pulledTrack]bool{}
 	for _, t := range tracks {
 		if t.Mid == "" || t.ErrorCode != "" {
 			if t.ErrorCode != "" {
@@ -483,36 +512,35 @@ func (b *roomBridge) assignPulled(ids []string, tracks []trackResult) (orphans [
 			continue
 		}
 		speaker := speakerOfTrackName(t.TrackName)
-		assigned := false
-		for _, id := range ids {
-			if p := b.pulled[id]; p != nil && p.speaker == speaker && p.mid == "" {
-				p.mid = t.Mid
-				assigned = true
+		var req *pulledTrack
+		for _, p := range reqs {
+			if p.speaker == speaker && p.mid == "" && !used[p] {
+				req = p
 				break
 			}
 		}
-		if !assigned {
+		if req == nil || !b.current(req) {
+			if req != nil {
+				used[req] = true
+			}
 			orphans = append(orphans, t.Mid)
 			continue
 		}
+		used[req] = true
+		req.mid = t.Mid
 		b.midSpeaker[t.Mid] = speaker
 	}
-	for _, id := range ids {
-		if p := b.pulled[id]; p != nil && p.mid == "" {
-			delete(b.pulled, id)
-		}
+	for _, p := range reqs {
+		b.releaseLocked(p)
 	}
 	return orphans
 }
 
-func (b *roomBridge) stopPulled(p *pulledTrack) {
-	if p.mid == "" {
-		// pull の応答を待っている。応答が来たら pull が止める（assignPulled）。
-		return
-	}
+// stopMids は、一覧から外れた（または rev が変わった）予約の mid を止める。
+func (b *roomBridge) stopMids(mids []string) {
 	b.negotiate.Lock()
 	defer b.negotiate.Unlock()
-	b.stopMidsLocked([]string{p.mid})
+	b.stopMidsLocked(mids)
 }
 
 // stopMidsLocked は受信を止め、Cloudflare 側も閉じる。b.negotiate を持って呼ぶ。

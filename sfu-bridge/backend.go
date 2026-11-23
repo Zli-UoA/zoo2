@@ -49,6 +49,9 @@ type trackInfo struct {
 	ID        string `json:"id"`
 	SessionID string `json:"session_id"`
 	Source    string `json:"source"`
+	// Rev は公開の世代（Cloudflare のセッションと track 名のハッシュ）。同じ id でも変われば別の音声。
+	// 古い backend は返さないので、無ければ ""。
+	Rev string `json:"rev"`
 }
 
 type roomState struct {
